@@ -8,6 +8,8 @@ use cashu::quote_id::QuoteId;
 use cashu::Amount;
 
 use super::{DbTransactionFinalizer, Error};
+#[cfg(feature = "conditional-tokens")]
+use crate::mint::{StoredCondition, StoredPartition};
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
 };
@@ -155,6 +157,34 @@ pub trait KeysDatabase {
 
     /// Get [`MintKeySetInfo`]s
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
+
+    /// Add a conditional keyset row (NUT-CTF) into the dedicated `conditional_keyset` table.
+    ///
+    /// The `MintKeySetInfo` must have `condition_id`, `outcome_collection`, and
+    /// `outcome_collection_id` all set; otherwise the implementation returns an error.
+    #[cfg(feature = "conditional-tokens")]
+    async fn add_conditional_keyset(
+        &self,
+        keyset_info: MintKeySetInfo,
+        created_at: u64,
+    ) -> Result<(), Self::Err> {
+        let _ = (keyset_info, created_at);
+        Err(Error::Internal(
+            "add_conditional_keyset not implemented by this backend".to_string(),
+        )
+        .into())
+    }
+
+    /// Load every conditional keyset row from the dedicated table.
+    ///
+    /// Used by the signatory's `reload_keys_from_db` path to populate the in-memory
+    /// signing map for conditional keysets alongside the regular keysets.
+    #[cfg(feature = "conditional-tokens")]
+    async fn get_all_conditional_mint_keyset_infos(
+        &self,
+    ) -> Result<Vec<MintKeySetInfo>, Self::Err> {
+        Ok(Vec::new())
+    }
 }
 
 /// Mint Quote Database writer trait
@@ -598,6 +628,69 @@ pub trait CompletedOperationsDatabase {
     async fn get_completed_operations(&self) -> Result<Vec<mint::Operation>, Self::Err>;
 }
 
+/// Conditions Database trait (NUT-CTF)
+#[cfg(feature = "conditional-tokens")]
+#[async_trait]
+pub trait ConditionsDatabase {
+    /// Conditions Database Error
+    type Err: Into<Error> + From<Error>;
+
+    /// Add a stored condition
+    async fn add_condition(&self, condition: StoredCondition) -> Result<(), Self::Err>;
+
+    /// Get a condition by condition_id
+    async fn get_condition(&self, condition_id: &str) -> Result<Option<StoredCondition>, Self::Err>;
+
+    /// Get all conditions, with optional cursor-based pagination and status filter
+    async fn get_conditions(
+        &self,
+        since: Option<u64>,
+        limit: Option<u64>,
+        status: &[String],
+    ) -> Result<Vec<StoredCondition>, Self::Err>;
+
+    /// Update condition attestation state.
+    /// Only succeeds if current status is 'pending' (first-write-wins).
+    /// Returns true if the update was applied, false if already attested.
+    async fn update_condition_attestation(
+        &self,
+        condition_id: &str,
+        status: &str,
+        winning_outcome: Option<&str>,
+        attested_at: Option<u64>,
+    ) -> Result<bool, Self::Err>;
+
+    /// Get conditional keysets for a condition (mapping outcome_collection → keyset id)
+    async fn get_conditional_keysets_for_condition(
+        &self,
+        condition_id: &str,
+    ) -> Result<HashMap<String, Id>, Self::Err>;
+
+    /// Get all conditional keyset infos (for GET /v1/conditional_keysets)
+    async fn get_all_conditional_keyset_infos(
+        &self,
+        since: Option<u64>,
+        limit: Option<u64>,
+        active: Option<bool>,
+    ) -> Result<Vec<cashu::nuts::nut_ctf::ConditionalKeySetInfo>, Self::Err>;
+
+    /// Get condition info for a specific keyset ID
+    /// Returns (condition_id, outcome_collection, outcome_collection_id) if this is a conditional keyset
+    async fn get_condition_for_keyset(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<Option<(String, String, String)>, Self::Err>;
+
+    /// Add a stored partition
+    async fn add_partition(&self, partition: StoredPartition) -> Result<(), Self::Err>;
+
+    /// Get partitions for a condition
+    async fn get_partitions_for_condition(
+        &self,
+        condition_id: &str,
+    ) -> Result<Vec<StoredPartition>, Self::Err>;
+}
+
 /// Base database writer
 pub trait Transaction<Error>:
     DbTransactionFinalizer<Err = Error>
@@ -611,6 +704,7 @@ pub trait Transaction<Error>:
 }
 
 /// Mint Database trait
+#[cfg(not(feature = "conditional-tokens"))]
 #[async_trait]
 pub trait Database<Error>:
     KVStoreDatabase<Err = Error>
@@ -619,6 +713,22 @@ pub trait Database<Error>:
     + SignaturesDatabase<Err = Error>
     + SagaDatabase<Err = Error>
     + CompletedOperationsDatabase<Err = Error>
+{
+    /// Begins a transaction
+    async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;
+}
+
+/// Mint Database trait (with conditional tokens support)
+#[cfg(feature = "conditional-tokens")]
+#[async_trait]
+pub trait Database<Error>:
+    KVStoreDatabase<Err = Error>
+    + QuotesDatabase<Err = Error>
+    + ProofsDatabase<Err = Error>
+    + SignaturesDatabase<Err = Error>
+    + SagaDatabase<Err = Error>
+    + CompletedOperationsDatabase<Err = Error>
+    + ConditionsDatabase<Err = Error>
 {
     /// Begins a transaction
     async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;

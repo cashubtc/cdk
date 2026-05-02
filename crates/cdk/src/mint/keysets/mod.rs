@@ -9,6 +9,29 @@ use crate::Error;
 mod auth;
 
 impl Mint {
+    /// Returns true if the given keyset should be listed by the public
+    /// NUT-01/NUT-02 list endpoints (`GET /v1/keys`, `GET /v1/keysets`).
+    ///
+    /// Per-ID lookups (`GET /v1/keys/{id}`) intentionally do NOT apply this
+    /// filter: wallets holding a conditional token must still be able to
+    /// fetch the keys for that specific keyset by ID (see `nuts/CTF.md`).
+    ///
+    /// Currently this hides from the list endpoints:
+    /// - auth keysets
+    /// - NUT-CTF conditional keysets (feature-gated), which are only
+    ///   enumerated via the NUT-CTF conditional endpoints
+    #[inline]
+    fn is_listable_keyset(keyset: &cdk_signatory::signatory::SignatoryKeySet) -> bool {
+        if keyset.unit == CurrencyUnit::Auth {
+            return false;
+        }
+        #[cfg(feature = "conditional-tokens")]
+        if keyset.condition_id.is_some() {
+            return false;
+        }
+        true
+    }
+
     /// Retrieve the public keys of the active keyset for distribution to wallet
     /// clients
     #[instrument(skip(self))]
@@ -32,7 +55,7 @@ impl Mint {
                 .keysets
                 .load()
                 .iter()
-                .filter(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
+                .filter(|keyset| keyset.active && Self::is_listable_keyset(keyset))
                 .map(|key| key.into())
                 .collect::<Vec<_>>(),
         }
@@ -46,7 +69,7 @@ impl Mint {
                 .keysets
                 .load()
                 .iter()
-                .filter(|k| k.unit != CurrencyUnit::Auth)
+                .filter(|k| Self::is_listable_keyset(k))
                 .map(|k| KeySetInfo {
                     id: k.id,
                     unit: k.unit.clone(),

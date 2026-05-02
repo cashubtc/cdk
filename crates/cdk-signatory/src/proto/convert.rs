@@ -72,6 +72,11 @@ impl TryInto<crate::signatory::SignatoryKeySet> for KeySet {
                 .map(|v| IssuerVersion::from_str(&v))
                 .transpose()
                 .map_err(|e| cdk_common::Error::Custom(e.to_string()))?,
+            // gRPC-backed signatories do not expose NUT-CTF conditional keysets
+            // over the wire: the conditional partition lives entirely inside the
+            // mint process, so any keyset arriving via proto is always primary.
+            #[cfg(feature = "conditional-tokens")]
+            condition_id: None,
         })
     }
 }
