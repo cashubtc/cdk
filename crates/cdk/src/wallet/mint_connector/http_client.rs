@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
+use cdk_common::nutxx::MintQuoteByPubkeyRequest;
 use cdk_common::{
     nut19, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, Method,
     MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteRequest,
@@ -347,6 +348,31 @@ where
                 Ok(MintQuoteResponse::Custom { method, response })
             }
         }
+    }
+
+    /// NUT-XX: Mint Quote Lookup by Public Key
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn post_mint_quote_by_pubkey(
+        &self,
+        method: PaymentMethod,
+        request: MintQuoteByPubkeyRequest,
+    ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
+        let url = self.mint_url.join_paths(&[
+            "v1",
+            "mint",
+            "quote",
+            &method.clone().to_string(),
+            "pubkey",
+        ])?;
+
+        let auth_token = self
+            .get_auth_token(Method::Post, RoutePath::MintQuote(method.to_string()))
+            .await?;
+
+        let response: Vec<MintQuoteResponse<String>> =
+            self.transport.http_post(url, auth_token, &request).await?;
+
+        Ok(response)
     }
 
     /// Mint Tokens [NUT-04]

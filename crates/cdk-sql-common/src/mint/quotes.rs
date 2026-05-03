@@ -1199,6 +1199,56 @@ where
         Ok(mint_quotes)
     }
 
+    async fn get_mint_quotes_by_pubkey(
+        &self,
+        method: PaymentMethod,
+        pubkeys: &[PublicKey],
+    ) -> Result<Vec<MintQuote>, Self::Err> {
+        if pubkeys.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let mut mint_quotes = query(
+            r#"
+            SELECT
+                id,
+                amount,
+                unit,
+                request,
+                expiry,
+                request_lookup_id,
+                pubkey,
+                created_time,
+                amount_paid,
+                amount_issued,
+                payment_method,
+                request_lookup_id_kind,
+                extra_json
+            FROM
+                mint_quote
+            WHERE pubkey IN (:pubkeys)
+            AND payment_method = :method
+            "#,
+        )?
+        .bind_vec("pubkeys", pubkeys.iter().map(|pk| pk.to_hex()).collect())?
+        .bind("method", method.as_str())
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(|row| sql_row_to_mint_quote(row, vec![], vec![]))
+        .collect::<Result<Vec<_>, _>>()?;
+
+        for quote in mint_quotes.as_mut_slice() {
+            let payments = get_mint_quote_payments(&*conn, &quote.id).await?;
+            let issuance = get_mint_quote_issuance(&*conn, &quote.id).await?;
+            quote.issuance = issuance;
+            quote.payments = payments;
+        }
+
+        Ok(mint_quotes)
+    }
+
     async fn get_melt_quote(
         &self,
         quote_id: &QuoteId,

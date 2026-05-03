@@ -8,8 +8,11 @@ use std::{env, fs};
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use bip39::Mnemonic;
+use bitcoin::secp256k1::schnorr::Signature;
 use cashu::nut00::KnownMethod;
+use cashu::nutxx::MintQuoteByPubkeyRequest;
 use cashu::quote_id::QuoteId;
+use cashu::PublicKey;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
@@ -125,6 +128,47 @@ impl MintConnector for DirectMintConnection {
                 }
             }
         }
+    }
+
+    async fn post_mint_quote_by_pubkey(
+        &self,
+        method: PaymentMethod,
+        request: MintQuoteByPubkeyRequest,
+    ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
+        let pubkeys: Vec<PublicKey> = request
+            .pubkeys
+            .iter()
+            .map(|pk| PublicKey::from_hex(pk).map_err(|_| Error::PubkeyRequired))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let signatures: Vec<Signature> = request
+            .pubkeys_signatures
+            .iter()
+            .map(|sig| {
+                Signature::from_slice(sig.as_bytes()).map_err(|_| Error::SignatureMissingOrInvalid)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let response = self
+            .mint
+            .get_mint_quote_by_pubkey(method.clone(), pubkeys, signatures)
+            .await?
+            .into_iter()
+            .map(|r| match r {
+                cdk::mint::MintQuoteResponse::Bolt11(x) => {
+                    MintQuoteResponse::<String>::Bolt11(x.into())
+                }
+                cdk::mint::MintQuoteResponse::Bolt12(x) => MintQuoteResponse::Bolt12(x.into()),
+                cdk::mint::MintQuoteResponse::Custom { response: x, .. } => {
+                    MintQuoteResponse::Custom {
+                        method: method.clone(),
+                        response: x.into(),
+                    }
+                }
+            })
+            .collect();
+
+        Ok(response)
     }
 
     async fn get_mint_quote_status(

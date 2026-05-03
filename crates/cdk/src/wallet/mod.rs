@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
+use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::Network;
 use cdk_common::amount::FeeAndAmounts;
 use cdk_common::database::{self, WalletDatabase};
@@ -925,6 +926,20 @@ impl Wallet {
         &self,
     ) -> Result<Option<cdk_common::wallet::P2PKSigningKey>, database::Error> {
         self.localstore.latest_p2pk().await
+    }
+
+    /// Sign a message from p2pk signing key in localstore
+    pub async fn sign_msg(
+        &self,
+        pubkey: &PublicKey,
+        msg: &[u8],
+    ) -> Result<Option<Signature>, Error> {
+        let signing_key = &self.get_signing_key(pubkey).await?;
+
+        match signing_key {
+            Some(signing_key) => Ok(Some(signing_key.sign(msg)?)),
+            None => Ok(None),
+        }
     }
 
     /// try to get secret key from p2pk signing key in localstore

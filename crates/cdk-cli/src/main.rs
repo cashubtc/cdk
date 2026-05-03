@@ -109,6 +109,8 @@ enum Commands {
     UpdateMintUrl(sub_commands::update_mint_url::UpdateMintUrlSubCommand),
     /// Get proofs from mint.
     ListMintProofs,
+    /// Get mint quotes from mint.
+    ListMintQuotes(sub_commands::list_mint_quotes::ListMintQuotesSubCommand),
     /// Decode a payment request
     DecodeRequest(sub_commands::decode_request::DecodePaymentRequestSubCommand),
     /// Pay a payment request
@@ -326,6 +328,14 @@ async fn main() -> Result<()> {
         }
         Commands::ListMintProofs => {
             sub_commands::list_mint_proofs::proofs(&wallet_repository).await
+        }
+        Commands::ListMintQuotes(sub_command_args) => {
+            sub_commands::list_mint_quotes::quotes(
+                &wallet_repository,
+                sub_command_args,
+                &default_unit,
+            )
+            .await
         }
         Commands::DecodeRequest(sub_command_args) => {
             sub_commands::decode_request::decode_payment_request(sub_command_args)

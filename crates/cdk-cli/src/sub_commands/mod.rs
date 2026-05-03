@@ -10,6 +10,7 @@ pub mod decode_token;
 pub mod generate_public_key;
 pub mod get_public_keys;
 pub mod list_mint_proofs;
+pub mod list_mint_quotes;
 pub mod melt;
 pub mod mint;
 pub mod mint_batch;
