@@ -17,7 +17,7 @@ use crate::nuts::{
     nut12, AuthRequired, AuthToken, BlindAuthToken, CurrencyUnit, KeySetInfo, PreMintSecrets,
     Proofs, ProtectedEndpoint, State,
 };
-use crate::wallet::mint_connector::AuthHttpClient;
+use crate::wallet::mint_connector::{AuthHttpClient, RateLimiter};
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::{Amount, Error, OidcClient};
 
@@ -52,7 +52,11 @@ pub struct AuthWallet {
 }
 
 impl AuthWallet {
-    /// Create a new [`AuthWallet`] instance
+    /// Create a new [`AuthWallet`] instance.
+    ///
+    /// The inner [`AuthHttpClient`] gets its own default [`RateLimiter`],
+    /// independent from any limiter attached to the wallet's regular
+    /// [`HttpClient`]. Use [`AuthWallet::with_rate_limiter`] to share one.
     pub fn new(
         mint_url: MintUrl,
         cat: Option<AuthToken>,
@@ -62,13 +66,59 @@ impl AuthWallet {
         oidc_client: Option<OidcClient>,
     ) -> Self {
         let http_client = Arc::new(AuthHttpClient::new(mint_url.clone(), cat));
+        Self::from_parts(
+            mint_url,
+            localstore,
+            metadata_cache,
+            protected_endpoints,
+            http_client,
+            oidc_client,
+        )
+    }
+
+    /// Create a new [`AuthWallet`] sharing a [`RateLimiter`] with the
+    /// wallet's regular HTTP client.
+    ///
+    /// Pass `None` to disable rate limiting on the blind-auth path entirely.
+    pub fn with_rate_limiter(
+        mint_url: MintUrl,
+        cat: Option<AuthToken>,
+        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
+        metadata_cache: Arc<MintMetadataCache>,
+        protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
+        oidc_client: Option<OidcClient>,
+        rate_limiter: Option<Arc<RateLimiter>>,
+    ) -> Self {
+        let http_client = Arc::new(AuthHttpClient::with_rate_limiter(
+            mint_url.clone(),
+            cat,
+            rate_limiter,
+        ));
+        Self::from_parts(
+            mint_url,
+            localstore,
+            metadata_cache,
+            protected_endpoints,
+            http_client,
+            oidc_client,
+        )
+    }
+
+    fn from_parts(
+        mint_url: MintUrl,
+        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
+        metadata_cache: Arc<MintMetadataCache>,
+        protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
+        auth_client: Arc<dyn AuthMintConnector + Send + Sync>,
+        oidc_client: Option<OidcClient>,
+    ) -> Self {
         Self {
             mint_url,
             localstore,
             metadata_cache,
             protected_endpoints: Arc::new(RwLock::new(protected_endpoints)),
             refresh_token: Arc::new(RwLock::new(None)),
-            auth_client: http_client,
+            auth_client,
             oidc_client: Arc::new(RwLock::new(oidc_client)),
         }
     }

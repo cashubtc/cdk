@@ -11,6 +11,8 @@ use crate::error::Error;
 use crate::mint_url::MintUrl;
 use crate::nuts::CurrencyUnit;
 use crate::wallet::auth::AuthWallet;
+use crate::wallet::mint_connector::rate_limiter::RateLimiter;
+use crate::wallet::mint_connector::transport::Async;
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::wallet::{HttpClient, MintConnector, SubscriptionManager, Wallet};
 
@@ -27,6 +29,8 @@ pub struct WalletBuilder {
     metadata_cache_ttl: Option<Duration>,
     metadata_cache: Option<Arc<MintMetadataCache>>,
     metadata_caches: HashMap<MintUrl, Arc<MintMetadataCache>>,
+    rate_limiter: Option<Option<Arc<RateLimiter>>>,
+    pending_auth_cat: Option<String>,
 }
 
 impl std::fmt::Debug for WalletBuilder {
@@ -53,6 +57,8 @@ impl Default for WalletBuilder {
             use_http_subscription: false,
             metadata_cache: None,
             metadata_caches: HashMap::new(),
+            rate_limiter: None,
+            pending_auth_cat: None,
         }
     }
 }
@@ -119,6 +125,8 @@ impl WalletBuilder {
     /// Set the auth wallet
     pub fn auth_wallet(mut self, auth_wallet: AuthWallet) -> Self {
         self.auth_wallet = Some(auth_wallet);
+        // `auth_wallet` and `set_auth_cat` are mutually exclusive; last call wins.
+        self.pending_auth_cat = None;
         self
     }
 
@@ -162,39 +170,48 @@ impl WalletBuilder {
         self
     }
 
-    /// Set auth CAT (Clear Auth Token)
+    /// Set the client-side rate limiter for HTTP requests to the mint.
+    ///
+    /// Pass `Some(limiter)` to share a limiter across multiple wallets
+    /// targeting the same mint (recommended for apps with separate wallets
+    /// per unit), or `None` to disable client-side rate limiting entirely.
+    ///
+    /// If this method is never called, a default [`RateLimiter`] is
+    /// installed automatically and shared between the built-in HTTP client
+    /// and the blind-auth client (when auth is configured via
+    /// [`set_auth_cat`](Self::set_auth_cat)).
+    ///
+    /// Scope: this setting applies to the built-in connector and to a NUT-22
+    /// [`AuthWallet`] materialized from [`set_auth_cat`](Self::set_auth_cat).
+    /// It has no effect on a custom connector passed via
+    /// [`client`](Self::client), nor on a user-supplied
+    /// [`AuthWallet`](Self::auth_wallet) — those carry their own pacing.
+    pub fn rate_limiter(mut self, rate_limiter: Option<Arc<RateLimiter>>) -> Self {
+        self.rate_limiter = Some(rate_limiter);
+        self
+    }
+
+    /// Set auth CAT (Clear Auth Token).
+    ///
+    /// The [`AuthWallet`] is not constructed until [`build`](Self::build) is
+    /// called, so the order in which you call [`set_auth_cat`](Self::set_auth_cat)
+    /// and [`rate_limiter`](Self::rate_limiter) does not matter — both will
+    /// share the same limiter.
     ///
     /// # Errors
     ///
     /// Returns an error if `mint_url` or `localstore` have not been set on the builder.
     pub fn set_auth_cat(mut self, cat: String) -> Result<Self, Error> {
-        let mint_url = self
-            .mint_url
-            .clone()
+        self.mint_url
+            .as_ref()
             .ok_or_else(|| Error::Custom("Mint URL required".to_string()))?;
-        let localstore = self
-            .localstore
-            .clone()
+        self.localstore
+            .as_ref()
             .ok_or_else(|| Error::Custom("Localstore required".to_string()))?;
 
-        let metadata_cache = self.metadata_cache.clone().unwrap_or_else(|| {
-            // Check if we already have a cache for this mint in the HashMap
-            if let Some(cache) = self.metadata_caches.get(&mint_url) {
-                cache.clone()
-            } else {
-                // Create a new one
-                Arc::new(MintMetadataCache::new(mint_url.clone()))
-            }
-        });
-
-        self.auth_wallet = Some(AuthWallet::new(
-            mint_url,
-            Some(AuthToken::ClearAuth(cat)),
-            localstore,
-            metadata_cache,
-            HashMap::new(),
-            None,
-        ));
+        self.pending_auth_cat = Some(cat);
+        // `auth_wallet` and `set_auth_cat` are mutually exclusive; last call wins.
+        self.auth_wallet = None;
         Ok(self)
     }
 
@@ -213,13 +230,14 @@ impl WalletBuilder {
             .seed
             .ok_or(Error::Custom("Seed required".to_string()))?;
 
-        let client = match self.client {
-            Some(client) => client,
-            None => Arc::new(HttpClient::new(mint_url.clone(), self.auth_wallet.clone()))
-                as Arc<dyn MintConnector + Send + Sync>,
+        // Resolve the effective rate limiter so both the `HttpClient` and a
+        // deferred `AuthWallet` share the same `Arc<RateLimiter>`. If the
+        // caller gave an explicit preference (including `None` to opt out),
+        // honor it; otherwise default to one shared instance.
+        let effective_rate_limiter: Option<Arc<RateLimiter>> = match self.rate_limiter {
+            Some(explicit) => explicit,
+            None => Some(Arc::new(RateLimiter::default())),
         };
-
-        let metadata_cache_ttl = self.metadata_cache_ttl;
 
         let metadata_cache = self.metadata_cache.unwrap_or_else(|| {
             // Check if we already have a cache for this mint in the HashMap
@@ -231,6 +249,36 @@ impl WalletBuilder {
             }
         });
 
+        // Materialize the `AuthWallet` from a pending `set_auth_cat` call,
+        // threading the effective rate limiter. A user-provided `auth_wallet`
+        // wins over `pending_auth_cat`.
+        let auth_wallet = match self.auth_wallet {
+            Some(aw) => Some(aw),
+            None => self.pending_auth_cat.map(|cat| {
+                AuthWallet::with_rate_limiter(
+                    mint_url.clone(),
+                    Some(AuthToken::ClearAuth(cat)),
+                    localstore.clone(),
+                    metadata_cache.clone(),
+                    HashMap::new(),
+                    None,
+                    effective_rate_limiter.clone(),
+                )
+            }),
+        };
+
+        let client = match self.client {
+            Some(client) => client,
+            None => Arc::new(HttpClient::with_rate_limiter(
+                mint_url.clone(),
+                Async::default(),
+                auth_wallet.clone(),
+                effective_rate_limiter,
+            )) as Arc<dyn MintConnector + Send + Sync>,
+        };
+
+        let metadata_cache_ttl = self.metadata_cache_ttl;
+
         Ok(Wallet {
             mint_url,
             unit,
@@ -238,7 +286,7 @@ impl WalletBuilder {
             metadata_cache,
             metadata_cache_ttl: Arc::new(RwLock::new(metadata_cache_ttl)),
             target_proof_count: self.target_proof_count.unwrap_or(3),
-            auth_wallet: Arc::new(TokioRwLock::new(self.auth_wallet)),
+            auth_wallet: Arc::new(TokioRwLock::new(auth_wallet)),
             #[cfg(feature = "npubcash")]
             npubcash_client: Arc::new(TokioRwLock::new(None)),
             seed,
