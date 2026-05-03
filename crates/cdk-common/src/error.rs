@@ -207,6 +207,9 @@ pub enum Error {
     /// Inactive Keyset
     #[error("Inactive Keyset")]
     InactiveKeyset,
+    /// Keyset has expired
+    #[error("Keyset has expired")]
+    ExpiredKeyset,
     /// Transaction unbalanced
     #[error("Inputs: `{0}`, Outputs: `{1}`, Expected Fee: `{2}`")]
     TransactionUnbalanced(u64, u64, u64),
@@ -574,6 +577,7 @@ impl Error {
             | Self::UnknownKeySet
             | Self::BlindedMessageAlreadySigned
             | Self::InactiveKeyset
+            | Self::ExpiredKeyset
             | Self::TransactionUnbalanced(_, _, _)
             | Self::DuplicateInputs
             | Self::DuplicateOutputs
@@ -879,6 +883,10 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::KeysetInactive,
                 detail: err.to_string(),
             },
+            Error::ExpiredKeyset => ErrorResponse {
+                code: ErrorCode::KeysetExpired,
+                detail: err.to_string(),
+            },
             Error::AmountLessNotAllowed => ErrorResponse {
                 code: ErrorCode::AmountlessInvoiceNotSupported,
                 detail: err.to_string(),
@@ -1065,6 +1073,7 @@ impl From<ErrorResponse> for Error {
             // 12xxx - Keyset errors
             ErrorCode::KeysetNotFound => Self::UnknownKeySet,
             ErrorCode::KeysetInactive => Self::InactiveKeyset,
+            ErrorCode::KeysetExpired => Self::ExpiredKeyset,
             // 20xxx - Quote/Payment errors
             ErrorCode::QuoteNotPaid => Self::UnpaidQuote,
             ErrorCode::TokensAlreadyIssued => Self::IssuedQuote,
@@ -1132,6 +1141,8 @@ pub enum ErrorCode {
     KeysetNotFound,
     /// Keyset is inactive, cannot sign messages (12002)
     KeysetInactive,
+    /// Keyset expired (12003)
+    KeysetExpired,
 
     // 20xxx - Quote/Payment errors
     /// Quote request is not paid (20001)
@@ -1201,6 +1212,7 @@ impl ErrorCode {
             // 12xxx - Keyset errors
             12001 => Self::KeysetNotFound,
             12002 => Self::KeysetInactive,
+            12003 => Self::KeysetExpired,
             // 20xxx - Quote/Payment errors
             20001 => Self::QuoteNotPaid,
             20002 => Self::TokensAlreadyIssued,
@@ -1247,6 +1259,7 @@ impl ErrorCode {
             // 12xxx - Keyset errors
             Self::KeysetNotFound => 12001,
             Self::KeysetInactive => 12002,
+            Self::KeysetExpired => 12003,
             // 20xxx - Quote/Payment errors
             Self::QuoteNotPaid => 20001,
             Self::TokensAlreadyIssued => 20002,

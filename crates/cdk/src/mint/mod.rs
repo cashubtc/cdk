@@ -1198,6 +1198,15 @@ impl Mint {
                 request.outputs.into_iter().zip(blinded_signatures)
             {
                 if let Some(blinded_signature) = blinded_signature {
+                    if let Some(keyset_info) = self.get_keyset_info(&blinded_signature.keyset_id) {
+                        if keyset_info.is_expired() {
+                            tracing::debug!(
+                                "Skipping restore for expired keyset {}",
+                                blinded_signature.keyset_id
+                            );
+                            continue;
+                        }
+                    }
                     outputs.push(blinded_message);
                     signatures.push(blinded_signature);
                 }
@@ -1779,5 +1788,85 @@ mod tests {
             rotation_result,
             Err(Error::UnitStringCollision(_currency_unit))
         ));
+    }
+
+    #[tokio::test]
+    async fn verify_outputs_keyset_rejects_expired_keyset() {
+        use cdk_common::nuts::SecretKey;
+        use cdk_common::util::unix_time;
+
+        let mut supported_units = HashMap::new();
+        let amounts: Vec<u64> = (0..8).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
+
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        let mint = create_mint(config).await;
+
+        let current_keysets: Vec<SignatoryKeySet> = mint.keysets.load().as_ref().clone();
+        let keyset_id = current_keysets[0].id;
+
+        let expired_keysets: Vec<SignatoryKeySet> = current_keysets
+            .into_iter()
+            .map(|mut ks| {
+                ks.final_expiry = Some(unix_time() - 1);
+                ks
+            })
+            .collect();
+        mint.keysets.store(Arc::new(expired_keysets));
+
+        let blinded_secret = SecretKey::generate().public_key();
+        let output = BlindedMessage::new(Amount::from(1), keyset_id, blinded_secret);
+
+        let result = mint.verify_outputs_keyset(&[output]);
+
+        assert!(
+            matches!(result, Err(Error::ExpiredKeyset)),
+            "expected ExpiredKeyset error, got: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_inputs_keyset_rejects_expired_keyset() {
+        use cdk_common::nuts::{Proof, SecretKey};
+        use cdk_common::secret::Secret;
+        use cdk_common::util::unix_time;
+
+        let mut supported_units = HashMap::new();
+        let amounts: Vec<u64> = (0..8).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
+
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        let mint = create_mint(config).await;
+
+        let current_keysets: Vec<SignatoryKeySet> = mint.keysets.load().as_ref().clone();
+        let keyset_id = current_keysets[0].id;
+
+        let expired_keysets: Vec<SignatoryKeySet> = current_keysets
+            .into_iter()
+            .map(|mut ks| {
+                ks.final_expiry = Some(unix_time() - 1);
+                ks
+            })
+            .collect();
+        mint.keysets.store(Arc::new(expired_keysets));
+
+        // Expiry check runs before crypto, so an unsigned proof is fine here.
+        let c = SecretKey::generate().public_key();
+        let proof = Proof::new(Amount::from(1), keyset_id, Secret::generate(), c);
+
+        let result = mint.verify_inputs_keyset(&vec![proof]).await;
+
+        assert!(
+            matches!(result, Err(Error::ExpiredKeyset)),
+            "expected ExpiredKeyset error, got: {:?}",
+            result
+        );
     }
 }
