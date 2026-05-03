@@ -10,14 +10,14 @@ readme.workspace = true
 
 [lib]
 crate-type = ["staticlib", "cdylib"]
-name = "cdk_ffi_kotlin"
+name = "cdk_ffi"
 
 [[bin]]
 name = "uniffi-bindgen"
 path = "uniffi-bindgen.rs"
 
 [dependencies]
-cdk-ffi.workspace = true
+cdk-ffi = { workspace = true, features = ["npubcash", "bip353"] }
 uniffi = { workspace = true, features = ["cli"] }
 
 [build-dependencies]
