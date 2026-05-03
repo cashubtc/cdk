@@ -93,9 +93,19 @@ max_connections = 20
 # Connection timeout in seconds (optional, defaults to 10)
 connection_timeout_seconds = 10
 
+# Lightning backends. Use [ln] for a single backend, or repeat [[ln]] for one
+# backend per (unit, method) pair, e.g.:
+#   [[ln]]
+#   ln_backend = "cln"
+#   unit = "sat"
+#   [[ln]]
+#   ln_backend = "lnbits"
+#   unit = "eur"
+
 [ln]
 # Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits', 'ldknode'
 ln_backend = "fakewallet"
+# unit = "sat"          # Optional, defaults to "sat"
 # min_mint=1
 # max_mint=500000
 # min_melt=1

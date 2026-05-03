@@ -177,6 +177,8 @@ impl std::str::FromStr for LnBackend {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ln {
     pub ln_backend: LnBackend,
+    #[serde(default)]
+    pub unit: CurrencyUnit,
     pub invoice_description: Option<String>,
     pub min_mint: Amount,
     pub max_mint: Amount,
@@ -188,12 +190,30 @@ impl Default for Ln {
     fn default() -> Self {
         Ln {
             ln_backend: LnBackend::default(),
+            unit: CurrencyUnit::default(),
             invoice_description: None,
             min_mint: 1.into(),
             max_mint: 500_000.into(),
             min_melt: 1.into(),
             max_melt: 500_000.into(),
         }
+    }
+}
+
+fn deserialize_ln<'de, D>(deserializer: D) -> Result<Vec<Ln>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum LnOneOrMany {
+        Many(Vec<Ln>),
+        One(Ln),
+    }
+
+    match LnOneOrMany::deserialize(deserializer)? {
+        LnOneOrMany::Many(v) => Ok(v),
+        LnOneOrMany::One(l) => Ok(vec![l]),
     }
 }
 
@@ -647,7 +667,8 @@ fn default_blind() -> AuthType {
 pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
-    pub ln: Ln,
+    #[serde(default, deserialize_with = "deserialize_ln")]
+    pub ln: Vec<Ln>,
     /// Transaction limits for DoS protection
     #[serde(default)]
     pub limits: Limits,
@@ -857,6 +878,79 @@ mod tests {
         // The mnemonic with special chars should be hashed
         assert!(!debug_output.contains("特殊字符 !@#$%^&*()"));
         assert!(debug_output.contains("<hashed: "));
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_multi_backend_config_parses() {
+        use std::{env, fs};
+
+        let temp_dir = env::temp_dir().join("cdk_test_multi_backend_config");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        let config_content = r#"
+[[ln]]
+ln_backend = "fakewallet"
+unit = "sat"
+min_mint = 1
+max_mint = 500000
+min_melt = 1
+max_melt = 500000
+
+[[ln]]
+ln_backend = "fakewallet"
+unit = "eur"
+min_mint = 1
+max_mint = 1000
+min_melt = 1
+max_melt = 1000
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        let settings = Settings::new(Some(&config_path));
+
+        assert_eq!(settings.ln.len(), 2);
+
+        assert_eq!(settings.ln[0].ln_backend, LnBackend::FakeWallet);
+        assert_eq!(settings.ln[0].unit, CurrencyUnit::Sat);
+        let max_mint_0: u64 = settings.ln[0].max_mint.into();
+        assert_eq!(max_mint_0, 500_000);
+
+        assert_eq!(settings.ln[1].ln_backend, LnBackend::FakeWallet);
+        assert_eq!(settings.ln[1].unit, CurrencyUnit::Eur);
+        let max_mint_1: u64 = settings.ln[1].max_mint.into();
+        assert_eq!(max_mint_1, 1_000);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_legacy_ln_block_parses() {
+        use std::{env, fs};
+
+        let temp_dir = env::temp_dir().join("cdk_test_legacy_ln_block");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        let config_content = r#"
+[ln]
+ln_backend = "fakewallet"
+min_mint = 1
+max_mint = 500000
+min_melt = 1
+max_melt = 500000
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        let settings = Settings::new(Some(&config_path));
+
+        assert_eq!(settings.ln.len(), 1);
+        assert_eq!(settings.ln[0].ln_backend, LnBackend::FakeWallet);
+        assert_eq!(settings.ln[0].unit, CurrencyUnit::Sat);
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     /// Test that configuration can be loaded purely from environment variables

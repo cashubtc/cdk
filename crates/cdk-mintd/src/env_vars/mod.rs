@@ -56,7 +56,7 @@ pub use mint_info::*;
 #[cfg(feature = "prometheus")]
 pub use prometheus::*;
 
-use crate::config::{DatabaseEngine, LnBackend, Settings};
+use crate::config::{DatabaseEngine, Ln, LnBackend, Settings};
 
 impl Settings {
     pub fn from_env(&mut self) -> Result<Self> {
@@ -90,7 +90,23 @@ impl Settings {
 
         self.info = self.info.clone().from_env();
         self.mint_info = self.mint_info.clone().from_env();
-        self.ln = self.ln.clone().from_env();
+        // CDK_MINTD_LN_* env vars only apply when there is exactly one (or zero) [[ln]] entry.
+        match self.ln.len() {
+            0 => {
+                let ln = Ln::default().from_env();
+                if ln.ln_backend != LnBackend::None {
+                    self.ln.push(ln);
+                }
+            }
+            1 => {
+                self.ln[0] = self.ln[0].clone().from_env();
+            }
+            _ => {
+                tracing::warn!(
+                    "CDK_MINTD_LN_* environment variables ignored: multiple [[ln]] entries configured"
+                );
+            }
+        }
         self.limits = self.limits.clone().from_env();
 
         {
@@ -120,35 +136,38 @@ impl Settings {
             self.prometheus = Some(self.prometheus.clone().unwrap_or_default().from_env());
         }
 
-        match self.ln.ln_backend {
-            #[cfg(feature = "cln")]
-            LnBackend::Cln => {
-                self.cln = Some(self.cln.clone().unwrap_or_default().from_env());
+        if self.ln.len() == 1 {
+            match self.ln[0].ln_backend {
+                #[cfg(feature = "cln")]
+                LnBackend::Cln => {
+                    self.cln = Some(self.cln.clone().unwrap_or_default().from_env());
+                }
+                #[cfg(feature = "lnbits")]
+                LnBackend::LNbits => {
+                    self.lnbits = Some(self.lnbits.clone().unwrap_or_default().from_env());
+                }
+                #[cfg(feature = "fakewallet")]
+                LnBackend::FakeWallet => {
+                    self.fake_wallet =
+                        Some(self.fake_wallet.clone().unwrap_or_default().from_env());
+                }
+                #[cfg(feature = "lnd")]
+                LnBackend::Lnd => {
+                    self.lnd = Some(self.lnd.clone().unwrap_or_default().from_env());
+                }
+                #[cfg(feature = "ldk-node")]
+                LnBackend::LdkNode => {
+                    self.ldk_node = Some(self.ldk_node.clone().unwrap_or_default().from_env());
+                }
+                #[cfg(feature = "grpc-processor")]
+                LnBackend::GrpcProcessor => {
+                    self.grpc_processor =
+                        Some(self.grpc_processor.clone().unwrap_or_default().from_env());
+                }
+                LnBackend::None => bail!("Ln backend must be set"),
+                #[allow(unreachable_patterns)]
+                _ => bail!("Selected Ln backend is not enabled in this build"),
             }
-            #[cfg(feature = "lnbits")]
-            LnBackend::LNbits => {
-                self.lnbits = Some(self.lnbits.clone().unwrap_or_default().from_env());
-            }
-            #[cfg(feature = "fakewallet")]
-            LnBackend::FakeWallet => {
-                self.fake_wallet = Some(self.fake_wallet.clone().unwrap_or_default().from_env());
-            }
-            #[cfg(feature = "lnd")]
-            LnBackend::Lnd => {
-                self.lnd = Some(self.lnd.clone().unwrap_or_default().from_env());
-            }
-            #[cfg(feature = "ldk-node")]
-            LnBackend::LdkNode => {
-                self.ldk_node = Some(self.ldk_node.clone().unwrap_or_default().from_env());
-            }
-            #[cfg(feature = "grpc-processor")]
-            LnBackend::GrpcProcessor => {
-                self.grpc_processor =
-                    Some(self.grpc_processor.clone().unwrap_or_default().from_env());
-            }
-            LnBackend::None => bail!("Ln backend must be set"),
-            #[allow(unreachable_patterns)]
-            _ => bail!("Selected Ln backend is not enabled in this build"),
         }
 
         Ok(self.clone())
