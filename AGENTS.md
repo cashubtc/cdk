@@ -288,6 +288,8 @@ Conventional commits: `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`.
 
 ## Docs & References
 
+**If you are reviewing PRs or code changes, always refer to the specific review guidelines in `.github/agents/review.md` for project-specific feedback standards.**
+
 | Document | Path |
 |---|---|
 | Developer setup & workflow | `DEVELOPMENT.md` |
