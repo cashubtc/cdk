@@ -463,14 +463,6 @@ impl<S> SwapSaga<'_, S> {
             return Ok(());
         }
 
-        #[cfg(feature = "prometheus")]
-        {
-            use cdk_prometheus::METRICS;
-
-            self.mint.record_swap_failure("process_swap_request");
-            METRICS.dec_in_flight_requests("process_swap_request");
-        }
-
         tracing::warn!("Running {} compensating actions", compensations.len());
 
         while let Some(compensation) = compensations.pop_front() {
