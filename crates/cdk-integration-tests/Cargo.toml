@@ -11,6 +11,7 @@ repository = "https://github.com/cashubtc/cdk.git"
 
 [features]
 http_subscription = ["cdk/http_subscription"]
+bdk = ["cdk-mintd/bdk"]
 
 [dependencies]
 async-trait.workspace = true
@@ -29,7 +30,7 @@ cdk-redb = { workspace = true }
 cdk-fake-wallet = { workspace = true }
 cdk-common = { workspace = true, features = ["mint", "wallet", "http"] }
 cdk-http-client = { workspace = true }
-cdk-mintd = { workspace = true, features = ["cln", "lnd", "fakewallet", "grpc-processor", "lnbits", "management-rpc", "sqlite", "postgres", "ldk-node", "prometheus"] }
+cdk-mintd = { workspace = true, features = ["cln", "lnd", "fakewallet", "grpc-processor", "lnbits", "management-rpc", "sqlite", "postgres", "ldk-node", "bdk", "prometheus"] }
 futures = { workspace = true, default-features = false, features = [
     "executor",
 ] }

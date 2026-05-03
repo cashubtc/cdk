@@ -15,8 +15,9 @@ use cdk::mint::QuoteId;
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
     BatchCheckMintQuoteRequest, BatchMintRequest, MeltQuoteBolt11Request, MeltQuoteBolt12Request,
-    MeltQuoteCustomRequest, MintQuoteBolt11Request, MintQuoteBolt11Response,
-    MintQuoteBolt12Request, MintQuoteBolt12Response, MintQuoteCustomRequest, MintRequest,
+    MeltQuoteCustomRequest, MeltQuoteOnchainRequest, MintQuoteBolt11Request,
+    MintQuoteBolt11Response, MintQuoteBolt12Request, MintQuoteBolt12Response,
+    MintQuoteCustomRequest, MintQuoteOnchainRequest, MintQuoteOnchainResponse, MintRequest,
     MintResponse,
 };
 use cdk::{MeltQuoteCreateResponse, MeltQuoteResponse};
@@ -71,22 +72,23 @@ where
 }
 
 /// Serialize a `MeltQuoteResponse` into an HTTP JSON response that carries the
-/// per-variant payload shape (bolt11, bolt12, or custom) rather than the tag.
+/// per-variant payload shape rather than the enum tag.
 fn melt_quote_response_to_json(response: MeltQuoteResponse<QuoteId>) -> Response {
     match response {
         MeltQuoteResponse::Bolt11(r) => Json(r).into_response(),
         MeltQuoteResponse::Bolt12(r) => Json(r).into_response(),
+        MeltQuoteResponse::Onchain(r) => Json(r).into_response(),
         MeltQuoteResponse::Custom((_, r)) => Json(r).into_response(),
     }
 }
 
 /// Serialize a `MeltQuoteCreateResponse` into an HTTP JSON response that
-/// carries the per-variant payload shape (bolt11, bolt12, or custom) rather
-/// than the tag.
+/// carries the per-variant payload shape rather than the enum tag.
 fn melt_quote_create_response_to_json(response: MeltQuoteCreateResponse<QuoteId>) -> Response {
     match response {
         MeltQuoteCreateResponse::Bolt11(r) => Json(r).into_response(),
         MeltQuoteCreateResponse::Bolt12(r) => Json(r).into_response(),
+        MeltQuoteCreateResponse::Onchain(r) => Json(r.quotes).into_response(),
         MeltQuoteCreateResponse::Custom((_, r)) => Json(r).into_response(),
     }
 }
@@ -168,6 +170,27 @@ pub async fn post_mint_custom_quote(
                 quote.try_into().map_err(into_response)?;
             Ok(Json(response).into_response())
         }
+        "onchain" => {
+            let onchain_request: MintQuoteOnchainRequest = serde_json::from_value(payload)
+                .map_err(|e| {
+                    tracing::error!("Failed to parse onchain request: {}", e);
+                    if e.to_string().contains("missing field `pubkey`") {
+                        into_response(cdk::Error::PubkeyRequired)
+                    } else {
+                        into_response(cdk::Error::InvalidPaymentMethod)
+                    }
+                })?;
+
+            let quote = state
+                .mint
+                .get_mint_quote(onchain_request.into())
+                .await
+                .map_err(into_response)?;
+
+            let response: MintQuoteOnchainResponse<QuoteId> =
+                MintQuoteOnchainResponse::try_from(quote).map_err(into_response)?;
+            Ok(Json(response).into_response())
+        }
         _ => {
             let custom_request: MintQuoteCustomRequest =
                 serde_json::from_value(payload).map_err(|e| {
@@ -225,12 +248,17 @@ pub async fn get_check_mint_custom_quote(
     match method.as_str() {
         "bolt11" => {
             let response: MintQuoteBolt11Response<QuoteId> =
-                quote_response.try_into().map_err(into_response)?;
+                MintQuoteBolt11Response::try_from(quote_response).map_err(into_response)?;
             Ok(Json(response).into_response())
         }
         "bolt12" => {
             let response: MintQuoteBolt12Response<QuoteId> =
-                quote_response.try_into().map_err(into_response)?;
+                MintQuoteBolt12Response::try_from(quote_response).map_err(into_response)?;
+            Ok(Json(response).into_response())
+        }
+        "onchain" => {
+            let response: MintQuoteOnchainResponse<QuoteId> =
+                MintQuoteOnchainResponse::try_from(quote_response).map_err(into_response)?;
             Ok(Json(response).into_response())
         }
         _ => {
@@ -278,7 +306,7 @@ pub async fn post_batch_check_mint_quote(
         "bolt11" => {
             let responses: Vec<MintQuoteBolt11Response<QuoteId>> = responses
                 .into_iter()
-                .map(|r| r.try_into())
+                .map(MintQuoteBolt11Response::try_from)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(into_response)?;
             Ok(Json(responses).into_response())
@@ -286,7 +314,15 @@ pub async fn post_batch_check_mint_quote(
         "bolt12" => {
             let responses: Vec<MintQuoteBolt12Response<QuoteId>> = responses
                 .into_iter()
-                .map(|r| r.try_into())
+                .map(MintQuoteBolt12Response::try_from)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(into_response)?;
+            Ok(Json(responses).into_response())
+        }
+        "onchain" => {
+            let responses: Vec<MintQuoteOnchainResponse<QuoteId>> = responses
+                .into_iter()
+                .map(MintQuoteOnchainResponse::try_from)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(into_response)?;
             Ok(Json(responses).into_response())
@@ -401,6 +437,24 @@ pub async fn post_melt_custom_quote(
                 .await
                 .map_err(into_response)?
         }
+        "onchain" => {
+            let onchain_request: MeltQuoteOnchainRequest = serde_json::from_value(payload)
+                .map_err(|e| {
+                    tracing::error!("Failed to parse onchain melt request: {}", e);
+                    into_response(cdk::Error::InvalidPaymentMethod)
+                })?;
+
+            let response = state
+                .mint
+                .get_melt_quote(onchain_request.into())
+                .await
+                .map_err(into_response)?;
+
+            return match response {
+                MeltQuoteCreateResponse::Onchain(r) => Ok(Json(r.quotes).into_response()),
+                _ => Err(into_response(cdk::Error::InvalidPaymentMethod)),
+            };
+        }
         _ => {
             let custom_request: MeltQuoteCustomRequest =
                 serde_json::from_value(payload).map_err(|e| {
@@ -466,7 +520,8 @@ async fn post_melt_custom_internal(
     validate_melt_quote_method(&state, &method, payload.quote()).await?;
 
     // Check for async preference in either the Prefer header or the request body
-    let respond_async = prefer.respond_async || payload.is_prefer_async();
+    // For onchain we always want to do the async flow
+    let respond_async = prefer.respond_async || payload.is_prefer_async() || method == "onchain";
 
     let pending = state.mint.melt(&payload).await?;
 

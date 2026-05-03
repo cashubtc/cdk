@@ -99,6 +99,7 @@ async fn start_fake_mint(
         mnemonic,
         signatory_config,
         fake_wallet_config,
+        None,
     );
 
     println!("Starting fake mintd on port {port}");

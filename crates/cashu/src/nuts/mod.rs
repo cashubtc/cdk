@@ -31,6 +31,7 @@ pub mod nut27;
 #[cfg(feature = "wallet")]
 pub mod nut28;
 pub mod nut29;
+pub mod nut_onchain;
 
 mod auth;
 
@@ -88,3 +89,7 @@ pub use nut27::{
     backup_filter_params, create_backup_event, decrypt_backup_event, derive_nostr_keys, MintBackup,
 };
 pub use nut29::{BatchCheckMintQuoteRequest, BatchMintRequest, Settings as Nut29Settings};
+pub use nut_onchain::{
+    MeltQuoteOnchainRequest, MeltQuoteOnchainResponse, MintQuoteOnchainRequest,
+    MintQuoteOnchainResponse,
+};

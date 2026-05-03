@@ -12,13 +12,14 @@ use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::nuts::nut17::{Kind, NotificationPayload};
 use cdk_common::payment::{
     Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, CustomOutgoingPaymentOptions,
-    OutgoingPaymentOptions,
+    OutgoingPaymentOptions, PaymentIdentifier,
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::subscription::Params;
 use cdk_common::{
     MeltOptions, MeltQuoteBolt12Request, MeltQuoteCreateResponse, MeltQuoteCustomRequest,
-    MeltQuoteCustomResponse, MeltQuoteResponse,
+    MeltQuoteCustomResponse, MeltQuoteOnchainOptions, MeltQuoteOnchainRequest,
+    MeltQuoteOnchainResponse, MeltQuoteResponse,
 };
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
@@ -290,6 +291,11 @@ impl Mint {
             MeltQuoteRequest::Bolt12(bolt12_request) => Ok(MeltQuoteCreateResponse::Bolt12(
                 self.get_melt_bolt12_quote_impl(&bolt12_request).await?,
             )),
+            MeltQuoteRequest::Onchain(onchain_request) => {
+                Ok(MeltQuoteCreateResponse::Onchain(MeltQuoteOnchainOptions {
+                    quotes: self.get_melt_onchain_quote_impl(&onchain_request).await?,
+                }))
+            }
             MeltQuoteRequest::Custom(request) => {
                 let quote = self.get_melt_custom_quote_impl(&request).await?;
                 let method = PaymentMethod::from(request.method.as_str());
@@ -387,6 +393,7 @@ impl Mint {
             *options,
             PaymentMethod::Known(KnownMethod::Bolt11),
             payment_quote.extra_json,
+            payment_quote.estimated_blocks,
         );
 
         tracing::debug!(
@@ -486,6 +493,7 @@ impl Mint {
             *options,
             PaymentMethod::Known(KnownMethod::Bolt12),
             payment_quote.extra_json,
+            payment_quote.estimated_blocks,
         );
 
         tracing::debug!(
@@ -508,6 +516,133 @@ impl Mint {
         }
 
         Ok(quote.into())
+    }
+
+    /// Implementation of get_melt_onchain_quote
+    #[instrument(skip_all)]
+    async fn get_melt_onchain_quote_impl(
+        &self,
+        melt_request: &MeltQuoteOnchainRequest,
+    ) -> Result<Vec<MeltQuoteOnchainResponse<QuoteId>>, Error> {
+        #[cfg(feature = "prometheus")]
+        METRICS.inc_in_flight_requests("get_melt_onchain_quote");
+
+        let unit = &melt_request.unit;
+
+        let ln = self
+            .payment_processors
+            .get(&PaymentProcessorKey::new(
+                unit.clone(),
+                PaymentMethod::Known(KnownMethod::Onchain),
+            ))
+            .ok_or_else(|| {
+                tracing::info!("Could not get ln backend for {}, onchain ", unit);
+                Error::UnsupportedUnit
+            })?;
+
+        // Generate the authoritative `QuoteId` on the mint side *before*
+        // calling the backend. The onchain contract
+        // ([`OnchainOutgoingPaymentOptions.quote_id`]) requires backends to
+        // echo this value verbatim in
+        // [`PaymentQuoteResponse.request_lookup_id`] as
+        // `PaymentIdentifier::QuoteId(..)`; we validate that echo below and
+        // use our locally-generated id as the `MeltQuote.id` so the flow is
+        // no longer self-referential via the backend response.
+        let quote_id = QuoteId::new_uuid();
+
+        let outgoing_payment_options = cdk_common::payment::OnchainOutgoingPaymentOptions {
+            address: melt_request.request.clone(),
+            amount: melt_request.amount.with_unit(unit.clone()),
+            max_fee_amount: None,
+            quote_id: quote_id.clone(),
+            // TODO(#TBD): Emit one quote per supported tier
+            // (immediate/standard/economy) and persist the tier on each
+            // MeltQuote. Today a single tier-less quote is produced, making
+            // Standard/Economy batching in cdk-bdk unreachable via the
+            // standard melt flow. Matching load-bearing site:
+            // crates/cdk-common/src/payment.rs (from_melt_quote_with_fee).
+            tier: None,
+            metadata: None,
+        };
+
+        let payment_quote = ln
+            .get_payment_quote(
+                unit,
+                OutgoingPaymentOptions::Onchain(Box::new(outgoing_payment_options)),
+            )
+            .await
+            .map_err(|err| {
+                tracing::error!(
+                    "Could not get payment quote for mint quote, {} onchain, {}",
+                    unit,
+                    err
+                );
+                err
+            })?;
+
+        if payment_quote.unit() != unit {
+            return Err(Error::UnitMismatch);
+        }
+
+        // Enforce the onchain quote-id echo contract: the backend MUST return
+        // `Some(PaymentIdentifier::QuoteId(quote_id))` matching the value we
+        // supplied. Anything else is a contract violation; reject loudly
+        // instead of silently accepting whatever the backend decided to
+        // synthesize.
+        match &payment_quote.request_lookup_id {
+            Some(PaymentIdentifier::QuoteId(id)) if id == &quote_id => {}
+            got => {
+                return Err(Error::OnchainQuoteLookupIdMismatch {
+                    expected: quote_id,
+                    got: got.clone(),
+                });
+            }
+        }
+
+        // Validate using processor quote amount for currency conversion
+        self.check_melt_request_acceptable(
+            payment_quote.amount.clone(),
+            PaymentMethod::Known(KnownMethod::Onchain),
+            melt_request.request.clone(),
+            None,
+        )
+        .await?;
+
+        let melt_ttl = self.quote_ttl().await?.melt_ttl;
+
+        // Store `request_lookup_id` deterministically from the mint-generated
+        // `quote_id` rather than cloning the backend response, so the
+        // persisted lookup id no longer depends on backend behavior beyond
+        // the validated echo.
+        let request_lookup_id = Some(PaymentIdentifier::QuoteId(quote_id.clone()));
+
+        let quote = MeltQuote::new(
+            Some(quote_id),
+            MeltPaymentRequest::Onchain {
+                address: melt_request.request.clone(),
+            },
+            unit.clone(),
+            payment_quote.amount,
+            payment_quote.fee,
+            unix_time() + melt_ttl,
+            request_lookup_id,
+            None,
+            PaymentMethod::Known(KnownMethod::Onchain),
+            payment_quote.extra_json,
+            payment_quote.estimated_blocks,
+        );
+
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.add_melt_quote(quote.clone()).await?;
+        tx.commit().await?;
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.dec_in_flight_requests("get_melt_onchain_quote");
+            METRICS.record_mint_operation("get_melt_onchain_quote", true);
+        }
+
+        Ok(vec![quote.into()])
     }
 
     /// Implementation of get_melt_custom_quote
@@ -619,6 +754,7 @@ impl Mint {
             None, // Custom methods don't use options
             PaymentMethod::from(method.as_str()),
             payment_quote.extra_json,
+            payment_quote.estimated_blocks,
         );
 
         tracing::debug!(
@@ -720,6 +856,12 @@ impl Mint {
                     request: Some(quote.request.to_string()),
                     unit: Some(quote.unit.clone()),
                 })
+            }
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                // Onchain melts never return NUT-08 change outputs.
+                let _ = change;
+                let response: MeltQuoteOnchainResponse<QuoteId> = quote.clone().into();
+                MeltQuoteResponse::Onchain(response)
             }
             _ => {
                 let custom_response: MeltQuoteCustomResponse<QuoteId> = quote.clone().into();
@@ -828,6 +970,9 @@ impl Mint {
                             let kind = match quote_for_spawn.payment_method {
                                 PaymentMethod::Known(KnownMethod::Bolt11) => Kind::Bolt11MeltQuote,
                                 PaymentMethod::Known(KnownMethod::Bolt12) => Kind::Bolt12MeltQuote,
+                                PaymentMethod::Known(KnownMethod::Onchain) => {
+                                    Kind::OnchainMeltQuote
+                                }
                                 PaymentMethod::Custom(ref method) => {
                                     Kind::Custom(format!("{}_melt_quote", method))
                                 }
@@ -913,6 +1058,16 @@ impl Mint {
                                             (r.quote, r.state)
                                         }
                                         NotificationPayload::CustomMeltQuoteResponse(_, r) => {
+                                            (r.quote, r.state)
+                                        }
+                                        // Onchain is the one method where the subscription
+                                        // fast-path is most valuable, because confirmation is
+                                        // inherently asynchronous. We subscribe to
+                                        // `OnchainMeltQuote` events above (see `Kind` mapping)
+                                        // and must handle them here; otherwise onchain waiters
+                                        // would rely solely on polling via
+                                        // `reconcile_pending_melt_quote`.
+                                        NotificationPayload::MeltQuoteOnchainResponse(r) => {
                                             (r.quote, r.state)
                                         }
                                         _ => continue,

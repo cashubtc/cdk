@@ -908,6 +908,41 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                         MeltQuoteState::Failed
                         | MeltQuoteState::Unknown
                         | MeltQuoteState::Unpaid => {
+                            // Safety invariant across all payment methods: if
+                            // the mint has a `payment_proof` for this quote,
+                            // an irreversible settlement artifact has been
+                            // produced (Lightning preimage or Onchain
+                            // outpoint). Compensating here — reverting proofs
+                            // to Unspent — would let the wallet re-spend
+                            // proofs the mint has already used. Route to
+                            // pending instead and let
+                            // `reconcile_pending_melt_quote` resolve the
+                            // final state. In practice this only fires for
+                            // Onchain today (Bolt11/Bolt12 do not report a
+                            // preimage in non-Paid states), but the rule is
+                            // correct for any method whose proof precedes
+                            // the Paid transition.
+                            if response.payment_proof().is_some() {
+                                tracing::warn!(
+                                    "Quote {} status is {:?} but mint reports a \
+                                     payment proof; keeping proofs pending to \
+                                     avoid loss",
+                                    quote_info.id,
+                                    response.state()
+                                );
+                                self.handle_pending().await;
+                                return Ok(MeltSagaResult::Pending(Box::new(MeltSaga {
+                                    wallet: self.wallet,
+                                    compensations: self.compensations,
+                                    state_data: PaymentPending {
+                                        operation_id: self.state_data.operation_id,
+                                        quote: self.state_data.quote,
+                                        final_proofs: self.state_data.final_proofs.clone(),
+                                        premint_secrets: self.state_data.premint_secrets.clone(),
+                                    },
+                                })));
+                            }
+
                             tracing::info!(
                                 "Quote {} status is {:?} - releasing proofs",
                                 quote_info.id,
@@ -1008,6 +1043,31 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                 })))
             }
             MeltQuoteState::Failed => {
+                // Safety: even on a `Failed` response, if the mint has
+                // emitted a `payment_proof` (Bolt11/Bolt12 preimage or
+                // Onchain outpoint), an irreversible settlement artifact
+                // exists and the mint may still re-observe success
+                // (Onchain: mempool replacement, reorg). Never revert
+                // proofs while a payment proof is present — keep them
+                // pending instead.
+                if melt_response.payment_proof().is_some() {
+                    tracing::warn!(
+                        "Melt quote {} reported Failed state but mint holds a \
+                         payment proof; keeping proofs pending to avoid loss",
+                        quote_info.id
+                    );
+                    self.handle_pending().await;
+                    return Ok(MeltSagaResult::Pending(Box::new(MeltSaga {
+                        wallet: self.wallet,
+                        compensations: self.compensations,
+                        state_data: PaymentPending {
+                            operation_id: self.state_data.operation_id,
+                            quote: self.state_data.quote,
+                            final_proofs: self.state_data.final_proofs.clone(),
+                            premint_secrets: self.state_data.premint_secrets.clone(),
+                        },
+                    })));
+                }
                 self.handle_failure().await;
                 Err(Error::PaymentFailed)
             }

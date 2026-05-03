@@ -27,6 +27,8 @@ pub struct MintQuote {
     pub amount_issued: Amount,
     /// Amount paid
     pub amount_paid: Amount,
+    /// Estimated confirmation target in blocks for onchain quotes
+    pub estimated_blocks: Option<u32>,
     /// Payment method
     pub payment_method: PaymentMethod,
     /// Secret key (optional, hex-encoded)
@@ -50,6 +52,7 @@ impl From<cdk::wallet::MintQuote> for MintQuote {
             mint_url: quote.mint_url.clone().into(),
             amount_issued: quote.amount_issued.into(),
             amount_paid: quote.amount_paid.into(),
+            estimated_blocks: quote.estimated_blocks,
             payment_method: quote.payment_method.into(),
             secret_key: quote.secret_key.map(|sk| sk.to_secret_hex()),
             used_by_operation: quote.used_by_operation.map(|id| id.to_string()),
@@ -78,6 +81,7 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
             mint_url: quote.mint_url.try_into()?,
             amount_issued: quote.amount_issued.into(),
             amount_paid: quote.amount_paid.into(),
+            estimated_blocks: quote.estimated_blocks,
             payment_method: quote.payment_method.into(),
             secret_key,
             used_by_operation: quote.used_by_operation,
@@ -354,8 +358,10 @@ pub struct MeltQuote {
     pub state: QuoteState,
     /// Expiry timestamp
     pub expiry: u64,
-    /// Payment proof
+    /// Payment proof (e.g. Lightning preimage or onchain outpoint)
     pub payment_proof: Option<String>,
+    /// Estimated confirmation target in blocks for onchain quotes
+    pub estimated_blocks: Option<u32>,
     /// Payment method
     pub payment_method: PaymentMethod,
     /// Operation ID that reserved this quote
@@ -377,6 +383,7 @@ impl From<cdk::wallet::MeltQuote> for MeltQuote {
             state: quote.state.into(),
             expiry: quote.expiry,
             payment_proof: quote.payment_proof.clone(),
+            estimated_blocks: quote.estimated_blocks,
             payment_method: quote.payment_method.into(),
             used_by_operation: quote.used_by_operation.map(|id| id.to_string()),
             version: quote.version,
@@ -398,6 +405,7 @@ impl TryFrom<MeltQuote> for cdk::wallet::MeltQuote {
             state: quote.state.into(),
             expiry: quote.expiry,
             payment_proof: quote.payment_proof,
+            estimated_blocks: quote.estimated_blocks,
             payment_method: quote.payment_method.into(),
             used_by_operation: quote.used_by_operation,
             version: quote.version,

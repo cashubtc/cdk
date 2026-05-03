@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::PublicKey;
 use crate::nut00::KnownMethod;
 use crate::nut25::MeltQuoteBolt12Response;
+use crate::nut_onchain::{MeltQuoteOnchainResponse, MintQuoteOnchainResponse};
 use crate::nuts::{
     CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteCustomResponse, MintQuoteBolt11Response,
     MintQuoteCustomResponse, PaymentMethod, ProofState,
@@ -190,12 +191,31 @@ where
 #[serde(bound = "T: Serialize + DeserializeOwned")]
 #[serde(untagged)]
 /// Subscription response
+///
+/// Note on variant ordering: serde `untagged` deserialization tries variants
+/// in declaration order and selects the first that matches. The Onchain
+/// variants are declared before the Bolt11/Bolt12 variants because the
+/// Onchain response structs use `#[serde(deny_unknown_fields)]`, which makes
+/// them reject Bolt11/Bolt12 payloads cleanly. Placing them first ensures
+/// onchain payloads are classified correctly without being consumed by the
+/// more permissive Bolt12 variant (which carries a superset of Onchain's
+/// field names).
 pub enum NotificationPayload<T>
 where
     T: Clone,
 {
     /// Proof State
     ProofState(ProofState),
+    /// Mint Quote Onchain Response
+    ///
+    /// Declared before `MintQuoteBolt12Response` to ensure untagged
+    /// discrimination picks the onchain variant for onchain payloads.
+    MintQuoteOnchainResponse(MintQuoteOnchainResponse<T>),
+    /// Melt Quote Onchain Response
+    ///
+    /// Declared before `MeltQuoteBolt11Response`/`MeltQuoteBolt12Response`
+    /// for the same reason.
+    MeltQuoteOnchainResponse(MeltQuoteOnchainResponse<T>),
     /// Melt Quote Bolt11 Response
     MeltQuoteBolt11Response(MeltQuoteBolt11Response<T>),
     /// Mint Quote Bolt11 Response
@@ -228,6 +248,10 @@ where
     /// MintQuote id is an QuoteId
     MeltQuoteBolt12(T),
     /// MintQuote id is an QuoteId
+    MintQuoteOnchain(T),
+    /// MintQuote id is an QuoteId
+    MeltQuoteOnchain(T),
+    /// MintQuote id is an QuoteId
     MintQuoteCustom(String, T),
     /// MintQuote id is an QuoteId
     MeltQuoteCustom(String, T),
@@ -246,6 +270,10 @@ pub enum Kind {
     Bolt12MintQuote,
     /// Bolt 12 Melt Quote
     Bolt12MeltQuote,
+    /// Onchain Mint Quote
+    OnchainMintQuote,
+    /// Onchain Melt Quote
+    OnchainMeltQuote,
     /// Custom
     Custom(String),
 }
@@ -260,6 +288,8 @@ impl Serialize for Kind {
             Kind::Bolt11MeltQuote => "bolt11_melt_quote",
             Kind::Bolt12MintQuote => "bolt12_mint_quote",
             Kind::Bolt12MeltQuote => "bolt12_melt_quote",
+            Kind::OnchainMintQuote => "onchain_mint_quote",
+            Kind::OnchainMeltQuote => "onchain_melt_quote",
             Kind::ProofState => "proof_state",
             Kind::Custom(custom) => custom.as_str(),
         };
@@ -278,6 +308,8 @@ impl<'de> Deserialize<'de> for Kind {
             "bolt11_melt_quote" => Kind::Bolt11MeltQuote,
             "bolt12_mint_quote" => Kind::Bolt12MintQuote,
             "bolt12_melt_quote" => Kind::Bolt12MeltQuote,
+            "onchain_mint_quote" => Kind::OnchainMintQuote,
+            "onchain_melt_quote" => Kind::OnchainMeltQuote,
             "proof_state" => Kind::ProofState,
             custom => Kind::Custom(custom.to_string()),
         })
@@ -300,4 +332,100 @@ pub enum Error {
     #[error("PublicKey Error: {0}")]
     /// PublicKey Error
     PublicKey(#[from] crate::nuts::nut01::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nuts::nut00::CurrencyUnit;
+    use crate::nuts::nut01::PublicKey;
+    use crate::nuts::MeltQuoteState;
+    use crate::Amount;
+
+    #[test]
+    fn notification_payload_onchain_mint_roundtrip() {
+        let resp: MintQuoteOnchainResponse<String> = MintQuoteOnchainResponse {
+            quote: "abc".to_string(),
+            request: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
+            unit: CurrencyUnit::Sat,
+            expiry: Some(1701704757),
+            pubkey: PublicKey::from_hex(
+                "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+            )
+            .unwrap(),
+            amount_paid: Amount::from(100_000),
+            amount_issued: Amount::from(0),
+        };
+        let payload: NotificationPayload<String> =
+            NotificationPayload::MintQuoteOnchainResponse(resp.clone());
+
+        let encoded = serde_json::to_string(&payload).unwrap();
+        let decoded: NotificationPayload<String> = serde_json::from_str(&encoded).unwrap();
+
+        match decoded {
+            NotificationPayload::MintQuoteOnchainResponse(r) => {
+                assert_eq!(r, resp);
+            }
+            other => panic!("expected MintQuoteOnchainResponse, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn notification_payload_bolt12_mint_roundtrip() {
+        // Ensure a Bolt12 payload (with `amount`) still decodes as Bolt12 after
+        // the Onchain variant was moved ahead of it and marked
+        // `deny_unknown_fields`.
+        let resp: MintQuoteBolt12Response<String> = MintQuoteBolt12Response {
+            quote: "abc".to_string(),
+            request: "lno1...".to_string(),
+            amount: Some(Amount::from(100_000)),
+            unit: CurrencyUnit::Sat,
+            expiry: Some(1701704757),
+            pubkey: PublicKey::from_hex(
+                "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+            )
+            .unwrap(),
+            amount_paid: Amount::from(0),
+            amount_issued: Amount::from(0),
+        };
+        let payload: NotificationPayload<String> =
+            NotificationPayload::MintQuoteBolt12Response(resp.clone());
+
+        let encoded = serde_json::to_string(&payload).unwrap();
+        let decoded: NotificationPayload<String> = serde_json::from_str(&encoded).unwrap();
+
+        match decoded {
+            NotificationPayload::MintQuoteBolt12Response(r) => {
+                assert_eq!(r, resp);
+            }
+            other => panic!("expected MintQuoteBolt12Response, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn notification_payload_onchain_melt_roundtrip() {
+        let resp: MeltQuoteOnchainResponse<String> = MeltQuoteOnchainResponse {
+            quote: "abc".to_string(),
+            request: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
+            amount: Amount::from(100_000),
+            unit: CurrencyUnit::Sat,
+            fee: Amount::from(5_000),
+            estimated_blocks: 1,
+            state: MeltQuoteState::Pending,
+            expiry: 1701704757,
+            outpoint: Some("3b7f3b85:2".to_string()),
+        };
+        let payload: NotificationPayload<String> =
+            NotificationPayload::MeltQuoteOnchainResponse(resp.clone());
+
+        let encoded = serde_json::to_string(&payload).unwrap();
+        let decoded: NotificationPayload<String> = serde_json::from_str(&encoded).unwrap();
+
+        match decoded {
+            NotificationPayload::MeltQuoteOnchainResponse(r) => {
+                assert_eq!(r, resp);
+            }
+            other => panic!("expected MeltQuoteOnchainResponse, got {:?}", other),
+        }
+    }
 }

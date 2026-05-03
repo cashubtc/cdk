@@ -3,12 +3,16 @@
 use std::array::TryFromSliceError;
 use std::fmt;
 
+#[cfg(feature = "mint")]
+use cashu::quote_id::QuoteId;
 use cashu::{CurrencyUnit, PaymentMethod};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use thiserror::Error;
 
 use crate::nuts::Id;
+#[cfg(feature = "mint")]
+use crate::payment::PaymentIdentifier;
 use crate::util::hex;
 #[cfg(feature = "wallet")]
 use crate::wallet::WalletKey;
@@ -101,6 +105,9 @@ pub enum Error {
     /// Pubkey required
     #[error("Pubkey required")]
     PubkeyRequired,
+    /// Missing Pubkey
+    #[error("Missing pubkey")]
+    MissingPubkey,
     /// Invalid payment method
     #[error("Invalid payment method")]
     InvalidPaymentMethod,
@@ -127,6 +134,26 @@ pub enum Error {
     /// Operation timeout
     #[error("Operation timeout")]
     Timeout,
+    /// Onchain backend returned a `request_lookup_id` that does not match the
+    /// mint-supplied `quote_id` (or omitted it entirely).
+    ///
+    /// Onchain backends MUST echo the `quote_id` from
+    /// [`OnchainOutgoingPaymentOptions`](crate::payment::OnchainOutgoingPaymentOptions)
+    /// verbatim as `PaymentIdentifier::QuoteId(...)` in
+    /// [`PaymentQuoteResponse::request_lookup_id`](crate::payment::PaymentQuoteResponse).
+    /// This error is returned when the mint layer detects a violation of that
+    /// contract during onchain melt quote construction.
+    #[cfg(feature = "mint")]
+    #[error(
+        "Onchain backend returned request_lookup_id {got:?} that does not match \
+         mint-supplied quote_id {expected}"
+    )]
+    OnchainQuoteLookupIdMismatch {
+        /// Mint-generated quote id sent to the backend.
+        expected: QuoteId,
+        /// Whatever the backend returned in `request_lookup_id`.
+        got: Option<PaymentIdentifier>,
+    },
 
     /// BIP353 address resolution error
     #[error("Failed to resolve BIP353 address: {0}")]
@@ -608,6 +635,9 @@ impl Error {
             | Self::Bip321Parse(_)
             | Self::Bip321Encode(_)
             | Self::LightningAddressParse(_) => true,
+
+            #[cfg(feature = "mint")]
+            Self::OnchainQuoteLookupIdMismatch { .. } => true,
 
             // HTTP Errors
             Self::HttpError(Some(status), _) => {

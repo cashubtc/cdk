@@ -274,6 +274,7 @@ where
             expiry,
             state,
             payment_proof,
+            estimated_blocks,
             request_lookup_id,
             created_time,
             paid_time,
@@ -382,6 +383,7 @@ where
             expiry,
             state,
             payment_proof,
+            estimated_blocks,
             request_lookup_id,
             created_time,
             paid_time,
@@ -436,6 +438,7 @@ where
             expiry,
             state,
             payment_proof,
+            estimated_blocks,
             request_lookup_id,
             created_time,
             paid_time,
@@ -543,6 +546,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
                 expiry,
                 state,
                 payment_proof,
+                estimated_blocks,
                 request_lookup_id,
                 created_time,
                 paid_time,
@@ -569,6 +573,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
 
     let state =
         MeltQuoteState::from_str(&column_as_string!(&state)).map_err(ConversionError::from)?;
+    let estimated_blocks: Option<u32> = column_as_nullable_number!(estimated_blocks);
 
     let unit = column_as_string!(unit);
     let request = column_as_string!(request);
@@ -621,6 +626,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
         paid_time,
         payment_method,
         extra_json,
+        estimated_blocks,
     ))
 }
 
@@ -932,13 +938,13 @@ where
             INSERT INTO melt_quote
             (
                 id, unit, amount, request, fee_reserve, state,
-                expiry, payment_proof, request_lookup_id,
+                expiry, payment_proof, estimated_blocks, request_lookup_id,
                 created_time, paid_time, options, request_lookup_id_kind, payment_method, extra_json
             )
             VALUES
             (
                 :id, :unit, :amount, :request, :fee_reserve, :state,
-                :expiry, :payment_proof, :request_lookup_id,
+                :expiry, :payment_proof, :estimated_blocks, :request_lookup_id,
                 :created_time, :paid_time, :options, :request_lookup_id_kind, :payment_method, :extra_json
             )
         "#,
@@ -951,6 +957,7 @@ where
         .bind("state", quote.state.to_string())
         .bind("expiry", quote.expiry as i64)
         .bind("payment_proof", quote.payment_proof)
+        .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
         .bind(
             "request_lookup_id",
             quote.request_lookup_id.as_ref().map(|id| id.to_string()),
@@ -1241,6 +1248,7 @@ where
                 expiry,
                 state,
                 payment_proof,
+                estimated_blocks,
                 request_lookup_id,
                 created_time,
                 paid_time,

@@ -13,6 +13,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -61,12 +62,17 @@ struct Args {
     /// LDK port (default: 8089)
     #[arg(default_value_t = 8089)]
     ldk_port: u16,
+
+    /// Skip Lightning setup
+    #[arg(long, default_value_t = false)]
+    skip_ln: bool,
 }
 
 /// Start regtest CLN mint using the library
 async fn start_cln_mint(
     temp_dir: &Path,
     port: u16,
+    database_type: &str,
     shutdown: Arc<Notify>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let cln_rpc_path = temp_dir
@@ -84,7 +90,7 @@ async fn start_cln_mint(
     };
 
     // Create settings struct for CLN mint using shared function
-    let settings = shared::create_cln_settings(
+    let mut settings = shared::create_cln_settings(
         port,
         temp_dir
             .join("cln")
@@ -94,6 +100,10 @@ async fn start_cln_mint(
         "eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal".to_string(),
         cln_config,
     );
+
+    apply_onchain_settings(&mut settings);
+    settings.database.engine =
+        cdk_mintd::config::DatabaseEngine::from_str(database_type).expect("valid database");
 
     println!("Starting CLN mintd on port {port}");
 
@@ -130,6 +140,7 @@ async fn start_cln_mint(
 async fn start_lnd_mint(
     temp_dir: &Path,
     port: u16,
+    database_type: &str,
     shutdown: Arc<Notify>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let lnd_cert_file = temp_dir.join("lnd").join("two").join("tls.cert");
@@ -155,11 +166,15 @@ async fn start_lnd_mint(
     };
 
     // Create settings struct for LND mint using shared function
-    let settings = shared::create_lnd_settings(
+    let mut settings = shared::create_lnd_settings(
         port,
         lnd_config,
         "cattle gold bind busy sound reduce tone addict baby spend february strategy".to_string(),
     );
+
+    apply_onchain_settings(&mut settings);
+    settings.database.engine =
+        cdk_mintd::config::DatabaseEngine::from_str(database_type).expect("valid database");
 
     println!("Starting LND mintd on port {port}");
 
@@ -198,6 +213,7 @@ async fn start_lnd_mint(
 async fn start_ldk_mint(
     temp_dir: &Path,
     port: u16,
+    database_type: &str,
     shutdown: Arc<Notify>,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     existing_node: Option<CdkLdkNode>,
@@ -235,7 +251,11 @@ async fn start_ldk_mint(
     };
 
     // Create settings struct for LDK mint using a new shared function
-    let settings = create_ldk_settings(port, ldk_config);
+    let mut settings = create_ldk_settings(port, ldk_config);
+
+    apply_onchain_settings(&mut settings);
+    settings.database.engine =
+        cdk_mintd::config::DatabaseEngine::from_str(database_type).expect("valid database");
 
     println!("Starting LDK mintd on port {port}");
 
@@ -315,13 +335,109 @@ fn create_ldk_settings(
         lnd: None,
         ldk_node: Some(ldk_config),
         fake_wallet: None,
-        grpc_processor: None,
-        database: cdk_mintd::config::Database::default(),
-        auth_database: None,
-        mint_management_rpc: None,
-        prometheus: None,
-        auth: None,
+        onchain: None,
+        ..Default::default()
     }
+}
+
+fn apply_onchain_settings(settings: &mut cdk_mintd::config::Settings) {
+    settings.onchain = Some(cdk_mintd::config::Onchain {
+        onchain_backend: cdk_mintd::config::OnchainBackend::Bdk,
+        min_mint: 1.into(),
+        max_mint: 500_000.into(),
+        min_melt: 1.into(),
+        max_melt: 500_000.into(),
+    });
+    settings.bdk = Some(cdk_mintd::config::Bdk {
+        mnemonic: Some(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+                .to_string(),
+        ),
+        network: Some("regtest".to_string()),
+        bitcoind_rpc_host: Some("127.0.0.1".to_string()),
+        bitcoind_rpc_port: Some(18443),
+        bitcoind_rpc_user: Some("testuser".to_string()),
+        bitcoind_rpc_password: Some("testpass".to_string()),
+        chain_source_type: Some("bitcoinrpc".to_string()),
+        num_confs: 1,
+        sync_interval_secs: 1,
+        ..Default::default()
+    });
+}
+
+/// Create settings for an onchain-only mint
+fn create_onchain_settings(port: u16) -> cdk_mintd::config::Settings {
+    cdk_mintd::config::Settings {
+        info: cdk_mintd::config::Info {
+            quote_ttl: None,
+            url: format!("http://127.0.0.1:{port}"),
+            listen_host: "127.0.0.1".to_string(),
+            listen_port: port,
+            seed: None,
+            mnemonic: Some(
+                "eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
+                    .to_string(),
+            ),
+            signatory_url: None,
+            signatory_certs: None,
+            input_fee_ppk: None,
+            use_keyset_v2: None,
+            http_cache: cdk_axum::cache::Config::default(),
+            enable_swagger_ui: None,
+            enable_info_page: None,
+            logging: LoggingConfig::default(),
+        },
+        mint_info: cdk_mintd::config::MintInfo::default(),
+        limits: cdk_mintd::config::Limits::default(),
+        ln: cdk_mintd::config::Ln {
+            ln_backend: cdk_mintd::config::LnBackend::None,
+            ..Default::default()
+        },
+        onchain: None, // Will be set by apply_onchain_settings
+        ..Default::default()
+    }
+}
+
+/// Start a mint configured with only onchain backend
+async fn start_onchain_mint(
+    work_dir: &Path,
+    port: u16,
+    database_type: &str,
+    shutdown: Arc<Notify>,
+) -> Result<tokio::task::JoinHandle<()>> {
+    let mut settings = create_onchain_settings(port);
+    apply_onchain_settings(&mut settings);
+    settings.database.engine =
+        cdk_mintd::config::DatabaseEngine::from_str(database_type).expect("valid database");
+
+    println!("Starting onchain-only mintd on port {port}");
+
+    let work_dir = work_dir.to_path_buf();
+    fs::create_dir_all(&work_dir)?;
+    let shutdown_clone = shutdown.clone();
+
+    let handle = tokio::spawn(async move {
+        let shutdown_future = async move {
+            shutdown_clone.notified().await;
+            println!("Onchain mint shutdown signal received");
+        };
+
+        match cdk_mintd::run_mintd_with_shutdown(
+            &work_dir,
+            &settings,
+            shutdown_future,
+            None,
+            None,
+            vec![],
+        )
+        .await
+        {
+            Ok(_) => println!("Onchain mint exited normally"),
+            Err(e) => eprintln!("Onchain mint exited with error: {e}"),
+        }
+    });
+
+    Ok(handle)
 }
 
 fn main() -> Result<()> {
@@ -357,6 +473,69 @@ fn main() -> Result<()> {
         let (tx, rx) = oneshot::channel();
 
         let shutdown_clone_one = Arc::clone(&shutdown_clone);
+
+        if args.skip_ln {
+            let temp_dir_clone = temp_dir.clone();
+            let shutdown_clone_two = Arc::clone(&shutdown_clone);
+            tokio::spawn(async move {
+                start_regtest_end(
+                    &temp_dir_clone,
+                    tx,
+                    shutdown_clone_two,
+                    None,
+                    args.skip_ln,
+                )
+                .await
+                .expect("Error starting regtest");
+            });
+
+            match timeout(Duration::from_secs(300), rx).await {
+                Ok(k) => {
+                    k?;
+                    tracing::info!("Regtest (onchain only) set up");
+                }
+                Err(_) => {
+                    tracing::error!("regtest setup timed out after 5 minutes");
+                    anyhow::bail!("Could not set up regtest");
+                }
+            }
+
+            let onchain_handle = start_onchain_mint(
+                &temp_dir.join("onchain_mint"),
+                args.cln_port,
+                &args.database_type,
+                shutdown_clone.clone(),
+            )
+            .await?;
+
+            let cancel_token = Arc::new(CancellationToken::new());
+            let ctrl_c_token = Arc::clone(&cancel_token);
+            let s_u = shutdown_clone.clone();
+
+            tokio::spawn(async move {
+                signal::ctrl_c()
+                    .await
+                    .expect("failed to install CTRL+C handler");
+                tracing::info!("Shutdown signal received during onchain mint setup");
+                println!("\nReceived Ctrl+C, shutting down...");
+                ctrl_c_token.cancel();
+                s_u.notify_waiters();
+            });
+
+            shared::wait_for_mint_ready_with_shutdown(
+                args.cln_port,
+                100,
+                Arc::clone(&cancel_token),
+            )
+            .await?;
+
+            println!("Onchain-only mint is ready on port {}!", args.cln_port);
+
+            // Wait for shutdown
+            shutdown_clone_one.notified().await;
+            let _ = onchain_handle.await;
+            return Ok(());
+        }
 
         let ldk_work_dir = temp_dir.join("ldk_mint");
         fs::create_dir_all(ldk_work_dir.join("logs"))?;
@@ -426,9 +605,15 @@ fn main() -> Result<()> {
         let temp_dir_clone = temp_dir.clone();
         let shutdown_clone_two = Arc::clone(&shutdown_clone);
         tokio::spawn(async move {
-            start_regtest_end(&temp_dir_clone, tx, shutdown_clone_two, Some(inner_node))
-                .await
-                .expect("Error starting regtest");
+            start_regtest_end(
+                &temp_dir_clone,
+                tx,
+                shutdown_clone_two,
+                Some(inner_node),
+                args.skip_ln,
+            )
+            .await
+            .expect("Error starting regtest");
         });
 
         match timeout(Duration::from_secs(300), rx).await {
@@ -442,15 +627,18 @@ fn main() -> Result<()> {
             }
         }
 
-        println!("lnd port: {}", args.ldk_port);
+        println!("ldk port: {}", args.ldk_port);
 
         // Start LND mint
-        let lnd_handle = start_lnd_mint(&temp_dir, args.lnd_port, shutdown_clone.clone()).await?;
+        let lnd_handle =
+            start_lnd_mint(&temp_dir, args.lnd_port, &args.database_type, shutdown_clone.clone())
+                .await?;
 
         // Start LDK mint (using the existing node that was already set up with channels)
         let ldk_handle = start_ldk_mint(
             &temp_dir,
             args.ldk_port,
+            &args.database_type,
             shutdown_clone.clone(),
             Some(rt_clone),
             Some(cdk_ldk),
@@ -458,7 +646,9 @@ fn main() -> Result<()> {
         .await?;
 
         // Start CLN mint
-        let cln_handle = start_cln_mint(&temp_dir, args.cln_port, shutdown_clone.clone()).await?;
+        let cln_handle =
+            start_cln_mint(&temp_dir, args.cln_port, &args.database_type, shutdown_clone.clone())
+                .await?;
 
         let cancel_token = Arc::new(CancellationToken::new());
 

@@ -22,6 +22,8 @@ pub enum PaymentType {
     Bolt12,
     /// Bip353
     Bip353,
+    /// Onchain Bitcoin address
+    Onchain,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -55,7 +57,7 @@ pub struct MeltSubCommand {
     /// Mint URL to use for melting
     #[arg(long, conflicts_with = "mpp")]
     mint_url: Option<String>,
-    /// Payment method (bolt11, bolt12, or bip353)
+    /// Payment method (bolt11, bolt12, bip353, or onchain)
     #[arg(long, default_value = "bolt11")]
     method: PaymentType,
     /// BOLT11 invoice to pay (for bolt11 method)
@@ -64,13 +66,13 @@ pub struct MeltSubCommand {
     /// BOLT12 offer to pay (for bolt12 method)
     #[arg(long, conflicts_with_all = ["invoice", "address"])]
     offer: Option<String>,
-    /// BIP353 address to pay (for bip353 method)
+    /// BIP353 or onchain address to pay
     #[arg(long, conflicts_with_all = ["invoice", "offer"])]
     address: Option<String>,
     /// Bitcoin network to use for BIP353 (bitcoin, testnet, signet, regtest)
     #[arg(long, default_value = "bitcoin")]
     network: BitcoinNetwork,
-    /// Amount in sats for amountless payments (bolt11 amountless, bolt12 amountless, bip353)
+    /// Amount in sats for amountless payments or onchain melts
     #[arg(long)]
     amount: Option<u64>,
     /// MPP split entry in the form <mint_url>=<amount_sats>; repeat for multiple mints
@@ -132,6 +134,38 @@ fn parse_mpp_split(entry: &str) -> Result<(MintUrl, Amount)> {
     }
 
     Ok((mint_url, Amount::from(amount_sat)))
+}
+
+fn select_onchain_quote(quotes: &[cdk_common::wallet::MeltQuote]) -> Result<cdk_common::wallet::MeltQuote> {
+    if quotes.is_empty() {
+        bail!("No onchain melt quotes available");
+    }
+
+    if quotes.len() == 1 {
+        return Ok(quotes[0].clone());
+    }
+
+    println!("\nAvailable onchain melt quotes:");
+    for (index, quote) in quotes.iter().enumerate() {
+        println!(
+            "  {}: amount={} fee={} expiry={} estimated_blocks={}",
+            index,
+            quote.amount,
+            quote.fee_reserve,
+            quote.expiry,
+            quote.estimated_blocks.unwrap_or_default()
+        );
+    }
+
+    loop {
+        let selection: usize = get_number_input("Enter onchain quote number to use")?;
+
+        if let Some(quote) = quotes.get(selection) {
+            return Ok(quote.clone());
+        }
+
+        println!("Invalid selection, please try again.");
+    }
 }
 
 pub async fn pay(
@@ -400,6 +434,65 @@ pub async fn pay(
             );
             if let Some(preimage) = melted.payment_proof() {
                 println!("Payment preimage: {}", preimage);
+            }
+        }
+        PaymentType::Onchain => {
+            let onchain_address =
+                input_or_prompt(sub_command_args.address.as_ref(), "Enter onchain address")?;
+
+            let amount_sat = match sub_command_args.amount {
+                Some(amount_sat) if amount_sat > 0 => amount_sat,
+                Some(_) => bail!("Onchain melt amount must be greater than zero"),
+                None => get_number_input::<u64>("Enter the amount you would like to melt in sats")?,
+            };
+
+            let melt_amount = Amount::from(amount_sat);
+
+            // Get wallet for onchain using the selected mint
+            let mint_url = if let Some(specific_mint) = selected_mint {
+                specific_mint
+            } else {
+                let balances = wallet_repository.get_balances().await?;
+
+                balances
+                    .into_iter()
+                    .find(|(_, balance)| *balance >= melt_amount)
+                    .map(|(key, _)| key.mint_url)
+                    .ok_or_else(|| anyhow::anyhow!("No mint with sufficient balance for onchain melt"))?
+            };
+
+            let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
+
+            let quote_options = wallet
+                .quote_onchain_melt_options(&onchain_address, melt_amount, None)
+                .await?;
+
+            let selected_quote = select_onchain_quote(&quote_options)?;
+            let quote = wallet.select_onchain_melt_quote(selected_quote).await?;
+
+            println!("Melt quote selected:");
+            println!("  Quote ID: {}", quote.id);
+            println!("  Amount: {}", quote.amount);
+            println!("  Fee Reserve: {}", quote.fee_reserve);
+            println!("  Expiry: {}", quote.expiry);
+            if let Some(estimated_blocks) = quote.estimated_blocks {
+                println!("  Estimated Blocks: {}", estimated_blocks);
+            }
+
+            let melted = wallet
+                .prepare_melt(&quote.id, HashMap::new())
+                .await?
+                .confirm()
+                .await?;
+
+            println!(
+                "Payment successful: state={}, amount={}, fee_paid={}",
+                melted.state(),
+                melted.amount(),
+                melted.fee_paid()
+            );
+            if let Some(payment_proof) = melted.payment_proof() {
+                println!("Payment proof: {}", payment_proof);
             }
         }
     }
