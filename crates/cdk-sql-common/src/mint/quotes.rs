@@ -647,8 +647,8 @@ where
             "#,
         )?
         .bind("quote_id", quote_id.to_string())
-        .bind("inputs_amount", inputs_amount.to_i64())
-        .bind("inputs_fee", inputs_fee.to_i64())
+        .bind("inputs_amount", inputs_amount.to_u64())
+        .bind("inputs_fee", inputs_fee.to_u64())
         .execute(&self.inner)
         .await?;
 
@@ -678,7 +678,7 @@ where
                 "blinded_message",
                 message.blinded_secret.to_bytes().to_vec(),
             )
-            .bind("amount", message.amount.to_i64())
+            .bind("amount", message.amount.to_u64())
             .bind("keyset_id", message.keyset_id.to_string())
             .bind("quote_id", quote_id.map(|q| q.to_string()))
             .bind("created_time", current_time as i64)
@@ -840,7 +840,7 @@ where
             )?
             .bind("quote_id", quote.id.to_string())
             .bind("payment_id", payment.payment_id)
-            .bind("amount", payment.amount.to_i64())
+            .bind("amount", payment.amount.to_u64())
             .bind("timestamp", payment.time as i64)
             .execute(&self.inner)
             .await
@@ -861,7 +861,7 @@ where
                 "#,
             )?
             .bind("quote_id", quote.id.to_string())
-            .bind("amount", amount_issued.to_i64())
+            .bind("amount", amount_issued.to_u64())
             .bind("timestamp", current_time as i64)
             .execute(&self.inner)
             .await?;
@@ -879,8 +879,8 @@ where
             "#,
         )?
         .bind("quote_id", quote.id.to_string())
-        .bind("amount_issued", quote.amount_issued().to_i64())
-        .bind("amount_paid", quote.amount_paid().to_i64())
+        .bind("amount_issued", quote.amount_issued().to_u64())
+        .bind("amount_paid", quote.amount_paid().to_u64())
         .execute(&self.inner)
         .await
         .inspect_err(|err| {
@@ -903,7 +903,7 @@ where
             "#,
         )?
         .bind("id", quote.id.to_string())
-        .bind("amount", quote.amount.clone().map(|a| a.to_i64()))
+        .bind("amount", quote.amount.clone().map(|a| a.to_u64()))
         .bind("unit", quote.unit.to_string())
         .bind("request", quote.request.clone())
         .bind("expiry", quote.expiry as i64)
@@ -945,9 +945,9 @@ where
         )?
         .bind("id", quote.id.to_string())
         .bind("unit", quote.unit.to_string())
-        .bind("amount", quote.amount().to_i64())
+        .bind("amount", quote.amount().to_u64())
         .bind("request", serde_json::to_string(&quote.request)?)
-        .bind("fee_reserve", quote.fee_reserve().to_i64())
+        .bind("fee_reserve", quote.fee_reserve().to_u64())
         .bind("state", quote.state.to_string())
         .bind("expiry", quote.expiry as i64)
         .bind("payment_proof", quote.payment_proof)

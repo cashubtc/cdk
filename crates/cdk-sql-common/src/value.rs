@@ -57,6 +57,12 @@ impl From<i64> for Value {
     }
 }
 
+impl From<u64> for Value {
+    fn from(value: u64) -> Self {
+        Self::Text(value.to_string())
+    }
+}
+
 impl From<u32> for Value {
     fn from(value: u32) -> Self {
         Self::Integer(value.into())

@@ -166,7 +166,7 @@ where
                   "#,
             )?
             .bind("y", y.to_bytes().to_vec())
-            .bind("amount", proof.amount.to_i64())
+            .bind("amount", proof.amount.to_u64())
             .bind("keyset_id", proof.keyset_id.to_string())
             .bind("secret", proof.secret.to_string())
             .bind("c", proof.c.to_bytes().to_vec())

@@ -727,7 +727,7 @@ where
                     .map(|s| serde_json::to_string(&s).ok()),
             )
             .bind("unit", proof.unit.to_string())
-            .bind("amount", u64::from(proof.proof.amount) as i64)
+            .bind("amount", u64::from(proof.proof.amount))
             .bind("keyset_id", proof.proof.keyset_id.to_string())
             .bind("secret", proof.proof.secret.to_string())
             .bind("c", proof.proof.c.to_bytes().to_vec())
@@ -803,8 +803,8 @@ where
         let mint_url = transaction.mint_url.to_string();
         let direction = transaction.direction.to_string();
         let unit = transaction.unit.to_string();
-        let amount = u64::from(transaction.amount) as i64;
-        let fee = u64::from(transaction.fee) as i64;
+        let amount = u64::from(transaction.amount);
+        let fee = u64::from(transaction.fee);
         let ys = transaction
             .ys
             .iter()
@@ -1061,7 +1061,7 @@ where
             .bind("active", keyset.active)
             .bind("input_fee_ppk", keyset.input_fee_ppk as i64)
             .bind("final_expiry", keyset.final_expiry.map(|v| v as i64))
-            .bind("keyset_u32", u32::from(keyset.id))
+            .bind("keyset_u32", u32::from(keyset.id) as i64)
             .execute(&tx)
             .await?;
         }
@@ -1103,15 +1103,15 @@ where
             )?
             .bind("id", quote.id.to_string())
             .bind("mint_url", quote.mint_url.to_string())
-            .bind("amount", quote.amount.map(|a| a.to_i64()))
+            .bind("amount", quote.amount.map(|a| a.to_u64()))
             .bind("unit", quote.unit.to_string())
             .bind("request", quote.request)
             .bind("state", quote.state.to_string())
             .bind("expiry", quote.expiry as i64)
             .bind("secret_key", quote.secret_key.map(|p| p.to_string()))
             .bind("payment_method", quote.payment_method.to_string())
-            .bind("amount_issued", quote.amount_issued.to_i64())
-            .bind("amount_paid", quote.amount_paid.to_i64())
+            .bind("amount_issued", quote.amount_issued.to_u64())
+            .bind("amount_paid", quote.amount_paid.to_u64())
             .bind("version", quote.version as i64)
             .bind("new_version", new_version as i64)
             .bind("expected_version", expected_version as i64)
@@ -1167,9 +1167,9 @@ where
         )?
         .bind("id", quote.id.to_string())
         .bind("unit", quote.unit.to_string())
-        .bind("amount", u64::from(quote.amount) as i64)
+        .bind("amount", u64::from(quote.amount))
         .bind("request", quote.request)
-        .bind("fee_reserve", u64::from(quote.fee_reserve) as i64)
+        .bind("fee_reserve", u64::from(quote.fee_reserve))
         .bind("state", quote.state.to_string())
         .bind("expiry", quote.expiry as i64)
         .bind("payment_method", quote.payment_method.to_string())
@@ -1219,7 +1219,7 @@ where
             "keys",
             serde_json::to_string(&keyset.keys).map_err(Error::from)?,
         )
-        .bind("keyset_u32", u32::from(keyset.id))
+        .bind("keyset_u32", u32::from(keyset.id) as i64)
         .execute(&*conn)
         .await?;
 
@@ -1282,7 +1282,7 @@ where
         .bind("id", saga.id.to_string())
         .bind("kind", saga.kind.to_string())
         .bind("state", state_json)
-        .bind("amount", u64::from(saga.amount) as i64)
+        .bind("amount", u64::from(saga.amount))
         .bind("mint_url", saga.mint_url.to_string())
         .bind("unit", saga.unit.to_string())
         .bind("quote_id", saga.quote_id)
@@ -1355,7 +1355,7 @@ where
         .bind("id", saga.id.to_string())
         .bind("kind", saga.kind.to_string())
         .bind("state", state_json)
-        .bind("amount", u64::from(saga.amount) as i64)
+        .bind("amount", u64::from(saga.amount))
         .bind("mint_url", saga.mint_url.to_string())
         .bind("unit", saga.unit.to_string())
         .bind("quote_id", saga.quote_id)

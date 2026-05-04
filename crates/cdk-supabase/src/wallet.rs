@@ -2397,15 +2397,15 @@ impl TryInto<Keys> for KeyTable {
 struct MintQuoteTable {
     id: String,
     mint_url: String,
-    amount: i64,
+    amount: String,
     unit: String,
     request: Option<String>,
     state: String,
     expiry: i64,
     secret_key: Option<String>,
     payment_method: String,
-    amount_issued: i64,
-    amount_paid: i64,
+    amount_issued: String,
+    amount_paid: String,
     #[serde(default)]
     used_by_operation: Option<String>,
     #[serde(default)]
@@ -2422,7 +2422,11 @@ impl TryInto<MintQuote> for MintQuoteTable {
             id: self.id,
             mint_url: MintUrl::from_str(&self.mint_url)
                 .map_err(|e| DatabaseError::Internal(e.to_string()))?,
-            amount: Some(cdk_common::Amount::from(self.amount as u64)),
+            amount: Some(cdk_common::Amount::from(
+                self.amount
+                    .parse::<u64>()
+                    .map_err(|_| DatabaseError::Internal("Invalid amount".into()))?,
+            )),
             unit: CurrencyUnit::from_str(&self.unit)
                 .map_err(|_| DatabaseError::Internal("Invalid unit".into()))?,
             request: self
@@ -2438,8 +2442,16 @@ impl TryInto<MintQuote> for MintQuoteTable {
                 .map_err(|_| DatabaseError::Internal("Invalid secret key".into()))?,
             payment_method: cdk_common::PaymentMethod::from_str(&self.payment_method)
                 .map_err(|_| DatabaseError::Internal("Invalid payment method".into()))?,
-            amount_issued: cdk_common::Amount::from(self.amount_issued as u64),
-            amount_paid: cdk_common::Amount::from(self.amount_paid as u64),
+            amount_issued: cdk_common::Amount::from(
+                self.amount_issued
+                    .parse::<u64>()
+                    .map_err(|_| DatabaseError::Internal("Invalid amount_issued".into()))?,
+            ),
+            amount_paid: cdk_common::Amount::from(
+                self.amount_paid
+                    .parse::<u64>()
+                    .map_err(|_| DatabaseError::Internal("Invalid amount_paid".into()))?,
+            ),
             used_by_operation: self.used_by_operation,
             version: self.version.unwrap_or(0) as u32,
         })
@@ -2452,15 +2464,18 @@ impl TryFrom<MintQuote> for MintQuoteTable {
         Ok(Self {
             id: q.id,
             mint_url: q.mint_url.to_string(),
-            amount: q.amount.map(|a| a.to_u64() as i64).unwrap_or(0),
+            amount: q
+                .amount
+                .map(|a| a.to_u64().to_string())
+                .unwrap_or_else(|| "0".to_string()),
             unit: q.unit.to_string(),
             request: Some(q.request),
             state: q.state.to_string(),
             expiry: q.expiry as i64,
             secret_key: q.secret_key.map(|k| k.to_string()),
             payment_method: q.payment_method.to_string(),
-            amount_issued: q.amount_issued.to_u64() as i64,
-            amount_paid: q.amount_paid.to_u64() as i64,
+            amount_issued: q.amount_issued.to_u64().to_string(),
+            amount_paid: q.amount_paid.to_u64().to_string(),
             used_by_operation: q.used_by_operation,
             version: Some(q.version as i32),
             _extra: Default::default(),
@@ -2472,9 +2487,9 @@ impl TryFrom<MintQuote> for MintQuoteTable {
 struct MeltQuoteTable {
     id: String,
     unit: String,
-    amount: i64,
+    amount: String,
     request: String,
-    fee_reserve: i64,
+    fee_reserve: String,
     state: String,
     expiry: i64,
     payment_proof: Option<String>,
@@ -2503,9 +2518,17 @@ impl TryInto<wallet::MeltQuote> for MeltQuoteTable {
                 .map_err(|_| DatabaseError::Internal("Invalid mint URL".into()))?,
             unit: CurrencyUnit::from_str(&self.unit)
                 .map_err(|_| DatabaseError::Internal("Invalid unit".into()))?,
-            amount: cdk_common::Amount::from(self.amount as u64),
+            amount: cdk_common::Amount::from(
+                self.amount
+                    .parse::<u64>()
+                    .map_err(|_| DatabaseError::Internal("Invalid amount".into()))?,
+            ),
             request: self.request,
-            fee_reserve: cdk_common::Amount::from(self.fee_reserve as u64),
+            fee_reserve: cdk_common::Amount::from(
+                self.fee_reserve
+                    .parse::<u64>()
+                    .map_err(|_| DatabaseError::Internal("Invalid fee_reserve".into()))?,
+            ),
             state: cdk_common::nuts::MeltQuoteState::from_str(&self.state)
                 .map_err(|_| DatabaseError::Internal("Invalid state".into()))?,
             expiry: self.expiry as u64,
@@ -2525,9 +2548,9 @@ impl TryFrom<wallet::MeltQuote> for MeltQuoteTable {
             id: q.id,
             mint_url: q.mint_url.map(|u| u.to_string()),
             unit: q.unit.to_string(),
-            amount: q.amount.to_u64() as i64,
+            amount: q.amount.to_u64().to_string(),
             request: q.request,
-            fee_reserve: q.fee_reserve.to_u64() as i64,
+            fee_reserve: q.fee_reserve.to_u64().to_string(),
             state: q.state.to_string(),
             expiry: q.expiry as i64,
             payment_proof: q.payment_proof,
@@ -2546,7 +2569,7 @@ struct ProofTable {
     state: String,
     spending_condition: Option<String>,
     unit: String,
-    amount: i64,
+    amount: String,
     keyset_id: String,
     secret: String,
     c: String,
@@ -2586,7 +2609,11 @@ impl TryInto<ProofInfo> for ProofTable {
             unit: CurrencyUnit::from_str(&self.unit)
                 .map_err(|_| DatabaseError::Internal("Invalid unit".into()))?,
             proof: cdk_common::Proof {
-                amount: cdk_common::Amount::from(self.amount as u64),
+                amount: cdk_common::Amount::from(
+                    self.amount
+                        .parse::<u64>()
+                        .map_err(|_| DatabaseError::Internal("Invalid amount".into()))?,
+                ),
                 keyset_id: Id::from_str(&self.keyset_id)
                     .map_err(|_| DatabaseError::InvalidKeysetId)?,
                 secret: Secret::from_str(&self.secret)
@@ -2640,7 +2667,7 @@ impl TryFrom<ProofInfo> for ProofTable {
                 .map(|s| serde_json::to_string(&s))
                 .transpose()?,
             unit: p.unit.to_string(),
-            amount: p.proof.amount.to_u64() as i64,
+            amount: p.proof.amount.to_u64().to_string(),
             keyset_id: p.proof.keyset_id.to_string(),
             secret: p.proof.secret.to_string(),
             c: hex::encode(p.proof.c.to_bytes()),
@@ -2678,8 +2705,8 @@ struct TransactionTable {
     mint_url: String,
     direction: String,
     unit: String,
-    amount: i64,
-    fee: i64,
+    amount: String,
+    fee: String,
     ys: Option<Vec<String>>,
     timestamp: i64,
     memo: Option<String>,
@@ -2722,8 +2749,16 @@ impl TryInto<Transaction> for TransactionTable {
                 .map_err(|_| DatabaseError::Internal("Invalid direction".into()))?,
             unit: CurrencyUnit::from_str(&self.unit)
                 .map_err(|_| DatabaseError::Internal("Invalid unit".into()))?,
-            amount: cdk_common::Amount::from(self.amount as u64),
-            fee: cdk_common::Amount::from(self.fee as u64),
+            amount: cdk_common::Amount::from(
+                self.amount
+                    .parse::<u64>()
+                    .map_err(|_| DatabaseError::Internal("Invalid amount".into()))?,
+            ),
+            fee: cdk_common::Amount::from(
+                self.fee
+                    .parse::<u64>()
+                    .map_err(|_| DatabaseError::Internal("Invalid fee".into()))?,
+            ),
             ys,
             timestamp: self.timestamp as u64,
             memo: self.memo,
@@ -2758,8 +2793,8 @@ impl TryFrom<Transaction> for TransactionTable {
             mint_url: t.mint_url.to_string(),
             direction: t.direction.to_string(),
             unit: t.unit.to_string(),
-            amount: t.amount.to_u64() as i64,
-            fee: t.fee.to_u64() as i64,
+            amount: t.amount.to_u64().to_string(),
+            fee: t.fee.to_u64().to_string(),
             ys: Some(t.ys.iter().map(|y| hex::encode(y.to_bytes())).collect()),
             timestamp: t.timestamp as i64,
             memo: t.memo,
