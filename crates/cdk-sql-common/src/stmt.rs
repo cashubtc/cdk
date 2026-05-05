@@ -145,6 +145,15 @@ pub fn split_sql_parts(input: &str) -> Result<Vec<SqlPart>, SqlParseError> {
                 }
 
                 chars.next(); // consume ':'
+
+                if chars.peek() == Some(&':') {
+                    // pgsql support column::CAST_AS
+                    chars.next(); // consume ':'
+                    parts.push(SqlPart::Raw("::".into()));
+                    current.clear();
+                    continue;
+                }
+
                 let mut name = String::new();
 
                 while let Some(&next) = chars.peek() {
