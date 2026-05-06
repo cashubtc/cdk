@@ -1,5 +1,6 @@
 //! Completed operations database implementation
 
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use async_trait::async_trait;
@@ -69,7 +70,7 @@ where
     async fn add_completed_operation(
         &mut self,
         operation: &mint::Operation,
-        fee_by_keyset: &std::collections::HashMap<cdk_common::nuts::Id, cdk_common::Amount>,
+        fee_by_keyset: &HashMap<cdk_common::nuts::Id, cdk_common::Amount>,
     ) -> Result<(), Self::Err> {
         query(
             r#"
@@ -91,23 +92,21 @@ where
         .execute(&self.inner)
         .await?;
 
-        // Update keyset_amounts with fee_collected from the breakdown
-        for (keyset_id, fee) in fee_by_keyset {
-            if fee.to_u64() > 0 {
-                query(
-                    r#"
-                    INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed, fee_collected)
-                    VALUES (:keyset_id, 0, 0, :fee)
-                    ON CONFLICT (keyset_id)
-                    DO UPDATE SET fee_collected = keyset_amounts.fee_collected + EXCLUDED.fee_collected
-                    "#,
-                )?
-                .bind("keyset_id", keyset_id.to_string())
-                .bind("fee", fee.to_u64())
-                .execute(&self.inner)
-                .await?;
-            }
-        }
+        // Bulk-update keyset_amounts with fee_collected from the breakdown
+        let fee_deltas: HashMap<cdk_common::nuts::Id, u64> = fee_by_keyset
+            .iter()
+            .filter(|(_, fee)| fee.to_u64() > 0)
+            .map(|(id, fee)| (*id, fee.to_u64()))
+            .collect();
+
+        super::keyset_amounts::increment(
+            &self.inner,
+            fee_deltas,
+            "fee_collected",
+            |a| a.fee_collected,
+            |a, v| a.fee_collected = v,
+        )
+        .await?;
 
         Ok(())
     }

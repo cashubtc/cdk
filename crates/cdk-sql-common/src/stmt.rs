@@ -367,7 +367,7 @@ impl Statement {
         Ok(self)
     }
 
-    /// Executes a query and returns the affected rows
+    /// Fetches the first row and column from a query
     pub async fn pluck<C>(self, conn: &C) -> Result<Option<Value>, Error>
     where
         C: DatabaseExecutor,

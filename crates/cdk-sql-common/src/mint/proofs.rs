@@ -212,20 +212,23 @@ where
             .await?;
 
         if new_state == State::Spent {
-            query(
-                    r#"
-                    INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                    SELECT keyset_id, 0, COALESCE(SUM(amount), 0)
-                    FROM proof
-                    WHERE y IN (:ys)
-                    GROUP BY keyset_id
-                    ON CONFLICT (keyset_id)
-                    DO UPDATE SET total_redeemed = keyset_amounts.total_redeemed + EXCLUDED.total_redeemed
-                    "#,
-                )?
-                .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
-                .execute(&self.inner)
-                .await?;
+            // Group proofs by keyset and sum amounts in Rust
+            let mut redeemed_by_keyset: HashMap<Id, u64> = HashMap::new();
+            for proof in proofs.iter() {
+                let entry = redeemed_by_keyset.entry(proof.keyset_id).or_default();
+                *entry = entry
+                    .checked_add(u64::from(proof.amount))
+                    .ok_or(Error::AmountOverflow)?;
+            }
+
+            super::keyset_amounts::increment(
+                &self.inner,
+                redeemed_by_keyset,
+                "total_redeemed",
+                |a| a.total_redeemed,
+                |a, v| a.total_redeemed = v,
+            )
+            .await?;
         }
 
         proofs.state = new_state;

@@ -92,9 +92,10 @@ WHERE i.quote_id=:quote_id
         let time: u64 = column_as_number!(row[1].clone());
         let unit = column_as_string!(&row[2], CurrencyUnit::from_str);
         Ok(Issuance::new(
-            Amount::from_i64(column_as_number!(row[0].clone()))
-                .expect("Is amount when put into db")
-                .with_unit(unit),
+            {
+                let amount: u64 = column_as_number!(row[0].clone());
+                Amount::from(amount).with_unit(unit)
+            },
             time,
         ))
     })

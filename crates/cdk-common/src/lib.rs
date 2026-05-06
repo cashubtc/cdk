@@ -23,6 +23,7 @@ pub mod grpc;
 
 pub mod common;
 pub mod database;
+pub mod timing;
 pub mod error;
 pub mod melt;
 #[cfg(feature = "mint")]

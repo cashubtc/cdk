@@ -21,6 +21,7 @@ use crate::pool::{DatabasePool, Pool, PooledResource};
 mod auth;
 mod completed_operations;
 mod keys;
+mod keyset_amounts;
 mod keyvalue;
 mod proofs;
 mod quotes;

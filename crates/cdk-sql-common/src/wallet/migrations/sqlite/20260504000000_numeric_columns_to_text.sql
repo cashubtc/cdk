@@ -67,7 +67,9 @@ FROM mint_quote;
 DROP TABLE mint_quote;
 ALTER TABLE mint_quote_new RENAME TO mint_quote;
 
+CREATE INDEX IF NOT EXISTS mint_quote_state_index ON mint_quote(state);
 CREATE INDEX IF NOT EXISTS mint_quote_used_by_operation_index ON mint_quote(used_by_operation);
+CREATE INDEX IF NOT EXISTS idx_mint_quote_pending ON mint_quote(payment_method, amount_issued);
 
 -- ============================================================================
 -- melt_quote (only amount and fee_reserve change to TEXT)

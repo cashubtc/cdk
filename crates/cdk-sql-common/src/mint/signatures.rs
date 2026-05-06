@@ -91,6 +91,9 @@ where
         })
         .collect::<Result<HashMap<_, _>, Error>>()?;
 
+        // Pre-aggregate issued amounts by keyset for bulk increment
+        let mut issued_deltas: HashMap<Id, u64> = HashMap::new();
+
         // Iterate over the provided blinded messages and signatures
         for (message, signature) in blinded_messages.iter().zip(blind_signatures) {
             match existing_rows.remove(message) {
@@ -122,18 +125,10 @@ where
                     .execute(&self.inner)
                     .await?;
 
-                    query(
-                        r#"
-                        INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                        VALUES (:keyset_id, :amount, 0)
-                        ON CONFLICT (keyset_id)
-                        DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
-                        "#,
-                    )?
-                    .bind("amount", u64::from(signature.amount))
-                    .bind("keyset_id", signature.keyset_id.to_string())
-                    .execute(&self.inner)
-                    .await?;
+                    let entry = issued_deltas.entry(signature.keyset_id).or_default();
+                    *entry = entry
+                        .checked_add(u64::from(signature.amount))
+                        .ok_or(Error::AmountOverflow)?;
                 }
                 Some((c, _dleq_e, _dleq_s)) => {
                     // Blind message exists: check if c is NULL
@@ -162,18 +157,10 @@ where
                             .execute(&self.inner)
                             .await?;
 
-                            query(
-                                r#"
-                                INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                                VALUES (:keyset_id, :amount, 0)
-                                ON CONFLICT (keyset_id)
-                                DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
-                                "#,
-                            )?
-                            .bind("amount", u64::from(signature.amount))
-                            .bind("keyset_id", signature.keyset_id.to_string())
-                            .execute(&self.inner)
-                            .await?;
+                            let entry = issued_deltas.entry(signature.keyset_id).or_default();
+                            *entry = entry
+                                .checked_add(u64::from(signature.amount))
+                                .ok_or(Error::AmountOverflow)?;
                         }
                         _ => {
                             // Blind message already has c: Error
@@ -201,6 +188,16 @@ where
                 "Did not check all existing rows".to_string(),
             ));
         }
+
+        // Bulk-increment total_issued for all keysets at once
+        super::keyset_amounts::increment(
+            &self.inner,
+            issued_deltas,
+            "total_issued",
+            |a| a.total_issued,
+            |a, v| a.total_issued = v,
+        )
+        .await?;
 
         Ok(())
     }

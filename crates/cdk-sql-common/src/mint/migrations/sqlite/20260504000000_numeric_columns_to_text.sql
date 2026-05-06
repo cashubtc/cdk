@@ -30,6 +30,7 @@ CREATE INDEX IF NOT EXISTS state_index ON proof(state);
 CREATE INDEX IF NOT EXISTS secret_index ON proof(secret);
 CREATE INDEX IF NOT EXISTS idx_proof_state_operation ON proof(state, operation_kind);
 CREATE INDEX IF NOT EXISTS idx_proof_operation_id ON proof(operation_kind, operation_id);
+CREATE INDEX IF NOT EXISTS proof_keyset_id_index ON proof(keyset_id);
 
 -- ============================================================================
 -- blind_signature
@@ -221,3 +222,6 @@ FROM completed_operations;
 
 DROP TABLE completed_operations;
 ALTER TABLE completed_operations_new RENAME TO completed_operations;
+
+CREATE INDEX IF NOT EXISTS idx_completed_operations_kind_time ON completed_operations(operation_kind, completed_at);
+CREATE INDEX IF NOT EXISTS idx_completed_operations_time ON completed_operations(completed_at);
