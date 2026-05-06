@@ -540,7 +540,7 @@ mod tests {
 
         let cdk_params: cdk::wallet::payment_request::CreateRequestParams = params.clone().into();
         assert_eq!(cdk_params.preferred_mints, params.preferred_mints);
-        
+
         let back: CreateRequestParams = cdk_params.into();
         assert_eq!(back.preferred_mints, params.preferred_mints);
     }
