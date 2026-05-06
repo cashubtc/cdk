@@ -517,6 +517,32 @@ mod tests {
         assert_eq!(params.num_sigs, 1);
         assert_eq!(params.transport, "none");
         assert!(params.amount.is_none());
+        assert!(params.preferred_mints.is_none());
+        assert!(params.mints.is_none());
+    }
+
+    #[test]
+    fn test_create_request_params_conversion() {
+        let params = CreateRequestParams {
+            amount: Some(100),
+            unit: "sat".to_string(),
+            description: Some("Test".to_string()),
+            pubkeys: Some(vec!["key".to_string()]),
+            num_sigs: 2,
+            hash: Some("hash".to_string()),
+            preimage: Some("preimage".to_string()),
+            transport: "nostr".to_string(),
+            http_url: Some("http".to_string()),
+            nostr_relays: Some(vec!["relay".to_string()]),
+            mints: Some(vec!["mint".to_string()]),
+            preferred_mints: Some(vec!["pref".to_string()]),
+        };
+
+        let cdk_params: cdk::wallet::payment_request::CreateRequestParams = params.clone().into();
+        assert_eq!(cdk_params.preferred_mints, params.preferred_mints);
+        
+        let back: CreateRequestParams = cdk_params.into();
+        assert_eq!(back.preferred_mints, params.preferred_mints);
     }
 
     #[test]

@@ -811,3 +811,25 @@ impl WalletRepository {
         Ok(Amount::ZERO)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_request_params_default() {
+        let params = CreateRequestParams::default();
+        assert_eq!(params.amount, None);
+        assert_eq!(params.unit, "sat");
+        assert_eq!(params.description, None);
+        assert_eq!(params.pubkeys, None);
+        assert_eq!(params.num_sigs, 1);
+        assert_eq!(params.hash, None);
+        assert_eq!(params.preimage, None);
+        assert_eq!(params.transport, "none");
+        assert_eq!(params.http_url, None);
+        assert_eq!(params.nostr_relays, None);
+        assert_eq!(params.mints, None);
+        assert_eq!(params.preferred_mints, None);
+    }
+}
