@@ -288,7 +288,7 @@ pub struct WalletRepository {
     /// Proxy configuration for HTTP clients (optional)
     proxy_config: Option<url::Url>,
     /// Whether proxied HTTPS clients should accept invalid TLS certificates
-    danger_accept_invalid_certs: bool,
+    pub danger_accept_invalid_certs: bool,
     /// Shared Tor transport to be cloned into each TorHttpClient (if enabled)
     #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
     shared_tor_transport: Option<TorAsync>,

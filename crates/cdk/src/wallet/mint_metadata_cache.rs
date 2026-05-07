@@ -328,6 +328,7 @@ impl MintMetadataCache {
     /// // Load from database (no HTTP)
     /// let metadata = cache.load_from_db(&storage).await?;
     /// ```
+    #[inline(always)]
     async fn load_from_db(
         &self,
         storage: &Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
