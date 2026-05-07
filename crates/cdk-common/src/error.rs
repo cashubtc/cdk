@@ -621,6 +621,14 @@ mod tests {
         // Test HTTP network errors (no status)
         assert!(!Error::HttpError(None, "Connection refused".to_string()).is_definitive_failure());
     }
+
+    #[test]
+    fn database_duplicate_maps_to_blinded_message_error() {
+        let response = ErrorResponse::from(Error::Database(crate::database::Error::Duplicate));
+
+        assert_eq!(response.code, ErrorCode::BlindedMessageAlreadySigned);
+        assert_eq!(response.detail, "Blinded message already signed or pending");
+    }
 }
 
 impl Error {
@@ -1014,10 +1022,9 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::InvoiceAlreadyPaid,
                 detail: err.to_string(),
             },
-            // Database duplicate error indicates another quote with same invoice is already pending/paid
             Error::Database(crate::database::Error::Duplicate) => ErrorResponse {
-                code: ErrorCode::InvoiceAlreadyPaid,
-                detail: "Invoice already paid or pending".to_string(),
+                code: ErrorCode::BlindedMessageAlreadySigned,
+                detail: "Blinded message already signed or pending".to_string(),
             },
 
             // 13xxx - Conditional token errors (NUT-CTF)
