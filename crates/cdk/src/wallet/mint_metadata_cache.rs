@@ -329,23 +329,10 @@ impl MintMetadataCache {
     /// let metadata = cache.load_from_db(&storage).await?;
     /// ```
     #[inline(always)]
-    pub async fn load_from_db(
+    async fn load_from_db(
         &self,
         storage: &Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
     ) -> Result<Arc<MintMetadata>, Error> {
-        let current_version = self.metadata.load().status.version;
-        let _guard = self.fetch_lock.lock().await;
-
-        // Check if another caller already updated the cache while we waited
-        let current_metadata = self.metadata.load().clone();
-        if current_metadata.status.is_populated && current_metadata.status.version > current_version
-        {
-            tracing::debug!(
-                "Cache was updated while waiting for fetch lock, returning cached data"
-            );
-            return Ok(current_metadata);
-        }
-
         let mut new_metadata = (*self.metadata.load().clone()).clone();
 
         // Load mint info
