@@ -316,6 +316,8 @@ pub enum PaymentMethod {
     Bolt11,
     /// Bolt12 payment type
     Bolt12,
+    /// Onchain Bitcoin payment type
+    Onchain,
     /// Custom payment type
     Custom { method: String },
 }
@@ -325,6 +327,7 @@ impl From<cdk::nuts::PaymentMethod> for PaymentMethod {
         match method.as_str() {
             "bolt11" => Self::Bolt11,
             "bolt12" => Self::Bolt12,
+            "onchain" => Self::Onchain,
             s => Self::Custom {
                 method: s.to_string(),
             },
@@ -337,7 +340,106 @@ impl From<PaymentMethod> for cdk::nuts::PaymentMethod {
         match method {
             PaymentMethod::Bolt11 => Self::from("bolt11"),
             PaymentMethod::Bolt12 => Self::from("bolt12"),
+            PaymentMethod::Onchain => Self::from("onchain"),
             PaymentMethod::Custom { method } => Self::from(method),
+        }
+    }
+}
+
+/// FFI-compatible MintQuoteOnchainResponse.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct MintQuoteOnchainResponse {
+    /// Quote ID
+    pub quote: String,
+    /// Bitcoin address to pay
+    pub request: String,
+    /// Unit
+    pub unit: CurrencyUnit,
+    /// Expiry timestamp
+    pub expiry: Option<u64>,
+    /// NUT-20 public key
+    pub pubkey: String,
+    /// Total confirmed amount paid to the onchain address
+    pub amount_paid: Amount,
+    /// Amount already issued for this quote
+    pub amount_issued: Amount,
+}
+
+impl From<cdk::nuts::MintQuoteOnchainResponse<String>> for MintQuoteOnchainResponse {
+    fn from(response: cdk::nuts::MintQuoteOnchainResponse<String>) -> Self {
+        Self {
+            quote: response.quote,
+            request: response.request,
+            unit: response.unit.into(),
+            expiry: response.expiry,
+            pubkey: response.pubkey.to_string(),
+            amount_paid: response.amount_paid.into(),
+            amount_issued: response.amount_issued.into(),
+        }
+    }
+}
+
+/// Fee option for an onchain melt quote.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct MeltQuoteOnchainFeeOption {
+    /// Maximum onchain transaction fee the mint may charge
+    pub fee_reserve: Amount,
+    /// Estimated confirmation target in blocks
+    pub estimated_blocks: u32,
+}
+
+impl From<cdk::nuts::nut_onchain::MeltQuoteOnchainFeeOption> for MeltQuoteOnchainFeeOption {
+    fn from(option: cdk::nuts::nut_onchain::MeltQuoteOnchainFeeOption) -> Self {
+        Self {
+            fee_reserve: option.fee_reserve.into(),
+            estimated_blocks: option.estimated_blocks,
+        }
+    }
+}
+
+/// FFI-compatible MeltQuoteOnchainResponse.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct MeltQuoteOnchainResponse {
+    /// Quote ID
+    pub quote: String,
+    /// Amount being paid to the onchain address
+    pub amount: Amount,
+    /// Unit
+    pub unit: CurrencyUnit,
+    /// Quote state
+    pub state: QuoteState,
+    /// Expiry timestamp
+    pub expiry: u64,
+    /// Bitcoin address to pay
+    pub request: String,
+    /// Available onchain fee options
+    pub fee_options: Vec<MeltQuoteOnchainFeeOption>,
+    /// Selected confirmation target, once execution has started
+    pub selected_estimated_blocks: Option<u32>,
+    /// Broadcast outpoint (`txid:vout`), once available
+    pub outpoint: Option<String>,
+    /// Change blind signatures as JSON, when the mint returns change
+    pub change: Option<String>,
+}
+
+impl From<cdk::nuts::MeltQuoteOnchainResponse<String>> for MeltQuoteOnchainResponse {
+    fn from(response: cdk::nuts::MeltQuoteOnchainResponse<String>) -> Self {
+        let change = response
+            .change
+            .as_ref()
+            .and_then(|change| serde_json::to_string(change).ok());
+
+        Self {
+            quote: response.quote,
+            amount: response.amount.into(),
+            unit: response.unit.into(),
+            state: response.state.into(),
+            expiry: response.expiry,
+            request: response.request,
+            fee_options: response.fee_options.into_iter().map(Into::into).collect(),
+            selected_estimated_blocks: response.selected_estimated_blocks,
+            outpoint: response.outpoint,
+            change,
         }
     }
 }

@@ -5,7 +5,10 @@ use cdk::event::MintEvent;
 use serde::{Deserialize, Serialize};
 
 use super::proof::ProofStateUpdate;
-use super::quote::{MeltQuoteBolt11Response, MintQuoteBolt11Response};
+use super::quote::{
+    MeltQuoteBolt11Response, MeltQuoteOnchainResponse, MintQuoteBolt11Response,
+    MintQuoteOnchainResponse,
+};
 use crate::error::FfiError;
 
 /// FFI-compatible SubscriptionKind
@@ -155,6 +158,10 @@ pub enum NotificationPayload {
     MintQuoteUpdate { quote: MintQuoteBolt11Response },
     /// Melt quote update
     MeltQuoteUpdate { quote: MeltQuoteBolt11Response },
+    /// Onchain mint quote update
+    MintQuoteOnchainUpdate { quote: MintQuoteOnchainResponse },
+    /// Onchain melt quote update
+    MeltQuoteOnchainUpdate { quote: MeltQuoteOnchainResponse },
 }
 
 impl From<MintEvent<String>> for NotificationPayload {
@@ -170,6 +177,16 @@ impl From<MintEvent<String>> for NotificationPayload {
             }
             cdk::nuts::NotificationPayload::MeltQuoteBolt11Response(quote_resp) => {
                 NotificationPayload::MeltQuoteUpdate {
+                    quote: quote_resp.into(),
+                }
+            }
+            cdk::nuts::NotificationPayload::MintQuoteOnchainResponse(quote_resp) => {
+                NotificationPayload::MintQuoteOnchainUpdate {
+                    quote: quote_resp.into(),
+                }
+            }
+            cdk::nuts::NotificationPayload::MeltQuoteOnchainResponse(quote_resp) => {
+                NotificationPayload::MeltQuoteOnchainUpdate {
                     quote: quote_resp.into(),
                 }
             }

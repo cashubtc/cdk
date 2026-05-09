@@ -409,6 +409,35 @@ impl Wallet {
             .await?;
         Ok(quote.into())
     }
+
+    /// Fetch available onchain melt quote options.
+    ///
+    /// Each returned quote represents one selectable confirmation target/fee reserve.
+    /// Pass the chosen quote to `select_onchain_melt_quote`, then prepare and confirm
+    /// the returned quote ID through the normal melt flow.
+    pub async fn quote_onchain_melt_options(
+        &self,
+        address: String,
+        amount: Amount,
+        max_fee_amount: Option<Amount>,
+    ) -> Result<Vec<MeltQuote>, FfiError> {
+        let quotes = self
+            .inner
+            .quote_onchain_melt_options(&address, amount.into(), max_fee_amount.map(Into::into))
+            .await?;
+
+        Ok(quotes.into_iter().map(Into::into).collect())
+    }
+
+    /// Persist the selected onchain melt quote before preparing it.
+    pub async fn select_onchain_melt_quote(&self, quote: MeltQuote) -> Result<MeltQuote, FfiError> {
+        let quote = self
+            .inner
+            .select_onchain_melt_quote(quote.try_into()?)
+            .await?;
+        Ok(quote.into())
+    }
+
     /// Swap proofs
     pub async fn swap(
         &self,
