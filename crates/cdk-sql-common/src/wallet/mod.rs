@@ -26,7 +26,6 @@ use crate::common::migrate;
 use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
 use crate::pool::{DatabasePool, Pool, PooledResource};
 use crate::stmt::{query, Column};
-use cdk_common::timing::MethodTimer;
 use crate::{
     column_as_binary, column_as_nullable_binary, column_as_nullable_number,
     column_as_nullable_string, column_as_number, column_as_string, unpack_into,
@@ -151,9 +150,7 @@ where
 {
     #[instrument(skip(self))]
     async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, database::Error> {
-        let _timer = MethodTimer::new("get_melt_quotes");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("get_melt_quotes_without_lock");
 
         Ok(query(
             r#"
@@ -183,9 +180,7 @@ where
 
     #[instrument(skip(self))]
     async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, database::Error> {
-        let _timer = MethodTimer::new("get_mint");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("get_mint_without_lock");
         Ok(query(
             r#"
             SELECT
@@ -215,9 +210,7 @@ where
 
     #[instrument(skip(self))]
     async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, database::Error> {
-        let _timer = MethodTimer::new("get_mints");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("get_mints_without_lock");
         Ok(query(
             r#"
                 SELECT
@@ -257,9 +250,7 @@ where
         &self,
         mint_url: MintUrl,
     ) -> Result<Option<Vec<KeySetInfo>>, database::Error> {
-        let _timer = MethodTimer::new("get_mint_keysets");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("get_mint_keysets_without_lock");
 
         let keysets = query(
             r#"
@@ -292,9 +283,7 @@ where
         &self,
         keyset_id: &Id,
     ) -> Result<Option<KeySetInfo>, database::Error> {
-        let _timer = MethodTimer::new("get_keyset_by_id");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("get_keyset_by_id_without_lock");
         query(
             r#"
             SELECT
@@ -317,9 +306,7 @@ where
 
     #[instrument(skip(self))]
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, database::Error> {
-        let _timer = MethodTimer::new("get_mint_quote");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("get_mint_quote_without_lock");
         query(
             r#"
             SELECT
@@ -351,9 +338,7 @@ where
 
     #[instrument(skip(self))]
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, database::Error> {
-        let _timer = MethodTimer::new("get_mint_quotes");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("get_mint_quotes_without_lock");
         Ok(query(
             r#"
             SELECT
@@ -383,9 +368,7 @@ where
 
     #[instrument(skip(self))]
     async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, database::Error> {
-        let _timer = MethodTimer::new("get_unissued_mint_quotes");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("get_unissued_mint_quotes_without_lock");
         Ok(query(
             r#"
             SELECT
@@ -422,9 +405,7 @@ where
         &self,
         quote_id: &str,
     ) -> Result<Option<wallet::MeltQuote>, database::Error> {
-        let _timer = MethodTimer::new("get_melt_quote");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("get_melt_quote_without_lock");
         query(
             r#"
             SELECT
@@ -455,9 +436,7 @@ where
 
     #[instrument(skip(self), fields(keyset_id = %keyset_id))]
     async fn get_keys(&self, keyset_id: &Id) -> Result<Option<Keys>, database::Error> {
-        let _timer = MethodTimer::new("get_keys");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("get_keys_without_lock");
         query(
             r#"
             SELECT
@@ -484,9 +463,7 @@ where
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, database::Error> {
-        let _timer = MethodTimer::new("get_proofs");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("get_proofs_without_lock");
         Ok(query(
             r#"
             SELECT
@@ -513,7 +490,6 @@ where
         .await?
         .into_iter()
         .filter_map(|row| {
-            let _timer2 = MethodTimer::new("get_proofs_without_lock parsing");
             let row = sql_row_to_proof_info(row).ok()?;
 
             if row.matches_conditions(&mint_url, &unit, &state, &spending_conditions) {
@@ -530,9 +506,7 @@ where
         &self,
         ys: Vec<PublicKey>,
     ) -> Result<Vec<ProofInfo>, database::Error> {
-        let _timer = MethodTimer::new("get_proofs_by_ys");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("get_proofs_by_ys_without_lock");
         Ok(query(
             r#"
             SELECT
@@ -570,9 +544,7 @@ where
         unit: Option<CurrencyUnit>,
         states: Option<Vec<State>>,
     ) -> Result<u64, database::Error> {
-        let _timer = MethodTimer::new("get_balance");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("get_balance_without_lock");
 
         let mut query_str = "SELECT amount FROM proof".to_string();
         let mut where_clauses = Vec::new();
@@ -633,9 +605,7 @@ where
         &self,
         transaction_id: TransactionId,
     ) -> Result<Option<Transaction>, database::Error> {
-        let _timer = MethodTimer::new("get_transaction");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("get_transaction_without_lock");
         Ok(query(
             r#"
             SELECT
@@ -673,9 +643,7 @@ where
         direction: Option<TransactionDirection>,
         unit: Option<CurrencyUnit>,
     ) -> Result<Vec<Transaction>, database::Error> {
-        let _timer = MethodTimer::new("list_transactions");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("list_transactions_without_lock");
 
         Ok(query(
             r#"
@@ -718,9 +686,7 @@ where
         added: Vec<ProofInfo>,
         removed_ys: Vec<PublicKey>,
     ) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("update_proofs");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("update_proofs_without_lock");
         let tx = ConnectionWithTransaction::new(conn).await?;
 
         for proof in added {
@@ -817,9 +783,7 @@ where
         ys: Vec<PublicKey>,
         state: State,
     ) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("update_proofs_state");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("update_proofs_state_without_lock");
 
         query("UPDATE proof SET state = :state WHERE y IN (:ys)")?
             .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
@@ -832,9 +796,7 @@ where
 
     #[instrument(skip(self))]
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("add_transaction");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("add_transaction_without_lock");
 
         let mint_url = transaction.mint_url.to_string();
         let direction = transaction.direction.to_string();
@@ -902,9 +864,7 @@ where
         old_mint_url: MintUrl,
         new_mint_url: MintUrl,
     ) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("update_mint_url");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("update_mint_url_without_lock");
         let tx = ConnectionWithTransaction::new(conn).await?;
         let tables = ["mint_quote", "proof"];
 
@@ -933,9 +893,7 @@ where
         keyset_id: &Id,
         count: u32,
     ) -> Result<u32, database::Error> {
-        let _timer = MethodTimer::new("increment_keyset_counter");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("increment_keyset_counter_without_lock");
 
         let new_counter = query(
             r#"
@@ -963,9 +921,7 @@ where
         mint_url: MintUrl,
         mint_info: Option<MintInfo>,
     ) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("add_mint");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("add_mint_without_lock");
 
         let (
             name,
@@ -1066,9 +1022,7 @@ where
 
     #[instrument(skip(self))]
     async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("remove_mint");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("remove_mint_without_lock");
 
         query(r#"DELETE FROM mint WHERE mint_url=:mint_url"#)?
             .bind("mint_url", mint_url.to_string())
@@ -1084,9 +1038,7 @@ where
         mint_url: MintUrl,
         keysets: Vec<KeySetInfo>,
     ) -> Result<(), database::Error> {
-        let _timer1 = MethodTimer::new("add_mint_keysets_with_lock");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer = MethodTimer::new("add_mint_keysets");
         let tx = ConnectionWithTransaction::new(conn).await?;
 
         for keyset in keysets {
@@ -1119,9 +1071,7 @@ where
 
     #[instrument(skip_all)]
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("add_mint_quote");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("add_mint_quote_without_lock");
 
         let expected_version = quote.version;
         let new_version = expected_version.wrapping_add(1);
@@ -1175,9 +1125,7 @@ where
 
     #[instrument(skip(self))]
     async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("remove_mint_quote");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("remove_mint_quote_without_lock");
 
         query(r#"DELETE FROM mint_quote WHERE id=:id"#)?
             .bind("id", quote_id.to_string())
@@ -1189,9 +1137,7 @@ where
 
     #[instrument(skip_all)]
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("add_melt_quote");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("add_melt_quote_without_lock");
 
         let expected_version = quote.version;
         let new_version = expected_version.wrapping_add(1);
@@ -1242,9 +1188,7 @@ where
 
     #[instrument(skip(self))]
     async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("remove_melt_quote");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("remove_melt_quote_without_lock");
 
         query(r#"DELETE FROM melt_quote WHERE id=:id"#)?
             .bind("id", quote_id.to_owned())
@@ -1256,9 +1200,7 @@ where
 
     #[instrument(skip_all)]
     async fn add_keys(&self, keyset: KeySet) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("add_keys");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("add_keys_without_lock");
 
         keyset.verify_id()?;
 
@@ -1284,9 +1226,7 @@ where
 
     #[instrument(skip(self))]
     async fn remove_keys(&self, id: &Id) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("remove_keys");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("remove_keys_without_lock");
 
         query(r#"DELETE FROM key WHERE id = :id"#)?
             .bind("id", id.to_string())
@@ -1301,9 +1241,7 @@ where
         &self,
         transaction_id: TransactionId,
     ) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("remove_transaction");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("remove_transaction_without_lock");
 
         query(r#"DELETE FROM transactions WHERE id=:id"#)?
             .bind("id", transaction_id.as_slice().to_vec())
@@ -1315,9 +1253,7 @@ where
 
     #[instrument(skip(self))]
     async fn add_saga(&self, saga: wallet::WalletSaga) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("add_saga");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("add_saga_without_lock");
 
         let state_json = serde_json::to_string(&saga.state).map_err(|e| {
             Error::Database(Box::new(std::io::Error::new(
@@ -1363,9 +1299,7 @@ where
         &self,
         id: &uuid::Uuid,
     ) -> Result<Option<wallet::WalletSaga>, database::Error> {
-        let _timer = MethodTimer::new("get_saga");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("get_saga_without_lock");
 
         let rows = query(
             r#"
@@ -1386,9 +1320,7 @@ where
 
     #[instrument(skip(self))]
     async fn update_saga(&self, saga: wallet::WalletSaga) -> Result<bool, database::Error> {
-        let _timer = MethodTimer::new("update_saga");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("update_saga_without_lock");
 
         let state_json = serde_json::to_string(&saga.state).map_err(|e| {
             Error::Database(Box::new(std::io::Error::new(
@@ -1438,9 +1370,7 @@ where
 
     #[instrument(skip(self))]
     async fn delete_saga(&self, id: &uuid::Uuid) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("delete_saga");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("delete_saga_without_lock");
 
         query(r#"DELETE FROM wallet_sagas WHERE id = :id"#)?
             .bind("id", id.to_string())
@@ -1452,9 +1382,7 @@ where
 
     #[instrument(skip(self))]
     async fn get_incomplete_sagas(&self) -> Result<Vec<wallet::WalletSaga>, database::Error> {
-        let _timer = MethodTimer::new("get_incomplete_sagas");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("get_incomplete_sagas_without_lock");
 
         let rows = query(
             r#"
@@ -1475,9 +1403,7 @@ where
         ys: Vec<PublicKey>,
         operation_id: &uuid::Uuid,
     ) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("reserve_proofs");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("reserve_proofs_without_lock");
 
         for y in ys {
             let rows_affected = query(
@@ -1502,9 +1428,7 @@ where
 
     #[instrument(skip(self))]
     async fn release_proofs(&self, operation_id: &uuid::Uuid) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("release_proofs");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("release_proofs_without_lock");
 
         query(
             r#"
@@ -1525,9 +1449,7 @@ where
         &self,
         operation_id: &uuid::Uuid,
     ) -> Result<Vec<ProofInfo>, database::Error> {
-        let _timer = MethodTimer::new("get_reserved_proofs");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("get_reserved_proofs_without_lock");
 
         let rows = query(
             r#"
@@ -1565,9 +1487,7 @@ where
         quote_id: &str,
         operation_id: &uuid::Uuid,
     ) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("reserve_melt_quote");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("reserve_melt_quote_without_lock");
 
         let rows_affected = query(
             r#"
@@ -1603,9 +1523,7 @@ where
 
     #[instrument(skip(self))]
     async fn release_melt_quote(&self, operation_id: &uuid::Uuid) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("release_melt_quote");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("release_melt_quote_without_lock");
 
         query(
             r#"
@@ -1627,9 +1545,7 @@ where
         quote_id: &str,
         operation_id: &uuid::Uuid,
     ) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("reserve_mint_quote");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("reserve_mint_quote_without_lock");
 
         let rows_affected = query(
             r#"
@@ -1665,9 +1581,7 @@ where
 
     #[instrument(skip(self))]
     async fn release_mint_quote(&self, operation_id: &uuid::Uuid) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("release_mint_quote");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("release_mint_quote_without_lock");
 
         query(
             r#"
@@ -1707,9 +1621,7 @@ where
         key: &str,
         value: &[u8],
     ) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("kv_write");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("kv_write_without_lock");
         crate::keyvalue::kv_write_standalone(
             &*conn,
             primary_namespace,
@@ -1727,9 +1639,7 @@ where
         secondary_namespace: &str,
         key: &str,
     ) -> Result<(), database::Error> {
-        let _timer = MethodTimer::new("kv_remove");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("kv_remove_without_lock");
         crate::keyvalue::kv_remove_standalone(&*conn, primary_namespace, secondary_namespace, key)
             .await?;
         Ok(())
@@ -1744,9 +1654,7 @@ where
         derivation_path: DerivationPath,
         derivation_index: u32,
     ) -> Result<(), Error> {
-        let _timer = MethodTimer::new("add_p2pk_key");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("add_p2pk_key_without_lock");
         let query_str = r#"
         INSERT INTO p2pk_signing_key (pubkey, derivation_index, derivation_path, created_time)
         VALUES (:pubkey, :derivation_index, :derivation_path, :created_time)
@@ -1769,9 +1677,7 @@ where
         &self,
         pubkey: &PublicKey,
     ) -> Result<Option<wallet::P2PKSigningKey>, Error> {
-        let _timer = MethodTimer::new("get_p2pk_key");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("get_p2pk_key_without_lock");
         let query_str = r#"SELECT pubkey, derivation_index, derivation_path, created_time FROM p2pk_signing_key WHERE pubkey = :pubkey"#.to_string();
 
         query(&query_str)?
@@ -1784,9 +1690,7 @@ where
 
     #[instrument(skip(self))]
     async fn list_p2pk_keys(&self) -> Result<Vec<wallet::P2PKSigningKey>, Error> {
-        let _timer = MethodTimer::new("list_p2pk_keys");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("list_p2pk_keys_without_lock");
         let query_str = r#"
         SELECT pubkey, derivation_index, derivation_path, created_time FROM p2pk_signing_key ORDER BY derivation_index DESC
         "#.to_string();
@@ -1805,9 +1709,7 @@ where
 
     #[instrument(skip(self))]
     async fn latest_p2pk(&self) -> Result<Option<wallet::P2PKSigningKey>, Error> {
-        let _timer = MethodTimer::new("latest_p2pk");
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-        let _timer2 = MethodTimer::new("latest_p2pk_without_lock");
         let query_str = r#"
         SELECT pubkey, derivation_index, derivation_path, created_time FROM p2pk_signing_key ORDER BY derivation_index DESC LIMIT 1
         "#.to_string();

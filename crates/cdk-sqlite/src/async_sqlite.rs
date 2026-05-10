@@ -1,5 +1,4 @@
 //! Simple SQLite
-use std::time::Instant;
 
 use cdk_common::database::Error;
 use cdk_sql_common::database::{DatabaseConnector, DatabaseExecutor, DatabaseTransaction};
@@ -106,13 +105,7 @@ impl DatabaseExecutor for AsyncSqlite {
     }
 
     async fn execute(&self, statement: Statement) -> Result<usize, Error> {
-        let lock_start = Instant::now();
         let conn = self.inner.lock().await;
-        let lock_time = lock_start.elapsed();
-        if lock_time.as_millis() > 1 {
-            tracing::warn!("[SQLITE execute] lock took {:?}", lock_time);
-        }
-
         let (sql, mut stmt) = self
             .get_stmt(&conn, statement)
             .map_err(|e| Error::Database(Box::new(e)))?;
@@ -121,13 +114,7 @@ impl DatabaseExecutor for AsyncSqlite {
     }
 
     async fn fetch_one(&self, statement: Statement) -> Result<Option<Vec<Column>>, Error> {
-        let lock_start = Instant::now();
         let conn = self.inner.lock().await;
-        let lock_time = lock_start.elapsed();
-        if lock_time.as_millis() > 1 {
-            tracing::warn!("[SQLITE fetch_one] lock took {:?}", lock_time);
-        }
-
         let (sql, mut stmt) = self
             .get_stmt(&conn, statement)
             .map_err(|e| Error::Database(Box::new(e)))?;
@@ -151,13 +138,7 @@ impl DatabaseExecutor for AsyncSqlite {
     }
 
     async fn fetch_all(&self, statement: Statement) -> Result<Vec<Vec<Column>>, Error> {
-        let lock_start = Instant::now();
         let conn = self.inner.lock().await;
-        let lock_time = lock_start.elapsed();
-        if lock_time.as_millis() > 1 {
-            tracing::warn!("[SQLITE fetch_all] lock took {:?}", lock_time);
-        }
-
         let (sql, mut stmt) = self
             .get_stmt(&conn, statement)
             .map_err(|e| Error::Database(Box::new(e)))?;
@@ -185,13 +166,7 @@ impl DatabaseExecutor for AsyncSqlite {
     }
 
     async fn pluck(&self, statement: Statement) -> Result<Option<Column>, Error> {
-        let lock_start = Instant::now();
         let conn = self.inner.lock().await;
-        let lock_time = lock_start.elapsed();
-        if lock_time.as_millis() > 1 {
-            tracing::warn!("[SQLITE pluck] lock took {:?}", lock_time);
-        }
-
         let (sql, mut stmt) = self
             .get_stmt(&conn, statement)
             .map_err(|e| Error::Database(Box::new(e)))?;
@@ -227,13 +202,7 @@ impl DatabaseExecutor for AsyncSqlite {
                 unreachable!()
             }
         };
-        let lock_start = Instant::now();
         let conn = self.inner.lock().await;
-        let lock_time = lock_start.elapsed();
-        if lock_time.as_millis() > 1 {
-            tracing::warn!("[SQLITE batch] lock took {:?}", lock_time);
-        }
-
         run_db_operation_sync(&sql, || conn.execute_batch(&sql), to_sqlite_error)
     }
 }
