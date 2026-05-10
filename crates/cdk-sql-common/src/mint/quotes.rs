@@ -1118,7 +1118,11 @@ where
 
         #[cfg(feature = "prometheus")]
         let start_time = std::time::Instant::now();
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
 
         let result = get_mint_quote_inner(&*conn, quote_id, false).await;
 
@@ -1142,7 +1146,11 @@ where
         &self,
         quote_ids: &[QuoteId],
     ) -> Result<Vec<Option<MintQuote>>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         get_mint_quotes_inner(&*conn, quote_ids, false).await
     }
 
@@ -1150,7 +1158,11 @@ where
         &self,
         request: &str,
     ) -> Result<Option<MintQuote>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         get_mint_quote_by_request_inner(&*conn, request, false).await
     }
 
@@ -1158,12 +1170,20 @@ where
         &self,
         request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<MintQuote>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         get_mint_quote_by_request_lookup_id_inner(&*conn, request_lookup_id, false).await
     }
 
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         let mut mint_quotes = query(
             r#"
             SELECT
@@ -1209,7 +1229,11 @@ where
 
         #[cfg(feature = "prometheus")]
         let start_time = std::time::Instant::now();
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
 
         let result = get_melt_quote_inner(&*conn, quote_id, false).await;
 
@@ -1230,7 +1254,11 @@ where
     }
 
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
