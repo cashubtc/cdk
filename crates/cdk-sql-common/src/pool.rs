@@ -5,11 +5,12 @@
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::metrics::METRICS;
+use tokio::sync::Notify;
 
 use crate::database::DatabaseConnector;
 
@@ -73,11 +74,13 @@ where
     RM: DatabasePool,
 {
     config: RM::Config,
+    // std::sync::Mutex is used intentionally: only held briefly for push/pop, never across await
+    // points. This allows PooledResource::drop (which is sync) to return resources to the pool.
     queue: Mutex<Vec<(Arc<AtomicBool>, RM::Connection)>>,
     in_use: AtomicUsize,
     max_size: usize,
     default_timeout: Duration,
-    waiter: Condvar,
+    waiter: Notify,
 }
 
 /// The pooled resource
@@ -119,7 +122,7 @@ where
                 METRICS.record_db_operation(duration, "drop");
             }
 
-            // Notify a waiting thread
+            // Notify a waiting task
             self.pool.waiter.notify_one();
         }
     }
@@ -157,14 +160,14 @@ where
             config,
             queue: Default::default(),
             in_use: Default::default(),
-            waiter: Default::default(),
+            waiter: Notify::new(),
         })
     }
 
     /// Similar to get_timeout but uses the default timeout value.
     #[inline(always)]
-    pub fn get(self: &Arc<Self>) -> Result<PooledResource<RM>, Error<RM::Error>> {
-        self.get_timeout(self.default_timeout)
+    pub async fn get(self: &Arc<Self>) -> Result<PooledResource<RM>, Error<RM::Error>> {
+        self.get_timeout(self.default_timeout).await
     }
 
     /// Increments the in_use connection counter and updates the metric
@@ -179,75 +182,89 @@ where
         in_use
     }
 
-    /// Get a new resource or fail after timeout is reached.
-    ///
-    /// This function will return a free resource or create a new one if there is still room for it;
-    /// otherwise, it will wait for a resource to be released for reuse.
-    #[inline(always)]
-    pub fn get_timeout(
-        self: &Arc<Self>,
-        timeout: Duration,
-    ) -> Result<PooledResource<RM>, Error<RM::Error>> {
+    /// Try to acquire a resource without waiting. Returns `None` if no resource is available.
+    fn try_get(self: &Arc<Self>) -> Result<Option<PooledResource<RM>>, Error<RM::Error>> {
         let mut resources = self.queue.lock().map_err(|_| Error::Poison)?;
-        let time = Instant::now();
 
-        loop {
-            while let Some((stale, resource)) = resources.pop() {
-                if !stale.load(Ordering::SeqCst) {
-                    // Increment counter BEFORE releasing the mutex to prevent race condition
-                    // where another thread sees in_use < max_size and creates a duplicate connection.
-                    // For in-memory SQLite, each connection is a separate database, so this race
-                    // would cause some connections to miss migrations.
-                    self.increment_connection_counter();
+        // Try to reuse an existing non-stale connection
+        while let Some((stale, resource)) = resources.pop() {
+            if !stale.load(Ordering::SeqCst) {
+                self.increment_connection_counter();
+                return Ok(Some(PooledResource {
+                    resource: Some((stale, resource)),
+                    pool: self.clone(),
+                    #[cfg(feature = "prometheus")]
+                    start_time: Instant::now(),
+                }));
+            }
+        }
 
-                    return Ok(PooledResource {
-                        resource: Some((stale, resource)),
+        // Try to create a new connection if under max_size
+        if self.in_use.load(Ordering::Relaxed) < self.max_size {
+            // Increment counter BEFORE releasing the mutex to prevent race condition
+            // where another thread sees in_use < max_size and creates a duplicate connection.
+            // For in-memory SQLite, each connection is a separate database, so this race
+            // would cause some connections to miss migrations.
+            self.increment_connection_counter();
+            let stale: Arc<AtomicBool> = Arc::new(false.into());
+            match RM::new_resource(&self.config, stale.clone(), self.default_timeout) {
+                Ok(new_resource) => {
+                    return Ok(Some(PooledResource {
+                        resource: Some((stale, new_resource)),
                         pool: self.clone(),
                         #[cfg(feature = "prometheus")]
                         start_time: Instant::now(),
-                    });
+                    }));
+                }
+                Err(e) => {
+                    self.in_use.fetch_sub(1, Ordering::AcqRel);
+                    return Err(e);
                 }
             }
+        }
 
-            if self.in_use.load(Ordering::Relaxed) < self.max_size {
-                // Increment counter BEFORE releasing the mutex to prevent race condition.
-                // This ensures other threads see the updated count and wait instead of
-                // creating additional connections beyond max_size.
-                self.increment_connection_counter();
-                let stale: Arc<AtomicBool> = Arc::new(false.into());
-                match RM::new_resource(&self.config, stale.clone(), timeout) {
-                    Ok(new_resource) => {
-                        return Ok(PooledResource {
-                            resource: Some((stale, new_resource)),
-                            pool: self.clone(),
-                            #[cfg(feature = "prometheus")]
-                            start_time: Instant::now(),
-                        });
-                    }
-                    Err(e) => {
-                        // If resource creation fails, decrement the counter we just incremented
-                        self.in_use.fetch_sub(1, Ordering::AcqRel);
-                        return Err(e);
-                    }
-                }
+        Ok(None)
+    }
+
+    /// Get a new resource or fail after timeout is reached.
+    ///
+    /// This function will return a free resource or create a new one if there is still room for it;
+    /// otherwise, it will wait asynchronously for a resource to be released for reuse.
+    #[inline(always)]
+    pub async fn get_timeout(
+        self: &Arc<Self>,
+        timeout: Duration,
+    ) -> Result<PooledResource<RM>, Error<RM::Error>> {
+        let deadline = Instant::now() + timeout;
+
+        loop {
+            if let Some(resource) = self.try_get()? {
+                return Ok(resource);
             }
 
-            resources = self
-                .waiter
-                .wait_timeout(resources, timeout)
-                .map_err(|_| Error::Poison)
-                .and_then(|(lock, timeout_result)| {
-                    if timeout_result.timed_out() {
-                        tracing::warn!(
-                            "Timeout waiting for the resource (pool size: {}). Waited {} ms",
-                            self.max_size,
-                            time.elapsed().as_millis()
-                        );
-                        Err(Error::Timeout)
-                    } else {
-                        Ok(lock)
-                    }
-                })?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                tracing::warn!(
+                    "Timeout waiting for the resource (pool size: {}). Waited {} ms",
+                    self.max_size,
+                    timeout.as_millis()
+                );
+                return Err(Error::Timeout);
+            }
+
+            match tokio::time::timeout(remaining, self.waiter.notified()).await {
+                Ok(()) => {
+                    // Notification received, loop back to try_get
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "Timeout waiting for the resource (pool size: {}). Waited {} ms",
+                        self.max_size,
+                        timeout.as_millis()
+                    );
+                    return Err(Error::Timeout);
+                }
+            }
         }
     }
 }
@@ -258,20 +275,8 @@ where
 {
     fn drop(&mut self) {
         if let Ok(mut resources) = self.queue.lock() {
-            loop {
-                while let Some(resource) = resources.pop() {
-                    RM::drop(resource.1);
-                }
-
-                if self.in_use.load(Ordering::Relaxed) == 0 {
-                    break;
-                }
-
-                resources = if let Ok(resources) = self.waiter.wait(resources) {
-                    resources
-                } else {
-                    break;
-                };
+            while let Some(resource) = resources.pop() {
+                RM::drop(resource.1);
             }
         }
     }

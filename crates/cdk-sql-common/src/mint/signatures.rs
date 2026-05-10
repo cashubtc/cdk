@@ -261,7 +261,11 @@ where
         &self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         let mut blinded_signatures = query(
             r#"SELECT
                 keyset_id,
@@ -306,7 +310,11 @@ where
         &self,
         keyset_id: &Id,
     ) -> Result<Vec<BlindSignature>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -334,7 +342,11 @@ where
         &self,
         quote_id: &QuoteId,
     ) -> Result<Vec<BlindSignature>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -359,7 +371,11 @@ where
 
     /// Get total proofs redeemed by keyset id
     async fn get_total_issued(&self) -> Result<HashMap<Id, Amount>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         query(
             r#"
             SELECT
@@ -380,7 +396,11 @@ where
         &self,
         operation_id: &uuid::Uuid,
     ) -> Result<Vec<PublicKey>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         query(
             r#"
             SELECT
