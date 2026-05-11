@@ -1611,6 +1611,49 @@ mod tests {
 
     use super::*;
 
+    #[cfg(feature = "fakewallet")]
+    #[tokio::test]
+    async fn fakewallet_dispatcher_uses_ln_entry_unit() {
+        use cdk::mint::MintBuilder;
+        use cdk_sqlite::mint::memory;
+
+        use crate::config::{FakeWallet, Ln, LnBackend};
+
+        let settings = config::Settings {
+            ln: vec![Ln {
+                ln_backend: LnBackend::FakeWallet,
+                unit: CurrencyUnit::Eur,
+                ..Default::default()
+            }],
+            fake_wallet: Some(FakeWallet::default()),
+            ..Default::default()
+        };
+
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let builder = MintBuilder::new(localstore);
+        let builder =
+            configure_lightning_backend(&settings, builder, None, &std::env::temp_dir(), None)
+                .await
+                .expect("dispatcher should succeed");
+
+        let mint_info = builder.current_mint_info();
+        let units: Vec<_> = mint_info
+            .nuts
+            .nut04
+            .methods
+            .iter()
+            .map(|m| m.unit.clone())
+            .collect();
+        assert!(
+            units.contains(&CurrencyUnit::Eur),
+            "expected Eur, got {units:?}"
+        );
+        assert!(
+            !units.contains(&CurrencyUnit::Sat),
+            "Sat would only appear if supported_units leaked through; got {units:?}"
+        );
+    }
+
     #[test]
     fn test_postgres_auth_url_validation() {
         // Test that the auth database config requires explicit configuration
