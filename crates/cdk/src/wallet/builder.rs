@@ -244,6 +244,7 @@ impl WalletBuilder {
             seed,
             client: client.clone(),
             subscription: SubscriptionManager::new(client, self.use_http_subscription),
+            proof_selection: Default::default(),
         })
     }
 }

@@ -19,7 +19,7 @@ pub use mint_connector::http_client::{
     AuthHttpClient as BaseAuthHttpClient, HttpClient as BaseHttpClient,
 };
 use subscription::{ActiveSubscription, SubscriptionManager};
-use tokio::sync::RwLock as TokioRwLock;
+use tokio::sync::{Mutex, RwLock as TokioRwLock};
 use tracing::instrument;
 use zeroize::Zeroize;
 
@@ -133,6 +133,7 @@ pub struct Wallet {
     seed: [u8; 64],
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
+    proof_selection: Arc<Mutex<()>>,
 }
 
 const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
