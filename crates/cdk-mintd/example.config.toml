@@ -273,7 +273,6 @@ onchain_backend = "fakewallet"
 # webserver_port = 0  # 0 = auto-assign available port
 
 [fake_wallet]
-supported_units = ["sat", "usd"]
 fee_percent = 0.02
 reserve_fee_min = 1
 # Custom payment methods advertised by the fake wallet.
@@ -311,7 +310,6 @@ max_delay_time = 3
 
 # [grpc_processor]
 # gRPC Payment Processor configuration
-# supported_units = ["sat"]
 # addr = "127.0.0.1"
 # port = 50051
 # tls_dir = "/path/to/tls"
