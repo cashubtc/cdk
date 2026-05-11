@@ -161,6 +161,7 @@ impl Wallet {
         amount: Amount,
         opts: SendOptions,
     ) -> Result<PreparedSend<'_>, Error> {
+        let _guard = self.proof_selection.lock().await;
         let saga = SendSaga::new(self);
         let prepared_saga = saga.prepare(amount, opts).await?;
 

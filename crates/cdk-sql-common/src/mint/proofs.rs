@@ -166,7 +166,7 @@ where
                   "#,
             )?
             .bind("y", y.to_bytes().to_vec())
-            .bind("amount", proof.amount.to_i64())
+            .bind("amount", proof.amount.to_u64())
             .bind("keyset_id", proof.keyset_id.to_string())
             .bind("secret", proof.secret.to_string())
             .bind("c", proof.c.to_bytes().to_vec())
@@ -212,20 +212,23 @@ where
             .await?;
 
         if new_state == State::Spent {
-            query(
-                    r#"
-                    INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                    SELECT keyset_id, 0, COALESCE(SUM(amount), 0)
-                    FROM proof
-                    WHERE y IN (:ys)
-                    GROUP BY keyset_id
-                    ON CONFLICT (keyset_id)
-                    DO UPDATE SET total_redeemed = keyset_amounts.total_redeemed + EXCLUDED.total_redeemed
-                    "#,
-                )?
-                .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
-                .execute(&self.inner)
-                .await?;
+            // Group proofs by keyset and sum amounts in Rust
+            let mut redeemed_by_keyset: HashMap<Id, u64> = HashMap::new();
+            for proof in proofs.iter() {
+                let entry = redeemed_by_keyset.entry(proof.keyset_id).or_default();
+                *entry = entry
+                    .checked_add(u64::from(proof.amount))
+                    .ok_or(Error::AmountOverflow)?;
+            }
+
+            super::keyset_amounts::increment(
+                &self.inner,
+                redeemed_by_keyset,
+                "total_redeemed",
+                |a| a.total_redeemed,
+                |a, v| a.total_redeemed = v,
+            )
+            .await?;
         }
 
         proofs.state = new_state;
@@ -407,7 +410,11 @@ where
     type Err = Error;
 
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         let mut proofs = query(
             r#"
             SELECT
@@ -446,7 +453,11 @@ where
         &self,
         quote_id: &QuoteId,
     ) -> Result<Vec<PublicKey>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         Ok(query(
             r#"
             SELECT
@@ -471,7 +482,11 @@ where
     }
 
     async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         let mut current_states = get_current_states(&*conn, ys, false).await?;
 
         Ok(ys.iter().map(|y| current_states.remove(y)).collect())
@@ -481,7 +496,11 @@ where
         &self,
         keyset_id: &Id,
     ) -> Result<(Proofs, Vec<Option<State>>), Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
 
         let (proofs, states): (Vec<Proof>, Vec<State>) = query(
             r#"
@@ -512,7 +531,11 @@ where
 
     /// Get total proofs redeemed by keyset id
     async fn get_total_redeemed(&self) -> Result<HashMap<Id, Amount>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         query(
             r#"
             SELECT
@@ -533,7 +556,11 @@ where
         &self,
         operation_id: &uuid::Uuid,
     ) -> Result<Vec<PublicKey>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
         query(
             r#"
             SELECT

@@ -145,6 +145,15 @@ pub fn split_sql_parts(input: &str) -> Result<Vec<SqlPart>, SqlParseError> {
                 }
 
                 chars.next(); // consume ':'
+
+                if chars.peek() == Some(&':') {
+                    // pgsql support column::CAST_AS
+                    chars.next(); // consume ':'
+                    parts.push(SqlPart::Raw("::".into()));
+                    current.clear();
+                    continue;
+                }
+
                 let mut name = String::new();
 
                 while let Some(&next) = chars.peek() {
@@ -358,7 +367,7 @@ impl Statement {
         Ok(self)
     }
 
-    /// Executes a query and returns the affected rows
+    /// Fetches the first row and column from a query
     pub async fn pluck<C>(self, conn: &C) -> Result<Option<Value>, Error>
     where
         C: DatabaseExecutor,

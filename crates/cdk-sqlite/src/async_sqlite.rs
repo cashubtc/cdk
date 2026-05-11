@@ -1,4 +1,5 @@
 //! Simple SQLite
+
 use cdk_common::database::Error;
 use cdk_sql_common::database::{DatabaseConnector, DatabaseExecutor, DatabaseTransaction};
 use cdk_sql_common::run_db_operation_sync;
@@ -105,7 +106,6 @@ impl DatabaseExecutor for AsyncSqlite {
 
     async fn execute(&self, statement: Statement) -> Result<usize, Error> {
         let conn = self.inner.lock().await;
-
         let (sql, mut stmt) = self
             .get_stmt(&conn, statement)
             .map_err(|e| Error::Database(Box::new(e)))?;
@@ -203,7 +203,6 @@ impl DatabaseExecutor for AsyncSqlite {
             }
         };
         let conn = self.inner.lock().await;
-
         run_db_operation_sync(&sql, || conn.execute_batch(&sql), to_sqlite_error)
     }
 }

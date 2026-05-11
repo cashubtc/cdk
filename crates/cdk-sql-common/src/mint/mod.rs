@@ -21,6 +21,7 @@ use crate::pool::{DatabasePool, Pool, PooledResource};
 mod auth;
 mod completed_operations;
 mod keys;
+mod keyset_amounts;
 mod keyvalue;
 mod proofs;
 mod quotes;
@@ -66,7 +67,7 @@ where
     {
         let pool = Pool::new(db.into());
 
-        Self::migrate(pool.get().map_err(|e| Error::Database(Box::new(e)))?).await?;
+        Self::migrate(pool.get().await.map_err(|e| Error::Database(Box::new(e)))?).await?;
 
         Ok(Self { pool })
     }
@@ -125,7 +126,10 @@ where
     ) -> Result<Box<dyn database::MintTransaction<Error> + Send + Sync>, Error> {
         let tx = SQLTransaction {
             inner: ConnectionWithTransaction::new(
-                self.pool.get().map_err(|e| Error::Database(Box::new(e)))?,
+                self.pool
+                    .get()
+                    .await
+                    .map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
         };
