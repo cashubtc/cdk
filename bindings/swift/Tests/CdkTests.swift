@@ -25,6 +25,36 @@ struct CdkTests {
         #expect(balance.value == 0, "New wallet should have zero balance")
     }
 
+    @Test("In-memory SQLite handles concurrent access")
+    func inMemorySqliteHandlesConcurrentAccess() async throws {
+        let memoryWallet = try Wallet(
+            mintUrl: "https://testnut.cashudevkit.org",
+            unit: .sat,
+            mnemonic: try generateMnemonic(),
+            store: .sqlite(path: ":memory:"),
+            config: WalletConfig(targetProofCount: nil)
+        )
+
+        let balances = try await withThrowingTaskGroup(of: Amount.self) { group in
+            for _ in 0..<64 {
+                group.addTask {
+                    try await memoryWallet.totalBalance()
+                }
+            }
+
+            var balances: [Amount] = []
+            for try await balance in group {
+                balances.append(balance)
+            }
+            return balances
+        }
+
+        #expect(balances.count == 64, "All concurrent balance reads should complete")
+        for balance in balances {
+            #expect(balance.value == 0, "New in-memory wallet should have zero balance")
+        }
+    }
+
     @Test("Mint flow completes successfully")
     func mintFlow() async throws {
         let quote = try await wallet.mintQuote(

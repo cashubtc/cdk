@@ -30,6 +30,28 @@ void main() {
     expect(balance.value, equals(0));
   });
 
+  test('in-memory sqlite handles concurrent access', () async {
+    final memoryWallet = Wallet(
+      mintUrl: 'https://testnut.cashudevkit.org',
+      unit: SatCurrencyUnit(),
+      mnemonic: generateMnemonic(),
+      store: SqliteWalletStore(':memory:'),
+      config: WalletConfig(targetProofCount: null),
+    );
+
+    try {
+      final balances = await Future.wait(
+        List.generate(64, (_) => memoryWallet.totalBalance()),
+      );
+
+      for (final balance in balances) {
+        expect(balance.value, equals(0));
+      }
+    } finally {
+      memoryWallet.dispose();
+    }
+  });
+
   test('mint flow', () async {
     final quote = await wallet.mintQuote(
       paymentMethod: Bolt11PaymentMethod(),

@@ -42,6 +42,12 @@ def create_test_db():
     return db, db_path
 
 
+def create_test_memory_db():
+    """Create an in-memory SQLite database for testing"""
+    backend = cdk_ffi.WalletDbBackend.SQLITE(path=":memory:")
+    return cdk_ffi.create_wallet_db(backend)
+
+
 def cleanup_db(db_path):
     """Clean up the temporary database file"""
     if os.path.exists(db_path):
@@ -374,6 +380,31 @@ async def test_kv_persistence_across_instances():
             os.unlink(db_path)
 
 
+async def test_kv_in_memory_concurrent_access():
+    """Test concurrent FFI access to the single-connection in-memory SQLite pool"""
+    print("\n=== Test: KV In-Memory Concurrent Access ===")
+
+    db = create_test_memory_db()
+
+    async def write_and_read(index):
+        key = f"key_{index}"
+        value = f"value_{index}".encode()
+        await db.kv_write("memory", "concurrent", key, value)
+        result = await db.kv_read("memory", "concurrent", key)
+        assert result is not None, f"Expected value for {key}"
+        assert bytes(result) == value, f"Expected {value}, got {bytes(result)}"
+
+    await asyncio.wait_for(
+        asyncio.gather(*(write_and_read(index) for index in range(64))),
+        timeout=10.0,
+    )
+
+    keys = await db.kv_list("memory", "concurrent")
+    assert len(keys) == 64, f"Expected 64 keys, got {len(keys)}"
+
+    print("  Test passed: concurrent in-memory KV access works")
+
+
 async def main():
     """Run all KV store tests"""
     print("Starting CDK FFI Key-Value Store Tests")
@@ -395,6 +426,8 @@ async def main():
         ("KV Special Key Names", test_kv_special_key_names),
         # Persistence
         ("KV Persistence Across Instances", test_kv_persistence_across_instances),
+        # In-memory SQLite pool
+        ("KV In-Memory Concurrent Access", test_kv_in_memory_concurrent_access),
     ]
 
     passed = 0
