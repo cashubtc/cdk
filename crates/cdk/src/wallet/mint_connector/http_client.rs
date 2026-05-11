@@ -15,6 +15,7 @@ use tracing::instrument;
 use url::Url;
 use web_time::{Duration, Instant};
 
+use super::rate_limiter::RateLimiter;
 use super::transport::Transport;
 use super::{Error, MintConnector};
 use crate::mint_url::MintUrl;
@@ -39,6 +40,7 @@ where
     mint_url: MintUrl,
     cache_support: Arc<StdRwLock<Cache>>,
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
+    rate_limiter: Option<Arc<RateLimiter>>,
 }
 
 impl<T> HttpClient<T>
@@ -46,6 +48,10 @@ where
     T: Transport + Send + Sync + 'static,
 {
     /// Create new [`HttpClient`] with a provided transport implementation.
+    ///
+    /// A default [`RateLimiter`] is installed to avoid triggering mint-side
+    /// rate limits. Use [`HttpClient::with_rate_limiter`] to share a limiter
+    /// across clients, or pass `None` to disable it entirely.
     pub fn with_transport(
         mint_url: MintUrl,
         transport: T,
@@ -56,6 +62,27 @@ where
             mint_url,
             auth_wallet: Arc::new(RwLock::new(auth_wallet)),
             cache_support: Default::default(),
+            rate_limiter: Some(Arc::new(RateLimiter::default())),
+        }
+    }
+
+    /// Create new [`HttpClient`] with an explicit [`RateLimiter`].
+    ///
+    /// Pass `None` to opt out of client-side rate limiting. To share pacing
+    /// across multiple wallets targeting the same mint, pass the same
+    /// `Arc<RateLimiter>` to each client.
+    pub fn with_rate_limiter(
+        mint_url: MintUrl,
+        transport: T,
+        auth_wallet: Option<AuthWallet>,
+        rate_limiter: Option<Arc<RateLimiter>>,
+    ) -> Self {
+        Self {
+            transport: transport.into(),
+            mint_url,
+            auth_wallet: Arc::new(RwLock::new(auth_wallet)),
+            cache_support: Default::default(),
+            rate_limiter,
         }
     }
 
@@ -66,7 +93,38 @@ where
             mint_url,
             auth_wallet: Arc::new(RwLock::new(auth_wallet)),
             cache_support: Default::default(),
+            rate_limiter: Some(Arc::new(RateLimiter::default())),
         }
+    }
+
+    async fn rate_limit(&self) {
+        if let Some(limiter) = &self.rate_limiter {
+            limiter.acquire().await;
+        }
+    }
+
+    /// HTTP GET gated by this client's rate limiter.
+    async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, Error>
+    where
+        R: DeserializeOwned,
+    {
+        self.rate_limit().await;
+        self.transport.http_get(url, auth).await
+    }
+
+    /// HTTP POST gated by this client's rate limiter.
+    async fn http_post<P, R>(
+        &self,
+        url: Url,
+        auth: Option<AuthToken>,
+        payload: &P,
+    ) -> Result<R, Error>
+    where
+        P: Serialize + ?Sized + Send + Sync,
+        R: DeserializeOwned,
+    {
+        self.rate_limit().await;
+        self.transport.http_post(url, auth, payload).await
     }
 
     /// Get auth token for a protected endpoint
@@ -103,6 +161,7 @@ where
             mint_url,
             auth_wallet: Arc::new(RwLock::new(None)),
             cache_support: Default::default(),
+            rate_limiter: Some(Arc::new(RateLimiter::default())),
         })
     }
 
@@ -136,7 +195,6 @@ where
             .map(Duration::from_secs)
             .unwrap_or_default();
 
-        let transport = self.transport.clone();
         loop {
             let url = match &path {
                 nut19::Path::Swap => self.mint_url.join_paths(&["v1", "swap"])?,
@@ -150,8 +208,8 @@ where
             };
 
             let result = match method {
-                nut19::Method::Get => transport.http_get(url, auth_token.clone()).await,
-                nut19::Method::Post => transport.http_post(url, auth_token.clone(), payload).await,
+                nut19::Method::Get => self.http_get(url, auth_token.clone()).await,
+                nut19::Method::Post => self.http_post(url, auth_token.clone(), payload).await,
             };
 
             if result.is_ok() {
@@ -192,7 +250,10 @@ where
         self.transport.resolve_dns_txt(domain).await
     }
 
-    /// Fetch Lightning address pay request data
+    /// Fetch Lightning address pay request data.
+    ///
+    /// LNURL endpoints are third-party Lightning address servers, not the
+    /// mint, so this call bypasses the client's rate limiter.
     #[instrument(skip(self))]
     async fn fetch_lnurl_pay_request(
         &self,
@@ -203,7 +264,10 @@ where
         self.transport.http_get(parsed_url, None).await
     }
 
-    /// Fetch invoice from Lightning address callback
+    /// Fetch invoice from Lightning address callback.
+    ///
+    /// LNURL endpoints are third-party Lightning address servers, not the
+    /// mint, so this call bypasses the client's rate limiter.
     #[instrument(skip(self))]
     async fn fetch_lnurl_invoice(
         &self,
@@ -218,9 +282,8 @@ where
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
         let url = self.mint_url.join_paths(&["v1", "keys"])?;
-        let transport = self.transport.clone();
 
-        Ok(transport.http_get::<KeysResponse>(url, None).await?.keysets)
+        Ok(self.http_get::<KeysResponse>(url, None).await?.keysets)
     }
 
     /// Get Keyset Keys [NUT-01]
@@ -230,8 +293,7 @@ where
             .mint_url
             .join_paths(&["v1", "keys", &keyset_id.to_string()])?;
 
-        let transport = self.transport.clone();
-        let keys_response = transport.http_get::<KeysResponse>(url, None).await?;
+        let keys_response = self.http_get::<KeysResponse>(url, None).await?;
 
         Ok(keys_response
             .keysets
@@ -244,8 +306,7 @@ where
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "keysets"])?;
-        let transport = self.transport.clone();
-        transport.http_get(url, None).await
+        self.http_get(url, None).await
     }
 
     /// Mint Quote [NUT-04, NUT-23, NUT-25]
@@ -271,17 +332,17 @@ where
         match &request {
             MintQuoteRequest::Bolt11(req) => {
                 let response: cdk_common::nut23::MintQuoteBolt11Response<String> =
-                    self.transport.http_post(url, auth_token, req).await?;
+                    self.http_post(url, auth_token, req).await?;
                 Ok(MintQuoteResponse::Bolt11(response))
             }
             MintQuoteRequest::Bolt12(req) => {
                 let response: cdk_common::nut25::MintQuoteBolt12Response<String> =
-                    self.transport.http_post(url, auth_token, req).await?;
+                    self.http_post(url, auth_token, req).await?;
                 Ok(MintQuoteResponse::Bolt12(response))
             }
             MintQuoteRequest::Custom { request: req, .. } => {
                 let response: cdk_common::nut04::MintQuoteCustomResponse<String> =
-                    self.transport.http_post(url, auth_token, req).await?;
+                    self.http_post(url, auth_token, req).await?;
                 Ok(MintQuoteResponse::Custom {
                     method: request.method(),
                     response,
@@ -311,7 +372,7 @@ where
                     .await?;
 
                 let response: MintQuoteBolt11Response<String> =
-                    self.transport.http_get(url, auth_token).await?;
+                    self.http_get(url, auth_token).await?;
 
                 Ok(MintQuoteResponse::Bolt11(response))
             }
@@ -328,7 +389,7 @@ where
                     .await?;
 
                 let response: MintQuoteBolt12Response<String> =
-                    self.transport.http_get(url, auth_token).await?;
+                    self.http_get(url, auth_token).await?;
 
                 Ok(MintQuoteResponse::Bolt12(response))
             }
@@ -342,7 +403,7 @@ where
                     .await?;
 
                 let response: MintQuoteCustomResponse<String> =
-                    self.transport.http_get(url, auth_token).await?;
+                    self.http_get(url, auth_token).await?;
 
                 Ok(MintQuoteResponse::Custom { method, response })
             }
@@ -389,7 +450,7 @@ where
             .get_auth_token(Method::Post, RoutePath::MintQuote(method.to_string()))
             .await?;
 
-        self.transport.http_post(url, auth_token, &request).await
+        self.http_post(url, auth_token, &request).await
     }
 
     /// Batch mint tokens [NUT-29]
@@ -428,17 +489,17 @@ where
         match &request {
             MeltQuoteRequest::Bolt11(req) => {
                 let response: cdk_common::nut23::MeltQuoteBolt11Response<String> =
-                    self.transport.http_post(url, auth_token, req).await?;
+                    self.http_post(url, auth_token, req).await?;
                 Ok(MeltQuoteCreateResponse::Bolt11(response))
             }
             MeltQuoteRequest::Bolt12(req) => {
                 let response: cdk_common::nut25::MeltQuoteBolt12Response<String> =
-                    self.transport.http_post(url, auth_token, req).await?;
+                    self.http_post(url, auth_token, req).await?;
                 Ok(MeltQuoteCreateResponse::Bolt12(response))
             }
             MeltQuoteRequest::Custom(req) => {
                 let response: cdk_common::nut05::MeltQuoteCustomResponse<String> =
-                    self.transport.http_post(url, auth_token, req).await?;
+                    self.http_post(url, auth_token, req).await?;
                 Ok(MeltQuoteCreateResponse::Custom((
                     request.method(),
                     response,
@@ -468,7 +529,7 @@ where
                     .await?;
 
                 let response: cdk_common::nut23::MeltQuoteBolt11Response<String> =
-                    self.transport.http_get(url, auth_token).await?;
+                    self.http_get(url, auth_token).await?;
 
                 Ok(MeltQuoteResponse::Bolt11(response))
             }
@@ -485,7 +546,7 @@ where
                     .await?;
 
                 let response: cdk_common::nut25::MeltQuoteBolt12Response<String> =
-                    self.transport.http_get(url, auth_token).await?;
+                    self.http_get(url, auth_token).await?;
 
                 Ok(MeltQuoteResponse::Bolt12(response))
             }
@@ -499,7 +560,7 @@ where
                     .await?;
 
                 let response: cdk_common::nut05::MeltQuoteCustomResponse<String> =
-                    self.transport.http_get(url, auth_token).await?;
+                    self.http_get(url, auth_token).await?;
 
                 Ok(MeltQuoteResponse::Custom((method.clone(), response)))
             }
@@ -567,8 +628,7 @@ where
     /// Helper to get mint info
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
         let url = self.mint_url.join_paths(&["v1", "info"])?;
-        let transport = self.transport.clone();
-        let info: MintInfo = transport.http_get(url, None).await?;
+        let info: MintInfo = self.http_get(url, None).await?;
 
         if let Ok(mut cache_support) = self.cache_support.write() {
             *cache_support = (
@@ -605,7 +665,7 @@ where
             .get_auth_token(Method::Post, RoutePath::Checkstate)
             .await?;
 
-        self.transport.http_post(url, auth_token, &request).await
+        self.http_post(url, auth_token, &request).await
     }
 
     /// Restore request [NUT-13]
@@ -616,12 +676,11 @@ where
             .get_auth_token(Method::Post, RoutePath::Restore)
             .await?;
 
-        self.transport.http_post(url, auth_token, &request).await
+        self.http_post(url, auth_token, &request).await
     }
 }
 
 /// Http Client
-
 #[derive(Debug, Clone)]
 pub struct AuthHttpClient<T>
 where
@@ -630,21 +689,70 @@ where
     transport: Arc<T>,
     mint_url: MintUrl,
     cat: Arc<RwLock<AuthToken>>,
+    rate_limiter: Option<Arc<RateLimiter>>,
 }
 
 impl<T> AuthHttpClient<T>
 where
     T: Transport + Send + Sync + 'static,
 {
-    /// Create new [`AuthHttpClient`]
+    /// Create new [`AuthHttpClient`].
+    ///
+    /// A default [`RateLimiter`] is installed. Note that this limiter is
+    /// independent of the one used by [`HttpClient`]: a wallet that performs
+    /// both regular and NUT-22 blind-auth requests will draw from two
+    /// separate budgets unless the caller shares one via
+    /// [`AuthHttpClient::with_rate_limiter`].
     pub fn new(mint_url: MintUrl, cat: Option<AuthToken>) -> Self {
+        Self::with_rate_limiter(mint_url, cat, Some(Arc::new(RateLimiter::default())))
+    }
+
+    /// Create new [`AuthHttpClient`] with an explicit [`RateLimiter`].
+    ///
+    /// Pass `None` to disable client-side rate limiting. Pass the same
+    /// `Arc<RateLimiter>` used by the wallet's [`HttpClient`] to share a
+    /// single budget across regular and blind-auth traffic.
+    pub fn with_rate_limiter(
+        mint_url: MintUrl,
+        cat: Option<AuthToken>,
+        rate_limiter: Option<Arc<RateLimiter>>,
+    ) -> Self {
         Self {
             transport: T::default().into(),
             mint_url,
             cat: Arc::new(RwLock::new(
                 cat.unwrap_or(AuthToken::ClearAuth("".to_string())),
             )),
+            rate_limiter,
         }
+    }
+
+    async fn rate_limit(&self) {
+        if let Some(limiter) = &self.rate_limiter {
+            limiter.acquire().await;
+        }
+    }
+
+    async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, Error>
+    where
+        R: DeserializeOwned,
+    {
+        self.rate_limit().await;
+        self.transport.http_get(url, auth).await
+    }
+
+    async fn http_post<P, R>(
+        &self,
+        url: Url,
+        auth: Option<AuthToken>,
+        payload: &P,
+    ) -> Result<R, Error>
+    where
+        P: Serialize + ?Sized + Send + Sync,
+        R: DeserializeOwned,
+    {
+        self.rate_limit().await;
+        self.transport.http_post(url, auth, payload).await
     }
 }
 
@@ -666,7 +774,7 @@ where
     /// Get Mint Info [NUT-06]
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
         let url = self.mint_url.join_paths(&["v1", "info"])?;
-        let mint_info: MintInfo = self.transport.http_get::<MintInfo>(url, None).await?;
+        let mint_info: MintInfo = self.http_get::<MintInfo>(url, None).await?;
 
         Ok(mint_info)
     }
@@ -678,7 +786,7 @@ where
             self.mint_url
                 .join_paths(&["v1", "auth", "blind", "keys", &keyset_id.to_string()])?;
 
-        let mut keys_response = self.transport.http_get::<KeysResponse>(url, None).await?;
+        let mut keys_response = self.http_get::<KeysResponse>(url, None).await?;
 
         let keyset = keys_response
             .keysets
@@ -696,15 +804,14 @@ where
             .mint_url
             .join_paths(&["v1", "auth", "blind", "keysets"])?;
 
-        self.transport.http_get(url, None).await
+        self.http_get(url, None).await
     }
 
     /// Mint Tokens [NUT-22]
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_mint_blind_auth(&self, request: MintAuthRequest) -> Result<MintResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "auth", "blind", "mint"])?;
-        self.transport
-            .http_post(url, Some(self.cat.read().await.clone()), &request)
+        self.http_post(url, Some(self.cat.read().await.clone()), &request)
             .await
     }
 }
@@ -858,5 +965,84 @@ mod tests {
         let parsed = parsed.expect("already checked");
         assert_eq!(parsed.amount, cdk_common::Amount::from(1000));
         assert_eq!(parsed.unit, cdk_common::CurrencyUnit::Sat);
+    }
+
+    /// When a rate limiter is attached, consecutive requests beyond its burst
+    /// must wait for refill; when `None`, they must not.
+    #[tokio::test]
+    async fn http_client_respects_attached_rate_limiter() {
+        use std::time::Instant;
+
+        use cdk_common::nuts::nut23::QuoteState;
+
+        let canned = MintQuoteCustomResponse::<String> {
+            quote: "q".to_string(),
+            request: "x".to_string(),
+            amount: Some(cdk_common::Amount::from(1)),
+            unit: Some(cdk_common::CurrencyUnit::Sat),
+            state: QuoteState::Unpaid,
+            expiry: Some(1),
+            pubkey: None,
+            extra: serde_json::Value::Null,
+        };
+        let canned_json = serde_json::to_string(&canned).expect("serialize");
+
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let make_request = || MintQuoteRequest::Custom {
+            method: PaymentMethod::Custom("paypal".to_string()),
+            request: MintQuoteCustomRequest {
+                amount: cdk_common::Amount::from(1),
+                unit: cdk_common::CurrencyUnit::Sat,
+                description: None,
+                pubkey: None,
+                extra: serde_json::Value::Null,
+            },
+        };
+
+        // Burst capacity 1, 60/min = 1 token per second. Second call waits ~1s.
+        let limiter = Arc::new(RateLimiter::new(1, 60));
+        let transport = MockTransport {
+            captured_payload: Arc::new(Mutex::new(None)),
+            post_response: Arc::new(Mutex::new(Some(canned_json.clone()))),
+        };
+        let client =
+            HttpClient::with_rate_limiter(mint_url.clone(), transport, None, Some(limiter.clone()));
+        client
+            .post_mint_quote(make_request())
+            .await
+            .expect("first ok");
+        let start = Instant::now();
+        client
+            .post_mint_quote(make_request())
+            .await
+            .expect("second ok");
+        let gated = start.elapsed();
+        assert!(
+            gated >= std::time::Duration::from_millis(800),
+            "second call should wait ~1s for refill, waited {:?}",
+            gated
+        );
+
+        // With rate_limiter = None the second call must not wait.
+        let transport = MockTransport {
+            captured_payload: Arc::new(Mutex::new(None)),
+            post_response: Arc::new(Mutex::new(Some(canned_json))),
+        };
+        let client = HttpClient::with_rate_limiter(mint_url, transport, None, None);
+        client
+            .post_mint_quote(make_request())
+            .await
+            .expect("first ok");
+        let start = Instant::now();
+        client
+            .post_mint_quote(make_request())
+            .await
+            .expect("second ok");
+        let ungated = start.elapsed();
+        assert!(
+            ungated < std::time::Duration::from_millis(100),
+            "without limiter the call should be essentially instant, took {:?}",
+            ungated
+        );
     }
 }
