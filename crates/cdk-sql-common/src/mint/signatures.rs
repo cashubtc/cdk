@@ -359,6 +359,7 @@ where
                 blind_signature
             WHERE
                 quote_id=:quote_id AND c IS NOT NULL
+            ORDER BY order_index ASC
             "#,
         )?
         .bind("quote_id", quote_id.to_string())

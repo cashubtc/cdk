@@ -665,13 +665,13 @@ where
 
         // Insert blinded_messages directly into blind_signature with c = NULL
         // Let the database constraint handle duplicate detection
-        for message in blinded_messages {
+        for (i, message) in blinded_messages.iter().enumerate() {
             match query(
                 r#"
                 INSERT INTO blind_signature
-                (blinded_message, amount, keyset_id, c, quote_id, created_time, operation_kind, operation_id)
+                (blinded_message, amount, keyset_id, c, quote_id, created_time, operation_kind, operation_id, order_index)
                 VALUES
-                (:blinded_message, :amount, :keyset_id, NULL, :quote_id, :created_time, :operation_kind, :operation_id)
+                (:blinded_message, :amount, :keyset_id, NULL, :quote_id, :created_time, :operation_kind, :operation_id, :order_index)
                 "#,
             )?
             .bind(
@@ -684,6 +684,7 @@ where
             .bind("created_time", current_time as i64)
             .bind("operation_kind", operation.kind().to_string())
             .bind("operation_id", operation.id().to_string())
+            .bind("order_index", i as i64)
             .execute(&self.inner)
             .await
             {
@@ -755,6 +756,7 @@ where
                 SELECT blinded_message, keyset_id, amount
                 FROM blind_signature
                 WHERE quote_id = :quote_id AND c IS NULL
+                ORDER BY order_index ASC
                 FOR UPDATE
                 "#,
             )?
