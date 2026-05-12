@@ -484,3 +484,125 @@ pub mod global {
         METRICS.registry()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Mutex, MutexGuard};
+    use std::time::Duration;
+
+    use super::{MintMetricGuard, METRICS};
+
+    static METRICS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn metrics_lock() -> MutexGuard<'static, ()> {
+        METRICS_TEST_LOCK
+            .lock()
+            .expect("metrics test lock should not be poisoned")
+    }
+
+    #[test]
+    fn mint_metric_guard_records_success_and_balances_in_flight() {
+        let _lock = metrics_lock();
+        let operation = "test_guard_success";
+        let in_flight = METRICS
+            .mint_in_flight_requests
+            .with_label_values(&[operation]);
+        let success_count = METRICS
+            .mint_operations_total
+            .with_label_values(&[operation, "success"]);
+        let error_count = METRICS
+            .mint_operations_total
+            .with_label_values(&[operation, "error"]);
+        let duration = METRICS
+            .mint_operation_duration
+            .with_label_values(&[operation, "success"]);
+
+        let in_flight_before = in_flight.get();
+        let success_count_before = success_count.get();
+        let error_count_before = error_count.get();
+        let duration_count_before = duration.get_sample_count();
+        let errors_before = METRICS.errors_total.get();
+
+        let guard = MintMetricGuard::new(operation);
+        assert_eq!(in_flight.get(), in_flight_before + 1);
+
+        std::thread::sleep(Duration::from_millis(1));
+        guard.record(true);
+
+        assert_eq!(in_flight.get(), in_flight_before);
+        assert_eq!(success_count.get(), success_count_before + 1);
+        assert_eq!(error_count.get(), error_count_before);
+        assert_eq!(duration.get_sample_count(), duration_count_before + 1);
+        assert_eq!(METRICS.errors_total.get(), errors_before);
+    }
+
+    #[test]
+    fn mint_metric_guard_records_error_and_global_error_count() {
+        let _lock = metrics_lock();
+        let operation = "test_guard_error";
+        let in_flight = METRICS
+            .mint_in_flight_requests
+            .with_label_values(&[operation]);
+        let error_count = METRICS
+            .mint_operations_total
+            .with_label_values(&[operation, "error"]);
+        let duration = METRICS
+            .mint_operation_duration
+            .with_label_values(&[operation, "error"]);
+
+        let in_flight_before = in_flight.get();
+        let error_count_before = error_count.get();
+        let duration_count_before = duration.get_sample_count();
+        let errors_before = METRICS.errors_total.get();
+
+        let guard = MintMetricGuard::new(operation);
+        assert_eq!(in_flight.get(), in_flight_before + 1);
+
+        guard.record(false);
+
+        assert_eq!(in_flight.get(), in_flight_before);
+        assert_eq!(error_count.get(), error_count_before + 1);
+        assert_eq!(duration.get_sample_count(), duration_count_before + 1);
+        assert_eq!(METRICS.errors_total.get(), errors_before + 1);
+    }
+
+    #[test]
+    fn mint_metric_guard_drop_without_record_only_balances_in_flight() {
+        let _lock = metrics_lock();
+        let operation = "test_guard_drop_without_record";
+        let in_flight = METRICS
+            .mint_in_flight_requests
+            .with_label_values(&[operation]);
+        let success_count = METRICS
+            .mint_operations_total
+            .with_label_values(&[operation, "success"]);
+        let error_count = METRICS
+            .mint_operations_total
+            .with_label_values(&[operation, "error"]);
+        let success_duration = METRICS
+            .mint_operation_duration
+            .with_label_values(&[operation, "success"]);
+        let error_duration = METRICS
+            .mint_operation_duration
+            .with_label_values(&[operation, "error"]);
+
+        let in_flight_before = in_flight.get();
+        let success_count_before = success_count.get();
+        let error_count_before = error_count.get();
+        let success_duration_before = success_duration.get_sample_count();
+        let error_duration_before = error_duration.get_sample_count();
+        let errors_before = METRICS.errors_total.get();
+
+        {
+            let _guard = MintMetricGuard::new(operation);
+            assert_eq!(in_flight.get(), in_flight_before + 1);
+        }
+
+        assert_eq!(in_flight.get(), in_flight_before);
+        assert_eq!(success_count.get(), success_count_before);
+        assert_eq!(error_count.get(), error_count_before);
+        assert_eq!(success_duration.get_sample_count(), success_duration_before);
+        assert_eq!(error_duration.get_sample_count(), error_duration_before);
+        assert_eq!(METRICS.errors_total.get(), errors_before);
+    }
+}

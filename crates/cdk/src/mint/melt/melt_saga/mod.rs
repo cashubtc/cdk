@@ -987,7 +987,10 @@ impl<S> MeltSaga<S> {
     ///
     /// This is called internally by saga methods when they need to compensate.
     #[instrument(skip_all)]
-    async fn compensate_all(mut self) -> Result<(), Error> {
+    async fn compensate_all(self) -> Result<(), Error> {
+        #[cfg(feature = "prometheus")]
+        let metrics = self.metrics;
+
         let mut compensations = self.compensations.lock().await;
 
         if compensations.is_empty() {
@@ -995,7 +998,7 @@ impl<S> MeltSaga<S> {
         }
 
         #[cfg(feature = "prometheus")]
-        if let Some(metrics) = self.metrics.take() {
+        if let Some(metrics) = metrics {
             metrics.record(false);
         }
 

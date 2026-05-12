@@ -268,3 +268,184 @@ where
         }
     }
 }
+
+#[cfg(all(test, feature = "prometheus"))]
+mod tests {
+    use std::fmt;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use cdk_common::database::Error as DatabaseError;
+    use cdk_prometheus::METRICS;
+
+    use super::{DatabaseConfig, DatabasePool, Error, Pool};
+    use crate::database::{DatabaseConnector, DatabaseExecutor, DatabaseTransaction};
+    use crate::stmt::{Column, Statement};
+
+    #[derive(Debug, Clone)]
+    struct TestConfig {
+        max_size: usize,
+        default_timeout: Duration,
+        fail_new_resource: bool,
+    }
+
+    impl DatabaseConfig for TestConfig {
+        fn max_size(&self) -> usize {
+            self.max_size
+        }
+
+        fn default_timeout(&self) -> Duration {
+            self.default_timeout
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestResourceError;
+
+    impl fmt::Display for TestResourceError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("test resource error")
+        }
+    }
+
+    impl std::error::Error for TestResourceError {}
+
+    #[derive(Debug)]
+    struct TestConnection;
+
+    #[async_trait::async_trait]
+    impl DatabaseExecutor for TestConnection {
+        fn name() -> &'static str {
+            "test"
+        }
+
+        async fn execute(&self, _statement: Statement) -> Result<usize, DatabaseError> {
+            Ok(0)
+        }
+
+        async fn fetch_one(
+            &self,
+            _statement: Statement,
+        ) -> Result<Option<Vec<Column>>, DatabaseError> {
+            Ok(None)
+        }
+
+        async fn fetch_all(
+            &self,
+            _statement: Statement,
+        ) -> Result<Vec<Vec<Column>>, DatabaseError> {
+            Ok(Vec::new())
+        }
+
+        async fn pluck(&self, _statement: Statement) -> Result<Option<Column>, DatabaseError> {
+            Ok(None)
+        }
+
+        async fn batch(&self, _statement: Statement) -> Result<(), DatabaseError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestTransaction;
+
+    #[async_trait::async_trait]
+    impl DatabaseTransaction<TestConnection> for TestTransaction {
+        async fn commit(_conn: &mut TestConnection) -> Result<(), DatabaseError> {
+            Ok(())
+        }
+
+        async fn begin(_conn: &mut TestConnection) -> Result<(), DatabaseError> {
+            Ok(())
+        }
+
+        async fn rollback(_conn: &mut TestConnection) -> Result<(), DatabaseError> {
+            Ok(())
+        }
+    }
+
+    impl DatabaseConnector for TestConnection {
+        type Transaction = TestTransaction;
+    }
+
+    #[derive(Debug)]
+    struct TestPool;
+
+    impl DatabasePool for TestPool {
+        type Connection = TestConnection;
+        type Config = TestConfig;
+        type Error = TestResourceError;
+
+        fn new_resource(
+            config: &Self::Config,
+            _stale: Arc<AtomicBool>,
+            _timeout: Duration,
+        ) -> Result<Self::Connection, Error<Self::Error>> {
+            if config.fail_new_resource {
+                Err(Error::Resource(TestResourceError))
+            } else {
+                Ok(TestConnection)
+            }
+        }
+    }
+
+    fn test_config(max_size: usize, fail_new_resource: bool) -> TestConfig {
+        TestConfig {
+            max_size,
+            default_timeout: Duration::from_millis(10),
+            fail_new_resource,
+        }
+    }
+
+    fn db_connections_active() -> f64 {
+        for family in METRICS.registry().gather() {
+            if family.get_name() != "cdk_db_connections_active" {
+                continue;
+            }
+
+            return family
+                .get_metric()
+                .first()
+                .expect("active connections metric should exist")
+                .get_gauge()
+                .get_value();
+        }
+
+        panic!("active connections metric should be registered");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn active_connections_gauge_tracks_current_checkout_and_drop_counts() {
+        let _lock = crate::metrics_test_lock::lock().await;
+        METRICS.set_db_connections_active(0);
+
+        let pool = Pool::<TestPool>::new(test_config(2, false));
+
+        let first = pool.get().expect("first resource should be checked out");
+        assert_eq!(db_connections_active(), 1.0);
+
+        let second = pool.get().expect("second resource should be checked out");
+        assert_eq!(db_connections_active(), 2.0);
+
+        drop(first);
+        assert_eq!(db_connections_active(), 1.0);
+
+        drop(second);
+        assert_eq!(db_connections_active(), 0.0);
+        assert_eq!(pool.in_use.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn active_connections_gauge_is_restored_when_resource_creation_fails() {
+        let _lock = crate::metrics_test_lock::lock().await;
+        METRICS.set_db_connections_active(0);
+
+        let pool = Pool::<TestPool>::new(test_config(1, true));
+        let result = pool.get();
+
+        assert!(matches!(result, Err(Error::Resource(_))));
+        assert_eq!(db_connections_active(), 0.0);
+        assert_eq!(pool.in_use.load(Ordering::Relaxed), 0);
+    }
+}
