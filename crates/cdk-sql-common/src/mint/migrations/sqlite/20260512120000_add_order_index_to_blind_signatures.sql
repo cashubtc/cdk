@@ -1,0 +1,1 @@
+ALTER TABLE blind_signature ADD COLUMN order_index INTEGER DEFAULT 0;
