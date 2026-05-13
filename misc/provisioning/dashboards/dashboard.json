@@ -1019,10 +1019,10 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, rate(cdk_lightning_payment_amount_sats_bucket[5m]))",
+          "expr": "histogram_quantile(0.50, sum by (le, method) (rate(cdk_payment_amount_sats_bucket[5m])))",
           "format": "time_series",
           "intervalFactor": 1,
-          "legendFormat": "p50 Payment Amount",
+          "legendFormat": "p50 {{method}} Payment Amount",
           "refId": "A"
         },
         {
@@ -1030,14 +1030,14 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, rate(cdk_lightning_payment_amount_sats_bucket[5m]))",
+          "expr": "histogram_quantile(0.95, sum by (le, method) (rate(cdk_payment_amount_sats_bucket[5m])))",
           "format": "time_series",
           "intervalFactor": 1,
-          "legendFormat": "p95 Payment Amount",
+          "legendFormat": "p95 {{method}} Payment Amount",
           "refId": "B"
         }
       ],
-      "title": "Lightning Payment Amounts",
+      "title": "Payment Amounts by Method",
       "type": "timeseries"
     },
     {
@@ -1226,10 +1226,10 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.50, rate(cdk_lightning_payment_fees_sats_bucket[5m]))",
+          "expr": "histogram_quantile(0.50, sum by (le, method) (rate(cdk_payment_fees_sats_bucket[5m])))",
           "format": "time_series",
           "intervalFactor": 1,
-          "legendFormat": "p50 Payment Fees",
+          "legendFormat": "p50 {{method}} Payment Fees",
           "refId": "A"
         },
         {
@@ -1237,14 +1237,14 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, rate(cdk_lightning_payment_fees_sats_bucket[5m]))",
+          "expr": "histogram_quantile(0.95, sum by (le, method) (rate(cdk_payment_fees_sats_bucket[5m])))",
           "format": "time_series",
           "intervalFactor": 1,
-          "legendFormat": "p95 Payment Fees",
+          "legendFormat": "p95 {{method}} Payment Fees",
           "refId": "B"
         }
       ],
-      "title": "Lightning Payment Fees",
+      "title": "Payment Fees by Method",
       "type": "timeseries"
     },
     {
@@ -1949,14 +1949,14 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(cdk_lightning_payments_total[1m])",
+          "expr": "sum by (method) (rate(cdk_payments_total[1m]))",
           "format": "time_series",
           "intervalFactor": 1,
-          "legendFormat": "Lightning Payments Rate",
+          "legendFormat": "{{method}} Payments Rate",
           "refId": "B"
         }
       ],
-      "title": "Wallet & Lightning Operations Rate",
+      "title": "Wallet & Payment Operations Rate",
       "type": "timeseries"
     }
   ],

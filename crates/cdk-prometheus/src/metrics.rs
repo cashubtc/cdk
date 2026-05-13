@@ -1,9 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use prometheus::{
-    Histogram, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Registry,
-};
+use prometheus::{HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Registry};
 
 /// Global metrics instance
 pub static METRICS: std::sync::LazyLock<CdkMetrics> = std::sync::LazyLock::new(CdkMetrics::default);
@@ -65,10 +63,10 @@ pub struct CdkMetrics {
     auth_attempts_total: IntCounter,
     auth_successes_total: IntCounter,
 
-    // Lightning metrics
-    lightning_payments_total: IntCounter,
-    lightning_payment_amount: Histogram,
-    lightning_payment_fees: Histogram,
+    // Payment metrics
+    payments_total: IntCounterVec,
+    payment_amount: HistogramVec,
+    payment_fees: HistogramVec,
 
     // Database metrics
     db_operations_total: IntCounter,
@@ -98,9 +96,9 @@ impl CdkMetrics {
         // Create and register authentication metrics
         let (auth_attempts_total, auth_successes_total) = Self::create_auth_metrics(&registry)?;
 
-        // Create and register Lightning metrics
-        let (lightning_payments_total, lightning_payment_amount, lightning_payment_fees) =
-            Self::create_lightning_metrics(&registry)?;
+        // Create and register payment metrics
+        let (payments_total, payment_amount, payment_fees) =
+            Self::create_payment_metrics(&registry)?;
 
         // Create and register database metrics
         let (db_operations_total, db_operation_duration, db_connections_active) =
@@ -119,9 +117,9 @@ impl CdkMetrics {
             http_request_duration,
             auth_attempts_total,
             auth_successes_total,
-            lightning_payments_total,
-            lightning_payment_amount,
-            lightning_payment_fees,
+            payments_total,
+            payment_amount,
+            payment_fees,
             db_operations_total,
             db_operation_duration,
             db_connections_active,
@@ -176,25 +174,27 @@ impl CdkMetrics {
         Ok((auth_attempts_total, auth_successes_total))
     }
 
-    /// Create and register Lightning metrics
+    /// Create and register payment metrics
     ///
     /// # Errors
     /// Returns an error if any of the metrics cannot be created or registered
-    fn create_lightning_metrics(
+    fn create_payment_metrics(
         registry: &Registry,
-    ) -> crate::Result<(IntCounter, Histogram, Histogram)> {
+    ) -> crate::Result<(IntCounterVec, HistogramVec, HistogramVec)> {
         let wallet_operations_total =
             IntCounter::new("cdk_wallet_operations_total", "Total wallet operations")?;
         registry.register(Box::new(wallet_operations_total))?;
 
-        let lightning_payments_total =
-            IntCounter::new("cdk_lightning_payments_total", "Total Lightning payments")?;
-        registry.register(Box::new(lightning_payments_total.clone()))?;
+        let payments_total = IntCounterVec::new(
+            prometheus::Opts::new("cdk_payments_total", "Total confirmed payments"),
+            &["method"],
+        )?;
+        registry.register(Box::new(payments_total.clone()))?;
 
-        let lightning_payment_amount = Histogram::with_opts(
+        let payment_amount = HistogramVec::new(
             prometheus::HistogramOpts::new(
-                "cdk_lightning_payment_amount_sats",
-                "Lightning payment amounts in satoshis",
+                "cdk_payment_amount_sats",
+                "Confirmed payment amounts in satoshis",
             )
             .buckets(vec![
                 1.0,
@@ -205,23 +205,21 @@ impl CdkMetrics {
                 100_000.0,
                 1_000_000.0,
             ]),
+            &["method"],
         )?;
-        registry.register(Box::new(lightning_payment_amount.clone()))?;
+        registry.register(Box::new(payment_amount.clone()))?;
 
-        let lightning_payment_fees = Histogram::with_opts(
+        let payment_fees = HistogramVec::new(
             prometheus::HistogramOpts::new(
-                "cdk_lightning_payment_fees_sats",
-                "Lightning payment fees in satoshis",
+                "cdk_payment_fees_sats",
+                "Confirmed payment fees in satoshis",
             )
             .buckets(vec![0.0, 1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1000.0]),
+            &["method"],
         )?;
-        registry.register(Box::new(lightning_payment_fees.clone()))?;
+        registry.register(Box::new(payment_fees.clone()))?;
 
-        Ok((
-            lightning_payments_total,
-            lightning_payment_amount,
-            lightning_payment_fees,
-        ))
+        Ok((payments_total, payment_amount, payment_fees))
     }
 
     /// Create and register database metrics
@@ -344,12 +342,29 @@ impl CdkMetrics {
         self.auth_successes_total.inc();
     }
 
-    // Lightning metrics methods
-    /// Record a Lightning payment
-    pub fn record_lightning_payment(&self, amount: f64, fee: f64) {
-        self.lightning_payments_total.inc();
-        self.lightning_payment_amount.observe(amount);
-        self.lightning_payment_fees.observe(fee);
+    // Payment metrics methods
+    /// Record a confirmed payment with known amount and fee in sats.
+    pub fn record_payment(&self, method: &str, amount: f64, fee: f64) {
+        self.record_payment_total(method);
+        self.record_payment_amount(method, amount);
+        self.record_payment_fee(method, fee);
+    }
+
+    /// Record a confirmed payment.
+    pub fn record_payment_total(&self, method: &str) {
+        self.payments_total.with_label_values(&[method]).inc();
+    }
+
+    /// Record a confirmed payment amount in sats.
+    pub fn record_payment_amount(&self, method: &str, amount: f64) {
+        self.payment_amount
+            .with_label_values(&[method])
+            .observe(amount);
+    }
+
+    /// Record a confirmed payment fee in sats.
+    pub fn record_payment_fee(&self, method: &str, fee: f64) {
+        self.payment_fees.with_label_values(&[method]).observe(fee);
     }
 
     // Database metrics methods
@@ -415,7 +430,11 @@ impl Default for CdkMetrics {
     }
 }
 
-/// Helper functions for recording metrics using the global instance
+/// Compatibility helpers for recording metrics using the global instance.
+///
+/// New code should call methods on [`METRICS`] directly or use a guard such as
+/// [`MintMetricGuard`]. These helpers remain to preserve the existing public
+/// API for callers using `cdk_prometheus::global`.
 pub mod global {
     use super::METRICS;
 
@@ -439,9 +458,24 @@ pub mod global {
         METRICS.record_auth_success();
     }
 
-    /// Record Lightning payment using the global metrics instance
-    pub fn record_lightning_payment(amount: f64, fee: f64) {
-        METRICS.record_lightning_payment(amount, fee);
+    /// Record confirmed payment using the global metrics instance
+    pub fn record_payment(method: &str, amount: f64, fee: f64) {
+        METRICS.record_payment(method, amount, fee);
+    }
+
+    /// Record confirmed payment count using the global metrics instance
+    pub fn record_payment_total(method: &str) {
+        METRICS.record_payment_total(method);
+    }
+
+    /// Record confirmed payment amount using the global metrics instance
+    pub fn record_payment_amount(method: &str, amount: f64) {
+        METRICS.record_payment_amount(method, amount);
+    }
+
+    /// Record confirmed payment fee using the global metrics instance
+    pub fn record_payment_fee(method: &str, fee: f64) {
+        METRICS.record_payment_fee(method, fee);
     }
 
     /// Record database operation using the global metrics instance
@@ -604,5 +638,24 @@ mod tests {
         assert_eq!(success_duration.get_sample_count(), success_duration_before);
         assert_eq!(error_duration.get_sample_count(), error_duration_before);
         assert_eq!(METRICS.errors_total.get(), errors_before);
+    }
+
+    #[test]
+    fn payment_metrics_are_labeled_by_method() {
+        let _lock = metrics_lock();
+        let method = "test_payment_method";
+        let payments = METRICS.payments_total.with_label_values(&[method]);
+        let amount = METRICS.payment_amount.with_label_values(&[method]);
+        let fee = METRICS.payment_fees.with_label_values(&[method]);
+
+        let payments_before = payments.get();
+        let amount_count_before = amount.get_sample_count();
+        let fee_count_before = fee.get_sample_count();
+
+        METRICS.record_payment(method, 21.0, 1.0);
+
+        assert_eq!(payments.get(), payments_before + 1);
+        assert_eq!(amount.get_sample_count(), amount_count_before + 1);
+        assert_eq!(fee.get_sample_count(), fee_count_before + 1);
     }
 }

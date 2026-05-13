@@ -1027,6 +1027,7 @@ pub struct Settings {
     pub mint_management_rpc: Option<MintManagementRpc>,
     pub auth: Option<Auth>,
     #[cfg(feature = "prometheus")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prometheus: Option<Prometheus>,
 }
 
@@ -1876,6 +1877,55 @@ max_delay_time = 3
 
         #[cfg(feature = "ldk-node")]
         test_ldk_node_env_config();
+    }
+
+    #[cfg(all(feature = "prometheus", feature = "fakewallet"))]
+    #[test]
+    fn test_prometheus_toml_config_survives_env_overlay() {
+        use std::{env, fs};
+
+        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
+        env::remove_var(crate::env_vars::ENV_PROMETHEUS_ENABLED);
+        env::remove_var(crate::env_vars::ENV_PROMETHEUS_ADDRESS);
+        env::remove_var(crate::env_vars::ENV_PROMETHEUS_PORT);
+
+        let temp_dir =
+            env::temp_dir().join(format!("cdk_prometheus_config_{}", std::process::id()));
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        let config_content = r#"
+[info]
+url = "http://127.0.0.1:8085"
+listen_host = "127.0.0.1"
+listen_port = 8085
+
+[ln]
+ln_backend = "fakewallet"
+min_mint = 1
+max_mint = 500000
+min_melt = 1
+max_melt = 500000
+
+[prometheus]
+enabled = true
+address = "0.0.0.0"
+port = 9090
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        let mut settings = Settings::new(Some(&config_path));
+        settings.from_env().expect("Failed to apply env vars");
+
+        let prometheus = settings
+            .prometheus
+            .as_ref()
+            .expect("Prometheus config should be loaded from TOML");
+        assert!(prometheus.enabled);
+        assert_eq!(prometheus.address.as_deref(), Some("0.0.0.0"));
+        assert_eq!(prometheus.port, Some(9090));
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     #[cfg(feature = "lnd")]
