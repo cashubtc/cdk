@@ -1193,8 +1193,7 @@ impl Settings {
     where
         P: Into<PathBuf>,
     {
-        Self::try_new(config_file_name)
-            .unwrap_or_else(|e| panic!("Error reading config file: {e}"))
+        Self::try_new(config_file_name).unwrap_or_else(|e| panic!("Error reading config file: {e}"))
     }
 
     fn new_from_default<P>(
