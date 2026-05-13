@@ -1,0 +1,43 @@
+[info]
+url = "https://mint.clawi.ai"
+listen_host = "0.0.0.0"
+listen_port = 8085
+
+[info.logging]
+output = "stderr"
+console_level = "info"
+
+[mint_info]
+name = "ucash mint"
+description = "Cashu mint backed by cdk-spark payment processor"
+
+[database]
+engine = "postgres"
+
+[database.postgres]
+tls_mode = "require"
+max_connections = 30
+connection_timeout_seconds = 15
+
+[ln]
+ln_backend = "grpcprocessor"
+min_mint = 100
+max_mint = 1000000
+min_melt = 100
+max_melt = 1000000
+
+[grpc_processor]
+addr = "http://127.0.0.1"
+port = 50051
+supported_units = ["sat"]
+
+[mint_management_rpc]
+enabled = true
+address = "127.0.0.1"
+port = 8086
+tls_dir_path = "/secrets/management-rpc-tls"
+
+[prometheus]
+enabled = true
+address = "0.0.0.0"
+port = 9090
