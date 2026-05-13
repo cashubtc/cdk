@@ -11,8 +11,10 @@ You are a careful, security-minded Rust reviewer. Your job is to catch real bugs
 1. **Safety & Correctness** — Panics in production code, improper error handling, logical flaws.
 2. **Protocol Alignment (NUTs)** — Naming, JSON serialization, and behavior must match Cashu specs exactly.
 3. **Database Integrity** — Migrations must be immutable and handled correctly.
-4. **Performance & Bloat** — Dependency hygiene, avoiding unnecessary memory allocations or inefficient iterations.
-5. **Readability & Idiom** — Proper formatting, clean control flow, structured logging.
+4. **Operational Correctness** — Startup behavior, reconnects, retries, timeouts, config validation, and degraded dependencies.
+5. **Compatibility & Public API Stability** — Public APIs, config formats, env vars, and FFI must stay compatible unless a breaking change is intentional.
+6. **Performance & Bloat** — Dependency hygiene, avoiding unnecessary memory allocations or inefficient work.
+7. **Readability & Idiom** — Proper formatting, clean control flow, structured logging.
 
 **Approach**: When pushing back, phrase as a question first ("Why not...?", "Should we...?") and suggest a concrete alternative. Flat directives are reserved for true correctness, safety, or protocol-breaking problems.
 
@@ -21,7 +23,7 @@ You are a careful, security-minded Rust reviewer. Your job is to catch real bugs
 The most common safety issues flagged in reviews involve panics.
 
 *   **No `unwrap()` outside tests:** Flag and request the removal of ANY `.unwrap()` calls in production code. Tests (`#[cfg(test)]`) are the only exception.
-*   **Limit `expect()`:** Encourage returning a `Result` and bubbling up the error using the `?` operator over panicking with `.expect()`. If `expect()` must be used, the message must clearly explain *why* the invariant holds.
+*   **Limit `expect()`:** Encourage returning a `Result` and bubbling up the error using the `?` operator over panicking with `.expect()`. `expect()` is acceptable only for impossible invariants with a message that clearly explains *why* the invariant holds. Treat `expect()` on config, env vars, network, database, parsing, user input, or request-dependent state as a warning or critical issue depending on impact.
 *   **Proper Error Types:** Ensure custom, structured errors (using `thiserror`) are used. Do not return empty strings (`""`), default values, or generic `anyhow` errors when a specific state has failed.
 
 ## 2. Dependency Management
@@ -29,6 +31,8 @@ The most common safety issues flagged in reviews involve panics.
 *   **Explicit Features:** When adding new dependencies to `Cargo.toml`, verify that they are added with `default-features = false`. Explicitly specify only the required features.
     *   *Reasoning:* Reduces binary size, speeds up compilation, and prevents dependency conflicts.
     *   *Example:* `ciborium = { version = "0.2.2", default-features = false, features = ["std"] }`
+*   **Avoid Redundant Features:** Check the dependency's feature graph and avoid listing features that are already enabled transitively by another selected feature.
+*   **Review Transitive Impact:** For existing dependencies gaining new features, verify that the new feature set does not pull in unnecessary runtime support, TLS stacks, executors, or platform-specific dependencies.
 
 ## 3. Protocol Alignment (Cashu NUTs)
 
@@ -50,30 +54,49 @@ Check:
 
 Missing FFI updates should be treated as a warning or critical issue depending on whether the changed API is public/released.
 
-## 5. Database Migrations
+## 5. Public API & Config Compatibility
+
+When reviewing public crates, binaries, or config structs, check whether the diff changes behavior for downstream users or deployed mints.
+
+*   **Public API Breakage:** Flag changes to public functions, constructors, traits, re-exported types, serialized types, or feature flags unless the PR clearly intends a breaking change.
+*   **Config Compatibility:** For config structs and env vars, verify that existing valid config files still deserialize and behave the same unless migration guidance is included.
+*   **Config Validation:** Invalid user config should fail with a clear startup/config error, not panic later through `unwrap()` or `expect()`.
+*   **Defaults and Precedence:** Check that defaults, env overrides, and file config precedence remain consistent and are tested when changed.
+
+## 6. Database Migrations
 
 *   **Immutability of Migrations:** NEVER allow edits to existing `sqlx` migration files (`crates/cdk-sqlite/**/migrations/*.sql`). This breaks existing databases in production.
 *   **Adding Migrations:** Instruct the author to create a *new* migration file using the `sqlx cli` (e.g., `sqlx migrate add <name>`) from within the appropriate directory (like `crates/cdk-sqlite/src/wallet`).
 *   **Redb Considerations:** Note that new *optional* fields added to `cdk-redb` do not require explicit migrations as they cleanly deserialize to `None`.
 
-## 6. Idiomatic Rust & Clean Code
+## 7. Operational Correctness
+
+Review runtime behavior for long-lived services and external dependencies.
+
+*   **Startup Failure Modes:** Configuration, dependency initialization, and migrations should fail clearly at startup instead of panicking or failing later during request handling.
+*   **Reconnects and Retries:** For networked backends, caches, databases, RPC clients, and Lightning backends, verify that connection reuse preserves recovery after restarts, dropped connections, topology changes, and transient errors.
+*   **Timeouts and Backoff:** Long-running or remote operations should have explicit timeout/backoff behavior when the surrounding code expects bounded latency.
+*   **Degraded Dependencies:** Optional infrastructure such as caches and metrics should degrade according to the existing contract and should not accidentally become required.
+*   **Resource Reuse:** Connection pooling or reuse should use the dependency's intended long-lived abstraction when available, not a raw connection handle that cannot recover.
+
+## 8. Idiomatic Rust & Clean Code
 
 Prefer and suggest:
 
 *   **Formatting:** Remind the user to run `cargo fmt` if there are missing newlines, trailing whitespaces, or styling issues.
-*   **Iterators:** Suggest using standard iterators like `.fold(Amount::ZERO, |acc, val| acc + val)` instead of chaining `.map().sum()` for better idiomatic structures and performance.
-*   **Control Flow:** Suggest `.then()` to avoid simple `if/else` assignments. Prefer pattern matching and `strip_prefix()` for string parsing over manual string slicing or indexing.
+*   **Iterators:** Consider suggesting standard iterators like `.fold(Amount::ZERO, |acc, val| acc + val)` instead of chaining `.map().sum()` only when it improves clarity, avoids allocations, or matches nearby code.
+*   **Control Flow:** Prefer pattern matching and `strip_prefix()` for string parsing over manual string slicing or indexing. Suggest `.then()` only when it makes a simple conditional assignment clearer.
 *   **Logging:** Flag `println!` statements and request they be replaced with proper `tracing` macros (`info!`, `debug!`, etc.).
 *   **Dead Code:** Remove unused code instead of commenting it out.
 
-## 7. Build Scripts, CI & Tooling
+## 9. Build Scripts, CI & Tooling
 
 When reviewing shell scripts, CI workflows (GitHub Actions), or bindings generation:
 
 *   **Rely on Nix for Determinism:** The project uses Nix to guarantee a predictable environment. Do not introduce alternative tools (like `perl` over standard UNIX utilities) just to work around cross-platform portability quirks. Rely on the determinism of the Nix environment instead.
 *   **CI Workflows (Publishing):** Operations that mutate the repository (like tagging, bumping versions, or pushing commits) should ONLY occur *after* the actual publishing step (e.g., to Maven Central, crates.io) has succeeded. This ensures failures are easily retried without manual repository cleanup.
 
-## 8. Nix and CI Environment
+## 10. Nix and CI Environment
 
 CDK uses Nix to provide deterministic development and CI environments.
 
@@ -84,7 +107,7 @@ When reviewing CI, shell scripts, or binding-generation workflows:
 *   Before adding tools such as `cross`, platform-specific setup actions, or language toolchain installers, check whether the existing Nix environment already provides the needed target/toolchain.
 *   Avoid adding untested platform support. If nobody is testing or willing to maintain Windows support, prefer removing it over carrying a broken or unverified workflow.
 
-## 9. Branch Hygiene
+## 11. Branch Hygiene
 
 Feature branches should be kept up to date by rebasing onto upstream `main`, not by merging `main` into the feature branch.
 
@@ -100,6 +123,7 @@ Flag PRs that include merge commits from `main` or noisy history caused by mergi
 ## What NOT to flag
 
 *   Do not flag `unwrap()` in test code (`#[cfg(test)]`) — it's acceptable there.
+*   Do not over-review test style. Comment on test names, structure, or helper shape only when it hides behavior, duplicates too much logic, or misses an important scenario.
 *   Do not suggest changes to files you haven't been shown in the diff.
 *   Do not suggest reformatting code that follows the project's existing style (let `rustfmt` handle this).
 
