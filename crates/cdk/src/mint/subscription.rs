@@ -29,26 +29,36 @@ pub struct MintPubSubSpec {
 }
 
 impl MintPubSubSpec {
-    /// Call Mint::check_mint_quote_payments to update the quote pinging the payment backend
-    async fn get_mint_quote(
+    /// Call Mint::check_mint_quote_payments to update quotes by pinging the payment backend
+    async fn get_mint_quotes(
         &self,
-        quote_id: &QuoteId,
-    ) -> Result<Option<MintQuote>, cdk_common::Error> {
-        let mut quote = if let Some(quote) = self.db.get_mint_quote(quote_id).await? {
-            quote
-        } else {
-            return Ok(None);
-        };
+        quote_ids: &[QuoteId],
+    ) -> Result<HashMap<QuoteId, MintQuote>, cdk_common::Error> {
+        if quote_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
 
-        Mint::check_mint_quote_payments(
-            self.db.clone(),
-            self.payment_processors.clone(),
-            None,
-            &mut quote,
-        )
-        .await?;
+        let mut quotes = HashMap::new();
 
-        Ok(Some(quote))
+        for mut quote in self
+            .db
+            .get_mint_quotes_by_ids(quote_ids)
+            .await?
+            .into_iter()
+            .flatten()
+        {
+            Mint::check_mint_quote_payments(
+                self.db.clone(),
+                self.payment_processors.clone(),
+                None,
+                &mut quote,
+            )
+            .await?;
+
+            quotes.insert(quote.id.clone(), quote);
+        }
+
+        Ok(quotes)
     }
 
     async fn get_events_from_db(
@@ -57,6 +67,19 @@ impl MintPubSubSpec {
     ) -> Result<Vec<MintEvent<QuoteId>>, String> {
         let mut to_return = vec![];
         let mut public_keys: Vec<PublicKey> = Vec::new();
+        let mint_quote_ids = request
+            .iter()
+            .filter_map(|idx| match idx {
+                NotificationId::MintQuoteBolt11(uuid) | NotificationId::MintQuoteBolt12(uuid) => {
+                    Some(uuid.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mint_quotes = self
+            .get_mint_quotes(&mint_quote_ids)
+            .await
+            .map_err(|e| e.to_string())?;
 
         for idx in request.iter() {
             match idx {
@@ -86,9 +109,7 @@ impl MintPubSubSpec {
                     }
                 }
                 NotificationId::MintQuoteBolt11(uuid) | NotificationId::MintQuoteBolt12(uuid) => {
-                    if let Some(mint_quote) =
-                        self.get_mint_quote(uuid).await.map_err(|e| e.to_string())?
-                    {
+                    if let Some(mint_quote) = mint_quotes.get(uuid).cloned() {
                         let mint_quote = match idx {
                             NotificationId::MintQuoteBolt11(_) => {
                                 let response: MintQuoteBolt11Response<QuoteId> = mint_quote.into();
@@ -303,5 +324,83 @@ impl Deref for PubSubManager {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk_common::database::DynMintDatabase;
+    use cdk_common::mint::MintQuote;
+    use cdk_common::payment::PaymentIdentifier;
+    use cdk_common::QuoteId;
+
+    use super::*;
+
+    fn paid_bolt11_quote(id: QuoteId, amount: u64) -> MintQuote {
+        MintQuote::new(
+            Some(id),
+            format!("lnbc1test{amount}"),
+            CurrencyUnit::Sat,
+            Some(Amount::new(amount, CurrencyUnit::Sat)),
+            0,
+            PaymentIdentifier::CustomId(format!("lookup-{amount}")),
+            None,
+            Amount::new(0, CurrencyUnit::Sat),
+            Amount::new(0, CurrencyUnit::Sat),
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11),
+            0,
+            vec![],
+            vec![],
+            None,
+        )
+    }
+
+    async fn add_mint_quote(db: &DynMintDatabase, quote: MintQuote) {
+        let payment_amount = quote.amount.clone().expect("quote amount");
+        let payment_id = format!("payment-{}", quote.id);
+        let mut tx = db.begin_transaction().await.expect("begin transaction");
+        let mut quote = tx.add_mint_quote(quote).await.expect("add mint quote");
+        quote
+            .add_payment(payment_amount, payment_id, Some(0))
+            .expect("add payment");
+        tx.update_mint_quote(&mut quote)
+            .await
+            .expect("update mint quote");
+        tx.commit().await.expect("commit transaction");
+    }
+
+    #[tokio::test]
+    async fn get_events_from_db_batches_multiple_mint_quote_filters() {
+        let db: DynMintDatabase = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory mint database"),
+        );
+        let first_quote_id = QuoteId::new_uuid();
+        let second_quote_id = QuoteId::new_uuid();
+        add_mint_quote(&db, paid_bolt11_quote(first_quote_id.clone(), 21)).await;
+        add_mint_quote(&db, paid_bolt11_quote(second_quote_id.clone(), 34)).await;
+
+        let spec = MintPubSubSpec {
+            db,
+            payment_processors: Arc::new(HashMap::new()),
+        };
+        let events = spec
+            .get_events_from_db(&[
+                NotificationId::MintQuoteBolt11(first_quote_id.clone()),
+                NotificationId::MintQuoteBolt11(second_quote_id.clone()),
+            ])
+            .await
+            .expect("get events");
+
+        let quote_ids = events
+            .into_iter()
+            .map(|event| match event.into_inner() {
+                NotificationPayload::MintQuoteBolt11Response(response) => response.quote,
+                payload => panic!("unexpected payload: {payload:?}"),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(quote_ids, vec![first_quote_id, second_quote_id]);
     }
 }
