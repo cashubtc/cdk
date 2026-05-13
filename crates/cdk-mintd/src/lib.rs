@@ -331,23 +331,35 @@ fn validate_listen_config(settings: &config::Settings) -> Result<()> {
 }
 
 fn validate_signing_config(settings: &config::Settings) -> Result<()> {
+    const MIN_SEED_BYTES: usize = 32;
+
     let has_signatory = settings
         .info
         .signatory_url
         .as_ref()
         .is_some_and(|value| !value.is_empty());
-    let has_seed = settings
+    let seed = settings
         .info
         .seed
         .as_ref()
-        .is_some_and(|value| !value.is_empty());
+        .filter(|value| !value.is_empty());
     let mnemonic = settings
         .info
         .mnemonic
         .as_ref()
         .filter(|value| !value.is_empty());
 
-    if has_signatory || has_seed {
+    if has_signatory {
+        return Ok(());
+    }
+
+    if let Some(seed) = seed {
+        if seed.len() < MIN_SEED_BYTES {
+            bail!(
+                "Seed in [info].seed/CDK_MINTD_SEED is too short ({} bytes); require at least {MIN_SEED_BYTES} bytes of entropy",
+                seed.len()
+            );
+        }
         return Ok(());
     }
 
@@ -2894,6 +2906,24 @@ ln_backend = "fakewallet"
         assert!(err.to_string().contains("PostgreSQL URL is required"));
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_reports_short_seed() {
+        assert_load_settings_error(
+            r#"
+[info]
+seed = "tooshort"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+"#,
+            "Seed in [info].seed/CDK_MINTD_SEED is too short",
+        );
     }
 
     #[cfg(feature = "fakewallet")]

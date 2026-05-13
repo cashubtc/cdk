@@ -1180,30 +1180,21 @@ impl Settings {
 
     /// Loads settings from defaults and an optional config file.
     ///
-    /// Use [`Self::try_new`] when the caller can return a recoverable config error.
+    /// Prefer [`Self::try_new`] in any code path that can surface a recoverable
+    /// config error; this constructor exists for callers that want a hard fail.
     ///
     /// # Panics
     ///
-    /// Panics when an explicitly provided config file cannot be read or deserialized.
+    /// Panics if the config file cannot be read or deserialized. Unlike earlier
+    /// versions, this never silently falls back to defaults — silent fallback
+    /// hid real misconfiguration.
     #[must_use]
     pub fn new<P>(config_file_name: Option<P>) -> Self
     where
         P: Into<PathBuf>,
     {
-        let config_file_name = config_file_name.map(Into::into);
-
-        match Self::try_new(config_file_name.clone()) {
-            Ok(f) => f,
-            Err(e) if config_file_name.is_none() => {
-                tracing::error!(
-                    "Error reading default config file, falling back to defaults. Error: {e:?}"
-                );
-                Self::default()
-            }
-            Err(e) => {
-                panic!("Error reading config file: {e}");
-            }
-        }
+        Self::try_new(config_file_name)
+            .unwrap_or_else(|e| panic!("Error reading config file: {e}"))
     }
 
     fn new_from_default<P>(
