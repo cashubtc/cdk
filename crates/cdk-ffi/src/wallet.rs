@@ -157,7 +157,7 @@ impl Wallet {
 
     /// Restore wallet from seed with custom NUT-13 options
     pub async fn restore_with_opts(&self, opts: NUT13Options) -> Result<Restored, FfiError> {
-        let restored = self.inner.restore_with_opts(opts.into()).await?;
+        let restored = self.inner.restore_with_opts(opts.try_into()?).await?;
         Ok(restored.into())
     }
 

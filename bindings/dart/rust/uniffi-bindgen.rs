@@ -74,6 +74,9 @@ fn main() {
 /// 5. **P2PKSigningKey casing** – uniffi-dart generates the Record class as `P2pkSigningKey`
 ///    (camelCase) but references it as `P2PKSigningKey` in callback interface method signatures and
 ///    sequence/optional converters. All occurrences are normalized to `P2pkSigningKey`.
+///
+/// 6. **NUT13Options casing** – same issue as above. The generated Record class is `Nut13Options`
+///    while some references use `NUT13Options`. All occurrences are normalized to `Nut13Options`.
 fn patch_generated(path: &camino::Utf8Path) {
     let content =
         std::fs::read_to_string(path).unwrap_or_else(|e| panic!("Failed to read {}: {}", path, e));
@@ -144,7 +147,13 @@ class _RustOwnedWalletDatabase implements WalletDatabase {
     // Normalize all occurrences to P2pkSigningKey.
     content = content.replace("P2PKSigningKey", "P2pkSigningKey");
 
-    // 6. Patch lower() to handle _RustOwnedWalletDatabase
+    // 6. Fix NUT13Options casing inconsistency.
+    // uniffi-dart generates the class as Nut13Options (camelCase) but references
+    // it as NUT13Options in some generated signatures and converters.
+    // Normalize all occurrences to Nut13Options.
+    content = content.replace("NUT13Options", "Nut13Options");
+
+    // 7. Patch lower() to handle _RustOwnedWalletDatabase
     content = content.replace(
         "  static Pointer<Void> lower(WalletDatabase value) {\n    _ensureVTableInitialized();\n    final handle = _handleMap.insert(value);\n    return Pointer<Void>.fromAddress(handle);\n  }",
         "  static Pointer<Void> lower(WalletDatabase value) {\n    if (value is _RustOwnedWalletDatabase) {\n      return value.clonePointer();\n    }\n    _ensureVTableInitialized();\n    final handle = _handleMap.insert(value);\n    return Pointer<Void>.fromAddress(handle);\n  }",

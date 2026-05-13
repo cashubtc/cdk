@@ -433,12 +433,14 @@ impl Default for NUT13Options {
     }
 }
 
-impl From<NUT13Options> for cdk::wallet::NUT13Options {
-    fn from(opts: NUT13Options) -> Self {
-        cdk::wallet::NUT13Options {
-            batch_size: opts.batch_size,
-            max_gap: opts.max_gap,
-        }
+impl TryFrom<NUT13Options> for cdk::wallet::NUT13Options {
+    type Error = FfiError;
+
+    fn try_from(opts: NUT13Options) -> Result<Self, Self::Error> {
+        Ok(cdk::wallet::NUT13Options::new(
+            opts.batch_size,
+            opts.max_gap,
+        )?)
     }
 }
 

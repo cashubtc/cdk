@@ -553,12 +553,10 @@ impl Wallet {
     ///
     /// Scans each keyset in batches of `opts.batch_size` blinded messages
     /// and stops after `opts.max_gap` consecutive empty batches. Lowering
-    /// `batch_size` trades scan latency for a gentler request pattern; the
-    /// mint's rate limit and the wallet's configured
-    /// [`RateLimiter`](crate::wallet::RateLimiter) are orthogonal pacing
-    /// controls that still apply.
+    /// `batch_size` trades scan latency for a gentler request pattern.
     #[instrument(skip(self))]
     pub async fn restore_with_opts(&self, opts: NUT13Options) -> Result<Restored, Error> {
+        let opts = NUT13Options::new(opts.batch_size, opts.max_gap)?;
         let batch_size = opts.batch_size;
         let max_gap = opts.max_gap;
 

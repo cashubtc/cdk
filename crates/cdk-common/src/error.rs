@@ -369,6 +369,14 @@ pub enum Error {
     /// Max Fee Ecxeded
     #[error("Max fee exceeded")]
     MaxFeeExceeded,
+    /// Invalid NUT-13 restore options
+    #[error("Invalid NUT-13 restore options: `{field}` {reason}")]
+    InvalidNut13Options {
+        /// Invalid option field.
+        field: &'static str,
+        /// Reason the option value is invalid.
+        reason: &'static str,
+    },
     /// Url path segments could not be joined
     #[error("Url path segments could not be joined")]
     UrlPathSegments,
@@ -663,6 +671,7 @@ impl Error {
             | Self::InvalidSpendConditions(_)
             | Self::IncorrectWallet(_)
             | Self::MaxFeeExceeded
+            | Self::InvalidNut13Options { .. }
             | Self::DleqProofNotProvided
             | Self::IncorrectMint
             | Self::MultiMintTokenNotSupported

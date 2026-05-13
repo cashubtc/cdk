@@ -346,9 +346,45 @@ pub struct NUT13Options {
 impl Default for NUT13Options {
     fn default() -> Self {
         Self {
-            batch_size: 100,
-            max_gap: 3,
+            batch_size: Self::DEFAULT_BATCH_SIZE,
+            max_gap: Self::DEFAULT_MAX_GAP,
         }
+    }
+}
+
+impl NUT13Options {
+    /// NUT-13 default restore batch size.
+    pub const DEFAULT_BATCH_SIZE: u32 = 100;
+
+    /// NUT-13 default restore gap limit.
+    pub const DEFAULT_MAX_GAP: u32 = 3;
+
+    /// Create new NUT-13 restore options.
+    pub fn new(batch_size: u32, max_gap: u32) -> Result<Self, Error> {
+        let opts = Self {
+            batch_size,
+            max_gap,
+        };
+        opts.validate()?;
+        Ok(opts)
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        if self.batch_size == 0 {
+            return Err(Error::InvalidNut13Options {
+                field: "batch_size",
+                reason: "must be greater than zero",
+            });
+        }
+
+        if self.max_gap == 0 {
+            return Err(Error::InvalidNut13Options {
+                field: "max_gap",
+                reason: "must be greater than zero",
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -1280,18 +1316,39 @@ mod tests {
         // NUT-13 recommends batch_size=100 and gap_limit=3.
         // https://github.com/cashubtc/nuts/blob/main/13.md#generate-blindedmessages
         let opts = NUT13Options::default();
-        assert_eq!(opts.batch_size, 100);
-        assert_eq!(opts.max_gap, 3);
+        assert_eq!(opts.batch_size, NUT13Options::DEFAULT_BATCH_SIZE);
+        assert_eq!(opts.max_gap, NUT13Options::DEFAULT_MAX_GAP);
     }
 
     #[test]
-    fn nut13_options_custom_values_round_trip() {
-        let opts = NUT13Options {
-            batch_size: 25,
-            max_gap: 2,
-        };
+    fn nut13_options_new_accepts_custom_values() {
+        let opts = NUT13Options::new(25, 2).unwrap();
         let cloned = opts.clone();
         assert_eq!(cloned.batch_size, 25);
         assert_eq!(cloned.max_gap, 2);
+    }
+
+    #[test]
+    fn nut13_options_reject_zero_batch_size() {
+        let err = NUT13Options::new(0, 2).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidNut13Options {
+                field: "batch_size",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn nut13_options_reject_zero_max_gap() {
+        let err = NUT13Options::new(25, 0).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidNut13Options {
+                field: "max_gap",
+                ..
+            }
+        ));
     }
 }
