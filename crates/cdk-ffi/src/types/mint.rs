@@ -646,11 +646,11 @@ impl From<cdk::nuts::MintInfo> for MintInfo {
     }
 }
 
-impl From<MintInfo> for cdk::nuts::MintInfo {
-    fn from(info: MintInfo) -> Self {
-        // Convert FFI Nuts back to cdk::nuts::Nuts (best-effort)
-        let nuts_cdk: cdk::nuts::Nuts = info.nuts.clone().try_into().unwrap_or_default();
-        Self {
+impl TryFrom<MintInfo> for cdk::nuts::MintInfo {
+    type Error = FfiError;
+
+    fn try_from(info: MintInfo) -> Result<Self, Self::Error> {
+        Ok(Self {
             name: info.name,
             pubkey: info.pubkey.and_then(|p| p.parse().ok()),
             version: info.version.map(Into::into),
@@ -659,13 +659,13 @@ impl From<MintInfo> for cdk::nuts::MintInfo {
             contact: info
                 .contact
                 .map(|contacts| contacts.into_iter().map(Into::into).collect()),
-            nuts: nuts_cdk,
+            nuts: info.nuts.try_into()?,
             icon_url: info.icon_url,
             urls: info.urls,
             motd: info.motd,
             time: info.time,
             tos_url: info.tos_url,
-        }
+        })
     }
 }
 
@@ -1027,6 +1027,71 @@ mod tests {
         };
 
         let result: Result<cdk::nuts::ProtectedEndpoint, _> = invalid_endpoint.try_into();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_protected_endpoint_custom_payment_method_path() {
+        let endpoint = ProtectedEndpoint {
+            method: "POST".to_string(),
+            path: "/v1/mint/custom-method".to_string(),
+        };
+
+        let converted: cdk::nuts::ProtectedEndpoint = endpoint
+            .try_into()
+            .expect("custom payment method routes should be accepted");
+        assert_eq!(
+            converted.path,
+            cdk::nuts::RoutePath::Mint("custom-method".to_string())
+        );
+    }
+
+    #[test]
+    fn test_mint_info_unknown_endpoint_returns_error() {
+        let ffi_mint_info = MintInfo {
+            name: None,
+            pubkey: None,
+            version: None,
+            description: None,
+            description_long: None,
+            contact: None,
+            nuts: Nuts {
+                nut04: Nut04Settings {
+                    methods: vec![],
+                    disabled: false,
+                },
+                nut05: Nut05Settings {
+                    methods: vec![],
+                    disabled: false,
+                },
+                nut07_supported: true,
+                nut08_supported: false,
+                nut09_supported: false,
+                nut10_supported: false,
+                nut11_supported: false,
+                nut12_supported: true,
+                nut14_supported: false,
+                nut20_supported: false,
+                nut21: None,
+                nut22: Some(BlindAuthSettings {
+                    bat_max_mint: 10,
+                    protected_endpoints: vec![ProtectedEndpoint {
+                        method: "POST".to_string(),
+                        path: "/v1/unknown-custom-endpoint".to_string(),
+                    }],
+                }),
+                nut29: Nut29Settings::default(),
+                mint_units: vec![],
+                melt_units: vec![],
+            },
+            icon_url: None,
+            urls: None,
+            motd: None,
+            time: None,
+            tos_url: None,
+        };
+
+        let result = cdk::nuts::MintInfo::try_from(ffi_mint_info);
         assert!(result.is_err());
     }
 }

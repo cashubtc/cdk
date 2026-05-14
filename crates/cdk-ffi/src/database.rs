@@ -324,7 +324,10 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
             .get_mint(ffi_mint_url)
             .await
             .map_err(|e| cdk::cdk_database::Error::Database(e.to_string().into()))?;
-        Ok(result.map(Into::into))
+        result
+            .map(TryInto::try_into)
+            .transpose()
+            .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))
     }
 
     async fn get_mints(
@@ -344,7 +347,11 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
             let cdk_url = ffi_mint_url
                 .try_into()
                 .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))?;
-            cdk_result.insert(cdk_url, mint_info_opt.map(Into::into));
+            let cdk_mint_info = mint_info_opt
+                .map(TryInto::try_into)
+                .transpose()
+                .map_err(|e: FfiError| cdk::cdk_database::Error::Database(e.to_string().into()))?;
+            cdk_result.insert(cdk_url, cdk_mint_info);
         }
         Ok(cdk_result)
     }
@@ -1570,7 +1577,7 @@ where
         mint_info: Option<MintInfo>,
     ) -> Result<(), FfiError> {
         let cdk_mint_url = mint_url.try_into()?;
-        let cdk_mint_info = mint_info.map(Into::into);
+        let cdk_mint_info = mint_info.map(TryInto::try_into).transpose()?;
         self.inner
             .add_mint(cdk_mint_url, cdk_mint_info)
             .await
