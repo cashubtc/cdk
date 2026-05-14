@@ -110,7 +110,9 @@ impl TryFrom<Nut10Secret> for SpendingConditions {
                 conditions: secret
                     .secret_data()
                     .tags()
-                    .and_then(|t| t.clone().try_into().ok()),
+                    .cloned()
+                    .map(Conditions::try_from)
+                    .transpose()?,
             }),
             Kind::HTLC => Ok(Self::HTLCConditions {
                 data: Sha256Hash::from_str(secret.secret_data().data())
@@ -118,7 +120,9 @@ impl TryFrom<Nut10Secret> for SpendingConditions {
                 conditions: secret
                     .secret_data()
                     .tags()
-                    .and_then(|t| t.clone().try_into().ok()),
+                    .cloned()
+                    .map(Conditions::try_from)
+                    .transpose()?,
             }),
         }
     }
@@ -142,6 +146,7 @@ impl From<SpendingConditions> for super::Secret {
 impl TryFrom<SpendingConditions> for Secret {
     type Error = Error;
     fn try_from(conditions: SpendingConditions) -> Result<Secret, Self::Error> {
+        conditions.validate()?;
         let secret: Nut10Secret = conditions.into();
         Secret::try_from(secret)
     }
@@ -176,6 +181,61 @@ pub struct Conditions {
 }
 
 impl Conditions {
+    fn validate(&self, primary_key_count: u64) -> Result<(), Error> {
+        if let Some(n) = self.num_sigs {
+            if n == 0 {
+                return Err(Error::NUT11(crate::nut11::Error::ZeroSignaturesRequired));
+            }
+
+            let available_keys =
+                primary_key_count + self.pubkeys.as_ref().map(Vec::len).unwrap_or(0) as u64;
+            if n > available_keys {
+                return Err(Error::NUT11(
+                    crate::nut11::Error::ImpossibleMultisigConfiguration {
+                        required: n,
+                        available: available_keys,
+                    },
+                ));
+            }
+        }
+
+        match (&self.refund_keys, self.num_sigs_refund) {
+            (Some(_), Some(0)) => {
+                return Err(Error::NUT11(crate::nut11::Error::ZeroSignaturesRequired));
+            }
+            (Some(refund_keys), Some(required)) if required > refund_keys.len() as u64 => {
+                return Err(Error::NUT11(
+                    crate::nut11::Error::ImpossibleRefundMultisigConfiguration {
+                        required,
+                        available: refund_keys.len() as u64,
+                    },
+                ));
+            }
+            (None, Some(0)) => {
+                return Err(Error::NUT11(crate::nut11::Error::ZeroSignaturesRequired));
+            }
+            (None, Some(required)) => {
+                return Err(Error::NUT11(
+                    crate::nut11::Error::ImpossibleRefundMultisigConfiguration {
+                        required,
+                        available: 0,
+                    },
+                ));
+            }
+            (Some(refund_keys), None) if refund_keys.is_empty() => {
+                return Err(Error::NUT11(
+                    crate::nut11::Error::ImpossibleRefundMultisigConfiguration {
+                        required: 1,
+                        available: 0,
+                    },
+                ));
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
     /// Create new Spending [`Conditions`]
     pub fn new(
         locktime: Option<u64>,
@@ -192,46 +252,39 @@ impl Conditions {
             );
         }
 
-        if let Some(n) = num_sigs {
-            if n == 0 {
-                return Err(Error::NUT11(crate::nut11::Error::ZeroSignaturesRequired));
-            }
-            let available_keys = 1 + pubkeys.as_ref().map(Vec::len).unwrap_or(0);
-            if n > available_keys as u64 {
-                return Err(Error::NUT11(
-                    crate::nut11::Error::ImpossibleMultisigConfiguration {
-                        required: n,
-                        available: available_keys as u64,
-                    },
-                ));
-            }
-        }
-
-        if let Some(n) = num_sigs_refund {
-            if n == 0 {
-                return Err(Error::NUT11(crate::nut11::Error::ZeroSignaturesRequired));
-            }
-            let refund_key_count = refund_keys.as_ref().map(Vec::len).unwrap_or(0);
-            if n > refund_key_count as u64 {
-                return Err(Error::NUT11(
-                    crate::nut11::Error::ImpossibleMultisigConfiguration {
-                        required: n,
-                        available: refund_key_count as u64,
-                    },
-                ));
-            }
-        }
-
-        Ok(Self {
+        let conditions = Self {
             locktime,
             pubkeys,
             refund_keys,
             num_sigs,
             sig_flag: sig_flag.unwrap_or_default(),
             num_sigs_refund,
-        })
+        };
+        conditions.validate(1)?;
+
+        Ok(conditions)
     }
 }
+
+impl SpendingConditions {
+    fn validate(&self) -> Result<(), Error> {
+        match self {
+            Self::P2PKConditions { conditions, .. } => {
+                if let Some(conditions) = conditions {
+                    conditions.validate(1)?;
+                }
+            }
+            Self::HTLCConditions { conditions, .. } => {
+                if let Some(conditions) = conditions {
+                    conditions.validate(0)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 impl From<Conditions> for Vec<Vec<String>> {
     fn from(conditions: Conditions) -> Vec<Vec<String>> {
         let Conditions {
@@ -257,7 +310,7 @@ impl From<Conditions> for Vec<Vec<String>> {
             tags.push(Tag::NSigs(num_sigs).as_vec());
         }
 
-        if let Some(refund_keys) = refund_keys {
+        if let Some(refund_keys) = refund_keys.filter(|keys| !keys.is_empty()) {
             tags.push(Tag::Refund(refund_keys).as_vec())
         }
 
@@ -324,6 +377,25 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
             return Err(Error::NUT11(crate::nut11::Error::ZeroSignaturesRequired));
         }
 
+        if let Some(refund_keys) = &refund_keys {
+            let required = num_sigs_refund.unwrap_or(1);
+            if required > refund_keys.len() as u64 {
+                return Err(Error::NUT11(
+                    crate::nut11::Error::ImpossibleRefundMultisigConfiguration {
+                        required,
+                        available: refund_keys.len() as u64,
+                    },
+                ));
+            }
+        } else if let Some(required) = num_sigs_refund {
+            return Err(Error::NUT11(
+                crate::nut11::Error::ImpossibleRefundMultisigConfiguration {
+                    required,
+                    available: 0,
+                },
+            ));
+        }
+
         Ok(Conditions {
             locktime,
             pubkeys,
@@ -374,5 +446,85 @@ mod tests {
             conditions.refund_keys,
             Some(vec![PublicKey::from_str(pk1).unwrap()])
         );
+    }
+
+    #[test]
+    fn test_empty_refund_tag_is_rejected() {
+        let tags = vec![
+            vec!["refund".to_string()],
+            vec!["sigflag".to_string(), "SIG_INPUTS".to_string()],
+        ];
+
+        let result = Conditions::try_from(tags);
+
+        assert!(matches!(
+            result,
+            Err(Error::NUT11(
+                crate::nut11::Error::ImpossibleRefundMultisigConfiguration {
+                    required: 1,
+                    available: 0
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_empty_refund_keys_are_not_serialized() {
+        let conditions = Conditions {
+            locktime: Some(1),
+            pubkeys: None,
+            refund_keys: Some(vec![]),
+            num_sigs: None,
+            sig_flag: crate::SigFlag::default(),
+            num_sigs_refund: None,
+        };
+
+        let tags = Vec::<Vec<String>>::from(conditions);
+
+        assert!(!tags
+            .iter()
+            .any(|tag| tag.first() == Some(&"refund".to_string())));
+    }
+
+    #[test]
+    fn test_n_sigs_refund_without_refund_keys_is_rejected() {
+        let tags = vec![
+            vec!["n_sigs_refund".to_string(), "1".to_string()],
+            vec!["sigflag".to_string(), "SIG_INPUTS".to_string()],
+        ];
+
+        let result = Conditions::try_from(tags);
+
+        assert!(matches!(
+            result,
+            Err(Error::NUT11(
+                crate::nut11::Error::ImpossibleRefundMultisigConfiguration {
+                    required: 1,
+                    available: 0
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_spending_conditions_try_from_propagates_invalid_tags() {
+        let pubkey = PublicKey::from_str(
+            "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198",
+        )
+        .unwrap();
+        let nut10_secret = Nut10Secret::new(
+            Kind::P2PK,
+            crate::nuts::nut10::SecretData::new(
+                pubkey.to_string(),
+                Some(vec![vec!["n_sigs".to_string(), "0".to_string()]]),
+            ),
+        );
+
+        let result = SpendingConditions::try_from(nut10_secret);
+
+        assert!(matches!(
+            result,
+            Err(Error::NUT11(crate::nut11::Error::ZeroSignaturesRequired))
+        ));
     }
 }

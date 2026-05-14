@@ -748,4 +748,84 @@ mod tests {
             "Should fail when using refund path with refund keys but no signature"
         );
     }
+
+    #[test]
+    fn test_htlc_generated_empty_refund_keys_are_omitted() {
+        use crate::nuts::nut10::Conditions;
+
+        let preimage_bytes = [42u8; 32];
+        let hash = Sha256Hash::hash(&preimage_bytes);
+        let hash_str = hash.to_string();
+
+        let conditions = Conditions {
+            locktime: Some(1),
+            pubkeys: None,
+            refund_keys: Some(vec![]),
+            num_sigs: None,
+            sig_flag: crate::nuts::nut11::SigFlag::default(),
+            num_sigs_refund: None,
+        };
+
+        let nut10_secret =
+            Nut10Secret::new(Kind::HTLC, SecretData::new(hash_str, Some(conditions)));
+        let secret: SecretString = nut10_secret.try_into().unwrap();
+
+        let htlc_witness = HTLCWitness {
+            preimage: hex::encode([0xffu8; 32]),
+            signatures: None,
+        };
+
+        let proof = Proof {
+            amount: crate::Amount::from(1),
+            keyset_id: crate::nuts::nut02::Id::from_str("00deadbeef123456").unwrap(),
+            secret,
+            c: crate::nuts::nut01::PublicKey::from_hex(
+                "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
+            )
+            .unwrap(),
+            witness: Some(Witness::HTLCWitness(htlc_witness)),
+            dleq: None,
+            p2pk_e: None,
+        };
+
+        assert!(proof.verify_htlc().is_ok());
+    }
+
+    #[test]
+    fn test_htlc_empty_refund_tag_is_rejected() {
+        let preimage_bytes = [42u8; 32];
+        let hash = Sha256Hash::hash(&preimage_bytes);
+        let hash_str = hash.to_string();
+
+        let tags = vec![
+            vec!["locktime".to_string(), "1".to_string()],
+            vec!["refund".to_string()],
+        ];
+
+        let nut10_secret = Nut10Secret::new(Kind::HTLC, SecretData::new(hash_str, Some(tags)));
+        let secret: SecretString = nut10_secret.try_into().unwrap();
+
+        let htlc_witness = HTLCWitness {
+            preimage: hex::encode([0xffu8; 32]),
+            signatures: None,
+        };
+
+        let proof = Proof {
+            amount: crate::Amount::from(1),
+            keyset_id: crate::nuts::nut02::Id::from_str("00deadbeef123456").unwrap(),
+            secret,
+            c: crate::nuts::nut01::PublicKey::from_hex(
+                "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
+            )
+            .unwrap(),
+            witness: Some(Witness::HTLCWitness(htlc_witness)),
+            dleq: None,
+            p2pk_e: None,
+        };
+
+        assert!(matches!(
+            proof.verify_htlc(),
+            Err(Error::SpendConditionsNotMet)
+        ));
+    }
 }
