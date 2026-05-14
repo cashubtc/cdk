@@ -2181,7 +2181,7 @@ mod tests {
         assert!(
             matches!(
                 err,
-                crate::nut10::Error::NUT11(Error::ImpossibleMultisigConfiguration {
+                crate::nut10::Error::NUT11(Error::ImpossibleRefundMultisigConfiguration {
                     required: 3,
                     available: 1,
                 })
@@ -2225,7 +2225,7 @@ mod tests {
         assert!(
             matches!(
                 err,
-                crate::nut10::Error::NUT11(Error::ImpossibleMultisigConfiguration {
+                crate::nut10::Error::NUT11(Error::ImpossibleRefundMultisigConfiguration {
                     required: 1,
                     available: 0,
                 })
@@ -2292,27 +2292,13 @@ mod tests {
             num_sigs_refund: None,
         };
 
-        // Creating the secret correctly
-        let secret: Secret = SpendingConditions::new_p2pk(data_pubkey, Some(conditions))
-            .try_into()
-            .unwrap();
+        let result: Result<Secret, _> =
+            SpendingConditions::new_p2pk(data_pubkey, Some(conditions)).try_into();
 
-        let proof = Proof {
-            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
-            amount: Amount::ZERO,
-            secret,
-            c: data_pubkey,
-            witness: Some(Witness::P2PKWitness(P2PKWitness { signatures: vec![] })),
-            dleq: None,
-            p2pk_e: None,
-        };
-
-        // FAILS on HEAD: required_sigs=0 makes the comparison trivially true
-        // for any witness, including an empty one with no signatures.
-        assert!(
-            proof.verify_p2pk().is_err(),
-            "P2PK with num_sigs=0 must not be spendable with an empty witness"
-        );
+        assert!(matches!(
+            result,
+            Err(crate::nut10::Error::NUT11(Error::ZeroSignaturesRequired))
+        ));
     }
 
     #[test]
