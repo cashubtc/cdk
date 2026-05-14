@@ -14,7 +14,17 @@ impl Mint {
         method: &ProtectedEndpoint,
     ) -> Result<Option<AuthRequired>, Error> {
         if let Some(auth_db) = self.auth_localstore.as_ref() {
-            Ok(auth_db.get_auth_for_endpoint(method.clone()).await?)
+            if let Some(auth_required) = auth_db.get_auth_for_endpoint(method.clone()).await? {
+                return Ok(Some(auth_required));
+            }
+
+            Ok(auth_db
+                .get_auth_for_endpoints()
+                .await?
+                .into_iter()
+                .filter_map(|(endpoint, auth)| endpoint.match_specificity(method).zip(auth))
+                .max_by_key(|(specificity, _)| *specificity)
+                .map(|(_, auth)| auth))
         } else {
             Ok(None)
         }
