@@ -2,8 +2,8 @@ use tracing::instrument;
 
 use super::nut21::ProtectedEndpoint;
 use super::{
-    AuthProof, AuthRequired, AuthToken, BlindAuthToken, BlindSignature, BlindedMessage, Error,
-    Mint, State,
+    AuthProof, AuthRequired, AuthToken, BlindAuthToken, BlindSignature, BlindedMessage,
+    CurrencyUnit, Error, Mint, State,
 };
 
 impl Mint {
@@ -34,6 +34,16 @@ impl Mint {
     /// Verify Blind auth
     #[instrument(skip(self, token))]
     pub async fn verify_blind_auth(&self, token: &BlindAuthToken) -> Result<(), Error> {
+        let keysets = self.keysets.load();
+        let keyset = keysets
+            .iter()
+            .find(|k| k.id == token.auth_proof.keyset_id)
+            .ok_or(Error::UnknownKeySet)?;
+
+        if keyset.unit != CurrencyUnit::Auth {
+            return Err(Error::BlindAuthFailed);
+        }
+
         self.signatory
             .verify_proofs(vec![token.auth_proof.clone().into()])
             .await
