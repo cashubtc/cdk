@@ -193,6 +193,9 @@ impl Conditions {
         }
 
         if let Some(n) = num_sigs {
+            if n == 0 {
+                return Err(Error::NUT11(crate::nut11::Error::ZeroSignaturesRequired));
+            }
             let available_keys = 1 + pubkeys.as_ref().map(Vec::len).unwrap_or(0);
             if n > available_keys as u64 {
                 return Err(Error::NUT11(
@@ -205,6 +208,9 @@ impl Conditions {
         }
 
         if let Some(n) = num_sigs_refund {
+            if n == 0 {
+                return Err(Error::NUT11(crate::nut11::Error::ZeroSignaturesRequired));
+            }
             let refund_key_count = refund_keys.as_ref().map(Vec::len).unwrap_or(0);
             if n > refund_key_count as u64 {
                 return Err(Error::NUT11(
@@ -309,6 +315,13 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
                 }
                 Tag::Custom(_, _) => {}
             }
+        }
+
+        if let Some(0) = num_sigs {
+            return Err(Error::NUT11(crate::nut11::Error::ZeroSignaturesRequired));
+        }
+        if let Some(0) = num_sigs_refund {
+            return Err(Error::NUT11(crate::nut11::Error::ZeroSignaturesRequired));
         }
 
         Ok(Conditions {
