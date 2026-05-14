@@ -280,7 +280,17 @@ impl AuthWallet {
     pub async fn is_protected(&self, method: &ProtectedEndpoint) -> Option<AuthRequired> {
         let protected_endpoints = self.protected_endpoints.read().await;
 
-        protected_endpoints.get(method).copied()
+        protected_endpoints.get(method).copied().or_else(|| {
+            protected_endpoints
+                .iter()
+                .filter_map(|(endpoint, auth)| {
+                    endpoint
+                        .match_specificity(method)
+                        .map(|specificity| (specificity, *auth))
+                })
+                .max_by_key(|(specificity, _)| *specificity)
+                .map(|(_, auth)| auth)
+        })
     }
 
     /// Get Auth Token
@@ -469,5 +479,78 @@ impl AuthWallet {
         Ok(Amount::from(
             self.get_unspent_auth_proofs().await?.len() as u64
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use cdk_common::mint_url::MintUrl;
+
+    use super::*;
+    use crate::nuts::{Method, RoutePath};
+
+    async fn auth_wallet(
+        protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
+    ) -> AuthWallet {
+        let mint_url = MintUrl::from_str("https://test-mint.example.com")
+            .expect("test mint URL should be valid");
+        let localstore = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("in-memory wallet database should initialize"),
+        );
+        let metadata_cache = Arc::new(MintMetadataCache::new(mint_url.clone()));
+
+        AuthWallet::new(
+            mint_url,
+            None,
+            localstore,
+            metadata_cache,
+            protected_endpoints,
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn is_protected_matches_wildcard_by_specificity() {
+        let request =
+            ProtectedEndpoint::new(Method::Post, RoutePath::MintQuote("bolt11".to_string()));
+        let exact =
+            ProtectedEndpoint::new(Method::Post, RoutePath::MintQuote("bolt11".to_string()));
+        let broad_wildcard =
+            ProtectedEndpoint::new(Method::Post, RoutePath::Wildcard("/v1/".to_string()));
+        let specific_wildcard = ProtectedEndpoint::new(
+            Method::Post,
+            RoutePath::Wildcard("/v1/mint/quote/".to_string()),
+        );
+        let different_method_wildcard = ProtectedEndpoint::new(
+            Method::Get,
+            RoutePath::Wildcard("/v1/mint/quote/".to_string()),
+        );
+
+        let wallet = auth_wallet(HashMap::from([
+            (broad_wildcard, AuthRequired::Clear),
+            (specific_wildcard, AuthRequired::Blind),
+            (different_method_wildcard, AuthRequired::Clear),
+        ]))
+        .await;
+
+        assert_eq!(
+            wallet.is_protected(&request).await,
+            Some(AuthRequired::Blind)
+        );
+
+        wallet
+            .protected_endpoints
+            .write()
+            .await
+            .insert(exact, AuthRequired::Clear);
+
+        assert_eq!(
+            wallet.is_protected(&request).await,
+            Some(AuthRequired::Clear)
+        );
     }
 }

@@ -369,7 +369,7 @@ mod tests {
         let settings: Settings = serde_json::from_str(json).unwrap();
 
         assert_eq!(settings.bat_max_mint, 5);
-        assert_eq!(settings.protected_endpoints.len(), 5); // 4 mint paths + 1 swap path
+        assert_eq!(settings.protected_endpoints.len(), 6); // 4 mint paths + wildcard + 1 swap path
 
         let expected_protected: HashSet<ProtectedEndpoint> = HashSet::from_iter(vec![
             ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
@@ -389,6 +389,7 @@ mod tests {
                 Method::Get,
                 RoutePath::Mint(PaymentMethod::Known(KnownMethod::Bolt12).to_string()),
             ),
+            ProtectedEndpoint::new(Method::Get, RoutePath::Wildcard("/v1/mint/".to_string())),
         ]);
 
         let deserialized_protected = settings.protected_endpoints.into_iter().collect();
@@ -413,6 +414,22 @@ mod tests {
     }
 
     #[test]
+    fn test_settings_deserialize_unknown_exact_path() {
+        let json = r#"{
+            "bat_max_mint": 5,
+            "protected_endpoints": [
+                {
+                    "method": "POST",
+                    "path": "/v1/swp"
+                }
+            ]
+        }"#;
+
+        let result = serde_json::from_str::<Settings>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_settings_deserialize_all_paths() {
         let json = r#"{
             "bat_max_mint": 5,
@@ -427,7 +444,7 @@ mod tests {
         let settings: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(
             settings.protected_endpoints.len(),
-            RoutePath::all_known_paths().len()
+            RoutePath::all_known_paths().len() + 1
         );
     }
 }

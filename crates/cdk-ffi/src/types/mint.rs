@@ -2,7 +2,6 @@
 
 use std::str::FromStr;
 
-use cdk::nuts::nut00::{KnownMethod, PaymentMethod as NutPaymentMethod};
 use serde::{Deserialize, Serialize};
 
 use super::amount::{Amount, CurrencyUnit};
@@ -460,44 +459,10 @@ impl TryFrom<ProtectedEndpoint> for cdk::nuts::ProtectedEndpoint {
             }
         };
 
-        // Convert path string to RoutePath by matching against known paths
-        let route_path = match endpoint.path.as_str() {
-            "/v1/mint/quote/bolt11" => cdk::nuts::RoutePath::MintQuote(
-                NutPaymentMethod::Known(KnownMethod::Bolt11).to_string(),
-            ),
-            "/v1/mint/bolt11" => {
-                cdk::nuts::RoutePath::Mint(NutPaymentMethod::Known(KnownMethod::Bolt11).to_string())
-            }
-            "/v1/melt/quote/bolt11" => cdk::nuts::RoutePath::MeltQuote(
-                NutPaymentMethod::Known(KnownMethod::Bolt11).to_string(),
-            ),
-            "/v1/melt/bolt11" => {
-                cdk::nuts::RoutePath::Melt(NutPaymentMethod::Known(KnownMethod::Bolt11).to_string())
-            }
-            "/v1/swap" => cdk::nuts::RoutePath::Swap,
-            "/v1/ws" => cdk::nuts::RoutePath::Ws,
-            "/v1/checkstate" => cdk::nuts::RoutePath::Checkstate,
-            "/v1/restore" => cdk::nuts::RoutePath::Restore,
-            "/v1/auth/blind/mint" => cdk::nuts::RoutePath::MintBlindAuth,
-            "/v1/mint/quote/bolt12" => cdk::nuts::RoutePath::MintQuote(
-                NutPaymentMethod::Known(KnownMethod::Bolt12).to_string(),
-            ),
-            "/v1/mint/bolt12" => {
-                cdk::nuts::RoutePath::Mint(NutPaymentMethod::Known(KnownMethod::Bolt12).to_string())
-            }
-            "/v1/melt/quote/bolt12" => cdk::nuts::RoutePath::MeltQuote(
-                NutPaymentMethod::Known(KnownMethod::Bolt12).to_string(),
-            ),
-            "/v1/melt/bolt12" => {
-                cdk::nuts::RoutePath::Melt(NutPaymentMethod::Known(KnownMethod::Bolt12).to_string())
-            }
-            _ => {
-                return Err(FfiError::internal(format!(
-                    "Unknown route path: {}",
-                    endpoint.path
-                )))
-            }
-        };
+        let route_path = endpoint
+            .path
+            .parse()
+            .map_err(|err| FfiError::internal(format!("Unknown route path: {err}")))?;
 
         Ok(cdk::nuts::ProtectedEndpoint::new(method, route_path))
     }
@@ -724,6 +689,8 @@ pub fn encode_mint_info(info: MintInfo) -> Result<String, FfiError> {
 }
 #[cfg(test)]
 mod tests {
+    use cdk::nuts::nut00::{KnownMethod, PaymentMethod as NutPaymentMethod};
+
     use super::*;
 
     /// Helper function to create a sample cdk::nuts::Nuts for testing
