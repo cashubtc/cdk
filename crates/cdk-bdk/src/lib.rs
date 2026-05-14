@@ -9,6 +9,7 @@ use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -27,7 +28,7 @@ use cdk_common::payment::{
     SettingsResponse, WaitPaymentResponse,
 };
 use cdk_common::{Amount, CurrencyUnit, MeltQuoteState};
-use futures::{Stream, StreamExt};
+use futures::Stream;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::BroadcastStream;
@@ -61,6 +62,48 @@ pub(crate) struct BackgroundTasks {
     pub(crate) cancel: CancellationToken,
     pub(crate) sync: JoinHandle<()>,
     pub(crate) batch: JoinHandle<()>,
+}
+
+struct PaymentEventStream {
+    receiver: BroadcastStream<Event>,
+    cancel: Pin<Box<dyn Future<Output = ()> + Send + 'static>>,
+    is_active: Arc<AtomicBool>,
+}
+
+impl Stream for PaymentEventStream {
+    type Item = Event;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+
+        if this.cancel.as_mut().poll(cx).is_ready() {
+            this.is_active.store(false, Ordering::SeqCst);
+            return Poll::Ready(None);
+        }
+
+        loop {
+            match Pin::new(&mut this.receiver).poll_next(cx) {
+                Poll::Ready(Some(Ok(event))) => return Poll::Ready(Some(event)),
+                Poll::Ready(Some(Err(err))) => {
+                    tracing::warn!(
+                        "cdk-bdk payment event subscriber lagged or errored: {}",
+                        err
+                    );
+                }
+                Poll::Ready(None) => {
+                    this.is_active.store(false, Ordering::SeqCst);
+                    return Poll::Ready(None);
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+impl Drop for PaymentEventStream {
+    fn drop(&mut self) {
+        self.is_active.store(false, Ordering::SeqCst);
+    }
 }
 
 impl WalletWithDb {
@@ -123,6 +166,19 @@ impl CdkBdk {
             return Err(Error::DustOutput {
                 amount: amount_sat,
                 dust_limit,
+            });
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn validate_send_amount(&self, address: &str, amount_sat: u64) -> Result<(), Error> {
+        self.validate_send_amount_against_dust(address, amount_sat)?;
+
+        if amount_sat < self.min_send_amount_sat {
+            return Err(Error::AmountBelowMinimumSend {
+                amount: amount_sat,
+                min: self.min_send_amount_sat,
             });
         }
 
@@ -223,6 +279,18 @@ impl CdkBdk {
         let wallet_with_db = WalletWithDb::new(wallet, db);
 
         let batch_config = batch_config.unwrap_or_default();
+        if batch_config.poll_interval.is_zero() {
+            return Err(Error::InvalidConfig(
+                "batch_config.poll_interval must be greater than zero".to_string(),
+            ));
+        }
+
+        if sync_interval_secs == 0 {
+            return Err(Error::InvalidConfig(
+                "sync_interval_secs must be greater than zero".to_string(),
+            ));
+        }
+
         let channel_capacity = batch_config.max_batch_size * 2 + 16;
         let (payment_sender, _) = tokio::sync::broadcast::channel(channel_capacity);
 
@@ -421,7 +489,7 @@ impl MintPayment for CdkBdk {
 
         let tier = PaymentTier::from_optional_str(onchain_options.tier.as_deref());
 
-        self.validate_send_amount_against_dust(
+        self.validate_send_amount(
             &onchain_options.address,
             onchain_options.amount.clone().to_u64(),
         )?;
@@ -510,7 +578,7 @@ impl MintPayment for CdkBdk {
         let amount = onchain_options.amount;
         let quote_id = onchain_options.quote_id;
 
-        self.validate_send_amount_against_dust(&address, amount.clone().to_u64())?;
+        self.validate_send_amount(&address, amount.clone().to_u64())?;
 
         let max_fee = onchain_options
             .max_fee_amount
@@ -585,21 +653,16 @@ impl MintPayment for CdkBdk {
     async fn wait_payment_event(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
+        self.wait_invoice_is_active.store(true, Ordering::SeqCst);
+
         let receiver = self.payment_sender.subscribe();
-        Ok(Box::pin(BroadcastStream::new(receiver).filter_map(
-            |event| async move {
-                match event {
-                    Ok(event) => Some(event),
-                    Err(err) => {
-                        tracing::warn!(
-                            "cdk-bdk payment event subscriber lagged or errored: {}",
-                            err
-                        );
-                        None
-                    }
-                }
-            },
-        )))
+        let stream = PaymentEventStream {
+            receiver: BroadcastStream::new(receiver),
+            cancel: Box::pin(self.wait_invoice_cancel_token.clone().cancelled_owned()),
+            is_active: Arc::clone(&self.wait_invoice_is_active),
+        };
+
+        Ok(Box::pin(stream))
     }
 
     async fn check_incoming_payment_status(
@@ -656,6 +719,9 @@ impl MintPayment for CdkBdk {
                     fee_contribution_sat,
                     ..
                 } => Amount::new(record.amount_sat + fee_contribution_sat, CurrencyUnit::Sat),
+                crate::send::payment_intent::record::SendIntentState::Failed { .. } => {
+                    Amount::new(0, CurrencyUnit::Sat)
+                }
             };
             let status = match record.state {
                 crate::send::payment_intent::record::SendIntentState::Pending { .. }
@@ -663,6 +729,9 @@ impl MintPayment for CdkBdk {
                 | crate::send::payment_intent::record::SendIntentState::AwaitingConfirmation {
                     ..
                 } => MeltQuoteState::Pending,
+                crate::send::payment_intent::record::SendIntentState::Failed { .. } => {
+                    MeltQuoteState::Failed
+                }
             };
 
             return Ok(MakePaymentResponse {
@@ -715,6 +784,7 @@ mod tests {
     use bdk_wallet::keys::bip39::Mnemonic;
     use cdk_common::common::FeeReserve;
     use cdk_common::payment::MintPayment;
+    use futures::StreamExt;
 
     use super::*;
     use crate::fee::{
@@ -734,6 +804,16 @@ mod tests {
     async fn build_test_instance_with_tempdir(
         shutdown_timeout_secs: u64,
     ) -> (CdkBdk, tempfile::TempDir) {
+        build_test_instance_with_config(shutdown_timeout_secs, None, 60)
+            .await
+            .expect("build CdkBdk test instance")
+    }
+
+    async fn build_test_instance_with_config(
+        shutdown_timeout_secs: u64,
+        batch_config: Option<BatchConfig>,
+        sync_interval_secs: u64,
+    ) -> Result<(CdkBdk, tempfile::TempDir), Error> {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mnemonic = Mnemonic::from_str(
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
@@ -761,17 +841,16 @@ mod tests {
             tmp.path().to_string_lossy().into_owned(),
             fee_reserve,
             Arc::new(kv),
-            None,
+            batch_config,
             1,
             0,
             546,
-            60,
+            sync_interval_secs,
             Some(shutdown_timeout_secs),
             None,
-        )
-        .expect("build CdkBdk test instance");
+        )?;
 
-        (backend, tmp)
+        Ok((backend, tmp))
     }
 
     async fn fund_backend_wallet(backend: &CdkBdk, amount_sat: u64) {
@@ -800,6 +879,33 @@ mod tests {
             .wallet
             .apply_unconfirmed_txs([(funding_tx, 0)]);
         wallet_with_db.persist().expect("persist funded wallet");
+    }
+
+    #[tokio::test]
+    async fn test_new_rejects_zero_sync_interval() {
+        match build_test_instance_with_config(5, None, 0).await {
+            Err(Error::InvalidConfig(message)) => {
+                assert!(message.contains("sync_interval_secs"));
+            }
+            Ok(_) => panic!("zero sync interval should be rejected"),
+            Err(err) => panic!("expected invalid config error, got {err}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_new_rejects_zero_batch_poll_interval() {
+        let batch_config = BatchConfig {
+            poll_interval: Duration::ZERO,
+            ..BatchConfig::default()
+        };
+
+        match build_test_instance_with_config(5, Some(batch_config), 60).await {
+            Err(Error::InvalidConfig(message)) => {
+                assert!(message.contains("poll_interval"));
+            }
+            Ok(_) => panic!("zero batch poll interval should be rejected"),
+            Err(err) => panic!("expected invalid config error, got {err}"),
+        }
     }
 
     #[tokio::test]
@@ -842,6 +948,26 @@ mod tests {
         backend.stop().await.expect("first stop");
         backend.start().await.expect("second start");
         backend.stop().await.expect("second stop");
+    }
+
+    #[tokio::test]
+    async fn test_wait_payment_event_tracks_active_state_and_cancels() {
+        let backend = build_test_instance(5).await;
+        assert!(!backend.is_payment_event_stream_active());
+
+        let mut stream = backend
+            .wait_payment_event()
+            .await
+            .expect("payment event stream");
+        assert!(backend.is_payment_event_stream_active());
+
+        backend.cancel_payment_event_stream();
+
+        let next = tokio::time::timeout(Duration::from_secs(2), stream.next())
+            .await
+            .expect("stream should observe cancellation promptly");
+        assert!(next.is_none());
+        assert!(!backend.is_payment_event_stream_active());
     }
 
     #[test]
@@ -985,15 +1111,19 @@ mod tests {
         let quote_id = QuoteId::UUID(Uuid::new_v4());
         (
             quote_id.clone(),
-            OutgoingPaymentOptions::Onchain(Box::new(OnchainOutgoingPaymentOptions {
-                address: "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
-                amount: Amount::new(amount_sat, CurrencyUnit::Sat),
-                max_fee_amount: Some(Amount::new(1_000, CurrencyUnit::Sat)),
-                quote_id,
-                tier: None,
-                metadata: None,
-            })),
+            onchain_options_for_quote(quote_id, amount_sat),
         )
+    }
+
+    fn onchain_options_for_quote(quote_id: QuoteId, amount_sat: u64) -> OutgoingPaymentOptions {
+        OutgoingPaymentOptions::Onchain(Box::new(OnchainOutgoingPaymentOptions {
+            address: "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            amount: Amount::new(amount_sat, CurrencyUnit::Sat),
+            max_fee_amount: Some(Amount::new(1_000, CurrencyUnit::Sat)),
+            quote_id,
+            tier: None,
+            metadata: None,
+        }))
     }
 
     #[tokio::test]
@@ -1068,6 +1198,67 @@ mod tests {
                 .expect("lookup send intent by quote id")
                 .is_none(),
             "dust rejection must not leave a pending send intent behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_payment_quote_rejects_amount_below_minimum_send() {
+        let backend = build_test_instance(5).await;
+        let (_quote_id, options) = onchain_options_for(545);
+
+        let err = backend
+            .get_payment_quote(&CurrencyUnit::Sat, options)
+            .await
+            .expect_err("amount below configured minimum should be rejected at quote time");
+
+        let cdk_common::payment::Error::Onchain(inner) = err else {
+            panic!("expected onchain error");
+        };
+
+        let backend_err = inner
+            .downcast_ref::<Error>()
+            .expect("expected cdk-bdk backend error");
+        assert!(matches!(
+            backend_err,
+            Error::AmountBelowMinimumSend {
+                amount: 545,
+                min: 546
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_make_payment_rejects_amount_below_minimum_send_without_persisting_intent() {
+        let backend = build_test_instance(5).await;
+        let (quote_id, options) = onchain_options_for(545);
+
+        let err = backend
+            .make_payment(&CurrencyUnit::Sat, options)
+            .await
+            .expect_err("amount below configured minimum should be rejected before enqueue");
+
+        let cdk_common::payment::Error::Onchain(inner) = err else {
+            panic!("expected onchain error");
+        };
+
+        let backend_err = inner
+            .downcast_ref::<Error>()
+            .expect("expected cdk-bdk backend error");
+        assert!(matches!(
+            backend_err,
+            Error::AmountBelowMinimumSend {
+                amount: 545,
+                min: 546
+            }
+        ));
+        assert!(
+            backend
+                .storage
+                .get_send_intent_by_quote_id(&quote_id.to_string())
+                .await
+                .expect("lookup send intent by quote id")
+                .is_none(),
+            "minimum-send rejection must not leave a pending send intent behind"
         );
     }
 
@@ -1192,6 +1383,93 @@ mod tests {
             "AwaitingConfirmation intents know the per-intent fee \
              contribution and must report amount + fee"
         );
+    }
+
+    #[tokio::test]
+    async fn test_check_outgoing_payment_failed_intent_reports_failed() {
+        use crate::send::payment_intent::SendIntent;
+        use crate::types::{PaymentMetadata, PaymentTier};
+
+        let backend = build_test_instance(5).await;
+        let quote_id = QuoteId::UUID(Uuid::new_v4());
+
+        let pending = SendIntent::new(
+            &backend.storage,
+            quote_id.to_string(),
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            30_000,
+            2_000,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await
+        .expect("create Pending send intent");
+
+        pending
+            .fail(&backend.storage, "fee too high".to_string())
+            .await
+            .expect("transition Pending to Failed");
+
+        let payment_identifier = PaymentIdentifier::QuoteId(quote_id);
+        let response = backend
+            .check_outgoing_payment(&payment_identifier)
+            .await
+            .expect("check_outgoing_payment for Failed intent");
+
+        assert_eq!(response.status, MeltQuoteState::Failed);
+        assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Sat));
+        assert_eq!(response.payment_proof, None);
+    }
+
+    #[tokio::test]
+    async fn test_make_payment_can_retry_failed_intent_with_same_quote_id() {
+        let backend = build_test_instance(5).await;
+        let (quote_id, options) = onchain_options_for(30_000);
+
+        backend
+            .make_payment(&CurrencyUnit::Sat, options)
+            .await
+            .expect("initial make_payment should enqueue intent");
+
+        let initial = backend
+            .storage
+            .get_send_intent_by_quote_id(&quote_id.to_string())
+            .await
+            .expect("lookup initial intent")
+            .expect("initial intent exists");
+
+        backend
+            .storage
+            .update_send_intent(
+                &initial.intent_id,
+                &crate::send::payment_intent::record::SendIntentState::Failed {
+                    reason: "pre-sign failure".to_string(),
+                    created_at: 1_700_000_000,
+                    failed_at: 1_700_000_100,
+                },
+            )
+            .await
+            .expect("mark failed");
+
+        let retry_options = onchain_options_for_quote(quote_id.clone(), 30_000);
+        let response = backend
+            .make_payment(&CurrencyUnit::Sat, retry_options)
+            .await
+            .expect("retry with same quote id should requeue failed intent");
+
+        assert_eq!(response.status, MeltQuoteState::Pending);
+
+        let retried = backend
+            .storage
+            .get_send_intent_by_quote_id(&quote_id.to_string())
+            .await
+            .expect("lookup retried intent")
+            .expect("retried intent exists");
+        assert_eq!(retried.intent_id, initial.intent_id);
+        assert!(matches!(
+            retried.state,
+            crate::send::payment_intent::record::SendIntentState::Pending { .. }
+        ));
     }
 
     #[tokio::test]

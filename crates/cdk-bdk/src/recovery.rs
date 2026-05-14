@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use bdk_wallet::bitcoin::{OutPoint, Transaction};
 use uuid::Uuid;
 
+use crate::chain::BroadcastOutcome;
 use crate::error::Error;
 use crate::send::batch_transaction::record::{BatchOutputAssignment, SendBatchState};
 use crate::send::payment_intent::record::{SendIntentRecord, SendIntentState};
@@ -115,6 +116,7 @@ impl CdkBdk {
                         );
                     }
                 }
+                SendIntentState::Failed { .. } => {}
             }
         }
 
@@ -158,7 +160,7 @@ impl CdkBdk {
                 SendIntentState::AwaitingConfirmation { .. } => {
                     BatchIntentRelation::IntentAlreadyAdvanced
                 }
-                SendIntentState::Pending { .. } => {
+                SendIntentState::Pending { .. } | SendIntentState::Failed { .. } => {
                     BatchIntentRelation::IntentReferencesDifferentBatch
                 }
             },
@@ -268,41 +270,70 @@ impl CdkBdk {
                     for assignment in &assignments {
                         let id = assignment.intent_id;
                         let record = self.storage.get_send_intent(&id).await?;
-                        match self
-                            .classify_batch_intent_relation(batch_record.batch_id, record.as_ref())
-                        {
-                            BatchIntentRelation::Valid => {
-                                if let Some(record) = record {
-                                    if let SendIntentAny::Batched(intent) =
-                                        payment_intent::from_record(&record)
+                        match record {
+                            Some(record) => match payment_intent::from_record(&record) {
+                                SendIntentAny::Batched(intent)
+                                    if intent.state.batch_id == batch_record.batch_id =>
+                                {
+                                    batched_intents.push(intent);
+                                }
+                                SendIntentAny::Pending(intent) => {
+                                    tracing::warn!(
+                                        batch_id = %batch_record.batch_id,
+                                        intent_id = %id,
+                                        "Repairing Signed batch member still stored as Pending"
+                                    );
+                                    match intent
+                                        .assign_to_batch(&self.storage, batch_record.batch_id)
+                                        .await
                                     {
-                                        batched_intents.push(intent);
+                                        Ok(intent) => batched_intents.push(intent),
+                                        Err(err) => {
+                                            tracing::error!(
+                                                batch_id = %batch_record.batch_id,
+                                                intent_id = %id,
+                                                error = %err,
+                                                "Signed batch recovery aborted because Pending member could not be assigned"
+                                            );
+                                            abort_recovery = true;
+                                            break;
+                                        }
                                     }
                                 }
-                            }
-                            BatchIntentRelation::MissingIntent => {
+                                SendIntentAny::Batched(intent) => {
+                                    tracing::error!(
+                                        batch_id = %batch_record.batch_id,
+                                        intent_id = %id,
+                                        intent_batch_id = %intent.state.batch_id,
+                                        "Signed batch recovery aborted because a member references a different batch"
+                                    );
+                                    abort_recovery = true;
+                                    break;
+                                }
+                                SendIntentAny::AwaitingConfirmation(_) => {
+                                    tracing::error!(
+                                        batch_id = %batch_record.batch_id,
+                                        intent_id = %id,
+                                        "Signed batch recovery aborted because a member is already advanced"
+                                    );
+                                    abort_recovery = true;
+                                    break;
+                                }
+                                SendIntentAny::Failed => {
+                                    tracing::error!(
+                                        batch_id = %batch_record.batch_id,
+                                        intent_id = %id,
+                                        "Signed batch recovery aborted because a member is failed"
+                                    );
+                                    abort_recovery = true;
+                                    break;
+                                }
+                            },
+                            None => {
                                 tracing::error!(
                                     batch_id = %batch_record.batch_id,
                                     intent_id = %id,
                                     "Signed batch recovery aborted because a member is missing"
-                                );
-                                abort_recovery = true;
-                                break;
-                            }
-                            BatchIntentRelation::IntentReferencesDifferentBatch => {
-                                tracing::error!(
-                                    batch_id = %batch_record.batch_id,
-                                    intent_id = %id,
-                                    "Signed batch recovery aborted because a member references a different batch"
-                                );
-                                abort_recovery = true;
-                                break;
-                            }
-                            BatchIntentRelation::IntentAlreadyAdvanced => {
-                                tracing::error!(
-                                    batch_id = %batch_record.batch_id,
-                                    intent_id = %id,
-                                    "Signed batch recovery aborted because a member is already advanced"
                                 );
                                 abort_recovery = true;
                                 break;
@@ -400,12 +431,23 @@ impl CdkBdk {
                         txid_str
                     );
 
-                    if let Err(err) = self.broadcast_transaction_internal(tx).await {
-                        tracing::error!(
-                            "Failed to broadcast signed batch {} during recovery: {}",
-                            batch_record.batch_id,
-                            err
-                        );
+                    match self.broadcast_transaction_internal(tx).await {
+                        Ok(BroadcastOutcome::Accepted) => {}
+                        Ok(BroadcastOutcome::AlreadyKnown) => {
+                            tracing::info!(
+                                "Recovered signed batch {} txid {} was already known to backend",
+                                batch_record.batch_id,
+                                txid_str
+                            );
+                        }
+                        Err(failure) => {
+                            self.log_broadcast_failure(
+                                "Signed batch recovery broadcast failed",
+                                batch_record.batch_id,
+                                &txid_str,
+                                &failure,
+                            );
+                        }
                     }
                 }
                 SendBatchState::Broadcast { txid, tx_bytes, .. } => {
@@ -417,7 +459,20 @@ impl CdkBdk {
                         // crash happened after persistence but before backend
                         // acceptance was observed.
                         tracing::info!("Re-broadcasting batch {} during recovery", txid);
-                        let _ = self.broadcast_transaction_internal(tx).await;
+                        match self.broadcast_transaction_internal(tx).await {
+                            Ok(BroadcastOutcome::Accepted) => {}
+                            Ok(BroadcastOutcome::AlreadyKnown) => {
+                                tracing::info!("Recovery rebroadcast tx {} already known", txid);
+                            }
+                            Err(failure) => {
+                                self.log_broadcast_failure(
+                                    "Broadcast batch recovery rebroadcast failed",
+                                    batch_record.batch_id,
+                                    &txid,
+                                    &failure,
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -430,6 +485,7 @@ impl CdkBdk {
         for persisted in persisted_intents {
             match payment_intent::from_record(&persisted) {
                 SendIntentAny::Pending(_) => {}
+                SendIntentAny::Failed => {}
                 SendIntentAny::Batched(intent) => {
                     let intent_id = intent.intent_id;
                     let batch = batches.iter().find(|b| b.batch_id == intent.state.batch_id);
@@ -562,7 +618,11 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use bdk_wallet::bitcoin::Network;
+    use bdk_wallet::bitcoin::absolute::LockTime;
+    use bdk_wallet::bitcoin::transaction::Version;
+    use bdk_wallet::bitcoin::{
+        consensus, Amount as BtcAmount, Network, ScriptBuf, Transaction, TxOut,
+    };
     use bdk_wallet::keys::bip39::Mnemonic;
     use cdk_common::common::FeeReserve;
     use cdk_common::{Amount, CurrencyUnit};
@@ -640,6 +700,34 @@ mod tests {
                 created_at: 1_700_000_000,
             },
         }
+    }
+
+    fn pending_intent(intent_id: Uuid, quote_id: &str) -> SendIntentRecord {
+        SendIntentRecord {
+            intent_id,
+            quote_id: quote_id.to_string(),
+            address: "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            amount_sat: 25_000,
+            max_fee_amount_sat: 1_000,
+            tier: PaymentTier::Immediate,
+            metadata: PaymentMetadata::default(),
+            state: SendIntentState::Pending {
+                created_at: 1_700_000_000,
+            },
+        }
+    }
+
+    fn valid_tx_bytes() -> Vec<u8> {
+        let tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: Vec::new(),
+            output: vec![TxOut {
+                value: BtcAmount::from_sat(25_000),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        };
+        consensus::serialize(&tx)
     }
 
     async fn assert_still_awaiting(backend: &CdkBdk, intent_id: Uuid) {
@@ -785,5 +873,70 @@ mod tests {
             .expect("recovery should not error");
 
         assert_still_awaiting(&backend, intent_id).await;
+    }
+
+    /// If the process crashes after the signed transaction is persisted but
+    /// before the linked intents are moved out of Pending, recovery must bind
+    /// those intents to the signed batch and continue toward rebroadcast. It
+    /// must not revert them into a fresh batch or fail/unlock them.
+    #[tokio::test]
+    async fn test_recover_send_saga_signed_batch_repairs_pending_member() {
+        let backend = build_test_instance().await;
+        let intent_id = Uuid::new_v4();
+        let batch_id = Uuid::new_v4();
+        let tx_bytes = valid_tx_bytes();
+        let tx: Transaction = consensus::deserialize(&tx_bytes).expect("valid tx");
+        let txid = tx.compute_txid().to_string();
+
+        backend
+            .storage
+            .create_send_intent_if_absent(&pending_intent(intent_id, "quote-signed-pending"))
+            .await
+            .expect("store pending intent");
+
+        backend
+            .storage
+            .store_send_batch(&SendBatchRecord {
+                batch_id,
+                state: SendBatchState::Signed {
+                    tx_bytes: tx_bytes.clone(),
+                    assignments: vec![BatchOutputAssignment {
+                        intent_id,
+                        vout: 0,
+                        fee_contribution_sat: 500,
+                    }],
+                    fee_sat: 500,
+                },
+            })
+            .await
+            .expect("store signed batch");
+
+        tokio::time::timeout(Duration::from_secs(5), backend.recover_send_saga())
+            .await
+            .expect("recovery timed out")
+            .expect("recovery should not error");
+
+        let intent = backend
+            .storage
+            .get_send_intent(&intent_id)
+            .await
+            .expect("get intent")
+            .expect("intent still present");
+        assert!(matches!(
+            intent.state,
+            SendIntentState::AwaitingConfirmation {
+                batch_id: stored_batch_id,
+                txid: ref stored_txid,
+                ..
+            } if stored_batch_id == batch_id && stored_txid == &txid
+        ));
+
+        let batch = backend
+            .storage
+            .get_send_batch(&batch_id)
+            .await
+            .expect("get batch")
+            .expect("batch still present");
+        assert!(matches!(batch.state, SendBatchState::Broadcast { .. }));
     }
 }

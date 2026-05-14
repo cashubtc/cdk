@@ -99,7 +99,7 @@ async fn test_onchain_setup_rejects_amount_for_unselected_fee_option() {
         )
         .await
     {
-        Ok(_) => panic!("selected fee option must drive exact onchain balance"),
+        Ok(_) => panic!("selected fee option must be covered by inputs"),
         Err(err) => err,
     };
 
@@ -158,6 +158,46 @@ async fn test_onchain_setup_accepts_change_outputs() {
         )
         .await
         .expect("onchain melt setup must accept change outputs");
+
+    assert_eq!(setup.state_data.quote.selected_estimated_blocks, Some(1));
+    assert_eq!(setup.state_data.quote.fee_reserve().value(), 500);
+}
+
+/// Test: onchain melt setup accepts inputs greater than amount plus selected fee reserve.
+#[tokio::test]
+async fn test_onchain_setup_accepts_overfunded_inputs() {
+    use cdk_common::nuts::MeltRequest;
+
+    use crate::test_helpers::mint::create_test_blinded_messages;
+
+    let mint = create_test_mint().await.unwrap();
+    let quote = create_test_onchain_melt_quote(&mint).await;
+
+    // amount = 9_000, fee_reserve (blocks=1) = 500. Per NUT-onchain the
+    // wallet includes proofs of at least that amount, so a larger input total
+    // must be accepted and returned through change outputs later.
+    let proofs = mint_test_proofs(&mint, Amount::from(9_600)).await.unwrap();
+    let (blinded_messages, _premint) = create_test_blinded_messages(&mint, Amount::from(100))
+        .await
+        .unwrap();
+
+    let melt_request =
+        MeltRequest::new(quote.id.clone(), proofs, Some(blinded_messages)).estimated_blocks(1);
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+
+    let saga = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let setup = saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Onchain),
+        )
+        .await
+        .expect("onchain melt setup must accept overfunded inputs");
 
     assert_eq!(setup.state_data.quote.selected_estimated_blocks, Some(1));
     assert_eq!(setup.state_data.quote.fee_reserve().value(), 500);

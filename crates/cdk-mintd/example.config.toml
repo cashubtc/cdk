@@ -135,15 +135,49 @@ onchain_backend = "none"
 # # Keep low for public Esplora servers to avoid rate limits.
 # # esplora_parallel_requests = 1
 #
-# # Conservative quote-time fee estimation. These values intentionally
-# # over-reserve so the exact payment-time BDK fee is unlikely to exceed the
-# # quoted reserve. Excess reserve is returned as change in the melt flow.
+# # === Onchain batch + fee-estimation config (BDK) ===
+# #
+# # Outgoing melts are batched into a single on-chain transaction per tier.
+# # Quotes are issued *before* BDK builds the final transaction, so the
+# # reserved fee is an upper-bound estimate. Any excess is returned to the
+# # wallet as change in the melt flow. The defaults intentionally
+# # over-reserve to avoid under-quoting (which would fail the melt at
+# # broadcast time).
+# #
+# # At low fee rates (e.g. ~1 sat/vB on testnet/signet/regtest), the fixed
+# # safety margin dominates the reserve. For a 1000-sat P2WPKH melt at
+# # ~1 sat/vB, the actual paid fee is typically ~140-280 sats while the
+# # default reserve quotes ~700-900 sats. Operators running on low-fee
+# # networks should lower `quote_fixed_safety_sat` and
+# # `quote_safety_multiplier`; the defaults are tuned for mainnet where
+# # fee-rate spikes between quote and broadcast are common.
+# #
+# # Every field below has a matching CDK_MINTD_BDK_* env-var override; see
+# # crates/cdk-mintd/src/env_vars/bdk.rs.
 # # [bdk.batch_config]
-# # fee_fallback_sat_per_vb = 2.0
-# # fee_cache_ttl_secs = 60
-# # quote_max_input_count = 24
-# # quote_fixed_safety_sat = 500
-# # quote_safety_multiplier = 1.25
+# # # --- Batching cadence ---
+# # poll_interval_secs = 30           # batch processor wake interval
+# # max_batch_size = 50               # max intents per batch transaction
+# # standard_deadline_secs = 300      # wait before flushing Standard tier
+# # economy_deadline_secs = 3600      # wait before flushing Economy tier
+# # min_batch_threshold = 1           # min pending intents to flush non-Immediate
+# #
+# # # --- Fee-rate sourcing ---
+# # fee_fallback_sat_per_vb = 2.0     # used only if chain source errors
+# # fee_cache_ttl_secs = 60           # how long to reuse a tier's rate
+# #
+# # # --- Quote-time safety margins ---
+# # quote_max_input_count = 24        # cap on inputs reserved in the vbyte estimate
+# # quote_fixed_safety_sat = 500      # flat sats added after the raw fee estimate
+# # quote_safety_multiplier = 1.25    # multiplicative padding on the raw estimate
+# #
+# # Example overrides for low-fee networks (signet / testnet / regtest):
+# # quote_fixed_safety_sat = 100
+# # quote_safety_multiplier = 1.10
+# #
+# # Note: a few input-weight heuristics in crates/cdk-bdk/src/fee.rs
+# # (QUOTE_INPUT_VBYTES, the +1 padding input) are hard-coded and cannot be
+# # tuned via config. They contribute a smaller but non-zero over-estimate.
 
 # [cln]
 # rpc_path = "/path/to/.lightning/bitcoin/lightning-rpc"

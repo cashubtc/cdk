@@ -11,7 +11,9 @@ pub(crate) mod state;
 
 use uuid::Uuid;
 
-use self::record::{BatchOutputAssignment, SendBatchRecord, SendBatchState};
+#[cfg(test)]
+use self::record::SendBatchRecord;
+use self::record::{BatchOutputAssignment, SendBatchState};
 use self::state::{Built, Signed};
 use crate::error::Error;
 use crate::send::payment_intent::state::Batched;
@@ -114,6 +116,7 @@ pub(crate) fn allocate_batch_fee(
 
 impl SendBatch<Built> {
     /// Create a new batch in the Built state and persist it atomically.
+    #[cfg(test)]
     pub async fn new(
         storage: &BdkStorage,
         batch_id: Uuid,
@@ -154,6 +157,7 @@ impl SendBatch<Built> {
     /// `assignments` records the `intent_id -> vout` mapping plus per-intent
     /// fee contribution. It is computed once at build time and preserved
     /// through Broadcast so recovery never needs to re-derive it.
+    #[cfg(test)]
     pub async fn sign(
         self,
         storage: &BdkStorage,

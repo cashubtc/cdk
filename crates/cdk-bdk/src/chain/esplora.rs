@@ -3,11 +3,10 @@ use std::time::Instant;
 use bdk_esplora::esplora_client::{AsyncClient, Builder};
 use bdk_esplora::EsploraAsyncExt;
 use bdk_wallet::bitcoin::Transaction;
-use bdk_wallet::WalletEvent;
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
-use crate::chain::EsploraConfig;
+use crate::chain::{BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, EsploraConfig};
 use crate::error::Error;
 use crate::CdkBdk;
 
@@ -30,7 +29,6 @@ pub(crate) async fn sync_esplora(
     let configured_interval = Duration::from_secs(cdk_bdk.sync_interval_secs);
     let initial_backoff = configured_interval.max(MIN_ESPLORA_BACKOFF);
     let mut sync_interval = interval(configured_interval);
-    let mut startup_reconciliation_pending = true;
     let warn_ms = cdk_bdk.sync_config.lock_hold_warn_ms;
 
     // Persist Esplora client across sync iterations; re-create on error.
@@ -111,7 +109,7 @@ pub(crate) async fn sync_esplora(
                 };
 
                 // Phase C (short lock): apply the update and persist.
-                let apply_result: Result<Vec<WalletEvent>, Error> = {
+                let apply_result = {
                     let apply_start = Instant::now();
                     let mut w = cdk_bdk.wallet_with_db.lock().await;
                     let res = w
@@ -133,9 +131,7 @@ pub(crate) async fn sync_esplora(
                     res
                 };
 
-                let events = match apply_result {
-                    Ok(events) => events,
-                    Err(e) => {
+                if let Err(e) = apply_result {
                         consecutive_failures =
                             consecutive_failures.saturating_add(1);
                         crate::sync::log_sync_failure(
@@ -144,8 +140,7 @@ pub(crate) async fn sync_esplora(
                             consecutive_failures,
                         );
                         continue;
-                    }
-                };
+                }
 
                 let tip = {
                     let w = cdk_bdk.wallet_with_db.lock().await;
@@ -166,40 +161,86 @@ pub(crate) async fn sync_esplora(
                 }
                 backoff = initial_backoff;
 
-                let has_relevant_events = events.iter().any(|e| matches!(
-                    e,
-                    WalletEvent::TxConfirmed { .. } | WalletEvent::ChainTipChanged { .. }
-                ));
-
-                if startup_reconciliation_pending || has_relevant_events {
-                    cdk_bdk.run_reconciliation().await;
-                    startup_reconciliation_pending = false;
-                }
+                cdk_bdk.run_reconciliation().await;
             }
         }
     }
     Ok(())
 }
 
+pub(crate) fn classify_esplora_broadcast_error(message: &str) -> BroadcastErrorKind {
+    let lower = message.to_ascii_lowercase();
+
+    if lower.contains("already")
+        && (lower.contains("known") || lower.contains("mempool") || lower.contains("chain"))
+    {
+        return BroadcastErrorKind::Unknown;
+    }
+
+    if lower.contains("dust")
+        || lower.contains("min relay")
+        || lower.contains("minrelay")
+        || lower.contains("mandatory-script-verify-flag-failed")
+        || lower.contains("non-mandatory-script-verify-flag")
+        || lower.contains("bad-txns")
+        || lower.contains("nonstandard")
+        || lower.contains("non-standard")
+        || lower.contains("insufficient fee")
+        || lower.contains("fee too low")
+        || lower.contains("mempool min fee")
+        || lower.contains("missing inputs")
+        || lower.contains("txn-mempool-conflict")
+        || lower.contains("replacement-adds-unconfirmed")
+    {
+        return BroadcastErrorKind::Rejected;
+    }
+
+    if lower.contains("timeout")
+        || lower.contains("timed out")
+        || lower.contains("connection")
+        || lower.contains("connect")
+        || lower.contains("dns")
+        || lower.contains("http")
+        || lower.contains("status 5")
+        || lower.contains("temporarily unavailable")
+        || lower.contains("too many requests")
+    {
+        return BroadcastErrorKind::Transient;
+    }
+
+    BroadcastErrorKind::Unknown
+}
+
 pub(crate) async fn broadcast_esplora(
     config: &EsploraConfig,
     tx: Transaction,
-) -> Result<(), Error> {
+) -> Result<BroadcastOutcome, BroadcastFailure> {
     let client = Builder::new(&config.url)
         .build_async()
-        .map_err(|e| Error::Esplora(e.to_string()))?;
+        .map_err(|e| BroadcastFailure::new(BroadcastErrorKind::Transient, e.to_string()))?;
 
     tracing::info!(
         "Broadcasting transaction: {} via esplora",
         tx.compute_txid()
     );
 
-    client
-        .broadcast(&tx)
-        .await
-        .map_err(|e| Error::Esplora(e.to_string()))?;
+    match client.broadcast(&tx).await {
+        Ok(()) => Ok(BroadcastOutcome::Accepted),
+        Err(e) => {
+            let message = e.to_string();
+            let lower = message.to_ascii_lowercase();
+            if lower.contains("already")
+                && (lower.contains("known") || lower.contains("mempool") || lower.contains("chain"))
+            {
+                return Ok(BroadcastOutcome::AlreadyKnown);
+            }
 
-    Ok(())
+            Err(BroadcastFailure::new(
+                classify_esplora_broadcast_error(&message),
+                message,
+            ))
+        }
+    }
 }
 
 pub(crate) async fn fetch_fee_rate_esplora(
@@ -240,4 +281,25 @@ pub(crate) async fn fetch_fee_rate_esplora(
     }
 
     Err(Error::FeeEstimationUnavailable)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_esplora_broadcast_errors() {
+        assert_eq!(
+            classify_esplora_broadcast_error("sendrawtransaction RPC error: missing inputs"),
+            BroadcastErrorKind::Rejected
+        );
+        assert_eq!(
+            classify_esplora_broadcast_error("connection timeout"),
+            BroadcastErrorKind::Transient
+        );
+        assert_eq!(
+            classify_esplora_broadcast_error("unexpected backend response"),
+            BroadcastErrorKind::Unknown
+        );
+    }
 }

@@ -850,6 +850,32 @@ impl Mint {
             // Phase 3: Amount validation
             ensure_cdk!(outputs_amount.unit() == &batch_unit, Error::UnsupportedUnit);
 
+            if batch_method.is_onchain() {
+                let mint_info = self.mint_info().await?;
+                let settings = mint_info
+                    .nuts
+                    .nut04
+                    .get_settings(&batch_unit, &batch_method)
+                    .ok_or(Error::UnsupportedUnit)?;
+
+                let min_amount = settings.min_amount;
+                let max_amount = settings.max_amount;
+                let operation_amount: Amount = outputs_amount.clone().into();
+                let is_above_max =
+                    max_amount.is_some_and(|max_amount| operation_amount > max_amount);
+                let is_below_min =
+                    min_amount.is_some_and(|min_amount| operation_amount < min_amount);
+
+                ensure_cdk!(
+                    !(is_above_max || is_below_min),
+                    Error::AmountOutofLimitRange(
+                        min_amount.unwrap_or_default(),
+                        max_amount.unwrap_or_default(),
+                        operation_amount,
+                    )
+                );
+            }
+
             if outputs_amount.value() > total_expected_value {
                 return Err(Error::TransactionUnbalanced(
                     total_expected_value,
@@ -995,23 +1021,109 @@ impl Mint {
 #[cfg(test)]
 mod batch_mint_tests {
     use std::collections::{HashMap, HashSet};
+    use std::pin::Pin;
     use std::sync::Arc;
 
+    use async_trait::async_trait;
     use bip39::Mnemonic;
     use cdk_common::amount::SplitTarget;
+    use cdk_common::mint::MintQuote;
     use cdk_common::nut00::KnownMethod;
     use cdk_common::nuts::PreMintSecrets;
+    use cdk_common::payment::{
+        self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
+        MintPayment, OnchainSettings, OutgoingPaymentOptions, PaymentIdentifier,
+        PaymentQuoteResponse, SettingsResponse, WaitPaymentResponse,
+    };
     use cdk_common::{
         Amount, BatchMintRequest, CurrencyUnit, Error, MintQuoteBolt11Request,
         MintQuoteBolt11Response, MintQuoteState, MintRequest, PaymentMethod, QuoteId,
     };
     use cdk_fake_wallet::FakeWallet;
+    use futures::Stream;
     use tokio::time::sleep;
 
     use crate::mint::{Mint, MintBuilder, MintMeltLimits};
     use crate::types::{FeeReserve, QuoteTTL};
 
+    struct OnchainTestBackend {
+        unit: CurrencyUnit,
+        confirmations: u32,
+    }
+
+    #[async_trait]
+    impl MintPayment for OnchainTestBackend {
+        type Err = payment::Error;
+
+        async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+            Ok(SettingsResponse {
+                unit: self.unit.to_string(),
+                bolt11: None,
+                bolt12: None,
+                onchain: Some(OnchainSettings {
+                    confirmations: self.confirmations,
+                    min_receive_amount_sat: 0,
+                    min_send_amount_sat: 0,
+                }),
+                custom: HashMap::new(),
+            })
+        }
+
+        async fn create_incoming_payment_request(
+            &self,
+            _options: IncomingPaymentOptions,
+        ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+
+        async fn get_payment_quote(
+            &self,
+            _unit: &CurrencyUnit,
+            _options: OutgoingPaymentOptions,
+        ) -> Result<PaymentQuoteResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+
+        async fn make_payment(
+            &self,
+            _unit: &CurrencyUnit,
+            _options: OutgoingPaymentOptions,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+
+        async fn wait_payment_event(
+            &self,
+        ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
+            Ok(Box::pin(futures::stream::pending()))
+        }
+
+        fn is_payment_event_stream_active(&self) -> bool {
+            false
+        }
+
+        fn cancel_payment_event_stream(&self) {}
+
+        async fn check_incoming_payment_status(
+            &self,
+            _payment_identifier: &PaymentIdentifier,
+        ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+            Ok(Vec::new())
+        }
+
+        async fn check_outgoing_payment(
+            &self,
+            _payment_identifier: &PaymentIdentifier,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+    }
+
     async fn create_test_mint() -> Mint {
+        create_test_mint_with_onchain_limits(1, 10_000).await
+    }
+
+    async fn create_test_mint_with_onchain_limits(onchain_min: u64, onchain_max: u64) -> Mint {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
 
         let mut mint_builder = MintBuilder::new(db.clone());
@@ -1035,6 +1147,21 @@ mod batch_mint_tests {
                 PaymentMethod::Known(KnownMethod::Bolt11),
                 MintMeltLimits::new(1, 10_000),
                 Arc::new(ln_fake_backend),
+            )
+            .await
+            .unwrap();
+
+        let onchain_backend = OnchainTestBackend {
+            unit: CurrencyUnit::Sat,
+            confirmations: 1,
+        };
+
+        mint_builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Onchain),
+                MintMeltLimits::new(onchain_min, onchain_max),
+                Arc::new(onchain_backend),
             )
             .await
             .unwrap();
@@ -1083,6 +1210,67 @@ mod batch_mint_tests {
                 }
             }
             sleep(std::time::Duration::from_secs(1)).await;
+        }
+    }
+
+    async fn add_paid_onchain_mint_quote(mint: &Mint, paid_amount: u64) -> QuoteId {
+        let quote_id = QuoteId::new_uuid();
+        let quote = MintQuote::new(
+            Some(quote_id.clone()),
+            "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
+            CurrencyUnit::Sat,
+            None,
+            0,
+            PaymentIdentifier::QuoteId(quote_id.clone()),
+            None,
+            Amount::new(paid_amount, CurrencyUnit::Sat),
+            Amount::new(0, CurrencyUnit::Sat),
+            PaymentMethod::Known(KnownMethod::Onchain),
+            cdk_common::util::unix_time(),
+            vec![],
+            vec![],
+            None,
+        );
+
+        let mut tx = mint.localstore().begin_transaction().await.unwrap();
+        let mut quote = tx.add_mint_quote(quote).await.unwrap();
+        quote
+            .add_payment(
+                Amount::new(paid_amount, CurrencyUnit::Sat),
+                "onchain-test-payment".to_string(),
+                None,
+            )
+            .unwrap();
+        tx.update_mint_quote(&mut quote).await.unwrap();
+        tx.commit().await.unwrap();
+
+        quote_id
+    }
+
+    fn mint_request_for_amount(mint: &Mint, quote: QuoteId, amount: u64) -> MintRequest<QuoteId> {
+        let keyset_id = *mint.get_active_keysets().get(&CurrencyUnit::Sat).unwrap();
+        let keys = mint
+            .keyset_pubkeys(&keyset_id)
+            .unwrap()
+            .keysets
+            .first()
+            .unwrap()
+            .keys
+            .clone();
+        let fees: (u64, Vec<u64>) = (0, keys.iter().map(|a| a.0.to_u64()).collect::<Vec<_>>());
+
+        let premint_secrets = PreMintSecrets::random(
+            keyset_id,
+            Amount::from(amount),
+            &SplitTarget::None,
+            &fees.into(),
+        )
+        .unwrap();
+
+        MintRequest {
+            quote,
+            outputs: premint_secrets.blinded_messages().to_vec(),
+            signature: None,
         }
     }
 
@@ -1160,6 +1348,42 @@ mod batch_mint_tests {
         // Should return 64 sats worth of blind signatures
         let total_sig_amount: u64 = response.signatures.iter().map(|s| s.amount.to_u64()).sum();
         assert_eq!(total_sig_amount, 64);
+    }
+
+    #[tokio::test]
+    async fn test_onchain_mint_rejects_operation_below_min_amount() {
+        let mint = create_test_mint_with_onchain_limits(100, 10_000).await;
+
+        let quote = add_paid_onchain_mint_quote(&mint, 1_000).await;
+        let request = mint_request_for_amount(&mint, quote, 64);
+
+        let err = mint
+            .process_mint_request(crate::mint::MintInput::Single(request))
+            .await
+            .expect_err("onchain mint operation below min_amount must be rejected");
+
+        assert!(
+            matches!(err, Error::AmountOutofLimitRange(_, _, _)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_onchain_mint_rejects_operation_above_max_amount() {
+        let mint = create_test_mint_with_onchain_limits(1, 100).await;
+
+        let quote = add_paid_onchain_mint_quote(&mint, 1_000).await;
+        let request = mint_request_for_amount(&mint, quote, 128);
+
+        let err = mint
+            .process_mint_request(crate::mint::MintInput::Single(request))
+            .await
+            .expect_err("onchain mint operation above max_amount must be rejected");
+
+        assert!(
+            matches!(err, Error::AmountOutofLimitRange(_, _, _)),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[tokio::test]

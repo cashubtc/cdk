@@ -17,9 +17,9 @@ esplora = ["dep:bdk_esplora"]
 
 [dependencies]
 async-trait.workspace = true
-bdk_wallet = { version = "3.0.0", features = ["rusqlite", "keys-bip39"] }
-bdk_bitcoind_rpc = { version = "0.21.0", optional = true }
-bdk_esplora = { version = "0.22.1", features = ["async-https-rustls", "tokio"], optional = true }
+bdk_wallet = { version = "3.0.0", default-features = false, features = ["std", "rusqlite", "keys-bip39"] }
+bdk_bitcoind_rpc = { version = "0.21.0", default-features = false, optional = true }
+bdk_esplora = { version = "0.22.1", default-features = false, features = ["async-https-rustls", "tokio"], optional = true }
 cdk-common = { workspace = true, features = ["mint"] }
 futures.workspace = true
 tokio.workspace = true 
@@ -34,4 +34,3 @@ uuid.workspace = true
 [dev-dependencies]
 cdk-sqlite = { workspace = true }
 tempfile = "3"
-

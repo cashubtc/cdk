@@ -26,3 +26,7 @@ pub struct AwaitingConfirmation {
     /// Fee allocated to this intent from the batch fee
     pub fee_contribution_sat: u64,
 }
+
+/// Marker for an intent that failed before a signed transaction was committed
+#[derive(Debug, Clone)]
+pub struct Failed;

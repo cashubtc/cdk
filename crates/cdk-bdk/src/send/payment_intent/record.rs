@@ -34,6 +34,15 @@ pub enum SendIntentState {
         /// When the intent was created (unix timestamp seconds)
         created_at: u64,
     },
+    /// Intent failed before a signed transaction was durably committed.
+    Failed {
+        /// Human-readable failure reason
+        reason: String,
+        /// When the intent was created (unix timestamp seconds)
+        created_at: u64,
+        /// When the intent failed (unix timestamp seconds)
+        failed_at: u64,
+    },
 }
 
 /// Full durable record for a send intent

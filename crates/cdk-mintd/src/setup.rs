@@ -434,7 +434,7 @@ impl LnBackendSetup for config::LdkNode {
 impl OnchainBackendSetup for crate::config::Bdk {
     async fn setup(
         &self,
-        _settings: &Settings,
+        settings: &Settings,
         _unit: CurrencyUnit,
         _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
         work_dir: &Path,
@@ -463,13 +463,13 @@ impl OnchainBackendSetup for crate::config::Bdk {
             _ => bail!("Unknown BDK network: {}", network_str),
         };
 
-        let chain_source = match self
+        let chain_source_type = self
             .chain_source_type
-            .as_ref()
-            .map(|s| s.to_lowercase())
             .as_deref()
             .unwrap_or("bitcoinrpc")
-        {
+            .to_lowercase();
+
+        let chain_source = match chain_source_type.as_str() {
             "esplora" => {
                 let esplora_url = self
                     .esplora_url
@@ -480,7 +480,7 @@ impl OnchainBackendSetup for crate::config::Bdk {
                     parallel_requests: self.esplora_parallel_requests.max(1),
                 })
             }
-            _ => {
+            "bitcoinrpc" => {
                 let host = self
                     .bitcoind_rpc_host
                     .clone()
@@ -502,6 +502,7 @@ impl OnchainBackendSetup for crate::config::Bdk {
                     password,
                 })
             }
+            _ => bail!("Unknown BDK chain_source_type: {}", chain_source_type),
         };
 
         let mnemonic = match &self.mnemonic {
@@ -509,16 +510,22 @@ impl OnchainBackendSetup for crate::config::Bdk {
             None => bail!("BDK mnemonic must be set"),
         };
 
+        let min_receive_amount_sat = settings
+            .onchain
+            .as_ref()
+            .map(|onchain| onchain.min_mint.to_u64().max(self.min_receive_amount_sat))
+            .unwrap_or(self.min_receive_amount_sat);
+
         let bdk = cdk_bdk::CdkBdk::new(
             mnemonic,
             network,
             chain_source,
             work_dir.to_string_lossy().to_string(),
             fee_reserve,
-            kv_store.expect("BDK needs kv store"),
+            kv_store.ok_or_else(|| anyhow::anyhow!("BDK backend requires a KV store"))?,
             Some(self.batch_config.clone().into()),
             self.num_confs,
-            self.min_receive_amount_sat,
+            min_receive_amount_sat,
             self.min_send_amount_sat,
             self.sync_interval_secs,
             None,

@@ -118,7 +118,7 @@ pub fn create_shutdown_handler() -> Arc<Notify> {
     tokio::spawn(async move {
         signal::ctrl_c().await.expect("failed to listen for event");
         println!("\nShutdown signal received");
-        notify_clone.notify_one();
+        notify_clone.notify_waiters();
     });
 
     notify

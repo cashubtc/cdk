@@ -1144,11 +1144,11 @@ impl MeltQuote {
 /// `estimated_blocks` or `fee_reserve` value.
 ///
 /// Returns:
-/// - [`Error::OnchainFeeOptionsEmpty`](crate::Error::OnchainFeeOptionsEmpty)
+/// - [`Error::OnchainFeeOptionsEmpty`]
 ///   when the slice is empty.
-/// - [`Error::OnchainFeeOptionsDuplicateBlocks`](crate::Error::OnchainFeeOptionsDuplicateBlocks)
+/// - [`Error::OnchainFeeOptionsDuplicateBlocks`]
 ///   when two entries share an `estimated_blocks` value.
-/// - [`Error::OnchainFeeOptionsDuplicateFee`](crate::Error::OnchainFeeOptionsDuplicateFee)
+/// - [`Error::OnchainFeeOptionsDuplicateFee`]
 ///   when two entries share a `fee_reserve` value.
 pub fn validate_onchain_fee_options(
     fee_options: &[MeltQuoteOnchainFeeOption],
@@ -1199,7 +1199,7 @@ impl TryFrom<MintQuote> for MintQuoteOnchainResponse<QuoteId> {
             quote: quote.id.clone(),
             request: quote.request.clone(),
             unit: quote.unit.clone(),
-            expiry: Some(quote.expiry),
+            expiry: (quote.expiry != 0).then_some(quote.expiry),
             pubkey: quote.pubkey.ok_or(crate::error::Error::MissingPubkey)?,
             amount_paid: quote.amount_paid().into(),
             amount_issued: quote.amount_issued().into(),
@@ -1756,6 +1756,39 @@ mod tests {
             }
             _ => panic!("expected MeltQuoteResponse::Onchain variant"),
         }
+    }
+
+    #[test]
+    fn test_mint_quote_onchain_response_converts_zero_expiry_to_none() {
+        let pubkey = PublicKey::from_hex(
+            "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+        )
+        .unwrap();
+        let quote_id = QuoteId::new_uuid();
+        let mint_quote = MintQuote::new(
+            Some(quote_id.clone()),
+            "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
+            CurrencyUnit::Sat,
+            None,
+            0,
+            PaymentIdentifier::QuoteId(quote_id.clone()),
+            Some(pubkey),
+            Amount::new(10_000, CurrencyUnit::Sat),
+            Amount::new(1_000, CurrencyUnit::Sat),
+            PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Onchain),
+            unix_time(),
+            vec![],
+            vec![],
+            None,
+        );
+
+        let response = MintQuoteOnchainResponse::try_from(mint_quote).unwrap();
+
+        assert_eq!(response.quote, quote_id);
+        assert_eq!(response.expiry, None);
+        assert_eq!(response.pubkey, pubkey);
+        assert_eq!(response.amount_paid, Amount::from(10_000));
+        assert_eq!(response.amount_issued, Amount::from(1_000));
     }
 
     #[test]

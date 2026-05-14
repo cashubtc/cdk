@@ -1,5 +1,20 @@
 use uuid::Uuid;
 
+/// Tombstone record for a failed pre-sign send attempt.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FailedSendAttemptRecord {
+    /// Unique attempt identifier
+    pub attempt_id: Uuid,
+    /// Intent identifier used by this attempt
+    pub intent_id: Uuid,
+    /// Quote ID linking to the melt quote
+    pub quote_id: String,
+    /// Human-readable failure reason
+    pub reason: String,
+    /// When the attempt failed (unix timestamp seconds)
+    pub failed_at: u64,
+}
+
 /// Tombstone record for a finalized (confirmed) send intent.
 ///
 /// Written when a confirmed intent is deleted, preserving the data needed

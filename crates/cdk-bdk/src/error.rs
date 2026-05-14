@@ -18,6 +18,11 @@ pub enum Error {
     /// Start called but tasks are already running
     #[error("Start called but background tasks are already running")]
     AlreadyStarted,
+
+    /// Invalid backend configuration
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
+
     /// Unsupported payment type for onchain backend
     #[error("Unsupported payment type for onchain backend")]
     UnsupportedOnchain,
@@ -107,6 +112,15 @@ pub enum Error {
         amount: u64,
         /// Minimum non-dust amount for the destination script in sats
         dust_limit: u64,
+    },
+
+    /// Requested send amount is below the backend's configured minimum.
+    #[error("Requested send amount {amount} sats is below minimum {min} sats")]
+    AmountBelowMinimumSend {
+        /// Requested recipient amount in sats
+        amount: u64,
+        /// Configured minimum send amount in sats
+        min: u64,
     },
 
     /// Batch record is missing an output assignment for one of its member intents.

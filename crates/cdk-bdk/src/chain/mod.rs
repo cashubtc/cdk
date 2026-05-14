@@ -41,6 +41,41 @@ pub enum ChainSource {
     BitcoinRpc(BitcoinRpcConfig),
 }
 
+/// Classified result of submitting a transaction to a chain backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BroadcastOutcome {
+    /// Backend accepted the transaction.
+    Accepted,
+    /// Backend already knows the transaction; this is success-equivalent.
+    AlreadyKnown,
+}
+
+/// Classification for broadcast errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BroadcastErrorKind {
+    /// Deterministic backend rejection.
+    Rejected,
+    /// Network or upstream failure expected to resolve on retry.
+    Transient,
+    /// Ambiguous or unrecognized error; retry conservatively.
+    Unknown,
+}
+
+/// A classified broadcast failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BroadcastFailure {
+    /// Failure class.
+    pub kind: BroadcastErrorKind,
+    /// Human-readable backend error.
+    pub message: String,
+}
+
+impl BroadcastFailure {
+    pub(crate) fn new(kind: BroadcastErrorKind, message: String) -> Self {
+        Self { kind, message }
+    }
+}
+
 impl ChainSource {
     pub async fn sync_wallet(
         &self,
@@ -61,7 +96,10 @@ impl ChainSource {
         }
     }
 
-    pub async fn broadcast(&self, tx: Transaction) -> Result<(), Error> {
+    pub(crate) async fn broadcast(
+        &self,
+        tx: Transaction,
+    ) -> Result<BroadcastOutcome, BroadcastFailure> {
         match self {
             #[cfg(feature = "esplora")]
             ChainSource::Esplora(config) => esplora::broadcast_esplora(config, tx).await,

@@ -6,7 +6,7 @@
 //! Post-broadcast batches are never compensated -- they are reconciled
 //! through the confirmation flow.
 
-use super::state::{Built, Signed};
+use super::state::Built;
 use super::SendBatch;
 use crate::error::Error;
 use crate::send::payment_intent::state::Pending;
@@ -27,13 +27,6 @@ async fn compensate_pre_broadcast_batch<S>(
 
 impl SendBatch<Built> {
     /// Compensate a built batch: revert intents, delete batch.
-    pub async fn compensate(self, storage: &BdkStorage) -> Result<Vec<SendIntent<Pending>>, Error> {
-        compensate_pre_broadcast_batch(self, storage).await
-    }
-}
-
-impl SendBatch<Signed> {
-    /// Compensate a signed batch: revert intents, delete batch.
     pub async fn compensate(self, storage: &BdkStorage) -> Result<Vec<SendIntent<Pending>>, Error> {
         compensate_pre_broadcast_batch(self, storage).await
     }

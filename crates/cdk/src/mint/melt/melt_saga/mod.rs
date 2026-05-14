@@ -339,12 +339,7 @@ impl MeltSaga<Initial> {
             .checked_add(&fee_reserve)?
             .checked_add(&inputs_fee)?;
 
-        let amount_mismatch =
-            if payment_method == cdk_common::PaymentMethod::Known(KnownMethod::Onchain) {
-                input_amount != required_total
-            } else {
-                input_amount < required_total.clone()
-            };
+        let amount_mismatch = input_amount < required_total.clone();
 
         if amount_mismatch {
             tracing::info!(

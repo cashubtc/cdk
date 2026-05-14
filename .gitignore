@@ -4,6 +4,7 @@
 build
 .build
 .jj
+.codex
 .vscode/
 .idea/
 *.redb

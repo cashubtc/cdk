@@ -1,14 +1,14 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client, RawTx, RpcApi};
+use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client, Error as BitcoinRpcError, RawTx, RpcApi};
 use bdk_bitcoind_rpc::{BlockEvent, Emitter, NO_EXPECTED_MEMPOOL_TXS};
 use bdk_wallet::bitcoin::{Block, Transaction};
 use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
-use crate::chain::BitcoinRpcConfig;
+use crate::chain::{BitcoinRpcConfig, BroadcastErrorKind, BroadcastFailure, BroadcastOutcome};
 use crate::error::Error;
 use crate::{CdkBdk, WalletWithDb};
 
@@ -55,7 +55,6 @@ pub(crate) async fn sync_bitcoin_rpc(
     cancel_token: CancellationToken,
 ) -> Result<(), Error> {
     let mut sync_interval = interval(Duration::from_secs(cdk_bdk.sync_interval_secs));
-    let mut startup_reconciliation_pending = true;
     let apply_chunk_size = cdk_bdk.sync_config.apply_chunk_size.max(1);
     let warn_ms = cdk_bdk.sync_config.lock_hold_warn_ms;
 
@@ -215,11 +214,8 @@ pub(crate) async fn sync_bitcoin_rpc(
                         );
                     }
                     consecutive_failures = 0;
-                }
 
-                if startup_reconciliation_pending || any_applied {
                     cdk_bdk.run_reconciliation().await;
-                    startup_reconciliation_pending = false;
                 }
             }
         }
@@ -227,23 +223,87 @@ pub(crate) async fn sync_bitcoin_rpc(
     Ok(())
 }
 
+pub(crate) fn classify_bitcoin_rpc_broadcast_message(message: &str) -> BroadcastErrorKind {
+    let message = message.to_ascii_lowercase();
+
+    if message.contains("already in block chain")
+        || message.contains("already in blockchain")
+        || message.contains("already have transaction")
+        || message.contains("txn-already-in-mempool")
+        || message.contains("transaction already in mempool")
+    {
+        return BroadcastErrorKind::Unknown;
+    }
+
+    if message.contains("missing inputs")
+        || message.contains("bad-txns")
+        || message.contains("bad-txns-inputs")
+        || message.contains("txn-mempool-conflict")
+        || message.contains("mandatory-script-verify-flag-failed")
+        || message.contains("non-mandatory-script-verify-flag")
+        || message.contains("non-bip68-final")
+        || message.contains("nonstandard")
+        || message.contains("non-standard")
+        || message.contains("dust")
+        || message.contains("min relay")
+        || message.contains("minrelay")
+        || message.contains("insufficient fee")
+        || message.contains("mempool min fee")
+        || message.contains("fee too low")
+    {
+        return BroadcastErrorKind::Rejected;
+    }
+
+    if message.contains("connection")
+        || message.contains("timed out")
+        || message.contains("timeout")
+        || message.contains("broken pipe")
+        || message.contains("refused")
+        || message.contains("reset")
+        || message.contains("temporarily unavailable")
+    {
+        return BroadcastErrorKind::Transient;
+    }
+
+    BroadcastErrorKind::Unknown
+}
+
+fn is_bitcoin_rpc_already_known(error: &BitcoinRpcError) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("already in block chain")
+        || message.contains("already in blockchain")
+        || message.contains("already have transaction")
+        || message.contains("txn-already-in-mempool")
+        || message.contains("transaction already in mempool")
+}
+
+pub(crate) fn classify_bitcoin_rpc_broadcast_error(error: &BitcoinRpcError) -> BroadcastErrorKind {
+    classify_bitcoin_rpc_broadcast_message(&error.to_string())
+}
+
 pub(crate) async fn broadcast_bitcoin_rpc(
     config: &BitcoinRpcConfig,
     tx: Transaction,
-) -> Result<(), Error> {
+) -> Result<BroadcastOutcome, BroadcastFailure> {
     let rpc_client: Client = Client::new(
         &format!("http://{}:{}", config.host, config.port),
         Auth::UserPass(config.user.clone(), config.password.clone()),
-    )?;
+    )
+    .map_err(|e| BroadcastFailure::new(BroadcastErrorKind::Transient, e.to_string()))?;
 
     tracing::info!(
         "Broadcasting transaction: {} via bitcoin rpc",
         tx.compute_txid()
     );
 
-    rpc_client.send_raw_transaction(tx.raw_hex())?;
-
-    Ok(())
+    match rpc_client.send_raw_transaction(tx.raw_hex()) {
+        Ok(_) => Ok(BroadcastOutcome::Accepted),
+        Err(e) if is_bitcoin_rpc_already_known(&e) => Ok(BroadcastOutcome::AlreadyKnown),
+        Err(e) => {
+            let kind = classify_bitcoin_rpc_broadcast_error(&e);
+            Err(BroadcastFailure::new(kind, e.to_string()))
+        }
+    }
 }
 
 pub(crate) async fn fetch_fee_rate_bitcoin_rpc(
@@ -276,4 +336,25 @@ pub(crate) async fn fetch_fee_rate_bitcoin_rpc(
     })
     .await
     .map_err(|e| Error::FeeEstimationFailed(e.to_string()))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_bitcoin_rpc_broadcast_errors() {
+        assert_eq!(
+            classify_bitcoin_rpc_broadcast_message("RPC error: missing inputs"),
+            BroadcastErrorKind::Rejected
+        );
+        assert_eq!(
+            classify_bitcoin_rpc_broadcast_message("connection refused"),
+            BroadcastErrorKind::Transient
+        );
+        assert_eq!(
+            classify_bitcoin_rpc_broadcast_message("some new backend error"),
+            BroadcastErrorKind::Unknown
+        );
+    }
 }

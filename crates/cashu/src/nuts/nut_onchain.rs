@@ -194,11 +194,7 @@ pub struct MeltQuoteOnchainResponse<Q> {
     /// Selected confirmation target once the quote is executed
     pub selected_estimated_blocks: Option<u32>,
     /// Transaction outpoint (txid:vout) once broadcast
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_empty_string_as_none"
-    )]
+    #[serde(default, deserialize_with = "deserialize_empty_string_as_none")]
     pub outpoint: Option<String>,
     /// Blind signatures for overpaid onchain fee reserve
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -320,6 +316,32 @@ mod tests {
         assert_eq!(response.state, deserialized.state);
         assert_eq!(response.outpoint, deserialized.outpoint);
         assert_eq!(response.change, deserialized.change);
+    }
+
+    #[test]
+    fn test_melt_quote_onchain_response_serializes_null_outpoint() {
+        let response: MeltQuoteOnchainResponse<String> = MeltQuoteOnchainResponse {
+            quote: "TRmjduhIsPxd...".to_string(),
+            amount: Amount::from(100000),
+            unit: CurrencyUnit::Sat,
+            state: MeltQuoteState::Pending,
+            expiry: 1701704757,
+            request: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
+            fee_options: vec![MeltQuoteOnchainFeeOption {
+                fee_reserve: Amount::from(5000),
+                estimated_blocks: 1,
+            }],
+            selected_estimated_blocks: None,
+            outpoint: None,
+            change: None,
+        };
+
+        let serialized = serde_json::to_string(&response).unwrap();
+        assert!(serialized.contains("\"outpoint\":null"));
+
+        let deserialized: MeltQuoteOnchainResponse<String> =
+            serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.outpoint, None);
     }
 
     #[test]

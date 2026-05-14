@@ -3,8 +3,8 @@ use std::str::FromStr;
 use uuid::Uuid;
 
 use super::{
-    BdkStorage, FinalizedSendIntentRecord, BDK_NAMESPACE, FINALIZED_INTENT_NAMESPACE,
-    FINALIZED_SEND_INTENT_QUOTE_ID_NAMESPACE, SEND_INTENT_NAMESPACE,
+    BdkStorage, FailedSendAttemptRecord, FinalizedSendIntentRecord, BDK_NAMESPACE,
+    FINALIZED_INTENT_NAMESPACE, FINALIZED_SEND_INTENT_QUOTE_ID_NAMESPACE, SEND_INTENT_NAMESPACE,
     SEND_INTENT_QUOTE_ID_NAMESPACE,
 };
 use crate::error::Error;
@@ -74,6 +74,93 @@ impl BdkStorage {
         Ok(())
     }
 
+    /// Store a new send intent, or re-queue an existing failed intent with
+    /// the same quote id.
+    pub async fn create_or_retry_failed_send_intent(
+        &self,
+        intent: &SendIntentRecord,
+    ) -> Result<SendIntentRecord, Error> {
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(Error::from)?;
+
+        let finalized = tx
+            .kv_read(
+                BDK_NAMESPACE,
+                FINALIZED_SEND_INTENT_QUOTE_ID_NAMESPACE,
+                &intent.quote_id,
+            )
+            .await
+            .map_err(Error::from)?;
+
+        if finalized.is_some() {
+            tx.rollback().await.map_err(Error::from)?;
+            return Err(Error::DuplicateQuoteId(intent.quote_id.clone()));
+        }
+
+        let active = tx
+            .kv_read(
+                BDK_NAMESPACE,
+                SEND_INTENT_QUOTE_ID_NAMESPACE,
+                &intent.quote_id,
+            )
+            .await
+            .map_err(Error::from)?;
+
+        let record = if let Some(intent_id_bytes) = active {
+            let intent_id_str = std::str::from_utf8(&intent_id_bytes)
+                .map_err(|e| Error::Wallet(format!("Invalid quote-id index entry: {}", e)))?;
+            let intent_id = Uuid::from_str(intent_id_str)
+                .map_err(|e| Error::Wallet(format!("Invalid indexed intent id: {}", e)))?;
+            let intent_bytes = tx
+                .kv_read(BDK_NAMESPACE, SEND_INTENT_NAMESPACE, &intent_id.to_string())
+                .await
+                .map_err(Error::from)?
+                .ok_or(Error::SendIntentNotFound(intent_id))?;
+            let existing: SendIntentRecord = serde_json::from_slice(&intent_bytes)?;
+
+            if !matches!(existing.state, SendIntentState::Failed { .. }) {
+                tx.rollback().await.map_err(Error::from)?;
+                return Err(Error::DuplicateQuoteId(intent.quote_id.clone()));
+            }
+
+            SendIntentRecord {
+                intent_id,
+                quote_id: intent.quote_id.clone(),
+                address: intent.address.clone(),
+                amount_sat: intent.amount_sat,
+                max_fee_amount_sat: intent.max_fee_amount_sat,
+                tier: intent.tier,
+                metadata: intent.metadata.clone(),
+                state: intent.state.clone(),
+            }
+        } else {
+            tx.kv_write(
+                BDK_NAMESPACE,
+                SEND_INTENT_QUOTE_ID_NAMESPACE,
+                &intent.quote_id,
+                intent.intent_id.to_string().as_bytes(),
+            )
+            .await
+            .map_err(Error::from)?;
+            intent.clone()
+        };
+
+        let serialized = serde_json::to_vec(&record)?;
+        tx.kv_write(
+            BDK_NAMESPACE,
+            SEND_INTENT_NAMESPACE,
+            &record.intent_id.to_string(),
+            &serialized,
+        )
+        .await
+        .map_err(Error::from)?;
+        tx.commit().await.map_err(Error::from)?;
+        Ok(record)
+    }
+
     /// Get a send intent by ID
     pub async fn get_send_intent(
         &self,
@@ -134,6 +221,26 @@ impl BdkStorage {
         Ok(all
             .into_iter()
             .filter(|i| matches!(i.state, SendIntentState::Pending { .. }))
+            .collect())
+    }
+
+    /// Store a failed pre-sign send attempt tombstone.
+    pub async fn add_failed_send_attempt(
+        &self,
+        record: &FailedSendAttemptRecord,
+    ) -> Result<(), Error> {
+        self.put_record(record).await
+    }
+
+    /// List failed pre-sign send attempts for a quote id.
+    pub async fn get_failed_send_attempts_by_quote_id(
+        &self,
+        quote_id: &str,
+    ) -> Result<Vec<FailedSendAttemptRecord>, Error> {
+        let all = self.list_records::<FailedSendAttemptRecord>().await?;
+        Ok(all
+            .into_iter()
+            .filter(|record| record.quote_id == quote_id)
             .collect())
     }
 

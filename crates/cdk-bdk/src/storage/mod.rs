@@ -15,7 +15,7 @@ pub mod receive;
 pub mod send;
 mod types;
 
-pub use types::{FinalizedReceiveIntentRecord, FinalizedSendIntentRecord};
+pub use types::{FailedSendAttemptRecord, FinalizedReceiveIntentRecord, FinalizedSendIntentRecord};
 
 /// Primary namespace for BDK KV store operations
 pub const BDK_NAMESPACE: &str = "bdk";
@@ -28,6 +28,9 @@ pub const SEND_INTENT_QUOTE_ID_NAMESPACE: &str = "send_intent_quote_id";
 
 /// Secondary namespace for send batches
 pub const SEND_BATCH_NAMESPACE: &str = "send_batch";
+
+/// Secondary namespace for failed pre-sign send attempt tombstones.
+pub const FAILED_SEND_ATTEMPT_NAMESPACE: &str = "failed_send_attempt";
 
 /// Secondary namespace for finalized (confirmed) intents.
 /// Stores tombstone records so `check_outgoing_payment` can return
@@ -214,6 +217,14 @@ impl KvRecord for SendIntentRecord {
     }
 }
 
+impl KvRecord for FailedSendAttemptRecord {
+    const NAMESPACE: &'static str = FAILED_SEND_ATTEMPT_NAMESPACE;
+
+    fn key(&self) -> String {
+        self.attempt_id.to_string()
+    }
+}
+
 impl ReplaceState<crate::send::payment_intent::record::SendIntentState> for SendIntentRecord {
     fn replace_state(&mut self, state: crate::send::payment_intent::record::SendIntentState) {
         self.state = state;
@@ -315,6 +326,11 @@ mod tests {
                 outpoint: "abc123def456:0".to_string(),
                 fee_contribution_sat: 250,
                 created_at: 1_700_000_000,
+            },
+            SendIntentState::Failed {
+                reason: "pre-sign failure".to_string(),
+                created_at: 1_700_000_000,
+                failed_at: 1_700_000_100,
             },
         ];
 

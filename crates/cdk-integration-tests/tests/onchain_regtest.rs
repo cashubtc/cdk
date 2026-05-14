@@ -9,7 +9,7 @@ use std::time::Duration;
 use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
 use cdk::nuts::{CurrencyUnit, NotificationPayload, PaymentMethod, Proofs, ProofsMethods};
-use cdk::wallet::{MeltOutcome, Wallet, WalletSubscription};
+use cdk::wallet::{MeltOutcome, MintConnector, Wallet, WalletSubscription};
 use cdk_integration_tests::get_mint_url_from_env;
 use cdk_integration_tests::init_regtest::init_bitcoin_client;
 use cdk_sqlite::wallet::memory;
@@ -757,6 +757,7 @@ async fn test_onchain_concurrent_melt_quotes() {
     assert!(final_balance < (mint_amount - total_melted).into());
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_mint_unissued_quotes_onchain() {
     let bitcoin_client = init_bitcoin_client().expect("Failed to init bitcoin client");
 
     let wallet = Wallet::new(
@@ -781,7 +782,10 @@ async fn test_onchain_concurrent_melt_quotes() {
         .await
         .expect("Failed to get mint quote");
 
-    assert_eq!(mint_quote.amount, Some(cdk::amount::Amount::from(mint_amount)));
+    assert_eq!(
+        mint_quote.amount,
+        Some(cdk::amount::Amount::from(mint_amount))
+    );
 
     // Verify the quote is in unissued quotes before payment
     let unissued_before = wallet.get_unissued_mint_quotes().await.unwrap();
@@ -810,19 +814,26 @@ async fn test_onchain_concurrent_melt_quotes() {
         .unwrap();
 
     // Verify initial balance is zero
-    assert_eq!(wallet.total_balance().await.unwrap(), cdk::amount::Amount::ZERO);
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        cdk::amount::Amount::ZERO
+    );
 
     // Call mint_unissued_quotes - this should mint the paid quote
     let total_minted = wallet.mint_unissued_quotes().await.unwrap();
 
     // Verify the amount minted is correct
     assert_eq!(
-        total_minted, cdk::amount::Amount::from(mint_amount),
+        total_minted,
+        cdk::amount::Amount::from(mint_amount),
         "mint_unissued_quotes should have minted the onchain quote"
     );
 
     // Verify wallet balance matches
-    assert_eq!(wallet.total_balance().await.unwrap(), cdk::amount::Amount::from(mint_amount));
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        cdk::amount::Amount::from(mint_amount)
+    );
 
     // Calling mint_unissued_quotes again should return 0 (quote already fully issued)
     let second_check = wallet.mint_unissued_quotes().await.unwrap();
@@ -859,7 +870,10 @@ async fn test_check_all_mint_quotes_onchain() {
         .await
         .expect("Failed to get mint quote");
 
-    assert_eq!(mint_quote.amount, Some(cdk::amount::Amount::from(mint_amount)));
+    assert_eq!(
+        mint_quote.amount,
+        Some(cdk::amount::Amount::from(mint_amount))
+    );
 
     // Verify the quote is in unissued quotes before payment
     let unissued_before = wallet.get_unissued_mint_quotes().await.unwrap();
@@ -909,19 +923,26 @@ async fn test_check_all_mint_quotes_onchain() {
     assert_eq!(paid_amount, cdk::amount::Amount::from(mint_amount));
 
     // Verify initial balance is zero
-    assert_eq!(wallet.total_balance().await.unwrap(), cdk::amount::Amount::ZERO);
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        cdk::amount::Amount::ZERO
+    );
 
     // Call mint_unissued_quotes - this should mint the paid quote
     let total_minted = wallet.mint_unissued_quotes().await.unwrap();
 
     // Verify the amount minted is correct
     assert_eq!(
-        total_minted, cdk::amount::Amount::from(mint_amount),
+        total_minted,
+        cdk::amount::Amount::from(mint_amount),
         "mint_unissued_quotes should have minted the onchain quote"
     );
 
     // Verify wallet balance matches
-    assert_eq!(wallet.total_balance().await.unwrap(), cdk::amount::Amount::from(mint_amount));
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        cdk::amount::Amount::from(mint_amount)
+    );
 
     // Calling mint_unissued_quotes again should return 0 (quote already fully issued)
     let second_check = wallet.mint_unissued_quotes().await.unwrap();
@@ -994,17 +1015,37 @@ async fn test_onchain_quote_amount_issued_tracking() {
     .await
     .expect("timeout waiting for notification");
 
-    let quote_after_payment = wallet.check_mint_quote_status(&mint_quote.id).await.unwrap();
-    assert_eq!(quote_after_payment.amount_paid, cdk::amount::Amount::from(mint_amount));
-    assert_eq!(quote_after_payment.amount_issued, cdk::amount::Amount::from(0));
+    let quote_after_payment = wallet
+        .check_mint_quote_status(&mint_quote.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        quote_after_payment.amount_paid,
+        cdk::amount::Amount::from(mint_amount)
+    );
+    assert_eq!(
+        quote_after_payment.amount_issued,
+        cdk::amount::Amount::from(0)
+    );
 
-    wallet.mint(&mint_quote.id, SplitTarget::default(), None).await.unwrap();
+    wallet
+        .mint(&mint_quote.id, SplitTarget::default(), None)
+        .await
+        .unwrap();
 
-    let quote_after_mint = wallet.check_mint_quote_status(&mint_quote.id).await.unwrap();
-    assert_eq!(quote_after_mint.amount_paid, cdk::amount::Amount::from(mint_amount));
-    assert_eq!(quote_after_mint.amount_issued, cdk::amount::Amount::from(mint_amount));
+    let quote_after_mint = wallet
+        .check_mint_quote_status(&mint_quote.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        quote_after_mint.amount_paid,
+        cdk::amount::Amount::from(mint_amount)
+    );
+    assert_eq!(
+        quote_after_mint.amount_issued,
+        cdk::amount::Amount::from(mint_amount)
+    );
 }
-
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_onchain_attempt_to_mint_unpaid() {
@@ -1029,14 +1070,17 @@ async fn test_onchain_attempt_to_mint_unpaid() {
         .await
         .expect("Failed to get mint quote");
 
-    let active_keyset = wallet.get_active_mint_keyset().await.unwrap();
+    let active_keyset = wallet.get_active_keyset().await.unwrap();
+    let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
     let premint_secrets = cdk::nuts::PreMintSecrets::random(
         active_keyset.id,
-        mint_amount,
+        mint_amount.into(),
         &cdk::amount::SplitTarget::default(),
-    ).unwrap();
+        &fee_and_amounts,
+    )
+    .unwrap();
 
-    let mut request = cdk::nuts::MintRequest {
+    let request = cdk::nuts::MintRequest {
         quote: mint_quote.id.clone(),
         outputs: premint_secrets.blinded_messages(),
         signature: None,
@@ -1053,4 +1097,3 @@ async fn test_onchain_attempt_to_mint_unpaid() {
         _ => panic!("Expected UnpaidQuote error, got {:?}", err),
     }
 }
-

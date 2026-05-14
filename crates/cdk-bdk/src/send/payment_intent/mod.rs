@@ -12,9 +12,9 @@ pub(crate) mod state;
 use uuid::Uuid;
 
 use self::record::{SendIntentRecord, SendIntentState};
-use self::state::{AwaitingConfirmation, Batched, Pending};
+use self::state::{AwaitingConfirmation, Batched, Failed, Pending};
 use crate::error::Error;
-use crate::storage::{BdkStorage, FinalizedSendIntentRecord};
+use crate::storage::{BdkStorage, FailedSendAttemptRecord, FinalizedSendIntentRecord};
 use crate::types::{PaymentMetadata, PaymentTier};
 
 /// A send intent in a particular typestate
@@ -70,16 +70,24 @@ impl SendIntent<Pending> {
             state: SendIntentState::Pending { created_at },
         };
 
-        storage.create_send_intent_if_absent(&record).await?;
+        let record = storage.create_or_retry_failed_send_intent(&record).await?;
+        let created_at = match record.state {
+            SendIntentState::Pending { created_at } => created_at,
+            _ => {
+                return Err(Error::Wallet(
+                    "send intent retry did not return Pending state".to_string(),
+                ));
+            }
+        };
 
         Ok(Self {
-            intent_id,
-            quote_id,
-            address,
-            amount,
-            max_fee_amount,
-            tier,
-            metadata,
+            intent_id: record.intent_id,
+            quote_id: record.quote_id,
+            address: record.address,
+            amount: record.amount_sat,
+            max_fee_amount: record.max_fee_amount_sat,
+            tier: record.tier,
+            metadata: record.metadata,
             created_at,
             state: Pending,
         })
@@ -111,6 +119,46 @@ impl SendIntent<Pending> {
             metadata: self.metadata,
             created_at: self.created_at,
             state: Batched { batch_id },
+        })
+    }
+
+    /// Mark a pending intent as failed before a signed transaction was committed.
+    pub async fn fail(
+        self,
+        storage: &BdkStorage,
+        reason: String,
+    ) -> Result<SendIntent<Failed>, Error> {
+        let failed_at = crate::util::unix_now();
+        storage
+            .update_send_intent(
+                &self.intent_id,
+                &SendIntentState::Failed {
+                    reason: reason.clone(),
+                    created_at: self.created_at,
+                    failed_at,
+                },
+            )
+            .await?;
+        storage
+            .add_failed_send_attempt(&FailedSendAttemptRecord {
+                attempt_id: Uuid::new_v4(),
+                intent_id: self.intent_id,
+                quote_id: self.quote_id.clone(),
+                reason: reason.clone(),
+                failed_at,
+            })
+            .await?;
+
+        Ok(SendIntent {
+            intent_id: self.intent_id,
+            quote_id: self.quote_id,
+            address: self.address,
+            amount: self.amount,
+            max_fee_amount: self.max_fee_amount,
+            tier: self.tier,
+            metadata: self.metadata,
+            created_at: self.created_at,
+            state: Failed,
         })
     }
 }
@@ -259,6 +307,14 @@ pub(crate) fn from_record(record: &SendIntentRecord) -> SendIntentAny {
                 fee_contribution_sat: *fee_contribution_sat,
             },
         }),
+        SendIntentState::Failed {
+            reason,
+            created_at,
+            failed_at,
+        } => {
+            let _ = (reason, created_at, failed_at);
+            SendIntentAny::Failed
+        }
     }
 }
 
@@ -270,6 +326,8 @@ pub(crate) enum SendIntentAny {
     Batched(SendIntent<Batched>),
     /// Intent in AwaitingConfirmation state
     AwaitingConfirmation(SendIntent<AwaitingConfirmation>),
+    /// Intent in Failed state
+    Failed,
 }
 
 #[cfg(test)]
@@ -334,6 +392,103 @@ mod tests {
         assert_eq!(awaiting.state.txid, txid);
         assert_eq!(awaiting.state.outpoint, outpoint);
         assert_eq!(awaiting.state.fee_contribution_sat, fee_contrib);
+    }
+
+    #[tokio::test]
+    async fn test_pending_to_failed() {
+        let storage = test_storage().await;
+
+        let pending = SendIntent::new(
+            &storage,
+            "quote-failed".to_string(),
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            10_000,
+            500,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await
+        .expect("new");
+
+        let intent_id = pending.intent_id;
+        let failed = pending
+            .fail(&storage, "fee too high".to_string())
+            .await
+            .expect("fail");
+
+        assert_eq!(failed.intent_id, intent_id);
+
+        let persisted = storage
+            .get_send_intent(&intent_id)
+            .await
+            .expect("get intent")
+            .expect("intent should remain as failed terminal record");
+        assert!(matches!(
+            persisted.state,
+            SendIntentState::Failed { ref reason, .. } if reason == "fee too high"
+        ));
+
+        let attempts = storage
+            .get_failed_send_attempts_by_quote_id("quote-failed")
+            .await
+            .expect("failed attempts");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].intent_id, intent_id);
+        assert_eq!(attempts[0].reason, "fee too high");
+    }
+
+    #[tokio::test]
+    async fn test_failed_intent_can_be_requeued_with_same_quote_id() {
+        let storage = test_storage().await;
+        let quote_id = "quote-retry".to_string();
+
+        let pending = SendIntent::new(
+            &storage,
+            quote_id.clone(),
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            10_000,
+            500,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await
+        .expect("new");
+        let intent_id = pending.intent_id;
+
+        pending
+            .fail(&storage, "fee too high".to_string())
+            .await
+            .expect("fail");
+
+        let retried = SendIntent::new(
+            &storage,
+            quote_id,
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            10_000,
+            750,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await
+        .expect("retry failed intent");
+
+        assert_eq!(retried.intent_id, intent_id);
+        assert_eq!(retried.max_fee_amount, 750);
+
+        let persisted = storage
+            .get_send_intent(&intent_id)
+            .await
+            .expect("get intent")
+            .expect("intent should remain present");
+        assert!(matches!(persisted.state, SendIntentState::Pending { .. }));
+        assert_eq!(persisted.max_fee_amount_sat, 750);
+
+        let attempts = storage
+            .get_failed_send_attempts_by_quote_id("quote-retry")
+            .await
+            .expect("failed attempts");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].intent_id, intent_id);
     }
 
     #[tokio::test]

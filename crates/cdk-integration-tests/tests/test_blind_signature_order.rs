@@ -56,6 +56,7 @@ async fn test_blind_signature_order_in_db() -> Result<()> {
         None,
         PaymentMethod::Custom("test".to_string()),
         None,
+        None,
     );
     tx.add_melt_quote(quote).await?;
     tx.add_blinded_messages(Some(&quote_id), &messages, &operation)
