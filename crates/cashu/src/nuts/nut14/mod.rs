@@ -527,6 +527,63 @@ mod tests {
         assert!(matches!(result.unwrap_err(), Error::InvalidHash));
     }
 
+    #[test]
+    fn test_htlc_num_sigs_zero_bypasses_signature_requirement() {
+        let pubkey = crate::nuts::nut01::PublicKey::from_hex(
+            "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
+        )
+        .unwrap();
+
+        let preimage_bytes = [42u8; 32];
+        let hash = Sha256Hash::hash(&preimage_bytes);
+        let hash_str = hash.to_string();
+
+        let tags = vec![
+            vec!["pubkeys".to_string(), pubkey.to_string()],
+            vec!["n_sigs".to_string(), "0".to_string()],
+        ];
+
+        let nut10_secret = Nut10Secret::new(Kind::HTLC, SecretData::new(hash_str, Some(tags)));
+        // Since we patched deserialization itself (TryFrom<Secret>), let's verify that
+        // extracting the conditions out of a constructed secret will error
+        let conditions_res = crate::nuts::nut10::Conditions::try_from(
+            nut10_secret.secret_data().tags().cloned().unwrap(),
+        );
+        assert!(
+            conditions_res.is_err(),
+            "Conditions should fail to parse due to n_sigs=0"
+        );
+    }
+
+    #[test]
+    fn test_verify_sig_all_htlc_nsigs_zero_bypasses_sig_check() {
+        let preimage_bytes = [42u8; 32];
+        let hash = Sha256Hash::hash(&preimage_bytes);
+        let hash_str = hash.to_string();
+
+        let required_pubkey = crate::nuts::nut01::PublicKey::from_hex(
+            "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
+        )
+        .unwrap();
+
+        // SIG_ALL HTLC with pubkeys but n_sigs=0
+        let tags = vec![
+            vec!["pubkeys".to_string(), required_pubkey.to_string()],
+            vec!["n_sigs".to_string(), "0".to_string()],
+            vec!["sigflag".to_string(), "SIG_ALL".to_string()],
+        ];
+
+        let nut10_secret = Nut10Secret::new(Kind::HTLC, SecretData::new(hash_str, Some(tags)));
+
+        let conditions_res = crate::nuts::nut10::Conditions::try_from(
+            nut10_secret.secret_data().tags().cloned().unwrap(),
+        );
+        assert!(
+            conditions_res.is_err(),
+            "Conditions should fail to parse due to n_sigs=0"
+        );
+    }
+
     /// Tests that verify_htlc correctly rejects an HTLC with the wrong witness type.
     ///
     /// This test ensures that the verification function checks that the witness is

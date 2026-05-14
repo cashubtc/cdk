@@ -82,6 +82,9 @@ pub enum Error {
     /// SIG_ALL not supported in this context
     #[error("SIG_ALL proofs must be verified using a different method")]
     SigAllNotSupportedHere,
+    /// Number of required signatures cannot be zero
+    #[error("Number of required signatures must be 1 or greater")]
+    ZeroSignaturesRequired,
     /// Serde Json error
     #[error(transparent)]
     SerdeJsonError(#[from] serde_json::Error),
@@ -2263,5 +2266,165 @@ mod tests {
             None,
         );
         assert!(result.is_err(), "4-of-3 should be impossible");
+    }
+
+    #[test]
+    fn test_p2pk_num_sigs_zero_bypasses_signature_requirement() {
+        // n_sigs=0 makes verify_p2pk() evaluate `valid_sig_count >= required_sigs`
+        // as `0 >= 0` which is trivially true. An empty P2PKWitness therefore
+        // passes verification with no cryptographic check at all.
+        //
+        // Per bkb's record of NUT-11: n_sigs must be "a positive integer".
+        // n_sigs=0 is out-of-spec and produces an anyone-can-spend P2PK proof.
+        //
+        // FAILS on HEAD (verify_p2pk returns Ok). PASSES once fixed.
+        let data_pubkey = PublicKey::from_str(
+            "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198",
+        )
+        .unwrap();
+
+        let conditions = Conditions {
+            locktime: None,
+            pubkeys: None,
+            refund_keys: None,
+            num_sigs: Some(0), // invalid: not a positive integer per NUT-11
+            sig_flag: SigFlag::SigInputs,
+            num_sigs_refund: None,
+        };
+
+        // Creating the secret correctly
+        let secret: Secret = SpendingConditions::new_p2pk(data_pubkey, Some(conditions))
+            .try_into()
+            .unwrap();
+
+        let proof = Proof {
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            amount: Amount::ZERO,
+            secret,
+            c: data_pubkey,
+            witness: Some(Witness::P2PKWitness(P2PKWitness { signatures: vec![] })),
+            dleq: None,
+            p2pk_e: None,
+        };
+
+        // FAILS on HEAD: required_sigs=0 makes the comparison trivially true
+        // for any witness, including an empty one with no signatures.
+        assert!(
+            proof.verify_p2pk().is_err(),
+            "P2PK with num_sigs=0 must not be spendable with an empty witness"
+        );
+    }
+
+    #[test]
+    fn test_sig_all_p2pk_nsigs_zero_bypasses_sig_check() {
+        let data_pubkey = PublicKey::from_str(
+            "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198",
+        )
+        .unwrap();
+        let extra_pubkey = PublicKey::from_str(
+            "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
+        )
+        .unwrap();
+
+        // Note: We bypass Conditions::new() by constructing it directly,
+        // to test the low-level verify routine. But because we implemented
+        // ZeroSignaturesRequired inside TryFrom for Conditions too,
+        // Secret::try_into() will fail on building the conditions!
+        // To make the test actually exercise verify_sig_all_p2pk on a "bad" Secret,
+        // we have to assert that either creation fails or verify_sig_all_p2pk fails.
+        // Given our fix prevents creation entirely, the test should check that.
+        let nut10_secret = Nut10Secret::new(
+            crate::nuts::nut10::Kind::P2PK,
+            crate::nuts::nut10::SecretData::new(
+                data_pubkey.to_string(),
+                Some(vec![
+                    vec!["pubkeys".to_string(), extra_pubkey.to_string()],
+                    vec!["n_sigs".to_string(), "0".to_string()],
+                    vec!["sigflag".to_string(), "SIG_ALL".to_string()],
+                ]),
+            ),
+        );
+        let conditions_res = crate::nuts::nut10::Conditions::try_from(
+            nut10_secret.secret_data().tags().cloned().unwrap(),
+        );
+        assert!(
+            conditions_res.is_err(),
+            "Conditions should fail to parse due to n_sigs=0"
+        );
+    }
+
+    #[test]
+    fn test_refund_path_num_sigs_refund_zero_bypasses_signature_check() {
+        // When n_sigs_refund=Some(0) and refund_keys are present,
+        // get_pubkeys_and_required_sigs sets required_sigs=0 for the RefundPath.
+        // In verify_p2pk the guard
+        //   if refund_path.required_sigs == 0 { return Ok(()); }
+        // fires once locktime has passed, letting anyone spend with an empty
+        // witness and no valid refund-key signature.
+        //
+        // FAILS on HEAD (verify_p2pk returns Ok). PASSES once the fix is applied.
+
+        let data_pubkey = PublicKey::from_str(
+            "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198",
+        )
+        .unwrap();
+
+        let refund_pubkey = PublicKey::from_str(
+            "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
+        )
+        .unwrap();
+
+        let nut10_secret = Nut10Secret::new(
+            crate::nuts::nut10::Kind::P2PK,
+            crate::nuts::nut10::SecretData::new(
+                data_pubkey.to_string(),
+                Some(vec![
+                    vec!["locktime".to_string(), "1".to_string()],
+                    vec!["refund".to_string(), refund_pubkey.to_string()],
+                    vec!["n_sigs".to_string(), "1".to_string()],
+                    vec!["n_sigs_refund".to_string(), "0".to_string()],
+                ]),
+            ),
+        );
+        let conditions_res = crate::nuts::nut10::Conditions::try_from(
+            nut10_secret.secret_data().tags().cloned().unwrap(),
+        );
+        assert!(
+            conditions_res.is_err(),
+            "Conditions should fail to parse due to n_sigs=0"
+        );
+    }
+
+    #[test]
+    fn test_sig_all_p2pk_nsigs_refund_zero_bypasses_refund_sig_check() {
+        let data_pubkey = PublicKey::from_str(
+            "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198",
+        )
+        .unwrap();
+        let refund_pubkey = PublicKey::from_str(
+            "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
+        )
+        .unwrap();
+
+        let nut10_secret = Nut10Secret::new(
+            crate::nuts::nut10::Kind::P2PK,
+            crate::nuts::nut10::SecretData::new(
+                data_pubkey.to_string(),
+                Some(vec![
+                    vec!["locktime".to_string(), "1".to_string()],
+                    vec!["refund".to_string(), refund_pubkey.to_string()],
+                    vec!["n_sigs".to_string(), "1".to_string()],
+                    vec!["n_sigs_refund".to_string(), "0".to_string()],
+                    vec!["sigflag".to_string(), "SIG_ALL".to_string()],
+                ]),
+            ),
+        );
+        let conditions_res = crate::nuts::nut10::Conditions::try_from(
+            nut10_secret.secret_data().tags().cloned().unwrap(),
+        );
+        assert!(
+            conditions_res.is_err(),
+            "Conditions should fail to parse due to n_sigs_refund=0"
+        );
     }
 }

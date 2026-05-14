@@ -116,12 +116,17 @@ where
             TagKind::SigFlag => Ok(Tag::SigFlag(SigFlag::from_str(
                 tag.get(1).ok_or(Error::TagValueNotFound)?.as_ref(),
             )?)),
-            TagKind::NSigs => Ok(Tag::NSigs(
-                tag.get(1)
+            TagKind::NSigs => {
+                let sigs = tag
+                    .get(1)
                     .ok_or(Error::TagValueNotFound)?
                     .as_ref()
-                    .parse()?,
-            )),
+                    .parse()?;
+                if sigs == 0 {
+                    return Err(Error::NUT11(crate::nut11::Error::ZeroSignaturesRequired));
+                }
+                Ok(Tag::NSigs(sigs))
+            }
             TagKind::Locktime => Ok(Tag::LockTime(
                 tag.get(1)
                     .ok_or(Error::TagValueNotFound)?
@@ -146,12 +151,17 @@ where
 
                 Ok(Self::PubKeys(pubkeys))
             }
-            TagKind::NSigsRefund => Ok(Tag::NSigsRefund(
-                tag.get(1)
+            TagKind::NSigsRefund => {
+                let sigs = tag
+                    .get(1)
                     .ok_or(Error::TagValueNotFound)?
                     .as_ref()
-                    .parse()?,
-            )),
+                    .parse()?;
+                if sigs == 0 {
+                    return Err(Error::NUT11(crate::nut11::Error::ZeroSignaturesRequired));
+                }
+                Ok(Tag::NSigsRefund(sigs))
+            }
             TagKind::Custom(name) => {
                 let tags = tag
                     .iter()
