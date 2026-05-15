@@ -177,12 +177,14 @@ pub struct MintQuoteCustomResponse {
     pub quote: String,
     /// Request string
     pub request: String,
-    /// State of the quote
-    pub state: QuoteState,
     /// Expiry timestamp (optional)
     pub expiry: Option<u64>,
     /// Amount (optional)
     pub amount: Option<Amount>,
+    /// Amount paid
+    pub amount_paid: Amount,
+    /// Amount issued
+    pub amount_issued: Amount,
     /// Unit (optional)
     pub unit: Option<CurrencyUnit>,
     /// Pubkey (optional)
@@ -205,9 +207,10 @@ impl From<cdk::nuts::MintQuoteCustomResponse<String>> for MintQuoteCustomRespons
         Self {
             quote: response.quote,
             request: response.request,
-            state: response.state.into(),
             expiry: response.expiry,
             amount: response.amount.map(Into::into),
+            amount_paid: response.amount_paid.into(),
+            amount_issued: response.amount_issued.into(),
             unit: response.unit.map(Into::into),
             pubkey: response.pubkey.map(|p| p.to_string()),
             extra,
@@ -262,7 +265,7 @@ pub struct MeltQuoteCustomResponse {
     /// Amount
     pub amount: Amount,
     /// Fee reserve
-    pub fee_reserve: Amount,
+    pub fee_reserve: Option<Amount>,
     /// State of the quote
     pub state: QuoteState,
     /// Expiry timestamp
@@ -291,7 +294,7 @@ impl From<cdk::nuts::MeltQuoteCustomResponse<String>> for MeltQuoteCustomRespons
         Self {
             quote: response.quote,
             amount: response.amount.into(),
-            fee_reserve: response.fee_reserve.into(),
+            fee_reserve: response.fee_reserve.map(Into::into),
             state: response.state.into(),
             expiry: response.expiry,
             payment_proof: response.payment_preimage,

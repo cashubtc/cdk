@@ -23,8 +23,7 @@ use cdk_common::{
 
 use crate::nuts::{
     nut17, nut19, BatchCheckMintQuoteRequest, BatchMintRequest, MeltQuoteBolt11Response,
-    MeltQuoteState, MintQuoteBolt11Response, NUT04Settings, NUT05Settings, PaymentMethod,
-    SecretKey, State,
+    MeltQuoteState, NUT04Settings, NUT05Settings, PaymentMethod, SecretKey, State,
 };
 use crate::secret::Secret;
 use crate::wallet::{MintConnector, Wallet};
@@ -717,7 +716,7 @@ impl MintConnector for MockMintConnector {
         &self,
         _method: &PaymentMethod,
         _request: BatchCheckMintQuoteRequest<String>,
-    ) -> Result<Vec<MintQuoteBolt11Response<String>>, Error> {
+    ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
         unimplemented!()
     }
 

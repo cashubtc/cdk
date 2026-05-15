@@ -13,8 +13,8 @@ use super::Error;
 pub use crate::lightning_address::{LnurlPayInvoiceResponse, LnurlPayResponse};
 use crate::nuts::{
     BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse, Id,
-    KeySet, KeysetResponse, MeltRequest, MintInfo, MintQuoteBolt11Response, MintRequest,
-    MintResponse, PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    KeySet, KeysetResponse, MeltRequest, MintInfo, MintRequest, MintResponse, PaymentMethod,
+    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use crate::wallet::AuthWallet;
 
@@ -70,13 +70,11 @@ pub trait MintConnector: Debug {
     /// Batch check mint quote status [NUT-29]
     ///
     /// Checks the status of multiple mint quotes in a single request.
-    /// The response type is `Vec<MintQuoteBolt11Response>` for bolt11 quotes.
-    /// For other payment methods, the response is method-specific.
     async fn post_batch_check_mint_quote_status(
         &self,
         method: &PaymentMethod,
         request: BatchCheckMintQuoteRequest<String>,
-    ) -> Result<Vec<MintQuoteBolt11Response<String>>, Error>;
+    ) -> Result<Vec<MintQuoteResponse<String>>, Error>;
 
     /// Batch mint tokens [NUT-29]
     ///

@@ -49,7 +49,7 @@ impl Wallet {
             amount: quote_res.amount,
             request: quote_request_str,
             unit: self.unit.clone(),
-            fee_reserve: quote_res.fee_reserve,
+            fee_reserve: quote_res.fee_reserve.unwrap_or_default(),
             state: quote_res.state,
             expiry: quote_res.expiry,
             payment_proof: quote_res.payment_preimage,

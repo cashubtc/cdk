@@ -478,8 +478,8 @@ pub struct MeltQuoteCustomRequest {
 /// ```
 ///
 /// This separation enables proper validation layering: the mint verifies
-/// well-defined fields (amount, fee_reserve, state, etc.) while passing extra
-/// through to the gRPC payment processor for method-specific validation.
+/// well-defined fields (amount, optional fee_reserve, state, etc.) while
+/// passing extra through to the gRPC payment processor for method-specific validation.
 ///
 /// It also provides a clean upgrade path: when a payment method becomes speced,
 /// its fields can be promoted from `extra` to well-defined struct fields without
@@ -492,8 +492,9 @@ pub struct MeltQuoteCustomResponse<Q> {
     pub quote: Q,
     /// Amount to be melted
     pub amount: Amount,
-    /// Fee reserve required
-    pub fee_reserve: Amount,
+    /// Fee reserve required, if provided
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_reserve: Option<Amount>,
     /// Quote State
     pub state: QuoteState,
     /// Unix timestamp until the quote is valid
@@ -621,5 +622,47 @@ mod tests {
             }
             _ => panic!("Expected Bolt11 options with amountless = true"),
         }
+    }
+
+    #[test]
+    fn test_melt_quote_custom_response_fee_reserve_optional() {
+        let json_str = r#"{
+            "quote": "abc123",
+            "state": "UNPAID",
+            "amount": 1000,
+            "expiry": 1234567890,
+            "custom_field": "value"
+        }"#;
+
+        let response: MeltQuoteCustomResponse<String> = from_str(json_str).unwrap();
+
+        assert_eq!(response.fee_reserve, None);
+        assert_eq!(response.extra["custom_field"], json!("value"));
+
+        let serialized = to_string(&response).unwrap();
+        let parsed: serde_json::Value = from_str(&serialized).unwrap();
+
+        assert!(parsed.get("fee_reserve").is_none());
+    }
+
+    #[test]
+    fn test_melt_quote_custom_response_serializes_fee_reserve_when_present() {
+        let response = MeltQuoteCustomResponse {
+            quote: "abc123".to_string(),
+            amount: Amount::from(1000),
+            fee_reserve: Some(Amount::from(10)),
+            state: QuoteState::Unpaid,
+            expiry: 1234567890,
+            payment_preimage: None,
+            change: None,
+            request: None,
+            unit: None,
+            extra: serde_json::Value::Null,
+        };
+
+        let serialized = to_string(&response).unwrap();
+        let parsed: serde_json::Value = from_str(&serialized).unwrap();
+
+        assert_eq!(parsed["fee_reserve"], json!(10));
     }
 }
