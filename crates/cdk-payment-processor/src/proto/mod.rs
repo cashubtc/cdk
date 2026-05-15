@@ -202,7 +202,7 @@ impl TryFrom<CreatePaymentResponse> for CreateIncomingPaymentResponse {
             request: value.request,
             expiry: value.expiry,
             extra_json: Some(
-                serde_json::from_str(value.extra_json.unwrap_or_default().as_str())
+                serde_json::from_str(value.extra_json.as_deref().unwrap_or("{}"))
                     .unwrap_or_default(),
             ),
         })

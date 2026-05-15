@@ -109,7 +109,7 @@ impl<Q> MeltQuoteResponse<Q> {
         match self {
             Self::Bolt11(r) => r.fee_reserve,
             Self::Bolt12(r) => r.fee_reserve,
-            Self::Custom((_, r)) => r.fee_reserve,
+            Self::Custom((_, r)) => r.fee_reserve.unwrap_or_default(),
         }
     }
 
@@ -227,7 +227,7 @@ mod tests {
         MeltQuoteCustomResponse {
             quote: quote.to_string(),
             amount: Amount::from(300),
-            fee_reserve: Amount::from(3),
+            fee_reserve: Some(Amount::from(3)),
             state: MeltQuoteState::Paid,
             expiry: 3000,
             payment_preimage: Some("outpoint-abc".to_string()),

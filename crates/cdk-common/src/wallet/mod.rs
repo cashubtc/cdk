@@ -16,6 +16,7 @@ use cashu::{nut00, PaymentMethod, Proof, Proofs, PublicKey};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::mint_quote::quote_state_from_amounts;
 use crate::mint_url::MintUrl;
 use crate::nuts::{
     CurrencyUnit, Id, MeltQuoteState, MintQuoteState, SecretKey, SpendingConditions, State,
@@ -269,6 +270,16 @@ impl MintQuote {
     /// Calculate the total amount including any fees
     pub fn total_amount(&self) -> Amount {
         self.amount_paid
+    }
+
+    /// Derive quote state from the tracked payment and issuance counters.
+    pub fn state_from_amounts(&self) -> MintQuoteState {
+        quote_state_from_amounts(self.amount_paid, self.amount_issued)
+    }
+
+    /// Update quote state from the tracked payment and issuance counters.
+    pub fn update_state_from_amounts(&mut self) {
+        self.state = self.state_from_amounts();
     }
 
     /// Check if the quote has expired

@@ -239,6 +239,7 @@ pub async fn get_check_mint_custom_quote(
                 cdk::mint::MintQuoteResponse::Custom {
                     method: quote_method,
                     response,
+                    ..
                 } => {
                     if quote_method.to_string() != method {
                         return Err(into_response(cdk::Error::InvalidPaymentMethod));
