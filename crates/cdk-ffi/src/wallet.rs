@@ -208,10 +208,8 @@ impl Wallet {
         amount: Amount,
         options: SendOptions,
     ) -> Result<std::sync::Arc<PreparedSend>, FfiError> {
-        let prepared = self
-            .inner
-            .prepare_send(amount.into(), options.into())
-            .await?;
+        let options = options.try_into()?;
+        let prepared = self.inner.prepare_send(amount.into(), options).await?;
         Ok(std::sync::Arc::new(PreparedSend::new(
             self.inner.clone(),
             &prepared,

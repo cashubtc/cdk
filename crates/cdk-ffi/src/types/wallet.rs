@@ -177,18 +177,22 @@ impl Default for SendOptions {
     }
 }
 
-impl From<SendOptions> for cdk::wallet::SendOptions {
-    fn from(opts: SendOptions) -> Self {
-        cdk::wallet::SendOptions {
+impl TryFrom<SendOptions> for cdk::wallet::SendOptions {
+    type Error = FfiError;
+
+    fn try_from(opts: SendOptions) -> Result<Self, Self::Error> {
+        let conditions = opts.conditions.map(TryInto::try_into).transpose()?;
+
+        Ok(cdk::wallet::SendOptions {
             memo: opts.memo.map(Into::into),
-            conditions: opts.conditions.and_then(|c| c.try_into().ok()),
+            conditions,
             amount_split_target: opts.amount_split_target.into(),
             send_kind: opts.send_kind.into(),
             include_fee: opts.include_fee,
             max_proofs: opts.max_proofs.map(|p| p as usize),
             metadata: opts.metadata,
             use_p2bk: opts.use_p2bk,
-        }
+        })
     }
 }
 

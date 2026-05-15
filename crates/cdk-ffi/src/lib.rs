@@ -219,6 +219,72 @@ mod tests {
     }
 
     #[test]
+    fn test_send_options_invalid_p2pk_conditions_returns_error() {
+        let options = SendOptions {
+            conditions: Some(SpendingConditions::P2PK {
+                pubkey: "not-a-pubkey".to_string(),
+                conditions: None,
+            }),
+            ..Default::default()
+        };
+
+        let result: Result<cdk::wallet::SendOptions, _> = options.try_into();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_send_options_invalid_htlc_conditions_returns_error() {
+        let options = SendOptions {
+            conditions: Some(SpendingConditions::HTLC {
+                hash: "not-a-hash".to_string(),
+                conditions: None,
+            }),
+            ..Default::default()
+        };
+
+        let result: Result<cdk::wallet::SendOptions, _> = options.try_into();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_wallet_prepare_send_invalid_conditions_returns_error() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let wallet = Wallet::new(
+                "https://mint.example.com".to_string(),
+                CurrencyUnit::Sat,
+                generate_mnemonic().unwrap(),
+                WalletStore::Sqlite {
+                    path: ":memory:".to_string(),
+                },
+                WalletConfig {
+                    target_proof_count: None,
+                },
+            )
+            .unwrap();
+
+            let options = SendOptions {
+                conditions: Some(SpendingConditions::P2PK {
+                    pubkey: "not-a-pubkey".to_string(),
+                    conditions: None,
+                }),
+                ..Default::default()
+            };
+
+            let result = wallet.prepare_send(Amount::new(1), options).await;
+
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
     fn test_receive_options_with_all_fields() {
         use std::collections::HashMap;
 
