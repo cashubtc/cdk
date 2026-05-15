@@ -612,7 +612,7 @@
 
               # Generate Kotlin bindings
               cargo run --release -p cdk-ffi-kotlin --bin uniffi-bindgen -- generate \
-                --library "target/${hostTarget}/release/libcdk_ffi_kotlin.$LIB_EXT" \
+                --library "target/${hostTarget}/release/libcdk_ffi.$LIB_EXT" \
                 --language kotlin \
                 --out-dir target/kotlin-bindings \
                 --no-format
@@ -627,8 +627,8 @@
               # Copy generated Kotlin sources
               cp -r target/kotlin-bindings/org $out/cdk-jvm/src/main/kotlin/
 
-              # Copy native library (renamed to libcdk_ffi for JNA convention)
-              cp "target/${hostTarget}/release/libcdk_ffi_kotlin.$LIB_EXT" \
+              # Copy native library
+              cp "target/${hostTarget}/release/libcdk_ffi.$LIB_EXT" \
                 "$out/cdk-jvm/src/main/resources/libcdk_ffi.$LIB_EXT"
 
               # Strip debug symbols
@@ -1359,6 +1359,81 @@
               // envVars
             );
 
+            # Shell for building Kotlin native libraries (Rust + Android NDK)
+            kotlin-build =
+              let
+                pkgsAndroid = import nixpkgs {
+                  inherit system;
+                  config = {
+                    android_sdk.accept_license = true;
+                    allowUnfree = true;
+                  };
+                };
+                androidComposition = pkgsAndroid.androidenv.composeAndroidPackages {
+                  platformVersions = [ "34" ];
+                  buildToolsVersions = [ "34.0.0" ];
+                  includeNDK = true;
+                  ndkVersions = [ "27.0.12077973" ];
+                  includeEmulator = false;
+                  includeSystemImages = false;
+                };
+                androidSdk = androidComposition.androidsdk;
+                ndkHome = "${androidSdk}/libexec/android-sdk/ndk/27.0.12077973";
+                toolchainBin = "${ndkHome}/toolchains/llvm/prebuilt/linux-x86_64/bin";
+                buildToolchain = pkgs.rust-bin.stable."1.95.0".default.override {
+                  targets = [
+                    "aarch64-linux-android"
+                    "armv7-linux-androideabi"
+                    "x86_64-linux-android"
+                    "aarch64-apple-ios"
+                    "aarch64-apple-darwin"
+                  ];
+                };
+              in
+              pkgs.mkShell {
+                buildInputs = [
+                  buildToolchain
+                ];
+                ANDROID_HOME = "${androidSdk}/libexec/android-sdk";
+                ANDROID_NDK_HOME = ndkHome;
+                CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = "${toolchainBin}/aarch64-linux-android24-clang";
+                CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER = "${toolchainBin}/armv7a-linux-androideabi24-clang";
+                CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER = "${toolchainBin}/x86_64-linux-android24-clang";
+                CC_aarch64_linux_android = "${toolchainBin}/aarch64-linux-android24-clang";
+                CC_armv7_linux_androideabi = "${toolchainBin}/armv7a-linux-androideabi24-clang";
+                CC_x86_64_linux_android = "${toolchainBin}/x86_64-linux-android24-clang";
+                AR_aarch64_linux_android = "${toolchainBin}/llvm-ar";
+                AR_armv7_linux_androideabi = "${toolchainBin}/llvm-ar";
+                AR_x86_64_linux_android = "${toolchainBin}/llvm-ar";
+              };
+
+            # Shell for Kotlin publishing (JDK 17 + Android SDK for Gradle)
+            kotlin-publish =
+              let
+                pkgsAndroid = import nixpkgs {
+                  inherit system;
+                  config = {
+                    android_sdk.accept_license = true;
+                    allowUnfree = true;
+                  };
+                };
+                androidComposition = pkgsAndroid.androidenv.composeAndroidPackages {
+                  platformVersions = [ "34" ];
+                  buildToolsVersions = [ "34.0.0" ];
+                  includeNDK = false;
+                  includeEmulator = false;
+                  includeSystemImages = false;
+                };
+              in
+              pkgs.mkShell {
+                buildInputs = [
+                  pkgs.jdk17
+                  androidComposition.androidsdk
+                ];
+                ANDROID_HOME = "${androidComposition.androidsdk}/libexec/android-sdk";
+                JAVA_HOME = "${pkgs.jdk17}";
+              };
+
           in
           {
             inherit
@@ -1370,6 +1445,8 @@
               integration
               ffi
               bindings
+              kotlin-build
+              kotlin-publish
               ;
             default = stable;
           };
