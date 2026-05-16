@@ -254,8 +254,7 @@ mod test {
     use bitcoin::key::Secp256k1;
     use bitcoin::Network;
     use cdk_common::nuts::SecretKey;
-    use cdk_common::util::hex;
-    use cdk_common::util::unix_time;
+    use cdk_common::util::{hex, unix_time};
     use cdk_common::{Amount, MintKeySet, PublicKey};
 
     use super::*;
