@@ -54,6 +54,10 @@ impl Mint {
             return Err(Error::BlindAuthFailed);
         }
 
+        if keyset.is_expired() {
+            return Err(Error::ExpiredKeyset);
+        }
+
         self.signatory
             .verify_proofs(vec![token.auth_proof.clone().into()])
             .await
