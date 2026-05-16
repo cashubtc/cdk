@@ -102,7 +102,7 @@ impl Serialize for MintMethodSettings {
     where
         S: Serializer,
     {
-        let mut num_fields = 3; // method and unit are always present
+        let mut num_fields = 2; // method and unit are always present
         if self.min_amount.is_some() {
             num_fields += 1;
         }
@@ -430,10 +430,298 @@ impl From<MintQuoteCustomResponse<QuoteId>> for MintQuoteCustomResponse<String> 
 }
 #[cfg(test)]
 mod tests {
+    use std::fmt;
+
+    use serde::ser::{Impossible, SerializeStruct, Serializer};
     use serde_json::{from_str, json, to_string};
 
     use super::*;
     use crate::nut00::KnownMethod;
+
+    #[derive(Debug)]
+    struct FieldCountError(String);
+
+    impl fmt::Display for FieldCountError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(&self.0)
+        }
+    }
+
+    impl std::error::Error for FieldCountError {}
+
+    impl serde::ser::Error for FieldCountError {
+        fn custom<T>(msg: T) -> Self
+        where
+            T: fmt::Display,
+        {
+            Self(msg.to_string())
+        }
+    }
+
+    struct FieldCountSerializer;
+
+    struct FieldCountStruct {
+        declared: usize,
+        actual: usize,
+    }
+
+    impl Serializer for FieldCountSerializer {
+        type Ok = ();
+        type Error = FieldCountError;
+        type SerializeSeq = Impossible<Self::Ok, Self::Error>;
+        type SerializeTuple = Impossible<Self::Ok, Self::Error>;
+        type SerializeTupleStruct = Impossible<Self::Ok, Self::Error>;
+        type SerializeTupleVariant = Impossible<Self::Ok, Self::Error>;
+        type SerializeMap = Impossible<Self::Ok, Self::Error>;
+        type SerializeStruct = FieldCountStruct;
+        type SerializeStructVariant = Impossible<Self::Ok, Self::Error>;
+
+        fn serialize_bool(self, _v: bool) -> Result<Self::Ok, Self::Error> {
+            Err(FieldCountError("unsupported bool".to_string()))
+        }
+
+        fn serialize_i8(self, _v: i8) -> Result<Self::Ok, Self::Error> {
+            Err(FieldCountError("unsupported i8".to_string()))
+        }
+
+        fn serialize_i16(self, _v: i16) -> Result<Self::Ok, Self::Error> {
+            Err(FieldCountError("unsupported i16".to_string()))
+        }
+
+        fn serialize_i32(self, _v: i32) -> Result<Self::Ok, Self::Error> {
+            Err(FieldCountError("unsupported i32".to_string()))
+        }
+
+        fn serialize_i64(self, _v: i64) -> Result<Self::Ok, Self::Error> {
+            Err(FieldCountError("unsupported i64".to_string()))
+        }
+
+        fn serialize_u8(self, _v: u8) -> Result<Self::Ok, Self::Error> {
+            Err(FieldCountError("unsupported u8".to_string()))
+        }
+
+        fn serialize_u16(self, _v: u16) -> Result<Self::Ok, Self::Error> {
+            Err(FieldCountError("unsupported u16".to_string()))
+        }
+
+        fn serialize_u32(self, _v: u32) -> Result<Self::Ok, Self::Error> {
+            Err(FieldCountError("unsupported u32".to_string()))
+        }
+
+        fn serialize_u64(self, _v: u64) -> Result<Self::Ok, Self::Error> {
+            Err(FieldCountError("unsupported u64".to_string()))
+        }
+
+        fn serialize_f32(self, _v: f32) -> Result<Self::Ok, Self::Error> {
+            Err(FieldCountError("unsupported f32".to_string()))
+        }
+
+        fn serialize_f64(self, _v: f64) -> Result<Self::Ok, Self::Error> {
+            Err(FieldCountError("unsupported f64".to_string()))
+        }
+
+        fn serialize_char(self, _v: char) -> Result<Self::Ok, Self::Error> {
+            Err(FieldCountError("unsupported char".to_string()))
+        }
+
+        fn serialize_str(self, _v: &str) -> Result<Self::Ok, Self::Error> {
+            Err(FieldCountError("unsupported str".to_string()))
+        }
+
+        fn serialize_bytes(self, _v: &[u8]) -> Result<Self::Ok, Self::Error> {
+            Err(FieldCountError("unsupported bytes".to_string()))
+        }
+
+        fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
+            Err(FieldCountError("unsupported none".to_string()))
+        }
+
+        fn serialize_some<T>(self, _value: &T) -> Result<Self::Ok, Self::Error>
+        where
+            T: ?Sized + Serialize,
+        {
+            Err(FieldCountError("unsupported some".to_string()))
+        }
+
+        fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
+            Err(FieldCountError("unsupported unit".to_string()))
+        }
+
+        fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok, Self::Error> {
+            Err(FieldCountError("unsupported unit struct".to_string()))
+        }
+
+        fn serialize_unit_variant(
+            self,
+            _name: &'static str,
+            _variant_index: u32,
+            _variant: &'static str,
+        ) -> Result<Self::Ok, Self::Error> {
+            Err(FieldCountError("unsupported unit variant".to_string()))
+        }
+
+        fn serialize_newtype_struct<T>(
+            self,
+            _name: &'static str,
+            _value: &T,
+        ) -> Result<Self::Ok, Self::Error>
+        where
+            T: ?Sized + Serialize,
+        {
+            Err(FieldCountError("unsupported newtype struct".to_string()))
+        }
+
+        fn serialize_newtype_variant<T>(
+            self,
+            _name: &'static str,
+            _variant_index: u32,
+            _variant: &'static str,
+            _value: &T,
+        ) -> Result<Self::Ok, Self::Error>
+        where
+            T: ?Sized + Serialize,
+        {
+            Err(FieldCountError("unsupported newtype variant".to_string()))
+        }
+
+        fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
+            Err(FieldCountError("unsupported seq".to_string()))
+        }
+
+        fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, Self::Error> {
+            Err(FieldCountError("unsupported tuple".to_string()))
+        }
+
+        fn serialize_tuple_struct(
+            self,
+            _name: &'static str,
+            _len: usize,
+        ) -> Result<Self::SerializeTupleStruct, Self::Error> {
+            Err(FieldCountError("unsupported tuple struct".to_string()))
+        }
+
+        fn serialize_tuple_variant(
+            self,
+            _name: &'static str,
+            _variant_index: u32,
+            _variant: &'static str,
+            _len: usize,
+        ) -> Result<Self::SerializeTupleVariant, Self::Error> {
+            Err(FieldCountError("unsupported tuple variant".to_string()))
+        }
+
+        fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
+            Err(FieldCountError("unsupported map".to_string()))
+        }
+
+        fn serialize_struct(
+            self,
+            _name: &'static str,
+            len: usize,
+        ) -> Result<Self::SerializeStruct, Self::Error> {
+            Ok(FieldCountStruct {
+                declared: len,
+                actual: 0,
+            })
+        }
+
+        fn serialize_struct_variant(
+            self,
+            _name: &'static str,
+            _variant_index: u32,
+            _variant: &'static str,
+            _len: usize,
+        ) -> Result<Self::SerializeStructVariant, Self::Error> {
+            Err(FieldCountError("unsupported struct variant".to_string()))
+        }
+    }
+
+    impl SerializeStruct for FieldCountStruct {
+        type Ok = ();
+        type Error = FieldCountError;
+
+        fn serialize_field<T>(&mut self, _key: &'static str, _value: &T) -> Result<(), Self::Error>
+        where
+            T: ?Sized + Serialize,
+        {
+            self.actual += 1;
+            Ok(())
+        }
+
+        fn end(self) -> Result<Self::Ok, Self::Error> {
+            if self.actual == self.declared {
+                Ok(())
+            } else {
+                Err(FieldCountError(format!(
+                    "declared {} fields but serialized {}",
+                    self.declared, self.actual
+                )))
+            }
+        }
+    }
+
+    fn assert_mint_method_settings_field_count(settings: &MintMethodSettings) {
+        settings.serialize(FieldCountSerializer).unwrap();
+    }
+
+    #[test]
+    fn test_mint_request_total_amount() {
+        let request: MintRequest<String> = from_str(
+            r#"{
+                "quote": "quote-id",
+                "outputs": [
+                    {
+                        "amount": 2,
+                        "id": "00bfa73302d12ffd",
+                        "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+                    },
+                    {
+                        "amount": 4,
+                        "id": "00bfa73302d12ffd",
+                        "B_": "02c97ee3d1db41cf0a3ddb601724be8711a032950811bf326f8219c50c4808d3cd"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(request.total_amount().unwrap(), Amount::from(6));
+    }
+
+    #[test]
+    fn test_mint_method_settings_serialize_field_count() {
+        assert_mint_method_settings_field_count(&MintMethodSettings {
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            unit: CurrencyUnit::Sat,
+            min_amount: Some(Amount::from(1)),
+            max_amount: Some(Amount::from(1000)),
+            options: Some(MintMethodOptions::Bolt11 { description: true }),
+        });
+
+        assert_mint_method_settings_field_count(&MintMethodSettings {
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            unit: CurrencyUnit::Sat,
+            min_amount: Some(Amount::from(1)),
+            max_amount: None,
+            options: None,
+        });
+
+        assert_mint_method_settings_field_count(&MintMethodSettings {
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            unit: CurrencyUnit::Sat,
+            min_amount: None,
+            max_amount: Some(Amount::from(1000)),
+            options: None,
+        });
+
+        assert_mint_method_settings_field_count(&MintMethodSettings {
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            unit: CurrencyUnit::Sat,
+            min_amount: None,
+            max_amount: None,
+            options: Some(MintMethodOptions::Bolt11 { description: true }),
+        });
+    }
 
     #[test]
     fn test_mint_method_settings_top_level_description() {

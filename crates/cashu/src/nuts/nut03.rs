@@ -204,4 +204,45 @@ mod tests {
         assert!(!rebuilt.inputs().is_empty());
         assert!(!rebuilt.outputs().is_empty());
     }
+
+    #[test]
+    fn test_swap_request_outputs_mut_updates_outputs() {
+        let mut req: SwapRequest = serde_json::from_str(SWAP_REQUEST_JSON).unwrap();
+        let output = req.outputs()[0].clone();
+
+        req.outputs_mut().push(output);
+
+        assert_eq!(req.outputs().len(), 2);
+    }
+
+    #[test]
+    fn test_swap_request_amounts() {
+        let req: SwapRequest = serde_json::from_str(SWAP_REQUEST_JSON).unwrap();
+
+        assert_eq!(req.input_amount().unwrap(), Amount::from(6));
+        assert_eq!(req.output_amount().unwrap(), Amount::from(2));
+    }
+
+    #[test]
+    fn test_swap_response_promises_amount() {
+        let response: SwapResponse = serde_json::from_str(
+            r#"{
+                "signatures": [
+                    {
+                        "amount": 8,
+                        "id": "00bfa73302d12ffd",
+                        "C_": "02c97ee3d1db41cf0a3ddb601724be8711a032950811bf326f8219c50c4808d3cd"
+                    },
+                    {
+                        "amount": 4,
+                        "id": "00bfa73302d12ffd",
+                        "C_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(response.promises_amount().unwrap(), Amount::from(12));
+    }
 }
