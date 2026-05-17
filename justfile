@@ -556,6 +556,14 @@ release m="":
   #!/usr/bin/env bash
   set -euo pipefail
 
+  # Extract version from the cdk-ffi crate
+  VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "cdk-ffi") | .version')
+
+  if ! git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
+    echo "Tag v$VERSION does not exist on origin. Push the release tag before publishing crates."
+    exit 1
+  fi
+
   args=(
     "-p cashu"
     "-p cdk-prometheus"
@@ -588,9 +596,6 @@ release m="":
     cargo publish $arg {{m}}
     echo
   done
-
-  # Extract version from the cdk-ffi crate
-  VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "cdk-ffi") | .version')
 
   # Trigger Swift package release after Rust crates are published
   echo "📦 Triggering Swift package release for version $VERSION..."
@@ -831,15 +836,15 @@ ffi-release-kotlin VERSION:
   #!/usr/bin/env bash
   set -euo pipefail
 
-  echo "🚀 Triggering Publish Kotlin Package workflow..."
+  echo "🚀 Triggering Kotlin bindings workflow..."
   echo "   Version: {{VERSION}}"
   echo "   CDK Ref: v{{VERSION}}"
 
   # Trigger the workflow using GitHub CLI
-  gh workflow run "Publish Kotlin Bindings" \
-    --repo cashubtc/cdk-kotlin \
-    --field version="{{VERSION}}" \
-    --field cdk_repo="cashubtc/cdk" \
+  gh workflow run "FFI - Kotlin Bindings" \
+    --repo cashubtc/cdk \
+    --field release_tag="v{{VERSION}}" \
+    --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
 
   echo "✅ Kotlin workflow triggered successfully!"
