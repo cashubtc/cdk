@@ -9,6 +9,9 @@ on:
       cdk_version:
         description: 'CDK dependency version (e.g. 0.17.0). Defaults to release_tag without the "v" prefix.'
         required: false
+      cdk_ref:
+        description: 'CDK git ref to publish from. Defaults to release_tag.'
+        required: false
 env:
   CARGO_TERM_COLOR: ${{ vars.CARGO_TERM_COLOR }}
 
@@ -19,6 +22,8 @@ jobs:
     steps:
       - name: Checkout monorepo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.cdk_ref || inputs.release_tag }}
 
       - name: Clone cdk-kotlin
         run: |
@@ -165,6 +170,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: cdk
+          ref: ${{ inputs.cdk_ref || inputs.release_tag }}
           fetch-depth: 1
 
       - name: Install Nix
@@ -258,6 +264,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: cdk
+          ref: ${{ inputs.cdk_ref || inputs.release_tag }}
           fetch-depth: 1
 
       - uses: DeterminateSystems/nix-installer-action@main
