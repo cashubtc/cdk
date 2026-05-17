@@ -1,0 +1,423 @@
+name: "FFI - Swift Bindings"
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag to create for release (e.g. v0.17.0)"
+        required: true
+      cdk_version:
+        description: 'CDK dependency version (e.g. 0.17.0). Defaults to release_tag without the "v" prefix.'
+        required: false
+env:
+  CARGO_TERM_COLOR: ${{ vars.CARGO_TERM_COLOR }}
+
+jobs:
+  swift-sync-sources:
+    name: "swift: Sync sources to cdk-swift"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Clone cdk-swift
+        run: |
+          git clone https://x-access-token:${{ secrets.SWIFT_DEPLOY_KEY }}@github.com/${{ vars.CDK_SWIFT_REPO }}.git cdk-swift
+
+      - name: Copy bindings/swift to cdk-swift
+        run: |
+          rsync -av --delete \
+            --exclude='.github' \
+            --exclude='target' \
+            --exclude='.git' \
+            --exclude='build' \
+            bindings/swift/ cdk-swift/
+          cp rust-toolchain.toml cdk-swift/
+
+      - name: Update versions and resolve workspace references
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          CDK_VER="${{ inputs.cdk_version }}"
+          CDK_VER="${CDK_VER:-${TAG#v}}"
+          RELEASE_VER="${TAG#v}"
+          echo "Setting CDK version to ${CDK_VER}, release version to ${RELEASE_VER}"
+
+          # Helper: extract a value from [workspace.package] in root Cargo.toml
+          ws_pkg() {
+            sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
+              | grep "^$1 " | head -1 | sed 's/.*= *"\(.*\)"/\1/'
+          }
+
+          # Helper: extract a workspace dependency version
+          ws_dep_ver() {
+            local line
+            line=$(sed -n '/^\[workspace\.dependencies\]/,/^\[/p' Cargo.toml \
+              | grep "^$1 " | head -1)
+            # Handle both: dep = "version" and dep = { ..., version = "x", ... }
+            if echo "$line" | grep -q 'version *= *"'; then
+              echo "$line" | sed 's/.*version *= *"\([^"]*\)".*/\1/'
+            else
+              echo "$line" | sed 's/.*= *"\([^"]*\)".*/\1/'
+            fi
+          }
+
+          # Read workspace values dynamically
+          WS_EDITION=$(ws_pkg edition)
+          WS_RUST_VERSION=$(ws_pkg rust-version)
+          WS_LICENSE=$(ws_pkg license)
+          WS_HOMEPAGE=$(ws_pkg homepage)
+          WS_REPOSITORY=$(ws_pkg repository)
+          WS_README=$(ws_pkg readme)
+          WS_UNIFFI_VER=$(ws_dep_ver uniffi)
+
+          echo "Workspace values: edition=${WS_EDITION} rust-version=${WS_RUST_VERSION} uniffi=${WS_UNIFFI_VER}"
+
+          # Resolve workspace package fields in rust/Cargo.toml
+          sed -i \
+            -e "s/^edition\.workspace = true/edition = \"${WS_EDITION}\"/" \
+            -e "s/^rust-version\.workspace = true/rust-version = \"${WS_RUST_VERSION}\"/" \
+            -e "s/^license\.workspace = true/license = \"${WS_LICENSE}\"/" \
+            -e "s|^homepage\.workspace = true|homepage = \"${WS_HOMEPAGE}\"|" \
+            -e "s|^repository\.workspace = true|repository = \"${WS_REPOSITORY}\"|" \
+            -e "s/^version\.workspace = true/version = \"${CDK_VER}\"/" \
+            -e "s/^readme\.workspace = true/readme = \"${WS_README}\"/" \
+            cdk-swift/rust/Cargo.toml
+
+          # Resolve workspace dependency references
+          sed -i \
+            -e "s/^cdk-ffi\.workspace = true/cdk-ffi = { version = \"=${CDK_VER}\", default-features = false }/" \
+            -e "s/cdk-ffi = { workspace = true/cdk-ffi = { version = \"=${CDK_VER}\"/" \
+            -e "s/uniffi = { workspace = true/uniffi = { version = \"${WS_UNIFFI_VER}\"/" \
+            cdk-swift/rust/Cargo.toml
+
+          # Remove workspace lints reference
+          sed -i '/^\[lints\]/,/^$/s/^workspace = true//' cdk-swift/rust/Cargo.toml
+
+          # Add release profile
+          printf '\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-swift/rust/Cargo.toml
+
+          echo "--- rust/Cargo.toml ---"
+          cat cdk-swift/rust/Cargo.toml
+
+      - name: Push to cdk-swift release branch
+        working-directory: cdk-swift
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          RELEASE_BRANCH="release/v${TAG#v}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "${RELEASE_BRANCH}"
+          git add -A
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "sync: update sources for ${TAG}"
+          git push origin "${RELEASE_BRANCH}"
+
+  swift-build-native:
+    name: "swift: Build ${{ matrix.target }}"
+    needs: [swift-sync-sources]
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-ios
+            artifact: libcdk_ffi_swift.a
+            unset_macos_env: true
+          - target: aarch64-apple-ios-sim
+            artifact: libcdk_ffi_swift.a
+            unset_macos_env: true
+          - target: x86_64-apple-ios
+            artifact: libcdk_ffi_swift.a
+            unset_macos_env: true
+          - target: aarch64-apple-darwin
+            artifact: libcdk_ffi_swift.dylib
+            unset_macos_env: false
+          - target: x86_64-apple-darwin
+            artifact: libcdk_ffi_swift.dylib
+            unset_macos_env: false
+    steps:
+      - name: Clone cdk-swift
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          RELEASE_BRANCH="release/v${TAG#v}"
+          git clone --branch "${RELEASE_BRANCH}" \
+            https://x-access-token:${{ secrets.SWIFT_DEPLOY_KEY }}@github.com/${{ vars.CDK_SWIFT_REPO }}.git cdk-swift
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        working-directory: cdk-swift/rust
+        run: |
+          export DEVELOPER_DIR=$(/usr/bin/xcrun xcode-select -p)
+          if [[ "${{ matrix.unset_macos_env }}" == "true" ]]; then
+            env -u MACOSX_DEPLOYMENT_TARGET -u SDKROOT \
+              cargo build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Fix dylib install name
+        if: endsWith(matrix.artifact, '.dylib')
+        working-directory: cdk-swift/rust
+        run: |
+          install_name_tool -id @rpath/CashuDevKitFFI.framework/Versions/A/CashuDevKitFFI \
+            target/${{ matrix.target }}/release/${{ matrix.artifact }}
+
+      - name: Strip debug symbols
+        working-directory: cdk-swift/rust
+        run: strip -S target/${{ matrix.target }}/release/${{ matrix.artifact }}
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p dist
+          cp cdk-swift/rust/target/${{ matrix.target }}/release/${{ matrix.artifact }} \
+             dist/${{ matrix.target }}-${{ matrix.artifact }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: swift-native-${{ matrix.target }}
+          path: dist/
+
+  swift-assemble-xcframework:
+    name: "swift: Assemble XCFramework"
+    needs: [swift-build-native]
+    runs-on: macos-14
+    steps:
+      - name: Clone cdk-swift
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          RELEASE_BRANCH="release/v${TAG#v}"
+          git clone --branch "${RELEASE_BRANCH}" \
+            https://x-access-token:${{ secrets.SWIFT_DEPLOY_KEY }}@github.com/${{ vars.CDK_SWIFT_REPO }}.git cdk-swift
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Download all native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          pattern: swift-native-*
+          merge-multiple: true
+
+      - name: Create universal binaries
+        run: |
+          # iOS simulator universal binary (arm64 + x86_64)
+          mkdir -p build/ios-simulator
+          lipo -create \
+            artifacts/aarch64-apple-ios-sim-libcdk_ffi_swift.a \
+            artifacts/x86_64-apple-ios-libcdk_ffi_swift.a \
+            -output build/ios-simulator/libcdk_ffi_swift.a
+
+          # macOS universal binary (arm64 + x86_64)
+          mkdir -p build/macos
+          lipo -create \
+            artifacts/aarch64-apple-darwin-libcdk_ffi_swift.dylib \
+            artifacts/x86_64-apple-darwin-libcdk_ffi_swift.dylib \
+            -output build/macos/libcdk_ffi_swift.dylib
+
+      - name: Create framework structures
+        run: |
+          # iOS device framework
+          IOS_FW="build/ios-device/CashuDevKitFFI.framework"
+          mkdir -p "$IOS_FW"
+          cp artifacts/aarch64-apple-ios-libcdk_ffi_swift.a "$IOS_FW/CashuDevKitFFI"
+          cp cdk-swift/resources/Info-iOS.plist "$IOS_FW/Info.plist"
+
+          # iOS simulator framework
+          SIM_FW="build/ios-simulator-framework/CashuDevKitFFI.framework"
+          mkdir -p "$SIM_FW"
+          cp build/ios-simulator/libcdk_ffi_swift.a "$SIM_FW/CashuDevKitFFI"
+          cp cdk-swift/resources/Info-iOSSimulator.plist "$SIM_FW/Info.plist"
+
+          # macOS framework (versioned bundle layout)
+          MAC_FW="build/macos-framework/CashuDevKitFFI.framework"
+          mkdir -p "$MAC_FW/Versions/A/Resources"
+          cp build/macos/libcdk_ffi_swift.dylib "$MAC_FW/Versions/A/CashuDevKitFFI"
+          cp cdk-swift/resources/Info-macOS.plist "$MAC_FW/Versions/A/Resources/Info.plist"
+
+          # Create symlinks for versioned framework structure
+          ln -s A "$MAC_FW/Versions/Current"
+          ln -s Versions/Current/CashuDevKitFFI "$MAC_FW/CashuDevKitFFI"
+          ln -s Versions/Current/Headers "$MAC_FW/Headers"
+          ln -s Versions/Current/Modules "$MAC_FW/Modules"
+          ln -s Versions/Current/Resources "$MAC_FW/Resources"
+
+      - name: Generate Swift bindings
+        working-directory: cdk-swift/rust
+        run: |
+          # Build uniffi-bindgen-swift binary
+          cargo build --release --bin uniffi-bindgen-swift
+
+          BINDGEN="./target/release/uniffi-bindgen-swift"
+
+          # Generate headers and modulemaps for iOS device
+          IOS_FW="../../build/ios-device/CashuDevKitFFI.framework"
+          $BINDGEN ../../artifacts/aarch64-apple-ios-libcdk_ffi_swift.a \
+            "$IOS_FW/Headers" --headers
+          $BINDGEN ../../artifacts/aarch64-apple-ios-libcdk_ffi_swift.a \
+            "$IOS_FW/Modules" --xcframework --modulemap \
+            --module-name CashuDevKitFFI --modulemap-filename module.modulemap
+
+          # Generate headers and modulemaps for iOS simulator
+          SIM_FW="../../build/ios-simulator-framework/CashuDevKitFFI.framework"
+          $BINDGEN ../../artifacts/aarch64-apple-ios-sim-libcdk_ffi_swift.a \
+            "$SIM_FW/Headers" --headers
+          $BINDGEN ../../artifacts/aarch64-apple-ios-sim-libcdk_ffi_swift.a \
+            "$SIM_FW/Modules" --xcframework --modulemap \
+            --module-name CashuDevKitFFI --modulemap-filename module.modulemap
+
+          # Generate headers and modulemaps for macOS
+          MAC_FW="../../build/macos-framework/CashuDevKitFFI.framework"
+          $BINDGEN ../../artifacts/aarch64-apple-darwin-libcdk_ffi_swift.dylib \
+            "$MAC_FW/Versions/A/Headers" --headers
+          $BINDGEN ../../artifacts/aarch64-apple-darwin-libcdk_ffi_swift.dylib \
+            "$MAC_FW/Versions/A/Modules" --xcframework --modulemap \
+            --module-name CashuDevKitFFI --modulemap-filename module.modulemap
+
+          # Generate Swift source files
+          SOURCES_DIR="../Sources/Cdk"
+          mkdir -p "$SOURCES_DIR"
+          $BINDGEN ../../artifacts/aarch64-apple-darwin-libcdk_ffi_swift.dylib \
+            "$SOURCES_DIR" --swift-sources
+
+          # Fix FFI module import to match the XCFramework module name
+          sed -i '' 's/canImport(cdk_ffiFFI)/canImport(CashuDevKitFFI)/g' "$SOURCES_DIR"/*.swift
+          sed -i '' 's/import cdk_ffiFFI/import CashuDevKitFFI/g' "$SOURCES_DIR"/*.swift
+
+      - name: Re-sign macOS framework
+        run: codesign --force --sign - build/macos-framework/CashuDevKitFFI.framework
+
+      - name: Create XCFramework
+        run: |
+          xcodebuild -create-xcframework \
+            -framework build/ios-device/CashuDevKitFFI.framework \
+            -framework build/ios-simulator-framework/CashuDevKitFFI.framework \
+            -framework build/macos-framework/CashuDevKitFFI.framework \
+            -output build/xcframework/CashuDevKitFFI.xcframework
+
+      - name: Create distribution archive
+        working-directory: build/xcframework
+        run: |
+          zip -r CashuDevKitFFI.xcframework.zip CashuDevKitFFI.xcframework
+          CHECKSUM=$(shasum -a 256 CashuDevKitFFI.xcframework.zip | cut -d' ' -f1)
+          echo "XCFRAMEWORK_CHECKSUM=${CHECKSUM}" >> "$GITHUB_ENV"
+          echo "XCFramework checksum: ${CHECKSUM}"
+
+      - name: Upload XCFramework artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: swift-xcframework
+          path: build/xcframework/CashuDevKitFFI.xcframework.zip
+
+      - name: Upload Swift sources artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: swift-sources-generated
+          path: cdk-swift/Sources/Cdk/
+
+  swift-publish:
+    name: "swift: Publish to cdk-swift"
+    runs-on: ubuntu-latest
+    needs: [swift-assemble-xcframework]
+    steps:
+      - name: Clone cdk-swift
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          RELEASE_BRANCH="release/v${TAG#v}"
+          git clone --branch "${RELEASE_BRANCH}" \
+            https://x-access-token:${{ secrets.SWIFT_DEPLOY_KEY }}@github.com/${{ vars.CDK_SWIFT_REPO }}.git cdk-swift
+
+      - name: Download XCFramework
+        uses: actions/download-artifact@v4
+        with:
+          name: swift-xcframework
+          path: ./artifacts
+
+      - name: Download generated Swift sources
+        uses: actions/download-artifact@v4
+        with:
+          name: swift-sources-generated
+          path: cdk-swift/Sources/Cdk
+
+      - name: Compute checksum
+        run: |
+          CHECKSUM=$(sha256sum artifacts/CashuDevKitFFI.xcframework.zip | cut -d' ' -f1)
+          echo "XCFRAMEWORK_CHECKSUM=${CHECKSUM}" >> "$GITHUB_ENV"
+          echo "XCFramework checksum: ${CHECKSUM}"
+
+      - name: Generate Package.swift
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          cat > cdk-swift/Package.swift << EOF
+          // swift-tools-version: 5.9
+          import PackageDescription
+
+          let package = Package(
+              name: "cdk-swift",
+              platforms: [.iOS(.v14), .macOS(.v13)],
+              products: [
+                  .library(name: "Cdk", targets: ["Cdk"]),
+              ],
+              targets: [
+                  .binaryTarget(
+                      name: "CashuDevKitFFI",
+                      url: "https://github.com/${{ vars.CDK_SWIFT_REPO }}/releases/download/${TAG}/CashuDevKitFFI.xcframework.zip",
+                      checksum: "${XCFRAMEWORK_CHECKSUM}"
+                  ),
+                  .target(
+                      name: "Cdk",
+                      dependencies: ["CashuDevKitFFI"],
+                      path: "Sources/Cdk"
+                  ),
+              ]
+          )
+          EOF
+
+      - name: Commit to release branch
+        working-directory: cdk-swift
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "release: ${{ inputs.release_tag }} — add Swift sources and Package.swift"
+
+      - name: Merge to default branch, tag
+        working-directory: cdk-swift
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          RELEASE_BRANCH="release/v${TAG#v}"
+          DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
+          echo "DEFAULT_BRANCH=${DEFAULT_BRANCH}" >> "$GITHUB_ENV"
+          echo "RELEASE_BRANCH=${RELEASE_BRANCH}" >> "$GITHUB_ENV"
+          git checkout "${DEFAULT_BRANCH}"
+          git merge "${RELEASE_BRANCH}" --squash
+          git commit -m "release: ${TAG}"
+
+      - name: Push and tag
+        working-directory: cdk-swift
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          git checkout "${RELEASE_BRANCH}"
+          git push origin "${RELEASE_BRANCH}"
+          git checkout "${DEFAULT_BRANCH}"
+          git tag "${TAG}"
+          git push origin "${DEFAULT_BRANCH}" --tags
+          git push origin --delete "${RELEASE_BRANCH}"
+
+      - name: Create release on cdk-swift
+        env:
+          GH_TOKEN: ${{ secrets.SWIFT_DEPLOY_KEY }}
+        run: |
+          gh release create "${{ inputs.release_tag }}" \
+            --repo ${{ vars.CDK_SWIFT_REPO }} \
+            --title "Release ${{ inputs.release_tag }}" \
+            --generate-notes \
+            artifacts/CashuDevKitFFI.xcframework.zip

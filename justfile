@@ -911,13 +911,6 @@ test-kotlin:
   ./gradlew :cdk-jvm:test
 
 
-# Generate Swift FFI bindings and XCFramework
-binding-swift:
-  #!/usr/bin/env bash
-  set -euo pipefail
-  cd "{{justfile_directory()}}/bindings/swift"
-  ./generate-bindings.sh
-
 # Run Swift binding tests
 test-swift:
   #!/usr/bin/env bash

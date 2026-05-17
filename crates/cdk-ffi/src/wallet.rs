@@ -8,6 +8,7 @@ use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
 
 use crate::error::FfiError;
 use crate::token::Token;
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use crate::types::bip321::BitcoinNetwork;
 use crate::types::payment_request::PaymentRequest;
 use crate::types::*;
@@ -690,7 +691,7 @@ impl Wallet {
 }
 
 /// BIP353 methods for Wallet
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 #[uniffi::export(async_runtime = "tokio")]
 impl Wallet {
     /// Get a quote for a BIP353 melt
