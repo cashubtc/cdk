@@ -18,6 +18,8 @@ mod error;
 mod subscribe;
 mod unsubscribe;
 
+pub(crate) const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 100;
+
 async fn process(
     context: &mut WsContext,
     body: WsRequest,
@@ -331,6 +333,42 @@ mod tests {
             pubsub.active_subscribers(),
             0,
             "active_subscribers should be 0 after context drop (disconnect)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_per_connection_subscription_count_limit() {
+        let mint = create_test_mint().await;
+        let pubsub = mint.pubsub_manager();
+        let mut context = make_context(mint);
+
+        for i in 0..MAX_SUBSCRIPTIONS_PER_CONNECTION {
+            subscribe::handle(&mut context, make_params(&format!("sub-cap-{i}")))
+                .await
+                .expect("subscribe before cap should succeed");
+        }
+
+        tokio::task::yield_now().await;
+        assert_eq!(
+            pubsub.active_subscribers(),
+            MAX_SUBSCRIPTIONS_PER_CONNECTION,
+            "should have subscribers up to the per-connection cap"
+        );
+
+        let over_cap = subscribe::handle(
+            &mut context,
+            make_params(&format!("sub-cap-{MAX_SUBSCRIPTIONS_PER_CONNECTION}")),
+        )
+        .await;
+
+        assert!(
+            over_cap.is_err(),
+            "subscription over the per-connection cap should be rejected"
+        );
+        assert_eq!(
+            pubsub.active_subscribers(),
+            MAX_SUBSCRIPTIONS_PER_CONNECTION,
+            "rejected subscription should not allocate a pub/sub subscriber"
         );
     }
 }
