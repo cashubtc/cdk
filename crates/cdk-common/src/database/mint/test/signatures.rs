@@ -119,8 +119,8 @@ where
     let quote_id1 = QuoteId::new_uuid();
     let quote_id2 = QuoteId::new_uuid();
 
-    // Create signatures for quote 1
     let blinded_message1 = SecretKey::generate().public_key();
+    let blinded_message2 = SecretKey::generate().public_key();
     let sig1 = BlindSignature {
         amount: Amount::from(100u64),
         keyset_id,
@@ -128,10 +128,17 @@ where
         dleq: None,
     };
 
-    // Create signatures for quote 2
-    let blinded_message2 = SecretKey::generate().public_key();
     let sig2 = BlindSignature {
         amount: Amount::from(200u64),
+        keyset_id,
+        c: SecretKey::generate().public_key(),
+        dleq: None,
+    };
+
+    // Create signature for quote 2
+    let blinded_message3 = SecretKey::generate().public_key();
+    let sig3 = BlindSignature {
+        amount: Amount::from(300u64),
         keyset_id,
         c: SecretKey::generate().public_key(),
         dleq: None,
@@ -140,15 +147,15 @@ where
     // Add signatures with different quote ids
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_blind_signatures(
-        &[blinded_message1],
-        std::slice::from_ref(&sig1),
+        &[blinded_message1, blinded_message2],
+        &[sig1.clone(), sig2.clone()],
         Some(quote_id1.clone()),
     )
     .await
     .unwrap();
     tx.add_blind_signatures(
-        &[blinded_message2],
-        std::slice::from_ref(&sig2),
+        &[blinded_message3],
+        std::slice::from_ref(&sig3),
         Some(quote_id2.clone()),
     )
     .await
@@ -157,15 +164,17 @@ where
 
     // Get signatures for quote 1
     let sigs1 = db.get_blind_signatures_for_quote(&quote_id1).await.unwrap();
-    assert_eq!(sigs1.len(), 1);
+    assert_eq!(sigs1.len(), 2);
     assert_eq!(sigs1[0].c, sig1.c);
     assert_eq!(sigs1[0].amount, sig1.amount);
+    assert_eq!(sigs1[1].c, sig2.c);
+    assert_eq!(sigs1[1].amount, sig2.amount);
 
     // Get signatures for quote 2
     let sigs2 = db.get_blind_signatures_for_quote(&quote_id2).await.unwrap();
     assert_eq!(sigs2.len(), 1);
-    assert_eq!(sigs2[0].c, sig2.c);
-    assert_eq!(sigs2[0].amount, sig2.amount);
+    assert_eq!(sigs2[0].c, sig3.c);
+    assert_eq!(sigs2[0].amount, sig3.amount);
 }
 
 /// Test getting total issued by keyset

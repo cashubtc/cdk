@@ -92,16 +92,16 @@ where
         .collect::<Result<HashMap<_, _>, Error>>()?;
 
         // Iterate over the provided blinded messages and signatures
-        for (message, signature) in blinded_messages.iter().zip(blind_signatures) {
+        for (i, (message, signature)) in blinded_messages.iter().zip(blind_signatures).enumerate() {
             match existing_rows.remove(message) {
                 None => {
                     // Unknown blind message: Insert new row with all columns
                     query(
                         r#"
                         INSERT INTO blind_signature
-                        (blinded_message, amount, keyset_id, c, quote_id, dleq_e, dleq_s, created_time, signed_time)
+                        (blinded_message, amount, keyset_id, c, quote_id, dleq_e, dleq_s, created_time, signed_time, order_index)
                         VALUES
-                        (:blinded_message, :amount, :keyset_id, :c, :quote_id, :dleq_e, :dleq_s, :created_time, :signed_time)
+                        (:blinded_message, :amount, :keyset_id, :c, :quote_id, :dleq_e, :dleq_s, :created_time, :signed_time, :order_index)
                         "#,
                     )?
                     .bind("blinded_message", message.to_bytes().to_vec())
@@ -119,6 +119,7 @@ where
                     )
                     .bind("created_time", current_time as i64)
                     .bind("signed_time", current_time as i64)
+                    .bind("order_index", i as i64)
                     .execute(&self.inner)
                     .await?;
 
