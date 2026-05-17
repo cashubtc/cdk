@@ -633,11 +633,14 @@ mod tests {
     use std::time::Duration;
 
     use bdk_wallet::bitcoin::absolute::LockTime;
+    use bdk_wallet::bitcoin::hashes::Hash as _;
     use bdk_wallet::bitcoin::transaction::Version;
     use bdk_wallet::bitcoin::{
-        consensus, Amount as BtcAmount, Network, ScriptBuf, Transaction, TxOut,
+        consensus, Amount as BtcAmount, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
+        TxOut, Txid, Witness,
     };
     use bdk_wallet::keys::bip39::Mnemonic;
+    use bdk_wallet::KeychainKind;
     use cdk_common::common::FeeReserve;
     use cdk_common::{Amount, CurrencyUnit};
 
@@ -731,17 +734,50 @@ mod tests {
         }
     }
 
-    fn valid_tx_bytes() -> Vec<u8> {
-        let tx = Transaction {
+    async fn wallet_relevant_send_tx_bytes(backend: &CdkBdk) -> Vec<u8> {
+        let mut wallet_with_db = backend.wallet_with_db.lock().await;
+        let funding_script = wallet_with_db
+            .wallet
+            .reveal_next_address(KeychainKind::External)
+            .address
+            .script_pubkey();
+        let funding_tx = Transaction {
             version: Version::TWO,
             lock_time: LockTime::ZERO,
-            input: Vec::new(),
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::all_zeros(), 0),
+                script_sig: Default::default(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: BtcAmount::from_sat(30_000),
+                script_pubkey: funding_script,
+            }],
+        };
+        let funding_outpoint = OutPoint::new(funding_tx.compute_txid(), 0);
+        wallet_with_db
+            .wallet
+            .apply_unconfirmed_txs([(funding_tx, crate::util::unix_now())]);
+        wallet_with_db.persist().expect("persist funding tx");
+        drop(wallet_with_db);
+
+        let send_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: funding_outpoint,
+                script_sig: Default::default(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
             output: vec![TxOut {
                 value: BtcAmount::from_sat(25_000),
                 script_pubkey: ScriptBuf::new(),
             }],
         };
-        consensus::serialize(&tx)
+
+        consensus::serialize(&send_tx)
     }
 
     async fn assert_still_awaiting(backend: &CdkBdk, intent_id: Uuid) {
@@ -764,6 +800,15 @@ mod tests {
                 .expect("get_finalized_intent")
                 .is_none(),
             "no tombstone should exist for an unconfirmed orphan intent"
+        );
+    }
+
+    async fn assert_wallet_knows_tx(backend: &CdkBdk, txid: &str) {
+        let parsed_txid = bdk_wallet::bitcoin::Txid::from_str(txid).expect("test txid must parse");
+        let wallet_with_db = backend.wallet_with_db.lock().await;
+        assert!(
+            wallet_with_db.wallet.get_tx(parsed_txid).is_some(),
+            "recovered transaction must be applied to the BDK wallet graph"
         );
     }
 
@@ -898,7 +943,7 @@ mod tests {
         let backend = build_test_instance().await;
         let intent_id = Uuid::new_v4();
         let batch_id = Uuid::new_v4();
-        let tx_bytes = valid_tx_bytes();
+        let tx_bytes = wallet_relevant_send_tx_bytes(&backend).await;
         let tx: Transaction = consensus::deserialize(&tx_bytes).expect("valid tx");
         let txid = tx.compute_txid().to_string();
 
@@ -952,5 +997,57 @@ mod tests {
             .expect("get batch")
             .expect("batch still present");
         assert!(matches!(batch.state, SendBatchState::Broadcast { .. }));
+        assert_wallet_knows_tx(&backend, &txid).await;
+    }
+
+    /// A persisted Broadcast batch may represent a crash after durable state
+    /// was written but before the tx was accepted or before the BDK wallet
+    /// graph was persisted. Recovery must apply the tx locally so its inputs
+    /// are not selected by later batches while rebroadcast/reconciliation
+    /// catches up.
+    #[tokio::test]
+    async fn test_recover_send_saga_broadcast_batch_applies_tx_to_wallet_graph() {
+        let backend = build_test_instance().await;
+        let batch_id = Uuid::new_v4();
+        let intent_id = Uuid::new_v4();
+        let tx_bytes = wallet_relevant_send_tx_bytes(&backend).await;
+        let tx: Transaction = consensus::deserialize(&tx_bytes).expect("valid tx");
+        let txid = tx.compute_txid().to_string();
+
+        backend
+            .storage
+            .create_send_intent_if_absent(&awaiting_intent(
+                intent_id,
+                batch_id,
+                "quote-broadcast-wallet-graph",
+            ))
+            .await
+            .expect("store awaiting intent");
+
+        backend
+            .storage
+            .store_send_batch(&SendBatchRecord {
+                batch_id,
+                state: SendBatchState::Broadcast {
+                    txid: txid.clone(),
+                    tx_bytes,
+                    assignments: vec![BatchOutputAssignment {
+                        intent_id,
+                        vout: 0,
+                        fee_contribution_sat: 500,
+                    }],
+                    fee_sat: 500,
+                },
+            })
+            .await
+            .expect("store broadcast batch");
+
+        tokio::time::timeout(Duration::from_secs(5), backend.recover_send_saga())
+            .await
+            .expect("recovery timed out")
+            .expect("recovery should not error");
+
+        assert_still_awaiting(&backend, intent_id).await;
+        assert_wallet_knows_tx(&backend, &txid).await;
     }
 }

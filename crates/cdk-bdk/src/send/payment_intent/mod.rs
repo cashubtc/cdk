@@ -558,4 +558,50 @@ mod tests {
         assert_eq!(response.status, MeltQuoteState::Paid);
         assert_eq!(response.total_spent, Amount::new(20_321, CurrencyUnit::Sat));
     }
+
+    #[tokio::test]
+    async fn test_finalized_intent_quote_id_cannot_be_requeued() {
+        let storage = test_storage().await;
+        let quote_id = "quote-finalized-no-retry".to_string();
+
+        let pending = SendIntent::new(
+            &storage,
+            quote_id.clone(),
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            20_000,
+            1_000,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await
+        .expect("new");
+
+        let awaiting = pending
+            .assign_to_batch(&storage, Uuid::new_v4())
+            .await
+            .expect("assign")
+            .mark_broadcast(
+                &storage,
+                "txid-finalized-no-retry".to_string(),
+                "txid-finalized-no-retry:0".to_string(),
+                250,
+            )
+            .await
+            .expect("mark_broadcast");
+
+        awaiting.finalize(&storage).await.expect("finalize");
+
+        let result = SendIntent::new(
+            &storage,
+            quote_id.clone(),
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            20_000,
+            1_000,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::DuplicateQuoteId(id)) if id == quote_id));
+    }
 }

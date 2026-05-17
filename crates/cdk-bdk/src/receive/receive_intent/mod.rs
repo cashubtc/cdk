@@ -246,4 +246,59 @@ mod tests {
         );
         assert_eq!(response.payment_id, outpoint);
     }
+
+    #[tokio::test]
+    async fn test_multiple_finalized_receive_intents_can_share_quote_id() {
+        let storage = test_storage().await;
+        let quote_id = Uuid::new_v4().to_string();
+        let address_1 = "bcrt1qreceive1".to_string();
+        let address_2 = "bcrt1qreceive2".to_string();
+
+        storage
+            .track_receive_address(&address_1, &quote_id)
+            .await
+            .expect("track first address");
+        storage
+            .track_receive_address(&address_2, &quote_id)
+            .await
+            .expect("track second address");
+
+        let intent_1 = ReceiveIntent::new(
+            &storage,
+            address_1,
+            "txid_receive_1".to_string(),
+            "txid_receive_1:0".to_string(),
+            30_000,
+            150,
+        )
+        .await
+        .expect("create first detected intent")
+        .expect("first intent should not be duplicate");
+        let intent_2 = ReceiveIntent::new(
+            &storage,
+            address_2,
+            "txid_receive_2".to_string(),
+            "txid_receive_2:1".to_string(),
+            45_000,
+            151,
+        )
+        .await
+        .expect("create second detected intent")
+        .expect("second intent should not be duplicate");
+
+        intent_1.finalize(&storage).await.expect("finalize first");
+        intent_2.finalize(&storage).await.expect("finalize second");
+
+        let mut finalized = storage
+            .get_finalized_receive_intents_by_quote_id(&quote_id)
+            .await
+            .expect("get finalized receive intents by quote id");
+        finalized.sort_by_key(|record| record.amount_sat);
+
+        assert_eq!(finalized.len(), 2);
+        assert_eq!(finalized[0].quote_id, quote_id);
+        assert_eq!(finalized[0].amount_sat, 30_000);
+        assert_eq!(finalized[1].quote_id, quote_id);
+        assert_eq!(finalized[1].amount_sat, 45_000);
+    }
 }

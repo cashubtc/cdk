@@ -759,12 +759,14 @@ async fn test_onchain_concurrent_melt_quotes() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_mint_unissued_quotes_onchain() {
     let bitcoin_client = init_bitcoin_client().expect("Failed to init bitcoin client");
+    let localstore = Arc::new(memory::empty().await.unwrap());
+    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
 
     let wallet = Wallet::new(
         &get_mint_url_from_env(),
         CurrencyUnit::Sat,
-        Arc::new(memory::empty().await.unwrap()),
-        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        localstore.clone(),
+        seed,
         None,
     )
     .expect("failed to create new wallet");
@@ -841,6 +843,27 @@ async fn test_mint_unissued_quotes_onchain() {
         second_check,
         cdk::amount::Amount::ZERO,
         "Second check should return 0 as quote is fully issued"
+    );
+
+    let restarted_wallet = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        localstore,
+        seed,
+        None,
+    )
+    .expect("failed to recreate wallet with same localstore and seed");
+
+    assert_eq!(
+        restarted_wallet.total_balance().await.unwrap(),
+        cdk::amount::Amount::from(mint_amount),
+        "Restarted wallet should retain minted proofs"
+    );
+    let restart_check = restarted_wallet.mint_unissued_quotes().await.unwrap();
+    assert_eq!(
+        restart_check,
+        cdk::amount::Amount::ZERO,
+        "Restarted wallet should not remint an already-issued onchain quote"
     );
 }
 

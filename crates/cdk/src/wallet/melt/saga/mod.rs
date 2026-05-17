@@ -1269,7 +1269,7 @@ mod tests {
     use cdk_common::{MeltQuoteOnchainResponse, MeltQuoteResponse, MeltQuoteState, PaymentMethod};
     use uuid::Uuid;
 
-    use super::{finalize_melt_common, MeltSaga};
+    use super::{finalize_melt_common, MeltSaga, MeltSagaResult};
     use crate::nuts::{BlindSignature, PreMintSecrets};
     use crate::wallet::saga::new_compensations;
     use crate::wallet::test_utils::{
@@ -1439,6 +1439,107 @@ mod tests {
                 .as_ref()
                 .is_some_and(|outputs| !outputs.is_empty()),
             "onchain melt request should include blinded change outputs"
+        );
+    }
+
+    fn onchain_melt_response(
+        quote: &cdk_common::wallet::MeltQuote,
+        state: MeltQuoteState,
+    ) -> MeltQuoteResponse<String> {
+        MeltQuoteResponse::Onchain(MeltQuoteOnchainResponse {
+            quote: quote.id.clone(),
+            amount: quote.amount,
+            unit: CurrencyUnit::Sat,
+            state,
+            expiry: quote.expiry,
+            request: quote.request.clone(),
+            fee_options: vec![MeltQuoteOnchainFeeOption {
+                fee_reserve: quote.fee_reserve,
+                estimated_blocks: quote
+                    .estimated_blocks
+                    .expect("test onchain quote must set estimated_blocks"),
+            }],
+            selected_estimated_blocks: quote.estimated_blocks,
+            outpoint: None,
+            change: None,
+        })
+    }
+
+    async fn requested_onchain_melt_with_response(
+        state: MeltQuoteState,
+    ) -> (
+        Arc<dyn cdk_common::database::WalletDatabase<cdk_common::database::Error> + Send + Sync>,
+        crate::nuts::PublicKey,
+        super::MeltSaga<'static, super::state::MeltRequested>,
+    ) {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let proof_info = test_proof_info(keyset_id, 1200, mint_url);
+        let proof_y = proof_info.y;
+        let proof = proof_info.proof.clone();
+
+        let mut quote = test_melt_quote();
+        quote.amount = Amount::from(1000);
+        quote.fee_reserve = Amount::from(10);
+        quote.payment_method = PaymentMethod::Known(KnownMethod::Onchain);
+        quote.request = "bcrt1qtestaddress".to_string();
+        quote.estimated_blocks = Some(6);
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote.clone()).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        mock_client.set_post_melt_response(Ok(onchain_melt_response(&quote, state)));
+        let wallet = Box::leak(Box::new(
+            create_test_wallet_with_mock(db.clone(), mock_client).await,
+        ));
+
+        let requested = MeltSaga::new(wallet)
+            .prepare_with_proofs(&quote_id, vec![proof], HashMap::new())
+            .await
+            .unwrap()
+            .request_melt_with_options(MeltConfirmOptions::new())
+            .await
+            .unwrap();
+
+        (db, proof_y, requested)
+    }
+
+    #[tokio::test]
+    async fn test_execute_async_unpaid_response_compensates_instead_of_finalizing() {
+        let (db, proof_y, requested) =
+            requested_onchain_melt_with_response(MeltQuoteState::Unpaid).await;
+        let operation_id = requested.state_data.operation_id;
+
+        let result = requested.execute_async(HashMap::new()).await;
+        assert!(matches!(result, Err(Error::PaymentFailed)));
+
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].state, State::Unspent);
+        assert!(
+            db.get_saga(&operation_id).await.unwrap().is_none(),
+            "compensated melt saga should be deleted"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_async_unknown_response_stays_pending_instead_of_finalizing() {
+        let (db, proof_y, requested) =
+            requested_onchain_melt_with_response(MeltQuoteState::Unknown).await;
+        let operation_id = requested.state_data.operation_id;
+
+        let result = requested.execute_async(HashMap::new()).await.unwrap();
+        assert!(matches!(result, MeltSagaResult::Pending(_)));
+
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].state, State::Pending);
+        assert_eq!(stored[0].used_by_operation, Some(operation_id));
+        assert!(
+            db.get_saga(&operation_id).await.unwrap().is_some(),
+            "pending melt saga should remain for recovery"
         );
     }
 
