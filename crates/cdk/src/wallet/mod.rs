@@ -40,6 +40,8 @@ use crate::Amount;
 
 mod auth;
 pub mod bip321;
+#[cfg(feature = "conditional-tokens")]
+mod ctf;
 #[cfg(feature = "nostr")]
 mod nostr_backup;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]

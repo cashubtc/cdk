@@ -103,8 +103,92 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
         amounts: amounts.to_owned(),
         input_fee_ppk,
         issuer_version: IssuerVersion::from_str(&format!("cdk/{}", env!("CARGO_PKG_VERSION"))).ok(),
+        #[cfg(feature = "conditional-tokens")]
+        condition_id: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection: None,
+        #[cfg(feature = "conditional-tokens")]
+        outcome_collection_id: None,
     };
     (keyset, keyset_info)
+}
+
+/// Create a new keyset for a conditional token (NUT-CTF).
+///
+/// Uses a derivation path based on a SHA-256 hash of the condition_id and outcome_collection_id
+/// to derive a unique child index: `m/0'/<unit_index>'/<hash_derived_index>'`
+#[cfg(feature = "conditional-tokens")]
+#[allow(clippy::too_many_arguments)]
+pub fn create_conditional_keyset<C: secp256k1::Signing>(
+    secp: &secp256k1::Secp256k1<C>,
+    xpriv: Xpriv,
+    unit: CurrencyUnit,
+    condition_id: &str,
+    outcome_collection_id: &str,
+    amounts: &[u64],
+    input_fee_ppk: u64,
+    final_expiry: Option<u64>,
+) -> Option<(MintKeySet, MintKeySetInfo)> {
+    use bitcoin::hashes::{sha256, Hash};
+
+    let unit_index = unit.derivation_index()?;
+
+    // Derive a unique child index from SHA256(condition_id || outcome_collection_id)
+    let mut hash_input = Vec::new();
+    hash_input.extend_from_slice(condition_id.as_bytes());
+    hash_input.extend_from_slice(outcome_collection_id.as_bytes());
+    let hash = sha256::Hash::hash(&hash_input);
+    let hash_bytes = hash.as_byte_array();
+    // Use the first 4 bytes as a u32 index, masking to valid hardened range (max 2^31 - 1)
+    let derived_index =
+        u32::from_be_bytes([hash_bytes[0], hash_bytes[1], hash_bytes[2], hash_bytes[3]])
+            & 0x7FFF_FFFF;
+
+    let derivation_path = DerivationPath::from(vec![
+        ChildNumber::from_hardened_idx(0).expect("0 is a valid index"),
+        ChildNumber::from_hardened_idx(unit_index).expect("valid unit index"),
+        ChildNumber::from_hardened_idx(derived_index).expect("valid derived index"),
+    ]);
+
+    let mut keyset = MintKeySet::generate(
+        secp,
+        xpriv
+            .derive_priv(secp, &derivation_path)
+            .expect("RNG busted"),
+        unit,
+        amounts,
+        input_fee_ppk,
+        final_expiry,
+        cdk_common::nut02::KeySetVersion::Version01,
+    );
+
+    // Override the keyset ID with V2 conditional derivation
+    let pub_keys: cdk_common::nuts::Keys = keyset.keys.clone().into();
+    keyset.id = cdk_common::nuts::Id::v2_from_data_conditional(
+        &pub_keys,
+        &keyset.unit,
+        input_fee_ppk,
+        final_expiry,
+        condition_id,
+        outcome_collection_id,
+    );
+
+    let keyset_info = MintKeySetInfo {
+        id: keyset.id,
+        unit: keyset.unit.clone(),
+        active: true,
+        valid_from: unix_time(),
+        final_expiry: keyset.final_expiry,
+        derivation_path,
+        derivation_path_index: Some(derived_index),
+        amounts: amounts.to_owned(),
+        input_fee_ppk,
+        issuer_version: None,
+        condition_id: Some(condition_id.to_string()),
+        outcome_collection: None, // Set by the caller
+        outcome_collection_id: Some(outcome_collection_id.to_string()),
+    };
+    Some((keyset, keyset_info))
 }
 
 pub fn derivation_path_from_unit(unit: CurrencyUnit, index: u32) -> Option<DerivationPath> {

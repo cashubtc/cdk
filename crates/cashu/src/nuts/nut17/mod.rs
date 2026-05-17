@@ -11,7 +11,6 @@ use crate::nuts::{
 };
 use crate::quote_id::QuoteIdError;
 use crate::MintQuoteBolt12Response;
-
 pub mod ws;
 
 /// Subscription Parameter according to the standard

@@ -8,9 +8,10 @@ WORKDIR /usr/src/app
 COPY flake.nix ./flake.nix
 COPY Cargo.toml ./Cargo.toml
 COPY crates ./crates
+COPY bindings ./bindings
 
 # Start the Nix daemon and develop the environment
-RUN nix develop --extra-experimental-features nix-command --extra-experimental-features flakes --command cargo build --release --bin cdk-mintd --features postgres --features prometheus
+RUN nix develop --extra-experimental-features nix-command --extra-experimental-features flakes --command cargo build --release --bin cdk-mintd --features postgres --features prometheus --features conditional-tokens
 
 # Create a runtime stage
 FROM debian:trixie-slim
@@ -20,7 +21,7 @@ WORKDIR /usr/src/app
 
 # Install needed runtime dependencies (if any)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends patchelf && \
+    apt-get install -y --no-install-recommends patchelf curl && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy the built application from the build stage

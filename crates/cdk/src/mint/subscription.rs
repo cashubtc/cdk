@@ -317,6 +317,7 @@ impl PubSubManager {
             }
         }
     }
+
 }
 
 impl Deref for PubSubManager {

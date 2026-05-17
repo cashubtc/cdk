@@ -101,6 +101,15 @@ pub struct SwapSaga<'a, S> {
     state_data: S,
 }
 
+/// Controls how balance is verified during swap setup.
+enum BalanceCheck {
+    /// Full balance verification (input >= output + fees)
+    Full,
+    /// Unit-equality only — caller already validated amounts (CTF split/merge)
+    #[cfg(feature = "conditional-tokens")]
+    UnitEqualityOnly,
+}
+
 impl<'a> SwapSaga<'a, Initial> {
     pub fn new(mint: &'a super::Mint, db: DynMintDatabase, pubsub: Arc<PubSubManager>) -> Self {
         let operation_id = uuid::Uuid::new_v4();
@@ -141,42 +150,94 @@ impl<'a> SwapSaga<'a, Initial> {
     /// - `DuplicateOutputs`: Output blinded messages already exist
     #[instrument(skip_all)]
     pub async fn setup_swap(
+        self,
+        input_proofs: &Proofs,
+        blinded_messages: &[BlindedMessage],
+        quote_id: Option<QuoteId>,
+        input_verification: crate::mint::Verification,
+    ) -> Result<SwapSaga<'a, SetupComplete>, Error> {
+        self.setup_swap_inner(
+            input_proofs,
+            blinded_messages,
+            quote_id,
+            input_verification,
+            BalanceCheck::Full,
+        )
+        .await
+    }
+
+    /// Sets up a swap without balanced verification (for CTF split/merge).
+    ///
+    /// This is identical to `setup_swap` except it skips the balance check.
+    /// The caller (split/merge logic) is responsible for its own balance validation.
+    #[cfg(feature = "conditional-tokens")]
+    #[instrument(skip_all)]
+    pub async fn setup_swap_unbalanced(
+        self,
+        input_proofs: &Proofs,
+        blinded_messages: &[BlindedMessage],
+        quote_id: Option<QuoteId>,
+        input_verification: crate::mint::Verification,
+    ) -> Result<SwapSaga<'a, SetupComplete>, Error> {
+        self.setup_swap_inner(
+            input_proofs,
+            blinded_messages,
+            quote_id,
+            input_verification,
+            BalanceCheck::UnitEqualityOnly,
+        )
+        .await
+    }
+
+    async fn setup_swap_inner(
         mut self,
         input_proofs: &Proofs,
         blinded_messages: &[BlindedMessage],
         quote_id: Option<QuoteId>,
         input_verification: crate::mint::Verification,
+        balance_check: BalanceCheck,
     ) -> Result<SwapSaga<'a, SetupComplete>, Error> {
         let output_verification = self.mint.verify_outputs(blinded_messages).map_err(|err| {
             tracing::debug!("Output verification failed: {:?}", err);
             err
         })?;
 
-        // Verify balance within the transaction
-        self.mint
-            .verify_transaction_balanced(
-                input_verification.clone(),
-                output_verification.clone(),
-                input_proofs,
-            )
-            .await?;
+        match balance_check {
+            BalanceCheck::Full => {
+                self.mint
+                    .verify_transaction_balanced(
+                        input_verification.clone(),
+                        output_verification.clone(),
+                        input_proofs,
+                    )
+                    .await?;
+            }
+            #[cfg(feature = "conditional-tokens")]
+            BalanceCheck::UnitEqualityOnly => {
+                if output_verification.amount.unit() != input_verification.amount.unit() {
+                    tracing::debug!(
+                        "Unbalanced swap unit mismatch: input {:?}, output {:?}",
+                        input_verification.amount.unit(),
+                        output_verification.amount.unit()
+                    );
+                    return Err(Error::UnitMismatch);
+                }
+            }
+        }
 
-        // Calculate amounts to create Operation
         let total_redeemed = input_verification.amount;
         let total_issued = output_verification.amount;
 
         let fee_breakdown = self.mint.get_proofs_fee(input_proofs).await?;
 
-        // Create Operation with actual amounts now that we know them
-        // Convert typed amounts to untyped for Operation::new
         let operation = Operation::new(
             self.state_data.operation_id,
             cdk_common::mint::OperationKind::Swap,
             total_issued.clone().into(),
             total_redeemed.clone().into(),
             fee_breakdown.total,
-            None, // complete_at
-            None, // payment_method (not applicable for swap)
+            None,
+            None,
         );
 
         let mut tx = self.db.begin_transaction().await?;
@@ -220,7 +281,6 @@ impl<'a> SwapSaga<'a, Initial> {
             });
         }
 
-        // Store data in saga struct (avoid duplication in state enum)
         let blinded_messages_vec = blinded_messages.to_vec();
         let blinded_secrets: Vec<PublicKey> = blinded_messages_vec
             .iter()

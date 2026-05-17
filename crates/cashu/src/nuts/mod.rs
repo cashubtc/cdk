@@ -31,6 +31,8 @@ pub mod nut27;
 #[cfg(feature = "wallet")]
 pub mod nut28;
 pub mod nut29;
+#[cfg(feature = "conditional-tokens")]
+pub mod nut_ctf;
 
 mod auth;
 

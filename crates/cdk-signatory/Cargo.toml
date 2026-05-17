@@ -14,6 +14,7 @@ default = ["grpc", "sqlite"]
 sqlite = ["cdk-sqlite"]
 sqlcipher = ["cdk-sqlite/sqlcipher"]
 grpc = ["dep:tonic", "tokio/full", "dep:tonic-prost", "dep:tonic-prost-build", "dep:prost"]
+conditional-tokens = ["cdk-common/conditional-tokens", "cdk-sqlite/conditional-tokens"]
 
 [dependencies]
 async-trait.workspace = true
