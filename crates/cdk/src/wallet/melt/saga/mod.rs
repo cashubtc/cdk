@@ -1085,26 +1085,49 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                 self.handle_failure().await;
                 Err(Error::PaymentFailed)
             }
-            _ => {
+            MeltQuoteState::Unpaid => {
+                if melt_response.payment_proof().is_some() {
+                    tracing::warn!(
+                        "Melt quote {} reported Unpaid state but mint holds a \
+                         payment proof; keeping proofs pending to avoid loss",
+                        quote_info.id
+                    );
+                    self.handle_pending().await;
+                    return Ok(MeltSagaResult::Pending(Box::new(MeltSaga {
+                        wallet: self.wallet,
+                        compensations: self.compensations,
+                        state_data: PaymentPending {
+                            operation_id: self.state_data.operation_id,
+                            quote: self.state_data.quote,
+                            final_proofs: self.state_data.final_proofs.clone(),
+                            premint_secrets: self.state_data.premint_secrets.clone(),
+                        },
+                    })));
+                }
+
                 tracing::warn!(
-                    "Melt quote {} returned unexpected state {:?}",
-                    quote_info.id,
-                    melt_response.state()
+                    "Melt quote {} returned Unpaid state - releasing proofs",
+                    quote_info.id
                 );
-                let finalized = finalize_melt_common(
-                    self.wallet,
-                    self.compensations,
-                    self.state_data.operation_id,
-                    &self.state_data.quote,
-                    &self.state_data.final_proofs,
-                    &self.state_data.premint_secrets,
-                    melt_response.state(),
-                    melt_response.payment_proof().map(|s| s.to_string()),
-                    melt_response.change().cloned(),
-                    metadata,
-                )
-                .await?;
-                Ok(MeltSagaResult::Finalized(finalized))
+                self.handle_failure().await;
+                Err(Error::PaymentFailed)
+            }
+            MeltQuoteState::Unknown => {
+                tracing::warn!(
+                    "Melt quote {} returned Unknown state - keeping proofs pending",
+                    quote_info.id
+                );
+                self.handle_pending().await;
+                Ok(MeltSagaResult::Pending(Box::new(MeltSaga {
+                    wallet: self.wallet,
+                    compensations: self.compensations,
+                    state_data: PaymentPending {
+                        operation_id: self.state_data.operation_id,
+                        quote: self.state_data.quote,
+                        final_proofs: self.state_data.final_proofs.clone(),
+                        premint_secrets: self.state_data.premint_secrets.clone(),
+                    },
+                })))
             }
         }
     }

@@ -431,6 +431,13 @@ impl CdkBdk {
                         txid_str
                     );
 
+                    self.apply_recovered_send_tx(
+                        batch_record.batch_id,
+                        "Signed batch recovery",
+                        &tx,
+                    )
+                    .await;
+
                     match self.broadcast_transaction_internal(tx).await {
                         Ok(BroadcastOutcome::Accepted) => {}
                         Ok(BroadcastOutcome::AlreadyKnown) => {
@@ -459,6 +466,13 @@ impl CdkBdk {
                         // crash happened after persistence but before backend
                         // acceptance was observed.
                         tracing::info!("Re-broadcasting batch {} during recovery", txid);
+                        self.apply_recovered_send_tx(
+                            batch_record.batch_id,
+                            "Broadcast batch recovery",
+                            &tx,
+                        )
+                        .await;
+
                         match self.broadcast_transaction_internal(tx).await {
                             Ok(BroadcastOutcome::Accepted) => {}
                             Ok(BroadcastOutcome::AlreadyKnown) => {
