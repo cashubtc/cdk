@@ -1,7 +1,7 @@
 use cdk::subscription::Params;
 use cdk::ws::{WsResponseResult, WsSubscribeResponse};
 
-use super::{WsContext, WsError};
+use super::{WsContext, WsError, MAX_SUBSCRIPTIONS_PER_CONNECTION};
 
 /// The `handle` method is called when a client sends a subscription request
 pub(crate) async fn handle(
@@ -12,6 +12,15 @@ pub(crate) async fn handle(
     if context.subscriptions.contains_key(&sub_id) {
         // Subscription ID already exits. Returns an error instead of
         // replacing the other subscription or avoiding it.
+        return Err(WsError::InvalidParams);
+    }
+
+    if context.subscriptions.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+        tracing::warn!(
+            "WebSocket subscription request exceeds per-connection limit: {} >= {}",
+            context.subscriptions.len(),
+            MAX_SUBSCRIPTIONS_PER_CONNECTION
+        );
         return Err(WsError::InvalidParams);
     }
 
