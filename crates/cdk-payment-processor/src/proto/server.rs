@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use cdk_common::grpc::create_version_check_interceptor;
 use cdk_common::payment::{IncomingPaymentOptions, MintPayment};
-use cdk_common::CurrencyUnit;
+use cdk_common::{CurrencyUnit, QuoteId};
 use futures::{Stream, StreamExt};
 use lightning::offers::offer::Offer;
 use tokio::sync::{mpsc, Notify};
@@ -282,6 +282,8 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
         let unit = CurrencyUnit::from_str(&request.unit)
             .map_err(|_| Status::invalid_argument("Invalid currency unit"))?;
 
+        let quote_id = parse_quote_id(&request.quote_id)?;
+
         let options = match request.request_type() {
             OutgoingPaymentRequestType::Bolt11Invoice => {
                 let bolt11: cdk_common::Bolt11Invoice =
@@ -293,6 +295,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         max_fee_amount: None,
                         timeout_secs: None,
                         melt_options: request.options.map(Into::into),
+                        quote_id,
                     },
                 ))
             }
@@ -307,6 +310,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         max_fee_amount: None,
                         timeout_secs: None,
                         melt_options: request.options.map(Into::into),
+                        quote_id,
                     },
                 ))
             }
@@ -320,6 +324,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         timeout_secs: None,
                         melt_options: request.options.map(Into::into),
                         extra_json: request.extra_json.clone(),
+                        quote_id,
                     },
                 ))
             }
@@ -365,6 +370,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                     .max_fee_amount
                     .try_from_proto()
                     .map_err(|_| Status::invalid_argument("Invalid max_fee_amount"))?;
+                let quote_id = parse_quote_id(&opts.quote_id)?;
 
                 cdk_common::payment::OutgoingPaymentOptions::Bolt11(Box::new(
                     cdk_common::payment::Bolt11OutgoingPaymentOptions {
@@ -372,6 +378,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         max_fee_amount,
                         timeout_secs: opts.timeout_secs,
                         melt_options: opts.melt_options.map(Into::into),
+                        quote_id,
                     },
                 ))
             }
@@ -382,6 +389,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                     .max_fee_amount
                     .try_from_proto()
                     .map_err(|_| Status::invalid_argument("Invalid max_fee_amount"))?;
+                let quote_id = parse_quote_id(&opts.quote_id)?;
 
                 cdk_common::payment::OutgoingPaymentOptions::Bolt12(Box::new(
                     cdk_common::payment::Bolt12OutgoingPaymentOptions {
@@ -389,6 +397,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         max_fee_amount,
                         timeout_secs: opts.timeout_secs,
                         melt_options: opts.melt_options.map(Into::into),
+                        quote_id,
                     },
                 ))
             }
@@ -397,6 +406,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                     .max_fee_amount
                     .try_from_proto()
                     .map_err(|_| Status::invalid_argument("Invalid max_fee_amount"))?;
+                let quote_id = parse_quote_id(&opts.quote_id)?;
 
                 cdk_common::payment::OutgoingPaymentOptions::Custom(Box::new(
                     cdk_common::payment::CustomOutgoingPaymentOptions {
@@ -406,6 +416,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         timeout_secs: opts.timeout_secs,
                         melt_options: opts.melt_options.map(Into::into),
                         extra_json: opts.extra_json,
+                        quote_id,
                     },
                 ))
             }
@@ -527,4 +538,9 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
             Box::pin(output_stream) as Self::WaitPaymentEventStream
         ))
     }
+}
+
+fn parse_quote_id(s: &str) -> Result<QuoteId, Status> {
+    s.parse()
+        .map_err(|err| Status::invalid_argument(format!("Invalid quote_id: {err}")))
 }

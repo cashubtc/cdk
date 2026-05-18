@@ -16,7 +16,7 @@ pub mod auth;
 pub const MINT_RPC_PROTOCOL_VERSION: &str = "1.0.0";
 
 /// Protocol version for gRPC Payment Processor communication
-pub const PAYMENT_PROCESSOR_PROTOCOL_VERSION: &str = "2.0.0";
+pub const PAYMENT_PROCESSOR_PROTOCOL_VERSION: &str = "3.0.0";
 
 #[cfg(feature = "grpc")]
 pub mod grpc;

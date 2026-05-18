@@ -251,6 +251,11 @@ pub struct Bolt11OutgoingPaymentOptions {
     pub timeout_secs: Option<u64>,
     /// Melt options
     pub melt_options: Option<MeltOptions>,
+    /// The mint's quote id for this melt. Set in both `get_payment_quote`
+    /// and `make_payment` so backends can correlate the two calls. For
+    /// BOLT11 backends the payment_hash already provides correlation, so
+    /// this is informational; it is still required for protocol uniformity.
+    pub quote_id: QuoteId,
 }
 
 /// Options for BOLT12 outgoing payments
@@ -264,6 +269,8 @@ pub struct Bolt12OutgoingPaymentOptions {
     pub timeout_secs: Option<u64>,
     /// Melt options
     pub melt_options: Option<MeltOptions>,
+    /// The mint's quote id for this melt. See [`Bolt11OutgoingPaymentOptions::quote_id`].
+    pub quote_id: QuoteId,
 }
 
 /// Options for custom outgoing payments
@@ -284,6 +291,12 @@ pub struct CustomOutgoingPaymentOptions {
     /// These fields are passed through to the payment processor for
     /// method-specific validation.
     pub extra_json: Option<String>,
+    /// The mint's quote id for this melt. Custom backends should use this
+    /// as the stable correlation key between `get_payment_quote` and
+    /// `make_payment` (and any later `check_outgoing_payment` polls) — it
+    /// is the only field guaranteed to be unique per melt without relying
+    /// on wallet-supplied uniqueness in `request`.
+    pub quote_id: QuoteId,
 }
 
 /// Options for outgoing payments
@@ -303,6 +316,7 @@ impl OutgoingPaymentOptions {
         melt_quote: MeltQuote,
     ) -> Result<OutgoingPaymentOptions, Error> {
         let fee_reserve = melt_quote.fee_reserve();
+        let quote_id = melt_quote.id.clone();
         match &melt_quote.request {
             MeltPaymentRequest::Bolt11 { bolt11 } => Ok(OutgoingPaymentOptions::Bolt11(Box::new(
                 Bolt11OutgoingPaymentOptions {
@@ -310,6 +324,7 @@ impl OutgoingPaymentOptions {
                     timeout_secs: None,
                     bolt11: bolt11.clone(),
                     melt_options: melt_quote.options,
+                    quote_id,
                 },
             ))),
             MeltPaymentRequest::Bolt12 { offer } => {
@@ -325,6 +340,7 @@ impl OutgoingPaymentOptions {
                         timeout_secs: None,
                         offer: *offer.clone(),
                         melt_options,
+                        quote_id,
                     },
                 )))
             }
@@ -336,6 +352,7 @@ impl OutgoingPaymentOptions {
                     timeout_secs: None,
                     melt_options: melt_quote.options,
                     extra_json: None,
+                    quote_id,
                 }),
             )),
         }

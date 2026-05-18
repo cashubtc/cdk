@@ -253,6 +253,12 @@ impl MintPayment for PaymentProcessorClient {
             _ => None,
         };
 
+        let quote_id = match &options {
+            cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => opts.quote_id.to_string(),
+            cdk_common::payment::OutgoingPaymentOptions::Bolt11(opts) => opts.quote_id.to_string(),
+            cdk_common::payment::OutgoingPaymentOptions::Bolt12(opts) => opts.quote_id.to_string(),
+        };
+
         let response = inner
             .get_payment_quote(Request::new(PaymentQuoteRequest {
                 request: proto_request,
@@ -260,6 +266,7 @@ impl MintPayment for PaymentProcessorClient {
                 options: proto_options.map(Into::into),
                 request_type: request_type.into(),
                 extra_json,
+                quote_id,
             }))
             .await
             .map_err(|err| {
@@ -292,6 +299,7 @@ impl MintPayment for PaymentProcessorClient {
                             timeout_secs: opts.timeout_secs,
                             melt_options: opts.melt_options.map(Into::into),
                             extra_json: opts.extra_json.clone(),
+                            quote_id: opts.quote_id.to_string(),
                         },
                     )),
                 }
@@ -304,6 +312,7 @@ impl MintPayment for PaymentProcessorClient {
                             max_fee_amount: opts.max_fee_amount.into_proto(),
                             timeout_secs: opts.timeout_secs,
                             melt_options: opts.melt_options.map(Into::into),
+                            quote_id: opts.quote_id.to_string(),
                         },
                     )),
                 }
@@ -316,6 +325,7 @@ impl MintPayment for PaymentProcessorClient {
                             max_fee_amount: opts.max_fee_amount.into_proto(),
                             timeout_secs: opts.timeout_secs,
                             melt_options: opts.melt_options.map(Into::into),
+                            quote_id: opts.quote_id.to_string(),
                         },
                     )),
                 }

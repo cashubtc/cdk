@@ -2245,8 +2245,18 @@ async fn test_restore_after_keyset_rotation() {
     );
 }
 
-#[derive(Debug)]
-struct CustomPaymentProcessor;
+#[derive(Debug, Default)]
+struct CustomPaymentProcessor {
+    /// Captures the quote_id seen by `get_payment_quote` so tests can assert
+    /// the mint propagates it correctly.
+    last_quote_id: std::sync::Mutex<Option<cdk_common::QuoteId>>,
+}
+
+impl CustomPaymentProcessor {
+    fn last_quote_id(&self) -> Option<cdk_common::QuoteId> {
+        self.last_quote_id.lock().expect("poisoned").clone()
+    }
+}
 
 #[async_trait::async_trait]
 impl MintPayment for CustomPaymentProcessor {
@@ -2281,6 +2291,11 @@ impl MintPayment for CustomPaymentProcessor {
                     custom.extra_json,
                     Some("{\"request_metadata\":true}".to_string())
                 );
+
+                // Capture the mint-supplied quote_id; the new-in-3.0 protocol
+                // field that lets backends correlate get_payment_quote with the
+                // eventual make_payment.
+                *self.last_quote_id.lock().expect("poisoned") = Some(custom.quote_id.clone());
 
                 Ok(PaymentQuoteResponse {
                     request_lookup_id: Some(PaymentIdentifier::CustomId(
@@ -2368,7 +2383,7 @@ async fn test_custom_melt_quote_status_preserves_extra_json() {
             CurrencyUnit::Sat,
             PaymentMethod::Custom("test-custom".to_string()),
             cdk::mint::MintMeltLimits::new(1, 10_000),
-            Arc::new(CustomPaymentProcessor),
+            Arc::new(CustomPaymentProcessor::default()),
         )
         .await
         .expect("custom payment processor");
@@ -2414,5 +2429,62 @@ async fn test_custom_melt_quote_status_preserves_extra_json() {
             "redirect_url": "https://example.com/pay/custom-lookup-id",
             "status": "pending"
         }))
+    );
+}
+
+#[tokio::test]
+async fn test_custom_melt_quote_id_propagates_to_payment_processor() {
+    setup_tracing();
+
+    let localstore = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("memory db"));
+    let processor = Arc::new(CustomPaymentProcessor::default());
+
+    let mut mint_builder = cdk::mint::MintBuilder::new(localstore.clone());
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    mint_builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Custom("test-custom".to_string()),
+            cdk::mint::MintMeltLimits::new(1, 10_000),
+            processor.clone(),
+        )
+        .await
+        .expect("custom payment processor");
+
+    mint_builder = mint_builder
+        .with_name("quote-id propagation test".to_string())
+        .with_description("quote-id propagation test".to_string())
+        .with_urls(vec!["https://example-mint".to_string()])
+        .with_limits(2000, 2000);
+
+    let mint = mint_builder
+        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .await
+        .expect("mint build");
+
+    mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000))
+        .await
+        .expect("quote ttl");
+
+    let response = mint
+        .get_melt_quote(cdk_common::MeltQuoteRequest::Custom(
+            cdk::nuts::MeltQuoteCustomRequest {
+                method: "test-custom".to_string(),
+                request: "custom-request".to_string(),
+                unit: CurrencyUnit::Sat,
+                extra: serde_json::json!({ "request_metadata": true }),
+            },
+        ))
+        .await
+        .expect("custom melt quote");
+
+    let response_quote_id = response.quote().clone();
+    let seen_by_processor = processor
+        .last_quote_id()
+        .expect("processor must have received a quote_id in get_payment_quote");
+
+    assert_eq!(
+        seen_by_processor, response_quote_id,
+        "the quote_id passed to get_payment_quote must equal the quote_id surfaced to the wallet",
     );
 }

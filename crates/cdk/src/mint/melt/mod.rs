@@ -326,11 +326,17 @@ impl Mint {
                 Error::UnsupportedUnit
             })?;
 
+        // Pre-generate the quote id so we can pass it to the backend in both
+        // `get_payment_quote` and the eventual `make_payment`, and use the same
+        // id when we persist the quote below.
+        let quote_id = cdk_common::QuoteId::new_uuid();
+
         let bolt11 = Bolt11OutgoingPaymentOptions {
             bolt11: melt_request.request.clone(),
             max_fee_amount: None,
             timeout_secs: None,
             melt_options: melt_request.options,
+            quote_id: quote_id.clone(),
         };
 
         let payment_quote = ln
@@ -375,7 +381,7 @@ impl Mint {
         let melt_ttl = self.quote_ttl().await?.melt_ttl;
 
         let quote = MeltQuote::new(
-            None,
+            Some(quote_id),
             MeltPaymentRequest::Bolt11 {
                 bolt11: request.clone(),
             },
@@ -431,11 +437,14 @@ impl Mint {
 
         let offer = Offer::from_str(&melt_request.request).map_err(|_| Error::Bolt12parse)?;
 
+        let quote_id = cdk_common::QuoteId::new_uuid();
+
         let outgoing_payment_options = Bolt12OutgoingPaymentOptions {
             offer: offer.clone(),
             max_fee_amount: None,
             timeout_secs: None,
             melt_options: *options,
+            quote_id: quote_id.clone(),
         };
 
         let payment_quote = ln
@@ -476,7 +485,7 @@ impl Mint {
         };
 
         let quote = MeltQuote::new(
-            None,
+            Some(quote_id),
             payment_request,
             unit.clone(),
             quote_amount.clone(),
@@ -555,6 +564,8 @@ impl Mint {
             Some(extra.to_string())
         };
 
+        let quote_id = cdk_common::QuoteId::new_uuid();
+
         let custom_options =
             OutgoingPaymentOptions::Custom(Box::new(CustomOutgoingPaymentOptions {
                 method: method.to_string(),
@@ -563,6 +574,7 @@ impl Mint {
                 timeout_secs: None,
                 melt_options: None,
                 extra_json,
+                quote_id: quote_id.clone(),
             }));
 
         let payment_quote = ln
@@ -606,7 +618,7 @@ impl Mint {
         let quote_fee = payment_quote.fee;
 
         let quote = MeltQuote::new(
-            None,
+            Some(quote_id),
             MeltPaymentRequest::Custom {
                 method: method.to_string(),
                 request: request.clone(),
