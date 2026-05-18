@@ -821,16 +821,14 @@ ffi-release-swift VERSION:
   #!/usr/bin/env bash
   set -euo pipefail
 
-  echo "🚀 Triggering Publish Swift Package workflow..."
+  echo "🚀 Triggering FFI - Swift Bindings workflow..."
   echo "   Version: {{VERSION}}"
-  echo "   CDK Ref: v{{VERSION}}"
 
   # Trigger the workflow using GitHub CLI
-  gh workflow run "Publish Swift Package" \
-    --repo cashubtc/cdk-swift \
-    --field version="{{VERSION}}" \
-    --field cdk_repo="cashubtc/cdk" \
-    --field cdk_ref="v{{VERSION}}"
+  gh workflow run "FFI - Swift Bindings" \
+    --repo cashubtc/cdk \
+    --field release_tag="v{{VERSION}}" \
+    --field cdk_version="{{VERSION}}"
 
   echo "✅ Swift workflow triggered successfully!"
 
