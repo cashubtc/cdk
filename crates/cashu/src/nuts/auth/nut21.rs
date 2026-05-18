@@ -179,13 +179,13 @@ impl std::str::FromStr for RoutePath {
             _ => {
                 // Try to parse as a payment method route
                 if let Some(method) = s.strip_prefix("/v1/mint/quote/") {
-                    Ok(RoutePath::MintQuote(method.to_string()))
+                    Ok(RoutePath::MintQuote(normalize_payment_method(method)))
                 } else if let Some(method) = s.strip_prefix("/v1/mint/") {
-                    Ok(RoutePath::Mint(method.to_string()))
+                    Ok(RoutePath::Mint(normalize_payment_method(method)))
                 } else if let Some(method) = s.strip_prefix("/v1/melt/quote/") {
-                    Ok(RoutePath::MeltQuote(method.to_string()))
+                    Ok(RoutePath::MeltQuote(normalize_payment_method(method)))
                 } else if let Some(method) = s.strip_prefix("/v1/melt/") {
-                    Ok(RoutePath::Melt(method.to_string()))
+                    Ok(RoutePath::Melt(normalize_payment_method(method)))
                 } else {
                     // Unknown path - this might be an old database value or config
                     // Provide a helpful error message
@@ -232,6 +232,34 @@ impl RoutePath {
             Self::Wildcard(prefix) if endpoint.to_string().starts_with(prefix) => {
                 Some(prefix.len())
             }
+            Self::MintQuote(method) => match endpoint {
+                Self::MintQuote(endpoint_method)
+                    if payment_methods_match(method, endpoint_method) =>
+                {
+                    Some(usize::MAX)
+                }
+                _ => None,
+            },
+            Self::Mint(method) => match endpoint {
+                Self::Mint(endpoint_method) if payment_methods_match(method, endpoint_method) => {
+                    Some(usize::MAX)
+                }
+                _ => None,
+            },
+            Self::MeltQuote(method) => match endpoint {
+                Self::MeltQuote(endpoint_method)
+                    if payment_methods_match(method, endpoint_method) =>
+                {
+                    Some(usize::MAX)
+                }
+                _ => None,
+            },
+            Self::Melt(method) => match endpoint {
+                Self::Melt(endpoint_method) if payment_methods_match(method, endpoint_method) => {
+                    Some(usize::MAX)
+                }
+                _ => None,
+            },
             _ if self == endpoint => Some(usize::MAX),
             _ => None,
         }
@@ -271,6 +299,14 @@ impl RoutePath {
         paths.extend(Self::common_payment_method_paths());
         paths
     }
+}
+
+fn normalize_payment_method(method: &str) -> String {
+    method.to_lowercase()
+}
+
+fn payment_methods_match(configured: &str, endpoint: &str) -> bool {
+    configured.to_lowercase() == endpoint.to_lowercase()
 }
 
 /// Returns [`RoutePath`]s that match the pattern (Exact or Prefix)
@@ -570,6 +606,42 @@ mod tests {
     }
 
     #[test]
+    fn test_payment_method_routes_match_case_insensitively() {
+        let cases = [
+            (
+                RoutePath::MintQuote("bolt11".to_string()),
+                RoutePath::MintQuote("BOLT11".to_string()),
+            ),
+            (
+                RoutePath::Mint("paypal".to_string()),
+                RoutePath::Mint("PayPal".to_string()),
+            ),
+            (
+                RoutePath::MeltQuote("bolt12".to_string()),
+                RoutePath::MeltQuote("BOLT12".to_string()),
+            ),
+            (
+                RoutePath::Melt("custom".to_string()),
+                RoutePath::Melt("CUSTOM".to_string()),
+            ),
+        ];
+
+        for (configured, request) in cases {
+            assert_eq!(configured.match_specificity(&request), Some(usize::MAX));
+        }
+    }
+
+    #[test]
+    fn test_protected_endpoint_matches_case_insensitive_payment_method() {
+        let configured =
+            ProtectedEndpoint::new(Method::Post, RoutePath::MintQuote("bolt11".to_string()));
+        let request =
+            ProtectedEndpoint::new(Method::Post, RoutePath::MintQuote("BOLT11".to_string()));
+
+        assert_eq!(configured.match_specificity(&request), Some(usize::MAX));
+    }
+
+    #[test]
     fn test_route_path_serialization() {
         // Test serialization of payment method paths
         let json = serde_json::to_string(&RoutePath::Mint(
@@ -587,6 +659,9 @@ mod tests {
             path,
             RoutePath::Mint(PaymentMethod::Known(KnownMethod::Bolt11).to_string())
         );
+
+        let path: RoutePath = serde_json::from_str("\"/v1/mint/quote/BOLT11\"").unwrap();
+        assert_eq!(path, RoutePath::MintQuote("bolt11".to_string()));
 
         let path: RoutePath = serde_json::from_str("\"/v1/melt/quote/venmo\"").unwrap();
         assert_eq!(path, RoutePath::MeltQuote("venmo".to_string()));

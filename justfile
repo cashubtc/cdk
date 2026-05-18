@@ -354,15 +354,18 @@ test-nutshell:
   test_exit_code=0
 
   # Run first test and capture exit code
+  # Serialize tests (--test-threads=1) to avoid concurrent writes against
+  # Nutshell's SQLite backend, which can cause transient lock-acquisition
+  # failures under parallel load.
   echo "Running happy_path_mint_wallet test..."
-  if ! cargo test -p cdk-integration-tests --test happy_path_mint_wallet; then
+  if ! cargo test -p cdk-integration-tests --test happy_path_mint_wallet -- --test-threads=1; then
     echo "ERROR: happy_path_mint_wallet test failed"
     test_exit_code=1
   fi
 
   # Run second test and capture exit code
   echo "Running test_fees test..."
-  if ! cargo test -p cdk-integration-tests --test test_fees; then
+  if ! cargo test -p cdk-integration-tests --test test_fees -- --test-threads=1; then
     echo "ERROR: test_fees test failed"
     test_exit_code=1
   fi
