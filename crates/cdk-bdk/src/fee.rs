@@ -11,86 +11,163 @@
 //! only reserves extra e-cash that is returned as change by the melt flow. The
 //! final transaction fee is still determined by BDK at payment time.
 
+use std::cell::Cell;
+use std::str::FromStr;
+
+use bdk_wallet::bitcoin::{
+    absolute, transaction, Amount as BitcoinAmount, FeeRate, Script, Transaction, TxIn, TxOut,
+    Weight,
+};
+use bdk_wallet::coin_selection::{
+    decide_change, BranchAndBoundCoinSelection, CoinSelectionAlgorithm, CoinSelectionResult,
+    Excess, InsufficientFunds,
+};
+use bdk_wallet::{KeychainKind, Utxo, WeightedUtxo};
+
 use crate::error::Error;
 use crate::types::{FeeEstimationConfig, PaymentTier};
 use crate::CdkBdk;
 
-// Conservative P2WPKH-style defaults used when the quote cannot safely run BDK
-// coin selection without mutating wallet state.
-const HEURISTIC_VBYTES_PER_INPUT: u64 = 68;
-const HEURISTIC_VBYTES_PER_OUTPUT: u64 = 31;
-const HEURISTIC_VBYTES_OVERHEAD: u64 = 11;
 const P2WPKH_CHANGE_OUTPUT_VBYTES: u64 = 31;
-const DEFAULT_QUOTE_INPUT_COUNT: usize = 4;
-const QUOTE_INPUT_VBYTES: u64 = 75;
-pub(crate) const QUOTE_UTXO_SCAN_LIMIT: usize = 100;
 
-/// Estimate the recipient output's serialized size from the actual script.
-pub(crate) fn recipient_output_vbytes(script_pubkey: &bdk_wallet::bitcoin::Script) -> u64 {
-    let txout = bdk_wallet::bitcoin::TxOut {
-        value: bdk_wallet::bitcoin::Amount::ZERO,
-        script_pubkey: script_pubkey.to_owned(),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuoteSelectionPath {
+    Bnb,
+    PessimisticFallback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QuoteFeeEstimate {
+    pub(crate) raw_fee_sat: u64,
+    pub(crate) padded_fee_sat: u64,
+    pub(crate) fee_reserve_sat: u64,
+    pub(crate) selected_input_count: usize,
+    pub(crate) sampled_utxo_count: usize,
+    pub(crate) path: QuoteSelectionPath,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PessimisticFallback;
+
+impl CoinSelectionAlgorithm for PessimisticFallback {
+    fn coin_select<R: bdk_wallet::bitcoin::key::rand::RngCore>(
+        &self,
+        required_utxos: Vec<WeightedUtxo>,
+        mut optional_utxos: Vec<WeightedUtxo>,
+        fee_rate: FeeRate,
+        target_amount: BitcoinAmount,
+        drain_script: &Script,
+        _rand: &mut R,
+    ) -> Result<CoinSelectionResult, InsufficientFunds> {
+        optional_utxos.sort_unstable_by_key(|weighted_utxo| weighted_utxo.utxo.txout().value);
+
+        let mut selected = Vec::new();
+        let mut selected_amount = BitcoinAmount::ZERO;
+        let mut fee_amount = BitcoinAmount::ZERO;
+
+        for weighted_utxo in required_utxos.into_iter().chain(optional_utxos) {
+            let input_fee = input_fee(fee_rate, weighted_utxo.satisfaction_weight);
+            let effective_value = weighted_utxo
+                .utxo
+                .txout()
+                .value
+                .checked_sub(input_fee)
+                .unwrap_or(BitcoinAmount::ZERO);
+
+            if selected_amount < target_amount + fee_amount || effective_value > BitcoinAmount::ZERO
+            {
+                fee_amount += input_fee;
+                selected_amount += weighted_utxo.utxo.txout().value;
+                selected.push(weighted_utxo.utxo);
+            }
+
+            if selected_amount >= target_amount + fee_amount {
+                break;
+            }
+        }
+
+        let amount_needed_with_fees = target_amount + fee_amount;
+        if selected_amount < amount_needed_with_fees {
+            return Err(InsufficientFunds {
+                needed: amount_needed_with_fees,
+                available: selected_amount,
+            });
+        }
+
+        let remaining_amount = selected_amount - amount_needed_with_fees;
+        let excess = decide_change(remaining_amount, fee_rate, drain_script);
+
+        Ok(CoinSelectionResult {
+            selected,
+            fee_amount,
+            excess,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct TrackingFallback<'a> {
+    fallback: PessimisticFallback,
+    used: &'a Cell<bool>,
+}
+
+impl CoinSelectionAlgorithm for TrackingFallback<'_> {
+    fn coin_select<R: bdk_wallet::bitcoin::key::rand::RngCore>(
+        &self,
+        required_utxos: Vec<WeightedUtxo>,
+        optional_utxos: Vec<WeightedUtxo>,
+        fee_rate: FeeRate,
+        target_amount: BitcoinAmount,
+        drain_script: &Script,
+        rand: &mut R,
+    ) -> Result<CoinSelectionResult, InsufficientFunds> {
+        self.used.set(true);
+        self.fallback.coin_select(
+            required_utxos,
+            optional_utxos,
+            fee_rate,
+            target_amount,
+            drain_script,
+            rand,
+        )
+    }
+}
+
+fn input_fee(fee_rate: FeeRate, satisfaction_weight: Weight) -> BitcoinAmount {
+    fee_rate
+        * TxIn::default()
+            .segwit_weight()
+            .checked_add(satisfaction_weight)
+            .expect("input weight should not overflow")
+}
+
+fn base_transaction_fee(
+    fee_rate: FeeRate,
+    recipient_script: &Script,
+    amount_sat: u64,
+) -> BitcoinAmount {
+    let tx = Transaction {
+        version: transaction::Version::TWO,
+        lock_time: absolute::LockTime::ZERO,
+        input: Vec::new(),
+        output: vec![TxOut {
+            value: BitcoinAmount::from_sat(amount_sat),
+            script_pubkey: recipient_script.to_owned(),
+        }],
     };
 
-    bdk_wallet::bitcoin::consensus::serialize(&txout).len() as u64
+    fee_rate * tx.weight()
 }
 
-/// Estimate a conservative quote-time input count from a bounded UTXO sample.
-///
-/// The sample is sorted largest-first to approximate a low-input coin
-/// selection. When the sampled value appears sufficient, one extra input is
-/// reserved as padding because the eventual BDK selection can differ. If the
-/// sample is empty, an internal fallback is used. If the sample cannot cover
-/// the amount plus rough fee, the configured maximum is used.
-pub(crate) fn estimate_quote_input_count(
-    amount_sat: u64,
-    sat_per_vb: f64,
-    utxo_values_sat: &[u64],
-    config: &FeeEstimationConfig,
-) -> usize {
-    let max_inputs = config.quote_max_input_count.max(1);
-    let default_inputs = DEFAULT_QUOTE_INPUT_COUNT.clamp(1, max_inputs);
+fn raw_fee_from_selection(base_fee: BitcoinAmount, result: &CoinSelectionResult) -> BitcoinAmount {
+    let excess_fee = match result.excess {
+        Excess::Change { fee, .. } => fee,
+        Excess::NoChange {
+            remaining_amount, ..
+        } => remaining_amount,
+    };
 
-    if utxo_values_sat.is_empty() {
-        return default_inputs;
-    }
-
-    let mut values = utxo_values_sat.to_vec();
-    values.sort_unstable_by(|a, b| b.cmp(a));
-
-    let mut selected_value = 0u64;
-    for (idx, value) in values.iter().take(max_inputs).enumerate() {
-        let input_count = idx + 1;
-        selected_value = selected_value.saturating_add(*value);
-        let rough_fee = estimate_quote_fee_without_safety(
-            sat_per_vb,
-            quote_vbytes_for_input_count(input_count, HEURISTIC_VBYTES_PER_OUTPUT),
-        );
-
-        if selected_value >= amount_sat.saturating_add(rough_fee) {
-            return input_count.saturating_add(1).min(max_inputs);
-        }
-    }
-
-    max_inputs
-}
-
-/// Estimate quote transaction vbytes using bounded, conservative assumptions.
-///
-/// This combines the estimated input count, the actual recipient output script
-/// size, and a fixed change output. It does not stage or persist any BDK wallet
-/// changes.
-pub(crate) fn estimate_quote_vbytes(
-    amount_sat: u64,
-    sat_per_vb: f64,
-    recipient_script: &bdk_wallet::bitcoin::Script,
-    utxo_values_sat: &[u64],
-    config: &FeeEstimationConfig,
-) -> u64 {
-    let recipient_output_vbytes = recipient_output_vbytes(recipient_script);
-    let input_count = estimate_quote_input_count(amount_sat, sat_per_vb, utxo_values_sat, config);
-
-    quote_vbytes_for_input_count(input_count, recipient_output_vbytes)
+    base_fee + result.fee_amount + excess_fee
 }
 
 /// Apply quote-time safety padding to a raw fee estimate.
@@ -105,17 +182,6 @@ pub(crate) fn apply_quote_fee_safety(estimated_fee_sat: u64, config: &FeeEstimat
     multiplied.saturating_add(config.quote_fixed_safety_sat)
 }
 
-pub(crate) fn estimate_quote_fee_without_safety(sat_per_vb: f64, vbytes: u64) -> u64 {
-    (sat_per_vb * vbytes as f64).ceil() as u64
-}
-
-fn quote_vbytes_for_input_count(input_count: usize, recipient_output_vbytes: u64) -> u64 {
-    HEURISTIC_VBYTES_OVERHEAD
-        + (input_count as u64 * QUOTE_INPUT_VBYTES.max(HEURISTIC_VBYTES_PER_INPUT))
-        + recipient_output_vbytes
-        + P2WPKH_CHANGE_OUTPUT_VBYTES
-}
-
 fn target_blocks_for_tier(tier: PaymentTier) -> u16 {
     match tier {
         PaymentTier::Immediate => 1,
@@ -125,6 +191,116 @@ fn target_blocks_for_tier(tier: PaymentTier) -> u16 {
 }
 
 impl CdkBdk {
+    pub(crate) async fn estimate_onchain_fee_reserve(
+        &self,
+        address: &str,
+        amount_sat: u64,
+        tier: PaymentTier,
+    ) -> Result<QuoteFeeEstimate, Error> {
+        let sat_per_vb = self
+            .estimate_fee_rate_sat_per_vb(tier)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    tier = ?tier,
+                    error = %e,
+                    "Fee-rate estimation failed, using configured fallback"
+                );
+                self.batch_config.fee_estimation.fallback_sat_per_vb
+            });
+
+        let fee_rate = FeeRate::from_sat_per_vb_u32(sat_per_vb.ceil() as u32);
+        let recipient_script = bdk_wallet::bitcoin::Address::from_str(address)
+            .map_err(|e| Error::Wallet(e.to_string()))?
+            .require_network(self.network)
+            .map_err(|e| Error::Wallet(e.to_string()))?
+            .script_pubkey();
+
+        let (weighted_utxos, change_script) = {
+            let wallet_with_db = self.wallet_with_db.lock().await;
+            let max_inputs = self
+                .batch_config
+                .fee_estimation
+                .quote_max_input_count
+                .max(1);
+            let weighted_utxos = wallet_with_db
+                .wallet
+                .list_unspent()
+                .take(max_inputs)
+                .map(|utxo| {
+                    Ok(WeightedUtxo {
+                        satisfaction_weight: wallet_with_db
+                            .wallet
+                            .public_descriptor(utxo.keychain)
+                            .max_weight_to_satisfy()
+                            .map_err(|e| Error::Wallet(e.to_string()))?,
+                        utxo: Utxo::Local(utxo),
+                    })
+                })
+                .collect::<Result<Vec<_>, Error>>()?;
+            let change_script = wallet_with_db
+                .wallet
+                .peek_address(KeychainKind::Internal, 0)
+                .address
+                .script_pubkey();
+            (weighted_utxos, change_script)
+        };
+
+        if weighted_utxos.is_empty() {
+            return Err(Error::NoSpendableUtxos);
+        }
+        let sampled_utxo_count = weighted_utxos.len();
+
+        let base_fee = base_transaction_fee(fee_rate, recipient_script.as_script(), amount_sat);
+        let target_amount = BitcoinAmount::from_sat(amount_sat) + base_fee;
+        let fallback_used = Cell::new(false);
+        let fallback = TrackingFallback {
+            fallback: PessimisticFallback,
+            used: &fallback_used,
+        };
+        let selector = BranchAndBoundCoinSelection::new(P2WPKH_CHANGE_OUTPUT_VBYTES, fallback);
+        let mut rng = bdk_wallet::bitcoin::key::rand::thread_rng();
+        let result = selector
+            .coin_select(
+                Vec::new(),
+                weighted_utxos,
+                fee_rate,
+                target_amount,
+                change_script.as_script(),
+                &mut rng,
+            )
+            .map_err(|e| Error::FeeEstimationFailed(e.to_string()))?;
+
+        let raw_fee_sat = raw_fee_from_selection(base_fee, &result).to_sat();
+        let padded_fee_sat = apply_quote_fee_safety(raw_fee_sat, &self.batch_config.fee_estimation);
+        let fee_reserve_sat = self.fee_reserve_for_estimate(padded_fee_sat);
+        let path = if fallback_used.get() {
+            QuoteSelectionPath::PessimisticFallback
+        } else {
+            QuoteSelectionPath::Bnb
+        };
+
+        tracing::debug!(
+            tier = ?tier,
+            sampled_utxo_count,
+            selected_input_count = result.selected.len(),
+            raw_fee_sat,
+            padded_fee_sat,
+            fee_reserve_sat,
+            selection_path = ?path,
+            "Estimated onchain fee reserve"
+        );
+
+        Ok(QuoteFeeEstimate {
+            raw_fee_sat,
+            padded_fee_sat,
+            fee_reserve_sat,
+            selected_input_count: result.selected.len(),
+            sampled_utxo_count,
+            path,
+        })
+    }
+
     /// Estimate the fee rate in satoshis per virtual byte for a given tier.
     ///
     /// Checks the cache first, then falls back to the configured chain source.

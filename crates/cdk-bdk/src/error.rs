@@ -101,6 +101,15 @@ pub enum Error {
         max_fee: u64,
     },
 
+    /// Current fee estimate exceeds the max fee accepted by a melt quote.
+    #[error("Estimated fee {estimated_fee} exceeds max fee {max_fee}")]
+    EstimatedFeeTooHigh {
+        /// Current estimated fee reserve in sats
+        estimated_fee: u64,
+        /// Maximum fee accepted by the quote in sats
+        max_fee: u64,
+    },
+
     /// No valid fee allocation exists for the batch
     #[error("No valid fee allocation for batch")]
     NoValidFeeAllocation,

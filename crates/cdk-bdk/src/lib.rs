@@ -494,51 +494,10 @@ impl MintPayment for CdkBdk {
             onchain_options.amount.clone().to_u64(),
         )?;
         let amount_sat = onchain_options.amount.clone().to_u64();
-
-        let sat_per_vb = self
-            .estimate_fee_rate_sat_per_vb(tier)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(
-                    tier = ?tier,
-                    error = %e,
-                    "Fee-rate estimation failed, using configured fallback"
-                );
-                self.batch_config.fee_estimation.fallback_sat_per_vb
-            });
-
-        let recipient_script = bdk_wallet::bitcoin::Address::from_str(&onchain_options.address)
-            .map_err(|e| Error::Wallet(e.to_string()))?
-            .require_network(self.network)
-            .map_err(|e| Error::Wallet(e.to_string()))?
-            .script_pubkey();
-
-        let utxo_values_sat: Vec<u64> = {
-            let wallet_with_db = self.wallet_with_db.lock().await;
-            wallet_with_db
-                .wallet
-                .list_unspent()
-                .take(fee::QUOTE_UTXO_SCAN_LIMIT)
-                .map(|utxo| utxo.txout.value.to_sat())
-                .collect()
-        };
-        if utxo_values_sat.is_empty() {
-            return Err(Error::NoSpendableUtxos.into());
-        }
-
-        let vbytes = fee::estimate_quote_vbytes(
-            amount_sat,
-            sat_per_vb,
-            recipient_script.as_script(),
-            &utxo_values_sat,
-            &self.batch_config.fee_estimation,
-        );
-        let estimated_fee_sat = fee::apply_quote_fee_safety(
-            fee::estimate_quote_fee_without_safety(sat_per_vb, vbytes),
-            &self.batch_config.fee_estimation,
-        );
-
-        let fee_reserve_sat = self.fee_reserve_for_estimate(estimated_fee_sat);
+        let fee_estimate = self
+            .estimate_onchain_fee_reserve(&onchain_options.address, amount_sat, tier)
+            .await?;
+        let fee_reserve_sat = fee_estimate.fee_reserve_sat;
 
         let estimated_blocks = match tier {
             PaymentTier::Immediate => 1,
@@ -583,15 +542,27 @@ impl MintPayment for CdkBdk {
         let max_fee = onchain_options
             .max_fee_amount
             .unwrap_or(Amount::new(1000, CurrencyUnit::Sat));
+        let amount_sat = amount.clone().to_u64();
+        let max_fee_sat = max_fee.clone().to_u64();
         let tier = PaymentTier::from_optional_str(onchain_options.tier.as_deref());
         let metadata = PaymentMetadata::from_optional_json(onchain_options.metadata.as_deref());
+        let fee_estimate = self
+            .estimate_onchain_fee_reserve(&address, amount_sat, tier)
+            .await?;
+        if fee_estimate.raw_fee_sat > max_fee_sat {
+            return Err(Error::EstimatedFeeTooHigh {
+                estimated_fee: fee_estimate.raw_fee_sat,
+                max_fee: max_fee_sat,
+            }
+            .into());
+        }
 
         crate::send::payment_intent::SendIntent::new(
             &self.storage,
             quote_id.to_string(),
             address,
-            amount.to_u64(),
-            max_fee.to_u64(),
+            amount_sat,
+            max_fee_sat,
             tier,
             metadata,
         )
@@ -787,10 +758,7 @@ mod tests {
     use futures::StreamExt;
 
     use super::*;
-    use crate::fee::{
-        apply_quote_fee_safety, estimate_quote_fee_without_safety, estimate_quote_input_count,
-        estimate_quote_vbytes,
-    };
+    use crate::fee::apply_quote_fee_safety;
 
     /// Build a `CdkBdk` instance pointed at a bogus Esplora URL so the sync
     /// loop spins without needing a real backend. The ticks are short so
@@ -971,32 +939,6 @@ mod tests {
     }
 
     #[test]
-    fn test_quote_input_count_uses_utxo_sample_with_padding() {
-        let config = FeeEstimationConfig::default();
-
-        assert_eq!(
-            estimate_quote_input_count(50_000, 1.0, &[100_000], &config),
-            2,
-            "one covering UTXO should still reserve one extra input"
-        );
-    }
-
-    #[test]
-    fn test_quote_input_count_falls_back_to_max_when_sample_cannot_cover() {
-        let config = FeeEstimationConfig {
-            quote_max_input_count: 12,
-            ..FeeEstimationConfig::default()
-        };
-        let tiny_utxos = vec![1_000; 100];
-
-        assert_eq!(
-            estimate_quote_input_count(50_000, 1.0, &tiny_utxos, &config),
-            12,
-            "insufficient bounded sample should quote the configured maximum"
-        );
-    }
-
-    #[test]
     fn test_quote_fee_safety_adds_multiplier_and_fixed_margin() {
         let config = FeeEstimationConfig {
             quote_safety_multiplier: 1.25,
@@ -1005,27 +947,6 @@ mod tests {
         };
 
         assert_eq!(apply_quote_fee_safety(1_000, &config), 1_750);
-    }
-
-    #[test]
-    fn test_quote_vbytes_uses_default_input_count_without_utxo_sample() {
-        let config = FeeEstimationConfig::default();
-        let address =
-            bdk_wallet::bitcoin::Address::from_str("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080")
-                .expect("address")
-                .require_network(Network::Regtest)
-                .expect("regtest address");
-
-        let vbytes = estimate_quote_vbytes(
-            50_000,
-            1.0,
-            address.script_pubkey().as_script(),
-            &[],
-            &config,
-        );
-
-        assert_eq!(vbytes, 11 + (4 * 75) + 31 + 31);
-        assert_eq!(estimate_quote_fee_without_safety(1.0, vbytes), vbytes);
     }
 
     #[tokio::test]
@@ -1084,6 +1005,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_make_payment_rechecks_current_fee_against_max_fee() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
+        fund_backend_wallet(&backend, 100_000).await;
+        let (quote_id, mut options) = onchain_options_for(10_000);
+        let OutgoingPaymentOptions::Onchain(onchain) = &mut options else {
+            panic!("expected onchain options");
+        };
+        onchain.max_fee_amount = Some(Amount::new(1, CurrencyUnit::Sat));
+
+        let err = backend
+            .make_payment(&CurrencyUnit::Sat, options)
+            .await
+            .expect_err("payment should be rejected when current fee exceeds max");
+
+        let cdk_common::payment::Error::Onchain(inner) = err else {
+            panic!("expected onchain error");
+        };
+        match inner.downcast_ref::<Error>() {
+            Some(Error::EstimatedFeeTooHigh { max_fee, .. }) => assert_eq!(*max_fee, 1),
+            other => panic!("expected EstimatedFeeTooHigh, got {other:?}"),
+        }
+
+        assert!(
+            backend
+                .storage
+                .get_send_intent_by_quote_id(&quote_id.to_string())
+                .await
+                .expect("lookup send intent by quote id")
+                .is_none(),
+            "fee recheck rejection must not leave a pending send intent behind"
+        );
+    }
+
+    #[tokio::test]
     async fn test_get_settings_reports_min_send_amount() {
         let backend = build_test_instance(5).await;
 
@@ -1131,7 +1086,8 @@ mod tests {
         // make_payment queues the intent before a batch has been built, so
         // the per-intent fee is unknown. total_spent MUST be 0, not the
         // user-requested amount (which would imply no fee).
-        let backend = build_test_instance(5).await;
+        let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
+        fund_backend_wallet(&backend, 100_000).await;
         let (quote_id, options) = onchain_options_for(10_000);
 
         let response = backend
@@ -1267,7 +1223,8 @@ mod tests {
         // An intent freshly created via make_payment is in state Pending.
         // check_outgoing_payment must report total_spent = 0 because the
         // fee contribution is not yet knowable.
-        let backend = build_test_instance(5).await;
+        let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
+        fund_backend_wallet(&backend, 100_000).await;
         let (quote_id, options) = onchain_options_for(12_345);
 
         backend
@@ -1423,7 +1380,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_make_payment_can_retry_failed_intent_with_same_quote_id() {
-        let backend = build_test_instance(5).await;
+        let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
+        fund_backend_wallet(&backend, 100_000).await;
         let (quote_id, options) = onchain_options_for(30_000);
 
         backend
