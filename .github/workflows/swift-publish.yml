@@ -19,8 +19,6 @@ jobs:
     steps:
       - name: Checkout monorepo
         uses: actions/checkout@v4
-        with:
-          ref: main
 
       - name: Clone cdk-swift
         run: |

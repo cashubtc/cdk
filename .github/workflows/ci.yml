@@ -542,4 +542,5 @@ jobs:
             PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
             SDKROOT="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)" \
             DEVELOPER_DIR="$(/usr/bin/xcode-select -p)" \
+            DYLD_LIBRARY_PATH="$PWD/target/release" \
             /usr/bin/swift test
