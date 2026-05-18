@@ -239,10 +239,126 @@ impl Mint {
         &self,
         blinded_message: &BlindedMessage,
     ) -> Result<BlindSignature, Error> {
+        let keyset = self
+            .get_keyset_info(&blinded_message.keyset_id)
+            .ok_or(Error::UnknownKeySet)?;
+
+        if keyset.unit != CurrencyUnit::Auth {
+            return Err(Error::BlindAuthFailed);
+        }
+
         self.signatory
             .blind_sign(vec![blinded_message.to_owned()])
             .await?
             .pop()
             .ok_or(Error::Internal)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+
+    use bip39::Mnemonic;
+    use cdk_common::amount::SplitTarget;
+    use cdk_common::nut00::KnownMethod;
+    use cdk_common::nuts::{Id, PreMintSecrets};
+    use cdk_common::{Amount, CurrencyUnit, PaymentMethod};
+    use cdk_fake_wallet::FakeWallet;
+
+    use super::*;
+    use crate::mint::{MintBuilder, MintMeltLimits};
+    use crate::types::FeeReserve;
+
+    async fn create_auth_enabled_mint() -> Mint {
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+        let auth_db = Arc::new(
+            cdk_sqlite::mint::MintSqliteAuthDatabase::new(":memory:")
+                .await
+                .expect("auth db"),
+        );
+
+        let mut mint_builder = MintBuilder::new(db.clone());
+
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: 1.into(),
+            percent_fee_reserve: 1.0,
+        };
+        let ln_fake_backend = FakeWallet::new(
+            fee_reserve,
+            HashMap::default(),
+            HashSet::default(),
+            2,
+            CurrencyUnit::Sat,
+        );
+
+        mint_builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintMeltLimits::new(1, 10_000),
+                Arc::new(ln_fake_backend),
+            )
+            .await
+            .expect("payment processor");
+
+        let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        let mint = mint_builder
+            .with_auth(
+                auth_db,
+                "https://example.com/.well-known/openid-configuration".to_string(),
+                "test-client".to_string(),
+                vec![],
+            )
+            .with_blind_auth(50, vec![])
+            .build_with_seed(db, &mnemonic.to_seed_normalized(""))
+            .await
+            .expect("mint");
+
+        mint.start().await.expect("start mint");
+        mint
+    }
+
+    fn output_for_keyset(keyset_id: Id) -> BlindedMessage {
+        let fee_and_amounts = (0, vec![1]).into();
+
+        PreMintSecrets::random(
+            keyset_id,
+            Amount::from(1),
+            &SplitTarget::Value(1.into()),
+            &fee_and_amounts,
+        )
+        .expect("premint secrets")
+        .blinded_messages()
+        .pop()
+        .expect("blinded message")
+    }
+
+    #[tokio::test]
+    async fn auth_blind_sign_rejects_non_auth_keysets() {
+        let mint = create_auth_enabled_mint().await;
+        let active_keysets = mint.get_active_keysets();
+        let auth_keyset_id = active_keysets
+            .get(&CurrencyUnit::Auth)
+            .copied()
+            .expect("auth keyset");
+        let sat_keyset_id = active_keysets
+            .get(&CurrencyUnit::Sat)
+            .copied()
+            .expect("sat keyset");
+
+        let auth_output = output_for_keyset(auth_keyset_id);
+        mint.auth_blind_sign(&auth_output)
+            .await
+            .expect("auth keyset should sign");
+
+        let sat_output = output_for_keyset(sat_keyset_id);
+        let err = mint
+            .auth_blind_sign(&sat_output)
+            .await
+            .expect_err("sat keyset must not sign through auth path");
+
+        assert!(matches!(err, Error::BlindAuthFailed));
     }
 }
