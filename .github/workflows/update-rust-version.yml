@@ -31,7 +31,11 @@ jobs:
         id: current-rust
         run: |
           # Extract current version from rust-toolchain.toml
-          CURRENT_VERSION=$(grep '^channel=' rust-toolchain.toml | sed 's/channel="\(.*\)"/\1/')
+          CURRENT_VERSION=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml)
+          if [ -z "$CURRENT_VERSION" ]; then
+            echo "Unable to determine current Rust version from rust-toolchain.toml" >&2
+            exit 1
+          fi
           echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
           echo "Current Rust version: $CURRENT_VERSION"
 
