@@ -401,23 +401,23 @@ jobs:
           git merge "${RELEASE_BRANCH}" --squash
           git commit -m "release: ${TAG}"
 
-      - name: Push and tag
+      - name: Push default branch (without tag)
         working-directory: cdk-swift
         run: |
-          TAG="${{ inputs.release_tag }}"
-          git checkout "${RELEASE_BRANCH}"
-          git push origin "${RELEASE_BRANCH}"
-          git checkout "${DEFAULT_BRANCH}"
-          git tag "${TAG}"
-          git push origin "${DEFAULT_BRANCH}" --tags
-          git push origin --delete "${RELEASE_BRANCH}"
+          git push origin "${DEFAULT_BRANCH}"
 
-      - name: Create release on cdk-swift
+      - name: Create release on cdk-swift (creates tag and uploads asset)
         env:
           GH_TOKEN: ${{ secrets.SWIFT_DEPLOY_KEY }}
         run: |
           gh release create "${{ inputs.release_tag }}" \
             --repo ${{ vars.CDK_SWIFT_REPO }} \
+            --target "${DEFAULT_BRANCH}" \
             --title "Release ${{ inputs.release_tag }}" \
             --generate-notes \
             artifacts/CashuDevKitFFI.xcframework.zip
+
+      - name: Clean up release branch
+        working-directory: cdk-swift
+        run: |
+          git push origin --delete "${RELEASE_BRANCH}"
