@@ -90,36 +90,107 @@ impl Deref for HttpCacheKey {
     }
 }
 
-impl From<config::Config> for HttpCache {
-    fn from(config: config::Config) -> Self {
+impl HttpCache {
+    /// Create an `HttpCache` from the given configuration.
+    ///
+    /// This is an async constructor because Redis connection setup requires
+    /// awaiting async operations. Using a sync `From` trait with
+    /// `Handle::current().block_on()` would panic when called from within
+    /// an active Tokio runtime.
+    pub async fn from_config(config: config::Config) -> Self {
+        let ttl = Duration::from_secs(config.ttl.unwrap_or(DEFAULT_TTL_SECS));
+        let tti = Duration::from_secs(config.tti.unwrap_or(DEFAULT_TTI_SECS));
+
         match config.backend {
-            config::Backend::Memory => Self::new(
-                Duration::from_secs(config.ttl.unwrap_or(DEFAULT_TTL_SECS)),
-                Duration::from_secs(config.tti.unwrap_or(DEFAULT_TTI_SECS)),
-                None,
-            ),
+            config::Backend::Memory => Self::new(ttl, tti, None),
             #[cfg(feature = "redis")]
             config::Backend::Redis(redis_config) => {
-                let client = redis::Client::open(redis_config.connection_string)
-                    .expect("Failed to create Redis client");
-                let storage = HttpCacheRedis::new(client).set_prefix(
-                    redis_config
-                        .key_prefix
-                        .unwrap_or_default()
-                        .as_bytes()
-                        .to_vec(),
-                );
-                Self::new(
-                    Duration::from_secs(config.ttl.unwrap_or(DEFAULT_TTL_SECS)),
-                    Duration::from_secs(config.tti.unwrap_or(DEFAULT_TTI_SECS)),
-                    Some(Box::new(storage)),
-                )
+                let client = if redis_config.use_cluster {
+                    match redis_config.cluster_nodes {
+                        Some(nodes) => {
+                            // Explicit timeouts
+                            let builder = redis::cluster::ClusterClientBuilder::new(nodes)
+                                .connection_timeout(Duration::from_secs(5))
+                                .response_timeout(Duration::from_secs(5))
+                                .retries(2);
+                            match builder.build() {
+                                Ok(cluster_client) => {
+                                    match cluster_client.get_async_connection().await {
+                                        Ok(conn) => Some(RedisClient::Cluster(conn)),
+                                        Err(err) => {
+                                            tracing::error!(
+                                                "Failed to connect to Redis cluster: {}",
+                                                err
+                                            );
+                                            None
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    tracing::error!(
+                                        "Failed to create Redis cluster client: {}",
+                                        err
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                        None => {
+                            tracing::error!(
+                                "Redis cluster nodes not provided, falling back to memory cache"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    let connection_string = redis_config.connection_string.clone();
+                    if connection_string.is_empty() {
+                        tracing::error!(
+                            "Redis connection string is empty, falling back to memory cache"
+                        );
+                        None
+                    } else {
+                        match redis::Client::open(connection_string) {
+                            Ok(single_client) => {
+                                match redis::aio::ConnectionManager::new(single_client).await {
+                                    Ok(conn) => Some(RedisClient::Single(conn)),
+                                    Err(err) => {
+                                        tracing::error!(
+                                            "Failed to create Redis connection manager: {}",
+                                            err
+                                        );
+                                        None
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                tracing::error!("Failed to create Redis client: {}", err);
+                                None
+                            }
+                        }
+                    }
+                };
+
+                match client {
+                    Some(redis_client) => {
+                        let storage = HttpCacheRedis::new(redis_client).set_prefix(
+                            redis_config
+                                .key_prefix
+                                .unwrap_or_default()
+                                .as_bytes()
+                                .to_vec(),
+                        );
+                        Self::new(ttl, tti, Some(Box::new(storage)))
+                    }
+                    None => {
+                        tracing::warn!("Redis initialization failed, using in-memory cache");
+                        Self::new(ttl, tti, None)
+                    }
+                }
             }
         }
     }
-}
 
-impl HttpCache {
     /// Create a new HTTP cache.
     pub fn new(
         ttl: Duration,

@@ -47,6 +47,10 @@ tti = 60
 # key_prefix = "mintd"
 # connection_string = "redis://localhost"
 
+# For redis-cluster:
+# use_cluster = true
+# cluster_nodes = ["redis://node1:6379", "redis://node2:6379"]
+
 # NOTE: If [mint_management_rpc] is enabled these values will only be used on first start up.
 # Further changes must be made through the rpc.
 [mint_info]

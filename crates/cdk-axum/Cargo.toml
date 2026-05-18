@@ -35,8 +35,10 @@ serde.workspace = true
 uuid.workspace = true
 sha2 = "0.10.8"
 maud = { workspace = true, optional = true }
-redis = { version = "0.31.0", features = [
+redis = { version = "0.31.0", default-features = false, features = [
     "tokio-rustls-comp",
+    "cluster-async",
+    "connection-manager",
 ], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

@@ -388,7 +388,7 @@ async fn configure_mint_builder(
         .with_batch_minting(Some(DEFAULT_BATCH_MINT_SIZE), Some(payment_methods.clone()));
 
     // Configure caching with payment methods
-    let mint_builder = configure_cache(settings, mint_builder, &payment_methods);
+    let mint_builder = configure_cache(settings, mint_builder, &payment_methods).await;
 
     // Configure transaction limits
     let mint_builder =
@@ -703,7 +703,7 @@ async fn configure_backend_for_unit(
 }
 
 /// Configures cache settings with support for custom payment methods
-fn configure_cache(
+async fn configure_cache(
     settings: &config::Settings,
     mint_builder: MintBuilder,
     payment_methods: &[String],
@@ -726,7 +726,7 @@ fn configure_cache(
         ));
     }
 
-    let cache: HttpCache = settings.info.http_cache.clone().into();
+    let cache: HttpCache = HttpCache::from_config(settings.info.http_cache.clone()).await;
     mint_builder.with_cache(Some(cache.ttl.as_secs()), cached_endpoints)
 }
 
@@ -948,7 +948,7 @@ async fn start_services_with_shutdown(
 ) -> Result<()> {
     let listen_addr = settings.info.listen_host.clone();
     let listen_port = settings.info.listen_port;
-    let cache: HttpCache = settings.info.http_cache.clone().into();
+    let cache: HttpCache = HttpCache::from_config(settings.info.http_cache.clone()).await;
 
     #[cfg(feature = "management-rpc")]
     let mut rpc_enabled = false;

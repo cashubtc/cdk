@@ -1,0 +1,88 @@
+# Local Redis Cluster for cdk-mintd HTTP cache development.
+#
+# Usage:
+#   docker compose -f docker-compose.redis-cluster.yaml up -d
+#   # wait for the init container to finish, then point cdk-mintd at:
+#   #   cluster_nodes = ["redis://127.0.0.1:7001", "redis://127.0.0.1:7002", "redis://127.0.0.1:7003"]
+#
+# Why host networking: Redis Cluster shards advertise their own address
+# (`cluster-announce-ip`) to clients AND to peer nodes for gossip. The same
+# address must be reachable from both the host (for cdk-mintd) and the other
+# shards. Host networking is the only setup where 127.0.0.1:<port> satisfies
+# both. Requires Docker Desktop 4.34+ on macOS/Windows; native on Linux.
+services:
+  redis-node-1:
+    image: redis:7-alpine
+    container_name: cdk-redis-node-1
+    network_mode: host
+    command: >
+      redis-server
+      --port 7001
+      --cluster-enabled yes
+      --cluster-config-file /data/nodes-7001.conf
+      --cluster-node-timeout 5000
+      --cluster-announce-ip 127.0.0.1
+      --appendonly no
+      --save ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "7001", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+  redis-node-2:
+    image: redis:7-alpine
+    container_name: cdk-redis-node-2
+    network_mode: host
+    command: >
+      redis-server
+      --port 7002
+      --cluster-enabled yes
+      --cluster-config-file /data/nodes-7002.conf
+      --cluster-node-timeout 5000
+      --cluster-announce-ip 127.0.0.1
+      --appendonly no
+      --save ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "7002", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+  redis-node-3:
+    image: redis:7-alpine
+    container_name: cdk-redis-node-3
+    network_mode: host
+    command: >
+      redis-server
+      --port 7003
+      --cluster-enabled yes
+      --cluster-config-file /data/nodes-7003.conf
+      --cluster-node-timeout 5000
+      --cluster-announce-ip 127.0.0.1
+      --appendonly no
+      --save ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "7003", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+  redis-cluster-init:
+    image: redis:7-alpine
+    container_name: cdk-redis-cluster-init
+    network_mode: host
+    depends_on:
+      redis-node-1:
+        condition: service_healthy
+      redis-node-2:
+        condition: service_healthy
+      redis-node-3:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - |
+        if redis-cli -p 7001 cluster info 2>/dev/null | grep -q 'cluster_state:ok'; then
+          echo 'Redis cluster already initialized'
+        else
+          redis-cli --cluster create 127.0.0.1:7001 127.0.0.1:7002 127.0.0.1:7003 --cluster-replicas 0 --cluster-yes
+        fi
+    restart: "no"
