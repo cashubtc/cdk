@@ -532,7 +532,7 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Build XCFramework and generate bindings
-        run: nix develop -L .#bindings --command just binding-swift
+        run: nix develop -L .#bindings --command just ffi-generate-swift
       - name: Run Swift tests
         run: |
           # Run swift test outside the Nix environment. The Nix shell injects
