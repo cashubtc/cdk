@@ -173,10 +173,9 @@ pub fn token_from_text(text: &str) -> Option<&str> {
 mod tests {
     use std::str::FromStr;
 
+    use super::*;
     use crate::nuts::{Id, Proof, SpendingConditions};
     use crate::Amount;
-
-    use super::*;
 
     fn make_p2pk_proof(pubkey: PublicKey) -> Proof {
         let spending_conditions = SpendingConditions::new_p2pk(pubkey, None);

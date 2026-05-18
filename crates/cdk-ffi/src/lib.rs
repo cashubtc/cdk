@@ -279,6 +279,25 @@ mod tests {
     }
 
     #[test]
+    fn test_send_options_json_defaults_new_p2pk_fields() {
+        let json = r#"{
+            "memo": null,
+            "conditions": null,
+            "amount_split_target": "None",
+            "send_kind": "OnlineExact",
+            "include_fee": false,
+            "use_p2bk": false,
+            "max_proofs": null,
+            "metadata": {}
+        }"#;
+
+        let options = crate::types::wallet::decode_send_options(json.to_string()).unwrap();
+
+        assert!(options.p2pk_signing_keys.is_empty());
+        assert!(!options.allow_locked_proofs);
+    }
+
+    #[test]
     fn test_proof_with_invalid_dleq_returns_error() {
         let proof = Proof {
             amount: Amount::new(1),

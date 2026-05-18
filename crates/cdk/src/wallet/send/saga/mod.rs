@@ -64,6 +64,7 @@
 use std::collections::{HashMap, HashSet};
 
 use bitcoin::XOnlyPublicKey;
+use cdk_common::amount::KeysetFeeAndAmounts;
 use cdk_common::nut02::KeySetInfosMethods;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
@@ -168,6 +169,190 @@ async fn merge_keyring_keys(
     Ok(keys)
 }
 
+struct SendSplitContext<'a> {
+    send_amounts: &'a [Amount],
+    amount: Amount,
+    send_fee: Amount,
+    keyset_fees: &'a HashMap<Id, u64>,
+    force_swap: bool,
+    is_exact_or_offline: bool,
+}
+
+struct InputFeeCoverageContext<'a> {
+    amount: Amount,
+    send_fee: Amount,
+    active_keyset_ids: &'a Vec<Id>,
+    keyset_fees: &'a KeysetFeeAndAmounts,
+    send_amounts: &'a [Amount],
+    force_swap: bool,
+    is_exact_or_offline: bool,
+}
+
+fn ensure_selected_proofs_cover_input_fees(
+    mut selected_proofs: Proofs,
+    proof_pool: Proofs,
+    context: InputFeeCoverageContext<'_>,
+) -> Result<Proofs, Error> {
+    let keyset_fee_map: HashMap<Id, u64> = context
+        .keyset_fees
+        .iter()
+        .map(|(key, values)| (*key, values.fee()))
+        .collect();
+    let mut remaining_proofs: Proofs = proof_pool
+        .into_iter()
+        .filter(|proof| !selected_proofs.contains(proof))
+        .collect();
+
+    loop {
+        let selected_net = selected_proofs_net_after_swap_fees(
+            selected_proofs.clone(),
+            SendSplitContext {
+                send_amounts: context.send_amounts,
+                amount: context.amount,
+                send_fee: context.send_fee,
+                keyset_fees: &keyset_fee_map,
+                force_swap: context.force_swap,
+                is_exact_or_offline: context.is_exact_or_offline,
+            },
+        )?;
+
+        if selected_net >= context.amount + context.send_fee {
+            return Ok(selected_proofs);
+        }
+
+        if remaining_proofs.is_empty() {
+            return Err(Error::InsufficientFunds);
+        }
+
+        let shortfall = (context.amount + context.send_fee)
+            .checked_sub(selected_net)
+            .unwrap_or(Amount::ZERO);
+        let additional = Wallet::select_proofs(
+            shortfall,
+            remaining_proofs.clone(),
+            context.active_keyset_ids,
+            context.keyset_fees,
+            false,
+        )?;
+
+        if additional.is_empty() {
+            return Err(Error::InsufficientFunds);
+        }
+
+        remaining_proofs.retain(|proof| !additional.contains(proof));
+        selected_proofs.extend(additional);
+    }
+}
+
+fn split_proofs_for_send_respecting_p2pk_locks(
+    proofs: Proofs,
+    allow_locked_proofs: bool,
+    context: SendSplitContext<'_>,
+) -> Result<super::ProofSplitResult, Error> {
+    // When the wallet holds P2PK-locked proofs and passthrough is not opted in, route them
+    // through a swap so the token contains fresh, unlocked proofs. The signing key may come
+    // from `SendOptions.p2pk_signing_keys` or be discovered automatically from the wallet
+    // keyring at confirm time; we partition eagerly regardless so that the swap is set up
+    // correctly even when only keyring keys will be used.
+    //
+    // Unlocked proofs bypass the swap entirely — they are already bearer.
+    //
+    // HTLC-locked proofs are intentionally excluded from this forced-swap path even though
+    // they also carry a NUT-10 secret. Spending an HTLC requires a preimage that signing
+    // keys alone cannot provide; routing HTLC proofs to a swap here would cause a mint
+    // rejection. HTLC support in the send path (including a `htlc_preimages` field on
+    // `SendOptions` and its own partition logic) is left for a follow-up PR.
+    let has_p2pk_locked = proofs.iter().any(crate::wallet::util::is_p2pk_locked);
+    if has_p2pk_locked && !allow_locked_proofs {
+        let (p2pk_locked, rest): (Proofs, Proofs) = proofs
+            .into_iter()
+            .partition(crate::wallet::util::is_p2pk_locked);
+        let mut proofs_to_swap = p2pk_locked;
+        let mut proofs_to_send = Proofs::new();
+
+        if context.force_swap {
+            proofs_to_swap.extend(rest);
+        } else if context.is_exact_or_offline {
+            proofs_to_send = rest;
+        } else {
+            let mut remaining_send_amounts: Vec<Amount> = context.send_amounts.to_vec();
+            for proof in rest {
+                if let Some(idx) = remaining_send_amounts
+                    .iter()
+                    .position(|a| a == &proof.amount)
+                {
+                    proofs_to_send.push(proof);
+                    remaining_send_amounts.remove(idx);
+                } else {
+                    proofs_to_swap.push(proof);
+                }
+            }
+
+            if !proofs_to_swap.is_empty() {
+                let swap_output_needed = (context.amount + context.send_fee)
+                    .checked_sub(proofs_to_send.total_amount()?)
+                    .unwrap_or(Amount::ZERO);
+
+                if swap_output_needed != Amount::ZERO {
+                    loop {
+                        let swap_input_fee =
+                            calculate_fee(&proofs_to_swap.count_by_keyset(), context.keyset_fees)?
+                                .total;
+                        let swap_total = proofs_to_swap.total_amount()?;
+                        let swap_can_produce = swap_total.checked_sub(swap_input_fee);
+
+                        match swap_can_produce {
+                            Some(can_produce) if can_produce >= swap_output_needed => {
+                                break;
+                            }
+                            _ => {
+                                if proofs_to_send.is_empty() {
+                                    return Err(Error::InsufficientFunds);
+                                }
+
+                                proofs_to_send.sort_by_key(|a| a.amount);
+                                let proof_to_move = proofs_to_send.remove(0);
+                                proofs_to_swap.push(proof_to_move);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let swap_fee = calculate_fee(&proofs_to_swap.count_by_keyset(), context.keyset_fees)?.total;
+        Ok(super::ProofSplitResult {
+            proofs_to_send,
+            proofs_to_swap,
+            swap_fee,
+        })
+    } else {
+        split_proofs_for_send(
+            proofs,
+            context.send_amounts,
+            context.amount,
+            context.send_fee,
+            context.keyset_fees,
+            context.force_swap,
+            context.is_exact_or_offline,
+        )
+    }
+}
+
+fn selected_proofs_net_after_swap_fees(
+    selected_proofs: Proofs,
+    context: SendSplitContext<'_>,
+) -> Result<Amount, Error> {
+    let split = split_proofs_for_send_respecting_p2pk_locks(selected_proofs, false, context)?;
+    let direct_total = split.proofs_to_send.total_amount()?;
+    let swap_total = split.proofs_to_swap.total_amount()?;
+    let swap_net = swap_total
+        .checked_sub(split.swap_fee)
+        .unwrap_or(Amount::ZERO);
+
+    Ok(direct_total + swap_net)
+}
+
 /// Saga pattern implementation for send operations.
 ///
 /// Uses the typestate pattern to enforce valid state transitions at compile-time.
@@ -237,6 +422,9 @@ impl<'a> SendSaga<'a, Initial> {
             available_proofs =
                 filter_signable_proofs(self.wallet, available_proofs, &opts.p2pk_signing_keys)
                     .await?;
+            if opts.send_kind.is_offline() {
+                available_proofs.retain(|proof| !crate::wallet::util::is_p2pk_locked(proof));
+            }
         }
 
         let mut force_swap = false;
@@ -286,7 +474,7 @@ impl<'a> SendSaga<'a, Initial> {
             .get_keyset_fees_and_amounts_by_id(active_keyset_id)
             .await?;
 
-        let selection_amount = if opts.include_fee {
+        let send_amounts = if opts.include_fee {
             let send_split = amount.split_with_fee(&fee_and_amounts)?;
             let send_fee = self
                 .wallet
@@ -296,25 +484,52 @@ impl<'a> SendSaga<'a, Initial> {
                         .collect(),
                 )
                 .await?;
-            amount + send_fee.total
+            (send_split, send_fee.total)
         } else {
-            amount
+            (amount.split(&fee_and_amounts)?, Amount::ZERO)
         };
+        let selection_amount = amount + send_amounts.1;
 
-        let selected_proofs = Wallet::select_proofs(
+        let may_swap_p2pk_locked = !opts.allow_locked_proofs
+            && available_proofs
+                .iter()
+                .any(crate::wallet::util::is_p2pk_locked);
+
+        let proof_pool = available_proofs.clone();
+        let mut selected_proofs = Wallet::select_proofs(
             selection_amount,
             available_proofs,
             &active_keyset_ids,
             &keyset_fees,
             opts.include_fee || force_swap,
         )?;
-        let selected_total = selected_proofs.total_amount()?;
 
         let send_fee = if opts.include_fee {
             self.wallet.get_proofs_fee(&selected_proofs).await?.total
         } else {
             Amount::ZERO
         };
+
+        if may_swap_p2pk_locked {
+            let is_exact_or_offline = selected_proofs.total_amount()? == amount + send_fee
+                || opts.send_kind.is_offline()
+                || opts.send_kind.has_tolerance();
+            selected_proofs = ensure_selected_proofs_cover_input_fees(
+                selected_proofs,
+                proof_pool,
+                InputFeeCoverageContext {
+                    amount,
+                    send_fee,
+                    active_keyset_ids: &active_keyset_ids,
+                    keyset_fees: &keyset_fees,
+                    send_amounts: &send_amounts.0,
+                    force_swap,
+                    is_exact_or_offline,
+                },
+            )?;
+        }
+
+        let selected_total = selected_proofs.total_amount()?;
 
         if selected_total == amount + send_fee {
             return self
@@ -422,51 +637,18 @@ impl<'a> SendSaga<'a, Initial> {
             .map(|(key, values)| (*key, values.fee()))
             .collect();
 
-        // When the wallet holds P2PK-locked proofs and passthrough is not opted in, route them
-        // through a swap so the token contains fresh, unlocked proofs. The signing key may come
-        // from `SendOptions.p2pk_signing_keys` or be discovered automatically from the wallet
-        // keyring at confirm time; we partition eagerly regardless so that the swap is set up
-        // correctly even when only keyring keys will be used.
-        //
-        // Unlocked proofs bypass the swap entirely — they are already bearer.
-        //
-        // HTLC-locked proofs are intentionally excluded from this forced-swap path even though
-        // they also carry a NUT-10 secret. Spending an HTLC requires a preimage that signing
-        // keys alone cannot provide; routing HTLC proofs to a swap here would cause a mint
-        // rejection. HTLC support in the send path (including a `htlc_preimages` field on
-        // `SendOptions` and its own partition logic) is left for a follow-up PR.
-        let has_p2pk_locked = proofs.iter().any(crate::wallet::util::is_p2pk_locked);
-        let split_result = if has_p2pk_locked && !opts.allow_locked_proofs {
-            let (p2pk_locked, rest): (Vec<_>, Vec<_>) = proofs
-                .into_iter()
-                .partition(crate::wallet::util::is_p2pk_locked);
-
-            let mut split = split_proofs_for_send(
-                rest,
-                &send_amounts,
+        let split_result = split_proofs_for_send_respecting_p2pk_locks(
+            proofs,
+            opts.allow_locked_proofs,
+            SendSplitContext {
+                send_amounts: &send_amounts,
                 amount,
-                send_fee.total,
-                &keyset_fees,
+                send_fee: send_fee.total,
+                keyset_fees: &keyset_fees,
                 force_swap,
                 is_exact_or_offline,
-            )?;
-
-            // Append the locked proofs to the swap set and recalculate the swap fee.
-            split.proofs_to_swap.extend(p2pk_locked);
-            split.swap_fee =
-                calculate_fee(&split.proofs_to_swap.count_by_keyset(), &keyset_fees)?.total;
-            split
-        } else {
-            split_proofs_for_send(
-                proofs,
-                &send_amounts,
-                amount,
-                send_fee.total,
-                &keyset_fees,
-                force_swap,
-                is_exact_or_offline,
-            )?
-        };
+            },
+        )?;
 
         Ok(SendSaga {
             wallet: self.wallet,
@@ -937,15 +1119,38 @@ impl std::fmt::Debug for SendSaga<'_, Prepared> {
 mod tests {
     use std::sync::Arc;
 
+    use cdk_common::amount::KeysetFeeAndAmounts;
     use cdk_common::nuts::State;
+    use cdk_common::wallet::{ProofInfo, SendKind};
+    use cdk_common::{CurrencyUnit, ProofsMethods};
 
-    use super::SendSaga;
+    use super::{ensure_selected_proofs_cover_input_fees, InputFeeCoverageContext, SendSaga};
+    use crate::nuts::{Proof, SecretKey, SpendingConditions};
     use crate::wallet::send::SendOptions;
     use crate::wallet::test_utils::{
-        create_test_db, create_test_wallet_with_mock, test_keyset_id, test_mint_url,
+        create_test_db, create_test_wallet_with_mock, test_keyset_id, test_mint_url, test_proof,
         test_proof_info, MockMintConnector,
     };
     use crate::Amount;
+
+    fn keyset_fees_with_ppk(fee_ppk: u64) -> KeysetFeeAndAmounts {
+        let mut fees = KeysetFeeAndAmounts::new();
+        fees.insert(
+            test_keyset_id(),
+            (fee_ppk, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        );
+        fees
+    }
+
+    fn test_p2pk_proof(keyset_id: crate::nuts::Id, amount: u64) -> Proof {
+        let secret_key = SecretKey::generate();
+        let spending_conditions = SpendingConditions::new_p2pk(secret_key.public_key(), None);
+        let nut10_secret: crate::nuts::nut10::Secret = spending_conditions.into();
+        let secret: crate::secret::Secret = nut10_secret.try_into().unwrap();
+        let mut proof = test_proof(keyset_id, amount);
+        proof.secret = secret;
+        proof
+    }
 
     #[tokio::test]
     async fn test_prepare_send_reserves_proofs_for_operation() {
@@ -982,5 +1187,135 @@ mod tests {
             stored_proofs[0].used_by_operation,
             Some(prepared.operation_id())
         );
+    }
+
+    #[tokio::test]
+    async fn test_offline_send_excludes_locked_proofs_without_passthrough() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let proof = test_p2pk_proof(keyset_id, 8);
+        let proof_info =
+            ProofInfo::new(proof, mint_url, State::Unspent, CurrencyUnit::Sat).unwrap();
+
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+        let saga = SendSaga::new(&wallet);
+        let err = saga
+            .prepare(
+                Amount::from(8),
+                SendOptions {
+                    send_kind: SendKind::OfflineExact,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect_err("offline send must not prepare a locked-proof swap by default");
+
+        assert!(matches!(err, crate::Error::InsufficientFunds));
+    }
+
+    #[test]
+    fn test_ensure_selected_proofs_cover_input_fees_adds_remaining_proofs() {
+        let keyset_id = test_keyset_id();
+        let selected_proofs = vec![
+            test_proof(keyset_id, 32),
+            test_proof(keyset_id, 16),
+            test_proof(keyset_id, 8),
+            test_proof(keyset_id, 4),
+            test_proof(keyset_id, 2),
+            test_proof(keyset_id, 1),
+        ];
+        let mut proof_pool = selected_proofs.clone();
+        proof_pool.push(test_proof(keyset_id, 8));
+        let active_keyset_ids = vec![keyset_id];
+        let keyset_fees = keyset_fees_with_ppk(1000);
+        let send_amounts = vec![Amount::from(63)];
+
+        let selected = ensure_selected_proofs_cover_input_fees(
+            selected_proofs,
+            proof_pool,
+            InputFeeCoverageContext {
+                amount: Amount::from(63),
+                send_fee: Amount::ZERO,
+                active_keyset_ids: &active_keyset_ids,
+                keyset_fees: &keyset_fees,
+                send_amounts: &send_amounts,
+                force_swap: true,
+                is_exact_or_offline: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(selected.total_amount().unwrap(), Amount::from(71));
+        assert_eq!(selected.len(), 7);
+    }
+
+    #[test]
+    fn test_ensure_selected_proofs_cover_input_fees_errors_when_short() {
+        let keyset_id = test_keyset_id();
+        let selected_proofs = vec![
+            test_proof(keyset_id, 32),
+            test_proof(keyset_id, 16),
+            test_proof(keyset_id, 8),
+            test_proof(keyset_id, 4),
+            test_proof(keyset_id, 2),
+            test_proof(keyset_id, 1),
+        ];
+        let active_keyset_ids = vec![keyset_id];
+        let keyset_fees = keyset_fees_with_ppk(1000);
+        let send_amounts = vec![Amount::from(63)];
+
+        let err = ensure_selected_proofs_cover_input_fees(
+            selected_proofs.clone(),
+            selected_proofs,
+            InputFeeCoverageContext {
+                amount: Amount::from(63),
+                send_fee: Amount::ZERO,
+                active_keyset_ids: &active_keyset_ids,
+                keyset_fees: &keyset_fees,
+                send_amounts: &send_amounts,
+                force_swap: true,
+                is_exact_or_offline: false,
+            },
+        )
+        .expect_err("selected proofs cannot cover input fees without extra proofs");
+
+        assert!(matches!(err, crate::Error::InsufficientFunds));
+    }
+
+    #[test]
+    fn test_ensure_selected_proofs_only_charges_actual_swap_inputs() {
+        let keyset_id = test_keyset_id();
+        let selected_proofs = vec![
+            test_p2pk_proof(keyset_id, 8),
+            test_proof(keyset_id, 2),
+            test_proof(keyset_id, 2),
+        ];
+        let active_keyset_ids = vec![keyset_id];
+        let keyset_fees = keyset_fees_with_ppk(1000);
+        let send_amounts = vec![Amount::from(8), Amount::from(2)];
+
+        let selected = ensure_selected_proofs_cover_input_fees(
+            selected_proofs.clone(),
+            selected_proofs,
+            InputFeeCoverageContext {
+                amount: Amount::from(10),
+                send_fee: Amount::ZERO,
+                active_keyset_ids: &active_keyset_ids,
+                keyset_fees: &keyset_fees,
+                send_amounts: &send_amounts,
+                force_swap: false,
+                is_exact_or_offline: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(selected.total_amount().unwrap(), Amount::from(12));
+        assert_eq!(selected.len(), 3);
     }
 }

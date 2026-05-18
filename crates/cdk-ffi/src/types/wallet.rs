@@ -161,8 +161,10 @@ pub struct SendOptions {
     /// Metadata
     pub metadata: HashMap<String, String>,
     /// Signing keys for P2PK-locked input proofs
+    #[serde(default)]
     pub p2pk_signing_keys: Vec<SecretKey>,
     /// Allow P2PK-locked proofs to be included directly in the token without a swap
+    #[serde(default)]
     pub allow_locked_proofs: bool,
 }
 
