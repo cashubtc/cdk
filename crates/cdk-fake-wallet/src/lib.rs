@@ -21,9 +21,11 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
+use bitcoin::{Address, CompressedPublicKey, Network};
 use cdk_common::amount::Amount;
 use cdk_common::common::FeeReserve;
 use cdk_common::ensure_cdk;
+use cdk_common::nuts::nut_onchain::MeltQuoteOnchainFeeOption;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
     self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
@@ -49,6 +51,10 @@ pub mod error;
 const DEFAULT_REPAY_QUEUE_MAX_SIZE: usize = 100;
 /// Default amount used for custom outgoing payments in tests
 const DEFAULT_CUSTOM_OUTGOING_AMOUNT: u64 = 1000;
+/// Default amount reported for fake onchain deposits.
+const DEFAULT_ONCHAIN_INCOMING_AMOUNT: u64 = 1000;
+/// Default confirmation target for fake onchain sends.
+const DEFAULT_ONCHAIN_ESTIMATED_BLOCKS: u32 = 6;
 
 /// Payment state entry containing the melt quote state and amount spent
 type PaymentStateEntry = (MeltQuoteState, Amount<CurrencyUnit>);
@@ -471,7 +477,11 @@ impl MintPayment for FakeWallet {
                 invoice_description: true,
             }),
             bolt12: Some(payment::Bolt12Settings { amountless: false }),
-            onchain: None,
+            onchain: Some(payment::OnchainSettings {
+                confirmations: 1,
+                min_receive_amount_sat: 1,
+                min_send_amount_sat: 1,
+            }),
             custom,
         })
     }
@@ -569,8 +579,23 @@ impl MintPayment for FakeWallet {
                     fee_options: None,
                 });
             }
-            OutgoingPaymentOptions::Onchain(_) => {
-                return Err(cdk_common::payment::Error::UnsupportedPaymentOption);
+            OutgoingPaymentOptions::Onchain(onchain_options) => {
+                let fee = self.fee_for_amount(&onchain_options.amount);
+
+                return Ok(PaymentQuoteResponse {
+                    request_lookup_id: Some(PaymentIdentifier::QuoteId(
+                        onchain_options.quote_id.clone(),
+                    )),
+                    amount: onchain_options.amount,
+                    fee: fee.clone(),
+                    state: MeltQuoteState::Unpaid,
+                    extra_json: None,
+                    estimated_blocks: Some(DEFAULT_ONCHAIN_ESTIMATED_BLOCKS),
+                    fee_options: Some(vec![MeltQuoteOnchainFeeOption {
+                        fee_reserve: Amount::from(fee.value()),
+                        estimated_blocks: DEFAULT_ONCHAIN_ESTIMATED_BLOCKS,
+                    }]),
+                });
             }
         };
 
@@ -703,8 +728,25 @@ impl MintPayment for FakeWallet {
                     total_spent: Amount::new(total_spent.value() + 1, unit.clone()),
                 })
             }
-            OutgoingPaymentOptions::Onchain(_) => {
-                Err(cdk_common::payment::Error::UnsupportedPaymentOption)
+            OutgoingPaymentOptions::Onchain(onchain_options) => {
+                let amount = onchain_options.amount;
+                let quote_id = onchain_options.quote_id;
+                let fee = self.fee_for_amount(&amount);
+
+                let total_spent = Amount::new(amount.value() + fee.value(), amount.unit().clone());
+                let payment_proof = fake_onchain_outpoint(&quote_id.to_string());
+
+                self.payment_states.lock().await.insert(
+                    quote_id.to_string(),
+                    (MeltQuoteState::Paid, total_spent.clone()),
+                );
+
+                Ok(MakePaymentResponse {
+                    payment_lookup_id: PaymentIdentifier::QuoteId(quote_id),
+                    payment_proof: Some(payment_proof),
+                    status: MeltQuoteState::Paid,
+                    total_spent,
+                })
             }
         }
     }
@@ -772,8 +814,18 @@ impl MintPayment for FakeWallet {
                     expiry,
                 )
             }
-            IncomingPaymentOptions::Custom(_) | IncomingPaymentOptions::Onchain(_) => {
-                // Custom payment methods and Onchain are not supported by fake wallet
+            IncomingPaymentOptions::Onchain(onchain_options) => {
+                let request = fake_onchain_address(&onchain_options.quote_id.to_string());
+
+                (
+                    PaymentIdentifier::QuoteId(onchain_options.quote_id),
+                    request,
+                    Amount::new(DEFAULT_ONCHAIN_INCOMING_AMOUNT, self.unit.clone()),
+                    None,
+                )
+            }
+            IncomingPaymentOptions::Custom(_) => {
+                // Custom payment methods are not supported by fake wallet
                 return Err(cdk_common::payment::Error::UnsupportedPaymentOption);
             }
         };
@@ -873,9 +925,16 @@ impl MintPayment for FakeWallet {
             return Err(payment::Error::InvoicePaymentPending);
         }
 
+        let payment_proof = match request_lookup_id {
+            PaymentIdentifier::QuoteId(quote_id) => {
+                Some(fake_onchain_outpoint(&quote_id.to_string()))
+            }
+            _ => Some("".to_string()),
+        };
+
         Ok(MakePaymentResponse {
             payment_lookup_id: request_lookup_id.clone(),
-            payment_proof: Some("".to_string()),
+            payment_proof,
             status,
             total_spent,
         })
@@ -916,4 +975,33 @@ pub fn create_fake_invoice(amount_msat: u64, description: String) -> Bolt11Invoi
         .min_final_cltv_expiry_delta(144)
         .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key))
         .expect("Failed to build fake invoice")
+}
+
+fn fake_onchain_outpoint(seed: &str) -> String {
+    let txid = sha256::Hash::hash(seed.as_bytes());
+    format!("{txid}:0")
+}
+
+fn fake_onchain_address(seed: &str) -> String {
+    let secp_ctx = Secp256k1::new();
+    let secret_key = fake_secret_key(seed);
+    let public_key = bitcoin::secp256k1::PublicKey::from_secret_key(&secp_ctx, &secret_key);
+
+    Address::p2wpkh(&CompressedPublicKey(public_key), Network::Regtest).to_string()
+}
+
+fn fake_secret_key(seed: &str) -> SecretKey {
+    let mut attempt = 0u64;
+
+    loop {
+        let mut key_material = seed.as_bytes().to_vec();
+        key_material.extend_from_slice(&attempt.to_le_bytes());
+
+        let candidate = sha256::Hash::hash(&key_material);
+        if let Ok(secret_key) = SecretKey::from_slice(candidate.as_ref()) {
+            return secret_key;
+        }
+
+        attempt += 1;
+    }
 }

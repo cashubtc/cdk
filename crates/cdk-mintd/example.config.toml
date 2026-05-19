@@ -99,7 +99,7 @@ connection_timeout_seconds = 10
 
 [ln]
 # Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits', 'ldknode' or 'none' (if onchain is enabled)
-# NOTE: fakewallet is NOT allowed if onchain is configured for mainnet.
+# NOTE: fakewallet is isolated testing mode and cannot be mixed with real payment backends.
 ln_backend = "fakewallet"
 # min_mint=1
 # max_mint=500000
@@ -107,9 +107,11 @@ ln_backend = "fakewallet"
 # max_melt=500000
 
 [onchain]
-# Required onchain backend `bdk` or `none`. 
+# Required onchain backend `bdk`, `fakewallet`, or `none`.
 # If `ln_backend` is set to `none`, `onchain_backend` MUST be set to a valid backend (e.g., `bdk`).
-onchain_backend = "none"
+# Use `fakewallet` with `ln_backend = "fakewallet"` for fully fake rails, or with
+# `ln_backend = "none"` for fake onchain-only testing.
+onchain_backend = "fakewallet"
 # min_mint=1000
 # max_mint=1000000
 # min_melt=1000

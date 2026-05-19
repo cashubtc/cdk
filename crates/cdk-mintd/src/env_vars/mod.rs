@@ -219,6 +219,9 @@ impl Settings {
             _ => bail!("Selected Ln backend is not enabled in this build"),
         }
 
+        self.validate_backend_pairing()
+            .map_err(|err| anyhow!(err))?;
+
         Ok(self.clone())
     }
 }

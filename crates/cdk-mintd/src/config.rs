@@ -204,6 +204,8 @@ pub enum OnchainBackend {
     None,
     #[cfg(feature = "bdk")]
     Bdk,
+    #[cfg(feature = "fakewallet")]
+    FakeWallet,
 }
 
 impl std::str::FromStr for OnchainBackend {
@@ -214,6 +216,8 @@ impl std::str::FromStr for OnchainBackend {
             "none" => Ok(OnchainBackend::None),
             #[cfg(feature = "bdk")]
             "bdk" => Ok(OnchainBackend::Bdk),
+            #[cfg(feature = "fakewallet")]
+            "fakewallet" => Ok(OnchainBackend::FakeWallet),
             _ => Err(format!("Unknown Onchain backend: {s}")),
         }
     }
@@ -1015,6 +1019,51 @@ pub struct MintManagementRpc {
 }
 
 impl Settings {
+    /// Validate payment backend combinations after config and env overrides are applied.
+    pub fn validate_backend_pairing(&self) -> Result<(), String> {
+        #[cfg(feature = "fakewallet")]
+        self.validate_fake_wallet_backend_pairing()?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "fakewallet")]
+    fn validate_fake_wallet_backend_pairing(&self) -> Result<(), String> {
+        let onchain_backend = self
+            .onchain
+            .as_ref()
+            .map(|onchain| &onchain.onchain_backend)
+            .unwrap_or(&OnchainBackend::None);
+
+        match (&self.ln.ln_backend, onchain_backend) {
+            #[cfg(feature = "bdk")]
+            (LnBackend::FakeWallet, OnchainBackend::Bdk) => {
+                return Err("ln_backend = \"fakewallet\" cannot be combined with \
+                     onchain_backend = \"bdk\"; use onchain_backend = \
+                     \"fakewallet\" or \"none\""
+                    .to_string());
+            }
+            (LnBackend::FakeWallet, _) => {}
+            (LnBackend::None, OnchainBackend::FakeWallet) => {}
+            #[cfg(any(
+                feature = "cln",
+                feature = "lnbits",
+                feature = "lnd",
+                feature = "ldk-node",
+                feature = "grpc-processor"
+            ))]
+            (_, OnchainBackend::FakeWallet) => {
+                return Err("onchain_backend = \"fakewallet\" cannot be combined with \
+                     a real Lightning backend; use ln_backend = \"fakewallet\" \
+                     or \"none\""
+                    .to_string());
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
     #[must_use]
     pub fn new<P>(config_file_name: Option<P>) -> Self
     where
@@ -1191,6 +1240,112 @@ min_send_amount_sat = 1200
         let err = bdk.validate().expect_err("zero send minimum should fail");
 
         assert!(err.contains("min_send_amount_sat"));
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "bdk"))]
+    #[test]
+    fn test_fakewallet_ln_with_bdk_onchain_rejected() {
+        let settings = Settings {
+            ln: Ln {
+                ln_backend: LnBackend::FakeWallet,
+                ..Default::default()
+            },
+            onchain: Some(Onchain {
+                onchain_backend: OnchainBackend::Bdk,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let err = settings
+            .validate_backend_pairing()
+            .expect_err("fake LN with BDK onchain should fail");
+
+        assert!(err.contains("fakewallet"));
+        assert!(err.contains("bdk"));
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "cln"))]
+    #[test]
+    fn test_real_ln_with_fakewallet_onchain_rejected() {
+        let settings = Settings {
+            ln: Ln {
+                ln_backend: LnBackend::Cln,
+                ..Default::default()
+            },
+            onchain: Some(Onchain {
+                onchain_backend: OnchainBackend::FakeWallet,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let err = settings
+            .validate_backend_pairing()
+            .expect_err("real LN with fake onchain should fail");
+
+        assert!(err.contains("fakewallet"));
+        assert!(err.contains("real Lightning"));
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_fakewallet_ln_with_fakewallet_onchain_accepted() {
+        let settings = Settings {
+            ln: Ln {
+                ln_backend: LnBackend::FakeWallet,
+                ..Default::default()
+            },
+            onchain: Some(Onchain {
+                onchain_backend: OnchainBackend::FakeWallet,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        settings
+            .validate_backend_pairing()
+            .expect("fake-only backend pairing should pass");
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_fakewallet_ln_with_no_onchain_accepted() {
+        let settings = Settings {
+            ln: Ln {
+                ln_backend: LnBackend::FakeWallet,
+                ..Default::default()
+            },
+            onchain: Some(Onchain {
+                onchain_backend: OnchainBackend::None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        settings
+            .validate_backend_pairing()
+            .expect("fake LN without onchain should pass");
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_no_ln_with_fakewallet_onchain_accepted() {
+        let settings = Settings {
+            ln: Ln {
+                ln_backend: LnBackend::None,
+                ..Default::default()
+            },
+            onchain: Some(Onchain {
+                onchain_backend: OnchainBackend::FakeWallet,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        settings
+            .validate_backend_pairing()
+            .expect("fake onchain-only backend pairing should pass");
     }
 
     #[test]

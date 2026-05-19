@@ -374,6 +374,10 @@ async fn configure_mint_builder(
     work_dir: &Path,
     kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
 ) -> Result<MintBuilder> {
+    settings
+        .validate_backend_pairing()
+        .map_err(anyhow::Error::msg)?;
+
     // Configure basic mint information
     let mint_builder = configure_basic_info(settings, mint_builder);
 
@@ -725,6 +729,43 @@ async fn configure_onchain_backend(
                 .await?;
             }
             OnchainBackend::None => {}
+            #[cfg(feature = "fakewallet")]
+            OnchainBackend::FakeWallet => {
+                if settings.ln.ln_backend == LnBackend::None {
+                    let mint_melt_limits = MintMeltLimits {
+                        mint_min: onchain_settings.min_mint,
+                        mint_max: onchain_settings.max_mint,
+                        melt_min: onchain_settings.min_melt,
+                        melt_max: onchain_settings.max_melt,
+                    };
+                    let fake_wallet = settings
+                        .fake_wallet
+                        .clone()
+                        .ok_or_else(|| anyhow!("Fake wallet config section is missing"))?;
+
+                    for unit in fake_wallet.clone().supported_units {
+                        let fake = fake_wallet
+                            .setup(settings, unit.clone(), None, _work_dir, _kv_store.clone())
+                            .await?;
+                        #[cfg(feature = "prometheus")]
+                        let fake = MetricsMintPayment::new(fake);
+
+                        mint_builder = configure_backend_for_methods(
+                            settings,
+                            mint_builder,
+                            unit,
+                            mint_melt_limits,
+                            Arc::new(fake),
+                            vec![PaymentMethod::Known(KnownMethod::Onchain)],
+                        )
+                        .await?;
+                    }
+                } else if settings.ln.ln_backend != LnBackend::FakeWallet {
+                    bail!(
+                        "onchain_backend = \"fakewallet\" cannot be combined with a real Lightning backend"
+                    );
+                }
+            }
         }
     }
 
@@ -734,7 +775,7 @@ async fn configure_onchain_backend(
 /// Helper function to configure a mint builder with a lightning backend for a specific currency unit
 async fn configure_backend_for_unit(
     settings: &config::Settings,
-    mut mint_builder: MintBuilder,
+    mint_builder: MintBuilder,
     unit: cdk::nuts::CurrencyUnit,
     mint_melt_limits: MintMeltLimits,
     backend: Arc<dyn MintPayment<Err = cdk_common::payment::Error> + Send + Sync>,
@@ -763,6 +804,25 @@ async fn configure_backend_for_unit(
         methods.push(PaymentMethod::from(method_name.as_str()));
     }
 
+    configure_backend_for_methods(
+        settings,
+        mint_builder,
+        unit,
+        mint_melt_limits,
+        backend,
+        methods,
+    )
+    .await
+}
+
+async fn configure_backend_for_methods(
+    settings: &config::Settings,
+    mut mint_builder: MintBuilder,
+    unit: cdk::nuts::CurrencyUnit,
+    mint_melt_limits: MintMeltLimits,
+    backend: Arc<dyn MintPayment<Err = cdk_common::payment::Error> + Send + Sync>,
+    methods: Vec<PaymentMethod>,
+) -> Result<MintBuilder> {
     // Add all supported payment methods to the mint builder
     for method in &methods {
         mint_builder
