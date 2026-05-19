@@ -36,8 +36,8 @@ pub enum Error {
     #[error(transparent)]
     Bip32(#[from] bitcoin::bip32::Error),
     /// HMAC Error
-    #[error(transparent)]
-    Hmac(#[from] bitcoin::secp256k1::hashes::FromSliceError),
+    #[error("HMAC error: {0}")]
+    Hmac(bitcoin::secp256k1::hashes::FromSliceError),
     /// SecretKey Error
     #[error(transparent)]
     SecpError(#[from] bitcoin::secp256k1::Error),
