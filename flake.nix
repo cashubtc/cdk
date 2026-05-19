@@ -534,7 +534,7 @@
             ];
             buildPhaseCargoCommand = ''
               # Build the FFI library
-              cargo build --release --package cdk-ffi --features postgres
+              cargo build --release --package cdk-ffi
 
               # Generate Python bindings
               cargo run -p cdk-ffi --bin uniffi-bindgen generate \

@@ -9,23 +9,45 @@ on:
       cdk_version:
         description: 'CDK dependency version (e.g. 0.17.0). Defaults to release_tag without the "v" prefix.'
         required: false
+      cdk_ref:
+        description: 'CDK git ref to publish from. Defaults to release_tag.'
+        required: false
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        required: true
+      cdk_version:
+        type: string
+        required: false
+      cdk_ref:
+        type: string
+        required: false
 env:
   CARGO_TERM_COLOR: ${{ vars.CARGO_TERM_COLOR }}
-
+  TAG: ${{ inputs.release_tag }}
+  CDK_REF: ${{ inputs.cdk_ref || inputs.release_tag }}
+  RELEASE_BRANCH: release/${{ inputs.release_tag }}
 
 jobs:
   dart-sync-sources:
     name: "dart: Sync sources to cdk-dart"
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve variables
+        run: |
+          CDK_VER="${{ inputs.cdk_version }}"
+          echo "CDK_VER=${CDK_VER:-${TAG#v}}" >> "$GITHUB_ENV"
+          echo "RELEASE_VER=${TAG#v}" >> "$GITHUB_ENV"
+
       - name: Checkout monorepo
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ env.CDK_REF }}
 
       - name: Clone cdk-dart
         run: |
-          git clone https://x-access-token:${{ secrets.DART_DEPLOY_KEY }}@github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
+          git clone https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
 
       - name: Copy bindings/dart to cdk-dart
         run: |
@@ -38,10 +60,6 @@ jobs:
 
       - name: Update versions and resolve workspace references
         run: |
-          TAG="${{ inputs.release_tag }}"
-          CDK_VER="${{ inputs.cdk_version }}"
-          CDK_VER="${CDK_VER:-${TAG#v}}"
-          RELEASE_VER="${TAG#v}"
           echo "Setting CDK version to ${CDK_VER}, release version to ${RELEASE_VER}"
 
           # Helper: extract a value from [workspace.package] in root Cargo.toml
@@ -107,8 +125,6 @@ jobs:
       - name: Push to cdk-dart release branch
         working-directory: cdk-dart
         run: |
-          TAG="${{ inputs.release_tag }}"
-          RELEASE_BRANCH="release/v${TAG#v}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "${RELEASE_BRANCH}"
@@ -163,10 +179,8 @@ jobs:
       - name: Clone cdk-dart
         shell: bash
         run: |
-          TAG="${{ inputs.release_tag }}"
-          RELEASE_BRANCH="release/v${TAG#v}"
           git clone --branch "${RELEASE_BRANCH}" \
-            https://x-access-token:${{ secrets.DART_DEPLOY_KEY }}@github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
+            https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -227,7 +241,6 @@ jobs:
           name: dart-native-${{ matrix.target }}
           path: dist/
 
-
   dart-publish:
     name: "dart: Publish to cdk-dart"
     runs-on: ubuntu-latest
@@ -235,10 +248,8 @@ jobs:
     steps:
       - name: Clone cdk-dart
         run: |
-          TAG="${{ inputs.release_tag }}"
-          RELEASE_BRANCH="release/v${TAG#v}"
           git clone --branch "${RELEASE_BRANCH}" \
-            https://x-access-token:${{ secrets.DART_DEPLOY_KEY }}@github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
+            https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
 
       - name: Download all native artifacts
         uses: actions/download-artifact@v4
@@ -269,15 +280,6 @@ jobs:
           name: dart-bindings-generated
           path: cdk-dart/lib/src/generated
 
-      - name: Commit and push prebuilt files
-        working-directory: cdk-dart
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --cached --quiet && echo "No changes to commit" || \
-            (git commit -m "prebuilt binaries before bindgen" && git push origin HEAD)
-
       - name: Commit to release branch
         working-directory: cdk-dart
         run: |
@@ -285,21 +287,11 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
           git diff --cached --quiet && echo "No changes to commit" && exit 0
-          git commit -m "release: ${{ inputs.release_tag }} — add bindings and prebuilt binaries"
-          git push origin HEAD
+          git commit -m "release: ${TAG} — add bindings and prebuilt binaries"
 
-      - name: Merge to master, tag, and cleanup
+      - name: Push release branch
         working-directory: cdk-dart
-        run: |
-          TAG="${{ inputs.release_tag }}"
-          RELEASE_BRANCH="release/v${TAG#v}"
-          DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
-          git checkout "${DEFAULT_BRANCH}"
-          git merge "${RELEASE_BRANCH}" --squash
-          git commit -m "release: ${TAG}"
-          git tag "${TAG}"
-          git push origin "${DEFAULT_BRANCH}" --tags
-          git push origin --delete "${RELEASE_BRANCH}"
+        run: git push origin "${RELEASE_BRANCH}"
 
       - name: Create per-platform release archives
         run: |
@@ -326,10 +318,26 @@ jobs:
 
       - name: Create release on cdk-dart
         env:
-          GH_TOKEN: ${{ secrets.DART_DEPLOY_KEY }}
+          GH_TOKEN: ${{ secrets.FFI_DEPLOY_KEY }}
         run: |
-          gh release create "${{ inputs.release_tag }}" \
+          COMMIT_SHA=$(git -C cdk-dart rev-parse HEAD)
+          gh release create "${TAG}" \
             --repo ${{ vars.CDK_DART_REPO }} \
-            --title "Release ${{ inputs.release_tag }}" \
+            --target "${COMMIT_SHA}" \
+            --title "Release ${TAG}" \
             --generate-notes \
             release-archives/*
+
+      - name: Merge to default branch
+        working-directory: cdk-dart
+        run: |
+          DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
+          echo "DEFAULT_BRANCH=${DEFAULT_BRANCH}" >> "$GITHUB_ENV"
+          git checkout "${DEFAULT_BRANCH}"
+          git merge "${RELEASE_BRANCH}" --squash
+          git commit -m "release: ${TAG}"
+          git push origin "${DEFAULT_BRANCH}"
+
+      - name: Clean up release branch
+        working-directory: cdk-dart
+        run: git push origin --delete "${RELEASE_BRANCH}"

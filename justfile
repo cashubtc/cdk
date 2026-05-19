@@ -611,13 +611,9 @@ release m="":
     echo
   done
 
-  # Trigger Swift package release after Rust crates are published
-  echo "📦 Triggering Swift package release for version $VERSION..."
-  just ffi-release-swift $VERSION
-
-  # Trigger Kotlin package release after Rust crates are published
-  echo "📦 Triggering Kotlin package release for version $VERSION..."
-  just ffi-release-kotlin $VERSION
+  # Trigger all FFI binding releases (Dart, Kotlin, Swift)
+  echo "📦 Triggering all FFI binding releases for version $VERSION..."
+  just ffi-release-all $VERSION
 
   # Trigger Golang package release after Rust crates are published
   echo "📦 Triggering Golang package release for version $VERSION..."
@@ -707,7 +703,7 @@ _ffi-lib-ext:
 
 # Build the FFI library
 ffi-build *ARGS="--release":
-  cargo build {{ARGS}} --package cdk-ffi --features postgres
+  cargo build {{ARGS}} --package cdk-ffi
 
 # Generate bindings for a specific language
 ffi-generate LANGUAGE *ARGS="--release": ffi-build
@@ -738,7 +734,7 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
     BUILD_TYPE="release"
   else
     BUILD_TYPE="debug"
-    cargo build --package cdk-ffi --features postgres
+    cargo build --package cdk-ffi
   fi
 
   LIB_EXT=$(just _ffi-lib-ext)
@@ -892,6 +888,39 @@ ffi-test-bindings LANGUAGE: (ffi-generate LANGUAGE "--debug")
 # Test Python bindings (shorthand)
 ffi-test-python:
   just ffi-test-bindings python
+
+# Trigger all FFI binding releases (Dart, Kotlin, Swift)
+ffi-release-all VERSION:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  echo "🚀 Triggering all FFI binding releases..."
+  echo "   Version: {{VERSION}}"
+  echo "   Tag: v{{VERSION}}"
+
+  gh workflow run "FFI - Publish All Bindings" \
+    --repo cashubtc/cdk \
+    --field release_tag="v{{VERSION}}" \
+    --field cdk_version="{{VERSION}}" \
+    --field cdk_ref="v{{VERSION}}"
+
+  echo "✅ All FFI binding workflows triggered successfully!"
+
+# Trigger Dart Package release workflow
+ffi-release-dart VERSION:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  echo "🚀 Triggering Dart bindings workflow..."
+  echo "   Version: {{VERSION}}"
+  echo "   Tag: v{{VERSION}}"
+
+  gh workflow run "FFI - Dart Bindings" \
+    --repo cashubtc/cdk \
+    --field release_tag="v{{VERSION}}" \
+    --field cdk_version="{{VERSION}}"
+
+  echo "✅ Dart workflow triggered successfully!"
 
 # Trigger Swift Package release workflow
 ffi-release-swift VERSION:

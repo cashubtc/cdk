@@ -42,7 +42,7 @@ log = "0.4"
 
 
 [features]
-default = ["postgres", "npubcash", "bip353"]
+default = ["npubcash", "bip353"]
 bip353 = ["cdk/bip353"]
 # Enable Postgres-backed wallet database support in FFI
 postgres = ["cdk-postgres"]

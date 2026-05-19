@@ -1,0 +1,42 @@
+name: "FFI - Publish All Bindings"
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag to create for release (e.g. v0.17.0)"
+        required: true
+      cdk_version:
+        description: 'CDK dependency version (e.g. 0.17.0). Defaults to release_tag without the "v" prefix.'
+        required: false
+      cdk_ref:
+        description: "CDK git ref to publish from. Defaults to release_tag."
+        required: false
+
+jobs:
+  dart:
+    name: "Trigger Dart bindings"
+    uses: ./.github/workflows/dart-publish.yml
+    with:
+      release_tag: ${{ inputs.release_tag }}
+      cdk_version: ${{ inputs.cdk_version }}
+      cdk_ref: ${{ inputs.cdk_ref }}
+    secrets: inherit
+
+  kotlin:
+    name: "Trigger Kotlin bindings"
+    uses: ./.github/workflows/kotlin-publish.yml
+    with:
+      release_tag: ${{ inputs.release_tag }}
+      cdk_version: ${{ inputs.cdk_version }}
+      cdk_ref: ${{ inputs.cdk_ref }}
+    secrets: inherit
+
+  swift:
+    name: "Trigger Swift bindings"
+    uses: ./.github/workflows/swift-publish.yml
+    with:
+      release_tag: ${{ inputs.release_tag }}
+      cdk_version: ${{ inputs.cdk_version }}
+      cdk_ref: ${{ inputs.cdk_ref }}
+    secrets: inherit

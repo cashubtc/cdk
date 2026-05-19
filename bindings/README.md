@@ -94,6 +94,50 @@ just test-dart       # Run tests
 just test-swift      # Run tests
 ```
 
+## Releasing
+
+### All bindings at once
+
+The recommended way to release all FFI bindings is through the unified workflow,
+which triggers Dart, Kotlin, and Swift builds in parallel:
+
+```bash
+just ffi-release-all 0.17.0
+```
+
+This runs the **FFI - Publish All Bindings** GitHub Actions workflow
+(`.github/workflows/ffi-publish-all.yml`), which:
+- Calls the Dart and Kotlin publish workflows as reusable workflows
+- Triggers the Swift publish workflow on the `cashubtc/cdk-swift` repo
+
+The `release` just recipe calls `ffi-release-all` automatically after publishing
+Rust crates.
+
+### Individual bindings
+
+Each binding can also be released independently:
+
+```bash
+# Dart
+just ffi-release-dart 0.17.0
+
+# Kotlin
+just ffi-release-kotlin 0.17.0
+
+# Swift
+just ffi-release-swift 0.17.0
+
+# Go (separate workflow)
+just ffi-release-go 0.17.0
+```
+
+### Prerequisites
+
+- The version tag (e.g. `v0.17.0`) must exist on the remote
+- The `FFI_DEPLOY_KEY` GitHub secret must have write access to `cdk-dart`,
+  `cdk-kotlin`, and `cdk-swift` repos
+- `gh` CLI must be authenticated for just commands
+
 ## Credits
 
 - [Bark FFI Bindings][bark] — the architectural model for this binding layer

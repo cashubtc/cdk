@@ -131,7 +131,7 @@ configured in the **CDK monorepo** repository settings
 
 | Name | Purpose |
 |---|---|
-| `KOTLIN_DEPLOY_KEY` | Personal access token (PAT) with `repo` scope on the `cdk-kotlin` target repo. Used to clone, push, and create releases. |
+| `FFI_DEPLOY_KEY` | Personal access token (PAT) with `repo` scope on the FFI target repos (`cdk-dart`, `cdk-kotlin`, `cdk-swift`). Used to clone, push, and create releases. Shared across all FFI publish workflows. |
 | `SONATYPE_USERNAME` | Maven Central (Sonatype OSSRH) username for publishing. |
 | `SONATYPE_PASSWORD` | Maven Central (Sonatype OSSRH) password or token. |
 | `SIGNING_KEY` | ASCII-armored GPG private key for signing Maven artifacts. |
@@ -140,8 +140,8 @@ configured in the **CDK monorepo** repository settings
 #### How to create the PAT
 
 1. Go to **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**.
-2. Create a token scoped to the `cdk-kotlin` repository with **Contents** (read/write) and **Metadata** (read) permissions.
-3. Add it as a repository secret named `KOTLIN_DEPLOY_KEY` in the monorepo.
+2. Create a token scoped to the `cdk-dart`, `cdk-kotlin`, and `cdk-swift` repositories with **Contents** (read/write) and **Metadata** (read) permissions.
+3. Add it as a repository secret named `FFI_DEPLOY_KEY` in the monorepo.
 
 #### Maven Central (Sonatype) setup
 

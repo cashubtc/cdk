@@ -56,13 +56,13 @@ and variables must be configured in the **CDK monorepo** repository settings
 
 | Name | Purpose |
 |---|---|
-| `DART_DEPLOY_KEY` | Personal access token (PAT) with `repo` scope on the `cdk-dart` target repo. Used to clone, push, and create releases. |
+| `FFI_DEPLOY_KEY` | Personal access token (PAT) with `repo` scope on the FFI target repos (`cdk-dart`, `cdk-kotlin`, `cdk-swift`). Used to clone, push, and create releases. Shared across all FFI publish workflows. |
 
 #### How to create the PAT
 
 1. Go to **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**.
-2. Create a token scoped to the `cdk-dart` repository with **Contents** (read/write) and **Metadata** (read) permissions.
-3. Add it as a repository secret named `DART_DEPLOY_KEY` in the monorepo.
+2. Create a token scoped to the `cdk-dart`, `cdk-kotlin`, and `cdk-swift` repositories with **Contents** (read/write) and **Metadata** (read) permissions.
+3. Add it as a repository secret named `FFI_DEPLOY_KEY` in the monorepo.
 
 ### Variables
 
