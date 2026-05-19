@@ -27,7 +27,7 @@ jobs:
 
       - name: Clone cdk-nitro
         run: |
-          git clone https://x-access-token:${{ secrets.NITRO_DEPLOY_KEY }}@github.com/${{ vars.CDK_NITRO_REPO }}.git cdk-nitro
+          git clone https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_NITRO_REPO }}.git cdk-nitro
 
       - name: Copy bindings/react-native to cdk-nitro
         run: |
@@ -141,7 +141,7 @@ jobs:
           TAG="${{ inputs.release_tag }}"
           RELEASE_BRANCH="release/v${TAG#v}"
           git clone --branch "${RELEASE_BRANCH}" \
-            https://x-access-token:${{ secrets.NITRO_DEPLOY_KEY }}@github.com/${{ vars.CDK_NITRO_REPO }}.git cdk-nitro
+            https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_NITRO_REPO }}.git cdk-nitro
 
       - name: Checkout CDK (for Nix flake)
         uses: actions/checkout@v4
@@ -215,7 +215,7 @@ jobs:
           TAG="${{ inputs.release_tag }}"
           RELEASE_BRANCH="release/v${TAG#v}"
           git clone --branch "${RELEASE_BRANCH}" \
-            https://x-access-token:${{ secrets.NITRO_DEPLOY_KEY }}@github.com/${{ vars.CDK_NITRO_REPO }}.git cdk-nitro
+            https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_NITRO_REPO }}.git cdk-nitro
 
       - name: Download all native artifacts
         uses: actions/download-artifact@v4
@@ -318,6 +318,10 @@ jobs:
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          if [ -z "${NPM_TOKEN}" ]; then
+            echo "::warning::NPM_TOKEN secret is not set — skipping npm publish. The package is still available via git: npm install github:${{ vars.CDK_NITRO_REPO }}#${{ inputs.release_tag }}"
+            exit 0
+          fi
           echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
           npm publish --access public
           rm -f .npmrc
@@ -335,7 +339,7 @@ jobs:
 
       - name: Create release on cdk-nitro
         env:
-          GH_TOKEN: ${{ secrets.NITRO_DEPLOY_KEY }}
+          GH_TOKEN: ${{ secrets.FFI_DEPLOY_KEY }}
         run: |
           gh release create "${{ inputs.release_tag }}" \
             --repo ${{ vars.CDK_NITRO_REPO }} \
