@@ -18,6 +18,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   pre-commit-checks:
@@ -661,6 +662,27 @@ jobs:
           chmod -R u+w target/bindings/go target/release/$(basename "$lib")
       - name: Run Go tests
         run: nix develop -L .#bindings --command just test-go
+
+  nitro-binding-tests:
+    name: "Nitro binding tests"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Run Nitro codegen
+        run: nix develop -L .#bindings --command bash -c 'cd bindings/react-native && npx nitrogen'
+      - name: Run Nitro Rust tests
+        run: nix develop -L .#bindings --command just test-nitro
+      - name: Run Nitro Node.js FFI tests
+        run: nix develop -L .#bindings --command just test-nitro-node
 
   swift-binding-tests:
     name: "Swift binding tests"
