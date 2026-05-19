@@ -1657,6 +1657,9 @@
                   pkgs.openssl
                   pkgs.jdk17
                   pkgs.go
+                  # Node 22+ for the Nitro binding tests: the cashu-ts adapter
+                  # test loads TypeScript directly via --experimental-strip-types.
+                  pkgs.nodejs_22
                 ];
                 nativeBuildInputs = [
                   pkgs.pkg-config
@@ -1668,8 +1671,8 @@
               // envVars
             );
 
-            # Shell for building Kotlin native libraries (Rust + Android NDK)
-            kotlin-build =
+            # Shell for cross-compiling Rust to Android/iOS/macOS (used by Kotlin + Nitro publish workflows)
+            cross-build =
               let
                 pkgsAndroid = import nixpkgs {
                   inherit system;
@@ -1697,6 +1700,7 @@
                     "i686-linux-android"
                     "x86_64-linux-android"
                     "aarch64-apple-ios"
+                    "aarch64-apple-ios-sim"
                     "aarch64-apple-darwin"
                   ];
                 };
@@ -1724,6 +1728,9 @@
                 AR_i686_linux_android = "${toolchainBin}/llvm-ar";
                 AR_x86_64_linux_android = "${toolchainBin}/llvm-ar";
               };
+
+            # Backwards-compatible alias
+            kotlin-build = self.devShells.${system}.cross-build;
 
             # Shell for Kotlin publishing (JDK 17 + Android SDK for Gradle)
             kotlin-publish =
@@ -1763,6 +1770,7 @@
               integration
               ffi
               bindings
+              cross-build
               kotlin-build
               kotlin-publish
               ;
