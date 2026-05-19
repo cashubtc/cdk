@@ -1,0 +1,22 @@
+[package]
+name = "cdk-nitro"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "cdylib"]
+name = "cdk_nitro"
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+missing_panics_doc = "allow"
+missing_safety_doc = "allow"
+unwrap_used = "allow"
+
+[dependencies]
+cashu = { path = "../../../crates/cashu" }
+cdk = { path = "../../../crates/cdk", default-features = false }
+serde_json = "1"

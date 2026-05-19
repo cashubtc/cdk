@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test native.test.mjs"
+  },
+  "devDependencies": {
+    "koffi": "^2.9.0"
+  }
+}

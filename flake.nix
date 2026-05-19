@@ -1426,6 +1426,7 @@
                   pkgs.openssl
                   pkgs.jdk17
                   pkgs.go
+                  pkgs.nodejs
                 ];
                 nativeBuildInputs = [
                   pkgs.pkg-config

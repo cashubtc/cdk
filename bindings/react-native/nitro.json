@@ -1,0 +1,11 @@
+{
+  "cxxNamespace": ["cashudevkit"],
+  "ios": {
+    "iosModuleName": "CashuDevKit"
+  },
+  "android": {
+    "androidNamespace": ["cashudevkit"],
+    "androidCxxLibName": "CashuDevKit"
+  },
+  "autolinking": {}
+}
