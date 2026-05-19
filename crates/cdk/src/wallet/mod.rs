@@ -79,7 +79,7 @@ pub use bip321::{
 };
 pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
-pub use cdk_common::wallet::{ReceiveOptions, SendMemo, SendOptions};
+pub use cdk_common::wallet::{P2PKLockedProofSendMode, ReceiveOptions, SendMemo, SendOptions};
 pub use keysets::KeysetFilter;
 pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;

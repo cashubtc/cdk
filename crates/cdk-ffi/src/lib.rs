@@ -81,7 +81,10 @@ mod tests {
         assert!(options.max_proofs.is_none());
         assert!(options.metadata.is_empty());
         assert!(options.p2pk_signing_keys.is_empty());
-        assert!(!options.allow_locked_proofs);
+        assert_eq!(
+            options.p2pk_locked_proof_send_mode,
+            P2PKLockedProofSendMode::Swap
+        );
     }
 
     #[test]
@@ -204,7 +207,7 @@ mod tests {
             metadata,
             use_p2bk: false,
             p2pk_signing_keys: Vec::new(),
-            allow_locked_proofs: false,
+            p2pk_locked_proof_send_mode: P2PKLockedProofSendMode::Swap,
         };
 
         assert!(options.memo.is_some());
@@ -294,7 +297,10 @@ mod tests {
         let options = crate::types::wallet::decode_send_options(json.to_string()).unwrap();
 
         assert!(options.p2pk_signing_keys.is_empty());
-        assert!(!options.allow_locked_proofs);
+        assert_eq!(
+            options.p2pk_locked_proof_send_mode,
+            P2PKLockedProofSendMode::Swap
+        );
     }
 
     #[test]

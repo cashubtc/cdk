@@ -337,8 +337,18 @@ pub struct SendOptions {
     pub use_p2bk: bool,
     /// Signing keys for P2PK-locked input proofs; auto-detected from the wallet keyring if omitted
     pub p2pk_signing_keys: Vec<SecretKey>,
-    /// If `true`, sign and forward P2PK-locked proofs directly without swapping them for fresh ones
-    pub allow_locked_proofs: bool,
+    /// How P2PK-locked input proofs should be handled during send
+    pub p2pk_locked_proof_send_mode: P2PKLockedProofSendMode,
+}
+
+/// Send behavior for selected P2PK-locked input proofs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum P2PKLockedProofSendMode {
+    /// Swap locked proofs into fresh proofs before creating the token
+    #[default]
+    Swap,
+    /// Sign locked proofs and include them directly in the token
+    SignAndSend,
 }
 
 /// Send memo

@@ -142,6 +142,40 @@ impl From<cdk::wallet::SendKind> for SendKind {
     }
 }
 
+/// FFI-compatible P2PK locked proof send mode
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, uniffi::Enum, Default,
+)]
+pub enum P2PKLockedProofSendMode {
+    /// Swap locked proofs into fresh proofs before creating the token
+    #[default]
+    Swap,
+    /// Sign locked proofs and include them directly in the token
+    SignAndSend,
+}
+
+impl From<P2PKLockedProofSendMode> for cdk::wallet::P2PKLockedProofSendMode {
+    fn from(mode: P2PKLockedProofSendMode) -> Self {
+        match mode {
+            P2PKLockedProofSendMode::Swap => cdk::wallet::P2PKLockedProofSendMode::Swap,
+            P2PKLockedProofSendMode::SignAndSend => {
+                cdk::wallet::P2PKLockedProofSendMode::SignAndSend
+            }
+        }
+    }
+}
+
+impl From<cdk::wallet::P2PKLockedProofSendMode> for P2PKLockedProofSendMode {
+    fn from(mode: cdk::wallet::P2PKLockedProofSendMode) -> Self {
+        match mode {
+            cdk::wallet::P2PKLockedProofSendMode::Swap => P2PKLockedProofSendMode::Swap,
+            cdk::wallet::P2PKLockedProofSendMode::SignAndSend => {
+                P2PKLockedProofSendMode::SignAndSend
+            }
+        }
+    }
+}
+
 /// FFI-compatible Send options
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct SendOptions {
@@ -163,9 +197,9 @@ pub struct SendOptions {
     /// Signing keys for P2PK-locked input proofs
     #[serde(default)]
     pub p2pk_signing_keys: Vec<SecretKey>,
-    /// Allow P2PK-locked proofs to be included directly in the token without a swap
+    /// How P2PK-locked input proofs should be handled during send
     #[serde(default)]
-    pub allow_locked_proofs: bool,
+    pub p2pk_locked_proof_send_mode: P2PKLockedProofSendMode,
 }
 
 impl Default for SendOptions {
@@ -180,7 +214,7 @@ impl Default for SendOptions {
             metadata: HashMap::new(),
             use_p2bk: false,
             p2pk_signing_keys: Vec::new(),
-            allow_locked_proofs: false,
+            p2pk_locked_proof_send_mode: P2PKLockedProofSendMode::Swap,
         }
     }
 }
@@ -205,7 +239,7 @@ impl TryFrom<SendOptions> for cdk::wallet::SendOptions {
             metadata: opts.metadata,
             use_p2bk: opts.use_p2bk,
             p2pk_signing_keys,
-            allow_locked_proofs: opts.allow_locked_proofs,
+            p2pk_locked_proof_send_mode: opts.p2pk_locked_proof_send_mode.into(),
         })
     }
 }
@@ -222,7 +256,7 @@ impl From<cdk::wallet::SendOptions> for SendOptions {
             metadata: opts.metadata,
             use_p2bk: opts.use_p2bk,
             p2pk_signing_keys: opts.p2pk_signing_keys.into_iter().map(Into::into).collect(),
-            allow_locked_proofs: opts.allow_locked_proofs,
+            p2pk_locked_proof_send_mode: opts.p2pk_locked_proof_send_mode.into(),
         }
     }
 }

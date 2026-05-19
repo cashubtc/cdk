@@ -68,8 +68,8 @@ use cdk_common::amount::KeysetFeeAndAmounts;
 use cdk_common::nut02::KeySetInfosMethods;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
-    OperationData, SendOperationData, SendSagaState, Transaction, TransactionDirection, WalletSaga,
-    WalletSagaState,
+    OperationData, P2PKLockedProofSendMode, SendOperationData, SendSagaState, Transaction,
+    TransactionDirection, WalletSaga, WalletSagaState,
 };
 use cdk_common::Id;
 use tracing::instrument;
@@ -246,7 +246,7 @@ fn ensure_selected_proofs_cover_input_fees(
 
 fn split_proofs_for_send_respecting_p2pk_locks(
     proofs: Proofs,
-    allow_locked_proofs: bool,
+    p2pk_locked_proof_send_mode: P2PKLockedProofSendMode,
     context: SendSplitContext<'_>,
 ) -> Result<super::ProofSplitResult, Error> {
     // When the wallet holds P2PK-locked proofs and passthrough is not opted in, route them
@@ -263,7 +263,7 @@ fn split_proofs_for_send_respecting_p2pk_locks(
     // rejection. HTLC support in the send path (including a `htlc_preimages` field on
     // `SendOptions` and its own partition logic) is left for a follow-up PR.
     let has_p2pk_locked = proofs.iter().any(crate::wallet::util::is_p2pk_locked);
-    if has_p2pk_locked && !allow_locked_proofs {
+    if has_p2pk_locked && p2pk_locked_proof_send_mode == P2PKLockedProofSendMode::Swap {
         let (p2pk_locked, rest): (Proofs, Proofs) = proofs
             .into_iter()
             .partition(crate::wallet::util::is_p2pk_locked);
@@ -343,7 +343,11 @@ fn selected_proofs_net_after_swap_fees(
     selected_proofs: Proofs,
     context: SendSplitContext<'_>,
 ) -> Result<Amount, Error> {
-    let split = split_proofs_for_send_respecting_p2pk_locks(selected_proofs, false, context)?;
+    let split = split_proofs_for_send_respecting_p2pk_locks(
+        selected_proofs,
+        P2PKLockedProofSendMode::Swap,
+        context,
+    )?;
     let direct_total = split.proofs_to_send.total_amount()?;
     let swap_total = split.proofs_to_swap.total_amount()?;
     let swap_net = swap_total
@@ -418,7 +422,7 @@ impl<'a> SendSaga<'a, Initial> {
         // cannot be signed before the swap and would cause a mint rejection at confirm time.
         // Excluding them here lets the selection algorithm work with only spendable proofs and
         // surfaces a clean InsufficientFunds error if nothing else is available.
-        if !opts.allow_locked_proofs {
+        if opts.p2pk_locked_proof_send_mode == P2PKLockedProofSendMode::Swap {
             available_proofs =
                 filter_signable_proofs(self.wallet, available_proofs, &opts.p2pk_signing_keys)
                     .await?;
@@ -449,7 +453,7 @@ impl<'a> SendSaga<'a, Initial> {
                     .map(|p| p.proof)
                     .collect();
 
-                if !opts.allow_locked_proofs {
+                if opts.p2pk_locked_proof_send_mode == P2PKLockedProofSendMode::Swap {
                     available_proofs = filter_signable_proofs(
                         self.wallet,
                         available_proofs,
@@ -490,7 +494,8 @@ impl<'a> SendSaga<'a, Initial> {
         };
         let selection_amount = amount + send_amounts.1;
 
-        let may_swap_p2pk_locked = !opts.allow_locked_proofs
+        let may_swap_p2pk_locked = opts.p2pk_locked_proof_send_mode
+            == P2PKLockedProofSendMode::Swap
             && available_proofs
                 .iter()
                 .any(crate::wallet::util::is_p2pk_locked);
@@ -639,7 +644,7 @@ impl<'a> SendSaga<'a, Initial> {
 
         let split_result = split_proofs_for_send_respecting_p2pk_locks(
             proofs,
-            opts.allow_locked_proofs,
+            opts.p2pk_locked_proof_send_mode,
             SendSplitContext {
                 send_amounts: &send_amounts,
                 amount,
@@ -773,7 +778,7 @@ impl<'a> SendSaga<'a, Prepared> {
             // create valid outputs for a proof signed with SIG_ALL, so any attempt to redeem
             // it at the mint would fail. Reject early with a clear error rather than silently
             // producing an unspendable token.
-            if options.allow_locked_proofs {
+            if options.p2pk_locked_proof_send_mode == P2PKLockedProofSendMode::SignAndSend {
                 let sig_flag = enforce_sig_flag(final_proofs_to_send.clone()).sig_flag;
                 if sig_flag == SigFlag::SigAll {
                     return Err(crate::nuts::nut11::Error::SigAllNotSupportedHere.into());

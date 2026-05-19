@@ -32,7 +32,9 @@ use cdk::nuts::nut00::ProofsMethods;
 use cdk::subscription::Params;
 use cdk::types::QuoteTTL;
 use cdk::wallet::types::{TransactionDirection, TransactionId};
-use cdk::wallet::{KeysetFilter, MintConnector, ReceiveOptions, SendMemo, SendOptions};
+use cdk::wallet::{
+    KeysetFilter, MintConnector, P2PKLockedProofSendMode, ReceiveOptions, SendMemo, SendOptions,
+};
 use cdk::{Amount, StreamExt};
 use cdk_common::mint::OperationKind;
 use cdk_common::payment::{
@@ -2611,7 +2613,7 @@ async fn test_p2pk_send_options_signing_keys() {
 /// `prepare_send` would normally take a short-circuit path: all proofs go directly to
 /// `proofs_to_send` (no swap), so signing is skipped and locked proofs end up in the token.
 ///
-/// Fix: when `p2pk_signing_keys` is non-empty and `allow_locked_proofs` is false (the default),
+/// Fix: when `p2pk_signing_keys` is non-empty and locked proofs are swapped (the default),
 /// force a swap so the token always contains fresh, unconditioned proofs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_p2pk_signing_keys_exact_denomination_short_circuit() {
@@ -2720,13 +2722,13 @@ async fn test_p2pk_signing_keys_exact_denomination_short_circuit() {
     );
 }
 
-/// Test that `allow_locked_proofs: true` opts in to passing signed P2PK-locked proofs
+/// Test that `SignAndSend` opts in to passing signed P2PK-locked proofs
 /// directly in the token without a swap.
 ///
 /// Bob must provide the corresponding signing key when receiving, since the proofs still
 /// carry their spending conditions.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_p2pk_allow_locked_proofs_passthrough() {
+async fn test_p2pk_locked_proof_sign_and_send_passthrough() {
     setup_tracing();
 
     let mint = create_and_start_test_mint()
@@ -2796,13 +2798,13 @@ async fn test_p2pk_allow_locked_proofs_passthrough() {
         .await
         .unwrap();
 
-    // Alice sends with allow_locked_proofs: proofs are signed but not swapped
+    // Alice sends with SignAndSend: proofs are signed but not swapped.
     let prepared = wallet_alice
         .prepare_send(
             total_amount,
             SendOptions {
                 p2pk_signing_keys: vec![shared_secret.clone()],
-                allow_locked_proofs: true,
+                p2pk_locked_proof_send_mode: P2PKLockedProofSendMode::SignAndSend,
                 ..Default::default()
             },
         )
@@ -2812,7 +2814,7 @@ async fn test_p2pk_allow_locked_proofs_passthrough() {
     let token = prepared
         .confirm(None)
         .await
-        .expect("confirm should succeed with allow_locked_proofs");
+        .expect("confirm should succeed with SignAndSend");
 
     // Alice pre-signed the proofs before sending, so the witness is already attached and the
     // proof is effectively bearer.  Bob does NOT need to provide the signing key — the mint
@@ -2825,14 +2827,14 @@ async fn test_p2pk_allow_locked_proofs_passthrough() {
     assert_eq!(total_amount, received, "Bob should receive the full amount");
 }
 
-/// Test that `allow_locked_proofs` is rejected when any passthrough proof carries `SIG_ALL`.
+/// Test that `SignAndSend` is rejected when any passthrough proof carries `SIG_ALL`.
 ///
 /// A `SIG_ALL` signature must commit to the swap outputs, which do not exist at signing time.
 /// The recipient cannot construct valid outputs for such a proof, so any redemption attempt
 /// would be rejected by the mint. `confirm` should fail fast rather than silently producing
 /// an unspendable token.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_p2pk_allow_locked_proofs_rejects_sig_all() {
+async fn test_p2pk_locked_proof_sign_and_send_rejects_sig_all() {
     setup_tracing();
 
     let mint = create_and_start_test_mint()
@@ -2902,13 +2904,13 @@ async fn test_p2pk_allow_locked_proofs_rejects_sig_all() {
         .await
         .unwrap();
 
-    // prepare_send succeeds: allow_locked_proofs skips the force-swap path
+    // prepare_send succeeds: SignAndSend skips the force-swap path.
     let prepared = wallet_alice
         .prepare_send(
             total_amount,
             SendOptions {
                 p2pk_signing_keys: vec![alice_secret],
-                allow_locked_proofs: true,
+                p2pk_locked_proof_send_mode: P2PKLockedProofSendMode::SignAndSend,
                 ..Default::default()
             },
         )
@@ -3401,7 +3403,7 @@ async fn test_p2pk_partially_signable_proof_only_gives_insufficient_funds() {
 
 /// Passthrough mode must not create a token containing partially signed locked proofs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_p2pk_allow_locked_proofs_rejects_partial_signatures() {
+async fn test_p2pk_locked_proof_sign_and_send_rejects_partial_signatures() {
     setup_tracing();
 
     let mint = create_and_start_test_mint()
@@ -3482,7 +3484,7 @@ async fn test_p2pk_allow_locked_proofs_rejects_partial_signatures() {
             total_amount,
             SendOptions {
                 p2pk_signing_keys: vec![alice_secret],
-                allow_locked_proofs: true,
+                p2pk_locked_proof_send_mode: P2PKLockedProofSendMode::SignAndSend,
                 ..Default::default()
             },
         )
