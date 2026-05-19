@@ -753,9 +753,10 @@ release m="":
     echo
   done
 
-  # Trigger all FFI binding releases (Dart, Kotlin, Swift, Go)
+  # Trigger all FFI binding releases (Dart, Kotlin, Swift, Go, Nitro)
   echo "📦 Triggering all FFI binding releases for version $VERSION..."
   just ffi-release-all $VERSION
+
 
 check-docs:
   #!/usr/bin/env bash
@@ -1055,7 +1056,7 @@ ffi-test-live-python:
   echo "🧪 Running live Python FFI tests..."
   python3 crates/cdk-ffi/tests/test_live_async_onchain_melt.py
 
-# Trigger all FFI binding releases (Dart, Kotlin, Swift, Go)
+# Trigger all FFI binding releases (Dart, Kotlin, Swift, Go, Nitro)
 ffi-release-all VERSION:
   #!/usr/bin/env bash
   set -euo pipefail
@@ -1174,6 +1175,24 @@ ffi-release-go VERSION:
 
   echo "✅ Go workflow triggered successfully!"
 
+# Trigger Nitro (React Native) Bindings release workflow
+ffi-release-nitro VERSION:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  echo "🚀 Triggering Nitro bindings workflow..."
+  echo "   Version: {{VERSION}}"
+  echo "   CDK Ref: v{{VERSION}}"
+
+  # Trigger the workflow using GitHub CLI
+  gh workflow run "FFI - Nitro Bindings" \
+    --repo cashubtc/cdk \
+    --field release_tag="v{{VERSION}}" \
+    --field cdk_version="{{VERSION}}" \
+    --field cdk_ref="v{{VERSION}}"
+
+  echo "✅ Nitro workflow triggered successfully!"
+
 # Generate Dart FFI bindings via nix
 binding-dart:
   #!/usr/bin/env bash
@@ -1236,3 +1255,37 @@ test-swift:
   else
     DYLD_LIBRARY_PATH="$LIB_DIR" swift test
   fi
+
+# Run React Native Nitro Rust unit tests
+test-nitro:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  cargo test -p cdk-nitro
+
+# Run React Native Nitro pure TS unit tests + typecheck (no native build)
+test-nitro-unit:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  # Adapter conversion logic needs no cdylib; install only the package dev deps
+  # (cashu-ts, typescript) and run the pure tests against the .ts source.
+  cd bindings/react-native
+  npm install
+  npm run typecheck
+  cd test
+  npm run test:unit
+
+# Run React Native Nitro Node.js FFI tests
+test-nitro-node:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  cargo build -p cdk-nitro
+  # Install the package's dev deps (cashu-ts) so the adapter and its test
+  # resolve a single copy of cashu-ts; a second copy would break instanceof.
+  cd bindings/react-native
+  npm install
+  cd test
+  npm install
+  npm run test:all
