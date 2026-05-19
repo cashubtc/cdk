@@ -84,7 +84,7 @@ pub async fn parse_bip321_payment_instruction(
 ///
 /// The `network` parameter controls which on-chain address prefixes are accepted
 /// in the resolved URI.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 #[uniffi::export(async_runtime = "tokio")]
 #[instrument(skip_all)]
 pub async fn resolve_bip353_payment_instruction(

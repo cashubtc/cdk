@@ -49,7 +49,7 @@ own `uniffi.toml` controlling language-specific code generation.
 | Language | Directory | Status | Build | Test |
 |----------|-----------|--------|-------|------|
 | **Dart** | `bindings/dart/` | Active | `just binding-dart` | `just test-dart` |
-| **Swift** | `bindings/swift/` | Active | `just binding-swift` | `just test-swift` |
+| **Swift** | `bindings/swift/` | Active | CI workflow | `just test-swift` |
 
 ### Dart
 
@@ -66,7 +66,7 @@ own `uniffi.toml` controlling language-specific code generation.
 - **Rust crate:** `cdk-ffi-swift`
 - **Binding generator:** uniffi-bindgen-swift (local, in `bindings/swift/rust/`)
 - Builds an XCFramework for iOS (device + simulator) and macOS (arm64 + x86_64)
-- `Package.swift` is generated at the repo root by `generate-bindings.sh`
+- `Package.swift` is generated during the CI publish workflow
 - Swift sources are generated into `bindings/swift/Sources/Cdk/`
 
 ## Planned targets
@@ -90,8 +90,7 @@ Prerequisites: Rust toolchain, and the target language SDK.
 just binding-dart    # Generate bindings
 just test-dart       # Run tests
 
-# Swift (macOS only)
-just binding-swift   # Build XCFramework + generate bindings
+# Swift (macOS only — build runs in CI via swift-publish workflow)
 just test-swift      # Run tests
 ```
 

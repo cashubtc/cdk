@@ -30,6 +30,12 @@ fuzz/artifacts/
 fuzz/corpus/
 
 
+# Swift SPM (generated for local testing)
+Package.swift
+Package.resolved
+Sources/Cdk/
+Sources/cdk_ffiFFI/
+
 # Python ffi
 __pycache__
 libcdk_ffi*

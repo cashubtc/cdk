@@ -556,7 +556,7 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Build XCFramework and generate bindings
-        run: nix develop -L .#bindings --command just binding-swift
+        run: nix develop -L .#bindings --command just ffi-generate-swift
       - name: Run Swift tests
         run: |
           # Run swift test outside the Nix environment. The Nix shell injects
@@ -566,4 +566,5 @@ jobs:
             PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
             SDKROOT="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)" \
             DEVELOPER_DIR="$(/usr/bin/xcode-select -p)" \
+            DYLD_LIBRARY_PATH="$PWD/target/release" \
             /usr/bin/swift test
