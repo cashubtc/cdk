@@ -38,7 +38,6 @@ jobs:
             --exclude='node_modules' \
             --exclude='lib' \
             bindings/react-native/ cdk-nitro/
-          cp rust-toolchain.toml cdk-nitro/
 
       - name: Update versions and resolve workspace references
         run: |
@@ -164,10 +163,12 @@ jobs:
       - name: Build (Nix)
         working-directory: cdk-nitro/rust
         run: |
+          # Remove rust-toolchain.toml so it doesn't override the Nix-provided toolchain
+          rm -f ../rust-toolchain.toml rust-toolchain.toml
           if [[ "${{ matrix.target }}" == *apple-ios* ]]; then
             XCODE_DEV_DIR=$(/usr/bin/xcrun xcode-select -p 2>/dev/null \
               || echo "/Applications/Xcode.app/Contents/Developer")
-            nix develop -L ../../cdk#bindings --command \
+            nix develop -L ../../cdk#cross-build --command \
               env -u MACOSX_DEPLOYMENT_TARGET -u SDKROOT \
                 DEVELOPER_DIR="$XCODE_DEV_DIR" \
                 CC_aarch64_apple_ios=/usr/bin/clang \
@@ -176,7 +177,7 @@ jobs:
                 CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER=/usr/bin/clang \
                 cargo build --release --target ${{ matrix.target }}
           else
-            nix develop -L ../../cdk#bindings --command \
+            nix develop -L ../../cdk#cross-build --command \
               cargo build --release --target ${{ matrix.target }}
           fi
 
@@ -187,7 +188,7 @@ jobs:
           FILE="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
           case "${{ matrix.target }}" in
             *apple*)    strip -S "$FILE" ;;
-            *android*)  nix develop -L ../../cdk#bindings --command \
+            *android*)  nix develop -L ../../cdk#cross-build --command \
                           bash -c '"$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-all '"$FILE" ;;
             *)          strip --strip-all "$FILE" ;;
           esac
