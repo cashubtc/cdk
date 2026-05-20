@@ -9,6 +9,9 @@ on:
       cdk_version:
         description: 'CDK dependency version (e.g. 0.17.0). Defaults to release_tag without the "v" prefix.'
         required: false
+      cdk_ref:
+        description: 'CDK git ref to publish from. Defaults to release_tag.'
+        required: false
 env:
   CARGO_TERM_COLOR: ${{ vars.CARGO_TERM_COLOR }}
 
@@ -19,6 +22,8 @@ jobs:
     steps:
       - name: Checkout monorepo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.cdk_ref || github.ref }}
 
       - name: Clone cdk-swift
         run: |
@@ -387,7 +392,7 @@ jobs:
           git diff --cached --quiet && echo "No changes to commit" && exit 0
           git commit -m "release: ${{ inputs.release_tag }} — add Swift sources and Package.swift"
 
-      - name: Merge to default branch, tag
+      - name: Merge to default branch
         working-directory: cdk-swift
         run: |
           TAG="${{ inputs.release_tag }}"
@@ -399,10 +404,11 @@ jobs:
           git merge "${RELEASE_BRANCH}" --squash
           git commit -m "release: ${TAG}"
 
-      - name: Push default branch (without tag)
+      - name: Push release branch
         working-directory: cdk-swift
         run: |
-          git push origin "${DEFAULT_BRANCH}"
+          git checkout "${RELEASE_BRANCH}"
+          git push origin "${RELEASE_BRANCH}"
 
       - name: Create release on cdk-swift (creates tag and uploads asset)
         env:
@@ -415,7 +421,9 @@ jobs:
             --generate-notes \
             artifacts/CashuDevKitFFI.xcframework.zip
 
-      - name: Clean up release branch
+      - name: Push default branch and clean up
         working-directory: cdk-swift
         run: |
+          git checkout "${DEFAULT_BRANCH}"
+          git push origin "${DEFAULT_BRANCH}"
           git push origin --delete "${RELEASE_BRANCH}"
