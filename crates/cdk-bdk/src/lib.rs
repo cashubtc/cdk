@@ -487,23 +487,41 @@ impl MintPayment for CdkBdk {
             _ => return Err(cdk_common::payment::Error::UnsupportedPaymentOption),
         };
 
-        let tier = PaymentTier::from_optional_str(onchain_options.tier.as_deref());
-
         self.validate_send_amount(
             &onchain_options.address,
             onchain_options.amount.clone().to_u64(),
         )?;
         let amount_sat = onchain_options.amount.clone().to_u64();
-        let fee_estimate = self
-            .estimate_onchain_fee_reserve(&onchain_options.address, amount_sat, tier)
-            .await?;
-        let fee_reserve_sat = fee_estimate.fee_reserve_sat;
 
-        let estimated_blocks = match tier {
-            PaymentTier::Immediate => 1,
-            PaymentTier::Standard => 6,
-            PaymentTier::Economy => 144,
-        };
+        // Estimate fee_reserve for every tier so the mint can present the
+        // wallet with a full menu of options. The backend owns these
+        // `fee_index` values and resolves them back to tiers during payment.
+        let tiers = [
+            (PaymentTier::Immediate, 1u32),
+            (PaymentTier::Standard, 6u32),
+            (PaymentTier::Economy, 144u32),
+        ];
+
+        let mut fee_options = Vec::with_capacity(tiers.len());
+        for (idx, (tier, estimated_blocks)) in tiers.iter().enumerate() {
+            let fee_estimate = self
+                .estimate_onchain_fee_reserve(&onchain_options.address, amount_sat, *tier)
+                .await?;
+            fee_options.push(MeltQuoteOnchainFeeOption {
+                fee_index: idx as u32,
+                fee_reserve: Amount::from(fee_estimate.fee_reserve_sat),
+                estimated_blocks: *estimated_blocks,
+            });
+        }
+
+        // The `fee`/`estimated_blocks` mirror fields surface the cheapest
+        // available option as a sensible default, matching the mint's
+        // initialization in `MeltQuote::new_onchain`.
+        let cheapest = fee_options
+            .iter()
+            .min_by_key(|option| u64::from(option.fee_reserve))
+            .copied()
+            .expect("tiers is non-empty");
 
         // Echo the mint-supplied `quote_id` verbatim per the
         // `OnchainOutgoingPaymentOptions.quote_id` contract. The mint
@@ -512,14 +530,11 @@ impl MintPayment for CdkBdk {
         Ok(PaymentQuoteResponse {
             request_lookup_id: Some(PaymentIdentifier::QuoteId(onchain_options.quote_id.clone())),
             amount: onchain_options.amount,
-            fee: Amount::new(fee_reserve_sat, CurrencyUnit::Sat),
+            fee: Amount::new(cheapest.fee_reserve.into(), CurrencyUnit::Sat),
             state: MeltQuoteState::Unpaid,
             extra_json: None,
-            estimated_blocks: Some(estimated_blocks),
-            fee_options: Some(vec![MeltQuoteOnchainFeeOption {
-                fee_reserve: Amount::from(fee_reserve_sat),
-                estimated_blocks,
-            }]),
+            estimated_blocks: Some(cheapest.estimated_blocks),
+            fee_options: Some(fee_options),
         })
     }
 
@@ -544,7 +559,21 @@ impl MintPayment for CdkBdk {
             .unwrap_or(Amount::new(1000, CurrencyUnit::Sat));
         let amount_sat = amount.clone().to_u64();
         let max_fee_sat = max_fee.clone().to_u64();
-        let tier = PaymentTier::from_optional_str(onchain_options.tier.as_deref());
+        // Resolve the wallet-selected `fee_index` back to a backend tier.
+        // The mint validates that `fee_index` corresponds to one of the
+        // `fee_options` we returned in `get_payment_quote`, so the only valid
+        // values here are 0/1/2 (Immediate/Standard/Economy).
+        let tier = match onchain_options.fee_index {
+            Some(0) => PaymentTier::Immediate,
+            Some(1) => PaymentTier::Standard,
+            Some(2) => PaymentTier::Economy,
+            // No selection or out-of-range index: fall back to Immediate so we
+            // never silently send at the wrong tier.
+            Some(other) => {
+                return Err(Error::UnknownFeeIndex(other).into());
+            }
+            None => PaymentTier::Immediate,
+        };
         let metadata = PaymentMetadata::from_optional_json(onchain_options.metadata.as_deref());
         let fee_estimate = self
             .estimate_onchain_fee_reserve(&address, amount_sat, tier)
@@ -1076,7 +1105,7 @@ mod tests {
             amount: Amount::new(amount_sat, CurrencyUnit::Sat),
             max_fee_amount: Some(Amount::new(1_000, CurrencyUnit::Sat)),
             quote_id,
-            tier: None,
+            fee_index: None,
             metadata: None,
         }))
     }

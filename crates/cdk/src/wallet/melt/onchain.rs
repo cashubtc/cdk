@@ -23,6 +23,7 @@ fn wallet_melt_quote_from_onchain_response(
         expiry: response.expiry,
         payment_proof: response.outpoint.clone(),
         estimated_blocks: Some(fee_option.estimated_blocks),
+        fee_index: Some(fee_option.fee_index),
         payment_method: PaymentMethod::Known(KnownMethod::Onchain),
         used_by_operation: None,
         version: 0,

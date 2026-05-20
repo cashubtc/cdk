@@ -139,11 +139,11 @@ impl<Q: ToString> MeltQuoteResponse<Q> {
             Self::Bolt11(r) => r.fee_reserve,
             Self::Bolt12(r) => r.fee_reserve,
             Self::Onchain(r) => r
-                .selected_estimated_blocks
+                .selected_fee_index
                 .and_then(|selected| {
                     r.fee_options
                         .iter()
-                        .find(|option| option.estimated_blocks == selected)
+                        .find(|option| option.fee_index == selected)
                 })
                 .or_else(|| r.fee_options.first())
                 .map(|option| option.fee_reserve)
@@ -311,7 +311,7 @@ where
                     expiry: value.expiry,
                     request: value.request.to_string(),
                     fee_options: value.fee_options().to_vec(),
-                    selected_estimated_blocks: value.selected_estimated_blocks,
+                    selected_fee_index: value.selected_fee_index,
                     outpoint: value.payment_proof.clone(),
                     change: None,
                 })
@@ -380,10 +380,11 @@ mod tests {
             expiry: 4000,
             request: "bc1qonchainaddress".to_string(),
             fee_options: vec![MeltQuoteOnchainFeeOption {
+                fee_index: 0,
                 fee_reserve: Amount::from(4),
                 estimated_blocks: 6,
             }],
-            selected_estimated_blocks: Some(6),
+            selected_fee_index: Some(0),
             outpoint: Some("abcd...ef:0".to_string()),
             change: None,
         }

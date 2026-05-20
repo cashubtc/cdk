@@ -634,8 +634,8 @@ where
             PaymentMethod::Known(KnownMethod::Onchain) => {
                 let request = MeltOnchainRequest {
                     quote: request.quote_id().clone(),
-                    estimated_blocks: request
-                        .selected_estimated_blocks()
+                    fee_index: request
+                        .selected_fee_index()
                         .ok_or(Error::InvalidPaymentRequest)?,
                     inputs: request.inputs().clone(),
                     outputs: request.outputs().clone(),

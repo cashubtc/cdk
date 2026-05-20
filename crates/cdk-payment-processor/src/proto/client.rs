@@ -267,6 +267,20 @@ impl MintPayment for PaymentProcessorClient {
             cdk_common::payment::OutgoingPaymentOptions::Onchain(_) => None,
         };
 
+        let onchain_options = match &options {
+            cdk_common::payment::OutgoingPaymentOptions::Onchain(opts) => {
+                Some(super::OnchainOutgoingPaymentOptions {
+                    address: opts.address.clone(),
+                    amount: Some(opts.amount.clone().into()),
+                    max_fee_amount: opts.max_fee_amount.clone().into_proto(),
+                    quote_id: opts.quote_id.to_string(),
+                    fee_index: opts.fee_index,
+                    metadata: opts.metadata.clone(),
+                })
+            }
+            _ => None,
+        };
+
         let extra_json = match &options {
             cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => opts.extra_json.clone(),
             _ => None,
@@ -359,7 +373,7 @@ impl MintPayment for PaymentProcessorClient {
                             amount: Some(opts.amount.into()),
                             max_fee_amount: opts.max_fee_amount.into_proto(),
                             quote_id: opts.quote_id.to_string(),
-                            tier: opts.tier.clone(),
+                            fee_index: opts.fee_index,
                             metadata: opts.metadata.clone(),
                         },
                     )),

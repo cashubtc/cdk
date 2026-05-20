@@ -592,6 +592,7 @@ impl MintPayment for FakeWallet {
                     extra_json: None,
                     estimated_blocks: Some(DEFAULT_ONCHAIN_ESTIMATED_BLOCKS),
                     fee_options: Some(vec![MeltQuoteOnchainFeeOption {
+                        fee_index: 0,
                         fee_reserve: Amount::from(fee.value()),
                         estimated_blocks: DEFAULT_ONCHAIN_ESTIMATED_BLOCKS,
                     }]),

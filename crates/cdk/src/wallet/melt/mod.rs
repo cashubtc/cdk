@@ -346,11 +346,11 @@ impl MeltQuoteStatusResponse {
                 quote: r.quote,
                 amount: r.amount,
                 fee_reserve: r
-                    .selected_estimated_blocks
+                    .selected_fee_index
                     .and_then(|selected| {
                         r.fee_options
                             .iter()
-                            .find(|option| option.estimated_blocks == selected)
+                            .find(|option| option.fee_index == selected)
                     })
                     .or_else(|| r.fee_options.first())
                     .map(|option| option.fee_reserve)
@@ -1372,12 +1372,19 @@ impl Wallet {
                     response.outpoint.clone(),
                 )
                 .await?;
-                quote.estimated_blocks = response.selected_estimated_blocks.or_else(|| {
-                    response
-                        .fee_options
-                        .first()
-                        .map(|option| option.estimated_blocks)
-                });
+                quote.fee_index = response
+                    .selected_fee_index
+                    .or_else(|| response.fee_options.first().map(|option| option.fee_index));
+                quote.estimated_blocks = response
+                    .selected_fee_index
+                    .and_then(|selected| {
+                        response
+                            .fee_options
+                            .iter()
+                            .find(|option| option.fee_index == selected)
+                    })
+                    .or_else(|| response.fee_options.first())
+                    .map(|option| option.estimated_blocks);
                 self.localstore.add_melt_quote(quote.clone()).await?;
             }
         };

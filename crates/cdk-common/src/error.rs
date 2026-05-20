@@ -166,27 +166,24 @@ pub enum Error {
     #[error("Onchain melt quote must contain at least one fee_options entry")]
     OnchainFeeOptionsEmpty,
 
-    /// `fee_options` contains two entries with the same `estimated_blocks`
-    /// value.
+    /// `fee_options` contains two entries with the same `fee_index` value.
     ///
     /// Per NUT the mint MUST NOT return multiple `fee_options` items with the
-    /// same `estimated_blocks` value in one quote.
+    /// same `fee_index` value in one quote.
     #[cfg(feature = "mint")]
-    #[error("Duplicate estimated_blocks {blocks} in onchain fee_options")]
-    OnchainFeeOptionsDuplicateBlocks {
-        /// The duplicated `estimated_blocks` value.
-        blocks: u32,
+    #[error("Duplicate fee_index {index} in onchain fee_options")]
+    OnchainFeeOptionsDuplicateIndex {
+        /// The duplicated `fee_index` value.
+        index: u32,
     },
 
-    /// `fee_options` contains two entries with the same `fee` value.
-    ///
-    /// Per NUT the mint MUST NOT return multiple `fee_options` items with the
-    /// same `fee` value in one quote.
+    /// The wallet's melt request specified a `fee_index` that does not match
+    /// any entry in the quote's `fee_options`.
     #[cfg(feature = "mint")]
-    #[error("Duplicate fee {fee} in onchain fee_options")]
-    OnchainFeeOptionsDuplicateFee {
-        /// The duplicated fee value (raw amount, no unit).
-        fee: u64,
+    #[error("Onchain melt request fee_index {index} not found in quote fee_options")]
+    OnchainFeeIndexNotFound {
+        /// The unmatched `fee_index` value sent by the wallet.
+        index: u32,
     },
 
     /// BIP353 address resolution error
@@ -690,8 +687,8 @@ impl Error {
             #[cfg(feature = "mint")]
             Self::OnchainQuoteLookupIdMismatch { .. }
             | Self::OnchainFeeOptionsEmpty
-            | Self::OnchainFeeOptionsDuplicateBlocks { .. }
-            | Self::OnchainFeeOptionsDuplicateFee { .. } => true,
+            | Self::OnchainFeeOptionsDuplicateIndex { .. }
+            | Self::OnchainFeeIndexNotFound { .. } => true,
 
             // HTTP Errors
             Self::HttpError(Some(status), _) => {

@@ -103,15 +103,15 @@ pub struct MeltQuoteOnchainRequest {
 /// Melt onchain request
 ///
 /// Request to execute an onchain melt quote. The wallet selects one of the
-/// quote's fee options by including that option's `estimated_blocks` value.
+/// quote's fee options by including that option's `fee_index` value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(bound = "Q: Serialize + DeserializeOwned")]
 pub struct MeltOnchainRequest<Q> {
     /// Quote ID
     pub quote: Q,
-    /// Selected estimated confirmation target from the quote's `fee_options`
-    pub estimated_blocks: u32,
+    /// Selected fee option index from the quote's `fee_options`
+    pub fee_index: u32,
     /// Proofs
     #[cfg_attr(feature = "swagger", schema(value_type = Vec<crate::Proof>))]
     pub inputs: Proofs,
@@ -129,7 +129,7 @@ where
 {
     fn from(request: MeltOnchainRequest<Q>) -> Self {
         MeltRequest::new(request.quote, request.inputs, request.outputs)
-            .estimated_blocks(request.estimated_blocks)
+            .fee_index(request.fee_index)
     }
 }
 
@@ -138,17 +138,18 @@ where
 /// Each item in an onchain melt quote's `fee_options` represents one
 /// available fee reserve and confirmation estimate for the same payment. The wallet
 /// selects one option when executing the quote by echoing its
-/// `estimated_blocks` value in the melt request.
+/// `fee_index` value in the melt request.
 ///
 /// The mint enforces these NUT rules on the `fee_options` list as a whole:
 ///
 /// - MUST return at least one item.
-/// - MUST NOT contain two items with the same `estimated_blocks`.
-/// - MUST NOT contain two items with the same `fee_reserve`.
+/// - MUST NOT contain two items with the same `fee_index`.
 /// - The list is fixed for the lifetime of the quote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MeltQuoteOnchainFeeOption {
+    /// Server-assigned identifier the wallet echoes back to select this option
+    pub fee_index: u32,
     /// Maximum onchain transaction fee the mint may charge for this option
     pub fee_reserve: Amount,
     /// Estimated number of blocks until confirmation
@@ -188,11 +189,10 @@ pub struct MeltQuoteOnchainResponse<Q> {
     /// Each entry represents one fee-reserve/confirmation-target pair the mint is
     /// willing to honor for this quote. Per NUT the mint MUST return at
     /// least one entry; MUST NOT return multiple entries with the same
-    /// `estimated_blocks` or the same `fee_reserve`; and the list is fixed for the
-    /// lifetime of the quote.
+    /// `fee_index`; and the list is fixed for the lifetime of the quote.
     pub fee_options: Vec<MeltQuoteOnchainFeeOption>,
-    /// Selected confirmation target once the quote is executed
-    pub selected_estimated_blocks: Option<u32>,
+    /// Selected fee option index once the quote is executed
+    pub selected_fee_index: Option<u32>,
     /// Transaction outpoint (txid:vout) once broadcast
     #[serde(default, deserialize_with = "deserialize_empty_string_as_none")]
     pub outpoint: Option<String>,
@@ -216,7 +216,7 @@ impl<Q: ToString> MeltQuoteOnchainResponse<Q> {
             expiry: self.expiry,
             request: self.request.clone(),
             fee_options: self.fee_options.clone(),
-            selected_estimated_blocks: self.selected_estimated_blocks,
+            selected_fee_index: self.selected_fee_index,
             outpoint: self.outpoint.clone(),
             change: self.change.clone(),
         }
@@ -234,7 +234,7 @@ impl From<MeltQuoteOnchainResponse<QuoteId>> for MeltQuoteOnchainResponse<String
             expiry: value.expiry,
             request: value.request,
             fee_options: value.fee_options,
-            selected_estimated_blocks: value.selected_estimated_blocks,
+            selected_fee_index: value.selected_fee_index,
             outpoint: value.outpoint,
             change: value.change,
         }
@@ -288,10 +288,11 @@ mod tests {
             expiry: 1701704757,
             request: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
             fee_options: vec![MeltQuoteOnchainFeeOption {
+                fee_index: 0,
                 fee_reserve: Amount::from(5000),
                 estimated_blocks: 1,
             }],
-            selected_estimated_blocks: Some(1),
+            selected_fee_index: Some(0),
             outpoint: Some(
                 "3b7f3b85c5f1a3c4d2b8e9f6a7c5d8e9f1a2b3c4d5e6f7a8b9c1d2e3f4a5b6c7:2".to_string(),
             ),
@@ -300,7 +301,8 @@ mod tests {
 
         let serialized = serde_json::to_string(&response).unwrap();
         assert!(serialized.contains("\"fee_reserve\""));
-        assert!(!serialized.contains("\"fee\""));
+        assert!(serialized.contains("\"fee_index\""));
+        assert!(!serialized.contains("\"fee\":"));
 
         let deserialized: MeltQuoteOnchainResponse<String> =
             serde_json::from_str(&serialized).unwrap();
@@ -309,10 +311,7 @@ mod tests {
         assert_eq!(response.request, deserialized.request);
         assert_eq!(response.amount, deserialized.amount);
         assert_eq!(response.fee_options, deserialized.fee_options);
-        assert_eq!(
-            response.selected_estimated_blocks,
-            deserialized.selected_estimated_blocks
-        );
+        assert_eq!(response.selected_fee_index, deserialized.selected_fee_index);
         assert_eq!(response.state, deserialized.state);
         assert_eq!(response.outpoint, deserialized.outpoint);
         assert_eq!(response.change, deserialized.change);
@@ -328,10 +327,11 @@ mod tests {
             expiry: 1701704757,
             request: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
             fee_options: vec![MeltQuoteOnchainFeeOption {
+                fee_index: 0,
                 fee_reserve: Amount::from(5000),
                 estimated_blocks: 1,
             }],
-            selected_estimated_blocks: None,
+            selected_fee_index: None,
             outpoint: None,
             change: None,
         };
@@ -380,10 +380,11 @@ mod tests {
             expiry: 1701704757,
             request: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
             fee_options: vec![MeltQuoteOnchainFeeOption {
+                fee_index: 0,
                 fee_reserve: Amount::from(5000),
                 estimated_blocks: 1,
             }],
-            selected_estimated_blocks: Some(1),
+            selected_fee_index: Some(0),
             outpoint: Some(
                 "3b7f3b85c5f1a3c4d2b8e9f6a7c5d8e9f1a2b3c4d5e6f7a8b9c1d2e3f4a5b6c7:2".to_string(),
             ),

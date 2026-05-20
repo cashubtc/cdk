@@ -276,26 +276,26 @@ impl MeltSaga<Initial> {
         }
 
         if payment_method == cdk_common::PaymentMethod::Known(KnownMethod::Onchain) {
-            let Some(estimated_blocks) = melt_request.selected_estimated_blocks() else {
+            let Some(fee_index) = melt_request.selected_fee_index() else {
                 tracing::warn!(
                     quote_id = %quote.id,
-                    "onchain melt rejected: request is missing selected_estimated_blocks",
+                    "onchain melt rejected: request is missing selected fee_index",
                 );
                 tx.rollback().await?;
                 return Err(Error::InvalidPaymentRequest);
             };
 
-            if let Err(err) = quote.select_onchain_fee_option(estimated_blocks) {
+            if let Err(err) = quote.select_onchain_fee_option(fee_index) {
                 let available: Vec<u32> = quote
                     .fee_options()
                     .iter()
-                    .map(|option| option.estimated_blocks)
+                    .map(|option| option.fee_index)
                     .collect();
                 tracing::warn!(
                     quote_id = %quote.id,
-                    requested_estimated_blocks = estimated_blocks,
-                    available_estimated_blocks = ?available,
-                    "onchain melt rejected: selected estimated_blocks is not valid for this quote: {err}",
+                    requested_fee_index = fee_index,
+                    available_fee_indices = ?available,
+                    "onchain melt rejected: selected fee_index is not valid for this quote: {err}",
                 );
                 tx.rollback().await?;
                 return Err(err);

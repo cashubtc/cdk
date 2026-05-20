@@ -133,6 +133,7 @@ fn test_melt_quote() -> MeltQuote {
         expiry: 9999999999,
         payment_proof: None,
         estimated_blocks: None,
+        fee_index: None,
         payment_method: cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         used_by_operation: None,
         version: 0,

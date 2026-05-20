@@ -224,6 +224,96 @@ async fn test_onchain_melt() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_onchain_melt_selects_standard_fee_index() {
+    let bitcoin_client = init_bitcoin_client().expect("Failed to init bitcoin client");
+
+    let wallet = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    let mint_amount = 50_000;
+    let mint_quote = wallet
+        .mint_quote(
+            PaymentMethod::from_str("onchain").unwrap(),
+            Some(mint_amount.into()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    bitcoin_client
+        .send_to_address(&mint_quote.request, mint_amount)
+        .expect("failed to send bitcoin");
+
+    let mine_addr = bitcoin_client.get_new_address().unwrap();
+    bitcoin_client.generate_blocks(&mine_addr, 1).unwrap();
+
+    wallet
+        .wait_and_mint_quote(
+            mint_quote,
+            SplitTarget::default(),
+            None,
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap();
+
+    let dest_addr = bitcoin_client.get_new_address().unwrap();
+    let melt_amount = 20_000;
+    let melt_quotes = wallet
+        .quote_onchain_melt_options(&dest_addr.to_string(), melt_amount.into(), None)
+        .await
+        .expect("Failed to get melt quotes");
+
+    let standard_quote = melt_quotes
+        .into_iter()
+        .find(|quote| quote.fee_index == Some(1))
+        .expect("expected Standard fee_index 1 option");
+    let selected_quote = wallet
+        .select_onchain_melt_quote(standard_quote.clone())
+        .await
+        .expect("Failed to select melt quote");
+
+    assert_eq!(selected_quote.fee_index, Some(1));
+    assert_eq!(
+        selected_quote.estimated_blocks,
+        standard_quote.estimated_blocks
+    );
+    assert_eq!(selected_quote.fee_reserve, standard_quote.fee_reserve);
+
+    let prepared = wallet
+        .prepare_melt(&selected_quote.id, std::collections::HashMap::new())
+        .await
+        .expect("Failed to prepare melt");
+
+    timeout(Duration::from_secs(60), async {
+        let confirm_future = prepared.confirm();
+        tokio::pin!(confirm_future);
+        loop {
+            tokio::select! {
+                res = &mut confirm_future => {
+                    return res.expect("Failed to confirm melt");
+                }
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                    bitcoin_client.generate_blocks(&mine_addr, 1).unwrap();
+                }
+            }
+        }
+    })
+    .await
+    .expect("timeout waiting for melt confirmation");
+
+    let remaining_balance = wallet.total_balance().await.unwrap();
+    assert!(remaining_balance < (mint_amount - melt_amount).into());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_onchain_restore() {
     let bitcoin_client = init_bitcoin_client().expect("Failed to init bitcoin client");
     let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");

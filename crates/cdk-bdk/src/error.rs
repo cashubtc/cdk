@@ -27,6 +27,11 @@ pub enum Error {
     #[error("Unsupported payment type for onchain backend")]
     UnsupportedOnchain,
 
+    /// Wallet selected a `fee_index` outside the range produced by the BDK
+    /// backend (currently 0/1/2 for Immediate/Standard/Economy).
+    #[error("unknown fee_index {0}; expected 0 (Immediate), 1 (Standard), or 2 (Economy)")]
+    UnknownFeeIndex(u32),
+
     /// JSON error
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),

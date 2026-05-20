@@ -47,7 +47,7 @@ async fn test_onchain_setup_uses_selected_fee_option_for_balance() {
     let quote = create_test_onchain_melt_quote(&mint).await;
 
     let proofs = mint_test_proofs(&mint, Amount::from(9_500)).await.unwrap();
-    let melt_request = create_test_melt_request(&proofs, &quote).estimated_blocks(1);
+    let melt_request = create_test_melt_request(&proofs, &quote).fee_index(0);
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
 
     let saga = MeltSaga::new(
@@ -64,7 +64,7 @@ async fn test_onchain_setup_uses_selected_fee_option_for_balance() {
         .await
         .unwrap();
 
-    assert_eq!(setup.state_data.quote.selected_estimated_blocks, Some(1));
+    assert_eq!(setup.state_data.quote.selected_fee_index, Some(0));
     assert_eq!(setup.state_data.quote.fee_reserve().value(), 500);
 
     let stored = mint
@@ -73,7 +73,7 @@ async fn test_onchain_setup_uses_selected_fee_option_for_balance() {
         .await
         .unwrap()
         .expect("quote must remain persisted");
-    assert_eq!(stored.selected_estimated_blocks, Some(1));
+    assert_eq!(stored.selected_fee_index, Some(0));
     assert_eq!(stored.fee_reserve().value(), 500);
 }
 
@@ -83,7 +83,7 @@ async fn test_onchain_setup_rejects_amount_for_unselected_fee_option() {
     let quote = create_test_onchain_melt_quote(&mint).await;
 
     let proofs = mint_test_proofs(&mint, Amount::from(9_200)).await.unwrap();
-    let melt_request = create_test_melt_request(&proofs, &quote).estimated_blocks(1);
+    let melt_request = create_test_melt_request(&proofs, &quote).fee_index(0);
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
 
     let saga = MeltSaga::new(
@@ -142,7 +142,7 @@ async fn test_onchain_setup_accepts_change_outputs() {
         .unwrap();
 
     let melt_request =
-        MeltRequest::new(quote.id.clone(), proofs, Some(blinded_messages)).estimated_blocks(1);
+        MeltRequest::new(quote.id.clone(), proofs, Some(blinded_messages)).fee_index(0);
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
 
     let saga = MeltSaga::new(
@@ -159,7 +159,7 @@ async fn test_onchain_setup_accepts_change_outputs() {
         .await
         .expect("onchain melt setup must accept change outputs");
 
-    assert_eq!(setup.state_data.quote.selected_estimated_blocks, Some(1));
+    assert_eq!(setup.state_data.quote.selected_fee_index, Some(0));
     assert_eq!(setup.state_data.quote.fee_reserve().value(), 500);
 }
 
@@ -182,7 +182,7 @@ async fn test_onchain_setup_accepts_overfunded_inputs() {
         .unwrap();
 
     let melt_request =
-        MeltRequest::new(quote.id.clone(), proofs, Some(blinded_messages)).estimated_blocks(1);
+        MeltRequest::new(quote.id.clone(), proofs, Some(blinded_messages)).fee_index(0);
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
 
     let saga = MeltSaga::new(
@@ -199,18 +199,18 @@ async fn test_onchain_setup_accepts_overfunded_inputs() {
         .await
         .expect("onchain melt setup must accept overfunded inputs");
 
-    assert_eq!(setup.state_data.quote.selected_estimated_blocks, Some(1));
+    assert_eq!(setup.state_data.quote.selected_fee_index, Some(0));
     assert_eq!(setup.state_data.quote.fee_reserve().value(), 500);
 }
 
-/// Test: onchain melt setup rejects a request with no selected `estimated_blocks`.
+/// Test: onchain melt setup rejects a request with no selected `fee_index`.
 #[tokio::test]
-async fn test_onchain_setup_rejects_missing_estimated_blocks() {
+async fn test_onchain_setup_rejects_missing_fee_index() {
     let mint = create_test_mint().await.unwrap();
     let quote = create_test_onchain_melt_quote(&mint).await;
 
     let proofs = mint_test_proofs(&mint, Amount::from(9_500)).await.unwrap();
-    // Deliberately do NOT call `.estimated_blocks(...)`.
+    // Deliberately do NOT call `.fee_index(...)`.
     let melt_request = create_test_melt_request(&proofs, &quote);
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
 
@@ -227,22 +227,22 @@ async fn test_onchain_setup_rejects_missing_estimated_blocks() {
         )
         .await
     {
-        Ok(_) => panic!("onchain melt must require selected_estimated_blocks"),
+        Ok(_) => panic!("onchain melt must require selected fee_index"),
         Err(err) => err,
     };
 
     assert!(matches!(err, cdk_common::Error::InvalidPaymentRequest));
 }
 
-/// Test: onchain melt setup rejects an `estimated_blocks` value not in `fee_options`.
+/// Test: onchain melt setup rejects a `fee_index` value not in `fee_options`.
 #[tokio::test]
-async fn test_onchain_setup_rejects_estimated_blocks_not_in_fee_options() {
+async fn test_onchain_setup_rejects_fee_index_not_in_fee_options() {
     let mint = create_test_mint().await.unwrap();
     let quote = create_test_onchain_melt_quote(&mint).await;
 
     let proofs = mint_test_proofs(&mint, Amount::from(9_500)).await.unwrap();
-    // Quote's fee_options contains only `estimated_blocks` of 1 and 6; 42 is invalid.
-    let melt_request = create_test_melt_request(&proofs, &quote).estimated_blocks(42);
+    // Quote's fee_options contains only `fee_index` 0 and 1; 42 is invalid.
+    let melt_request = create_test_melt_request(&proofs, &quote).fee_index(42);
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
 
     let saga = MeltSaga::new(
@@ -258,11 +258,14 @@ async fn test_onchain_setup_rejects_estimated_blocks_not_in_fee_options() {
         )
         .await
     {
-        Ok(_) => panic!("onchain melt must reject unknown estimated_blocks"),
+        Ok(_) => panic!("onchain melt must reject unknown fee_index"),
         Err(err) => err,
     };
 
-    assert!(matches!(err, cdk_common::Error::InvalidPaymentRequest));
+    assert!(matches!(
+        err,
+        cdk_common::Error::OnchainFeeIndexNotFound { index: 42 }
+    ));
 }
 
 // ============================================================================
@@ -3469,10 +3472,12 @@ async fn create_test_onchain_melt_quote(mint: &crate::mint::Mint) -> cdk_common:
         None,
         vec![
             MeltQuoteOnchainFeeOption {
+                fee_index: 0,
                 fee_reserve: Amount::from(500),
                 estimated_blocks: 1,
             },
             MeltQuoteOnchainFeeOption {
+                fee_index: 1,
                 fee_reserve: Amount::from(200),
                 estimated_blocks: 6,
             },

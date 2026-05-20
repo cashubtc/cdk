@@ -334,8 +334,8 @@ pub struct OnchainOutgoingPaymentOptions {
     /// supplied `quote_id` (see
     /// [`Error::OnchainQuoteLookupIdMismatch`](crate::Error::OnchainQuoteLookupIdMismatch)).
     pub quote_id: QuoteId,
-    /// Batching tier hint (e.g. "immediate", "standard", "economy")
-    pub tier: Option<String>,
+    /// Selected fee option index (mirrors the quote's chosen `fee_options[i].fee_index`)
+    pub fee_index: Option<u32>,
     /// Opaque metadata as a JSON string for future extensions
     pub metadata: Option<String>,
 }
@@ -404,14 +404,7 @@ impl OutgoingPaymentOptions {
                     amount: melt_quote.amount(),
                     max_fee_amount: Some(fee_reserve),
                     quote_id: melt_quote.id,
-                    tier: melt_quote
-                        .selected_estimated_blocks
-                        .map(|blocks| match blocks {
-                            1 => "immediate".to_string(),
-                            6 => "standard".to_string(),
-                            144 => "economy".to_string(),
-                            _ => blocks.to_string(),
-                        }),
+                    fee_index: melt_quote.selected_fee_index,
                     metadata: None,
                 }),
             )),
@@ -603,14 +596,14 @@ pub struct PaymentQuoteResponse {
     /// For onchain melt quotes the mint enforces the NUT `fee_options` rules:
     ///
     /// - MUST be non-empty.
-    /// - MUST NOT contain duplicate `estimated_blocks` values.
-    /// - MUST NOT contain duplicate `fee_reserve` values.
+    /// - MUST NOT contain duplicate `fee_index` values.
     ///
+    /// Backends assign stable `fee_index` values and must be able to honor the
+    /// selected value later in [`OnchainOutgoingPaymentOptions::fee_index`].
+    /// The mint validates, persists, and exposes these values unchanged.
     /// Onchain backends must return `Some(vec)` here. Violations produce
-    /// [`Error::OnchainFeeOptionsEmpty`](crate::Error::OnchainFeeOptionsEmpty),
-    /// [`Error::OnchainFeeOptionsDuplicateBlocks`](crate::Error::OnchainFeeOptionsDuplicateBlocks),
-    /// or
-    /// [`Error::OnchainFeeOptionsDuplicateFee`](crate::Error::OnchainFeeOptionsDuplicateFee)
+    /// [`Error::OnchainFeeOptionsEmpty`](crate::Error::OnchainFeeOptionsEmpty)
+    /// or [`Error::OnchainFeeOptionsDuplicateIndex`](crate::Error::OnchainFeeOptionsDuplicateIndex),
     /// and the quote is not persisted.
     pub fee_options: Option<Vec<MeltQuoteOnchainFeeOption>>,
 }

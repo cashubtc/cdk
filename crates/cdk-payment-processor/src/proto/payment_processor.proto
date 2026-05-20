@@ -91,7 +91,7 @@ message OnchainOutgoingPaymentOptions {
   AmountMessage amount = 2;
   optional AmountMessage max_fee_amount = 3;
   string quote_id = 4;
-  optional string tier = 5;
+  optional uint32 fee_index = 5;
   optional string metadata = 6;
 }
 
@@ -208,6 +208,7 @@ message PaymentQuoteResponse {
 message OnchainFeeOption {
   uint64 fee_reserve = 1;
   uint32 estimated_blocks = 2;
+  uint32 fee_index = 3;
 }
 
 message Bolt11OutgoingPaymentOptions {

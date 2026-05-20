@@ -234,6 +234,7 @@ impl From<MeltQuoteOnchainFeeOption> for OnchainFeeOption {
         Self {
             fee_reserve: value.fee_reserve.into(),
             estimated_blocks: value.estimated_blocks,
+            fee_index: value.fee_index,
         }
     }
 }
@@ -241,6 +242,7 @@ impl From<MeltQuoteOnchainFeeOption> for OnchainFeeOption {
 impl From<OnchainFeeOption> for MeltQuoteOnchainFeeOption {
     fn from(value: OnchainFeeOption) -> Self {
         Self {
+            fee_index: value.fee_index,
             fee_reserve: value.fee_reserve.into(),
             estimated_blocks: value.estimated_blocks,
         }
@@ -465,6 +467,7 @@ mod tests {
                 "nested": { "attempt": 1 }
             })),
             fee_options: Some(vec![MeltQuoteOnchainFeeOption {
+                fee_index: 0,
                 fee_reserve: Amount::from(2),
                 estimated_blocks: 6,
             }]),

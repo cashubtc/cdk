@@ -232,6 +232,9 @@ pub struct MeltQuote {
     /// Estimated confirmation target in blocks for onchain quotes
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_blocks: Option<u32>,
+    /// Selected fee option index for onchain quotes
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_index: Option<u32>,
     /// Payment method
     pub payment_method: PaymentMethod,
     /// Operation ID that has reserved this quote (for saga pattern)

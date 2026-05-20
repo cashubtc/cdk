@@ -561,10 +561,10 @@ impl Mint {
             amount: melt_request.amount.with_unit(unit.clone()),
             max_fee_amount: None,
             quote_id: quote_id.clone(),
-            // TODO(#TBD): Let wallets request a specific tier when creating
-            // an onchain quote. Today the default backend tier is used until
-            // the wallet selects one of the returned `fee_options`.
-            tier: None,
+            // No selection at quote creation: the backend enumerates all
+            // available `fee_options` and the wallet picks one (echoed back
+            // as `fee_index`) when executing the melt.
+            fee_index: None,
             metadata: None,
         };
 

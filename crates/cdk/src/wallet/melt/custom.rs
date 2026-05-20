@@ -54,6 +54,7 @@ impl Wallet {
             expiry: quote_res.expiry,
             payment_proof: quote_res.payment_preimage,
             estimated_blocks: None,
+            fee_index: None,
             payment_method: PaymentMethod::Custom(method.to_string()),
 
             used_by_operation: None,

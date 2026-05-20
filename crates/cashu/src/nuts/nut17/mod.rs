@@ -412,10 +412,11 @@ mod tests {
             expiry: 1701704757,
             request: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
             fee_options: vec![crate::nut_onchain::MeltQuoteOnchainFeeOption {
+                fee_index: 0,
                 fee_reserve: Amount::from(5_000),
                 estimated_blocks: 1,
             }],
-            selected_estimated_blocks: Some(1),
+            selected_fee_index: Some(0),
             outpoint: Some("3b7f3b85:2".to_string()),
             change: None,
         };

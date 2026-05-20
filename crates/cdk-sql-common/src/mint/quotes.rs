@@ -284,7 +284,7 @@ where
             request_lookup_id_kind,
             extra_json,
             fee_options,
-            selected_estimated_blocks
+            selected_fee_index
         FROM
             melt_quote
         WHERE
@@ -395,7 +395,7 @@ where
             request_lookup_id_kind,
             extra_json,
             fee_options,
-            selected_estimated_blocks
+            selected_fee_index
         FROM
             melt_quote
         WHERE
@@ -452,7 +452,7 @@ where
             request_lookup_id_kind,
             extra_json,
             fee_options,
-            selected_estimated_blocks
+            selected_fee_index
         FROM
             melt_quote
         WHERE
@@ -562,7 +562,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
                 request_lookup_id_kind,
                 extra_json,
                 fee_options,
-                selected_estimated_blocks
+                selected_fee_index
         ) = row
     );
 
@@ -582,8 +582,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
     let fee_options = column_as_nullable_string!(&fee_options)
         .and_then(|value| serde_json::from_str::<Vec<MeltQuoteOnchainFeeOption>>(&value).ok())
         .unwrap_or_default();
-    let selected_estimated_blocks: Option<u32> =
-        column_as_nullable_number!(selected_estimated_blocks);
+    let selected_fee_index: Option<u32> = column_as_nullable_number!(selected_fee_index);
 
     let state =
         MeltQuoteState::from_str(&column_as_string!(&state)).map_err(ConversionError::from)?;
@@ -642,7 +641,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
         extra_json,
         estimated_blocks,
         fee_options,
-        selected_estimated_blocks,
+        selected_fee_index,
     )
     .map_err(|e| Error::Internal(format!("Invalid onchain melt quote row: {e}")))
 }
@@ -964,14 +963,14 @@ where
             INSERT INTO melt_quote
             (
                 id, unit, amount, request, fee_reserve, state,
-                expiry, payment_proof, estimated_blocks, fee_options, selected_estimated_blocks,
+                expiry, payment_proof, estimated_blocks, fee_options, selected_fee_index,
                 request_lookup_id, created_time, paid_time, options, request_lookup_id_kind,
                 payment_method, extra_json
             )
             VALUES
             (
                 :id, :unit, :amount, :request, :fee_reserve, :state,
-                :expiry, :payment_proof, :estimated_blocks, :fee_options, :selected_estimated_blocks,
+                :expiry, :payment_proof, :estimated_blocks, :fee_options, :selected_fee_index,
                 :request_lookup_id, :created_time, :paid_time, :options, :request_lookup_id_kind,
                 :payment_method, :extra_json
             )
@@ -986,13 +985,10 @@ where
         .bind("expiry", quote.expiry as i64)
         .bind("payment_proof", quote.payment_proof)
         .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
+        .bind("fee_options", fee_options_json)
         .bind(
-            "fee_options",
-            fee_options_json,
-        )
-        .bind(
-            "selected_estimated_blocks",
-            quote.selected_estimated_blocks.map(i64::from),
+            "selected_fee_index",
+            quote.selected_fee_index.map(i64::from),
         )
         .bind(
             "request_lookup_id",
@@ -1048,28 +1044,28 @@ where
         // queries below. Per the NUT spec the returned `fee_options` are
         // fixed for the lifetime of the quote, so we never rewrite them
         // after insert. Only state/paid_time/payment_proof/fee_reserve/
-        // estimated_blocks/selected_estimated_blocks may change over the
+        // estimated_blocks/selected_fee_index may change over the
         // quote's lifetime.
         let rec = if state == MeltQuoteState::Paid {
             let current_time = unix_time();
             quote.paid_time = Some(current_time);
             quote.payment_proof = payment_proof.clone();
-            query(r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time, payment_proof = :payment_proof, fee_reserve = :fee_reserve, estimated_blocks = :estimated_blocks, selected_estimated_blocks = :selected_estimated_blocks WHERE id = :id"#)?
+            query(r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time, payment_proof = :payment_proof, fee_reserve = :fee_reserve, estimated_blocks = :estimated_blocks, selected_fee_index = :selected_fee_index WHERE id = :id"#)?
                 .bind("state", state.to_string())
                 .bind("paid_time", current_time as i64)
                 .bind("payment_proof", payment_proof)
                 .bind("fee_reserve", quote.fee_reserve().value() as i64)
                 .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
-                .bind("selected_estimated_blocks", quote.selected_estimated_blocks.map(i64::from))
+                .bind("selected_fee_index", quote.selected_fee_index.map(i64::from))
                 .bind("id", quote.id.to_string())
                 .execute(&self.inner)
                 .await
         } else {
-            query(r#"UPDATE melt_quote SET state = :state, fee_reserve = :fee_reserve, estimated_blocks = :estimated_blocks, selected_estimated_blocks = :selected_estimated_blocks WHERE id = :id"#)?
+            query(r#"UPDATE melt_quote SET state = :state, fee_reserve = :fee_reserve, estimated_blocks = :estimated_blocks, selected_fee_index = :selected_fee_index WHERE id = :id"#)?
                 .bind("state", state.to_string())
                 .bind("fee_reserve", quote.fee_reserve().value() as i64)
                 .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
-                .bind("selected_estimated_blocks", quote.selected_estimated_blocks.map(i64::from))
+                .bind("selected_fee_index", quote.selected_fee_index.map(i64::from))
                 .bind("id", quote.id.to_string())
                 .execute(&self.inner)
                 .await
@@ -1333,7 +1329,7 @@ where
                 request_lookup_id_kind,
                 extra_json,
                 fee_options,
-                selected_estimated_blocks
+                selected_fee_index
             FROM
                 melt_quote
             "#,

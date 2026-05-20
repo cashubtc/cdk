@@ -169,6 +169,7 @@ where
                   payment_proof,
                   payment_method,
                   estimated_blocks,
+                  fee_index,
                   used_by_operation,
                   version,
                   mint_url
@@ -459,6 +460,7 @@ where
                 payment_proof,
                 payment_method,
                 estimated_blocks,
+                fee_index,
                 used_by_operation,
                 version,
                 mint_url
@@ -1258,9 +1260,9 @@ where
         let rows_affected = query(
             r#"
  INSERT INTO melt_quote
- (id, unit, amount, request, fee_reserve, state, expiry, payment_method, estimated_blocks, version, mint_url, used_by_operation)
+ (id, unit, amount, request, fee_reserve, state, expiry, payment_method, estimated_blocks, fee_index, version, mint_url, used_by_operation)
  VALUES
- (:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_method, :estimated_blocks, :version, :mint_url, :used_by_operation)
+ (:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_method, :estimated_blocks, :fee_index, :version, :mint_url, :used_by_operation)
  ON CONFLICT(id) DO UPDATE SET
      unit = excluded.unit,
      amount = excluded.amount,
@@ -1270,6 +1272,7 @@ where
      expiry = excluded.expiry,
      payment_method = excluded.payment_method,
      estimated_blocks = excluded.estimated_blocks,
+     fee_index = excluded.fee_index,
      version = :new_version,
      mint_url = excluded.mint_url,
      used_by_operation = excluded.used_by_operation
@@ -1286,6 +1289,7 @@ where
         .bind("expiry", quote.expiry as i64)
         .bind("payment_method", quote.payment_method.to_string())
         .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
+        .bind("fee_index", quote.fee_index.map(i64::from))
         .bind("version", quote.version as i64)
         .bind("new_version", new_version as i64)
         .bind("expected_version", expected_version as i64)
@@ -2043,6 +2047,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<wallet::MeltQuote, Error> {
             payment_proof,
             row_method,
             estimated_blocks,
+            fee_index,
             used_by_operation,
             version,
             mint_url
@@ -2068,6 +2073,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<wallet::MeltQuote, Error> {
         expiry: expiry_val,
         payment_proof: column_as_nullable_string!(payment_proof),
         estimated_blocks: column_as_nullable_number!(estimated_blocks),
+        fee_index: column_as_nullable_number!(fee_index),
         payment_method,
         used_by_operation: column_as_nullable_string!(used_by_operation),
         version: version_val,

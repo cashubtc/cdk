@@ -96,9 +96,9 @@ pub struct MeltRequest<Q> {
     #[serde(default)]
     #[cfg_attr(feature = "swagger", schema(value_type = bool))]
     prefer_async: bool,
-    /// Selected estimated confirmation target for onchain melts
+    /// Selected fee option index for onchain melts
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    estimated_blocks: Option<u32>,
+    fee_index: Option<u32>,
 }
 
 #[cfg(feature = "mint")]
@@ -111,7 +111,7 @@ impl TryFrom<MeltRequest<String>> for MeltRequest<QuoteId> {
             inputs: value.inputs,
             outputs: value.outputs,
             prefer_async: value.prefer_async,
-            estimated_blocks: value.estimated_blocks,
+            fee_index: value.fee_index,
         })
     }
 }
@@ -150,7 +150,7 @@ where
             inputs: inputs.without_dleqs(),
             outputs,
             prefer_async: false,
-            estimated_blocks: None,
+            fee_index: None,
         }
     }
 
@@ -165,15 +165,15 @@ where
         self.prefer_async
     }
 
-    /// Set the selected estimated confirmation target for onchain melts.
-    pub fn estimated_blocks(mut self, estimated_blocks: u32) -> Self {
-        self.estimated_blocks = Some(estimated_blocks);
+    /// Set the selected fee option index for onchain melts.
+    pub fn fee_index(mut self, fee_index: u32) -> Self {
+        self.fee_index = Some(fee_index);
         self
     }
 
-    /// Get the selected estimated confirmation target for onchain melts.
-    pub fn selected_estimated_blocks(&self) -> Option<u32> {
-        self.estimated_blocks
+    /// Get the selected fee option index for onchain melts.
+    pub fn selected_fee_index(&self) -> Option<u32> {
+        self.fee_index
     }
 
     /// Get quote

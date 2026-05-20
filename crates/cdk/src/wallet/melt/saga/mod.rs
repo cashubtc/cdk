@@ -886,11 +886,7 @@ impl<'a> MeltSaga<'a, MeltRequested> {
         .prefer_async(true);
 
         let request = if quote_info.payment_method == PaymentMethod::Known(KnownMethod::Onchain) {
-            request.estimated_blocks(
-                quote_info
-                    .estimated_blocks
-                    .ok_or(Error::InvalidPaymentRequest)?,
-            )
+            request.fee_index(quote_info.fee_index.ok_or(Error::InvalidPaymentRequest)?)
         } else {
             request
         };
@@ -1373,6 +1369,7 @@ mod tests {
         quote.payment_method = PaymentMethod::Known(KnownMethod::Onchain);
         quote.request = "bcrt1qtestaddress".to_string();
         quote.estimated_blocks = Some(6);
+        quote.fee_index = Some(0);
         let quote_id = quote.id.clone();
         db.add_melt_quote(quote.clone()).await.unwrap();
 
@@ -1387,10 +1384,11 @@ mod tests {
                 expiry: quote.expiry,
                 request: quote.request.clone(),
                 fee_options: vec![MeltQuoteOnchainFeeOption {
+                    fee_index: 0,
                     fee_reserve: quote.fee_reserve,
                     estimated_blocks: 6,
                 }],
-                selected_estimated_blocks: Some(6),
+                selected_fee_index: Some(0),
                 outpoint: None,
                 change: None,
             },
@@ -1432,7 +1430,7 @@ mod tests {
             .expect("post_melt request must be captured");
 
         assert_eq!(method, PaymentMethod::Known(KnownMethod::Onchain));
-        assert_eq!(request.selected_estimated_blocks(), Some(6));
+        assert_eq!(request.selected_fee_index(), Some(0));
         assert!(
             request
                 .outputs()
@@ -1454,12 +1452,13 @@ mod tests {
             expiry: quote.expiry,
             request: quote.request.clone(),
             fee_options: vec![MeltQuoteOnchainFeeOption {
+                fee_index: quote.fee_index.unwrap_or(0),
                 fee_reserve: quote.fee_reserve,
                 estimated_blocks: quote
                     .estimated_blocks
                     .expect("test onchain quote must set estimated_blocks"),
             }],
-            selected_estimated_blocks: quote.estimated_blocks,
+            selected_fee_index: quote.fee_index,
             outpoint: None,
             change: None,
         })
@@ -1485,6 +1484,7 @@ mod tests {
         quote.payment_method = PaymentMethod::Known(KnownMethod::Onchain);
         quote.request = "bcrt1qtestaddress".to_string();
         quote.estimated_blocks = Some(6);
+        quote.fee_index = Some(0);
         let quote_id = quote.id.clone();
         db.add_melt_quote(quote.clone()).await.unwrap();
 

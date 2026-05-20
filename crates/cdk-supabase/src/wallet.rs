@@ -204,7 +204,7 @@ impl SupabaseWalletDatabase {
     /// This must match the latest `schema_version` value set in the migration files.
     /// When adding new migrations, update this constant and set the same value
     /// in the new migration's `INSERT INTO schema_info` statement.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 5;
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 6;
 
     /// Get the full database schema SQL
     ///
@@ -2481,6 +2481,10 @@ struct MeltQuoteTable {
     payment_proof: Option<String>,
     payment_method: String,
     #[serde(default)]
+    estimated_blocks: Option<i64>,
+    #[serde(default)]
+    fee_index: Option<i64>,
+    #[serde(default)]
     mint_url: Option<String>,
     #[serde(default)]
     used_by_operation: Option<String>,
@@ -2513,7 +2517,16 @@ impl TryInto<wallet::MeltQuote> for MeltQuoteTable {
             payment_proof: self.payment_proof,
             payment_method: cdk_common::PaymentMethod::from_str(&self.payment_method)
                 .map_err(|_| DatabaseError::Internal("Invalid payment method".into()))?,
-            estimated_blocks: None,
+            estimated_blocks: self
+                .estimated_blocks
+                .map(u32::try_from)
+                .transpose()
+                .map_err(|_| DatabaseError::Internal("Invalid estimated_blocks".into()))?,
+            fee_index: self
+                .fee_index
+                .map(u32::try_from)
+                .transpose()
+                .map_err(|_| DatabaseError::Internal("Invalid fee_index".into()))?,
             used_by_operation: self.used_by_operation,
             version: self.version.unwrap_or(0) as u32,
         })
@@ -2534,6 +2547,8 @@ impl TryFrom<wallet::MeltQuote> for MeltQuoteTable {
             expiry: q.expiry as i64,
             payment_proof: q.payment_proof,
             payment_method: q.payment_method.to_string(),
+            estimated_blocks: q.estimated_blocks.map(i64::from),
+            fee_index: q.fee_index.map(i64::from),
             used_by_operation: q.used_by_operation,
             version: Some(q.version as i32),
             _extra: Default::default(),

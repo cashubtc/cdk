@@ -382,6 +382,8 @@ impl From<cdk::nuts::MintQuoteOnchainResponse<String>> for MintQuoteOnchainRespo
 /// Fee option for an onchain melt quote.
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MeltQuoteOnchainFeeOption {
+    /// Server-assigned identifier the wallet echoes back to select this option
+    pub fee_index: u32,
     /// Maximum onchain transaction fee the mint may charge
     pub fee_reserve: Amount,
     /// Estimated confirmation target in blocks
@@ -391,6 +393,7 @@ pub struct MeltQuoteOnchainFeeOption {
 impl From<cdk::nuts::nut_onchain::MeltQuoteOnchainFeeOption> for MeltQuoteOnchainFeeOption {
     fn from(option: cdk::nuts::nut_onchain::MeltQuoteOnchainFeeOption) -> Self {
         Self {
+            fee_index: option.fee_index,
             fee_reserve: option.fee_reserve.into(),
             estimated_blocks: option.estimated_blocks,
         }
@@ -414,8 +417,8 @@ pub struct MeltQuoteOnchainResponse {
     pub request: String,
     /// Available onchain fee options
     pub fee_options: Vec<MeltQuoteOnchainFeeOption>,
-    /// Selected confirmation target, once execution has started
-    pub selected_estimated_blocks: Option<u32>,
+    /// Selected fee option index, once execution has started
+    pub selected_fee_index: Option<u32>,
     /// Broadcast outpoint (`txid:vout`), once available
     pub outpoint: Option<String>,
     /// Change blind signatures as JSON, when the mint returns change
@@ -437,7 +440,7 @@ impl From<cdk::nuts::MeltQuoteOnchainResponse<String>> for MeltQuoteOnchainRespo
             expiry: response.expiry,
             request: response.request,
             fee_options: response.fee_options.into_iter().map(Into::into).collect(),
-            selected_estimated_blocks: response.selected_estimated_blocks,
+            selected_fee_index: response.selected_fee_index,
             outpoint: response.outpoint,
             change,
         }
@@ -467,6 +470,8 @@ pub struct MeltQuote {
     pub payment_proof: Option<String>,
     /// Estimated confirmation target in blocks for onchain quotes
     pub estimated_blocks: Option<u32>,
+    /// Selected fee option index for onchain quotes
+    pub fee_index: Option<u32>,
     /// Payment method
     pub payment_method: PaymentMethod,
     /// Operation ID that reserved this quote
@@ -489,6 +494,7 @@ impl From<cdk::wallet::MeltQuote> for MeltQuote {
             expiry: quote.expiry,
             payment_proof: quote.payment_proof.clone(),
             estimated_blocks: quote.estimated_blocks,
+            fee_index: quote.fee_index,
             payment_method: quote.payment_method.into(),
             used_by_operation: quote.used_by_operation.map(|id| id.to_string()),
             version: quote.version,
@@ -511,6 +517,7 @@ impl TryFrom<MeltQuote> for cdk::wallet::MeltQuote {
             expiry: quote.expiry,
             payment_proof: quote.payment_proof,
             estimated_blocks: quote.estimated_blocks,
+            fee_index: quote.fee_index,
             payment_method: quote.payment_method.into(),
             used_by_operation: quote.used_by_operation,
             version: quote.version,
