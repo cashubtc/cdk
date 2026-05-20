@@ -666,6 +666,8 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           useDaemon: false
         continue-on-error: true
+      - name: Run Nitro codegen
+        run: nix develop -L .#bindings --command bash -c 'cd bindings/react-native && npx nitrogen'
       - name: Run Nitro Rust tests
         run: nix develop -L .#bindings --command just test-nitro
       - name: Run Nitro Node.js FFI tests

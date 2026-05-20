@@ -180,39 +180,3 @@ std::vector<OutputData> HybridOutputDataCreator::createDeterministicData(
 }
 
 } // namespace cashudevkit
-d->data(),
-    static_cast<uint32_t>(seed->size()),
-    static_cast<uint32_t>(counter)
-  );
-  if (!res) throw std::runtime_error("Failed to create deterministic blinded message");
-
-  OutputData out{
-    .amount = amount,
-    .keysetId = keysetId,
-    .blindedSecret = std::string(res->blinded_secret),
-    .blindingFactor = std::string(res->blinding_factor),
-    .secret = std::string(res->secret),
-  };
-  cdk_ffi_blind_result_free(res);
-  return out;
-}
-
-std::vector<OutputData> HybridOutputDataCreator::createDeterministicData(
-    double amount,
-    const std::shared_ptr<ArrayBuffer>& seed,
-    double counter,
-    const std::string& keysetId,
-    const std::vector<KeyEntry>& keys,
-    const std::optional<std::vector<double>>& customSplit) {
-
-  auto amounts = splitAmount(static_cast<uint64_t>(amount), keys, customSplit);
-  std::vector<OutputData> results;
-  results.reserve(amounts.size());
-  for (uint32_t i = 0; i < amounts.size(); i++) {
-    results.push_back(createSingleDeterministicData(
-      static_cast<double>(amounts[i]), seed, counter + i, keysetId));
-  }
-  return results;
-}
-
-} // namespace cashudevkit

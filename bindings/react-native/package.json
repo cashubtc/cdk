@@ -19,7 +19,7 @@
   ],
   "scripts": {
     "build": "bob build",
-    "codegen": "nitro-codegen",
+    "codegen": "nitrogen",
     "prepack": "bob build"
   },
   "keywords": ["react-native", "cashu", "ecash", "nitro"],
@@ -30,7 +30,7 @@
     "react-native-nitro-modules": "*"
   },
   "devDependencies": {
-    "react-native-nitro-codegen": "^0.19.0",
+    "nitrogen": "^0.32.0",
     "react-native-builder-bob": "^0.30.0",
     "typescript": "^5.4.0"
   },
