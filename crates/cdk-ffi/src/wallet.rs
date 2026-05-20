@@ -654,6 +654,15 @@ impl Wallet {
         Ok(amount.into())
     }
 
+    /// Recover from incomplete wallet sagas after a crash
+    ///
+    /// Handles interrupted swap, send, receive, issue, and melt operations. Requires
+    /// network access to the mint for states that need external status checks.
+    pub async fn recover_incomplete_sagas(&self) -> Result<RecoveryReport, FfiError> {
+        let report = self.inner.recover_incomplete_sagas().await?;
+        Ok(report.into())
+    }
+
     /// Calculate fee for a given number of proofs with the specified keyset
     pub async fn calculate_fee(
         &self,

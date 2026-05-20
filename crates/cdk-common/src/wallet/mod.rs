@@ -701,6 +701,8 @@ pub trait Wallet: Send + Sync {
     type Subscription: Send + Sync;
     /// Subscribe params type
     type SubscribeParams: Clone + Send + Sync;
+    /// Saga recovery report type
+    type RecoveryReport: Clone + Send + Sync;
 
     /// Get the mint URL this wallet is connected to
     fn mint_url(&self) -> Self::MintUrl;
@@ -797,6 +799,9 @@ pub trait Wallet: Send + Sync {
 
     /// Check all pending proofs and return total amount still pending
     async fn check_all_pending_proofs(&self) -> Result<Self::Amount, Self::Error>;
+
+    /// Recover from incomplete operations after a crash
+    async fn recover_incomplete_sagas(&self) -> Result<Self::RecoveryReport, Self::Error>;
 
     /// Check if proofs are spent
     async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<ProofState>, Self::Error>;

@@ -717,6 +717,31 @@ impl From<cdk_common::wallet::Restored> for Restored {
         }
     }
 }
+
+/// Report of wallet saga recovery operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, uniffi::Record)]
+pub struct RecoveryReport {
+    /// Operations successfully completed after crash.
+    pub recovered: u64,
+    /// Operations rolled back and resources released.
+    pub compensated: u64,
+    /// Operations still pending and left for a later retry.
+    pub skipped: u64,
+    /// Operations that could not be recovered.
+    pub failed: u64,
+}
+
+impl From<cdk::wallet::RecoveryReport> for RecoveryReport {
+    fn from(report: cdk::wallet::RecoveryReport) -> Self {
+        Self {
+            recovered: report.recovered as u64,
+            compensated: report.compensated as u64,
+            skipped: report.skipped as u64,
+            failed: report.failed as u64,
+        }
+    }
+}
+
 /// FFI-compatible options for confirming a melt operation
 #[derive(Debug, Clone, Default, Serialize, Deserialize, uniffi::Record)]
 pub struct MeltConfirmOptions {

@@ -42,6 +42,7 @@ impl WalletTrait for super::Wallet {
     type PreparedMelt<'a> = super::melt::PreparedMelt<'a>;
     type Subscription = ActiveSubscription;
     type SubscribeParams = WalletParams;
+    type RecoveryReport = super::RecoveryReport;
 
     fn mint_url(&self) -> MintUrl {
         self.mint_url.clone()
@@ -171,6 +172,11 @@ impl WalletTrait for super::Wallet {
     #[instrument(skip(self))]
     async fn check_all_pending_proofs(&self) -> Result<Amount, Self::Error> {
         self.check_all_pending_proofs().await
+    }
+
+    #[instrument(skip(self))]
+    async fn recover_incomplete_sagas(&self) -> Result<super::RecoveryReport, Self::Error> {
+        self.recover_incomplete_sagas().await
     }
 
     #[instrument(skip(self, proofs))]

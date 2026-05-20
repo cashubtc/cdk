@@ -37,7 +37,7 @@ struct OutputRecoveryParams<'a> {
 }
 
 /// Report of recovery operations performed by [`Wallet::recover_incomplete_sagas`].
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RecoveryReport {
     /// Operations successfully completed after crash
     pub recovered: usize,

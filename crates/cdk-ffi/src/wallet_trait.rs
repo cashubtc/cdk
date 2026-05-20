@@ -33,6 +33,7 @@ impl WalletTraitDef for Wallet {
     type PreparedMelt<'a> = PreparedMelt;
     type Subscription = Arc<crate::types::ActiveSubscription>;
     type SubscribeParams = crate::types::SubscribeParams;
+    type RecoveryReport = RecoveryReport;
 
     fn mint_url(&self) -> Self::MintUrl {
         self.inner().mint_url.clone().into()
@@ -196,6 +197,11 @@ impl WalletTraitDef for Wallet {
     async fn check_all_pending_proofs(&self) -> Result<Self::Amount, Self::Error> {
         let amount = WalletTraitDef::check_all_pending_proofs(self.inner().as_ref()).await?;
         Ok(amount.into())
+    }
+
+    async fn recover_incomplete_sagas(&self) -> Result<Self::RecoveryReport, Self::Error> {
+        let report = WalletTraitDef::recover_incomplete_sagas(self.inner().as_ref()).await?;
+        Ok(report.into())
     }
 
     async fn check_proofs_spent(
