@@ -250,8 +250,10 @@ impl CdkBdk {
         let now = crate::util::unix_now();
 
         let mut immediate = Vec::new();
-        let mut ready_standard = Vec::new();
-        let mut ready_economy = Vec::new();
+        let mut standard = Vec::new();
+        let mut economy = Vec::new();
+        let mut has_ready_standard = false;
+        let mut has_ready_economy = false;
 
         for intent in &pending {
             let created_at = match &intent.state {
@@ -314,41 +316,31 @@ impl CdkBdk {
                 PaymentTier::Immediate => immediate.push(intent),
                 PaymentTier::Standard => {
                     if age_secs >= self.batch_config.standard_deadline.as_secs() {
-                        ready_standard.push(intent);
+                        has_ready_standard = true;
                     }
+                    standard.push(intent);
                 }
                 PaymentTier::Economy => {
                     if age_secs >= self.batch_config.economy_deadline.as_secs() {
-                        ready_economy.push(intent);
+                        has_ready_economy = true;
                     }
+                    economy.push(intent);
                 }
             }
         }
 
-        // If there are immediate intents, allow lower-tier ready intents
-        // to piggyback
-        let has_immediate = !immediate.is_empty();
-
-        let mut batch_intents: Vec<_> = immediate;
-
-        if has_immediate {
-            // Piggyback all ready lower-tier intents
-            batch_intents.extend(ready_standard);
-            batch_intents.extend(ready_economy);
-        } else {
-            // Check if we have enough ready intents to form a batch
-            let combined: Vec<_> = ready_standard.into_iter().chain(ready_economy).collect();
-            if combined.len() >= self.batch_config.min_batch_threshold {
-                batch_intents = combined;
-            }
-        }
+        let batch_intents = select_batch_intents(
+            immediate,
+            standard,
+            has_ready_standard,
+            economy,
+            has_ready_economy,
+            self.batch_config.max_batch_size,
+        );
 
         if batch_intents.is_empty() {
             return Ok(());
         }
-
-        // Respect max_batch_size
-        batch_intents.truncate(self.batch_config.max_batch_size);
 
         tracing::info!("Processing batch of {} intents", batch_intents.len());
 
@@ -821,6 +813,25 @@ impl CdkBdk {
     }
 }
 
+fn select_batch_intents<T>(
+    immediate: Vec<T>,
+    standard: Vec<T>,
+    has_ready_standard: bool,
+    economy: Vec<T>,
+    has_ready_economy: bool,
+    max_batch_size: usize,
+) -> Vec<T> {
+    if immediate.is_empty() && !has_ready_standard && !has_ready_economy {
+        return Vec::new();
+    }
+
+    let mut batch_intents = immediate;
+    batch_intents.extend(standard);
+    batch_intents.extend(economy);
+    batch_intents.truncate(max_batch_size);
+    batch_intents
+}
+
 /// Pure helper that does the vout-derivation work for
 /// [`CdkBdk::derive_vout_assignments`].
 ///
@@ -939,6 +950,96 @@ mod tests {
             .require_network(Network::Regtest)
             .unwrap()
             .script_pubkey()
+    }
+
+    #[test]
+    fn select_batch_intents_piggybacks_waiting_lower_tiers_on_immediate() {
+        let selected = select_batch_intents(
+            vec!["immediate"],
+            vec!["standard-a", "standard-b"],
+            false,
+            vec!["economy-a", "economy-b"],
+            false,
+            5,
+        );
+
+        assert_eq!(
+            selected,
+            vec![
+                "immediate",
+                "standard-a",
+                "standard-b",
+                "economy-a",
+                "economy-b"
+            ]
+        );
+    }
+
+    #[test]
+    fn select_batch_intents_prioritizes_immediate_when_truncated() {
+        let selected = select_batch_intents(
+            vec!["immediate-a", "immediate-b"],
+            vec!["standard"],
+            true,
+            vec!["economy-a", "economy-b"],
+            true,
+            3,
+        );
+
+        assert_eq!(selected, vec!["immediate-a", "immediate-b", "standard"]);
+    }
+
+    #[test]
+    fn select_batch_intents_deadline_trigger_includes_all_pending_tiers() {
+        let selected = select_batch_intents(
+            Vec::<&str>::new(),
+            vec!["standard-waiting-a", "standard-ready", "standard-waiting-b"],
+            true,
+            vec!["economy-waiting"],
+            false,
+            10,
+        );
+
+        assert_eq!(
+            selected,
+            vec![
+                "standard-waiting-a",
+                "standard-ready",
+                "standard-waiting-b",
+                "economy-waiting"
+            ]
+        );
+    }
+
+    #[test]
+    fn select_batch_intents_economy_deadline_trigger_includes_all_pending_tiers() {
+        let selected = select_batch_intents(
+            Vec::<&str>::new(),
+            vec!["standard-waiting"],
+            false,
+            vec!["economy-ready", "economy-waiting"],
+            true,
+            10,
+        );
+
+        assert_eq!(
+            selected,
+            vec!["standard-waiting", "economy-ready", "economy-waiting"]
+        );
+    }
+
+    #[test]
+    fn select_batch_intents_waits_for_deadline_without_immediate() {
+        let selected = select_batch_intents(
+            Vec::<&str>::new(),
+            vec!["waiting-standard"],
+            false,
+            vec!["waiting-economy"],
+            false,
+            10,
+        );
+
+        assert!(selected.is_empty());
     }
 
     /// Two intents pay the same address for the same amount within one batch.

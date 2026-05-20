@@ -168,8 +168,8 @@ pub enum Error {
 
     /// `fee_options` contains two entries with the same `fee_index` value.
     ///
-    /// Per NUT the mint MUST NOT return multiple `fee_options` items with the
-    /// same `fee_index` value in one quote.
+    /// Retained for callers that may still handle older validation behavior.
+    /// Current onchain fee option validation only rejects empty option lists.
     #[cfg(feature = "mint")]
     #[error("Duplicate fee_index {index} in onchain fee_options")]
     OnchainFeeOptionsDuplicateIndex {

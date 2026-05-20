@@ -452,11 +452,10 @@ async fn onchain_quote_accepts_duplicate_fee_under_fee_index() {
     assert_eq!(indices, vec![0, 1]);
 }
 
-/// Backend returns duplicate `fee_index` values. The mint must reject this
-/// because the backend owns the index mapping and duplicate selectors would be
-/// ambiguous when executing the quote.
+/// Backend returns duplicate `fee_index` values. The mint preserves them
+/// because NUT-30 does not require fee indexes to be unique.
 #[tokio::test]
-async fn onchain_quote_rejects_duplicate_backend_fee_index() {
+async fn onchain_quote_accepts_duplicate_backend_fee_index() {
     let tiers = vec![
         MeltQuoteOnchainFeeOption {
             fee_index: 7,
@@ -477,14 +476,16 @@ async fn onchain_quote_rejects_duplicate_backend_fee_index() {
     .await
     .unwrap();
 
-    let err = mint
+    let response = mint
         .get_melt_quote(onchain_melt_request())
         .await
-        .expect_err("duplicate backend fee_index must be rejected");
-    match err {
-        Error::OnchainFeeOptionsDuplicateIndex { index: 7 } => {}
-        other => panic!("expected duplicate fee_index error, got {other:?}"),
-    }
+        .expect("duplicate backend fee_index must be accepted");
+    let options = match response {
+        cdk_common::MeltQuoteCreateResponse::Onchain(o) => o,
+        other => panic!("expected onchain quote response, got {other:?}"),
+    };
+    let indices: Vec<u32> = options.fee_options.iter().map(|o| o.fee_index).collect();
+    assert_eq!(indices, vec![7, 7]);
 }
 
 /// Happy path with multiple well-formed tiers: the quote persists and the mint

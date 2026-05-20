@@ -2485,7 +2485,10 @@ async fn test_custom_melt_quote_id_propagates_to_payment_processor() {
         .await
         .expect("custom melt quote");
 
-    let response_quote_id = response.quote().clone();
+    let response_quote_id = response
+        .quote()
+        .expect("custom melt quote response must include a quote_id")
+        .clone();
     let seen_by_processor = processor
         .last_quote_id()
         .expect("processor must have received a quote_id in get_payment_quote");

@@ -2,6 +2,9 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+/// Default average Bitcoin block interval used for delayed batch deadlines.
+pub const DEFAULT_TARGET_BLOCK_TIME_SECS: u64 = 600;
+
 /// Configuration for BDK fee estimation.
 ///
 /// Fee rates are cached per payment tier. Melt quote fees use a conservative
@@ -42,32 +45,73 @@ pub struct BatchConfig {
     pub poll_interval: Duration,
     /// Maximum number of intents to include in a single batch
     pub max_batch_size: usize,
+    /// Average block interval used to derive default delayed tier deadlines.
+    pub target_block_time: Duration,
     /// How long standard-tier intents wait before being eligible
     pub standard_deadline: Duration,
     /// How long economy-tier intents wait before being eligible
     pub economy_deadline: Duration,
-    /// Minimum number of pending intents required before creating a
-    /// non-immediate batch. Immediate tier bypasses this threshold.
-    /// Expired tier deadlines also override this threshold.
-    pub min_batch_threshold: usize,
     /// Maximum age for a pending intent before it is expired and removed.
-    /// Set to `None` to disable automatic expiry (default: 24 hours).
+    /// Set to `None` to disable automatic expiry.
     pub max_intent_age: Option<Duration>,
+    /// Fee tiers exposed in melt quotes. The configured order defines the
+    /// backend-owned `fee_index` values.
+    pub fee_options: Vec<PaymentTier>,
     /// Fee estimation configuration
     pub fee_estimation: FeeEstimationConfig,
 }
 
 impl Default for BatchConfig {
     fn default() -> Self {
+        let poll_interval = Duration::from_secs(30);
+        let target_block_time = Duration::from_secs(DEFAULT_TARGET_BLOCK_TIME_SECS);
+        let standard_deadline =
+            Self::deadline_for_target_blocks(PaymentTier::Standard, target_block_time);
+        let economy_deadline =
+            Self::deadline_for_target_blocks(PaymentTier::Economy, target_block_time);
+
         Self {
-            poll_interval: Duration::from_secs(30),
+            poll_interval,
             max_batch_size: 50,
-            standard_deadline: Duration::from_secs(300),
-            economy_deadline: Duration::from_secs(3600),
-            min_batch_threshold: 1,
-            max_intent_age: Some(Duration::from_secs(24 * 60 * 60)),
+            target_block_time,
+            standard_deadline,
+            economy_deadline,
+            max_intent_age: Some(economy_deadline.saturating_add(poll_interval)),
+            fee_options: vec![PaymentTier::Immediate],
             fee_estimation: FeeEstimationConfig::default(),
         }
+    }
+}
+
+impl BatchConfig {
+    /// Derive a delayed tier deadline from its advertised confirmation target.
+    pub fn deadline_for_target_blocks(tier: PaymentTier, target_block_time: Duration) -> Duration {
+        Duration::from_secs(
+            target_block_time
+                .as_secs()
+                .saturating_mul(u64::from(tier.estimated_blocks())),
+        )
+    }
+
+    /// Validate operator-selected fee tiers.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.target_block_time.is_zero() {
+            return Err("BDK batch_config.target_block_time must be greater than zero".to_string());
+        }
+
+        validate_fee_options(&self.fee_options)
+    }
+
+    /// Resolve a wallet-selected fee index to the configured tier.
+    pub fn tier_for_fee_index(&self, fee_index: Option<u32>) -> Result<PaymentTier, u32> {
+        let Some(fee_index) = fee_index else {
+            return Ok(PaymentTier::Immediate);
+        };
+
+        self.fee_options
+            .get(fee_index as usize)
+            .copied()
+            .ok_or(fee_index)
     }
 }
 
@@ -108,6 +152,34 @@ pub enum PaymentTier {
 }
 
 impl PaymentTier {
+    /// Parse a tier from a configuration name.
+    pub fn from_config_name(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "immediate" => Some(Self::Immediate),
+            "standard" => Some(Self::Standard),
+            "economy" => Some(Self::Economy),
+            _ => None,
+        }
+    }
+
+    /// Stable configuration name for this tier.
+    pub fn config_name(self) -> &'static str {
+        match self {
+            Self::Immediate => "immediate",
+            Self::Standard => "standard",
+            Self::Economy => "economy",
+        }
+    }
+
+    /// Target confirmation blocks advertised for this tier.
+    pub fn estimated_blocks(self) -> u32 {
+        match self {
+            Self::Immediate => 1,
+            Self::Standard => 6,
+            Self::Economy => 144,
+        }
+    }
+
     /// Parse a tier from an optional string value.
     ///
     /// Returns `Immediate` when `None` is provided or the string is
@@ -127,6 +199,28 @@ impl PaymentTier {
             Self::default()
         }
     }
+}
+
+/// Validate an ordered list of exposed fee tiers.
+pub fn validate_fee_options(fee_options: &[PaymentTier]) -> Result<(), String> {
+    if fee_options.is_empty() {
+        return Err("BDK batch_config.fee_options must not be empty".to_string());
+    }
+
+    if fee_options.len() > 3 {
+        return Err("BDK batch_config.fee_options must contain at most 3 entries".to_string());
+    }
+
+    for (idx, tier) in fee_options.iter().enumerate() {
+        if fee_options[..idx].contains(tier) {
+            return Err(format!(
+                "BDK batch_config.fee_options contains duplicate tier '{}'",
+                tier.config_name()
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 /// Opaque key-value metadata attached to a send intent

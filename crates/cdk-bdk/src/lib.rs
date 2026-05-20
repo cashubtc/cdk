@@ -39,6 +39,7 @@ pub use crate::error::Error;
 pub use crate::storage::{BdkStorage, FinalizedReceiveIntentRecord, FinalizedSendIntentRecord};
 pub use crate::types::{
     BatchConfig, FeeEstimationConfig, PaymentMetadata, PaymentTier, SyncConfig,
+    DEFAULT_TARGET_BLOCK_TIME_SECS,
 };
 
 pub mod chain;
@@ -284,6 +285,7 @@ impl CdkBdk {
                 "batch_config.poll_interval must be greater than zero".to_string(),
             ));
         }
+        batch_config.validate().map_err(Error::InvalidConfig)?;
 
         if sync_interval_secs == 0 {
             return Err(Error::InvalidConfig(
@@ -493,24 +495,18 @@ impl MintPayment for CdkBdk {
         )?;
         let amount_sat = onchain_options.amount.clone().to_u64();
 
-        // Estimate fee_reserve for every tier so the mint can present the
-        // wallet with a full menu of options. The backend owns these
+        // Estimate fee_reserve for each configured tier so the mint presents
+        // only the operator-enabled options. The configured order owns the
         // `fee_index` values and resolves them back to tiers during payment.
-        let tiers = [
-            (PaymentTier::Immediate, 1u32),
-            (PaymentTier::Standard, 6u32),
-            (PaymentTier::Economy, 144u32),
-        ];
-
-        let mut fee_options = Vec::with_capacity(tiers.len());
-        for (idx, (tier, estimated_blocks)) in tiers.iter().enumerate() {
+        let mut fee_options = Vec::with_capacity(self.batch_config.fee_options.len());
+        for (idx, tier) in self.batch_config.fee_options.iter().enumerate() {
             let fee_estimate = self
                 .estimate_onchain_fee_reserve(&onchain_options.address, amount_sat, *tier)
                 .await?;
             fee_options.push(MeltQuoteOnchainFeeOption {
                 fee_index: idx as u32,
                 fee_reserve: Amount::from(fee_estimate.fee_reserve_sat),
-                estimated_blocks: *estimated_blocks,
+                estimated_blocks: tier.estimated_blocks(),
             });
         }
 
@@ -521,7 +517,7 @@ impl MintPayment for CdkBdk {
             .iter()
             .min_by_key(|option| u64::from(option.fee_reserve))
             .copied()
-            .expect("tiers is non-empty");
+            .expect("fee_options is validated as non-empty");
 
         // Echo the mint-supplied `quote_id` verbatim per the
         // `OnchainOutgoingPaymentOptions.quote_id` contract. The mint
@@ -559,21 +555,13 @@ impl MintPayment for CdkBdk {
             .unwrap_or(Amount::new(1000, CurrencyUnit::Sat));
         let amount_sat = amount.clone().to_u64();
         let max_fee_sat = max_fee.clone().to_u64();
-        // Resolve the wallet-selected `fee_index` back to a backend tier.
-        // The mint validates that `fee_index` corresponds to one of the
-        // `fee_options` we returned in `get_payment_quote`, so the only valid
-        // values here are 0/1/2 (Immediate/Standard/Economy).
-        let tier = match onchain_options.fee_index {
-            Some(0) => PaymentTier::Immediate,
-            Some(1) => PaymentTier::Standard,
-            Some(2) => PaymentTier::Economy,
-            // No selection or out-of-range index: fall back to Immediate so we
-            // never silently send at the wrong tier.
-            Some(other) => {
-                return Err(Error::UnknownFeeIndex(other).into());
-            }
-            None => PaymentTier::Immediate,
-        };
+        // Resolve the wallet-selected `fee_index` back to a configured tier.
+        // Older callers that omit `fee_index` continue to default to
+        // Immediate.
+        let tier = self
+            .batch_config
+            .tier_for_fee_index(onchain_options.fee_index)
+            .map_err(Error::UnknownFeeIndex)?;
         let metadata = PaymentMetadata::from_optional_json(onchain_options.metadata.as_deref());
         let fee_estimate = self
             .estimate_onchain_fee_reserve(&address, amount_sat, tier)
@@ -906,6 +894,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_new_rejects_zero_target_block_time() {
+        let batch_config = BatchConfig {
+            target_block_time: Duration::ZERO,
+            ..BatchConfig::default()
+        };
+
+        match build_test_instance_with_config(5, Some(batch_config), 60).await {
+            Err(Error::InvalidConfig(message)) => {
+                assert!(message.contains("target_block_time"));
+            }
+            Ok(_) => panic!("zero target block time should be rejected"),
+            Err(err) => panic!("expected invalid config error, got {err}"),
+        }
+    }
+
+    #[test]
+    fn test_default_batch_deadlines_match_advertised_blocks() {
+        let batch_config = BatchConfig::default();
+
+        assert_eq!(batch_config.target_block_time, Duration::from_secs(600));
+        assert_eq!(batch_config.standard_deadline, Duration::from_secs(3600));
+        assert_eq!(batch_config.economy_deadline, Duration::from_secs(86_400));
+        assert_eq!(
+            batch_config.max_intent_age,
+            Some(Duration::from_secs(86_430))
+        );
+    }
+
+    #[tokio::test]
     async fn test_start_then_stop_exits_promptly() {
         let backend = build_test_instance(5).await;
 
@@ -1011,6 +1028,140 @@ mod tests {
             wallet_with_db.wallet.staged().is_none(),
             "quote estimation must not mutate or stage BDK wallet state"
         );
+    }
+
+    #[tokio::test]
+    async fn test_default_fee_options_emit_immediate_only() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
+        fund_backend_wallet(&backend, 100_000).await;
+        let (_quote_id, options) = onchain_options_for(10_000);
+
+        let quote = backend
+            .get_payment_quote(&CurrencyUnit::Sat, options)
+            .await
+            .expect("quote should succeed");
+
+        let fee_options = quote.fee_options.expect("fee options");
+        assert_eq!(fee_options.len(), 1);
+        assert_eq!(fee_options[0].fee_index, 0);
+        assert_eq!(fee_options[0].estimated_blocks, 1);
+    }
+
+    #[tokio::test]
+    async fn test_configured_fee_options_emit_indexes_in_order() {
+        let batch_config = BatchConfig {
+            fee_options: vec![
+                PaymentTier::Immediate,
+                PaymentTier::Standard,
+                PaymentTier::Economy,
+            ],
+            ..BatchConfig::default()
+        };
+        let (backend, _tmp) = build_test_instance_with_config(5, Some(batch_config), 60)
+            .await
+            .expect("build CdkBdk test instance");
+        fund_backend_wallet(&backend, 100_000).await;
+        let (_quote_id, options) = onchain_options_for(10_000);
+
+        let quote = backend
+            .get_payment_quote(&CurrencyUnit::Sat, options)
+            .await
+            .expect("quote should succeed");
+
+        let fee_options = quote.fee_options.expect("fee options");
+        let indexes: Vec<u32> = fee_options.iter().map(|option| option.fee_index).collect();
+        let estimated_blocks: Vec<u32> = fee_options
+            .iter()
+            .map(|option| option.estimated_blocks)
+            .collect();
+
+        assert_eq!(indexes, vec![0, 1, 2]);
+        assert_eq!(estimated_blocks, vec![1, 6, 144]);
+    }
+
+    #[tokio::test]
+    async fn test_configured_fee_index_resolves_by_position() {
+        let batch_config = BatchConfig {
+            fee_options: vec![PaymentTier::Immediate, PaymentTier::Economy],
+            ..BatchConfig::default()
+        };
+        let (backend, _tmp) = build_test_instance_with_config(5, Some(batch_config), 60)
+            .await
+            .expect("build CdkBdk test instance");
+        fund_backend_wallet(&backend, 100_000).await;
+        let (quote_id, mut options) = onchain_options_for(10_000);
+        let OutgoingPaymentOptions::Onchain(onchain) = &mut options else {
+            panic!("expected onchain options");
+        };
+        onchain.fee_index = Some(1);
+        onchain.max_fee_amount = Some(Amount::new(10_000, CurrencyUnit::Sat));
+
+        backend
+            .make_payment(&CurrencyUnit::Sat, options)
+            .await
+            .expect("make_payment should enqueue the intent");
+
+        let intent = backend
+            .storage
+            .get_send_intent_by_quote_id(&quote_id.to_string())
+            .await
+            .expect("lookup send intent by quote id")
+            .expect("send intent should be persisted");
+
+        assert_eq!(intent.tier, PaymentTier::Economy);
+    }
+
+    #[tokio::test]
+    async fn test_make_payment_omitted_fee_index_defaults_to_immediate() {
+        let batch_config = BatchConfig {
+            fee_options: vec![PaymentTier::Immediate, PaymentTier::Economy],
+            ..BatchConfig::default()
+        };
+        let (backend, _tmp) = build_test_instance_with_config(5, Some(batch_config), 60)
+            .await
+            .expect("build CdkBdk test instance");
+        fund_backend_wallet(&backend, 100_000).await;
+        let (quote_id, options) = onchain_options_for(10_000);
+
+        backend
+            .make_payment(&CurrencyUnit::Sat, options)
+            .await
+            .expect("make_payment should enqueue the intent");
+
+        let intent = backend
+            .storage
+            .get_send_intent_by_quote_id(&quote_id.to_string())
+            .await
+            .expect("lookup send intent by quote id")
+            .expect("send intent should be persisted");
+
+        assert_eq!(intent.tier, PaymentTier::Immediate);
+    }
+
+    #[tokio::test]
+    async fn test_new_rejects_invalid_fee_option_lists() {
+        for fee_options in [
+            Vec::new(),
+            vec![PaymentTier::Immediate, PaymentTier::Immediate],
+            vec![
+                PaymentTier::Immediate,
+                PaymentTier::Standard,
+                PaymentTier::Economy,
+                PaymentTier::Immediate,
+            ],
+        ] {
+            let batch_config = BatchConfig {
+                fee_options,
+                ..BatchConfig::default()
+            };
+            match build_test_instance_with_config(5, Some(batch_config), 60).await {
+                Err(Error::InvalidConfig(message)) => {
+                    assert!(message.contains("fee_options"));
+                }
+                Ok(_) => panic!("invalid fee options should be rejected"),
+                Err(err) => panic!("expected invalid config error, got {err}"),
+            }
+        }
     }
 
     #[tokio::test]

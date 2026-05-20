@@ -253,16 +253,18 @@ pub struct BatchConfig {
     /// Maximum number of intents to include in a single batch
     #[serde(default = "default_bdk_max_batch_size")]
     pub max_batch_size: usize,
-    /// How long standard-tier intents wait before being eligible
-    #[serde(default = "default_bdk_standard_deadline_secs")]
-    pub standard_deadline_secs: u64,
-    /// How long economy-tier intents wait before being eligible
-    #[serde(default = "default_bdk_economy_deadline_secs")]
-    pub economy_deadline_secs: u64,
-    /// Minimum number of pending intents required before creating a
-    /// non-immediate batch
-    #[serde(default = "default_bdk_min_batch_threshold")]
-    pub min_batch_threshold: usize,
+    /// Average block interval used to derive default delayed tier deadlines.
+    #[serde(default = "default_bdk_target_block_time_secs")]
+    pub target_block_time_secs: u64,
+    /// Optional override for how long standard-tier intents wait before being eligible
+    #[serde(default)]
+    pub standard_deadline_secs: Option<u64>,
+    /// Optional override for how long economy-tier intents wait before being eligible
+    #[serde(default)]
+    pub economy_deadline_secs: Option<u64>,
+    /// Fee tiers exposed in melt quotes. Order determines fee_index values.
+    #[serde(default = "default_bdk_fee_options")]
+    pub fee_options: Vec<String>,
     /// Quote-time fallback fee rate used when chain estimation fails, in sat/vB.
     #[serde(default = "default_bdk_fee_fallback_sat_per_vb")]
     pub fee_fallback_sat_per_vb: f64,
@@ -286,9 +288,10 @@ impl Default for BatchConfig {
         Self {
             poll_interval_secs: default_bdk_poll_interval_secs(),
             max_batch_size: default_bdk_max_batch_size(),
-            standard_deadline_secs: default_bdk_standard_deadline_secs(),
-            economy_deadline_secs: default_bdk_economy_deadline_secs(),
-            min_batch_threshold: default_bdk_min_batch_threshold(),
+            target_block_time_secs: default_bdk_target_block_time_secs(),
+            standard_deadline_secs: None,
+            economy_deadline_secs: None,
+            fee_options: default_bdk_fee_options(),
             fee_fallback_sat_per_vb: default_bdk_fee_fallback_sat_per_vb(),
             fee_cache_ttl_secs: default_bdk_fee_cache_ttl_secs(),
             quote_max_input_count: default_bdk_quote_max_input_count(),
@@ -393,6 +396,12 @@ impl Bdk {
             return Err("BDK min_send_amount_sat must be >= 1".to_string());
         }
 
+        if self.batch_config.target_block_time_secs == 0 {
+            return Err("BDK batch_config.target_block_time_secs must be >= 1".to_string());
+        }
+
+        validate_bdk_fee_options(&self.batch_config.fee_options)?;
+
         Ok(())
     }
 }
@@ -433,18 +442,29 @@ fn default_bdk_max_batch_size() -> usize {
 }
 
 #[cfg(feature = "bdk")]
-fn default_bdk_standard_deadline_secs() -> u64 {
-    300
+fn default_bdk_target_block_time_secs() -> u64 {
+    cdk_bdk::DEFAULT_TARGET_BLOCK_TIME_SECS
 }
 
 #[cfg(feature = "bdk")]
-fn default_bdk_economy_deadline_secs() -> u64 {
-    3600
+fn default_bdk_fee_options() -> Vec<String> {
+    vec!["immediate".to_string()]
 }
 
 #[cfg(feature = "bdk")]
-fn default_bdk_min_batch_threshold() -> usize {
-    1
+fn validate_bdk_fee_options(fee_options: &[String]) -> Result<(), String> {
+    let tiers = fee_options
+        .iter()
+        .map(|tier| {
+            cdk_bdk::PaymentTier::from_config_name(tier).ok_or_else(|| {
+                format!(
+                    "Unknown BDK batch_config.fee_options tier '{tier}'; expected immediate, standard, or economy"
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    cdk_bdk::types::validate_fee_options(&tiers)
 }
 
 #[cfg(feature = "bdk")]
@@ -1118,10 +1138,21 @@ mod tests {
     use super::*;
 
     #[cfg(feature = "bdk")]
+    fn bdk_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static BDK_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+        BDK_ENV_LOCK
+            .lock()
+            .expect("BDK env test lock should not be poisoned")
+    }
+
+    #[cfg(feature = "bdk")]
     fn clear_bdk_env_vars() {
         std::env::remove_var(crate::env_vars::BDK_MNEMONIC_ENV_VAR);
         std::env::remove_var(crate::env_vars::BDK_NETWORK_ENV_VAR);
         std::env::remove_var(crate::env_vars::BDK_MIN_SEND_AMOUNT_SAT_ENV_VAR);
+        std::env::remove_var(crate::env_vars::BDK_TARGET_BLOCK_TIME_SECS_ENV_VAR);
+        std::env::remove_var(crate::env_vars::BDK_FEE_OPTIONS_ENV_VAR);
         std::env::remove_var(crate::env_vars::ENV_ONCHAIN_BACKEND);
     }
 
@@ -1209,6 +1240,7 @@ min_send_amount_sat = 1200
     #[cfg(feature = "bdk")]
     #[test]
     fn test_bdk_env_min_send_amount_sat_override() {
+        let _guard = bdk_env_lock();
         clear_bdk_env_vars();
         std::env::set_var(crate::env_vars::ENV_ONCHAIN_BACKEND, "bdk");
         std::env::set_var(crate::env_vars::BDK_NETWORK_ENV_VAR, "regtest");
@@ -1227,6 +1259,229 @@ min_send_amount_sat = 1200
         );
 
         clear_bdk_env_vars();
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn test_bdk_default_fee_options_immediate_only() {
+        assert_eq!(
+            Bdk::default().batch_config.fee_options,
+            vec!["immediate".to_string()]
+        );
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn test_bdk_default_batch_deadlines_derive_from_target_block_time() {
+        let batch_config: cdk_bdk::BatchConfig = Bdk::default().batch_config.into();
+
+        assert_eq!(
+            batch_config.target_block_time,
+            std::time::Duration::from_secs(600)
+        );
+        assert_eq!(
+            batch_config.standard_deadline,
+            std::time::Duration::from_secs(3600)
+        );
+        assert_eq!(
+            batch_config.economy_deadline,
+            std::time::Duration::from_secs(86_400)
+        );
+        assert_eq!(
+            batch_config.max_intent_age,
+            Some(std::time::Duration::from_secs(86_430))
+        );
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn test_bdk_config_fee_options_override() {
+        use std::{env, fs};
+
+        let temp_dir = env::temp_dir().join("cdk_test_bdk_fee_options_config");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        let config_content = r#"
+[bdk.batch_config]
+fee_options = ["immediate", "economy"]
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        let settings = Settings::new(Some(&config_path));
+
+        assert_eq!(
+            settings
+                .bdk
+                .as_ref()
+                .expect("bdk config should be present")
+                .batch_config
+                .fee_options,
+            vec!["immediate".to_string(), "economy".to_string()]
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn test_bdk_config_target_block_time_derives_deadlines() {
+        use std::{env, fs};
+
+        let temp_dir = env::temp_dir().join("cdk_test_bdk_target_block_time_config");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        let config_content = r#"
+[bdk.batch_config]
+target_block_time_secs = 300
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        let settings = Settings::new(Some(&config_path));
+        let batch_config: cdk_bdk::BatchConfig = settings
+            .bdk
+            .as_ref()
+            .expect("bdk config should be present")
+            .batch_config
+            .clone()
+            .into();
+
+        assert_eq!(
+            batch_config.target_block_time,
+            std::time::Duration::from_secs(300)
+        );
+        assert_eq!(
+            batch_config.standard_deadline,
+            std::time::Duration::from_secs(1800)
+        );
+        assert_eq!(
+            batch_config.economy_deadline,
+            std::time::Duration::from_secs(43_200)
+        );
+        assert_eq!(
+            batch_config.max_intent_age,
+            Some(std::time::Duration::from_secs(43_230))
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn test_bdk_env_fee_options_override() {
+        let _guard = bdk_env_lock();
+        clear_bdk_env_vars();
+        std::env::set_var(crate::env_vars::ENV_ONCHAIN_BACKEND, "bdk");
+        std::env::set_var(crate::env_vars::BDK_NETWORK_ENV_VAR, "regtest");
+        std::env::set_var(
+            crate::env_vars::BDK_FEE_OPTIONS_ENV_VAR,
+            "immediate,standard,economy",
+        );
+
+        let mut settings = Settings::default();
+        settings.from_env().expect("Failed to apply env vars");
+
+        assert_eq!(
+            settings
+                .bdk
+                .as_ref()
+                .expect("bdk config should be present")
+                .batch_config
+                .fee_options,
+            vec![
+                "immediate".to_string(),
+                "standard".to_string(),
+                "economy".to_string()
+            ]
+        );
+
+        clear_bdk_env_vars();
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn test_bdk_env_target_block_time_override() {
+        let _guard = bdk_env_lock();
+        clear_bdk_env_vars();
+        std::env::set_var(crate::env_vars::ENV_ONCHAIN_BACKEND, "bdk");
+        std::env::set_var(crate::env_vars::BDK_NETWORK_ENV_VAR, "regtest");
+        std::env::set_var(crate::env_vars::BDK_TARGET_BLOCK_TIME_SECS_ENV_VAR, "120");
+
+        let mut settings = Settings::default();
+        settings.from_env().expect("Failed to apply env vars");
+        let batch_config: cdk_bdk::BatchConfig = settings
+            .bdk
+            .as_ref()
+            .expect("bdk config should be present")
+            .batch_config
+            .clone()
+            .into();
+
+        assert_eq!(
+            batch_config.target_block_time,
+            std::time::Duration::from_secs(120)
+        );
+        assert_eq!(
+            batch_config.standard_deadline,
+            std::time::Duration::from_secs(720)
+        );
+        assert_eq!(
+            batch_config.economy_deadline,
+            std::time::Duration::from_secs(17_280)
+        );
+        assert_eq!(
+            batch_config.max_intent_age,
+            Some(std::time::Duration::from_secs(17_310))
+        );
+
+        clear_bdk_env_vars();
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn test_bdk_invalid_fee_options_rejected() {
+        for fee_options in [
+            Vec::new(),
+            vec!["immediate".to_string(), "immediate".to_string()],
+            vec!["urgent".to_string()],
+            vec![
+                "immediate".to_string(),
+                "standard".to_string(),
+                "economy".to_string(),
+                "immediate".to_string(),
+            ],
+        ] {
+            let bdk = Bdk {
+                batch_config: BatchConfig {
+                    fee_options,
+                    ..BatchConfig::default()
+                },
+                ..Default::default()
+            };
+
+            let err = bdk.validate().expect_err("invalid fee options should fail");
+
+            assert!(err.contains("fee_options"));
+        }
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn test_bdk_target_block_time_zero_rejected() {
+        let bdk = Bdk {
+            batch_config: BatchConfig {
+                target_block_time_secs: 0,
+                ..BatchConfig::default()
+            },
+            ..Default::default()
+        };
+
+        let err = bdk
+            .validate()
+            .expect_err("zero target block time should fail");
+
+        assert!(err.contains("target_block_time_secs"));
     }
 
     #[cfg(feature = "bdk")]

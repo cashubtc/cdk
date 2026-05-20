@@ -593,17 +593,14 @@ pub struct PaymentQuoteResponse {
     pub estimated_blocks: Option<u32>,
     /// Explicit onchain fee options the backend is willing to honor.
     ///
-    /// For onchain melt quotes the mint enforces the NUT `fee_options` rules:
-    ///
-    /// - MUST be non-empty.
-    /// - MUST NOT contain duplicate `fee_index` values.
+    /// For onchain melt quotes the mint enforces that `fee_options` is
+    /// non-empty.
     ///
     /// Backends assign stable `fee_index` values and must be able to honor the
     /// selected value later in [`OnchainOutgoingPaymentOptions::fee_index`].
     /// The mint validates, persists, and exposes these values unchanged.
-    /// Onchain backends must return `Some(vec)` here. Violations produce
-    /// [`Error::OnchainFeeOptionsEmpty`](crate::Error::OnchainFeeOptionsEmpty)
-    /// or [`Error::OnchainFeeOptionsDuplicateIndex`](crate::Error::OnchainFeeOptionsDuplicateIndex),
+    /// Onchain backends must return `Some(vec)` here. Empty vectors produce
+    /// [`Error::OnchainFeeOptionsEmpty`](crate::Error::OnchainFeeOptionsEmpty),
     /// and the quote is not persisted.
     pub fee_options: Option<Vec<MeltQuoteOnchainFeeOption>>,
 }

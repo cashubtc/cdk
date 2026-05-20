@@ -539,6 +539,25 @@ impl OnchainBackendSetup for crate::config::Bdk {
 #[cfg(feature = "bdk")]
 impl From<crate::config::BatchConfig> for cdk_bdk::BatchConfig {
     fn from(config: crate::config::BatchConfig) -> Self {
+        let target_block_time = Duration::from_secs(config.target_block_time_secs);
+        let standard_deadline = config
+            .standard_deadline_secs
+            .map(Duration::from_secs)
+            .unwrap_or_else(|| {
+                cdk_bdk::BatchConfig::deadline_for_target_blocks(
+                    cdk_bdk::PaymentTier::Standard,
+                    target_block_time,
+                )
+            });
+        let economy_deadline = config
+            .economy_deadline_secs
+            .map(Duration::from_secs)
+            .unwrap_or_else(|| {
+                cdk_bdk::BatchConfig::deadline_for_target_blocks(
+                    cdk_bdk::PaymentTier::Economy,
+                    target_block_time,
+                )
+            });
         let fee_estimation = cdk_bdk::FeeEstimationConfig {
             fallback_sat_per_vb: config.fee_fallback_sat_per_vb,
             cache_ttl_secs: config.fee_cache_ttl_secs,
@@ -550,10 +569,20 @@ impl From<crate::config::BatchConfig> for cdk_bdk::BatchConfig {
         Self {
             poll_interval: Duration::from_secs(config.poll_interval_secs),
             max_batch_size: config.max_batch_size,
-            standard_deadline: Duration::from_secs(config.standard_deadline_secs),
-            economy_deadline: Duration::from_secs(config.economy_deadline_secs),
-            min_batch_threshold: config.min_batch_threshold,
-            max_intent_age: Some(Duration::from_secs(24 * 60 * 60)),
+            target_block_time,
+            standard_deadline,
+            economy_deadline,
+            max_intent_age: Some(
+                economy_deadline.saturating_add(Duration::from_secs(config.poll_interval_secs)),
+            ),
+            fee_options: config
+                .fee_options
+                .iter()
+                .map(|tier| {
+                    cdk_bdk::PaymentTier::from_config_name(tier)
+                        .expect("BDK fee_options should be validated before setup")
+                })
+                .collect(),
             fee_estimation,
         }
     }

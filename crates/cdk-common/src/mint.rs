@@ -934,11 +934,8 @@ impl MeltQuote {
 
     /// Create a new onchain [`MeltQuote`] with explicit `fee_options`.
     ///
-    /// Preserves backend-provided `fee_index` values and validates the NUT rules
-    /// on `fee_options`:
-    ///
-    /// 1. At least one entry (`OnchainFeeOptionsEmpty`).
-    /// 2. No duplicate `fee_index` (`OnchainFeeOptionsDuplicateIndex`).
+    /// Preserves backend-provided `fee_index` values and validates that the
+    /// quote contains at least one option (`OnchainFeeOptionsEmpty`).
     ///
     /// `fee_reserve` is initialized to the lowest-fee option so the quote has
     /// a definite reserve before the wallet selects a tier. Once the wallet
@@ -1001,9 +998,8 @@ impl MeltQuote {
     /// Onchain fee options for this quote.
     ///
     /// For non-onchain quotes this returns an empty slice. For onchain quotes
-    /// this is guaranteed non-empty with unique `fee_index` values (enforced at
-    /// construction in [`MeltQuote::new_onchain`] and on reload in
-    /// [`MeltQuote::from_db`]).
+    /// this is guaranteed non-empty (enforced at construction in
+    /// [`MeltQuote::new_onchain`] and on reload in [`MeltQuote::from_db`]).
     #[inline]
     pub fn fee_options(&self) -> &[MeltQuoteOnchainFeeOption] {
         &self.fee_options
@@ -1143,29 +1139,16 @@ impl MeltQuote {
 /// Validate the NUT `fee_options` rules for an onchain melt quote.
 ///
 /// Per spec, for every onchain melt quote the mint MUST return at least one
-/// `fee_options` item and MUST NOT return multiple items with the same
-/// `fee_index` value.
+/// `fee_options` item.
 ///
 /// Returns:
 /// - [`Error::OnchainFeeOptionsEmpty`]
 ///   when the slice is empty.
-/// - [`Error::OnchainFeeOptionsDuplicateIndex`]
-///   when two entries share a `fee_index` value.
 pub fn validate_onchain_fee_options(
     fee_options: &[MeltQuoteOnchainFeeOption],
 ) -> Result<(), crate::Error> {
     if fee_options.is_empty() {
         return Err(crate::Error::OnchainFeeOptionsEmpty);
-    }
-
-    let mut seen_indices = std::collections::HashSet::with_capacity(fee_options.len());
-
-    for option in fee_options {
-        if !seen_indices.insert(option.fee_index) {
-            return Err(crate::Error::OnchainFeeOptionsDuplicateIndex {
-                index: option.fee_index,
-            });
-        }
     }
 
     Ok(())
@@ -1820,7 +1803,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_onchain_fee_options_rejects_duplicate_fee_index() {
+    fn validate_onchain_fee_options_allows_duplicate_fee_index() {
         let options = [
             MeltQuoteOnchainFeeOption {
                 fee_index: 10,
@@ -1828,17 +1811,12 @@ mod tests {
                 estimated_blocks: 3,
             },
             MeltQuoteOnchainFeeOption {
-                fee_index: 30,
+                fee_index: 10,
                 fee_reserve: Amount::from(20),
                 estimated_blocks: 6,
             },
         ];
-        match validate_onchain_fee_options(&options)
-            .expect_err("duplicate fee_index must be rejected")
-        {
-            crate::Error::OnchainFeeOptionsDuplicateIndex { index: 0 } => {}
-            other => panic!("unexpected error: {other:?}"),
-        }
+        validate_onchain_fee_options(&options).expect("duplicate fee_index must be allowed");
     }
 
     #[test]
@@ -1962,7 +1940,7 @@ mod tests {
     }
 
     #[test]
-    fn new_onchain_rejects_duplicate_backend_fee_index() {
+    fn new_onchain_preserves_duplicate_backend_fee_index() {
         let options = vec![
             MeltQuoteOnchainFeeOption {
                 fee_index: 7,
@@ -1975,7 +1953,7 @@ mod tests {
                 estimated_blocks: 6,
             },
         ];
-        let err = MeltQuote::new_onchain(
+        let quote = MeltQuote::new_onchain(
             None,
             MeltPaymentRequest::Onchain {
                 address: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq".to_string(),
@@ -1987,12 +1965,10 @@ mod tests {
             None,
             options,
         )
-        .expect_err("duplicate backend fee_index must be rejected");
+        .expect("duplicate backend fee_index must be preserved");
 
-        assert!(matches!(
-            err,
-            crate::Error::OnchainFeeOptionsDuplicateIndex { index: 7 }
-        ));
+        let returned: Vec<u32> = quote.fee_options().iter().map(|o| o.fee_index).collect();
+        assert_eq!(returned, vec![7, 7]);
     }
 
     #[test]
@@ -2070,7 +2046,7 @@ mod tests {
     }
 
     #[test]
-    fn from_db_rejects_duplicate_onchain_fee_options() {
+    fn from_db_preserves_duplicate_onchain_fee_options() {
         let options = vec![
             MeltQuoteOnchainFeeOption {
                 fee_index: 0,
@@ -2083,7 +2059,7 @@ mod tests {
                 estimated_blocks: 6,
             },
         ];
-        let err = MeltQuote::from_db(
+        let quote = MeltQuote::from_db(
             QuoteId::new_uuid(),
             CurrencyUnit::Sat,
             MeltPaymentRequest::Onchain {
@@ -2104,11 +2080,10 @@ mod tests {
             options,
             None,
         )
-        .expect_err("corrupt fee_options on reload must be rejected");
-        assert!(matches!(
-            err,
-            crate::Error::OnchainFeeOptionsDuplicateIndex { index: 0 }
-        ));
+        .expect("duplicate onchain fee_options on reload must be preserved");
+
+        let returned: Vec<u32> = quote.fee_options().iter().map(|o| o.fee_index).collect();
+        assert_eq!(returned, vec![0, 0]);
     }
 
     #[test]

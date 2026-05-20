@@ -625,8 +625,7 @@ impl Mint {
             return Err(Error::OnchainFeeOptionsEmpty);
         };
 
-        // `MeltQuote::new_onchain` applies the NUT validation
-        // (non-empty + unique estimated_blocks + unique fee_reserve). Failures are
+        // `MeltQuote::new_onchain` applies the NUT validation. Failures are
         // returned before the quote is persisted, so a backend that violates
         // the contract never leaves state behind in the mint.
         let quote = MeltQuote::new_onchain(

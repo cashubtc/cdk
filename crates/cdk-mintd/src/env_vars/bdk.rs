@@ -19,13 +19,14 @@ pub const BDK_RESERVE_FEE_MIN_ENV_VAR: &str = "CDK_MINTD_BDK_RESERVE_FEE_MIN";
 pub const BDK_MIN_RECEIVE_AMOUNT_SAT_ENV_VAR: &str = "CDK_MINTD_BDK_MIN_RECEIVE_AMOUNT_SAT";
 pub const BDK_MIN_SEND_AMOUNT_SAT_ENV_VAR: &str = "CDK_MINTD_BDK_MIN_SEND_AMOUNT_SAT";
 pub const BDK_SYNC_INTERVAL_SECS_ENV_VAR: &str = "CDK_MINTD_BDK_SYNC_INTERVAL_SECS";
+pub const BDK_TARGET_BLOCK_TIME_SECS_ENV_VAR: &str = "CDK_MINTD_BDK_TARGET_BLOCK_TIME_SECS";
 pub const BDK_BATCH_POLL_INTERVAL_SECS_ENV_VAR: &str = "CDK_MINTD_BDK_BATCH_POLL_INTERVAL_SECS";
 pub const BDK_BATCH_MAX_BATCH_SIZE_ENV_VAR: &str = "CDK_MINTD_BDK_BATCH_MAX_BATCH_SIZE";
 pub const BDK_BATCH_STANDARD_DEADLINE_SECS_ENV_VAR: &str =
     "CDK_MINTD_BDK_BATCH_STANDARD_DEADLINE_SECS";
 pub const BDK_BATCH_ECONOMY_DEADLINE_SECS_ENV_VAR: &str =
     "CDK_MINTD_BDK_BATCH_ECONOMY_DEADLINE_SECS";
-pub const BDK_BATCH_MIN_BATCH_THRESHOLD_ENV_VAR: &str = "CDK_MINTD_BDK_BATCH_MIN_BATCH_THRESHOLD";
+pub const BDK_FEE_OPTIONS_ENV_VAR: &str = "CDK_MINTD_BDK_FEE_OPTIONS";
 pub const BDK_FEE_FALLBACK_SAT_PER_VB_ENV_VAR: &str = "CDK_MINTD_BDK_FEE_FALLBACK_SAT_PER_VB";
 pub const BDK_FEE_CACHE_TTL_SECS_ENV_VAR: &str = "CDK_MINTD_BDK_FEE_CACHE_TTL_SECS";
 pub const BDK_QUOTE_MAX_INPUT_COUNT_ENV_VAR: &str = "CDK_MINTD_BDK_QUOTE_MAX_INPUT_COUNT";
@@ -110,6 +111,12 @@ impl Bdk {
             }
         }
 
+        if let Ok(target_block_time_secs) = env::var(BDK_TARGET_BLOCK_TIME_SECS_ENV_VAR) {
+            if let Ok(target_block_time_secs) = target_block_time_secs.parse::<u64>() {
+                self.batch_config.target_block_time_secs = target_block_time_secs;
+            }
+        }
+
         if let Ok(poll_interval_secs) = env::var(BDK_BATCH_POLL_INTERVAL_SECS_ENV_VAR) {
             if let Ok(poll_interval_secs) = poll_interval_secs.parse::<u64>() {
                 self.batch_config.poll_interval_secs = poll_interval_secs;
@@ -124,20 +131,21 @@ impl Bdk {
 
         if let Ok(standard_deadline_secs) = env::var(BDK_BATCH_STANDARD_DEADLINE_SECS_ENV_VAR) {
             if let Ok(standard_deadline_secs) = standard_deadline_secs.parse::<u64>() {
-                self.batch_config.standard_deadline_secs = standard_deadline_secs;
+                self.batch_config.standard_deadline_secs = Some(standard_deadline_secs);
             }
         }
 
         if let Ok(economy_deadline_secs) = env::var(BDK_BATCH_ECONOMY_DEADLINE_SECS_ENV_VAR) {
             if let Ok(economy_deadline_secs) = economy_deadline_secs.parse::<u64>() {
-                self.batch_config.economy_deadline_secs = economy_deadline_secs;
+                self.batch_config.economy_deadline_secs = Some(economy_deadline_secs);
             }
         }
 
-        if let Ok(min_batch_threshold) = env::var(BDK_BATCH_MIN_BATCH_THRESHOLD_ENV_VAR) {
-            if let Ok(min_batch_threshold) = min_batch_threshold.parse::<usize>() {
-                self.batch_config.min_batch_threshold = min_batch_threshold;
-            }
+        if let Ok(fee_options) = env::var(BDK_FEE_OPTIONS_ENV_VAR) {
+            self.batch_config.fee_options = fee_options
+                .split(',')
+                .map(|tier| tier.trim().to_string())
+                .collect();
         }
 
         if let Ok(fallback_sat_per_vb) = env::var(BDK_FEE_FALLBACK_SAT_PER_VB_ENV_VAR) {

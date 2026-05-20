@@ -157,12 +157,21 @@ onchain_backend = "fakewallet"
 # # Every field below has a matching CDK_MINTD_BDK_* env-var override; see
 # # crates/cdk-mintd/src/env_vars/bdk.rs.
 # # [bdk.batch_config]
+# # By default only Immediate is exposed. Uncomment and choose any subset of
+# # the existing tiers to expose more fee options; order defines fee_index.
+# # Warning: Standard and Economy delay transaction construction so more
+# # melts can share one on-chain transaction. On mints without high melt
+# # volume, delayed batching increases the chance that a quote fails at
+# # consumption time because fee conditions or available coins changed
+# # before broadcast. Low-volume mints should keep Immediate only.
+# # fee_options = ["immediate", "standard", "economy"]
+# #
 # # # --- Batching cadence ---
-# # poll_interval_secs = 30           # batch processor wake interval
+# # poll_interval_secs = 30           # batch processor wake/check interval
 # # max_batch_size = 50               # max intents per batch transaction
-# # standard_deadline_secs = 300      # wait before flushing Standard tier
-# # economy_deadline_secs = 3600      # wait before flushing Economy tier
-# # min_batch_threshold = 1           # min pending intents to flush non-Immediate
+# # target_block_time_secs = 600      # maps advertised blocks to default wait time
+# # standard_deadline_secs = 3600     # optional override; default is 6 blocks * target_block_time_secs
+# # economy_deadline_secs = 86400     # optional override; default is 144 blocks * target_block_time_secs
 # #
 # # # --- Fee-rate sourcing ---
 # # fee_fallback_sat_per_vb = 2.0     # used only if chain source errors
