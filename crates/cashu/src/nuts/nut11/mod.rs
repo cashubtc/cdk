@@ -361,7 +361,7 @@ pub(crate) fn valid_signatures(
 impl BlindedMessage {
     /// Sign [BlindedMessage]
     pub fn sign_p2pk(&mut self, secret_key: SecretKey) -> Result<(), Error> {
-        let msg: [u8; 33] = self.blinded_secret.to_bytes();
+        let msg = self.blinded_secret.to_bytes();
         let signature: Signature = secret_key.sign(&msg)?;
 
         let signatures = vec![signature.to_string()];

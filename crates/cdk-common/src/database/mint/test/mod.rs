@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 // For derivation path parsing
 use bitcoin::bip32::DerivationPath;
-use cashu::CurrencyUnit;
+use cashu::{CurrencyUnit, KeySetVersion};
 use web_time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
@@ -48,6 +48,31 @@ where
         final_expiry: None,
         derivation_path: DerivationPath::from_str("m/0'/0'/0'").unwrap(),
         derivation_path_index: Some(0),
+        input_fee_ppk: 0,
+        amounts: standard_keyset_amounts(32),
+        issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
+    };
+    let mut writer = db.begin_transaction().await.expect("db.begin()");
+    writer.add_keyset_info(keyset_info).await.unwrap();
+    writer.commit().await.expect("commit()");
+    keyset_id
+}
+
+#[inline]
+async fn setup_bls_keyset<DB>(db: &DB) -> Id
+where
+    DB: KeysDatabase<Err = crate::database::Error>,
+{
+    let keyset_id =
+        Id::from_bytes(&[vec![KeySetVersion::Version02.to_byte()], vec![2; 32]].concat()).unwrap();
+    let keyset_info = MintKeySetInfo {
+        id: keyset_id,
+        unit: CurrencyUnit::Sat,
+        active: true,
+        valid_from: 0,
+        final_expiry: None,
+        derivation_path: DerivationPath::from_str("m/0'/0'/1'").unwrap(),
+        derivation_path_index: Some(1),
         input_fee_ppk: 0,
         amounts: standard_keyset_amounts(32),
         issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
@@ -191,6 +216,7 @@ macro_rules! mint_db_test {
             $make_db_fn,
             add_and_find_proofs,
             add_duplicate_proofs,
+            bls_g1_proofs_can_be_stored_queried_and_spent,
             kvstore_functionality,
             add_mint_quote,
             add_mint_quote_only_once,

@@ -161,10 +161,22 @@ impl Wallet {
         Ok(restored.into())
     }
 
-    /// Verify token DLEQ proofs
+    /// Verify token proof signatures
+    pub async fn verify_token_signatures(
+        &self,
+        token: std::sync::Arc<Token>,
+    ) -> Result<(), FfiError> {
+        let cdk_token = token.inner.clone();
+        self.inner.verify_token_signatures(&cdk_token).await?;
+        Ok(())
+    }
+
+    /// Verify token DLEQ proofs.
+    ///
+    /// Deprecated: use `verify_token_signatures` instead.
     pub async fn verify_token_dleq(&self, token: std::sync::Arc<Token>) -> Result<(), FfiError> {
         let cdk_token = token.inner.clone();
-        self.inner.verify_token_dleq(&cdk_token).await?;
+        self.inner.verify_token_signatures(&cdk_token).await?;
         Ok(())
     }
 

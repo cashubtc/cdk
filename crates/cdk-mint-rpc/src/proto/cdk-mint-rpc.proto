@@ -130,8 +130,10 @@ message RotateNextKeysetRequest {
     string unit = 1;
     repeated uint64 amounts = 2;
     optional uint64 input_fee_ppk = 3;
+    // Deprecated: use keyset_version instead.
     optional bool use_keyset_v2 = 4;
     optional uint64 final_expiry = 5;
+    optional string keyset_version = 6;
 }
 
 

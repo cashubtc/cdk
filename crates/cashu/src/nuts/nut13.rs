@@ -10,9 +10,9 @@ use tracing::instrument;
 
 use super::nut00::{BlindedMessage, PreMint, PreMintSecrets};
 use super::nut01::SecretKey;
-use super::nut02::Id;
+use super::nut02::{Id, KeySetVersion};
 use crate::amount::{FeeAndAmounts, SplitTarget};
-use crate::dhke::blind_message;
+use crate::dhke::blind_message_for_version;
 use crate::secret::Secret;
 use crate::util::hex;
 use crate::{Amount, SECP256K1};
@@ -47,8 +47,10 @@ impl Secret {
     /// Create new [`Secret`] from seed
     pub fn from_seed(seed: &[u8; 64], keyset_id: Id, counter: u32) -> Result<Self, Error> {
         match keyset_id.get_version() {
-            super::nut02::KeySetVersion::Version00 => Self::legacy_derive(seed, keyset_id, counter),
-            super::nut02::KeySetVersion::Version01 => Self::derive(seed, keyset_id, counter),
+            KeySetVersion::Version00 => Self::legacy_derive(seed, keyset_id, counter),
+            KeySetVersion::Version01 | KeySetVersion::Version02 => {
+                Self::derive(seed, keyset_id, counter)
+            }
         }
     }
 
@@ -64,7 +66,7 @@ impl Secret {
         )))
     }
 
-    fn derive(seed: &[u8; 64], keyset_id: Id, counter: u32) -> Result<Self, Error> {
+    fn derive(seed: &[u8], keyset_id: Id, counter: u32) -> Result<Self, Error> {
         let mut message = Vec::new();
         message.extend_from_slice(b"Cashu_KDF_HMAC_SHA256");
         message.extend_from_slice(&keyset_id.to_bytes());
@@ -84,8 +86,9 @@ impl SecretKey {
     /// Create new [`SecretKey`] from seed
     pub fn from_seed(seed: &[u8; 64], keyset_id: Id, counter: u32) -> Result<Self, Error> {
         match keyset_id.get_version() {
-            super::nut02::KeySetVersion::Version00 => Self::legacy_derive(seed, keyset_id, counter),
-            super::nut02::KeySetVersion::Version01 => Self::derive(seed, keyset_id, counter),
+            KeySetVersion::Version00 => Self::legacy_derive(seed, keyset_id, counter),
+            KeySetVersion::Version01 => Self::derive(seed, keyset_id, counter),
+            KeySetVersion::Version02 => Self::derive_bls(seed, keyset_id, counter),
         }
     }
 
@@ -99,7 +102,7 @@ impl SecretKey {
         Ok(Self::from(derived_xpriv.private_key))
     }
 
-    fn derive(seed: &[u8; 64], keyset_id: Id, counter: u32) -> Result<Self, Error> {
+    fn derive(seed: &[u8], keyset_id: Id, counter: u32) -> Result<Self, Error> {
         let mut message = Vec::new();
         message.extend_from_slice(b"Cashu_KDF_HMAC_SHA256");
         message.extend_from_slice(&keyset_id.to_bytes());
@@ -114,6 +117,21 @@ impl SecretKey {
         Ok(Self::from(secp256k1::SecretKey::from_slice(
             &result_bytes[..32],
         )?))
+    }
+
+    fn derive_bls(seed: &[u8], keyset_id: Id, counter: u32) -> Result<Self, Error> {
+        let mut message = Vec::new();
+        message.extend_from_slice(b"Cashu_KDF_HMAC_SHA256");
+        message.extend_from_slice(&keyset_id.to_bytes());
+        message.extend_from_slice(&(counter as u64).to_be_bytes());
+        message.extend_from_slice(b"\x01");
+
+        let mut engine = HmacEngine::<sha256::Hash>::new(seed);
+        engine.input(&message);
+        let hmac_result = hmac::Hmac::<sha256::Hash>::from_engine(engine);
+        let result_bytes = hmac_result.to_byte_array();
+
+        Ok(Self::bls_from_reduced_bytes(&result_bytes))
     }
 }
 
@@ -137,7 +155,11 @@ impl PreMintSecrets {
             let secret = Secret::from_seed(seed, keyset_id, counter)?;
             let blinding_factor = SecretKey::from_seed(seed, keyset_id, counter)?;
 
-            let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
+            let (blinded, r) = blind_message_for_version(
+                &secret.to_bytes(),
+                Some(blinding_factor),
+                keyset_id.get_version(),
+            )?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
@@ -171,7 +193,11 @@ impl PreMintSecrets {
             let secret = Secret::from_seed(seed, keyset_id, counter)?;
             let blinding_factor = SecretKey::from_seed(seed, keyset_id, counter)?;
 
-            let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
+            let (blinded, r) = blind_message_for_version(
+                &secret.to_bytes(),
+                Some(blinding_factor),
+                keyset_id.get_version(),
+            )?;
 
             let amount = Amount::ZERO;
 
@@ -204,7 +230,11 @@ impl PreMintSecrets {
             let secret = Secret::from_seed(seed, keyset_id, i)?;
             let blinding_factor = SecretKey::from_seed(seed, keyset_id, i)?;
 
-            let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
+            let (blinded, r) = blind_message_for_version(
+                &secret.to_bytes(),
+                Some(blinding_factor),
+                keyset_id.get_version(),
+            )?;
 
             let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
 
@@ -469,6 +499,27 @@ mod tests {
         // Verify outputs are valid hex strings of correct length
         assert_eq!(secret.to_string().len(), 64); // 32 bytes as hex
         assert_eq!(secret_key.secret_bytes().len(), 32);
+    }
+
+    #[test]
+    fn test_v3_secret_derivation_vector() {
+        let seed = b"test seed v3 reduction";
+        let keyset_id =
+            Id::from_str("02ce4c47836fd0e64f37a08254777b7fd0dedb95fc1ddd0acadf5600674c743c5d")
+                .unwrap();
+        let counter = 2;
+
+        let secret = Secret::derive(seed, keyset_id, counter).unwrap();
+        let blinding_factor = SecretKey::derive_bls(seed, keyset_id, counter).unwrap();
+
+        assert_eq!(
+            secret.to_string(),
+            "4729fe85ab3886ce03259ac658735ff534c9cd41b2b364d202ff497e4ee48809"
+        );
+        assert_eq!(
+            blinding_factor.to_secret_hex(),
+            "08bb237d625b73022cd50f6fedfb660c6125b676a4819474241c264903259d2f"
+        );
     }
 
     #[test]

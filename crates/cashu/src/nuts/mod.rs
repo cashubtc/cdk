@@ -48,7 +48,7 @@ pub use nut00::{PreMint, PreMintSecrets};
 pub use nut01::{Keys, KeysResponse, PublicKey, SecretKey};
 #[cfg(feature = "mint")]
 pub use nut02::MintKeySet;
-pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
+pub use nut02::{Id, KeySet, KeySetInfo, KeySetVersion, KeysetResponse};
 #[cfg(feature = "wallet")]
 pub use nut03::PreSwap;
 pub use nut03::{SwapRequest, SwapResponse};

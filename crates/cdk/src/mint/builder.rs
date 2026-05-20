@@ -7,6 +7,7 @@ use bitcoin::bip32::DerivationPath;
 use cdk_common::database::{DynMintAuthDatabase, DynMintDatabase, MintKeysDatabase};
 use cdk_common::error::Error;
 use cdk_common::nut00::KnownMethod;
+use cdk_common::nut02::KeySetVersion;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::DynMintPayment;
@@ -53,8 +54,8 @@ pub struct KeysetRotation {
     pub amounts: Vec<u64>,
     /// Input fee
     pub input_fee_ppk: u64,
-    /// Whether to use keyset V2 (Version01) or V1 (Version00)
-    pub use_keyset_v2: bool,
+    /// Keyset version to create.
+    pub keyset_id_type: KeySetVersion,
     /// Optional expiry timestamp (unix seconds)
     pub final_expiry: Option<u64>,
 }
@@ -125,6 +126,14 @@ impl MintBuilder {
     pub fn with_keyset_v2(mut self, use_keyset_v2: Option<bool>) -> Self {
         self.use_keyset_v2 = use_keyset_v2;
         self
+    }
+
+    fn preferred_keyset_version(&self) -> KeySetVersion {
+        match self.use_keyset_v2 {
+            Some(false) => KeySetVersion::Version00,
+            Some(true) => KeySetVersion::Version01,
+            None => KeySetVersion::Version02,
+        }
     }
 
     /// Add a keyset rotation to execute during build.
@@ -620,13 +629,18 @@ impl MintBuilder {
 
                 // Check if version matches explicit preference
                 if let Some(want_v2) = self.use_keyset_v2 {
-                    let is_v2 =
-                        keyset.id.get_version() == cdk_common::nut02::KeySetVersion::Version01;
-                    if want_v2 && !is_v2 {
-                        tracing::info!("Rotating keyset for unit {} due to explicit V2 preference (current is V1)", unit);
-                        rotate = true;
-                    } else if !want_v2 && is_v2 {
-                        tracing::info!("Rotating keyset for unit {} due to explicit V1 preference (current is V2)", unit);
+                    let desired_version = if want_v2 {
+                        KeySetVersion::Version01
+                    } else {
+                        KeySetVersion::Version00
+                    };
+                    if keyset.id.get_version() != desired_version {
+                        tracing::info!(
+                            "Rotating keyset for unit {} due to explicit {} preference (current is {})",
+                            unit,
+                            desired_version,
+                            keyset.id.get_version()
+                        );
                         rotate = true;
                     }
                 }
@@ -642,11 +656,7 @@ impl MintBuilder {
                         unit: unit.clone(),
                         amounts: amounts.clone(),
                         input_fee_ppk: *fee,
-                        keyset_id_type: if self.use_keyset_v2.unwrap_or(true) {
-                            cdk_common::nut02::KeySetVersion::Version01
-                        } else {
-                            cdk_common::nut02::KeySetVersion::Version00
-                        },
+                        keyset_id_type: self.preferred_keyset_version(),
                         final_expiry: None,
                     })
                     .await?;
@@ -660,11 +670,7 @@ impl MintBuilder {
                     unit: rotation.unit.clone(),
                     amounts: rotation.amounts.clone(),
                     input_fee_ppk: rotation.input_fee_ppk,
-                    keyset_id_type: if rotation.use_keyset_v2 {
-                        cdk_common::nut02::KeySetVersion::Version01
-                    } else {
-                        cdk_common::nut02::KeySetVersion::Version00
-                    },
+                    keyset_id_type: rotation.keyset_id_type,
                     final_expiry: rotation.final_expiry,
                 })
                 .await?;
