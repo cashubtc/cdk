@@ -33,18 +33,19 @@ impl MintPubSubSpec {
         request: &NotificationId<QuoteId>,
         melt_quote: MeltQuote,
     ) -> Option<MintEvent<QuoteId>> {
+        let payment_method = melt_quote.payment_method.clone();
+
         match request {
-            NotificationId::MeltQuote(_) => match &melt_quote.payment_method {
+            NotificationId::MeltQuote(_) => match payment_method {
                 cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => {
                     Some(MeltQuoteBolt11Response::from(melt_quote).into())
                 }
                 cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => {
                     Some(MeltQuoteBolt12Response::from(melt_quote).into())
                 }
-                cdk_common::PaymentMethod::Custom(method) => Some(
-                    NotificationPayload::CustomMeltQuoteResponse(method.clone(), melt_quote.into())
-                        .into(),
-                ),
+                cdk_common::PaymentMethod::Custom(method) => {
+                    Some(NotificationPayload::CustomMeltQuoteResponse(method, melt_quote.into()).into())
+                }
             },
             NotificationId::MeltQuoteBolt11(_) => {
                 Some(MeltQuoteBolt11Response::from(melt_quote).into())
@@ -64,8 +65,10 @@ impl MintPubSubSpec {
         request: &NotificationId<QuoteId>,
         mint_quote: MintQuote,
     ) -> Option<MintEvent<QuoteId>> {
+        let payment_method = mint_quote.payment_method.clone();
+
         match request {
-            NotificationId::MintQuote(_) => match &mint_quote.payment_method {
+            NotificationId::MintQuote(_) => match payment_method {
                 cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => {
                     Some(MintQuoteBolt11Response::from(mint_quote).into())
                 }
@@ -78,8 +81,7 @@ impl MintPubSubSpec {
                     MintQuoteCustomResponse::try_from(mint_quote)
                         .ok()
                         .map(|response| {
-                            NotificationPayload::CustomMintQuoteResponse(method.clone(), response)
-                                .into()
+                            NotificationPayload::CustomMintQuoteResponse(method, response).into()
                         })
                 }
             },
