@@ -23,7 +23,7 @@ jobs:
       - name: Checkout monorepo
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.cdk_ref || github.ref }}
+          ref: ${{ inputs.cdk_ref || inputs.release_tag }}
 
       - name: Clone cdk-swift
         run: |

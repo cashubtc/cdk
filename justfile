@@ -904,7 +904,8 @@ ffi-release-swift VERSION:
   gh workflow run "FFI - Swift Bindings" \
     --repo cashubtc/cdk \
     --field release_tag="v{{VERSION}}" \
-    --field cdk_version="{{VERSION}}"
+    --field cdk_version="{{VERSION}}" \
+    --field cdk_ref="v{{VERSION}}"
 
   echo "✅ Swift workflow triggered successfully!"
 
