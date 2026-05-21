@@ -40,6 +40,10 @@ pub struct PaymentRequest {
     #[serde(rename = "pm")]
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub preferred_mints: Vec<MintUrl>,
+    /// Supported Methods
+    #[serde(rename = "sm")]
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub supported_methods: Vec<String>,
     /// Description
     #[serde(rename = "d")]
     pub description: Option<String>,
@@ -112,6 +116,7 @@ pub struct PaymentRequestBuilder {
     single_use: Option<bool>,
     mints: Vec<MintUrl>,
     preferred_mints: Vec<MintUrl>,
+    supported_methods: Vec<String>,
     description: Option<String>,
     transports: Vec<Transport>,
     nut10: Option<Nut10SecretRequest>,
@@ -172,6 +177,18 @@ impl PaymentRequestBuilder {
         self
     }
 
+    /// Set supported methods
+    pub fn supported_methods(mut self, supported_methods: Vec<String>) -> Self {
+        self.supported_methods = supported_methods;
+        self
+    }
+
+    /// Add a supported method
+    pub fn add_supported_method<S: Into<String>>(mut self, method: S) -> Self {
+        self.supported_methods.push(method.into());
+        self
+    }
+
     /// Set description
     pub fn description<S: Into<String>>(mut self, description: S) -> Self {
         self.description = Some(description.into());
@@ -209,6 +226,7 @@ impl PaymentRequestBuilder {
             single_use: self.single_use,
             mints: self.mints,
             preferred_mints: self.preferred_mints,
+            supported_methods: self.supported_methods,
             description: self.description,
             transports: self.transports,
             nut10: self.nut10,
@@ -277,6 +295,7 @@ mod tests {
                 .parse()
                 .expect("valid mint url")],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: None,
             transports: vec![transport.clone()],
             nut10: None,
@@ -727,6 +746,7 @@ mod tests {
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: Some("Test both formats".to_string()),
             transports: vec![],
             nut10: None,
@@ -813,5 +833,34 @@ mod tests {
         let invalid_encoded_str =
             format!("creqA{}", general_purpose::URL_SAFE.encode(invalid_encoded));
         assert!(PaymentRequest::from_str(&invalid_encoded_str).is_err());
+    }
+
+    #[test]
+    fn test_supported_methods_payment_request() {
+        let json = r#"{
+          "i": "sm_test",
+          "a": 100,
+          "u": "sat",
+          "m": ["https://mint.example.com"],
+          "sm": ["bolt11", "bolt12"]
+        }"#;
+
+        let payment_request: PaymentRequest = serde_json::from_str(json).unwrap();
+
+        assert_eq!(payment_request.payment_id.as_ref().unwrap(), "sm_test");
+        assert_eq!(payment_request.amount.unwrap(), Amount::from(100));
+        assert_eq!(payment_request.unit.clone().unwrap(), CurrencyUnit::Sat);
+        assert_eq!(
+            payment_request.mints,
+            vec![MintUrl::from_str("https://mint.example.com").unwrap()]
+        );
+        assert_eq!(
+            payment_request.supported_methods,
+            vec!["bolt11".to_string(), "bolt12".to_string()]
+        );
+
+        let encoded = payment_request.to_string();
+        let decoded = PaymentRequest::from_str(&encoded).unwrap();
+        assert_eq!(payment_request, decoded);
     }
 }
