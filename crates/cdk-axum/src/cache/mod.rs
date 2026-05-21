@@ -97,15 +97,15 @@ impl HttpCache {
     /// awaiting async operations. Using a sync `From` trait with
     /// `Handle::current().block_on()` would panic when called from within
     /// an active Tokio runtime.
-    pub async fn from_config(config: config::Config) -> Self {
+    pub async fn from_config(config: config::Config) -> anyhow::Result<Self> {
         let ttl = Duration::from_secs(config.ttl.unwrap_or(DEFAULT_TTL_SECS));
         let tti = Duration::from_secs(config.tti.unwrap_or(DEFAULT_TTI_SECS));
 
         match config.backend {
-            config::Backend::Memory => Self::new(ttl, tti, None),
+            config::Backend::Memory => Ok(Self::new(ttl, tti, None)),
             #[cfg(feature = "redis")]
             config::Backend::Redis(redis_config) => {
-                let client = if redis_config.use_cluster {
+                let redis_client = if redis_config.use_cluster {
                     match redis_config.cluster_nodes {
                         Some(nodes) => {
                             // Explicit timeouts
@@ -116,13 +116,16 @@ impl HttpCache {
                             match builder.build() {
                                 Ok(cluster_client) => {
                                     match cluster_client.get_async_connection().await {
-                                        Ok(conn) => Some(RedisClient::Cluster(conn)),
+                                        Ok(conn) => RedisClient::Cluster(conn),
                                         Err(err) => {
                                             tracing::error!(
                                                 "Failed to connect to Redis cluster: {}",
                                                 err
                                             );
-                                            None
+                                            return Err(anyhow::anyhow!(
+                                                "Failed to connect to Redis cluster: {}",
+                                                err
+                                            ));
                                         }
                                     }
                                 }
@@ -131,62 +134,59 @@ impl HttpCache {
                                         "Failed to create Redis cluster client: {}",
                                         err
                                     );
-                                    None
+                                    return Err(anyhow::anyhow!(
+                                        "Failed to create Redis cluster client: {}",
+                                        err
+                                    ));
                                 }
                             }
                         }
                         None => {
-                            tracing::error!(
-                                "Redis cluster nodes not provided, falling back to memory cache"
-                            );
-                            None
+                            tracing::error!("Redis cluster nodes not provided");
+                            return Err(anyhow::anyhow!("Redis cluster nodes not provided"));
                         }
                     }
                 } else {
                     let connection_string = redis_config.connection_string.clone();
                     if connection_string.is_empty() {
-                        tracing::error!(
-                            "Redis connection string is empty, falling back to memory cache"
-                        );
-                        None
+                        tracing::error!("Redis connection string is empty");
+                        return Err(anyhow::anyhow!("Redis connection string is empty"));
                     } else {
                         match redis::Client::open(connection_string) {
                             Ok(single_client) => {
                                 match redis::aio::ConnectionManager::new(single_client).await {
-                                    Ok(conn) => Some(RedisClient::Single(conn)),
+                                    Ok(conn) => RedisClient::Single(conn),
                                     Err(err) => {
                                         tracing::error!(
                                             "Failed to create Redis connection manager: {}",
                                             err
                                         );
-                                        None
+                                        return Err(anyhow::anyhow!(
+                                            "Failed to create Redis connection manager: {}",
+                                            err
+                                        ));
                                     }
                                 }
                             }
                             Err(err) => {
                                 tracing::error!("Failed to create Redis client: {}", err);
-                                None
+                                return Err(anyhow::anyhow!(
+                                    "Failed to create Redis client: {}",
+                                    err
+                                ));
                             }
                         }
                     }
                 };
 
-                match client {
-                    Some(redis_client) => {
-                        let storage = HttpCacheRedis::new(redis_client).set_prefix(
-                            redis_config
-                                .key_prefix
-                                .unwrap_or_default()
-                                .as_bytes()
-                                .to_vec(),
-                        );
-                        Self::new(ttl, tti, Some(Box::new(storage)))
-                    }
-                    None => {
-                        tracing::warn!("Redis initialization failed, using in-memory cache");
-                        Self::new(ttl, tti, None)
-                    }
-                }
+                let storage = HttpCacheRedis::new(redis_client).set_prefix(
+                    redis_config
+                        .key_prefix
+                        .unwrap_or_default()
+                        .as_bytes()
+                        .to_vec(),
+                );
+                Ok(Self::new(ttl, tti, Some(Box::new(storage))))
             }
         }
     }

@@ -388,7 +388,7 @@ async fn configure_mint_builder(
         .with_batch_minting(Some(DEFAULT_BATCH_MINT_SIZE), Some(payment_methods.clone()));
 
     // Configure caching with payment methods
-    let mint_builder = configure_cache(settings, mint_builder, &payment_methods).await;
+    let mint_builder = configure_cache(settings, mint_builder, &payment_methods).await?;
 
     // Configure transaction limits
     let mint_builder =
@@ -707,7 +707,7 @@ async fn configure_cache(
     settings: &config::Settings,
     mint_builder: MintBuilder,
     payment_methods: &[String],
-) -> MintBuilder {
+) -> Result<MintBuilder> {
     let mut cached_endpoints = vec![
         // Always include swap endpoint
         CachedEndpoint::new(NUT19Method::Post, NUT19Path::Swap),
@@ -726,8 +726,8 @@ async fn configure_cache(
         ));
     }
 
-    let cache: HttpCache = HttpCache::from_config(settings.info.http_cache.clone()).await;
-    mint_builder.with_cache(Some(cache.ttl.as_secs()), cached_endpoints)
+    let cache: HttpCache = HttpCache::from_config(settings.info.http_cache.clone()).await?;
+    Ok(mint_builder.with_cache(Some(cache.ttl.as_secs()), cached_endpoints))
 }
 
 async fn setup_authentication(
@@ -948,7 +948,7 @@ async fn start_services_with_shutdown(
 ) -> Result<()> {
     let listen_addr = settings.info.listen_host.clone();
     let listen_port = settings.info.listen_port;
-    let cache: HttpCache = HttpCache::from_config(settings.info.http_cache.clone()).await;
+    let cache: HttpCache = HttpCache::from_config(settings.info.http_cache.clone()).await?;
 
     #[cfg(feature = "management-rpc")]
     let mut rpc_enabled = false;
