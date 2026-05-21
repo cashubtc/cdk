@@ -223,6 +223,7 @@ impl PaymentRequest {
         let mut single_use: Option<bool> = None;
         let mut mints: Vec<MintUrl> = Vec::new();
         let mut preferred_mints: Vec<MintUrl> = Vec::new();
+        let mut supported_methods: Vec<String> = Vec::new();
         let mut description: Option<String> = None;
         let mut transports: Vec<Transport> = Vec::new();
         let mut nut10: Option<Nut10SecretRequest> = None;
@@ -301,6 +302,11 @@ impl PaymentRequest {
                         MintUrl::from_str(&mint_str).map_err(|_| Error::InvalidStructure)?;
                     preferred_mints.push(mint_url);
                 }
+                0x0a => {
+                    // supported_methods: string (repeatable)
+                    let method = String::from_utf8(value).map_err(|_| Error::InvalidUtf8)?;
+                    supported_methods.push(method);
+                }
                 _ => {
                     // Unknown tags are ignored
                 }
@@ -318,6 +324,7 @@ impl PaymentRequest {
             single_use,
             mints,
             preferred_mints,
+            supported_methods,
             description,
             transports,
             nut10,
@@ -378,6 +385,11 @@ impl PaymentRequest {
         // 0x09 preferred_mints: string (repeatable)
         for mint in &self.preferred_mints {
             writer.write_tlv(0x09, mint.to_string().as_bytes());
+        }
+
+        // 0x0a supported_methods: string (repeatable)
+        for method in &self.supported_methods {
+            writer.write_tlv(0x0a, method.as_bytes());
         }
 
         Ok(writer.into_bytes())
@@ -806,6 +818,7 @@ mod tests {
             single_use: Some(true),
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: Some("Test payment".to_string()),
             transports: vec![transport],
             nut10: None,
@@ -836,6 +849,7 @@ mod tests {
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -865,6 +879,7 @@ mod tests {
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: Some("P2PK locked payment".to_string()),
             transports: vec![],
             nut10: Some(nut10.clone()),
@@ -888,6 +903,7 @@ mod tests {
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -934,6 +950,7 @@ mod tests {
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -954,6 +971,7 @@ mod tests {
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -1131,6 +1149,7 @@ mod tests {
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: Some("Nostr payment".to_string()),
             transports: vec![transport],
             nut10: None,
@@ -1176,6 +1195,7 @@ mod tests {
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: Some("Nostr payment with relays".to_string()),
             transports: vec![transport],
             nut10: None,
@@ -1224,6 +1244,7 @@ mod tests {
             single_use: Some(true),
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: Some("Coffee".to_string()),
             transports: vec![transport],
             nut10: None,
@@ -1301,6 +1322,7 @@ mod tests {
                 MintUrl::from_str("https://testnut.cashu.space").unwrap(),
             ],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: Some("Payment with multiple transports and mints".to_string()),
             transports: vec![transport1, transport2],
             nut10: None,
@@ -1796,6 +1818,7 @@ mod tests {
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: Some("Test payment description".to_string()),
             transports: vec![],
             nut10: None,
@@ -1832,6 +1855,7 @@ mod tests {
             single_use: Some(true),
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -1863,6 +1887,7 @@ mod tests {
             single_use: Some(false),
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -1894,6 +1919,7 @@ mod tests {
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -1926,6 +1952,7 @@ mod tests {
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -2121,6 +2148,7 @@ mod tests {
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: None,
             transports: vec![], // Empty transports = in-band per NUT-26
             nut10: None,
@@ -2221,6 +2249,7 @@ mod tests {
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -2259,6 +2288,7 @@ mod tests {
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             preferred_mints: vec![],
+            supported_methods: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -2312,5 +2342,22 @@ mod tests {
         let invalid_req: PaymentRequest = serde_json::from_str(invalid_json).unwrap();
         let invalid_encoded = invalid_req.to_bech32_string().unwrap();
         assert!(PaymentRequest::from_bech32_string(&invalid_encoded).is_err());
+    }
+
+    #[test]
+    fn test_supported_methods_payment_request_nut26() {
+        let json = r#"{
+          "i": "sm_test",
+          "a": 100,
+          "u": "sat",
+          "m": ["https://mint.example.com"],
+          "sm": ["bolt11", "bolt12"]
+        }"#;
+
+        let payment_request: PaymentRequest = serde_json::from_str(json).unwrap();
+
+        let encoded = payment_request.to_bech32_string().unwrap();
+        let decoded = PaymentRequest::from_bech32_string(&encoded).unwrap();
+        assert_eq!(payment_request, decoded);
     }
 }
