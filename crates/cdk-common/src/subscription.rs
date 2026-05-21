@@ -24,10 +24,17 @@ impl SubscriptionRequest for Params {
         self.id.clone()
     }
 
+    #[allow(deprecated)]
     fn try_get_topics(&self) -> Result<Vec<Self::Topic>, Error> {
         self.filters
             .iter()
             .map(|filter| match self.kind {
+                Kind::MintQuote => QuoteId::from_str(filter)
+                    .map(NotificationId::MintQuote)
+                    .map_err(|_| Error::ParsingError(filter.to_owned())),
+                Kind::MeltQuote => QuoteId::from_str(filter)
+                    .map(NotificationId::MeltQuote)
+                    .map_err(|_| Error::ParsingError(filter.to_owned())),
                 Kind::Bolt11MeltQuote => QuoteId::from_str(filter)
                     .map(NotificationId::MeltQuoteBolt11)
                     .map_err(|_| Error::ParsingError(filter.to_owned())),
@@ -45,6 +52,8 @@ impl SubscriptionRequest for Params {
                     .map(NotificationId::MeltQuoteBolt12)
                     .map_err(|_| Error::ParsingError(filter.to_owned())),
                 Kind::Custom(ref s) => {
+                    // TODO: Remove this legacy custom-kind compatibility once old
+                    // websocket quote kind strings are no longer accepted by mints.
                     if let Some(method) = s.strip_suffix("_mint_quote") {
                         QuoteId::from_str(filter)
                             .map(|id| NotificationId::MintQuoteCustom(method.to_string(), id))
@@ -77,11 +86,14 @@ impl SubscriptionRequest for WalletParams {
         self.id.clone()
     }
 
+    #[allow(deprecated)]
     fn try_get_topics(&self) -> Result<Vec<Self::Topic>, Error> {
         self.filters
             .iter()
             .map(|filter| {
                 Ok(match self.kind {
+                    Kind::MintQuote => NotificationId::MintQuote(filter.to_owned()),
+                    Kind::MeltQuote => NotificationId::MeltQuote(filter.to_owned()),
                     Kind::Bolt11MeltQuote => NotificationId::MeltQuoteBolt11(filter.to_owned()),
                     Kind::Bolt11MintQuote => NotificationId::MintQuoteBolt11(filter.to_owned()),
                     Kind::ProofState => PublicKey::from_str(filter)
@@ -91,6 +103,8 @@ impl SubscriptionRequest for WalletParams {
                     Kind::Bolt12MintQuote => NotificationId::MintQuoteBolt12(filter.to_owned()),
                     Kind::Bolt12MeltQuote => NotificationId::MeltQuoteBolt12(filter.to_owned()),
                     Kind::Custom(ref s) => {
+                        // TODO: Remove this legacy custom-kind compatibility once old
+                        // websocket quote kind strings are no longer accepted by wallets.
                         if let Some(method) = s.strip_suffix("_mint_quote") {
                             NotificationId::MintQuoteCustom(method.to_string(), filter.to_owned())
                         } else if let Some(method) = s.strip_suffix("_melt_quote") {

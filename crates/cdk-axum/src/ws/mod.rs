@@ -229,7 +229,7 @@ mod tests {
         // the channel closes immediately and the ActiveSubscription is dropped
         // before the test can observe the active_subscribers count.
         Params {
-            kind: cdk::nuts::nut17::Kind::Bolt11MintQuote,
+            kind: cdk::nuts::nut17::Kind::MintQuote,
             filters: vec![QuoteId::new_uuid().to_string()],
             id: Arc::new(SubId::from(sub_id)),
         }

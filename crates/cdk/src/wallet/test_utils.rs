@@ -271,8 +271,8 @@ pub fn test_mint_info() -> MintInfo {
                         PaymentMethod::Known(KnownMethod::Bolt11),
                         CurrencyUnit::Sat,
                         vec![
-                            nut17::WsCommand::Bolt11MintQuote,
-                            nut17::WsCommand::Bolt11MeltQuote,
+                            nut17::WsCommand::MintQuote,
+                            nut17::WsCommand::MeltQuote,
                             nut17::WsCommand::ProofState,
                         ],
                     ),
@@ -280,8 +280,8 @@ pub fn test_mint_info() -> MintInfo {
                         PaymentMethod::Known(KnownMethod::Bolt12),
                         CurrencyUnit::Sat,
                         vec![
-                            nut17::WsCommand::Bolt12MintQuote,
-                            nut17::WsCommand::Bolt12MeltQuote,
+                            nut17::WsCommand::MintQuote,
+                            nut17::WsCommand::MeltQuote,
                             nut17::WsCommand::ProofState,
                         ],
                     ),

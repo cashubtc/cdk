@@ -11,12 +11,28 @@ use crate::error::FfiError;
 /// FFI-compatible SubscriptionKind
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum SubscriptionKind {
+    /// Generic mint quote subscription
+    MintQuote,
+    /// Generic melt quote subscription
+    MeltQuote,
+    #[deprecated(
+        note = "Temporary backwards compatibility for legacy NUT-17 FFI subscription kinds. TODO: remove once downstream clients migrate to generic kinds."
+    )]
     /// Bolt 11 Melt Quote
     Bolt11MeltQuote,
+    #[deprecated(
+        note = "Temporary backwards compatibility for legacy NUT-17 FFI subscription kinds. TODO: remove once downstream clients migrate to generic kinds."
+    )]
     /// Bolt 11 Mint Quote
     Bolt11MintQuote,
+    #[deprecated(
+        note = "Temporary backwards compatibility for legacy NUT-17 FFI subscription kinds. TODO: remove once downstream clients migrate to generic kinds."
+    )]
     /// Bolt 12 Mint Quote
     Bolt12MintQuote,
+    #[deprecated(
+        note = "Temporary backwards compatibility for legacy NUT-17 FFI subscription kinds. TODO: remove once downstream clients migrate to generic kinds."
+    )]
     /// Bolt 12 Melt Quote
     Bolt12MeltQuote,
     /// Proof State
@@ -24,20 +40,26 @@ pub enum SubscriptionKind {
 }
 
 impl From<SubscriptionKind> for cdk::nuts::nut17::Kind {
+    #[allow(deprecated)]
     fn from(kind: SubscriptionKind) -> Self {
         match kind {
-            SubscriptionKind::Bolt11MeltQuote => cdk::nuts::nut17::Kind::Bolt11MeltQuote,
-            SubscriptionKind::Bolt11MintQuote => cdk::nuts::nut17::Kind::Bolt11MintQuote,
-            SubscriptionKind::Bolt12MintQuote => cdk::nuts::nut17::Kind::Bolt12MintQuote,
-            SubscriptionKind::Bolt12MeltQuote => cdk::nuts::nut17::Kind::Bolt12MeltQuote,
+            SubscriptionKind::MintQuote => cdk::nuts::nut17::Kind::MintQuote,
+            SubscriptionKind::MeltQuote => cdk::nuts::nut17::Kind::MeltQuote,
+            SubscriptionKind::Bolt11MeltQuote => cdk::nuts::nut17::Kind::MeltQuote,
+            SubscriptionKind::Bolt11MintQuote => cdk::nuts::nut17::Kind::MintQuote,
+            SubscriptionKind::Bolt12MintQuote => cdk::nuts::nut17::Kind::MintQuote,
+            SubscriptionKind::Bolt12MeltQuote => cdk::nuts::nut17::Kind::MeltQuote,
             SubscriptionKind::ProofState => cdk::nuts::nut17::Kind::ProofState,
         }
     }
 }
 
 impl From<cdk::nuts::nut17::Kind> for SubscriptionKind {
+    #[allow(deprecated)]
     fn from(kind: cdk::nuts::nut17::Kind) -> Self {
         match kind {
+            cdk::nuts::nut17::Kind::MintQuote => SubscriptionKind::MintQuote,
+            cdk::nuts::nut17::Kind::MeltQuote => SubscriptionKind::MeltQuote,
             cdk::nuts::nut17::Kind::Bolt11MeltQuote => SubscriptionKind::Bolt11MeltQuote,
             cdk::nuts::nut17::Kind::Bolt11MintQuote => SubscriptionKind::Bolt11MintQuote,
             cdk::nuts::nut17::Kind::Bolt12MintQuote => SubscriptionKind::Bolt12MintQuote,

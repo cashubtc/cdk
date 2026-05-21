@@ -178,25 +178,28 @@ impl From<WalletSubscription> for WalletParams {
             },
             WalletSubscription::Bolt11MintQuoteState(filters) => WalletParams {
                 filters,
-                kind: Kind::Bolt11MintQuote,
+                kind: Kind::MintQuote,
                 id,
             },
             WalletSubscription::Bolt11MeltQuoteState(filters) => WalletParams {
                 filters,
-                kind: Kind::Bolt11MeltQuote,
+                kind: Kind::MeltQuote,
                 id,
             },
             WalletSubscription::Bolt12MintQuoteState(filters) => WalletParams {
                 filters,
-                kind: Kind::Bolt12MintQuote,
+                kind: Kind::MintQuote,
                 id,
             },
             WalletSubscription::Bolt12MeltQuoteState(filters) => WalletParams {
                 filters,
-                kind: Kind::Bolt12MeltQuote,
+                kind: Kind::MeltQuote,
                 id,
             },
             WalletSubscription::MeltQuoteCustom(method, filters) => WalletParams {
+                // TODO: Switch custom wallet subscriptions to the generic melt
+                // quote kind once the local subscription topic carries the
+                // payment method separately from the websocket kind.
                 filters,
                 kind: Kind::Custom(format!("{}_melt_quote", method)),
                 id,

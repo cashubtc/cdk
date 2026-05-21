@@ -29,6 +29,80 @@ pub struct MintPubSubSpec {
 }
 
 impl MintPubSubSpec {
+    fn melt_quote_event_for_request(
+        request: &NotificationId<QuoteId>,
+        melt_quote: MeltQuote,
+    ) -> Option<MintEvent<QuoteId>> {
+        let payment_method = melt_quote.payment_method.clone();
+
+        match request {
+            NotificationId::MeltQuote(_) => match payment_method {
+                cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => {
+                    Some(MeltQuoteBolt11Response::from(melt_quote).into())
+                }
+                cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => {
+                    Some(MeltQuoteBolt12Response::from(melt_quote).into())
+                }
+                cdk_common::PaymentMethod::Custom(method) => {
+                    Some(NotificationPayload::CustomMeltQuoteResponse(method, melt_quote.into()).into())
+                }
+            },
+            NotificationId::MeltQuoteBolt11(_) => {
+                Some(MeltQuoteBolt11Response::from(melt_quote).into())
+            }
+            NotificationId::MeltQuoteBolt12(_) => {
+                Some(MeltQuoteBolt12Response::from(melt_quote).into())
+            }
+            NotificationId::MeltQuoteCustom(method, _) => Some(
+                NotificationPayload::CustomMeltQuoteResponse(method.clone(), melt_quote.into())
+                    .into(),
+            ),
+            _ => None,
+        }
+    }
+
+    fn mint_quote_event_for_request(
+        request: &NotificationId<QuoteId>,
+        mint_quote: MintQuote,
+    ) -> Option<MintEvent<QuoteId>> {
+        let payment_method = mint_quote.payment_method.clone();
+
+        match request {
+            NotificationId::MintQuote(_) => match payment_method {
+                cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => {
+                    Some(MintQuoteBolt11Response::from(mint_quote).into())
+                }
+                cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => {
+                    MintQuoteBolt12Response::try_from(mint_quote)
+                        .ok()
+                        .map(Into::into)
+                }
+                cdk_common::PaymentMethod::Custom(method) => {
+                    MintQuoteCustomResponse::try_from(mint_quote)
+                        .ok()
+                        .map(|response| {
+                            NotificationPayload::CustomMintQuoteResponse(method, response).into()
+                        })
+                }
+            },
+            NotificationId::MintQuoteBolt11(_) => {
+                Some(MintQuoteBolt11Response::from(mint_quote).into())
+            }
+            NotificationId::MintQuoteBolt12(_) => MintQuoteBolt12Response::try_from(mint_quote)
+                .ok()
+                .map(Into::into),
+            NotificationId::MintQuoteCustom(method, _) => {
+                MintQuoteCustomResponse::try_from(mint_quote)
+                    .ok()
+                    .map(|response| {
+                        NotificationPayload::CustomMintQuoteResponse(method.clone(), response)
+                            .into()
+                    })
+            }
+            _ => None,
+        }
+    }
+
     /// Call Mint::check_mint_quote_payments to update quotes by pinging the payment backend
     async fn get_mint_quotes(
         &self,
@@ -70,9 +144,10 @@ impl MintPubSubSpec {
         let mint_quote_ids = request
             .iter()
             .filter_map(|idx| match idx {
-                NotificationId::MintQuoteBolt11(uuid) | NotificationId::MintQuoteBolt12(uuid) => {
-                    Some(uuid.clone())
-                }
+                NotificationId::MintQuote(uuid)
+                | NotificationId::MintQuoteBolt11(uuid)
+                | NotificationId::MintQuoteBolt12(uuid)
+                | NotificationId::MintQuoteCustom(_, uuid) => Some(uuid.clone()),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -84,7 +159,10 @@ impl MintPubSubSpec {
         for idx in request.iter() {
             match idx {
                 NotificationId::ProofState(pk) => public_keys.push(*pk),
-                NotificationId::MeltQuoteBolt11(uuid) => {
+                NotificationId::MeltQuote(uuid)
+                | NotificationId::MeltQuoteBolt11(uuid)
+                | NotificationId::MeltQuoteBolt12(uuid)
+                | NotificationId::MeltQuoteCustom(_, uuid) => {
                     // TODO: In the HTTP handler, we check with the LN backend if a payment is in a pending quote state to resolve stuck payments.
                     // Implement similar logic here for WebSocket-only wallets.
                     if let Some(melt_quote) = self
@@ -93,43 +171,20 @@ impl MintPubSubSpec {
                         .await
                         .map_err(|e| e.to_string())?
                     {
-                        let melt_quote: MeltQuoteBolt11Response<_> = melt_quote.into();
-                        to_return.push(melt_quote.into());
+                        if let Some(event) = Self::melt_quote_event_for_request(idx, melt_quote) {
+                            to_return.push(event);
+                        }
                     }
                 }
-                NotificationId::MeltQuoteBolt12(uuid) => {
-                    if let Some(melt_quote) = self
-                        .db
-                        .get_melt_quote(uuid)
-                        .await
-                        .map_err(|e| e.to_string())?
-                    {
-                        let melt_quote: MeltQuoteBolt12Response<_> = melt_quote.into();
-                        to_return.push(melt_quote.into());
-                    }
-                }
-                NotificationId::MintQuoteBolt11(uuid) | NotificationId::MintQuoteBolt12(uuid) => {
+                NotificationId::MintQuote(uuid)
+                | NotificationId::MintQuoteBolt11(uuid)
+                | NotificationId::MintQuoteBolt12(uuid)
+                | NotificationId::MintQuoteCustom(_, uuid) => {
                     if let Some(mint_quote) = mint_quotes.get(uuid).cloned() {
-                        let mint_quote = match idx {
-                            NotificationId::MintQuoteBolt11(_) => {
-                                let response: MintQuoteBolt11Response<QuoteId> = mint_quote.into();
-                                response.into()
-                            }
-                            NotificationId::MintQuoteBolt12(_) => match mint_quote.try_into() {
-                                Ok(response) => {
-                                    let response: MintQuoteBolt12Response<QuoteId> = response;
-                                    response.into()
-                                }
-                                Err(_) => continue,
-                            },
-                            _ => continue,
-                        };
-
-                        to_return.push(mint_quote);
+                        if let Some(event) = Self::mint_quote_event_for_request(idx, mint_quote) {
+                            to_return.push(event);
+                        }
                     }
-                }
-                NotificationId::MintQuoteCustom(_, _) | NotificationId::MeltQuoteCustom(_, _) => {
-                    continue;
                 }
             }
         }
@@ -387,8 +442,8 @@ mod tests {
         };
         let events = spec
             .get_events_from_db(&[
-                NotificationId::MintQuoteBolt11(first_quote_id.clone()),
-                NotificationId::MintQuoteBolt11(second_quote_id.clone()),
+                NotificationId::MintQuote(first_quote_id.clone()),
+                NotificationId::MintQuote(second_quote_id.clone()),
             ])
             .await
             .expect("get events");
