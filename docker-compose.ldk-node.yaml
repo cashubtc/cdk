@@ -46,7 +46,7 @@ services:
     container_name: mint-ldk-node
     ports:
       - "8085:8085"
-      - "8091:8091" # LDK admin dashboard (WARNING!!! Do not expose to network! Doing so will leave LDK node funds accessible by whole network)
+      - "127.0.0.1:8091:8091" # LDK admin dashboard; host-local only because it has no authentication
     environment:
       - CDK_MINTD_URL=https://example.com
       - CDK_MINTD_LN_BACKEND=ldk-node
