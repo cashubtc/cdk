@@ -113,36 +113,48 @@ where
     fn get_topics(&self) -> Vec<Self::Topic> {
         match &self.0 {
             NotificationPayload::MeltQuoteBolt11Response(r) => {
+                // TODO: Remove the legacy per-method topic fan-out once old
+                // websocket quote kinds are no longer supported by the mint.
                 // TODO: MeltQuoteBolt12Response is a type alias for MeltQuoteBolt11Response.
                 // Since NotificationPayload uses untagged serde, all melt responses are
                 // deserialized as Bolt11. We broadcast to both topics to ensure Bolt12
                 // subscribers receive the event. This workaround should be addressed by
                 // properly distinguishing the response types in the protocol.
                 vec![
+                    NotificationId::MeltQuote(r.quote.to_owned()),
                     NotificationId::MeltQuoteBolt11(r.quote.to_owned()),
                     NotificationId::MeltQuoteBolt12(r.quote.to_owned()),
                 ]
             }
             NotificationPayload::MintQuoteBolt11Response(r) => {
-                vec![NotificationId::MintQuoteBolt11(r.quote.to_owned())]
+                vec![
+                    NotificationId::MintQuote(r.quote.to_owned()),
+                    NotificationId::MintQuoteBolt11(r.quote.to_owned()),
+                ]
             }
             NotificationPayload::MintQuoteBolt12Response(r) => {
-                vec![NotificationId::MintQuoteBolt12(r.quote.to_owned())]
+                vec![
+                    NotificationId::MintQuote(r.quote.to_owned()),
+                    NotificationId::MintQuoteBolt12(r.quote.to_owned()),
+                ]
             }
             NotificationPayload::MeltQuoteBolt12Response(r) => {
-                vec![NotificationId::MeltQuoteBolt12(r.quote.to_owned())]
+                vec![
+                    NotificationId::MeltQuote(r.quote.to_owned()),
+                    NotificationId::MeltQuoteBolt12(r.quote.to_owned()),
+                ]
             }
             NotificationPayload::CustomMintQuoteResponse(method, r) => {
-                vec![NotificationId::MintQuoteCustom(
-                    method.clone(),
-                    r.quote.to_owned(),
-                )]
+                vec![
+                    NotificationId::MintQuote(r.quote.to_owned()),
+                    NotificationId::MintQuoteCustom(method.clone(), r.quote.to_owned()),
+                ]
             }
             NotificationPayload::CustomMeltQuoteResponse(method, r) => {
-                vec![NotificationId::MeltQuoteCustom(
-                    method.clone(),
-                    r.quote.to_owned(),
-                )]
+                vec![
+                    NotificationId::MeltQuote(r.quote.to_owned()),
+                    NotificationId::MeltQuoteCustom(method.clone(), r.quote.to_owned()),
+                ]
             }
             NotificationPayload::ProofState(p) => vec![NotificationId::ProofState(p.y.to_owned())],
         }

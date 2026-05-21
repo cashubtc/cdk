@@ -838,8 +838,8 @@ impl Mint {
                         Ok(PaymentOutcome::Pending) => {
                             // Wait for the background task to complete the payment
                             let kind = match quote_for_spawn.payment_method {
-                                PaymentMethod::Known(KnownMethod::Bolt11) => Kind::Bolt11MeltQuote,
-                                PaymentMethod::Known(KnownMethod::Bolt12) => Kind::Bolt12MeltQuote,
+                                PaymentMethod::Known(KnownMethod::Bolt11)
+                                | PaymentMethod::Known(KnownMethod::Bolt12) => Kind::MeltQuote,
                                 PaymentMethod::Custom(ref method) => {
                                     Kind::Custom(format!("{}_melt_quote", method))
                                 }
