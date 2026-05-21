@@ -96,7 +96,7 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 tracing-appender = "0.2"
 uniffi = "0.30"
 url = "2.3"
-uuid = { version = "1.17", features = ["v4", "serde"] }
+uuid = { version = "1.17", features = ["v4", "v7", "serde"] }
 maud = { version = "0.27.0", features = ["axum"] }
 serde_with = "3"
 reqwest = { version = "0.12", default-features = false, features = [

@@ -78,7 +78,7 @@ pub(crate) struct ReceiveSaga<'a, S> {
 impl<'a> ReceiveSaga<'a, Initial> {
     /// Create a new receive saga in the Initial state.
     pub fn new(wallet: &'a Wallet) -> Self {
-        let operation_id = uuid::Uuid::new_v4();
+        let operation_id = uuid::Uuid::now_v7();
 
         Self {
             wallet,

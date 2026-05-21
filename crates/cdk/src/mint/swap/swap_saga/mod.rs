@@ -103,7 +103,7 @@ pub struct SwapSaga<'a, S> {
 
 impl<'a> SwapSaga<'a, Initial> {
     pub fn new(mint: &'a super::Mint, db: DynMintDatabase, pubsub: Arc<PubSubManager>) -> Self {
-        let operation_id = uuid::Uuid::new_v4();
+        let operation_id = uuid::Uuid::now_v7();
 
         Self {
             mint,

@@ -219,7 +219,7 @@ async fn finalize_melt_common<'a>(
 impl<'a> MeltSaga<'a, Initial> {
     /// Create a new melt saga in the Initial state.
     pub fn new(wallet: &'a Wallet) -> Self {
-        let operation_id = uuid::Uuid::new_v4();
+        let operation_id = uuid::Uuid::now_v7();
 
         Self {
             wallet,

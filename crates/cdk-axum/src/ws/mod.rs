@@ -230,7 +230,7 @@ mod tests {
         // before the test can observe the active_subscribers count.
         Params {
             kind: cdk::nuts::nut17::Kind::Bolt11MintQuote,
-            filters: vec![QuoteId::new_uuid().to_string()],
+            filters: vec![QuoteId::new().to_string()],
             id: Arc::new(SubId::from(sub_id)),
         }
     }

@@ -2311,7 +2311,7 @@ async fn test_invalid_quote_id() {
     use cdk_common::nuts::MeltRequest;
     use cdk_common::QuoteId;
 
-    let fake_quote_id = QuoteId::new_uuid();
+    let fake_quote_id = QuoteId::new();
     let melt_request = MeltRequest::new(fake_quote_id.clone(), proofs.clone(), None);
 
     // STEP 3: Try to setup melt saga (should fail due to invalid quote)

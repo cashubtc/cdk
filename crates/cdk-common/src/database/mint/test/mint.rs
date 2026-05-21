@@ -535,7 +535,7 @@ pub async fn reject_melt_duplicate_blinded_signature<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error> + MintSignaturesDatabase<Err = Error>,
 {
-    let quote_id1 = QuoteId::new_uuid();
+    let quote_id1 = QuoteId::new();
     let inputs_amount = Amount::new(100, CurrencyUnit::Sat);
     let inputs_fee = Amount::new(1, CurrencyUnit::Sat);
     let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
@@ -1843,7 +1843,7 @@ where
     assert_eq!(quotes[1].as_ref().unwrap().id, quote2.id);
 
     // 2. Test getting with missing ID
-    let missing_id = QuoteId::new_uuid();
+    let missing_id = QuoteId::new();
     let ids = vec![quote1.id.clone(), missing_id, quote2.id.clone()];
     let quotes = db.get_mint_quotes_by_ids(&ids).await.unwrap();
     assert_eq!(quotes.len(), 3);

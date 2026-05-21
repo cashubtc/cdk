@@ -34,8 +34,14 @@ pub enum QuoteId {
 
 impl QuoteId {
     /// Create a new UUID-based MintQuoteId
-    pub fn new_uuid() -> Self {
-        Self::UUID(Uuid::new_v4())
+    pub fn new() -> Self {
+        Self::UUID(Uuid::now_v7())
+    }
+}
+
+impl Default for QuoteId {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -115,6 +121,15 @@ mod tests {
         // Verify roundtrip works for UUID
         let parsed: QuoteId = displayed.parse().unwrap();
         assert_eq!(quote_id, parsed);
+    }
+
+    #[test]
+    fn test_quote_id_new_uses_uuid_v7() {
+        let QuoteId::UUID(uuid) = QuoteId::new() else {
+            panic!("new should create a UUID quote ID");
+        };
+
+        assert_eq!(uuid.get_version(), Some(uuid::Version::SortRand));
     }
 
     #[test]

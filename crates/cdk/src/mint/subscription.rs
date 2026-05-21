@@ -415,8 +415,8 @@ mod tests {
                 .await
                 .expect("in-memory mint database"),
         );
-        let first_quote_id = QuoteId::new_uuid();
-        let second_quote_id = QuoteId::new_uuid();
+        let first_quote_id = QuoteId::new();
+        let second_quote_id = QuoteId::new();
         add_mint_quote(&db, paid_bolt11_quote(first_quote_id.clone(), 21)).await;
         add_mint_quote(&db, paid_bolt11_quote(second_quote_id.clone(), 34)).await;
 

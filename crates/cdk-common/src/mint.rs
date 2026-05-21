@@ -399,7 +399,7 @@ impl Operation {
     /// Mint
     pub fn new_mint(total_issued: Amount, payment_method: PaymentMethod) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: Uuid::now_v7(),
             kind: OperationKind::Mint,
             total_issued,
             total_redeemed: Amount::ZERO,
@@ -414,7 +414,7 @@ impl Operation {
     /// Batch mint
     pub fn new_batch_mint(total_issued: Amount, payment_method: PaymentMethod) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: Uuid::now_v7(),
             kind: OperationKind::BatchMint,
             total_issued,
             total_redeemed: Amount::ZERO,
@@ -435,7 +435,7 @@ impl Operation {
         payment_method: PaymentMethod,
     ) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: Uuid::now_v7(),
             kind: OperationKind::Melt,
             total_issued: Amount::ZERO,
             total_redeemed,
@@ -450,7 +450,7 @@ impl Operation {
     /// Swap
     pub fn new_swap(total_issued: Amount, total_redeemed: Amount, fee_collected: Amount) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: Uuid::now_v7(),
             kind: OperationKind::Swap,
             total_issued,
             total_redeemed,
@@ -595,7 +595,7 @@ impl MintQuote {
         issuance: Vec<Issuance>,
         extra_json: Option<serde_json::Value>,
     ) -> Self {
-        let id = id.unwrap_or_else(QuoteId::new_uuid);
+        let id = id.unwrap_or_default();
 
         Self {
             id,
@@ -899,7 +899,7 @@ impl MeltQuote {
         extra_json: Option<serde_json::Value>,
         estimated_blocks: Option<u32>,
     ) -> Self {
-        let id = id.unwrap_or_else(QuoteId::new_uuid);
+        let id = id.unwrap_or_default();
 
         let fee_options = estimated_blocks
             .map(|estimated_blocks| {
@@ -960,7 +960,7 @@ impl MeltQuote {
 
         validate_onchain_fee_options(&fee_options)?;
 
-        let id = id.unwrap_or_else(QuoteId::new_uuid);
+        let id = id.unwrap_or_default();
 
         // Pick the lowest-reserve option as the initial reserve. The `ok_or` is
         // unreachable — we checked for empty above — but we use it instead of
@@ -1553,9 +1553,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_operation_new_mint_uses_uuid_v7() {
+        let operation = Operation::new_mint(Amount::from(100), PaymentMethod::BOLT11);
+
+        assert_eq!(operation.id.get_version(), Some(uuid::Version::SortRand));
+    }
+
+    #[test]
     fn test_melt_quote_to_custom_response_with_custom_request() {
         let melt_quote = MeltQuote::new(
-            Some(QuoteId::new_uuid()),
+            Some(QuoteId::new()),
             MeltPaymentRequest::Custom {
                 method: "custom".to_string(),
                 request: "custom_request_string".to_string(),
@@ -1591,7 +1598,7 @@ mod tests {
         let bolt11 = Bolt11Invoice::from_str(bolt11_str).unwrap();
 
         let melt_quote = MeltQuote::new(
-            Some(QuoteId::new_uuid()),
+            Some(QuoteId::new()),
             MeltPaymentRequest::Bolt11 { bolt11 },
             CurrencyUnit::Sat,
             Amount::new(100, CurrencyUnit::Sat),
@@ -1620,7 +1627,7 @@ mod tests {
         let offer = OfferBuilder::new(pubkey).build().unwrap();
 
         let melt_quote = MeltQuote::new(
-            Some(QuoteId::new_uuid()),
+            Some(QuoteId::new()),
             MeltPaymentRequest::Bolt12 {
                 offer: Box::new(offer),
             },
@@ -1692,7 +1699,7 @@ mod tests {
     fn test_melt_quote_into_response_onchain() {
         let address = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
         let mut melt_quote = MeltQuote::new(
-            Some(QuoteId::new_uuid()),
+            Some(QuoteId::new()),
             MeltPaymentRequest::Onchain {
                 address: address.to_string(),
             },
@@ -1743,7 +1750,7 @@ mod tests {
             "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
         )
         .unwrap();
-        let quote_id = QuoteId::new_uuid();
+        let quote_id = QuoteId::new();
         let mint_quote = MintQuote::new(
             Some(quote_id.clone()),
             "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
@@ -1774,7 +1781,7 @@ mod tests {
     fn test_melt_quote_into_response_onchain_includes_change() {
         let address = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
         let melt_quote = MeltQuote::new(
-            Some(QuoteId::new_uuid()),
+            Some(QuoteId::new()),
             MeltPaymentRequest::Onchain {
                 address: address.to_string(),
             },
@@ -2060,7 +2067,7 @@ mod tests {
             },
         ];
         let quote = MeltQuote::from_db(
-            QuoteId::new_uuid(),
+            QuoteId::new(),
             CurrencyUnit::Sat,
             MeltPaymentRequest::Onchain {
                 address: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq".to_string(),
@@ -2089,7 +2096,7 @@ mod tests {
     #[test]
     fn from_db_rejects_empty_onchain_fee_options() {
         let err = MeltQuote::from_db(
-            QuoteId::new_uuid(),
+            QuoteId::new(),
             CurrencyUnit::Sat,
             MeltPaymentRequest::Onchain {
                 address: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq".to_string(),

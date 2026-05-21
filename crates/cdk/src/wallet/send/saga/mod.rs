@@ -374,7 +374,7 @@ pub(crate) struct SendSaga<'a, S> {
 impl<'a> SendSaga<'a, Initial> {
     /// Create a new send saga in the Initial state.
     pub fn new(wallet: &'a Wallet) -> Self {
-        let operation_id = uuid::Uuid::new_v4();
+        let operation_id = uuid::Uuid::now_v7();
 
         Self {
             wallet,
@@ -1137,6 +1137,20 @@ mod tests {
         test_proof_info, MockMintConnector,
     };
     use crate::Amount;
+
+    #[tokio::test]
+    async fn test_send_saga_new_uses_uuid_v7_operation_id() {
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        let saga = SendSaga::new(&wallet);
+
+        assert_eq!(
+            saga.state_data.operation_id.get_version(),
+            Some(uuid::Version::SortRand)
+        );
+    }
 
     fn keyset_fees_with_ppk(fee_ppk: u64) -> KeysetFeeAndAmounts {
         let mut fees = KeysetFeeAndAmounts::new();

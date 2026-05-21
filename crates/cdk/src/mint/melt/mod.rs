@@ -332,7 +332,7 @@ impl Mint {
             // Pre-generate the quote id so we can pass it to the backend in both
             // `get_payment_quote` and the eventual `make_payment`, and use the same
             // id when we persist the quote below.
-            let quote_id = cdk_common::QuoteId::new_uuid();
+            let quote_id = cdk_common::QuoteId::new();
 
             let bolt11 = Bolt11OutgoingPaymentOptions {
                 bolt11: melt_request.request.clone(),
@@ -448,7 +448,7 @@ impl Mint {
 
             let offer = Offer::from_str(&melt_request.request).map_err(|_| Error::Bolt12parse)?;
 
-            let quote_id = cdk_common::QuoteId::new_uuid();
+            let quote_id = cdk_common::QuoteId::new();
 
             let outgoing_payment_options = Bolt12OutgoingPaymentOptions {
                 offer: offer.clone(),
@@ -565,7 +565,7 @@ impl Mint {
             // `PaymentIdentifier::QuoteId(..)`; we validate that echo below and
             // use our locally-generated id as the `MeltQuote.id` so the flow is
             // no longer self-referential via the backend response.
-            let quote_id = QuoteId::new_uuid();
+            let quote_id = QuoteId::new();
 
             let outgoing_payment_options = cdk_common::payment::OnchainOutgoingPaymentOptions {
                 address: melt_request.request.clone(),
@@ -714,7 +714,7 @@ impl Mint {
                 Some(extra.to_string())
             };
 
-            let quote_id = cdk_common::QuoteId::new_uuid();
+            let quote_id = cdk_common::QuoteId::new();
 
             let custom_options =
                 OutgoingPaymentOptions::Custom(Box::new(CustomOutgoingPaymentOptions {

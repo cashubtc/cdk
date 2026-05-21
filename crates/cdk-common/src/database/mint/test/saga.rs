@@ -294,7 +294,7 @@ pub async fn get_melt_saga_by_quote_id<DB>(db: DB)
 where
     DB: Database<Error>,
 {
-    let quote_id = crate::QuoteId::new_uuid();
+    let quote_id = crate::QuoteId::new();
     let saga = Saga {
         operation_id: uuid::Uuid::new_v4(),
         operation_kind: OperationKind::Melt,
@@ -321,7 +321,7 @@ pub async fn get_melt_saga_by_quote_id_filters_non_melt<DB>(db: DB)
 where
     DB: Database<Error>,
 {
-    let quote_id = crate::QuoteId::new_uuid();
+    let quote_id = crate::QuoteId::new();
     let swap_saga = Saga {
         operation_id: uuid::Uuid::new_v4(),
         operation_kind: OperationKind::Swap,

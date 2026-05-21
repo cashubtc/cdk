@@ -13,7 +13,7 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error> + MintSignaturesDatabase<Err = Error>,
 {
     let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
-    let quote_id = QuoteId::new_uuid();
+    let quote_id = QuoteId::new();
 
     // Create blinded messages and signatures
     let blinded_message1 = SecretKey::generate().public_key();
@@ -116,8 +116,8 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error> + MintSignaturesDatabase<Err = Error>,
 {
     let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
-    let quote_id1 = QuoteId::new_uuid();
-    let quote_id2 = QuoteId::new_uuid();
+    let quote_id1 = QuoteId::new();
+    let quote_id2 = QuoteId::new();
 
     let blinded_message1 = SecretKey::generate().public_key();
     let blinded_message2 = SecretKey::generate().public_key();

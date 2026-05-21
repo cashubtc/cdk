@@ -146,7 +146,7 @@ impl MeltSaga<Initial> {
         #[cfg(feature = "prometheus")]
         let metrics = Some(MintMetricGuard::new("melt_bolt11"));
 
-        let operation_id = uuid::Uuid::new_v4();
+        let operation_id = uuid::Uuid::now_v7();
 
         Self {
             mint,

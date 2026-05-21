@@ -76,7 +76,7 @@ pub(crate) struct MintSaga<'a, S> {
 impl<'a> MintSaga<'a, Initial> {
     /// Create a new mint saga in the Initial state.
     pub fn new(wallet: &'a Wallet) -> Self {
-        let operation_id = uuid::Uuid::new_v4();
+        let operation_id = uuid::Uuid::now_v7();
 
         Self {
             wallet,

@@ -64,7 +64,7 @@ pub(crate) struct SwapSaga<'a, S> {
 impl<'a> SwapSaga<'a, Initial> {
     /// Create a new swap saga in the Initial state.
     pub fn new(wallet: &'a Wallet) -> Self {
-        let operation_id = uuid::Uuid::new_v4();
+        let operation_id = uuid::Uuid::now_v7();
 
         Self {
             wallet,

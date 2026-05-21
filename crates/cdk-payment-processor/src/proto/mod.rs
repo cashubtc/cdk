@@ -530,7 +530,7 @@ mod tests {
 
     #[test]
     fn payment_event_response_successful_roundtrip() {
-        let quote_id = QuoteId::new_uuid();
+        let quote_id = QuoteId::new();
         let event = Event::PaymentSuccessful {
             quote_id: quote_id.clone(),
             details: MakePaymentResponse {
@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn payment_event_response_failed_roundtrip() {
-        let quote_id = QuoteId::new_uuid();
+        let quote_id = QuoteId::new();
         let event = Event::PaymentFailed {
             quote_id: quote_id.clone(),
             reason: "route not found".to_string(),

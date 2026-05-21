@@ -219,7 +219,7 @@ impl Mint {
 
             let ln = self.get_payment_processor(unit.clone(), payment_method.clone())?;
 
-            let quote_id = QuoteId::new_uuid();
+            let quote_id = QuoteId::new();
 
             let payment_options = match mint_quote_request {
                 MintQuoteRequest::Bolt11(bolt11_request) => {
@@ -1184,7 +1184,7 @@ mod batch_mint_tests {
     }
 
     async fn add_paid_onchain_mint_quote(mint: &Mint, paid_amount: u64) -> QuoteId {
-        let quote_id = QuoteId::new_uuid();
+        let quote_id = QuoteId::new();
         let quote = MintQuote::new(
             Some(quote_id.clone()),
             "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
