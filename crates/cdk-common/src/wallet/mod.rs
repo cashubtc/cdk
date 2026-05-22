@@ -329,7 +329,7 @@ pub struct Restored {
 }
 
 /// Send options
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct SendOptions {
     /// Memo
     pub memo: Option<SendMemo>,
@@ -351,6 +351,26 @@ pub struct SendOptions {
     pub p2pk_signing_keys: Vec<SecretKey>,
     /// How P2PK-locked input proofs should be handled during send
     pub p2pk_locked_proof_send_mode: P2PKLockedProofSendMode,
+}
+
+impl fmt::Debug for SendOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SendOptions")
+            .field("memo", &self.memo)
+            .field("conditions", &self.conditions)
+            .field("amount_split_target", &self.amount_split_target)
+            .field("send_kind", &self.send_kind)
+            .field("include_fee", &self.include_fee)
+            .field("max_proofs", &self.max_proofs)
+            .field("metadata", &self.metadata)
+            .field("use_p2bk", &self.use_p2bk)
+            .field("p2pk_signing_keys", &"[redacted]")
+            .field(
+                "p2pk_locked_proof_send_mode",
+                &self.p2pk_locked_proof_send_mode,
+            )
+            .finish()
+    }
 }
 
 /// Send behavior for selected P2PK-locked input proofs
@@ -383,7 +403,7 @@ impl SendMemo {
 }
 
 /// Receive options
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ReceiveOptions {
     /// Amount split target
     pub amount_split_target: SplitTarget,
@@ -393,6 +413,17 @@ pub struct ReceiveOptions {
     pub preimages: Vec<String>,
     /// Metadata
     pub metadata: HashMap<String, String>,
+}
+
+impl fmt::Debug for ReceiveOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReceiveOptions")
+            .field("amount_split_target", &self.amount_split_target)
+            .field("p2pk_signing_keys", &"[redacted]")
+            .field("preimages", &self.preimages)
+            .field("metadata", &self.metadata)
+            .finish()
+    }
 }
 
 /// Send Kind
@@ -1192,5 +1223,28 @@ mod tests {
             conditions: None,
         };
         assert!(!proof_info.matches_conditions(&None, &None, &None, &Some(vec![dummy_condition])));
+    }
+
+    #[test]
+    fn test_wallet_options_debug_redacts_p2pk_signing_keys() {
+        let secret_key = SecretKey::generate();
+        let secret_hex = secret_key.to_secret_hex();
+
+        let send_options = SendOptions {
+            p2pk_signing_keys: vec![secret_key.clone()],
+            ..Default::default()
+        };
+        let receive_options = ReceiveOptions {
+            p2pk_signing_keys: vec![secret_key],
+            ..Default::default()
+        };
+
+        let send_debug = format!("{:?}", send_options);
+        let receive_debug = format!("{:?}", receive_options);
+
+        assert!(!send_debug.contains(&secret_hex));
+        assert!(send_debug.contains("[redacted]"));
+        assert!(!receive_debug.contains(&secret_hex));
+        assert!(receive_debug.contains("[redacted]"));
     }
 }

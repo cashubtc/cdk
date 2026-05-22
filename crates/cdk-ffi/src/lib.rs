@@ -297,6 +297,91 @@ mod tests {
     }
 
     #[test]
+    fn test_send_options_json_preserves_p2pk_signing_keys() {
+        let secret_hex =
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".to_string();
+        let options = SendOptions {
+            p2pk_signing_keys: vec![SecretKey {
+                hex: secret_hex.clone(),
+            }],
+            ..Default::default()
+        };
+
+        let to_json = options.to_json().unwrap();
+        let encoded = crate::types::wallet::encode_send_options(options.clone()).unwrap();
+        let debug = format!("{:?}", options);
+
+        assert!(to_json.contains(&secret_hex));
+        assert!(to_json.contains("p2pk_signing_keys"));
+        assert!(encoded.contains(&secret_hex));
+        assert!(encoded.contains("p2pk_signing_keys"));
+        assert!(!debug.contains(&secret_hex));
+        assert!(debug.contains("[redacted]"));
+
+        let decoded = crate::types::wallet::decode_send_options(encoded).unwrap();
+
+        assert_eq!(decoded.p2pk_signing_keys.len(), 1);
+        assert_eq!(decoded.p2pk_signing_keys[0].hex, secret_hex);
+    }
+
+    #[test]
+    fn test_send_options_json_still_decodes_p2pk_signing_keys() {
+        let secret_hex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+        let json = format!(
+            r#"{{
+                "memo": null,
+                "conditions": null,
+                "amount_split_target": "None",
+                "send_kind": "OnlineExact",
+                "include_fee": false,
+                "use_p2bk": false,
+                "max_proofs": null,
+                "metadata": {{}},
+                "p2pk_signing_keys": ["{}"],
+                "p2pk_locked_proof_send_mode": "SignAndSend"
+            }}"#,
+            secret_hex
+        );
+
+        let options = crate::types::wallet::decode_send_options(json).unwrap();
+
+        assert_eq!(options.p2pk_signing_keys.len(), 1);
+        assert_eq!(options.p2pk_signing_keys[0].hex, secret_hex);
+        assert_eq!(
+            options.p2pk_locked_proof_send_mode,
+            P2PKLockedProofSendMode::SignAndSend
+        );
+    }
+
+    #[test]
+    fn test_receive_options_json_preserves_p2pk_signing_keys() {
+        let secret_hex =
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".to_string();
+        let options = ReceiveOptions {
+            p2pk_signing_keys: vec![SecretKey {
+                hex: secret_hex.clone(),
+            }],
+            ..Default::default()
+        };
+
+        let to_json = options.to_json().unwrap();
+        let encoded = crate::types::wallet::encode_receive_options(options.clone()).unwrap();
+        let debug = format!("{:?}", options);
+
+        assert!(to_json.contains(&secret_hex));
+        assert!(to_json.contains("p2pk_signing_keys"));
+        assert!(encoded.contains(&secret_hex));
+        assert!(encoded.contains("p2pk_signing_keys"));
+        assert!(!debug.contains(&secret_hex));
+        assert!(debug.contains("[redacted]"));
+
+        let decoded = crate::types::wallet::decode_receive_options(encoded).unwrap();
+
+        assert_eq!(decoded.p2pk_signing_keys.len(), 1);
+        assert_eq!(decoded.p2pk_signing_keys[0].hex, secret_hex);
+    }
+
+    #[test]
     fn test_send_options_json_defaults_new_p2pk_fields() {
         let json = r#"{
             "memo": null,

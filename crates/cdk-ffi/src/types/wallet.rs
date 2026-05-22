@@ -1,6 +1,7 @@
 //! Wallet-related FFI types
 
 use std::collections::HashMap;
+use std::fmt;
 
 use cdk_common::bitcoin;
 use serde::{Deserialize, Serialize};
@@ -281,11 +282,19 @@ pub fn encode_send_options(options: SendOptions) -> Result<String, FfiError> {
 }
 
 /// FFI-compatible SecretKey
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 #[serde(transparent)]
 pub struct SecretKey {
     /// Hex-encoded secret key (64 characters)
     pub hex: String,
+}
+
+impl fmt::Debug for SecretKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecretKey")
+            .field("hex", &"[redacted]")
+            .finish()
+    }
 }
 
 impl SecretKey {
@@ -341,6 +350,7 @@ pub struct ReceiveOptions {
     /// Amount split target
     pub amount_split_target: SplitTarget,
     /// P2PK signing keys
+    #[serde(default)]
     pub p2pk_signing_keys: Vec<SecretKey>,
     /// Preimages for HTLC conditions
     pub preimages: Vec<String>,
