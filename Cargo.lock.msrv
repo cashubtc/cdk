@@ -552,9 +552,9 @@ dependencies = [
 
 [[package]]
 name = "autocfg"
-version = "1.5.0"
+version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
+checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "axum"
@@ -1170,7 +1170,7 @@ dependencies = [
 
 [[package]]
 name = "cashu"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "bip39",
  "bitcoin 0.32.9",
@@ -1243,7 +1243,7 @@ dependencies = [
 
 [[package]]
 name = "cdk"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1297,7 +1297,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-axum"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1322,7 +1322,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-bdk"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "async-trait",
  "bdk_bitcoind_rpc",
@@ -1344,7 +1344,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-cli"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "anyhow",
  "bip39",
@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-cln"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.9",
@@ -1385,7 +1385,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-common"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1423,7 +1423,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-fake-wallet"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.9",
@@ -1444,7 +1444,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "android_logger",
  "async-trait",
@@ -1474,7 +1474,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi-dart"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "camino",
  "cdk-ffi",
@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi-kotlin"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "cdk-ffi",
  "uniffi",
@@ -1492,7 +1492,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi-swift"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "cdk-ffi",
  "uniffi",
@@ -1500,7 +1500,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-http-client"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "futures",
  "futures-channel",
@@ -1522,7 +1522,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-integration-tests"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1568,7 +1568,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ldk-node"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -1594,7 +1594,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-lnbits"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1612,7 +1612,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-lnd"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1637,7 +1637,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-mint-rpc"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "anyhow",
  "cdk",
@@ -1659,7 +1659,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-mintd"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1700,7 +1700,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-npubcash"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1724,7 +1724,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-payment-processor"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1761,7 +1761,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-postgres"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.9",
@@ -1784,7 +1784,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-prometheus"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -1802,7 +1802,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-redb"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "async-trait",
  "cdk-common",
@@ -1820,7 +1820,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-signatory"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1845,7 +1845,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-sql-common"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.9",
@@ -1863,7 +1863,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-sqlite"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.9",
@@ -1883,7 +1883,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-supabase"
-version = "0.16.0"
+version = "0.17.0-rc.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2986,7 +2986,6 @@ dependencies = [
  "bitcoin 0.32.9",
  "hex-conservative 0.2.2",
  "log",
- "minreq",
  "reqwest",
  "serde",
  "serde_json",
@@ -3912,22 +3911,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hyper-tls"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70206fc6890eaca9fde8a0bf71caa2ddfc9fe045ac9e5c70df101a7dbde866e0"
-dependencies = [
- "bytes",
- "http-body-util",
- "hyper 1.9.0",
- "hyper-util",
- "native-tls",
- "tokio",
- "tokio-native-tls",
- "tower-service",
-]
-
-[[package]]
 name = "hyper-util"
 version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4747,12 +4730,8 @@ version = "2.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05015102dad0f7d61691ca347e9d9d9006685a64aefb3d79eecf62665de2153d"
 dependencies = [
- "base64 0.22.1",
- "rustls 0.21.12",
- "rustls-webpki 0.101.7",
  "serde",
  "serde_json",
- "webpki-roots 0.25.4",
 ]
 
 [[package]]
@@ -6261,11 +6240,9 @@ dependencies = [
  "http-body-util",
  "hyper 1.9.0",
  "hyper-rustls 0.27.9",
- "hyper-tls",
  "hyper-util",
  "js-sys",
  "log",
- "native-tls",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
@@ -6277,7 +6254,6 @@ dependencies = [
  "serde_urlencoded",
  "sync_wrapper 1.0.2",
  "tokio",
- "tokio-native-tls",
  "tokio-rustls 0.26.4",
  "tower 0.5.3",
  "tower-http",
