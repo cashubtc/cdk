@@ -357,6 +357,9 @@ fn apply_onchain_settings(settings: &mut cdk_mintd::config::Settings) {
         bitcoind_rpc_password: Some("testpass".to_string()),
         chain_source_type: Some("bitcoinrpc".to_string()),
         batch_config: cdk_mintd::config::BatchConfig {
+            poll_interval_secs: 1,
+            standard_deadline_secs: Some(1),
+            economy_deadline_secs: Some(2),
             fee_options: vec![
                 "immediate".to_string(),
                 "standard".to_string(),

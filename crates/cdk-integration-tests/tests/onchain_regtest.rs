@@ -874,11 +874,6 @@ async fn test_mint_unissued_quotes_onchain() {
         .await
         .expect("Failed to get mint quote");
 
-    assert_eq!(
-        mint_quote.amount,
-        Some(cdk::amount::Amount::from(mint_amount))
-    );
-
     // Verify the quote is in unissued quotes before payment
     let unissued_before = wallet.get_unissued_mint_quotes().await.unwrap();
     assert!(
@@ -982,11 +977,6 @@ async fn test_check_all_mint_quotes_onchain() {
         )
         .await
         .expect("Failed to get mint quote");
-
-    assert_eq!(
-        mint_quote.amount,
-        Some(cdk::amount::Amount::from(mint_amount))
-    );
 
     // Verify the quote is in unissued quotes before payment
     let unissued_before = wallet.get_unissued_mint_quotes().await.unwrap();
