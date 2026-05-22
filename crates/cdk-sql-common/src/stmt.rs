@@ -138,13 +138,24 @@ pub fn split_sql_parts(input: &str) -> Result<Vec<SqlPart>, SqlParseError> {
             }
 
             ':' => {
+                chars.next(); // consume ':'
+
+                if chars.peek() == Some(&':') {
+                    current.push(':');
+                    current.push(
+                        chars
+                            .next()
+                            .ok_or(SqlParseError::UnterminatedStringLiteral)?,
+                    );
+                    continue;
+                }
+
                 // Flush current raw SQL
                 if !current.is_empty() {
                     parts.push(SqlPart::Raw(current.clone().into()));
                     current.clear();
                 }
 
-                chars.next(); // consume ':'
                 let mut name = String::new();
 
                 while let Some(&next) = chars.peek() {
@@ -416,5 +427,17 @@ mod tests {
         let result = stmt.bind_vec("ids", Vec::<Vec<u8>>::new());
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::EmptyInClause(name) if name == "ids"));
+    }
+
+    #[test]
+    fn parser_preserves_postgres_cast_operator() {
+        let stmt = query("SELECT (ord - 1)::int AS matched WHERE id = :id")
+            .unwrap()
+            .bind("id", "quote-id");
+
+        let (sql, values) = stmt.to_sql().unwrap();
+
+        assert_eq!(sql, "SELECT (ord - 1)::int AS matched WHERE id = $1");
+        assert_eq!(values.len(), 1);
     }
 }
