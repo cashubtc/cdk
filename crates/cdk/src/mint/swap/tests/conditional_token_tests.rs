@@ -388,7 +388,67 @@ async fn test_redeem_outcome_outputs_conditional() {
     );
 }
 
-/// Test that regular swap rejects conditional keyset inputs
+/// Test that regular swap allows conditional trading within the same outcome collection.
+#[tokio::test]
+async fn test_swap_allows_same_conditional_outcome_inputs_and_outputs() {
+    let mint = create_test_mint().await.unwrap();
+    let oracle = create_test_oracle();
+    let (_, hex_tlv) = create_test_announcement(&oracle, &["YES", "NO"], "test-event");
+
+    // Mint regular proofs BEFORE registering conditions
+    let amount = Amount::from(10);
+    let regular_proofs = mint_test_proofs(&mint, amount).await.unwrap();
+
+    let condition_response = mint
+        .register_condition(enum_condition_request("Conditional transfer test", vec![hex_tlv]))
+        .await
+        .unwrap();
+
+    let partition_response = mint
+        .register_partition(
+            &condition_response.condition_id,
+            RegisterPartitionRequest {
+                collateral: "sat".to_string(),
+                partition: None,
+                parent_collection_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let yes_keyset_id = *partition_response.keysets.get("YES").unwrap();
+    let conditional_proofs =
+        swap_to_conditional(&mint, regular_proofs, yes_keyset_id, amount).await;
+
+    let (conditional_outputs, pre_mint) = create_premint(&mint, yes_keyset_id, amount);
+    let keys = mint
+        .keyset_pubkeys(&yes_keyset_id)
+        .unwrap()
+        .keysets
+        .first()
+        .unwrap()
+        .keys
+        .clone();
+    let swap_request = SwapRequest::new(conditional_proofs, conditional_outputs);
+    let swap_response = mint
+        .process_swap_request(swap_request)
+        .await
+        .expect("same-outcome conditional swap should succeed");
+
+    let refreshed_proofs = construct_proofs(
+        swap_response.signatures,
+        pre_mint.rs(),
+        pre_mint.secrets(),
+        &keys,
+    )
+    .unwrap();
+
+    assert!(refreshed_proofs
+        .iter()
+        .all(|proof| proof.keyset_id == yes_keyset_id));
+}
+
+/// Test that regular swap rejects conditional keyset inputs to regular outputs
 #[tokio::test]
 async fn test_swap_rejects_conditional_inputs() {
     let mint = create_test_mint().await.unwrap();
@@ -429,6 +489,49 @@ async fn test_swap_rejects_conditional_inputs() {
     assert!(
         result.is_err(),
         "regular swap should reject conditional keyset inputs"
+    );
+}
+
+/// Test that regular swap rejects conditional inputs rewritten to a different outcome.
+#[tokio::test]
+async fn test_swap_rejects_conditional_inputs_to_different_outcome() {
+    let mint = create_test_mint().await.unwrap();
+    let oracle = create_test_oracle();
+    let (_, hex_tlv) = create_test_announcement(&oracle, &["YES", "NO"], "test-event");
+
+    // Mint regular proofs BEFORE registering conditions
+    let amount = Amount::from(10);
+    let regular_proofs = mint_test_proofs(&mint, amount).await.unwrap();
+
+    let condition_response = mint
+        .register_condition(enum_condition_request("Conditional wrong outcome test", vec![hex_tlv]))
+        .await
+        .unwrap();
+
+    let partition_response = mint
+        .register_partition(
+            &condition_response.condition_id,
+            RegisterPartitionRequest {
+                collateral: "sat".to_string(),
+                partition: None,
+                parent_collection_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let yes_keyset_id = *partition_response.keysets.get("YES").unwrap();
+    let no_keyset_id = *partition_response.keysets.get("NO").unwrap();
+    let conditional_proofs =
+        swap_to_conditional(&mint, regular_proofs, yes_keyset_id, amount).await;
+
+    let (wrong_outcome_outputs, _) = create_premint(&mint, no_keyset_id, amount);
+    let swap_request = SwapRequest::new(conditional_proofs, wrong_outcome_outputs);
+    let result = mint.process_swap_request(swap_request).await;
+
+    assert!(
+        result.is_err(),
+        "regular swap should reject conditional inputs to a different outcome"
     );
 }
 

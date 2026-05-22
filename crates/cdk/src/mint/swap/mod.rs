@@ -52,18 +52,51 @@ impl Mint {
         // We don't need to check P2PK or HTLC again. It has all been checked above
         // and the code doesn't reach here unless such verifications were satisfactory
 
-        // NUT-CTF: Reject conditional keyset tokens in regular swaps.
-        // Conditional tokens must be redeemed via POST /v1/redeem_outcome.
+        // NUT-CTF trading: conditional tokens may be refreshed/transferred via
+        // regular NUT-03 swap only when every input and output belongs to the
+        // same condition outcome collection. Conditional -> regular remains
+        // the oracle-witness redemption path (`POST /v1/redeem_outcome`).
         #[cfg(feature = "conditional-tokens")]
         {
+            let mut conditional_input: Option<(String, String)> = None;
+            let mut saw_regular_input = false;
+
             for proof in input_proofs {
-                if self
+                match self
                     .localstore
                     .get_condition_for_keyset(&proof.keyset_id)
                     .await?
-                    .is_some()
                 {
+                    Some((condition_id, _outcome_collection, outcome_collection_id)) => {
+                        let current = (condition_id, outcome_collection_id);
+                        if conditional_input
+                            .as_ref()
+                            .is_some_and(|expected| expected != &current)
+                        {
+                            return Err(Error::InputsMustUseSameConditionalKeyset);
+                        }
+                        conditional_input = Some(current);
+                    }
+                    None => saw_regular_input = true,
+                }
+            }
+
+            if let Some(expected) = conditional_input {
+                if saw_regular_input {
                     return Err(Error::InputsMustUseSameConditionalKeyset);
+                }
+
+                for output in swap_request.outputs() {
+                    match self
+                        .localstore
+                        .get_condition_for_keyset(&output.keyset_id)
+                        .await?
+                    {
+                        Some((ref condition_id, _outcome_collection, ref outcome_collection_id))
+                            if condition_id == &expected.0
+                                && outcome_collection_id == &expected.1 => {}
+                        _ => return Err(Error::InputsMustUseSameConditionalKeyset),
+                    }
                 }
             }
         }
