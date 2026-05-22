@@ -11,7 +11,10 @@ use crate::error::FfiError;
 pub struct MintQuote {
     /// Quote ID
     pub id: String,
-    /// Quote amount
+    /// Requested or fixed quote amount, when defined by the payment method.
+    ///
+    /// Variable-amount methods such as onchain leave this unset and track
+    /// funds through `amount_paid` and `amount_issued`.
     pub amount: Option<Amount>,
     /// Currency unit
     pub unit: CurrencyUnit,

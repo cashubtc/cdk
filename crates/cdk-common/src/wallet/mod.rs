@@ -179,7 +179,10 @@ pub struct MintQuote {
     pub mint_url: MintUrl,
     /// Payment method
     pub payment_method: PaymentMethod,
-    /// Amount of quote
+    /// Requested or fixed quote amount, when defined by the payment method.
+    ///
+    /// Variable-amount methods such as onchain leave this unset and track
+    /// funds through `amount_paid` and `amount_issued`.
     pub amount: Option<Amount>,
     /// Unit of quote
     pub unit: CurrencyUnit,

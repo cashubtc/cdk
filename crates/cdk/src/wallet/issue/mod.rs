@@ -51,6 +51,22 @@ fn apply_mint_quote_response(quote: &mut MintQuote, response: &MintQuoteResponse
     }
 }
 
+fn local_mint_quote_amount(method: &PaymentMethod, amount: Option<Amount>) -> Option<Amount> {
+    match method {
+        PaymentMethod::Known(KnownMethod::Onchain) => None,
+        _ => amount,
+    }
+}
+
+fn mint_quote_response_amount(response: &MintQuoteResponse<String>) -> Option<Amount> {
+    match response {
+        MintQuoteResponse::Bolt11(r) => r.amount,
+        MintQuoteResponse::Bolt12(r) => r.amount,
+        MintQuoteResponse::Custom { response: r, .. } => r.amount,
+        MintQuoteResponse::Onchain(_) => None,
+    }
+}
+
 impl Wallet {
     /// Create a mint quote for the given payment method and amount
     #[instrument(skip(self, method))]
@@ -131,7 +147,7 @@ impl Wallet {
             quote_id,
             mint_url,
             method.clone(),
-            amount,
+            local_mint_quote_amount(&method, amount),
             unit,
             request_str,
             expiry.unwrap_or(0),
@@ -438,12 +454,7 @@ impl Wallet {
             }
             None => {
                 // Create a new quote from the response
-                let amount = match &response {
-                    MintQuoteResponse::Bolt11(r) => r.amount,
-                    MintQuoteResponse::Bolt12(r) => r.amount,
-                    MintQuoteResponse::Custom { response: r, .. } => r.amount,
-                    MintQuoteResponse::Onchain(r) => Some(r.amount_paid),
-                };
+                let amount = mint_quote_response_amount(&response);
                 let unit = match &response {
                     MintQuoteResponse::Bolt11(r) => r.unit.clone(),
                     MintQuoteResponse::Bolt12(r) => Some(r.unit.clone()),
@@ -560,5 +571,38 @@ impl Wallet {
         let finalized = prepared.execute().await?;
 
         Ok(finalized.into_proofs())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk_common::nuts::CurrencyUnit;
+
+    use super::*;
+
+    #[test]
+    fn local_onchain_mint_quote_amount_is_not_stored() {
+        let amount = Some(Amount::from(1_000));
+
+        assert_eq!(
+            local_mint_quote_amount(&PaymentMethod::Known(KnownMethod::Onchain), amount),
+            None
+        );
+    }
+
+    #[test]
+    fn fetched_onchain_mint_quote_does_not_use_amount_paid_as_amount() {
+        let response =
+            MintQuoteResponse::Onchain(cdk_common::nuts::nut_onchain::MintQuoteOnchainResponse {
+                quote: "quote-id".to_string(),
+                request: "bc1qexample".to_string(),
+                unit: CurrencyUnit::Sat,
+                expiry: Some(1_700_000_000),
+                pubkey: SecretKey::generate().public_key(),
+                amount_paid: Amount::from(1_000),
+                amount_issued: Amount::from(250),
+            });
+
+        assert_eq!(mint_quote_response_amount(&response), None);
     }
 }
