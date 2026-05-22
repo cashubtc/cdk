@@ -329,7 +329,7 @@ impl MintPayment for Cln {
                             if let Some(invoice_amount) =
                                 bolt11_options.bolt11.amount_milli_satoshis()
                             {
-                                if !invoice_amount == u64::from(amount_msat) {
+                                if invoice_amount != u64::from(amount_msat) {
                                     return Err(payment::Error::AmountMismatch);
                                 }
                             }
@@ -970,5 +970,125 @@ async fn fetch_invoice_by_payment_hash(
             );
             Err(Error::from(e))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use cdk_common::database::{
+        Error as DatabaseError, KVStore, KVStoreDatabase, KVStoreTransaction,
+    };
+    use cdk_common::payment::Bolt11OutgoingPaymentOptions;
+
+    use super::*;
+
+    #[derive(Debug)]
+    struct UnusedKvStore;
+
+    #[async_trait::async_trait]
+    impl KVStoreDatabase for UnusedKvStore {
+        type Err = DatabaseError;
+
+        async fn kv_read(
+            &self,
+            _primary_namespace: &str,
+            _secondary_namespace: &str,
+            _key: &str,
+        ) -> Result<Option<Vec<u8>>, Self::Err> {
+            Ok(None)
+        }
+
+        async fn kv_list(
+            &self,
+            _primary_namespace: &str,
+            _secondary_namespace: &str,
+        ) -> Result<Vec<String>, Self::Err> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl KVStore for UnusedKvStore {
+        async fn begin_transaction(
+            &self,
+        ) -> Result<Box<dyn KVStoreTransaction<Self::Err> + Send + Sync>, DatabaseError> {
+            Err(DatabaseError::Database(Box::new(std::io::Error::other(
+                "unused kv store transaction",
+            ))))
+        }
+    }
+
+    fn test_cln() -> Cln {
+        Cln {
+            rpc_socket: PathBuf::new(),
+            fee_reserve: FeeReserve {
+                min_fee_reserve: Amount::ZERO,
+                percent_fee_reserve: 0.0,
+            },
+            expose_private_channels: false,
+            wait_invoice_cancel_token: CancellationToken::new(),
+            wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
+            kv_store: Arc::new(UnusedKvStore),
+        }
+    }
+
+    fn test_invoice() -> Bolt11Invoice {
+        Bolt11Invoice::from_str("lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq")
+            .expect("test invoice must parse")
+    }
+
+    #[tokio::test]
+    async fn get_payment_quote_rejects_amountless_mismatch() {
+        let invoice = test_invoice();
+        let invoice_amount = invoice
+            .amount_milli_satoshis()
+            .expect("test invoice must include amount");
+        let options = Bolt11OutgoingPaymentOptions {
+            bolt11: invoice,
+            max_fee_amount: None,
+            timeout_secs: None,
+            melt_options: Some(MeltOptions::new_amountless(invoice_amount + 1)),
+            quote_id: cdk_common::QuoteId::new_uuid(),
+        };
+
+        let err = test_cln()
+            .get_payment_quote(
+                &CurrencyUnit::Msat,
+                OutgoingPaymentOptions::Bolt11(Box::new(options)),
+            )
+            .await
+            .expect_err("amountless override must match invoice amount");
+
+        assert!(matches!(err, payment::Error::AmountMismatch));
+    }
+
+    #[tokio::test]
+    async fn get_payment_quote_accepts_matching_amountless_amount() {
+        let invoice = test_invoice();
+        let invoice_amount = invoice
+            .amount_milli_satoshis()
+            .expect("test invoice must include amount");
+        let options = Bolt11OutgoingPaymentOptions {
+            bolt11: invoice,
+            max_fee_amount: None,
+            timeout_secs: None,
+            melt_options: Some(MeltOptions::new_amountless(invoice_amount)),
+            quote_id: cdk_common::QuoteId::new_uuid(),
+        };
+
+        let quote = test_cln()
+            .get_payment_quote(
+                &CurrencyUnit::Msat,
+                OutgoingPaymentOptions::Bolt11(Box::new(options)),
+            )
+            .await
+            .expect("matching amountless override must be accepted");
+
+        assert_eq!(
+            quote.amount,
+            Amount::new(invoice_amount, CurrencyUnit::Msat)
+        );
     }
 }

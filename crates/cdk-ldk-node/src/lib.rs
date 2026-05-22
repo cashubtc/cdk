@@ -637,7 +637,18 @@ impl MintPayment for CdkLdkNode {
                 let bolt11 = bolt11_options.bolt11;
 
                 let amount_msat = match bolt11_options.melt_options {
-                    Some(melt_options) => melt_options.amount_msat(),
+                    Some(MeltOptions::Amountless { amountless }) => {
+                        let amount_msat = amountless.amount_msat;
+
+                        if let Some(invoice_amount) = bolt11.amount_milli_satoshis() {
+                            if invoice_amount != u64::from(amount_msat) {
+                                return Err(payment::Error::AmountMismatch);
+                            }
+                        }
+
+                        amount_msat
+                    }
+                    Some(MeltOptions::Mpp { mpp }) => mpp.amount,
                     None => bolt11
                         .amount_milli_satoshis()
                         .ok_or(Error::UnknownInvoiceAmount)?
@@ -750,14 +761,21 @@ impl MintPayment for CdkLdkNode {
                 };
 
                 let payment_id = match bolt11_options.melt_options {
-                    Some(MeltOptions::Amountless { amountless }) => self
-                        .inner
-                        .bolt11_payment()
-                        .send_using_amount(&bolt11, amountless.amount_msat.into(), send_params)
-                        .map_err(|err| {
-                            tracing::error!("Could not send send amountless bolt11: {}", err);
-                            Error::CouldNotSendBolt11WithoutAmount
-                        })?,
+                    Some(MeltOptions::Amountless { amountless }) => {
+                        if let Some(invoice_amount) = bolt11.amount_milli_satoshis() {
+                            if invoice_amount != u64::from(amountless.amount_msat) {
+                                return Err(payment::Error::AmountMismatch);
+                            }
+                        }
+
+                        self.inner
+                            .bolt11_payment()
+                            .send_using_amount(&bolt11, amountless.amount_msat.into(), send_params)
+                            .map_err(|err| {
+                                tracing::error!("Could not send send amountless bolt11: {}", err);
+                                Error::CouldNotSendBolt11WithoutAmount
+                            })?
+                    }
                     None => self
                         .inner
                         .bolt11_payment()

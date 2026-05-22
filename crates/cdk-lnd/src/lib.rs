@@ -362,7 +362,19 @@ impl MintPayment for Lnd {
         match options {
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 let amount_msat = match bolt11_options.melt_options {
-                    Some(amount) => amount.amount_msat(),
+                    Some(MeltOptions::Amountless { amountless }) => {
+                        let amount_msat = amountless.amount_msat;
+
+                        if let Some(invoice_amount) = bolt11_options.bolt11.amount_milli_satoshis()
+                        {
+                            if invoice_amount != u64::from(amount_msat) {
+                                return Err(payment::Error::AmountMismatch);
+                            }
+                        }
+
+                        amount_msat
+                    }
+                    Some(MeltOptions::Mpp { mpp }) => mpp.amount,
                     None => bolt11_options
                         .bolt11
                         .amount_milli_satoshis()
@@ -545,12 +557,21 @@ impl MintPayment for Lnd {
 
                         let max_fee: Option<Amount<CurrencyUnit>> = bolt11_options.max_fee_amount;
 
-                        let amount_msat = u64::from(
-                            bolt11_options
-                                .melt_options
-                                .map(|a| a.amount_msat())
-                                .unwrap_or_default(),
-                        );
+                        let amount_msat = match bolt11_options.melt_options {
+                            Some(MeltOptions::Amountless { amountless }) => {
+                                let amount_msat = amountless.amount_msat;
+
+                                if let Some(invoice_amount) = bolt11.amount_milli_satoshis() {
+                                    if invoice_amount != u64::from(amount_msat) {
+                                        return Err(payment::Error::AmountMismatch);
+                                    }
+                                }
+
+                                u64::from(amount_msat)
+                            }
+                            Some(MeltOptions::Mpp { mpp }) => u64::from(mpp.amount),
+                            None => 0,
+                        };
 
                         let fee_limit_msat = match max_fee {
                             Some(fee) => fee.convert_to(&CurrencyUnit::Msat)?.value() as i64,

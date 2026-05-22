@@ -236,11 +236,20 @@ impl MintPayment for LNbits {
         match options {
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
                 let amount_msat = match bolt11_options.melt_options {
-                    Some(amount) => {
-                        if matches!(amount, MeltOptions::Mpp { mpp: _ }) {
-                            return Err(payment::Error::UnsupportedPaymentOption);
+                    Some(MeltOptions::Amountless { amountless }) => {
+                        let amount_msat = amountless.amount_msat;
+
+                        if let Some(invoice_amount) = bolt11_options.bolt11.amount_milli_satoshis()
+                        {
+                            if invoice_amount != u64::from(amount_msat) {
+                                return Err(payment::Error::AmountMismatch);
+                            }
                         }
-                        amount.amount_msat()
+
+                        amount_msat
+                    }
+                    Some(MeltOptions::Mpp { mpp: _ }) => {
+                        return Err(payment::Error::UnsupportedPaymentOption);
                     }
                     None => bolt11_options
                         .bolt11

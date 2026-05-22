@@ -527,7 +527,7 @@ impl MintPayment for FakeWallet {
                             {
                                 ensure_cdk!(
                                     invoice_amount == u64::from(amount_msat),
-                                    Error::UnknownInvoiceAmount.into()
+                                    payment::Error::AmountMismatch
                                 );
                             }
                             amount_msat
@@ -647,7 +647,23 @@ impl MintPayment for FakeWallet {
                     .unwrap_or(MeltQuoteState::Paid);
 
                 let amount_msat: u64 = if let Some(melt_options) = bolt11_options.melt_options {
-                    melt_options.amount_msat().into()
+                    let msats = match melt_options {
+                        MeltOptions::Amountless { amountless } => {
+                            let amount_msat = amountless.amount_msat;
+
+                            if let Some(invoice_amount) = bolt11.amount_milli_satoshis() {
+                                ensure_cdk!(
+                                    invoice_amount == u64::from(amount_msat),
+                                    payment::Error::AmountMismatch
+                                );
+                            }
+
+                            amount_msat
+                        }
+                        MeltOptions::Mpp { mpp } => mpp.amount,
+                    };
+
+                    u64::from(msats)
                 } else {
                     // Fall back to invoice amount
                     bolt11
