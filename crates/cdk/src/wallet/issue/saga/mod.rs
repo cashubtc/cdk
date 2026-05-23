@@ -451,7 +451,7 @@ impl<'a> MintSaga<'a, Initial> {
             premint_secrets,
             mint_request: PreparedMintRequest::Single {
                 quote_id: quote_id.to_string(),
-                quote_info: quote_info.clone(),
+                quote_info: Box::new(quote_info.clone()),
                 request,
             },
             payment_method: quote_info.payment_method.clone(),
@@ -808,7 +808,7 @@ impl<'a> MintSaga<'a, Prepared> {
                 quote_id,
                 quote_info,
                 ..
-            } => (vec![quote_id.clone()], vec![quote_info.clone()], None),
+            } => (vec![quote_id.clone()], vec![(**quote_info).clone()], None),
             PreparedMintRequest::Batch {
                 quote_ids,
                 quote_infos,

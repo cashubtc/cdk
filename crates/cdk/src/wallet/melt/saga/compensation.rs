@@ -95,6 +95,7 @@ mod tests {
             payment_proof: None,
             estimated_blocks: None,
             fee_index: None,
+            payjoin: None,
             payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
             used_by_operation: None,
             version: 0,

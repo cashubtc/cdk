@@ -615,6 +615,27 @@ impl OnchainBackendSetup for crate::config::Bdk {
             .as_ref()
             .map(|onchain| onchain.min_mint.to_u64().max(self.min_receive_amount_sat))
             .unwrap_or(self.min_receive_amount_sat);
+        let payjoin_config = match (
+            self.payjoin_directory_url.as_ref(),
+            self.payjoin_ohttp_relay_url.as_ref(),
+        ) {
+            (Some(directory), Some(relay)) => {
+                let config = cdk_bdk::PayjoinConfig::new(
+                    directory.clone(),
+                    relay.clone(),
+                    Some(self.payjoin_expiry_secs),
+                )
+                .map_err(anyhow::Error::msg)?;
+                #[cfg(feature = "payjoin-local-https")]
+                let config = if let Some(cert_path) = self.payjoin_local_tls_cert_path.as_ref() {
+                    config.with_local_tls_cert_der(std::fs::read(cert_path)?)
+                } else {
+                    config
+                };
+                Some(config)
+            }
+            _ => None,
+        };
 
         let bdk = cdk_bdk::CdkBdk::new(
             mnemonic,
@@ -630,6 +651,7 @@ impl OnchainBackendSetup for crate::config::Bdk {
             self.sync_interval_secs,
             None,
             None,
+            payjoin_config,
         )?;
 
         Ok(bdk)

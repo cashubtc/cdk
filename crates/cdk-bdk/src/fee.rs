@@ -12,7 +12,6 @@
 //! final transaction fee is still determined by BDK at payment time.
 
 use std::cell::Cell;
-use std::str::FromStr;
 
 use bdk_wallet::bitcoin::{
     absolute, transaction, Amount as BitcoinAmount, FeeRate, Script, Transaction, TxIn, TxOut,
@@ -26,6 +25,7 @@ use bdk_wallet::{KeychainKind, Utxo, WeightedUtxo};
 
 use crate::error::Error;
 use crate::types::{FeeEstimationConfig, PaymentTier};
+use crate::util::parse_checked_address;
 use crate::CdkBdk;
 
 const P2WPKH_CHANGE_OUTPUT_VBYTES: u64 = 31;
@@ -254,11 +254,8 @@ impl CdkBdk {
             });
 
         let fee_rate = fee_rate_from_sat_per_vb(sat_per_vb)?;
-        let recipient_script = bdk_wallet::bitcoin::Address::from_str(address)
-            .map_err(|e| Error::Wallet(e.to_string()))?
-            .require_network(self.network)
-            .map_err(|e| Error::Wallet(e.to_string()))?
-            .script_pubkey();
+        let recipient_script =
+            parse_checked_address(address, self.network, Error::Wallet)?.script_pubkey();
 
         let (weighted_utxos, change_script) = {
             let wallet_with_db = self.wallet_with_db.lock().await;
@@ -366,6 +363,10 @@ impl CdkBdk {
         }
 
         let target_blocks = target_blocks_for_tier(tier);
+        #[cfg(test)]
+        self.planning_test_hooks
+            .pause(crate::PlanningPausePoint::FeeEstimation)
+            .await;
         let rate_result = self.chain_source.fetch_fee_rate(target_blocks).await;
 
         let rate = match rate_result {

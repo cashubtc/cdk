@@ -1,13 +1,14 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use bdk_wallet::bitcoin::{OutPoint, Transaction};
 use uuid::Uuid;
 
 use crate::chain::BroadcastOutcome;
 use crate::error::Error;
-use crate::send::batch_transaction::record::{BatchOutputAssignment, SendBatchState};
+use crate::send::batch_transaction::record::SendBatchState;
 use crate::send::payment_intent::record::{SendIntentRecord, SendIntentState};
 use crate::send::payment_intent::{self, SendIntentAny};
+use crate::send::staging::StagedBroadcastOutcome;
 use crate::storage::BdkStorage;
 use crate::CdkBdk;
 
@@ -80,12 +81,28 @@ impl CdkBdk {
             found_ids.insert(record.intent_id);
 
             match &record.state {
-                SendIntentState::Pending { .. } => {
+                SendIntentState::Pending { .. } | SendIntentState::BatchClaimed { .. } => {
                     saw_pending = true;
                     tracing::warn!(
                         batch_id = %batch_id,
                         intent_id = %record.intent_id,
-                        "Recovery found batch member stored as Pending"
+                        "Recovery found batch member stored before Batched"
+                    );
+                }
+                SendIntentState::CutThroughReserved { .. } => {
+                    tracing::warn!(
+                        batch_id = %batch_id,
+                        intent_id = %record.intent_id,
+                        "Recovery found batch member reserved by cut-through"
+                    );
+                }
+                SendIntentState::CutThroughExposed { .. } => {}
+                SendIntentState::PayjoinNegotiating { .. } => {
+                    saw_pending = true;
+                    tracing::warn!(
+                        batch_id = %batch_id,
+                        intent_id = %record.intent_id,
+                        "Recovery found batch member still negotiating Payjoin"
                     );
                 }
                 SendIntentState::Batched {
@@ -160,7 +177,23 @@ impl CdkBdk {
                 SendIntentState::AwaitingConfirmation { .. } => {
                     BatchIntentRelation::IntentAlreadyAdvanced
                 }
-                SendIntentState::Pending { .. } | SendIntentState::Failed { .. } => {
+                SendIntentState::BatchClaimed {
+                    batch_id: intent_batch_id,
+                    ..
+                } => {
+                    if *intent_batch_id == batch_id {
+                        BatchIntentRelation::Valid
+                    } else {
+                        BatchIntentRelation::IntentReferencesDifferentBatch
+                    }
+                }
+                SendIntentState::Pending { .. }
+                | SendIntentState::CutThroughReserved { .. }
+                | SendIntentState::CutThroughExposed { .. }
+                | SendIntentState::Failed { .. } => {
+                    BatchIntentRelation::IntentReferencesDifferentBatch
+                }
+                SendIntentState::PayjoinNegotiating { .. } => {
                     BatchIntentRelation::IntentReferencesDifferentBatch
                 }
             },
@@ -300,12 +333,87 @@ impl CdkBdk {
                                         }
                                     }
                                 }
+                                SendIntentAny::BatchClaimed(intent)
+                                    if intent.state.batch_id == batch_record.batch_id =>
+                                {
+                                    tracing::warn!(
+                                        batch_id = %batch_record.batch_id,
+                                        intent_id = %id,
+                                        "Repairing Signed batch member still stored as BatchClaimed"
+                                    );
+                                    match intent.assign_to_batch(&self.storage).await {
+                                        Ok(intent) => batched_intents.push(intent),
+                                        Err(err) => {
+                                            tracing::error!(
+                                                batch_id = %batch_record.batch_id,
+                                                intent_id = %id,
+                                                error = %err,
+                                                "Signed batch recovery aborted because claimed member could not be assigned"
+                                            );
+                                            abort_recovery = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                SendIntentAny::PayjoinNegotiating(intent) => {
+                                    tracing::warn!(
+                                        batch_id = %batch_record.batch_id,
+                                        intent_id = %id,
+                                        "Repairing Signed batch member still stored as PayjoinNegotiating"
+                                    );
+                                    match intent
+                                        .assign_to_batch(&self.storage, batch_record.batch_id)
+                                        .await
+                                    {
+                                        Ok(intent) => batched_intents.push(intent),
+                                        Err(err) => {
+                                            tracing::error!(
+                                                batch_id = %batch_record.batch_id,
+                                                intent_id = %id,
+                                                error = %err,
+                                                "Signed batch recovery aborted because Payjoin member could not be assigned"
+                                            );
+                                            abort_recovery = true;
+                                            break;
+                                        }
+                                    }
+                                }
                                 SendIntentAny::Batched(intent) => {
                                     tracing::error!(
                                         batch_id = %batch_record.batch_id,
                                         intent_id = %id,
                                         intent_batch_id = %intent.state.batch_id,
                                         "Signed batch recovery aborted because a member references a different batch"
+                                    );
+                                    abort_recovery = true;
+                                    break;
+                                }
+                                SendIntentAny::BatchClaimed(intent) => {
+                                    tracing::error!(
+                                        batch_id = %batch_record.batch_id,
+                                        intent_id = %id,
+                                        intent_batch_id = %intent.state.batch_id,
+                                        "Signed batch recovery aborted because a claimed member references a different batch"
+                                    );
+                                    abort_recovery = true;
+                                    break;
+                                }
+                                SendIntentAny::CutThroughReserved(intent) => {
+                                    tracing::error!(
+                                        batch_id = %batch_record.batch_id,
+                                        intent_id = %id,
+                                        reservation_id = %intent.state.reservation_id,
+                                        "Signed batch recovery aborted because a member is reserved by cut-through"
+                                    );
+                                    abort_recovery = true;
+                                    break;
+                                }
+                                SendIntentAny::CutThroughExposed(intent) => {
+                                    tracing::error!(
+                                        batch_id = %batch_record.batch_id,
+                                        intent_id = %id,
+                                        reservation_id = %intent.state.reservation_id,
+                                        "Signed batch recovery aborted because a member is exposed by cut-through"
                                     );
                                     abort_recovery = true;
                                     break;
@@ -349,88 +457,15 @@ impl CdkBdk {
                         continue;
                     }
 
-                    let txid = tx.compute_txid();
-                    let txid_str = txid.to_string();
-
-                    let signed_batch = crate::send::batch_transaction::SendBatch::<
-                        crate::send::batch_transaction::state::Signed,
-                    >::reconstruct(
-                        batch_record.batch_id, batched_intents
-                    );
-
-                    let broadcast_result = match signed_batch
-                        .mark_broadcast(
-                            &self.storage,
-                            txid_str.clone(),
-                            tx_bytes.clone(),
-                            assignments.clone(),
-                            fee_sat,
-                        )
-                        .await
-                    {
-                        Ok(result) => result,
-                        Err(err) => {
-                            tracing::error!(
-                                "Failed to promote signed batch {} to Broadcast during recovery: {}",
-                                batch_record.batch_id,
-                                err
-                            );
-                            continue;
-                        }
-                    };
-
-                    // Pair intents with their assignments by intent_id rather
-                    // than positional index to avoid any hidden coupling.
-                    let assignment_by_intent: HashMap<Uuid, &BatchOutputAssignment> =
-                        assignments.iter().map(|a| (a.intent_id, a)).collect();
-
-                    let mut all_intents_transitioned = true;
-                    for intent in broadcast_result.intents {
-                        let intent_id = intent.intent_id;
-                        let Some(assignment) = assignment_by_intent.get(&intent_id) else {
-                            tracing::error!(
-                                batch_id = %batch_record.batch_id,
-                                intent_id = %intent_id,
-                                "Signed batch intent has no output assignment during recovery"
-                            );
-                            all_intents_transitioned = false;
-                            break;
-                        };
-                        let outpoint = OutPoint::new(txid, assignment.vout).to_string();
-
-                        if let Err(err) = intent
-                            .mark_broadcast(
-                                &self.storage,
-                                txid_str.clone(),
-                                outpoint,
-                                assignment.fee_contribution_sat,
-                            )
-                            .await
-                        {
-                            tracing::error!(
-                                "Failed to transition signed batch intent {} to AwaitingConfirmation during recovery: {}",
-                                intent_id,
-                                err
-                            );
-                            all_intents_transitioned = false;
-                            break;
-                        }
-                    }
-
-                    if !all_intents_transitioned {
-                        tracing::error!(
-                            "Signed batch {} recovery aborted before broadcast because not all intents transitioned",
-                            batch_record.batch_id
-                        );
-                        continue;
-                    }
-
                     tracing::info!(
                         "Recovering signed batch {} by promoting to Broadcast and broadcasting transaction {}",
                         batch_record.batch_id,
-                        txid_str
+                        tx.compute_txid()
                     );
 
+                    // Re-apply the recovered tx to the wallet graph before
+                    // promoting, mirroring the staging paths where the tx is
+                    // applied before any batch record is persisted.
                     self.apply_recovered_send_tx(
                         batch_record.batch_id,
                         "Signed batch recovery",
@@ -438,23 +473,22 @@ impl CdkBdk {
                     )
                     .await;
 
-                    match self.broadcast_transaction_internal(tx).await {
-                        Ok(BroadcastOutcome::Accepted) => {}
-                        Ok(BroadcastOutcome::AlreadyKnown) => {
-                            tracing::info!(
-                                "Recovered signed batch {} txid {} was already known to backend",
-                                batch_record.batch_id,
-                                txid_str
-                            );
-                        }
-                        Err(failure) => {
-                            self.log_broadcast_failure(
-                                "Signed batch recovery broadcast failed",
-                                batch_record.batch_id,
-                                &txid_str,
-                                &failure,
-                            );
-                        }
+                    if let StagedBroadcastOutcome::PendingRecovery(err) = self
+                        .promote_signed_batch_and_broadcast(
+                            batch_record.batch_id,
+                            &tx,
+                            tx_bytes.clone(),
+                            assignments.clone(),
+                            fee_sat,
+                            batched_intents,
+                        )
+                        .await
+                    {
+                        tracing::error!(
+                            batch_id = %batch_record.batch_id,
+                            error = %err,
+                            "Signed batch recovery incomplete; will retry on next recovery run"
+                        );
                     }
                 }
                 SendBatchState::Broadcast { txid, tx_bytes, .. } => {
@@ -499,6 +533,36 @@ impl CdkBdk {
         for persisted in persisted_intents {
             match payment_intent::from_record(&persisted) {
                 SendIntentAny::Pending(_) => {}
+                SendIntentAny::BatchClaimed(intent) => {
+                    let intent_id = intent.intent_id;
+                    let batch = batches.iter().find(|b| b.batch_id == intent.state.batch_id);
+                    if batch.is_none()
+                        || batch.is_some_and(|batch| {
+                            !batch_intent_ids(&batch.state).contains(&intent_id)
+                        })
+                    {
+                        tracing::info!(
+                            "Orphaned batch-claimed intent {}, reverting to Pending",
+                            intent_id
+                        );
+                        if let Err(e) = intent.revert_to_pending(&self.storage).await {
+                            tracing::error!(
+                                "Failed to revert orphaned claimed intent {} during recovery: {}",
+                                intent_id,
+                                e
+                            );
+                        }
+                    }
+                }
+                SendIntentAny::CutThroughReserved(intent) => {
+                    tracing::trace!(
+                        intent_id = %intent.intent_id,
+                        reservation_id = %intent.state.reservation_id,
+                        "Leaving cut-through-reserved intent for cut-through recovery"
+                    );
+                }
+                SendIntentAny::CutThroughExposed(_) => {}
+                SendIntentAny::PayjoinNegotiating(_) => {}
                 SendIntentAny::Failed => {}
                 SendIntentAny::Batched(intent) => {
                     let intent_id = intent.intent_id;
@@ -705,6 +769,7 @@ mod tests {
             546,
             60,
             Some(5),
+            None,
             None,
         )
         .expect("build CdkBdk test instance")

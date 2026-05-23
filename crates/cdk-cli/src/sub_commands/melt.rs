@@ -5,9 +5,10 @@ use anyhow::{bail, Result};
 use cdk::amount::{amount_for_offer, Amount, MSAT_IN_SAT};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::KnownMethod;
-use cdk::nuts::{CurrencyUnit, MeltOptions, PaymentMethod};
+use cdk::nuts::{CurrencyUnit, MeltOptions, PayjoinV2, PaymentMethod};
 use cdk::wallet::WalletRepository;
 use cdk::Bolt11Invoice;
+use cdk_common::payjoin::{parse_bip21_amount_to_sats, payjoin_v2_from_bip77_endpoint};
 use cdk_common::wallet::WalletKey;
 use clap::{Args, ValueEnum};
 use lightning::offers::offer::Offer;
@@ -66,7 +67,8 @@ pub struct MeltSubCommand {
     /// BOLT12 offer to pay (for bolt12 method)
     #[arg(long, conflicts_with_all = ["invoice", "address"])]
     offer: Option<String>,
-    /// BIP353 or onchain address to pay
+    /// BIP353 address for --method bip353, or Bitcoin address/full bitcoin: URI for
+    /// --method onchain
     #[arg(long, conflicts_with_all = ["invoice", "offer"])]
     address: Option<String>,
     /// Bitcoin network to use for BIP353 (bitcoin, testnet, signet, regtest)
@@ -78,6 +80,19 @@ pub struct MeltSubCommand {
     /// MPP split entry in the form <mint_url>=<amount_sats>; repeat for multiple mints
     #[arg(long = "mpp-split", value_name = "MINT_URL=AMOUNT", action = clap::ArgAction::Append, requires = "mpp")]
     mpp_split: Vec<String>,
+    /// Destination Payjoin instructions as NUT-31 JSON or a bitcoin: Payjoin URI, for onchain melts
+    #[arg(long, value_name = "JSON_OR_URI")]
+    payjoin: Option<String>,
+}
+
+fn validate_args(sub_command_args: &MeltSubCommand) -> Result<()> {
+    if sub_command_args.payjoin.is_some()
+        && !matches!(sub_command_args.method, PaymentType::Onchain)
+    {
+        bail!("--payjoin can only be used with --method onchain");
+    }
+
+    Ok(())
 }
 
 /// Helper function to check if there are enough funds and create appropriate MeltOptions
@@ -116,6 +131,116 @@ fn input_or_prompt(arg: Option<&String>, prompt: &str) -> Result<String> {
         Some(value) => Ok(value.clone()),
         None => get_user_input(prompt),
     }
+}
+
+#[derive(Debug, Clone, Default)]
+struct OnchainPaymentInput {
+    address: Option<String>,
+    amount_sat: Option<u64>,
+    payjoin: Option<PayjoinV2>,
+}
+
+impl OnchainPaymentInput {
+    fn merge(self, other: Self) -> Result<Self> {
+        Ok(Self {
+            address: merge_optional("onchain address", self.address, other.address)?,
+            amount_sat: merge_optional("onchain amount", self.amount_sat, other.amount_sat)?,
+            payjoin: merge_optional("payjoin", self.payjoin, other.payjoin)?,
+        })
+    }
+}
+
+fn merge_optional<T>(field: &str, left: Option<T>, right: Option<T>) -> Result<Option<T>>
+where
+    T: PartialEq + std::fmt::Debug,
+{
+    match (left, right) {
+        (Some(left), Some(right)) if left != right => {
+            bail!("Conflicting {field} values: {left:?} and {right:?}")
+        }
+        (Some(value), _) | (_, Some(value)) => Ok(Some(value)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn parse_onchain_input_arg(value: &str) -> Result<OnchainPaymentInput> {
+    if value.to_ascii_lowercase().starts_with("bitcoin:") {
+        parse_bitcoin_payjoin_uri(value)
+    } else {
+        Ok(OnchainPaymentInput {
+            address: Some(value.to_string()),
+            ..Default::default()
+        })
+    }
+}
+
+fn parse_payjoin_arg(value: &str) -> Result<OnchainPaymentInput> {
+    if value.to_ascii_lowercase().starts_with("bitcoin:") {
+        parse_bitcoin_payjoin_uri(value)
+    } else {
+        Ok(OnchainPaymentInput {
+            payjoin: Some(serde_json::from_str::<PayjoinV2>(value)?),
+            ..Default::default()
+        })
+    }
+}
+
+fn parse_bitcoin_payjoin_uri(value: &str) -> Result<OnchainPaymentInput> {
+    let uri = url::Url::parse(value)?;
+    if uri.scheme() != "bitcoin" {
+        bail!("Expected a bitcoin: URI");
+    }
+
+    let address = normalize_onchain_address(uri.path());
+    if address.is_empty() {
+        bail!("bitcoin: URI is missing an onchain address");
+    }
+
+    let mut amount_sat = None;
+    let mut endpoint = None;
+
+    for (key, value) in uri.query_pairs() {
+        match key.as_ref() {
+            "amount" => amount_sat = Some(parse_bip21_amount_sat(&value)?),
+            "pj" => endpoint = Some(value.into_owned()),
+            "pjos" if !matches!(value.as_ref(), "0" | "1") => {
+                bail!("Invalid pjos value '{}', expected 0 or 1", value);
+            }
+            "pjos" => {}
+            _ => {}
+        }
+    }
+
+    let payjoin = match endpoint {
+        Some(endpoint) => Some(onchain_payjoin_from_endpoint(endpoint)?),
+        None => None,
+    };
+
+    Ok(OnchainPaymentInput {
+        address: Some(address),
+        amount_sat,
+        payjoin,
+    })
+}
+
+fn normalize_onchain_address(address: &str) -> String {
+    let lowercase = address.to_ascii_lowercase();
+    if lowercase.starts_with("bc1")
+        || lowercase.starts_with("tb1")
+        || lowercase.starts_with("bcrt1")
+    {
+        lowercase
+    } else {
+        address.to_string()
+    }
+}
+
+fn parse_bip21_amount_sat(amount: &str) -> Result<u64> {
+    parse_bip21_amount_to_sats(amount).map_err(Into::into)
+}
+
+fn onchain_payjoin_from_endpoint(endpoint: String) -> Result<PayjoinV2> {
+    payjoin_v2_from_bip77_endpoint(&endpoint).map_err(Into::into)
 }
 
 fn parse_mpp_split(entry: &str) -> Result<(MintUrl, Amount)> {
@@ -175,6 +300,8 @@ pub async fn pay(
     sub_command_args: &MeltSubCommand,
     unit: &CurrencyUnit,
 ) -> Result<()> {
+    validate_args(sub_command_args)?;
+
     // Check total balance for the requested unit
     let balances_by_unit = wallet_repository.total_balance().await?;
     let total_balance = balances_by_unit.get(unit).copied().unwrap_or(Amount::ZERO);
@@ -439,10 +566,26 @@ pub async fn pay(
             }
         }
         PaymentType::Onchain => {
-            let onchain_address =
-                input_or_prompt(sub_command_args.address.as_ref(), "Enter onchain address")?;
+            let mut onchain_input = sub_command_args
+                .address
+                .as_deref()
+                .map(parse_onchain_input_arg)
+                .transpose()?
+                .unwrap_or_default();
+            if let Some(payjoin) = sub_command_args.payjoin.as_deref() {
+                onchain_input = onchain_input.merge(parse_payjoin_arg(payjoin)?)?;
+            }
 
-            let amount_sat = match sub_command_args.amount {
+            let onchain_address = match onchain_input.address {
+                Some(address) => address,
+                None => get_user_input("Enter onchain address")?,
+            };
+
+            let amount_sat = match merge_optional(
+                "onchain amount",
+                onchain_input.amount_sat,
+                sub_command_args.amount,
+            )? {
                 Some(amount_sat) if amount_sat > 0 => amount_sat,
                 Some(_) => bail!("Onchain melt amount must be greater than zero"),
                 None => get_number_input::<u64>("Enter the amount you would like to melt in sats")?,
@@ -468,7 +611,12 @@ pub async fn pay(
             let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
 
             let quote_options = wallet
-                .quote_onchain_melt_options(&onchain_address, melt_amount, None)
+                .quote_onchain_melt_options_with_payjoin(
+                    &onchain_address,
+                    melt_amount,
+                    None,
+                    onchain_input.payjoin,
+                )
                 .await?;
 
             let selected_quote = select_onchain_quote(&quote_options)?;
@@ -481,6 +629,9 @@ pub async fn pay(
             println!("  Expiry: {}", quote.expiry);
             if let Some(estimated_blocks) = quote.estimated_blocks {
                 println!("  Estimated Blocks: {}", estimated_blocks);
+            }
+            if let Some(payjoin) = quote.payjoin.as_ref() {
+                println!("  Payjoin: {}", serde_json::to_string(payjoin)?);
             }
 
             let melted = wallet
@@ -641,4 +792,92 @@ async fn pay_mpp(
     println!("Total fees: {} {}", total_fees, unit);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PAYJOIN_URI: &str = "bitcoin:tb1qhe0dkl8tfkrp9nnufq0v0nl46yramxmzwvs83r?amount=0.00004&pjos=0&pj=HTTPS://PAYJO.IN/E73HSW759WNES%23EX12XHZ26S-OH1QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ-RK1QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG";
+
+    fn melt_sub_command(method: PaymentType, payjoin: Option<String>) -> MeltSubCommand {
+        MeltSubCommand {
+            mpp: false,
+            mint_url: None,
+            method,
+            invoice: None,
+            offer: None,
+            address: None,
+            network: BitcoinNetwork::Bitcoin,
+            amount: None,
+            mpp_split: Vec::new(),
+            payjoin,
+        }
+    }
+
+    #[test]
+    fn payjoin_requires_onchain_method() {
+        for method in [
+            PaymentType::Bolt11,
+            PaymentType::Bolt12,
+            PaymentType::Bip353,
+        ] {
+            let args = melt_sub_command(method, Some("{}".to_string()));
+            let err = validate_args(&args).expect_err("payjoin should require onchain method");
+
+            assert_eq!(
+                err.to_string(),
+                "--payjoin can only be used with --method onchain"
+            );
+        }
+    }
+
+    #[test]
+    fn onchain_method_allows_payjoin() {
+        let args = melt_sub_command(PaymentType::Onchain, Some("{}".to_string()));
+
+        validate_args(&args).expect("onchain payjoin should pass validation");
+    }
+
+    #[test]
+    fn default_method_rejects_payjoin() {
+        let args = melt_sub_command(PaymentType::Bolt11, Some("{}".to_string()));
+        let err = validate_args(&args).expect_err("default method should reject payjoin");
+
+        assert_eq!(
+            err.to_string(),
+            "--payjoin can only be used with --method onchain"
+        );
+    }
+
+    #[test]
+    fn parses_bitcoin_payjoin_uri_for_onchain_melt() {
+        let input = parse_bitcoin_payjoin_uri(PAYJOIN_URI).expect("parse payjoin uri");
+        let payjoin = input.payjoin.expect("payjoin params");
+
+        assert_eq!(
+            input.address.as_deref(),
+            Some("tb1qhe0dkl8tfkrp9nnufq0v0nl46yramxmzwvs83r")
+        );
+        assert_eq!(input.amount_sat, Some(4_000));
+        assert_eq!(payjoin.endpoint, "https://payjo.in/E73HSW759WNES");
+        assert_eq!(
+            payjoin.ohttp_keys.to_string(),
+            "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ"
+        );
+        assert_eq!(
+            payjoin.receiver_key.to_string(),
+            "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG"
+        );
+        assert_eq!(payjoin.expires_at, 1_780_854_353);
+    }
+
+    #[test]
+    fn onchain_uri_amount_conflicts_are_rejected() {
+        let input = parse_bitcoin_payjoin_uri(PAYJOIN_URI).expect("parse payjoin uri");
+        let err = merge_optional("onchain amount", input.amount_sat, Some(5_000))
+            .expect_err("conflicting amount should fail");
+
+        assert!(err.to_string().contains("Conflicting onchain amount"));
+    }
 }

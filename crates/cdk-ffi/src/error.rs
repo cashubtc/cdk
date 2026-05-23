@@ -68,6 +68,12 @@ impl From<cdk::nuts::nut00::Error> for FfiError {
     }
 }
 
+impl From<cdk::nuts::nut31::PayjoinV2KeyError> for FfiError {
+    fn from(err: cdk::nuts::nut31::PayjoinV2KeyError) -> Self {
+        FfiError::internal(err)
+    }
+}
+
 impl From<serde_json::Error> for FfiError {
     fn from(err: serde_json::Error) -> Self {
         FfiError::internal(err)

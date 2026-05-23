@@ -67,7 +67,6 @@ pub(crate) fn apply_mint_quote_response(
             if is_stale_mint_quote_update(quote, response.updated_at, amount_paid, amount_issued) {
                 return false;
             }
-
             quote.state = state;
             quote.amount_paid = amount_paid;
             quote.amount_issued = amount_issued;
@@ -80,12 +79,18 @@ pub(crate) fn apply_mint_quote_response(
             response.amount_issued,
             response.updated_at,
         ),
-        MintQuoteResponse::Onchain(response) => apply_accounting_mint_quote_update(
-            quote,
-            response.amount_paid,
-            response.amount_issued,
-            response.updated_at,
-        ),
+        MintQuoteResponse::Onchain(response) => {
+            let applied = apply_accounting_mint_quote_update(
+                quote,
+                response.amount_paid,
+                response.amount_issued,
+                response.updated_at,
+            );
+            if applied {
+                quote.payjoin = response.payjoin.clone();
+            }
+            applied
+        }
         MintQuoteResponse::Custom { response, .. } => apply_accounting_mint_quote_update(
             quote,
             response.amount_paid,
@@ -722,6 +727,7 @@ mod tests {
                 amount_paid: Amount::from(1_000),
                 amount_issued: Amount::from(250),
                 updated_at: 0,
+                payjoin: None,
             });
 
         assert_eq!(mint_quote_response_amount(&response), None);
