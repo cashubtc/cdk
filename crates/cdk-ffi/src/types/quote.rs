@@ -393,8 +393,8 @@ pub struct MeltQuoteOnchainFeeOption {
     pub estimated_blocks: u32,
 }
 
-impl From<cdk::nuts::nut_onchain::MeltQuoteOnchainFeeOption> for MeltQuoteOnchainFeeOption {
-    fn from(option: cdk::nuts::nut_onchain::MeltQuoteOnchainFeeOption) -> Self {
+impl From<cdk::nuts::nut30::MeltQuoteOnchainFeeOption> for MeltQuoteOnchainFeeOption {
+    fn from(option: cdk::nuts::nut30::MeltQuoteOnchainFeeOption) -> Self {
         Self {
             fee_index: option.fee_index,
             fee_reserve: option.fee_reserve.into(),

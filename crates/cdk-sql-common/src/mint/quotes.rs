@@ -11,7 +11,7 @@ use cdk_common::database::{
 use cdk_common::mint::{
     self, IncomingPayment, Issuance, MeltPaymentRequest, MeltQuote, MintQuote, Operation,
 };
-use cdk_common::nuts::nut_onchain::MeltQuoteOnchainFeeOption;
+use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
 use cdk_common::payment::PaymentIdentifier;
 use cdk_common::quote_id::QuoteId;
 use cdk_common::state::check_melt_quote_state_transition;

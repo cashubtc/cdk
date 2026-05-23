@@ -131,7 +131,7 @@ impl Wallet {
                 }
             }
             PaymentMethod::Known(KnownMethod::Onchain) => {
-                MintQuoteRequest::Onchain(cdk_common::nuts::nut_onchain::MintQuoteOnchainRequest {
+                MintQuoteRequest::Onchain(cdk_common::nuts::nut30::MintQuoteOnchainRequest {
                     unit: unit.clone(),
                     pubkey: secret_key.public_key(),
                 })
@@ -593,7 +593,7 @@ mod tests {
     #[test]
     fn fetched_onchain_mint_quote_does_not_use_amount_paid_as_amount() {
         let response =
-            MintQuoteResponse::Onchain(cdk_common::nuts::nut_onchain::MintQuoteOnchainResponse {
+            MintQuoteResponse::Onchain(cdk_common::nuts::nut30::MintQuoteOnchainResponse {
                 quote: "quote-id".to_string(),
                 request: "bc1qexample".to_string(),
                 unit: CurrencyUnit::Sat,

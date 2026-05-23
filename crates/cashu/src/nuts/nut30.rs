@@ -1,4 +1,4 @@
-//! Onchain payment method
+//! NUT-30 onchain payment method
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};

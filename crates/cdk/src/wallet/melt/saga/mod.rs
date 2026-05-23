@@ -1259,7 +1259,7 @@ mod tests {
 
     use cdk_common::amount::{FeeAndAmounts, SplitTarget};
     use cdk_common::nut00::KnownMethod;
-    use cdk_common::nuts::nut_onchain::MeltQuoteOnchainFeeOption;
+    use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
     use cdk_common::nuts::{CurrencyUnit, State};
     use cdk_common::wallet::OperationData;
     use cdk_common::{MeltQuoteOnchainResponse, MeltQuoteResponse, MeltQuoteState, PaymentMethod};

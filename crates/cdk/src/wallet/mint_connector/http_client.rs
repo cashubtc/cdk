@@ -280,7 +280,7 @@ where
                 Ok(MintQuoteResponse::Bolt12(response))
             }
             MintQuoteRequest::Onchain(req) => {
-                let response: cdk_common::nut_onchain::MintQuoteOnchainResponse<String> =
+                let response: cdk_common::nut30::MintQuoteOnchainResponse<String> =
                     self.transport.http_post(url, auth_token, req).await?;
                 Ok(MintQuoteResponse::Onchain(response))
             }
@@ -500,7 +500,7 @@ where
                 Ok(MeltQuoteCreateResponse::Bolt12(response))
             }
             MeltQuoteRequest::Onchain(req) => {
-                let response: cdk_common::nut_onchain::MeltQuoteOnchainResponse<String> =
+                let response: cdk_common::nut30::MeltQuoteOnchainResponse<String> =
                     self.transport.http_post(url, auth_token, req).await?;
                 Ok(MeltQuoteCreateResponse::Onchain(response))
             }
@@ -571,7 +571,7 @@ where
                     )
                     .await?;
 
-                let response: cdk_common::nut_onchain::MeltQuoteOnchainResponse<String> =
+                let response: cdk_common::nut30::MeltQuoteOnchainResponse<String> =
                     self.transport.http_get(url, auth_token).await?;
 
                 Ok(MeltQuoteResponse::Onchain(response))

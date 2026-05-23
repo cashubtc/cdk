@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::nut00::KnownMethod;
-use cdk_common::nuts::nut_onchain::MeltQuoteOnchainFeeOption;
+use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
 use cdk_common::nuts::{CurrencyUnit, MeltQuoteState};
 use cdk_common::payment::{
     self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,

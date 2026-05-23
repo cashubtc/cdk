@@ -5,7 +5,7 @@ use std::ops::Deref;
 use std::str::FromStr;
 
 use bitcoin::bip32::DerivationPath;
-use cashu::nuts::nut_onchain::MeltQuoteOnchainFeeOption;
+use cashu::nuts::nut30::MeltQuoteOnchainFeeOption;
 use cashu::quote_id::QuoteId;
 use cashu::util::unix_time;
 use cashu::{

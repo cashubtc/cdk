@@ -21,7 +21,7 @@ use bdk_wallet::template::Bip84;
 use bdk_wallet::{KeychainKind, PersistedWallet, Wallet};
 use cdk_common::common::FeeReserve;
 use cdk_common::database::KVStore;
-use cdk_common::nuts::nut_onchain::MeltQuoteOnchainFeeOption;
+use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
 use cdk_common::payment::{
     CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse, MintPayment,
     OnchainSettings, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse,

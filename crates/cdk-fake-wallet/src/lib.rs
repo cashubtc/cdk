@@ -25,7 +25,7 @@ use bitcoin::{Address, CompressedPublicKey, Network};
 use cdk_common::amount::Amount;
 use cdk_common::common::FeeReserve;
 use cdk_common::ensure_cdk;
-use cdk_common::nuts::nut_onchain::MeltQuoteOnchainFeeOption;
+use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
     self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,

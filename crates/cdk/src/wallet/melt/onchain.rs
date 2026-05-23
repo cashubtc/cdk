@@ -10,7 +10,7 @@ fn wallet_melt_quote_from_onchain_response(
     mint_url: &crate::mint_url::MintUrl,
     unit: &crate::nuts::CurrencyUnit,
     response: cdk_common::MeltQuoteOnchainResponse<String>,
-    fee_option: cdk_common::nuts::nut_onchain::MeltQuoteOnchainFeeOption,
+    fee_option: cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption,
 ) -> MeltQuote {
     MeltQuote {
         id: response.quote,

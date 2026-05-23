@@ -7,7 +7,7 @@ use crate::nuts::nut00::KnownMethod;
 use crate::nuts::nut05::{MeltQuoteCustomRequest, MeltQuoteCustomResponse};
 use crate::nuts::nut23::{MeltQuoteBolt11Request, MeltQuoteBolt11Response};
 use crate::nuts::nut25::{MeltQuoteBolt12Request, MeltQuoteBolt12Response};
-use crate::nuts::nut_onchain::{MeltQuoteOnchainRequest, MeltQuoteOnchainResponse};
+use crate::nuts::nut30::{MeltQuoteOnchainRequest, MeltQuoteOnchainResponse};
 use crate::{Amount, CurrencyUnit, MeltQuoteState, PaymentMethod};
 
 /// Melt quote request enum for different types of quotes
@@ -303,7 +303,7 @@ where
                 })
             }
             PaymentMethod::Known(KnownMethod::Onchain) => {
-                Self::Onchain(crate::nuts::nut_onchain::MeltQuoteOnchainResponse {
+                Self::Onchain(crate::nuts::nut30::MeltQuoteOnchainResponse {
                     quote: value.id.clone().into(),
                     amount: value.amount().into(),
                     unit: value.unit.clone(),
@@ -340,7 +340,7 @@ mod tests {
     use super::*;
     use crate::nuts::nut05::MeltQuoteCustomResponse;
     use crate::nuts::nut23::MeltQuoteBolt11Response;
-    use crate::nuts::nut_onchain::{MeltQuoteOnchainFeeOption, MeltQuoteOnchainResponse};
+    use crate::nuts::nut30::{MeltQuoteOnchainFeeOption, MeltQuoteOnchainResponse};
     use crate::{Amount, CurrencyUnit, MeltQuoteState};
 
     fn bolt11_response(quote: &str) -> MeltQuoteBolt11Response<String> {

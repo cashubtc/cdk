@@ -16,7 +16,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::mint::{MeltPaymentRequest, MeltQuote};
-use crate::nuts::nut_onchain::MeltQuoteOnchainFeeOption;
+use crate::nuts::nut30::MeltQuoteOnchainFeeOption;
 use crate::nuts::{CurrencyUnit, MeltQuoteState};
 use crate::{Amount, QuoteId};
 

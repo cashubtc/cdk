@@ -7,7 +7,7 @@ use crate::nuts::nut00::KnownMethod;
 use crate::nuts::nut04::{MintQuoteCustomRequest, MintQuoteCustomResponse};
 use crate::nuts::nut23::{MintQuoteBolt11Request, MintQuoteBolt11Response, QuoteState};
 use crate::nuts::nut25::{MintQuoteBolt12Request, MintQuoteBolt12Response};
-use crate::nuts::nut_onchain::{MintQuoteOnchainRequest, MintQuoteOnchainResponse};
+use crate::nuts::nut30::{MintQuoteOnchainRequest, MintQuoteOnchainResponse};
 use crate::{Amount, CurrencyUnit, PaymentMethod, PublicKey};
 
 /// Unified mint quote request for all payment methods

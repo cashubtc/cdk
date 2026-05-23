@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use cdk_common::nuts::nut_onchain::MeltQuoteOnchainFeeOption;
+use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
 use cdk_common::payment::{
     CreateIncomingPaymentResponse, MakePaymentResponse as CdkMakePaymentResponse,
     PaymentIdentifier as CdkPaymentIdentifier, PaymentQuoteResponse as CdkPaymentQuoteResponse,
@@ -444,7 +444,7 @@ impl TryFrom<PaymentEventResponse> for cdk_common::payment::Event {
 mod tests {
     use std::str::FromStr;
 
-    use cdk_common::nuts::nut_onchain::MeltQuoteOnchainFeeOption;
+    use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
     use cdk_common::payment::{
         Event, MakePaymentResponse, OnchainSettings, PaymentIdentifier,
         PaymentQuoteResponse as CdkPaymentQuoteResponse, WaitPaymentResponse,

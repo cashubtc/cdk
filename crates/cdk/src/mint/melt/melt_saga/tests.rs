@@ -16,7 +16,7 @@ use cdk_common::mint::{
     SagaStateEnum,
 };
 use cdk_common::nut00::KnownMethod;
-use cdk_common::nuts::nut_onchain::MeltQuoteOnchainFeeOption;
+use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
 use cdk_common::nuts::{MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
 use cdk_common::payment::PaymentIdentifier;
 use cdk_common::util::unix_time;
@@ -113,7 +113,7 @@ async fn test_onchain_setup_rejects_amount_for_unselected_fee_option() {
 ///
 /// Change outputs on an onchain melt are used to return the unused portion of
 /// the over-allocated `fee_reserve` as ecash. Per
-/// `MeltOnchainRequest.outputs` (see `cashu::nut_onchain`), the wallet MAY
+/// `MeltOnchainRequest.outputs` (see `cashu::nut30`), the wallet MAY
 /// attach blinded messages and the mint MUST NOT reject the request for that
 /// reason alone.
 ///

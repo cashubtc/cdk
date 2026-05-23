@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::PublicKey;
 use crate::nut00::KnownMethod;
 use crate::nut25::MeltQuoteBolt12Response;
-use crate::nut_onchain::{MeltQuoteOnchainResponse, MintQuoteOnchainResponse};
+use crate::nut30::{MeltQuoteOnchainResponse, MintQuoteOnchainResponse};
 use crate::nuts::{
     CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteCustomResponse, MintQuoteBolt11Response,
     MintQuoteCustomResponse, PaymentMethod, ProofState,
@@ -411,7 +411,7 @@ mod tests {
             state: MeltQuoteState::Pending,
             expiry: 1701704757,
             request: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
-            fee_options: vec![crate::nut_onchain::MeltQuoteOnchainFeeOption {
+            fee_options: vec![crate::nut30::MeltQuoteOnchainFeeOption {
                 fee_index: 0,
                 fee_reserve: Amount::from(5_000),
                 estimated_blocks: 1,
