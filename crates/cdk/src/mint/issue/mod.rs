@@ -11,7 +11,7 @@ use cdk_common::util::unix_time;
 use cdk_common::{
     database, ensure_cdk, Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Error,
     MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteOnchainResponse, MintQuoteState,
-    MintRequest, MintResponse, NotificationPayload, PublicKey,
+    MintRequest, MintResponse, NotificationPayload, PaymentMethod, PublicKey,
 };
 use tracing::instrument;
 
@@ -555,6 +555,18 @@ impl Mint {
         }
 
         result
+    }
+
+    /// Get the configured payment method for an existing mint quote.
+    #[instrument(skip(self))]
+    pub async fn get_mint_quote_method(&self, quote_id: &QuoteId) -> Result<PaymentMethod, Error> {
+        let quote = self
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        Ok(quote.payment_method)
     }
 
     /// Checks the status of multiple mint quotes (NUT-29 batch quote check)

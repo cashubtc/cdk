@@ -18,7 +18,7 @@ use cdk::nuts::{
     MeltQuoteBolt12Request, MeltQuoteCustomRequest, MeltQuoteOnchainRequest,
     MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteBolt12Request,
     MintQuoteBolt12Response, MintQuoteCustomRequest, MintQuoteOnchainRequest,
-    MintQuoteOnchainResponse, MintRequest, MintResponse,
+    MintQuoteOnchainResponse, MintRequest, MintResponse, PaymentMethod,
 };
 use cdk::{MeltQuoteCreateResponse, MeltQuoteResponse};
 use serde_json::Value;
@@ -106,6 +106,24 @@ async fn validate_melt_quote_method(
 
     if quote_method != method {
         return Err(cdk::Error::InvalidPaymentMethod);
+    }
+
+    Ok(())
+}
+
+async fn validate_mint_quote_methods(
+    state: &MintState,
+    method: &str,
+    quote_ids: &[QuoteId],
+) -> Result<(), cdk::Error> {
+    let expected_method = PaymentMethod::from(method);
+
+    for quote_id in quote_ids {
+        let quote_method = state.mint.get_mint_quote_method(quote_id).await?;
+
+        if quote_method != expected_method {
+            return Err(cdk::Error::InvalidPaymentMethod);
+        }
     }
 
     Ok(())
@@ -359,6 +377,10 @@ pub async fn post_mint_custom(
         .await
         .map_err(into_response)?;
 
+    validate_mint_quote_methods(&state, &method, std::slice::from_ref(&payload.quote))
+        .await
+        .map_err(into_response)?;
+
     let res = state
         .mint
         .process_mint_request(cdk::mint::MintInput::Single(payload))
@@ -382,6 +404,10 @@ pub async fn post_batch_mint(
             auth.into(),
             &ProtectedEndpoint::new(Method::Post, RoutePath::Mint(method.clone())),
         )
+        .await
+        .map_err(into_response)?;
+
+    validate_mint_quote_methods(&state, &method, &payload.quotes)
         .await
         .map_err(into_response)?;
 
@@ -689,9 +715,21 @@ pub async fn cache_post_batch_mint(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+    use std::time::Duration;
+
     use axum::http::{HeaderValue, Request, StatusCode};
+    use bip39::Mnemonic;
+    use cdk::mint::{MintBuilder, MintMeltLimits, MintQuoteResponse};
+    use cdk::nuts::nut00::KnownMethod;
+    use cdk::nuts::{BlindedMessage, CurrencyUnit, MintQuoteState, PaymentMethod, SecretKey};
+    use cdk::types::{FeeReserve, QuoteTTL};
+    use cdk::Amount;
+    use cdk_fake_wallet::FakeWallet;
 
     use super::*;
+    use crate::cache::HttpCache;
 
     fn create_test_request(prefer_header: Option<&str>) -> Request<()> {
         let mut req = Request::builder()
@@ -721,6 +759,94 @@ mod tests {
             .insert(PREFER_HEADER_KEY, HeaderValue::from_bytes(bytes).unwrap());
 
         req
+    }
+
+    async fn create_test_state() -> MintState {
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let mut builder = MintBuilder::new(db.clone())
+            .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]));
+        let fake = FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 0.0,
+            },
+            HashMap::default(),
+            HashSet::default(),
+            0,
+            CurrencyUnit::Sat,
+        );
+        builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintMeltLimits::new(1, 10_000),
+                Arc::new(fake),
+            )
+            .await
+            .unwrap();
+
+        let mnemonic = Mnemonic::generate(12).unwrap();
+        let mint = builder
+            .build_with_seed(db, &mnemonic.to_seed_normalized(""))
+            .await
+            .unwrap();
+        mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000))
+            .await
+            .unwrap();
+        mint.start().await.unwrap();
+
+        MintState {
+            mint: Arc::new(mint),
+            cache: Arc::new(HttpCache::default()),
+        }
+    }
+
+    async fn create_paid_bolt11_quote(state: &MintState) -> QuoteId {
+        let quote: MintQuoteBolt11Response<QuoteId> = state
+            .mint
+            .get_mint_quote(
+                MintQuoteBolt11Request {
+                    amount: Amount::from(2u64),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                }
+                .into(),
+            )
+            .await
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        for _ in 0..100 {
+            let check = state
+                .mint
+                .check_mint_quotes(std::slice::from_ref(&quote.quote))
+                .await
+                .unwrap();
+            if let MintQuoteResponse::Bolt11(q) = &check[0] {
+                if q.state == MintQuoteState::Paid {
+                    return quote.quote;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        panic!("bolt11 quote was not paid by the fake wallet");
+    }
+
+    fn outputs_for_amount(state: &MintState, amount: u64) -> Vec<BlindedMessage> {
+        let keyset_id = *state
+            .mint
+            .get_active_keysets()
+            .get(&CurrencyUnit::Sat)
+            .unwrap();
+
+        vec![BlindedMessage::new(
+            Amount::from(amount),
+            keyset_id,
+            SecretKey::generate().public_key(),
+        )]
     }
 
     #[tokio::test]
@@ -793,5 +919,54 @@ mod tests {
         let result = PreferHeader::from_request_parts(&mut parts, &()).await;
         assert!(result.is_ok());
         assert!(!result.unwrap().respond_async);
+    }
+
+    #[tokio::test]
+    async fn post_mint_custom_rejects_url_method_quote_method_mismatch() {
+        let state = create_test_state().await;
+        let quote_id = create_paid_bolt11_quote(&state).await;
+        let mint_request = MintRequest {
+            quote: quote_id,
+            outputs: outputs_for_amount(&state, 2),
+            signature: None,
+        };
+
+        let result = post_mint_custom(
+            AuthHeader::None,
+            State(state),
+            Path("bolt12".to_string()),
+            Json(mint_request),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "post_mint_custom must reject cross-method mint"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_batch_mint_rejects_url_method_quote_method_mismatch() {
+        let state = create_test_state().await;
+        let quote_id = create_paid_bolt11_quote(&state).await;
+        let batch_request = BatchMintRequest {
+            quotes: vec![quote_id],
+            quote_amounts: None,
+            outputs: outputs_for_amount(&state, 2),
+            signatures: None,
+        };
+
+        let result = post_batch_mint(
+            AuthHeader::None,
+            State(state),
+            Path("bolt12".to_string()),
+            Json(batch_request),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "post_batch_mint must reject cross-method mint"
+        );
     }
 }
