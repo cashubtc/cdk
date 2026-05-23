@@ -288,6 +288,20 @@ restart_mints() {
     echo "==============================="
     echo "Restarting CDK Mints"
     echo "==============================="
+
+    export_regtest_bdk_env() {
+        local mnemonic="$1"
+
+        export CDK_MINTD_BDK_MNEMONIC="$mnemonic"
+        export CDK_MINTD_ONCHAIN_BACKEND="bdk"
+        export CDK_MINTD_BDK_BITCOIND_RPC_HOST="127.0.0.1"
+        export CDK_MINTD_BDK_BITCOIND_RPC_PORT=18443
+        export CDK_MINTD_BDK_BITCOIND_RPC_USER="testuser"
+        export CDK_MINTD_BDK_BITCOIND_RPC_PASSWORD="testpass"
+        export CDK_MINTD_BDK_NETWORK="regtest"
+        export CDK_MINTD_BDK_CHAIN_SOURCE_TYPE="bitcoinrpc"
+        export CDK_MINTD_BDK_NUM_CONFS=1
+    }
     
     # Stop existing mints
     echo "Stopping existing mints..."
@@ -321,6 +335,7 @@ restart_mints() {
     export CDK_MINTD_LN_BACKEND="cln"
     export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
     export RUST_BACKTRACE=1
+    export_regtest_bdk_env "$CDK_MINTD_MNEMONIC"
     
     cargo run --bin cdk-mintd > "$CDK_MINTD_WORK_DIR/mintd.log" 2>&1 &
     NEW_CLN_PID=$!
@@ -355,6 +370,7 @@ restart_mints() {
     export CDK_MINTD_LISTEN_PORT=8087
     export CDK_MINTD_LN_BACKEND="lnd"
     export CDK_MINTD_MNEMONIC="cattle gold bind busy sound reduce tone addict baby spend february strategy"
+    export_regtest_bdk_env "$CDK_MINTD_MNEMONIC"
     
     cargo run --bin cdk-mintd > "$CDK_MINTD_WORK_DIR/mintd.log" 2>&1 &
     NEW_LND_PID=$!

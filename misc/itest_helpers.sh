@@ -43,7 +43,7 @@ run_mintd_bg() {
 }
 
 # Helper: run cargo nextest with archive if available, or fall back to cargo test.
-# For nextest: translates '-- --nocapture' to '--no-capture' and strips '--' separators.
+# For nextest: translates cargo test conventions and strips '--' separators.
 #
 # Usage: run_test <test_name> [extra cargo-test args...]
 run_test() {
@@ -52,18 +52,30 @@ run_test() {
     if [ -n "${CDK_ITEST_ARCHIVE:-}" ] && [ -f "${CDK_ITEST_ARCHIVE:-}" ]; then
         # Build nextest args, translating cargo test conventions
         local nextest_args=()
-        for arg in "$@"; do
+        local args=("$@")
+        local i=0
+        while [ "$i" -lt "${#args[@]}" ]; do
+            local arg="${args[$i]}"
             if [ "$arg" = "--" ]; then
+                i=$((i + 1))
                 continue
             fi
             if [ "$arg" = "--nocapture" ]; then
                 nextest_args+=("--no-capture")
+            elif [ "$arg" = "--test-threads" ]; then
+                i=$((i + 1))
+                if [ "$i" -lt "${#args[@]}" ]; then
+                    nextest_args+=("-j" "${args[$i]}")
+                fi
+            elif [[ "$arg" == --test-threads=* ]]; then
+                nextest_args+=("-j" "${arg#--test-threads=}")
             else
                 nextest_args+=("$arg")
             fi
+            i=$((i + 1))
         done
         echo "Running test '$test_name' from nextest archive"
-        cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~$test_name)" "${nextest_args[@]}"
+        cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(/^${test_name}$/)" "${nextest_args[@]}"
     else
         echo "Running test '$test_name' via cargo test"
         cargo test -p cdk-integration-tests --test "$test_name" "$@"
