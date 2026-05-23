@@ -1342,7 +1342,7 @@
               // envVars
             );
 
-            # Shell for bindings development (Dart + Swift + Kotlin FFI)
+            # Shell for bindings development (Dart + Swift + Kotlin + Go FFI)
             bindings = pkgs.mkShell (
               {
                 shellHook = commonShellHook;
@@ -1352,6 +1352,7 @@
                   dartpkgs.default
                   pkgs.openssl
                   pkgs.jdk17
+                  pkgs.go
                 ];
                 nativeBuildInputs = [
                   pkgs.pkg-config

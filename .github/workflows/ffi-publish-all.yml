@@ -43,3 +43,12 @@ jobs:
       cdk_version: ${{ inputs.cdk_version }}
       cdk_ref: ${{ inputs.cdk_ref }}
     secrets: inherit
+
+  go:
+    name: "Trigger Go bindings"
+    uses: ./.github/workflows/go-publish.yml
+    with:
+      release_tag: ${{ inputs.release_tag }}
+      cdk_version: ${{ inputs.cdk_version }}
+      cdk_ref: ${{ inputs.cdk_ref }}
+    secrets: inherit

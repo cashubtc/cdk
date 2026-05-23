@@ -157,6 +157,9 @@ jobs:
           echo "--- rust/Cargo.toml ---"
           cat cdk-swift/rust/Cargo.toml
 
+      - name: Replace README placeholders
+        run: sed -i 's|{{CDK_SWIFT_REPO}}|${{ vars.CDK_SWIFT_REPO }}|g' cdk-swift/README.md
+
       - name: Push to cdk-swift release branch
         working-directory: cdk-swift
         env:

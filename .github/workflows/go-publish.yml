@@ -1,0 +1,416 @@
+name: "FFI - Go Bindings"
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag to create for release (e.g. v0.17.0)"
+        required: true
+      cdk_version:
+        description: 'CDK dependency version (e.g. 0.17.0). Defaults to release_tag without the "v" prefix.'
+        required: false
+      cdk_ref:
+        description: "CDK git ref to publish from. Defaults to release_tag."
+        required: false
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        required: true
+      cdk_version:
+        type: string
+        required: false
+      cdk_ref:
+        type: string
+        required: false
+env:
+  CARGO_TERM_COLOR: ${{ vars.CARGO_TERM_COLOR }}
+  TAG: ${{ inputs.release_tag }}
+  CDK_REF: ${{ inputs.cdk_ref || inputs.release_tag }}
+  RELEASE_BRANCH: release/${{ inputs.release_tag }}
+  UNIFFI_BINDGEN_GO_TAG: v0.6.0+v0.30.0
+
+jobs:
+  go-sync-sources:
+    name: "go: Sync sources to cdk-go"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve variables
+        run: |
+          CDK_VER="${{ inputs.cdk_version }}"
+          echo "CDK_VER=${CDK_VER:-${TAG#v}}" >> "$GITHUB_ENV"
+          echo "RELEASE_VER=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Checkout monorepo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CDK_REF }}
+
+      - name: Clone cdk-go
+        run: |
+          git clone https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_GO_REPO }}.git cdk-go
+
+      - name: Copy bindings/go to cdk-go
+        run: |
+          rsync -av \
+            --exclude='.github' \
+            --exclude='target' \
+            --exclude='.git' \
+            bindings/go/ cdk-go/
+          cp rust-toolchain.toml cdk-go/
+
+      - name: Update versions and resolve workspace references
+        run: |
+          echo "Setting CDK version to ${CDK_VER}, release version to ${RELEASE_VER}"
+
+          # Helper: extract a value from [workspace.package] in root Cargo.toml
+          ws_pkg() {
+            sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
+              | grep "^$1 " | head -1 | sed 's/.*= *"\(.*\)"/\1/'
+          }
+
+          # Helper: extract a workspace dependency version
+          ws_dep_ver() {
+            local line
+            line=$(sed -n '/^\[workspace\.dependencies\]/,/^\[/p' Cargo.toml \
+              | grep "^$1 " | head -1)
+            # Handle both: dep = "version" and dep = { ..., version = "x", ... }
+            if echo "$line" | grep -q 'version *= *"'; then
+              echo "$line" | sed 's/.*version *= *"\([^"]*\)".*/\1/'
+            else
+              echo "$line" | sed 's/.*= *"\([^"]*\)".*/\1/'
+            fi
+          }
+
+          # Read workspace values dynamically
+          WS_EDITION=$(ws_pkg edition)
+          WS_RUST_VERSION=$(ws_pkg rust-version)
+          WS_LICENSE=$(ws_pkg license)
+          WS_HOMEPAGE=$(ws_pkg homepage)
+          WS_REPOSITORY=$(ws_pkg repository)
+          WS_README=$(ws_pkg readme)
+          WS_UNIFFI_VER=$(ws_dep_ver uniffi)
+
+          echo "Workspace values: edition=${WS_EDITION} rust-version=${WS_RUST_VERSION} uniffi=${WS_UNIFFI_VER}"
+
+          # Resolve workspace package fields in rust/Cargo.toml
+          sed -i \
+            -e "s/^edition\.workspace = true/edition = \"${WS_EDITION}\"/" \
+            -e "s/^rust-version\.workspace = true/rust-version = \"${WS_RUST_VERSION}\"/" \
+            -e "s/^license\.workspace = true/license = \"${WS_LICENSE}\"/" \
+            -e "s|^homepage\.workspace = true|homepage = \"${WS_HOMEPAGE}\"|" \
+            -e "s|^repository\.workspace = true|repository = \"${WS_REPOSITORY}\"|" \
+            -e "s/^version\.workspace = true/version = \"${CDK_VER}\"/" \
+            -e "s/^readme\.workspace = true/readme = \"${WS_README}\"/" \
+            cdk-go/rust/Cargo.toml
+
+          # Resolve workspace dependency references
+          sed -i \
+            -e "s/^cdk-ffi\.workspace = true/cdk-ffi = { version = \"=${CDK_VER}\", default-features = false }/" \
+            -e "s/cdk-ffi = { workspace = true/cdk-ffi = { version = \"=${CDK_VER}\"/" \
+            -e "s/uniffi = { workspace = true/uniffi = { version = \"${WS_UNIFFI_VER}\"/" \
+            cdk-go/rust/Cargo.toml
+
+          # Remove workspace lints reference
+          sed -i '/^\[lints\]/,/^$/s/^workspace = true//' cdk-go/rust/Cargo.toml
+
+          # Add release profile
+          printf '\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-go/rust/Cargo.toml
+
+          echo "--- rust/Cargo.toml ---"
+          cat cdk-go/rust/Cargo.toml
+
+      - name: Push to cdk-go release branch
+        working-directory: cdk-go
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "${RELEASE_BRANCH}"
+          git add -A
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "sync: update sources for ${TAG}"
+          git push origin "${RELEASE_BRANCH}"
+
+  go-build-native:
+    name: "go: Build ${{ matrix.target }}"
+    needs: [go-sync-sources]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            artifact: libcdk_ffi.so
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            artifact: libcdk_ffi.so
+
+          # macOS
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            artifact: libcdk_ffi.dylib
+          - target: x86_64-apple-darwin
+            runner: macos-14
+            artifact: libcdk_ffi.dylib
+
+          # Windows
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            artifact: cdk_ffi.dll
+
+    steps:
+      - name: Checkout monorepo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CDK_REF }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build cdk-ffi
+        shell: bash
+        run: |
+          cargo build --release --package cdk-ffi \
+            --target ${{ matrix.target }}
+
+      - name: Fix dylib install name
+        if: endsWith(matrix.artifact, '.dylib')
+        run: |
+          install_name_tool -id @rpath/libcdk_ffi.dylib \
+            target/${{ matrix.target }}/release/${{ matrix.artifact }}
+
+      - name: Install uniffi-bindgen-go
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          cargo install uniffi-bindgen-go \
+            --git https://github.com/NordSecurity/uniffi-bindgen-go \
+            --tag ${{ env.UNIFFI_BINDGEN_GO_TAG }} \
+            --locked --force
+
+      - name: Generate Go bindings
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          mkdir -p generated-bindings
+          uniffi-bindgen-go \
+            "target/${{ matrix.target }}/release/${{ matrix.artifact }}" \
+            --library \
+            --config bindings/go/uniffi.toml \
+            --out-dir generated-bindings
+
+      - name: Upload generated bindings
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-bindings-generated
+          path: generated-bindings/
+
+      - name: Strip debug symbols
+        shell: bash
+        run: |
+          FILE="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
+          case "${{ matrix.target }}" in
+            *windows*)  strip --strip-all "$FILE" ;;
+            *apple*)    strip -S "$FILE" ;;
+            *)          strip --strip-all "$FILE" ;;
+          esac
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.artifact }}" \
+             "dist/${{ matrix.target }}-${{ matrix.artifact }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-native-${{ matrix.target }}
+          path: dist/
+
+  go-publish:
+    name: "go: Publish to cdk-go"
+    runs-on: ubuntu-latest
+    needs: [go-build-native]
+    steps:
+      - name: Clone cdk-go
+        run: |
+          git clone --branch "${RELEASE_BRANCH}" \
+            https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_GO_REPO }}.git cdk-go
+
+      - name: Download all native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          pattern: go-native-*
+          merge-multiple: true
+
+      - name: Download generated Go bindings
+        uses: actions/download-artifact@v4
+        with:
+          name: go-bindings-generated
+          path: ./generated-bindings
+
+      - name: Organize native libraries
+        run: |
+          NATIVE_DIR="cdk-go/bindings/cdkffi/native"
+
+          declare -A TARGET_MAP
+          TARGET_MAP[x86_64-unknown-linux-gnu]="linux_amd64"
+          TARGET_MAP[aarch64-unknown-linux-gnu]="linux_arm64"
+          TARGET_MAP[aarch64-apple-darwin]="darwin_arm64"
+          TARGET_MAP[x86_64-apple-darwin]="darwin_amd64"
+          TARGET_MAP[x86_64-pc-windows-msvc]="windows_amd64"
+
+          declare -A ARTIFACT_MAP
+          ARTIFACT_MAP[x86_64-unknown-linux-gnu]="libcdk_ffi.so"
+          ARTIFACT_MAP[aarch64-unknown-linux-gnu]="libcdk_ffi.so"
+          ARTIFACT_MAP[aarch64-apple-darwin]="libcdk_ffi.dylib"
+          ARTIFACT_MAP[x86_64-apple-darwin]="libcdk_ffi.dylib"
+          ARTIFACT_MAP[x86_64-pc-windows-msvc]="cdk_ffi.dll"
+
+          for target in "${!TARGET_MAP[@]}"; do
+            go_dir="${TARGET_MAP[$target]}"
+            artifact="${ARTIFACT_MAP[$target]}"
+            mkdir -p "${NATIVE_DIR}/${go_dir}"
+            cp "artifacts/${target}-${artifact}" "${NATIVE_DIR}/${go_dir}/${artifact}"
+          done
+
+          echo "Native libraries organized:"
+          find "${NATIVE_DIR}" -type f
+
+      - name: Generate go.mod
+        working-directory: cdk-go
+        run: |
+          MAJOR_VER="${TAG#v}"
+          MAJOR_VER="${MAJOR_VER%%.*}"
+          MODULE="github.com/${{ vars.CDK_GO_REPO }}"
+          if [ "$MAJOR_VER" -ge 2 ] 2>/dev/null; then
+            MODULE="${MODULE}/v${MAJOR_VER}"
+          fi
+          if [ ! -f go.mod ]; then
+            go mod init "${MODULE}"
+          else
+            go mod edit -module "${MODULE}"
+          fi
+          go mod edit -go 1.22
+
+      - name: Copy generated Go bindings
+        run: |
+          PACKAGE_DIR="cdk-go/bindings/cdkffi"
+          cp generated-bindings/cdkffi/cdk_ffi.go "${PACKAGE_DIR}/cdk_ffi.go"
+          cp generated-bindings/cdkffi/cdk_ffi.h "${PACKAGE_DIR}/cdk_ffi.h"
+
+      - name: Generate link files
+        run: |
+          PACKAGE_DIR="cdk-go/bindings/cdkffi"
+
+          cat > "${PACKAGE_DIR}/link_linux_amd64.go" <<'EOF'
+          //go:build linux && amd64
+
+          package cdk_ffi
+
+          // #cgo LDFLAGS: -L${SRCDIR}/native/linux_amd64 -lcdk_ffi -Wl,-rpath,${SRCDIR}/native/linux_amd64 -lm -ldl
+          import "C"
+          EOF
+
+          cat > "${PACKAGE_DIR}/link_linux_arm64.go" <<'EOF'
+          //go:build linux && arm64
+
+          package cdk_ffi
+
+          // #cgo LDFLAGS: -L${SRCDIR}/native/linux_arm64 -lcdk_ffi -Wl,-rpath,${SRCDIR}/native/linux_arm64 -lm -ldl
+          import "C"
+          EOF
+
+          cat > "${PACKAGE_DIR}/link_darwin_amd64.go" <<'EOF'
+          //go:build darwin && amd64
+
+          package cdk_ffi
+
+          // #cgo LDFLAGS: -L${SRCDIR}/native/darwin_amd64 -lcdk_ffi -Wl,-rpath,${SRCDIR}/native/darwin_amd64 -lm
+          import "C"
+          EOF
+
+          cat > "${PACKAGE_DIR}/link_darwin_arm64.go" <<'EOF'
+          //go:build darwin && arm64
+
+          package cdk_ffi
+
+          // #cgo LDFLAGS: -L${SRCDIR}/native/darwin_arm64 -lcdk_ffi -Wl,-rpath,${SRCDIR}/native/darwin_arm64 -lm
+          import "C"
+          EOF
+
+          cat > "${PACKAGE_DIR}/link_windows_amd64.go" <<'EOF'
+          //go:build windows && amd64
+
+          package cdk_ffi
+
+          // #cgo LDFLAGS: -L${SRCDIR}/native/windows_amd64 -lcdk_ffi
+          import "C"
+          EOF
+
+      - name: Update checksums
+        run: |
+          NATIVE_DIR="cdk-go/bindings/cdkffi/native"
+          CHECKSUM_FILE="${NATIVE_DIR}/checksums.sha256"
+          LIBS=()
+          while IFS= read -r -d '' f; do
+            LIBS+=("${f}")
+          done < <(find "${NATIVE_DIR}" -type f \( -name "*.so" -o -name "*.dylib" \) -print0 | sort -z)
+          {
+            for abs_path in "${LIBS[@]}"; do
+              rel_path="${abs_path#"${NATIVE_DIR}/"}"
+              hash="$(sha256sum "${abs_path}" | awk '{print $1}')"
+              echo "${hash}  ${rel_path}"
+            done
+          } > "${CHECKSUM_FILE}"
+          echo "Updated ${CHECKSUM_FILE}:"
+          cat "${CHECKSUM_FILE}"
+
+      - name: Commit to release branch
+        working-directory: cdk-go
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "release: ${TAG} — add bindings and native libraries"
+
+      - name: Push release branch
+        working-directory: cdk-go
+        run: git push origin "${RELEASE_BRANCH}"
+
+      - name: Build release archive
+        run: |
+          tar -czf "cdk-go-bindings-${TAG}.tar.gz" -C cdk-go bindings/cdkffi
+
+      - name: Create release on cdk-go (creates tag and uploads asset atomically)
+        working-directory: cdk-go
+        env:
+          GH_TOKEN: ${{ secrets.FFI_DEPLOY_KEY }}
+        run: |
+          COMMIT_SHA=$(git rev-parse HEAD)
+          gh release create "${TAG}" \
+            --repo ${{ vars.CDK_GO_REPO }} \
+            --target "${COMMIT_SHA}" \
+            --title "Release ${TAG}" \
+            --generate-notes \
+            "../cdk-go-bindings-${TAG}.tar.gz"
+
+      - name: Merge to default branch
+        working-directory: cdk-go
+        run: |
+          DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
+          echo "DEFAULT_BRANCH=${DEFAULT_BRANCH}" >> "$GITHUB_ENV"
+          git checkout "${DEFAULT_BRANCH}"
+          git merge "${RELEASE_BRANCH}" --squash
+          git commit -m "release: ${TAG}"
+          git push origin "${DEFAULT_BRANCH}"
+
+      - name: Clean up release branch
+        working-directory: cdk-go
+        run: git push origin --delete "${RELEASE_BRANCH}"

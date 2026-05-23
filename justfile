@@ -611,13 +611,9 @@ release m="":
     echo
   done
 
-  # Trigger all FFI binding releases (Dart, Kotlin, Swift)
+  # Trigger all FFI binding releases (Dart, Kotlin, Swift, Go)
   echo "📦 Triggering all FFI binding releases for version $VERSION..."
   just ffi-release-all $VERSION
-
-  # Trigger Golang package release after Rust crates are published
-  echo "📦 Triggering Golang package release for version $VERSION..."
-  just ffi-release-go $VERSION
 
 check-docs:
   #!/usr/bin/env bash
@@ -889,7 +885,7 @@ ffi-test-bindings LANGUAGE: (ffi-generate LANGUAGE "--debug")
 ffi-test-python:
   just ffi-test-bindings python
 
-# Trigger all FFI binding releases (Dart, Kotlin, Swift)
+# Trigger all FFI binding releases (Dart, Kotlin, Swift, Go)
 ffi-release-all VERSION:
   #!/usr/bin/env bash
   set -euo pipefail
@@ -957,25 +953,58 @@ ffi-release-kotlin VERSION:
 
   echo "✅ Kotlin workflow triggered successfully!"
 
+# Generate Go FFI bindings
+binding-go:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  cargo build --release --package cdk-ffi-go
+  cargo install uniffi-bindgen-go \
+    --git https://github.com/NordSecurity/uniffi-bindgen-go \
+    --tag v0.6.0+v0.30.0 \
+    --locked
+  export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+  LIB_EXT=$(just _ffi-lib-ext)
+  uniffi-bindgen-go \
+    "target/release/libcdk_ffi_go.${LIB_EXT}" \
+    --library \
+    --config bindings/go/uniffi.toml \
+    --out-dir target/bindings/go
+
+# Run Go binding tests
+test-go:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  export CGO_ENABLED=1
+  export GO111MODULE=off
+  export CGO_LDFLAGS="-L{{justfile_directory()}}/target/release -lcdk_ffi_go"
+  export LD_LIBRARY_PATH="{{justfile_directory()}}/target/release"
+  BINDINGS_DIR="target/bindings/go/cdkffi"
+
+  echo "🧪 Testing Go bindings compile..."
+  cd "$BINDINGS_DIR"
+  go build .
+  echo "✅ Go bindings compile successfully!"
+
+  echo "🧪 Running Go binding tests..."
+  cp "{{justfile_directory()}}/bindings/go/cdk_test.go" .
+  go test -v -count=1 -timeout 120s .
+  echo "✅ Go binding tests passed!"
+
 # Trigger Go Bindings release workflow
 ffi-release-go VERSION:
   #!/usr/bin/env bash
   set -euo pipefail
 
-  CDK_GO_WORKFLOW_REF="${CDK_GO_WORKFLOW_REF:-$(git -C "{{justfile_directory()}}" branch --show-current)}"
-
-  echo "🚀 Triggering Publish Go Bindings workflow..."
+  echo "🚀 Triggering Go bindings workflow..."
   echo "   Version: {{VERSION}}"
-  echo "   CDK Ref: v{{VERSION}}"
-  echo "   cdk-go workflow ref: ${CDK_GO_WORKFLOW_REF}"
+  echo "   Tag: v{{VERSION}}"
 
-  # Use the workflow file name so the trigger works before and after the
-  # display name change, and allow the cdk-go workflow branch to be overridden.
-  gh workflow run release.yml \
-    --repo cashubtc/cdk-go \
-    --ref "${CDK_GO_WORKFLOW_REF}" \
-    --field version="{{VERSION}}" \
-    --field cdk_repo="cashubtc/cdk" \
+  gh workflow run "FFI - Go Bindings" \
+    --repo cashubtc/cdk \
+    --field release_tag="v{{VERSION}}" \
+    --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
 
   echo "✅ Go workflow triggered successfully!"

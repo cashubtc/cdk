@@ -10,7 +10,7 @@ Add to your `pubspec.yaml`:
 dependencies:
   cdk:
     git:
-      url: https://github.com/cashubtc/cdk-dart
+      url: https://github.com/{{CDK_DART_REPO}}
       ref: v0.16.0  # replace with desired version
 ```
 
@@ -33,7 +33,7 @@ If you're in a Nix environment, OpenSSL paths are detected automatically from `N
 
 ## Pre-built binaries
 
-Pre-built native libraries for all supported platforms are available as [GitHub release assets](https://github.com/cashubtc/cdk-dart/releases).
+Pre-built native libraries for all supported platforms are available as [GitHub release assets](https://github.com/{{CDK_DART_REPO}}/releases).
 
 Supported targets:
 
