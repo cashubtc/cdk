@@ -137,7 +137,7 @@ impl MintConnector for DirectMintConnection {
 
     async fn get_mint_quote_status(
         &self,
-        _method: PaymentMethod,
+        method: PaymentMethod,
         quote_id: &str,
     ) -> Result<MintQuoteResponse<String>, Error> {
         let response = self
@@ -146,9 +146,37 @@ impl MintConnector for DirectMintConnection {
             .await?
             .first()
             .ok_or(Error::UnknownQuote)?
-            .clone()
-            .into();
-        Ok(MintQuoteResponse::Bolt11(response))
+            .clone();
+
+        match method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => match response {
+                cdk_common::MintQuoteResponse::Bolt11(r) => {
+                    Ok(MintQuoteResponse::Bolt11(r.to_string_id()))
+                }
+                _ => Err(Error::InvalidPaymentMethod),
+            },
+            PaymentMethod::Known(KnownMethod::Bolt12) => match response {
+                cdk_common::MintQuoteResponse::Bolt12(r) => {
+                    Ok(MintQuoteResponse::Bolt12(r.to_string_id()))
+                }
+                _ => Err(Error::InvalidPaymentMethod),
+            },
+            PaymentMethod::Known(KnownMethod::Onchain) => match response {
+                cdk_common::MintQuoteResponse::Onchain(r) => {
+                    Ok(MintQuoteResponse::Onchain(r.to_string_id()))
+                }
+                _ => Err(Error::InvalidPaymentMethod),
+            },
+            PaymentMethod::Custom(_) => match response {
+                cdk_common::MintQuoteResponse::Custom { method, response } => {
+                    Ok(MintQuoteResponse::Custom {
+                        method,
+                        response: response.to_string_id(),
+                    })
+                }
+                _ => Err(Error::InvalidPaymentMethod),
+            },
+        }
     }
 
     async fn post_mint(
@@ -422,7 +450,8 @@ pub async fn create_mint_with_fee(fee_ppk: u64) -> Result<Mint> {
         HashSet::default(),
         2,
         CurrencyUnit::Sat,
-    );
+    )
+    .with_custom_payment_methods(HashMap::from([("paypal".to_string(), "{}".to_string())]));
 
     mint_builder
         .add_payment_processor(
@@ -505,7 +534,8 @@ pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<M
         HashSet::default(),
         2,
         CurrencyUnit::Sat,
-    );
+    )
+    .with_custom_payment_methods(HashMap::from([("paypal".to_string(), "{}".to_string())]));
 
     mint_builder
         .add_payment_processor(

@@ -264,9 +264,20 @@ onchain_backend = "fakewallet"
 # webserver_port = 0  # 0 = auto-assign available port
 
 [fake_wallet]
-supported_units = ["sat"]
+supported_units = ["sat", "usd"]
 fee_percent = 0.02
 reserve_fee_min = 1
+# Custom payment methods advertised by the fake wallet.
+# Each table entry scopes a method to one unit.
+custom_payment_methods = [
+    { method = "paypal", unit = "sat" },
+    { method = "venmo", unit = "usd" },
+]
+# Bare method names are enabled for every supported unit:
+# custom_payment_methods = ["paypal"]
+#
+# Set to [] to disable fake custom methods:
+# custom_payment_methods = []
 min_delay_time = 1
 max_delay_time = 3
 

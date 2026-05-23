@@ -118,6 +118,41 @@ export CDK_MINTD_DATABASE=sqlite
 cdk-mintd
 ```
 
+### Fake Wallet Custom Payment Methods
+
+The fake wallet backend can advertise custom payment methods for testing NUT-04
+and NUT-05 custom payment flows. Configure methods in `config.toml` with one
+entry per method and unit:
+
+```toml
+[fake_wallet]
+supported_units = ["sat", "usd"]
+custom_payment_methods = [
+    { method = "paypal", unit = "sat" },
+    { method = "venmo", unit = "usd" },
+]
+```
+
+For Docker or env-only setups, use a comma-separated list of `method:unit`
+pairs:
+
+```bash
+export CDK_MINTD_LN_BACKEND=fakewallet
+export CDK_MINTD_FAKE_WALLET_CUSTOM_PAYMENT_METHODS=paypal:sat,venmo:usd
+```
+
+Bare method names are enabled for every fake wallet unit:
+
+```toml
+custom_payment_methods = ["paypal"]
+```
+
+Disable fake custom methods with:
+
+```toml
+custom_payment_methods = []
+```
+
 ### Keyset Version Management
 
 The mint supports rotating keysets to newer versions (e.g., migrating from V1 to V2).
@@ -242,12 +277,11 @@ All configuration can be done through environment variables:
 
 ```yaml
 environment:
-  - CDK_MINTD_LN_BACKEND=ldk-node
+  - CDK_MINTD_LN_BACKEND=fakewallet
   - CDK_MINTD_DATABASE=sqlite
   - CDK_MINTD_LISTEN_HOST=0.0.0.0
   - CDK_MINTD_LISTEN_PORT=8085
-  - CDK_MINTD_LDK_NODE_NETWORK=testnet
-  - CDK_MINTD_LDK_NODE_ESPLORA_URL=https://blockstream.info/testnet/api
+  - CDK_MINTD_FAKE_WALLET_CUSTOM_PAYMENT_METHODS=paypal:sat,venmo:usd
 ```
 
 ### Monitoring
@@ -303,6 +337,7 @@ cdk-mintd --help
 - `CDK_MINTD_DATABASE`: Database engine (`sqlite`/`postgres`/`redb`)
 - `CDK_MINTD_DATABASE_URL`: PostgreSQL connection string
 - `CDK_MINTD_LN_BACKEND`: Lightning backend (`cln`/`lnd`/`lnbits`/`ldk-node`/`fakewallet`)
+- `CDK_MINTD_FAKE_WALLET_CUSTOM_PAYMENT_METHODS`: Comma-separated fake wallet custom methods, optionally scoped as `method:unit`
 - `CDK_MINTD_LISTEN_HOST`: Host to bind to (default: `127.0.0.1`)
 - `CDK_MINTD_LISTEN_PORT`: Port to bind to (default: `8085`)
 

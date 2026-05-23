@@ -211,15 +211,102 @@ impl LnBackendSetup for config::FakeWallet {
         let mut rng = thread_rng();
         let delay_time = rng.gen_range(self.min_delay_time..=self.max_delay_time);
 
+        let mut custom_payment_methods = HashMap::new();
+        for custom_payment_method in &self.custom_payment_methods {
+            if !custom_payment_method.applies_to_unit(&unit) {
+                continue;
+            }
+
+            let method = custom_payment_method.method().trim().to_lowercase();
+            if method.is_empty() {
+                anyhow::bail!("Fake wallet custom payment method cannot be empty");
+            }
+
+            if matches!(method.as_str(), "bolt11" | "bolt12" | "onchain") {
+                anyhow::bail!(
+                    "Fake wallet custom payment method `{method}` conflicts with a known payment method"
+                );
+            }
+
+            custom_payment_methods.insert(method, "{}".to_string());
+        }
+
         let fake_wallet = cdk_fake_wallet::FakeWallet::new(
             fee_reserve,
             HashMap::default(),
             HashSet::default(),
             delay_time,
             unit,
-        );
+        )
+        .with_custom_payment_methods(custom_payment_methods);
 
         Ok(fake_wallet)
+    }
+}
+
+#[cfg(all(test, feature = "fakewallet"))]
+mod tests {
+    use cdk::cdk_payment::MintPayment;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn fake_wallet_setup_filters_custom_methods_by_unit() {
+        let fake_wallet = config::FakeWallet {
+            supported_units: vec![CurrencyUnit::Sat, CurrencyUnit::Usd],
+            custom_payment_methods: vec![
+                config::FakeWalletCustomPaymentMethod::MethodForUnit {
+                    method: "paypal".to_string(),
+                    unit: CurrencyUnit::Sat,
+                },
+                config::FakeWalletCustomPaymentMethod::MethodForUnit {
+                    method: "venmo".to_string(),
+                    unit: CurrencyUnit::Usd,
+                },
+                config::FakeWalletCustomPaymentMethod::Method("cashapp".to_string()),
+            ],
+            min_delay_time: 0,
+            max_delay_time: 0,
+            ..Default::default()
+        };
+
+        let sat_wallet = fake_wallet
+            .setup(
+                &Settings::default(),
+                CurrencyUnit::Sat,
+                None,
+                Path::new("."),
+                None,
+            )
+            .await
+            .expect("sat fake wallet should set up");
+        let sat_settings = sat_wallet
+            .get_settings()
+            .await
+            .expect("sat fake wallet settings should load");
+
+        assert!(sat_settings.custom.contains_key("paypal"));
+        assert!(sat_settings.custom.contains_key("cashapp"));
+        assert!(!sat_settings.custom.contains_key("venmo"));
+
+        let usd_wallet = fake_wallet
+            .setup(
+                &Settings::default(),
+                CurrencyUnit::Usd,
+                None,
+                Path::new("."),
+                None,
+            )
+            .await
+            .expect("usd fake wallet should set up");
+        let usd_settings = usd_wallet
+            .get_settings()
+            .await
+            .expect("usd fake wallet settings should load");
+
+        assert!(!usd_settings.custom.contains_key("paypal"));
+        assert!(usd_settings.custom.contains_key("cashapp"));
+        assert!(usd_settings.custom.contains_key("venmo"));
     }
 }
 

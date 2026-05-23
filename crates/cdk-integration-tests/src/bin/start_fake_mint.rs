@@ -74,6 +74,9 @@ async fn start_fake_mint(
         supported_units: vec![CurrencyUnit::Sat, CurrencyUnit::Usd],
         fee_percent: 0.0,
         reserve_fee_min: 1.into(),
+        custom_payment_methods: vec![cdk_mintd::config::FakeWalletCustomPaymentMethod::Method(
+            "paypal".to_string(),
+        )],
         min_delay_time: 1,
         max_delay_time: 3,
         keyset_rotations: vec![

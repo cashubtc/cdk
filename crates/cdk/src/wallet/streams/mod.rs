@@ -69,14 +69,14 @@ impl WaitableEvent {
     fn into_subscription(self) -> Vec<WalletSubscription> {
         match self {
             WaitableEvent::MeltQuote(quotes) => {
-                let (bolt11, bolt12, onchain) = quotes.into_iter().fold(
-                    (Vec::new(), Vec::new(), Vec::new()),
+                let (bolt11, bolt12, onchain, custom) = quotes.into_iter().fold(
+                    (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
                     |mut acc, (quote_id, payment_method)| {
                         match payment_method.as_str() {
                             "bolt11" => acc.0.push(quote_id),
                             "bolt12" => acc.1.push(quote_id),
                             "onchain" => acc.2.push(quote_id),
-                            _ => acc.0.push(quote_id),
+                            method => acc.3.push((method.to_string(), quote_id)),
                         }
                         acc
                     },
@@ -96,17 +96,21 @@ impl WaitableEvent {
                     subscriptions.push(WalletSubscription::MeltQuoteOnchainState(onchain));
                 }
 
+                subscriptions.extend(custom.into_iter().map(|(method, quote_id)| {
+                    WalletSubscription::MeltQuoteCustom(method, vec![quote_id])
+                }));
+
                 subscriptions
             }
             WaitableEvent::MintQuote(quotes) => {
-                let (bolt11, bolt12, onchain) = quotes.into_iter().fold(
-                    (Vec::new(), Vec::new(), Vec::new()),
+                let (bolt11, bolt12, onchain, custom) = quotes.into_iter().fold(
+                    (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
                     |mut acc, (quote_id, payment_method)| {
                         match payment_method.as_str() {
                             "bolt11" => acc.0.push(quote_id),
                             "bolt12" => acc.1.push(quote_id),
                             "onchain" => acc.2.push(quote_id),
-                            _ => acc.0.push(quote_id),
+                            method => acc.3.push((method.to_string(), quote_id)),
                         }
                         acc
                     },
@@ -125,6 +129,10 @@ impl WaitableEvent {
                 if !onchain.is_empty() {
                     subscriptions.push(WalletSubscription::MintQuoteOnchainState(onchain));
                 }
+
+                subscriptions.extend(custom.into_iter().map(|(method, quote_id)| {
+                    WalletSubscription::MintQuoteCustom(method, vec![quote_id])
+                }));
 
                 subscriptions
             }

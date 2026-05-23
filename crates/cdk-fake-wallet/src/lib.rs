@@ -350,6 +350,7 @@ pub struct FakeWallet {
     unit: CurrencyUnit,
     secondary_repayment_queue: SecondaryRepaymentQueue,
     exchange_rate_cache: ExchangeRateCache,
+    custom_payment_methods: HashMap<String, String>,
 }
 
 impl FakeWallet {
@@ -399,7 +400,30 @@ impl FakeWallet {
             unit,
             secondary_repayment_queue,
             exchange_rate_cache: ExchangeRateCache::new(),
+            custom_payment_methods: HashMap::new(),
         }
+    }
+
+    /// Configure custom payment methods advertised by this fake wallet.
+    pub fn with_custom_payment_methods(
+        mut self,
+        custom_payment_methods: HashMap<String, String>,
+    ) -> Self {
+        self.custom_payment_methods = custom_payment_methods
+            .into_iter()
+            .map(|(method, settings)| (method.to_lowercase(), settings))
+            .collect();
+        self
+    }
+
+    fn ensure_custom_method_supported(&self, method: &str) -> Result<(), payment::Error> {
+        ensure_cdk!(
+            self.custom_payment_methods
+                .contains_key(&method.to_lowercase()),
+            payment::Error::UnsupportedPaymentOption
+        );
+
+        Ok(())
     }
 
     fn fee_for_amount(&self, amount: &Amount<CurrencyUnit>) -> Amount<CurrencyUnit> {
@@ -466,9 +490,6 @@ impl MintPayment for FakeWallet {
 
     #[instrument(skip_all)]
     async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
-        let mut custom = std::collections::HashMap::new();
-        custom.insert("paypal".to_string(), "{}".to_string());
-
         Ok(SettingsResponse {
             unit: self.unit.to_string(),
             bolt11: Some(payment::Bolt11Settings {
@@ -482,7 +503,7 @@ impl MintPayment for FakeWallet {
                 min_receive_amount_sat: 1,
                 min_send_amount_sat: 1,
             }),
-            custom,
+            custom: self.custom_payment_methods.clone(),
         })
     }
 
@@ -563,6 +584,8 @@ impl MintPayment for FakeWallet {
                 (amount_msat, None)
             }
             OutgoingPaymentOptions::Custom(custom_options) => {
+                self.ensure_custom_method_supported(&custom_options.method)?;
+
                 let amount = self
                     .custom_outgoing_amount(unit, &custom_options.extra_json)
                     .await?;
@@ -574,7 +597,10 @@ impl MintPayment for FakeWallet {
                     amount: amount.clone(),
                     fee: self.fee_for_amount(&amount),
                     state: MeltQuoteState::Unpaid,
-                    extra_json: None,
+                    extra_json: custom_options
+                        .extra_json
+                        .as_ref()
+                        .and_then(|extra_json| serde_json::from_str(extra_json).ok()),
                     estimated_blocks: None,
                     fee_options: None,
                 });
@@ -734,6 +760,8 @@ impl MintPayment for FakeWallet {
                 })
             }
             OutgoingPaymentOptions::Custom(custom_options) => {
+                self.ensure_custom_method_supported(&custom_options.method)?;
+
                 let total_spent = self
                     .custom_outgoing_amount(unit, &custom_options.extra_json)
                     .await?;
@@ -841,9 +869,18 @@ impl MintPayment for FakeWallet {
                     None,
                 )
             }
-            IncomingPaymentOptions::Custom(_) => {
-                // Custom payment methods are not supported by fake wallet
-                return Err(cdk_common::payment::Error::UnsupportedPaymentOption);
+            IncomingPaymentOptions::Custom(custom_options) => {
+                self.ensure_custom_method_supported(&custom_options.method)?;
+
+                let custom_id = Uuid::new_v4().to_string();
+                let request = format!("{}:{}", custom_options.method.to_lowercase(), custom_id);
+
+                (
+                    PaymentIdentifier::CustomId(custom_id),
+                    request,
+                    custom_options.amount,
+                    custom_options.unix_expiry,
+                )
             }
         };
 
@@ -1020,5 +1057,71 @@ fn fake_secret_key(seed: &str) -> SecretKey {
         }
 
         attempt += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk_common::payment::{
+        CustomIncomingPaymentOptions, IncomingPaymentOptions, MintPayment, PaymentIdentifier,
+    };
+
+    use super::*;
+
+    fn test_wallet() -> FakeWallet {
+        FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 0.into(),
+                percent_fee_reserve: 0.0,
+            },
+            HashMap::new(),
+            HashSet::new(),
+            0,
+            CurrencyUnit::Sat,
+        )
+    }
+
+    #[tokio::test]
+    async fn custom_payment_methods_are_configurable() {
+        let settings = test_wallet()
+            .get_settings()
+            .await
+            .expect("fake wallet settings should load");
+        assert!(settings.custom.is_empty());
+
+        let wallet = test_wallet()
+            .with_custom_payment_methods(HashMap::from([("Venmo".to_string(), "{}".to_string())]));
+
+        let settings = wallet
+            .get_settings()
+            .await
+            .expect("fake wallet settings should load");
+        assert!(settings.custom.contains_key("venmo"));
+        assert!(!settings.custom.contains_key("paypal"));
+    }
+
+    #[tokio::test]
+    async fn configured_custom_incoming_payment_is_paid() {
+        let wallet = test_wallet()
+            .with_custom_payment_methods(HashMap::from([("venmo".to_string(), "{}".to_string())]));
+
+        let response = wallet
+            .create_incoming_payment_request(IncomingPaymentOptions::Custom(Box::new(
+                CustomIncomingPaymentOptions {
+                    method: "venmo".to_string(),
+                    description: None,
+                    amount: Amount::new(10, CurrencyUnit::Sat),
+                    unix_expiry: None,
+                    extra_json: None,
+                },
+            )))
+            .await
+            .expect("configured custom method should create a request");
+
+        assert!(response.request.starts_with("venmo:"));
+        assert!(matches!(
+            response.request_lookup_id,
+            PaymentIdentifier::CustomId(_)
+        ));
     }
 }

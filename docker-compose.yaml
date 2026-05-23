@@ -48,6 +48,8 @@ services:
       - CDK_MINTD_LISTEN_HOST=0.0.0.0
       - CDK_MINTD_LISTEN_PORT=8085
       - CDK_MINTD_MNEMONIC=
+      # Fake wallet custom payment methods. Use method:unit to scope a method to one unit.
+      - CDK_MINTD_FAKE_WALLET_CUSTOM_PAYMENT_METHODS=paypal:sat
       # Database configuration - choose one:
       # Option 1: SQLite (embedded, no additional setup needed)
       - CDK_MINTD_DATABASE=sqlite

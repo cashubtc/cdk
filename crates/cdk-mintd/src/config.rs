@@ -731,11 +731,47 @@ fn default_keyset_version() -> String {
 }
 
 #[cfg(feature = "fakewallet")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum FakeWalletCustomPaymentMethod {
+    /// Custom method available for every supported fake wallet unit
+    Method(String),
+    /// Custom method available only for one unit
+    MethodForUnit {
+        /// Payment method name (e.g. "paypal", "venmo")
+        method: String,
+        /// Currency unit for this method
+        unit: CurrencyUnit,
+    },
+}
+
+#[cfg(feature = "fakewallet")]
+impl FakeWalletCustomPaymentMethod {
+    pub fn method(&self) -> &str {
+        match self {
+            Self::Method(method) => method,
+            Self::MethodForUnit { method, .. } => method,
+        }
+    }
+
+    pub fn applies_to_unit(&self, unit: &CurrencyUnit) -> bool {
+        match self {
+            Self::Method(_) => true,
+            Self::MethodForUnit {
+                unit: method_unit, ..
+            } => method_unit == unit,
+        }
+    }
+}
+
+#[cfg(feature = "fakewallet")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FakeWallet {
     pub supported_units: Vec<CurrencyUnit>,
     pub fee_percent: f32,
     pub reserve_fee_min: Amount,
+    #[serde(default = "default_fake_wallet_custom_payment_methods")]
+    pub custom_payment_methods: Vec<FakeWalletCustomPaymentMethod>,
     #[serde(default = "default_min_delay_time")]
     pub min_delay_time: u64,
     #[serde(default = "default_max_delay_time")]
@@ -752,6 +788,7 @@ impl Default for FakeWallet {
             supported_units: vec![CurrencyUnit::Sat],
             fee_percent: 0.02,
             reserve_fee_min: 2.into(),
+            custom_payment_methods: default_fake_wallet_custom_payment_methods(),
             min_delay_time: 1,
             max_delay_time: 3,
             keyset_rotations: Vec::new(),
@@ -779,6 +816,11 @@ fn default_min_delay_time() -> u64 {
 #[cfg(feature = "fakewallet")]
 fn default_max_delay_time() -> u64 {
     3
+}
+
+#[cfg(feature = "fakewallet")]
+fn default_fake_wallet_custom_payment_methods() -> Vec<FakeWalletCustomPaymentMethod> {
+    vec![FakeWalletCustomPaymentMethod::Method("paypal".to_string())]
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -1603,6 +1645,21 @@ target_block_time_secs = 300
             .expect("fake onchain-only backend pairing should pass");
     }
 
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_fakewallet_custom_payment_method_unit_matching() {
+        let global = FakeWalletCustomPaymentMethod::Method("paypal".to_string());
+        let usd_only = FakeWalletCustomPaymentMethod::MethodForUnit {
+            method: "venmo".to_string(),
+            unit: CurrencyUnit::Usd,
+        };
+
+        assert!(global.applies_to_unit(&CurrencyUnit::Sat));
+        assert!(global.applies_to_unit(&CurrencyUnit::Usd));
+        assert!(!usd_only.applies_to_unit(&CurrencyUnit::Sat));
+        assert!(usd_only.applies_to_unit(&CurrencyUnit::Usd));
+    }
+
     #[test]
     fn test_info_debug_with_special_chars() {
         // Test with a mnemonic containing special characters
@@ -1846,6 +1903,10 @@ max_melt = 500000
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_SUPPORTED_UNITS, "sat,msat");
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_FEE_PERCENT, "0.0");
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_RESERVE_FEE_MIN, "0");
+        env::set_var(
+            crate::env_vars::ENV_FAKE_WALLET_CUSTOM_PAYMENT_METHODS,
+            "venmo:msat,cashapp:sat,paypal",
+        );
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_MIN_DELAY, "0");
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_MAX_DELAY, "5");
 
@@ -1859,6 +1920,20 @@ max_melt = 500000
         assert_eq!(fakewallet_config.fee_percent, 0.0);
         let reserve_fee_u64: u64 = fakewallet_config.reserve_fee_min.into();
         assert_eq!(reserve_fee_u64, 0);
+        assert_eq!(
+            fakewallet_config.custom_payment_methods,
+            vec![
+                FakeWalletCustomPaymentMethod::MethodForUnit {
+                    method: "venmo".to_string(),
+                    unit: CurrencyUnit::Msat,
+                },
+                FakeWalletCustomPaymentMethod::MethodForUnit {
+                    method: "cashapp".to_string(),
+                    unit: CurrencyUnit::Sat,
+                },
+                FakeWalletCustomPaymentMethod::Method("paypal".to_string()),
+            ]
+        );
         assert_eq!(fakewallet_config.min_delay_time, 0);
         assert_eq!(fakewallet_config.max_delay_time, 5);
 
@@ -1867,6 +1942,7 @@ max_melt = 500000
         env::remove_var(crate::env_vars::ENV_FAKE_WALLET_SUPPORTED_UNITS);
         env::remove_var(crate::env_vars::ENV_FAKE_WALLET_FEE_PERCENT);
         env::remove_var(crate::env_vars::ENV_FAKE_WALLET_RESERVE_FEE_MIN);
+        env::remove_var(crate::env_vars::ENV_FAKE_WALLET_CUSTOM_PAYMENT_METHODS);
         env::remove_var(crate::env_vars::ENV_FAKE_WALLET_MIN_DELAY);
         env::remove_var(crate::env_vars::ENV_FAKE_WALLET_MAX_DELAY);
 

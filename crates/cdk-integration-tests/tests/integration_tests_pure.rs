@@ -1789,6 +1789,70 @@ async fn test_direct_connector_custom_melt_enum_roundtrip() {
 }
 
 #[tokio::test]
+async fn test_fake_wallet_custom_mint_and_melt_flow() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint)
+        .await
+        .expect("Failed to create test wallet");
+    let method = PaymentMethod::Custom("paypal".to_string());
+
+    let mint_quote = wallet
+        .mint_quote(method.clone(), Some(Amount::from(64)), None, None)
+        .await
+        .expect("Failed to create custom mint quote");
+
+    assert_eq!(mint_quote.payment_method, method);
+    assert!(mint_quote.request.starts_with("paypal:"));
+
+    let proofs = wallet
+        .wait_and_mint_quote(
+            mint_quote,
+            SplitTarget::default(),
+            None,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("Failed to mint custom quote");
+
+    assert_eq!(
+        Amount::from(64),
+        proofs.total_amount().expect("Failed to total proofs")
+    );
+    assert_eq!(
+        Amount::from(64),
+        wallet.total_balance().await.expect("Failed to get balance")
+    );
+
+    let melt_quote = wallet
+        .melt_quote(
+            method.clone(),
+            "paypal:merchant-request",
+            None,
+            Some(r#"{"amount":20}"#.to_string()),
+        )
+        .await
+        .expect("Failed to create custom melt quote");
+
+    assert_eq!(melt_quote.payment_method, method);
+    assert_eq!(Amount::from(20), melt_quote.amount);
+
+    let finalized = wallet
+        .prepare_melt(&melt_quote.id, HashMap::new())
+        .await
+        .expect("Failed to prepare custom melt")
+        .confirm()
+        .await
+        .expect("Failed to confirm custom melt");
+
+    assert_eq!(cdk_common::nuts::MeltQuoteState::Paid, finalized.state());
+    assert_eq!(Amount::from(20), finalized.amount());
+    assert_eq!(Some("paypal:merchant-request"), finalized.payment_proof());
+}
+
+#[tokio::test]
 async fn test_batch_mint_unknown_quote() {
     setup_tracing();
     let mint = create_and_start_test_mint()

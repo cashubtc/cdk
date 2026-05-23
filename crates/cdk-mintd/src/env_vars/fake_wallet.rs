@@ -4,12 +4,14 @@ use std::env;
 
 use cdk::nuts::CurrencyUnit;
 
-use crate::config::{FakeWallet, FakeWalletKeysetRotation};
+use crate::config::{FakeWallet, FakeWalletCustomPaymentMethod, FakeWalletKeysetRotation};
 
 // Fake Wallet environment variables
 pub const ENV_FAKE_WALLET_SUPPORTED_UNITS: &str = "CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS";
 pub const ENV_FAKE_WALLET_FEE_PERCENT: &str = "CDK_MINTD_FAKE_WALLET_FEE_PERCENT";
 pub const ENV_FAKE_WALLET_RESERVE_FEE_MIN: &str = "CDK_MINTD_FAKE_WALLET_RESERVE_FEE_MIN";
+pub const ENV_FAKE_WALLET_CUSTOM_PAYMENT_METHODS: &str =
+    "CDK_MINTD_FAKE_WALLET_CUSTOM_PAYMENT_METHODS";
 pub const ENV_FAKE_WALLET_MIN_DELAY: &str = "CDK_MINTD_FAKE_WALLET_MIN_DELAY";
 pub const ENV_FAKE_WALLET_MAX_DELAY: &str = "CDK_MINTD_FAKE_WALLET_MAX_DELAY";
 /// JSON array of keyset rotations, e.g.:
@@ -41,6 +43,13 @@ impl FakeWallet {
             }
         }
 
+        if let Ok(methods_str) = env::var(ENV_FAKE_WALLET_CUSTOM_PAYMENT_METHODS) {
+            self.custom_payment_methods = methods_str
+                .split(',')
+                .filter_map(parse_custom_payment_method_env)
+                .collect();
+        }
+
         if let Ok(min_delay_str) = env::var(ENV_FAKE_WALLET_MIN_DELAY) {
             if let Ok(min_delay) = min_delay_str.parse() {
                 self.min_delay_time = min_delay;
@@ -63,4 +72,28 @@ impl FakeWallet {
 
         self
     }
+}
+
+fn parse_custom_payment_method_env(value: &str) -> Option<FakeWalletCustomPaymentMethod> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    let Some((method, unit)) = value.split_once(':') else {
+        return Some(FakeWalletCustomPaymentMethod::Method(value.to_string()));
+    };
+
+    let method = method.trim();
+    let unit = unit.trim();
+    if method.is_empty() || unit.is_empty() {
+        return None;
+    }
+
+    unit.parse()
+        .ok()
+        .map(|unit| FakeWalletCustomPaymentMethod::MethodForUnit {
+            method: method.to_string(),
+            unit,
+        })
 }
