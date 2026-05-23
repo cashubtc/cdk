@@ -7,3 +7,4 @@
 pub(crate) mod batch_transaction;
 pub(crate) mod payment_intent;
 pub(crate) mod service;
+pub(crate) mod staging;

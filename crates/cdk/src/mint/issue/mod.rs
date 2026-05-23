@@ -220,7 +220,6 @@ impl Mint {
             let ln = self.get_payment_processor(unit.clone(), payment_method.clone())?;
 
             let quote_id = QuoteId::new();
-
             let payment_options = match mint_quote_request {
                 MintQuoteRequest::Bolt11(bolt11_request) => {
                     if let Some(ref desc) = bolt11_request.description {

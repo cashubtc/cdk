@@ -71,7 +71,9 @@ impl Mint {
             Error::Internal
         })?;
 
-        // Check payment status with LN backend
+        // `check_outgoing_payment` is a pure status read by trait contract,
+        // so startup recovery can call it without advancing Payjoin
+        // negotiations or triggering fallback broadcasts.
         let pay_invoice_response =
             ln_backend
                 .check_outgoing_payment(lookup_id)

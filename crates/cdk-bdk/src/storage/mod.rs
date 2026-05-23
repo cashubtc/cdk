@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use cdk_common::database::KVStore;
+use futures::{StreamExt, TryStreamExt};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -15,7 +16,10 @@ pub mod receive;
 pub mod send;
 mod types;
 
-pub use types::{FailedSendAttemptRecord, FinalizedReceiveIntentRecord, FinalizedSendIntentRecord};
+pub use types::{
+    FailedSendAttemptRecord, FinalizedReceiveIntentRecord, FinalizedSendIntentRecord,
+    PayjoinCutThroughProgress, PayjoinReceiveSessionRecord,
+};
 
 /// Primary namespace for BDK KV store operations
 pub const BDK_NAMESPACE: &str = "bdk";
@@ -72,12 +76,18 @@ pub fn finalized_receive_intent_by_quote_namespace(quote_id: &str) -> String {
 /// Secondary namespace for finalized send intent quote id index (quote_id -> intent_id)
 pub const FINALIZED_SEND_INTENT_QUOTE_ID_NAMESPACE: &str = "finalized_send_intent_quote_id";
 
+/// Secondary namespace for Payjoin v2 receive sessions keyed by quote id.
+pub const PAYJOIN_RECEIVE_SESSION_NAMESPACE: &str = "payjoin_receive_session";
+
+/// Secondary namespace for Payjoin v2 receive input outpoints.
+pub const PAYJOIN_RECEIVE_INPUT_OUTPOINT_NAMESPACE: &str = "payjoin_receive_input_outpoint";
+
 /// Encode an outpoint string for use as a KV store key.
 ///
 /// The KV store only allows ASCII letters, numbers, underscore, and
 /// hyphen. Outpoint strings contain `:` (e.g. `txid:vout`), so we
 /// replace it with `-`.
-fn outpoint_to_key(outpoint: &str) -> String {
+pub(crate) fn outpoint_to_key(outpoint: &str) -> String {
     outpoint.replace(':', "-")
 }
 
@@ -142,25 +152,35 @@ impl BdkStorage {
     where
         T: KvRecord,
     {
+        // The KV trait has no batch read, so issue the per-key reads
+        // concurrently (bounded) instead of one round trip at a time.
+        const LIST_READ_CONCURRENCY: usize = 16;
+
         let keys = self
             .kv_store
             .kv_list(BDK_NAMESPACE, T::NAMESPACE)
             .await
             .map_err(Error::from)?;
 
-        let mut records = Vec::new();
-        for key in keys {
-            if let Some(data) = self
+        let reads = futures::stream::iter(keys.into_iter().map(|key| async move {
+            let data = self
                 .kv_store
                 .kv_read(BDK_NAMESPACE, T::NAMESPACE, &key)
                 .await
-                .map_err(Error::from)?
-            {
-                match serde_json::from_slice::<T>(&data) {
-                    Ok(record) => records.push(record),
-                    Err(e) => {
-                        tracing::warn!("Failed to deserialize {} {}: {}", T::NAMESPACE, key, e);
-                    }
+                .map_err(Error::from)?;
+            Ok::<_, Error>((key, data))
+        }))
+        .buffered(LIST_READ_CONCURRENCY)
+        .try_collect::<Vec<_>>()
+        .await?;
+
+        let mut records = Vec::new();
+        for (key, data) in reads {
+            let Some(data) = data else { continue };
+            match serde_json::from_slice::<T>(&data) {
+                Ok(record) => records.push(record),
+                Err(e) => {
+                    tracing::warn!("Failed to deserialize {} {}: {}", T::NAMESPACE, key, e);
                 }
             }
         }
@@ -206,6 +226,110 @@ impl BdkStorage {
         let mut record: T = serde_json::from_slice(&bytes)?;
         record.replace_state(new_state.clone());
         self.put_record(&record).await
+    }
+
+    /// Store or replace a Payjoin receive session.
+    pub async fn put_payjoin_receive_session(
+        &self,
+        record: &PayjoinReceiveSessionRecord,
+    ) -> Result<(), Error> {
+        self.put_record(record).await
+    }
+
+    /// Load a Payjoin receive session by quote id.
+    pub async fn get_payjoin_receive_session(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<PayjoinReceiveSessionRecord>, Error> {
+        self.get_record(quote_id).await
+    }
+
+    /// List all Payjoin receive sessions.
+    pub async fn get_all_payjoin_receive_sessions(
+        &self,
+    ) -> Result<Vec<PayjoinReceiveSessionRecord>, Error> {
+        self.list_records().await
+    }
+
+    /// Delete a Payjoin receive session by quote id.
+    pub async fn delete_payjoin_receive_session(&self, quote_id: &str) -> Result<(), Error> {
+        self.delete_record::<PayjoinReceiveSessionRecord>(quote_id)
+            .await
+    }
+
+    /// Return whether a Payjoin receive input outpoint was previously seen.
+    ///
+    /// Intentionally **global** (keyed by outpoint only): probing spans many
+    /// cheap sessions, so only cross-session memory catches input reuse —
+    /// per-quote scoping would reset every probe and defeat anti-probing. The
+    /// tradeoff is a poisoning vector, gated on Bitcoin Core by `test_mempool_accept`
+    /// (see `ChainSource::accepts_broadcast`); on Esplora it stays poisonable but
+    /// only degrades gracefully (fallback, no fund loss).
+    pub async fn is_payjoin_input_seen(&self, outpoint: &str) -> Result<bool, Error> {
+        let outpoint_key = outpoint_to_key(outpoint);
+        self.kv_store
+            .kv_read(
+                BDK_NAMESPACE,
+                PAYJOIN_RECEIVE_INPUT_OUTPOINT_NAMESPACE,
+                &outpoint_key,
+            )
+            .await
+            .map(|entry| entry.is_some())
+            .map_err(Error::from)
+    }
+
+    /// Return when a Payjoin receive input outpoint was first seen, if any.
+    #[cfg(test)]
+    pub async fn get_payjoin_seen_input_seen_at(
+        &self,
+        outpoint: &str,
+    ) -> Result<Option<u64>, Error> {
+        let outpoint_key = outpoint_to_key(outpoint);
+        let seen_at_bytes = self
+            .kv_store
+            .kv_read(
+                BDK_NAMESPACE,
+                PAYJOIN_RECEIVE_INPUT_OUTPOINT_NAMESPACE,
+                &outpoint_key,
+            )
+            .await
+            .map_err(Error::from)?;
+
+        let Some(seen_at_bytes) = seen_at_bytes else {
+            return Ok(None);
+        };
+
+        let seen_at = String::from_utf8(seen_at_bytes)
+            .map_err(|e| Error::Wallet(format!("Invalid Payjoin input index entry: {}", e)))?;
+        let seen_at = seen_at
+            .parse::<u64>()
+            .map_err(|e| Error::Wallet(format!("Invalid Payjoin input seen timestamp: {}", e)))?;
+        Ok(Some(seen_at))
+    }
+
+    /// Mark Payjoin receive input outpoints as seen.
+    pub async fn mark_payjoin_inputs_seen(&self, outpoints: &[String]) -> Result<(), Error> {
+        let seen_at = crate::util::unix_now().to_string();
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(Error::from)?;
+
+        for outpoint in outpoints {
+            let outpoint_key = outpoint_to_key(outpoint);
+            tx.kv_write(
+                BDK_NAMESPACE,
+                PAYJOIN_RECEIVE_INPUT_OUTPOINT_NAMESPACE,
+                &outpoint_key,
+                seen_at.as_bytes(),
+            )
+            .await
+            .map_err(Error::from)?;
+        }
+
+        tx.commit().await.map_err(Error::from)?;
+        Ok(())
     }
 }
 
@@ -269,6 +393,14 @@ impl KvRecord for FinalizedReceiveIntentRecord {
     }
 }
 
+impl KvRecord for PayjoinReceiveSessionRecord {
+    const NAMESPACE: &'static str = PAYJOIN_RECEIVE_SESSION_NAMESPACE;
+
+    fn key(&self) -> String {
+        self.quote_id.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -304,6 +436,421 @@ mod tests {
                 created_at: 1_700_000_000,
             },
         }
+    }
+
+    #[test]
+    fn finalized_receive_intent_deserializes_legacy_without_payment_id() {
+        let value = serde_json::json!({
+            "intent_id": Uuid::new_v4(),
+            "quote_id": Uuid::new_v4().to_string(),
+            "address": "bcrt1qaddr",
+            "txid": "abc123",
+            "outpoint": "abc123:0",
+            "amount_sat": 50_000,
+            "finalized_at": 1_700_000_001_u64
+        });
+
+        let record: FinalizedReceiveIntentRecord =
+            serde_json::from_value(value).expect("legacy tombstone should deserialize");
+
+        assert_eq!(record.payment_id, None);
+        assert_eq!(record.outpoint, "abc123:0");
+    }
+
+    #[tokio::test]
+    async fn test_claim_pending_send_intents_for_batch_is_conditional() {
+        let storage = test_storage().await;
+        let batch_id = Uuid::new_v4();
+        let first_id = Uuid::new_v4();
+        let second_id = Uuid::new_v4();
+        let mut first = make_pending_intent(first_id);
+        first.quote_id = "claim-quote-1".to_string();
+        let mut second = make_pending_intent(second_id);
+        second.quote_id = "claim-quote-2".to_string();
+
+        storage
+            .create_send_intent_if_absent(&first)
+            .await
+            .expect("store first");
+        storage
+            .create_send_intent_if_absent(&second)
+            .await
+            .expect("store second");
+        storage
+            .update_send_intent(
+                &second_id,
+                &SendIntentState::Batched {
+                    batch_id: Uuid::new_v4(),
+                    created_at: 1_700_000_000,
+                },
+            )
+            .await
+            .expect("advance second");
+
+        let claimed = storage
+            .claim_pending_send_intents_for_batch(&[first_id, second_id], batch_id)
+            .await
+            .expect("claim");
+
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].intent_id, first_id);
+        assert!(matches!(
+            claimed[0].state,
+            SendIntentState::BatchClaimed {
+                batch_id: claimed_batch_id,
+                ..
+            } if claimed_batch_id == batch_id
+        ));
+        assert!(storage
+            .get_pending_send_intents()
+            .await
+            .expect("pending")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cut_through_reservation_and_release_are_conditional() {
+        let storage = test_storage().await;
+        let intent_id = Uuid::new_v4();
+        let mut intent = make_pending_intent(intent_id);
+        intent.quote_id = "cut-through-send".to_string();
+        storage
+            .create_send_intent_if_absent(&intent)
+            .await
+            .expect("store intent");
+
+        let reservation_id = Uuid::new_v4();
+
+        let reserved = storage
+            .reserve_pending_send_intent_for_cut_through(
+                &intent_id,
+                reservation_id,
+                "receive-quote",
+                50_000,
+            )
+            .await
+            .expect("reserve")
+            .expect("should reserve");
+        assert!(matches!(
+            reserved.state,
+            SendIntentState::CutThroughReserved {
+                reservation_id: stored,
+                ..
+            } if stored == reservation_id
+        ));
+        assert!(storage
+            .reserve_pending_send_intent_for_cut_through(
+                &intent_id,
+                reservation_id,
+                "receive-quote",
+                50_000,
+            )
+            .await
+            .expect("reserve again")
+            .is_none());
+
+        storage
+            .release_cut_through_reserved_intent(&intent_id, Uuid::new_v4())
+            .await
+            .expect("wrong release");
+        assert!(matches!(
+            storage
+                .get_send_intent(&intent_id)
+                .await
+                .expect("get")
+                .expect("intent")
+                .state,
+            SendIntentState::CutThroughReserved { .. }
+        ));
+
+        storage
+            .release_cut_through_reserved_intent(&intent_id, reservation_id)
+            .await
+            .expect("release");
+        assert!(matches!(
+            storage
+                .get_send_intent(&intent_id)
+                .await
+                .expect("get")
+                .expect("intent")
+                .state,
+            SendIntentState::Pending { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_delete_payjoin_receive_session() {
+        let storage = test_storage().await;
+        let quote_id = Uuid::new_v4().to_string();
+        let record = PayjoinReceiveSessionRecord {
+            quote_id: quote_id.clone(),
+            fallback_address: "bcrt1qaddr".to_string(),
+            amount_sat: 1_000,
+            proposal_receiver_outpoints: Vec::new(),
+            proposal_tx_bytes: None,
+            cut_through: None,
+            expires_at: 1_700_000_000,
+            events: Vec::new(),
+            closed: true,
+        };
+
+        storage
+            .put_payjoin_receive_session(&record)
+            .await
+            .expect("store session");
+        assert!(storage
+            .get_payjoin_receive_session(&quote_id)
+            .await
+            .expect("load session")
+            .is_some());
+
+        storage
+            .delete_payjoin_receive_session(&quote_id)
+            .await
+            .expect("delete session");
+
+        assert!(storage
+            .get_payjoin_receive_session(&quote_id)
+            .await
+            .expect("load deleted session")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_payjoin_receive_session_and_cut_through_exposure_write_together() {
+        let storage = test_storage().await;
+        let quote_id = Uuid::new_v4().to_string();
+        let send_intent_id = Uuid::new_v4();
+        let mut intent = make_pending_intent(send_intent_id);
+        intent.quote_id = "send-quote".to_string();
+        intent.amount_sat = 40_000;
+        intent.max_fee_amount_sat = 1_000;
+        storage
+            .create_send_intent_if_absent(&intent)
+            .await
+            .expect("store pending intent");
+        let reservation_id = Uuid::new_v4();
+        let session = PayjoinReceiveSessionRecord {
+            quote_id: quote_id.clone(),
+            fallback_address: "bcrt1qaddr".to_string(),
+            amount_sat: 50_000,
+            proposal_receiver_outpoints: Vec::new(),
+            proposal_tx_bytes: Some(vec![1, 2, 3]),
+            cut_through: Some(PayjoinCutThroughProgress::Active {
+                reservation_id,
+                send_intent_id,
+                proposal_txid: "proposal-txid".to_string(),
+            }),
+            expires_at: 1_700_000_000,
+            events: Vec::new(),
+            closed: false,
+        };
+        storage
+            .reserve_pending_send_intent_for_cut_through(
+                &send_intent_id,
+                reservation_id,
+                &quote_id,
+                50_000,
+            )
+            .await
+            .expect("reserve intent")
+            .expect("reservation");
+        let exposed = SendIntentState::CutThroughExposed {
+            reservation_id,
+            receive_quote_id: quote_id.clone(),
+            original_receive_amount_sat: 50_000,
+            proposal_txid: "proposal-txid".to_string(),
+            original_tx_bytes: vec![4, 5, 6],
+            receive_outpoint: "receive-outpoint".to_string(),
+            melt_outpoint: "melt-outpoint".to_string(),
+            fee_contribution_sat: 321,
+            conflict_observed_height: None,
+            created_at: 1_700_000_000,
+        };
+
+        storage
+            .expose_cut_through(&session, send_intent_id, reservation_id, &exposed)
+            .await
+            .expect("store records atomically");
+
+        let stored_session = storage
+            .get_payjoin_receive_session(&quote_id)
+            .await
+            .expect("load session")
+            .expect("session");
+        let stored_intent = storage
+            .get_send_intent(&send_intent_id)
+            .await
+            .expect("load settlement")
+            .expect("intent");
+
+        assert_eq!(stored_session.quote_id, session.quote_id);
+        assert_eq!(stored_session.amount_sat, session.amount_sat);
+        assert!(matches!(
+            stored_intent.state,
+            SendIntentState::CutThroughExposed {
+                fee_contribution_sat: 321,
+                ..
+            }
+        ));
+
+        let mut abandoned_session = stored_session;
+        abandoned_session.cut_through = Some(PayjoinCutThroughProgress::Abandoned {
+            proposal_txid: "proposal-txid".to_string(),
+        });
+        storage
+            .abandon_cut_through(send_intent_id, reservation_id, &abandoned_session)
+            .await
+            .expect("atomically abandon exposure");
+        assert!(matches!(
+            storage
+                .get_send_intent(&send_intent_id)
+                .await
+                .expect("load released intent")
+                .expect("released intent")
+                .state,
+            SendIntentState::Pending { .. }
+        ));
+        assert!(matches!(
+            storage
+                .get_payjoin_receive_session(&quote_id)
+                .await
+                .expect("load abandoned session")
+                .expect("abandoned session")
+                .cut_through,
+            Some(PayjoinCutThroughProgress::Abandoned { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_cut_through_finalization_writes_both_tombstones_atomically() {
+        let storage = test_storage().await;
+        let intent_id = Uuid::new_v4();
+        let reservation_id = Uuid::new_v4();
+        let receive_quote_id = "receive-finalize".to_string();
+        let mut intent = make_pending_intent(intent_id);
+        intent.quote_id = "send-finalize".to_string();
+        storage
+            .create_send_intent_if_absent(&intent)
+            .await
+            .expect("store intent");
+        storage
+            .update_send_intent(
+                &intent_id,
+                &SendIntentState::CutThroughExposed {
+                    reservation_id,
+                    receive_quote_id: receive_quote_id.clone(),
+                    original_receive_amount_sat: 50_000,
+                    original_tx_bytes: vec![1],
+                    proposal_txid: "proposal-finalize".to_string(),
+                    receive_outpoint: "receive:0".to_string(),
+                    melt_outpoint: "melt:0".to_string(),
+                    fee_contribution_sat: 200,
+                    conflict_observed_height: None,
+                    created_at: 1_700_000_000,
+                },
+            )
+            .await
+            .expect("expose intent");
+        let session = PayjoinReceiveSessionRecord {
+            quote_id: receive_quote_id.clone(),
+            fallback_address: "bcrt1qaddr".to_string(),
+            amount_sat: 50_000,
+            proposal_receiver_outpoints: Vec::new(),
+            proposal_tx_bytes: Some(vec![2]),
+            cut_through: Some(PayjoinCutThroughProgress::Confirmed {
+                proposal_txid: "proposal-finalize".to_string(),
+            }),
+            expires_at: 1_700_000_000,
+            events: Vec::new(),
+            closed: true,
+        };
+        let receive = FinalizedReceiveIntentRecord {
+            intent_id: Uuid::new_v4(),
+            quote_id: receive_quote_id,
+            address: String::new(),
+            txid: "receive".to_string(),
+            outpoint: "receive:0".to_string(),
+            payment_id: Some("receive:0".to_string()),
+            amount_sat: 50_000,
+            finalized_at: 1_700_000_001,
+        };
+        let send = FinalizedSendIntentRecord {
+            intent_id,
+            quote_id: intent.quote_id,
+            total_spent_sat: 50_200,
+            outpoint: "melt:0".to_string(),
+            finalized_at: 1_700_000_001,
+        };
+
+        storage
+            .finalize_cut_through_pair(&receive, &send, reservation_id, &session)
+            .await
+            .expect("finalize pair");
+
+        assert!(storage
+            .get_send_intent(&intent_id)
+            .await
+            .expect("load active intent")
+            .is_none());
+        assert!(storage
+            .get_finalized_intent(&intent_id)
+            .await
+            .expect("load send tombstone")
+            .is_some());
+        assert!(storage
+            .get_finalized_receive_intent(&receive.intent_id)
+            .await
+            .expect("load receive tombstone")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_mark_payjoin_inputs_seen_indexes_outpoints() {
+        let storage = test_storage().await;
+        let outpoints = vec![
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0".to_string(),
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:1".to_string(),
+        ];
+        let unrelated_outpoint =
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:2".to_string();
+        let before = crate::util::unix_now();
+
+        storage
+            .mark_payjoin_inputs_seen(&outpoints)
+            .await
+            .expect("mark inputs seen");
+        let after = crate::util::unix_now();
+
+        assert!(storage
+            .is_payjoin_input_seen(&outpoints[0])
+            .await
+            .expect("check seen input"));
+        assert!(storage
+            .is_payjoin_input_seen(&outpoints[1])
+            .await
+            .expect("check seen input"));
+        assert!(!storage
+            .is_payjoin_input_seen(&unrelated_outpoint)
+            .await
+            .expect("check unrelated input"));
+
+        let seen_at = storage
+            .get_payjoin_seen_input_seen_at(&outpoints[0])
+            .await
+            .expect("load seen timestamp")
+            .expect("timestamp is stored");
+        assert!(
+            (before..=after).contains(&seen_at),
+            "timestamp {seen_at} should be between {before} and {after}"
+        );
+        assert_eq!(
+            storage
+                .get_payjoin_seen_input_seen_at(&unrelated_outpoint)
+                .await
+                .expect("load unrelated timestamp"),
+            None
+        );
     }
 
     // ── Serialization round-trip tests ─────────────────────────────
@@ -1470,6 +2017,7 @@ mod tests {
             address: "bcrt1qaddr".to_string(),
             txid: "abc123".to_string(),
             outpoint: "abc123:0".to_string(),
+            payment_id: Some("abc123:0".to_string()),
             amount_sat: 50_000,
             finalized_at: 1_700_000_001,
         };
@@ -1612,6 +2160,20 @@ mod tests {
             .await
             .expect("create first");
         assert!(created1);
+        assert!(
+            storage
+                .has_receive_intent_for_outpoint("txid_abc:0")
+                .await
+                .expect("check active outpoint"),
+            "Active outpoint should be detected"
+        );
+        assert!(
+            !storage
+                .has_receive_intent_for_outpoint("txid_abc:1")
+                .await
+                .expect("check missing outpoint"),
+            "Unknown outpoint should not be detected"
+        );
 
         let created2 = storage
             .create_receive_intent_if_absent(&intent2)
@@ -1657,6 +2219,7 @@ mod tests {
             address: "bcrt1qaddr".to_string(),
             txid: "txid_abc".to_string(),
             outpoint: "txid_abc:0".to_string(),
+            payment_id: Some("txid_abc:0".to_string()),
             amount_sat: 50_000,
             finalized_at: 1_700_000_001,
         };
@@ -1681,6 +2244,13 @@ mod tests {
             .expect("tombstone should exist");
         assert_eq!(fetched_tombstone.intent_id, intent_id);
         assert_eq!(fetched_tombstone.amount_sat, 50_000);
+        assert!(
+            storage
+                .has_receive_intent_for_outpoint("txid_abc:0")
+                .await
+                .expect("check finalized outpoint"),
+            "Finalized outpoint should be detected"
+        );
 
         // Outpoint should NOT be freed (cannot create a new intent with same outpoint)
         let intent2 = ReceiveIntentRecord {
@@ -1760,6 +2330,7 @@ mod tests {
                 address: "bcrt1qshared".to_string(),
                 txid: format!("txid_{}", i),
                 outpoint: outpoint.to_string(),
+                payment_id: Some(outpoint.to_string()),
                 amount_sat: 10_000 * (i as u64 + 1),
                 finalized_at: 1_700_000_010 + i as u64,
             };
@@ -1797,6 +2368,7 @@ mod tests {
                     address: "bcrt1qother".to_string(),
                     txid: "txid_c".to_string(),
                     outpoint: "txid_c:0".to_string(),
+                    payment_id: Some("txid_c:0".to_string()),
                     amount_sat: 99_000,
                     finalized_at: 1_700_000_200,
                 },
@@ -1873,7 +2445,8 @@ mod tests {
                 quote_id: quote_a,
                 address: "bcrt1qshared".to_string(),
                 txid: format!("txid_{}", i_a),
-                outpoint: outpoint_a,
+                outpoint: outpoint_a.clone(),
+                payment_id: Some(outpoint_a),
                 amount_sat: 10_000 * (i_a as u64 + 1),
                 finalized_at: 1_700_000_010 + i_a as u64,
             };
@@ -1889,7 +2462,8 @@ mod tests {
                 quote_id: quote_b,
                 address: "bcrt1qshared".to_string(),
                 txid: format!("txid_{}", i_b),
-                outpoint: outpoint_b,
+                outpoint: outpoint_b.clone(),
+                payment_id: Some(outpoint_b),
                 amount_sat: 10_000 * (i_b as u64 + 1),
                 finalized_at: 1_700_000_010 + i_b as u64,
             };

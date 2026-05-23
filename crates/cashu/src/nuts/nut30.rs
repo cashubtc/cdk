@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, KnownMethod, PaymentMethod};
 use super::nut01::PublicKey;
 use super::nut05::MeltRequest;
+use super::nut31::PayjoinV2;
 use super::MeltQuoteState;
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteId;
@@ -58,6 +59,9 @@ pub struct MintQuoteOnchainResponse<Q> {
     /// Unix timestamp indicating when the quote was last updated
     #[serde(default)]
     pub updated_at: u64,
+    /// Optional Payjoin instructions. `request` remains the fallback address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payjoin: Option<PayjoinV2>,
 }
 
 impl<Q: ToString> MintQuoteOnchainResponse<Q> {
@@ -73,6 +77,7 @@ impl<Q: ToString> MintQuoteOnchainResponse<Q> {
             amount_paid: self.amount_paid,
             amount_issued: self.amount_issued,
             updated_at: self.updated_at,
+            payjoin: self.payjoin.clone(),
         }
     }
 }
@@ -90,6 +95,7 @@ impl From<MintQuoteOnchainResponse<QuoteId>> for MintQuoteOnchainResponse<String
             amount_paid: value.amount_paid,
             amount_issued: value.amount_issued,
             updated_at: value.updated_at,
+            payjoin: value.payjoin,
         }
     }
 }
@@ -105,6 +111,9 @@ pub struct MeltQuoteOnchainRequest {
     pub unit: CurrencyUnit,
     /// Amount to send in the specified unit
     pub amount: Amount,
+    /// Optional Payjoin instructions for the destination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payjoin: Option<PayjoinV2>,
 }
 
 /// Melt onchain request
@@ -197,6 +206,9 @@ pub struct MeltQuoteOnchainResponse<Q> {
     /// Blind signatures for overpaid onchain fee reserve
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change: Option<Vec<BlindSignature>>,
+    /// Optional confirmation that Payjoin v2 was accepted for this quote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payjoin: Option<PayjoinV2>,
 }
 
 impl<Q: ToString> MeltQuoteOnchainResponse<Q> {
@@ -214,6 +226,7 @@ impl<Q: ToString> MeltQuoteOnchainResponse<Q> {
             selected_fee_index: self.selected_fee_index,
             outpoint: self.outpoint.clone(),
             change: self.change.clone(),
+            payjoin: self.payjoin.clone(),
         }
     }
 }
@@ -233,6 +246,7 @@ impl From<MeltQuoteOnchainResponse<QuoteId>> for MeltQuoteOnchainResponse<String
             selected_fee_index: value.selected_fee_index,
             outpoint: value.outpoint,
             change: value.change,
+            payjoin: value.payjoin,
         }
     }
 }
@@ -252,6 +266,7 @@ mod tests {
         };
 
         let serialized = serde_json::to_string(&request).unwrap();
+        assert!(!serialized.contains("\"amount\""));
         let deserialized: MintQuoteOnchainRequest = serde_json::from_str(&serialized).unwrap();
 
         assert_eq!(request.unit, deserialized.unit);
@@ -264,6 +279,7 @@ mod tests {
             request: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
             unit: CurrencyUnit::Sat,
             amount: Amount::from(1000),
+            payjoin: None,
         };
 
         let serialized = serde_json::to_string(&request).unwrap();
@@ -294,6 +310,7 @@ mod tests {
                 "3b7f3b85c5f1a3c4d2b8e9f6a7c5d8e9f1a2b3c4d5e6f7a8b9c1d2e3f4a5b6c7:2".to_string(),
             ),
             change: None,
+            payjoin: None,
         };
 
         let serialized = serde_json::to_string(&response).unwrap();
@@ -357,6 +374,7 @@ mod tests {
             selected_fee_index: None,
             outpoint: None,
             change: None,
+            payjoin: None,
         };
 
         let serialized = serde_json::to_string(&response).unwrap();
@@ -369,8 +387,8 @@ mod tests {
 
     #[test]
     fn test_mint_quote_onchain_response_tolerates_unknown_fields() {
-        // Responses from newer mints may carry additional optional fields
-        // (e.g. payjoin instructions); released wallets must not reject them.
+        // Responses from newer mints may carry additional optional fields;
+        // released wallets must not reject them.
         let encoded = r#"{
             "quote": "DSGLX9kevM...",
             "request": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
@@ -379,7 +397,7 @@ mod tests {
             "pubkey": "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
             "amount_paid": 100000,
             "amount_issued": 0,
-            "payjoin": {"endpoint": "https://payjoin.example/pj"}
+            "future_extension": {"enabled": true}
         }"#;
 
         let deserialized: MintQuoteOnchainResponse<String> = serde_json::from_str(encoded).unwrap();
@@ -399,7 +417,7 @@ mod tests {
             "fee_options": [{"fee_index": 0, "fee_reserve": 5000, "estimated_blocks": 1}],
             "selected_fee_index": null,
             "outpoint": null,
-            "payjoin": {"endpoint": "https://payjoin.example/pj"}
+            "future_extension": {"enabled": true}
         }"#;
 
         let deserialized: MeltQuoteOnchainResponse<String> = serde_json::from_str(encoded).unwrap();
@@ -426,6 +444,7 @@ mod tests {
             amount_paid: Amount::from(100000),
             amount_issued: Amount::from(0),
             updated_at: 0,
+            payjoin: None,
         };
 
         let string_id_response = response.to_string_id();
@@ -472,9 +491,90 @@ mod tests {
                 "3b7f3b85c5f1a3c4d2b8e9f6a7c5d8e9f1a2b3c4d5e6f7a8b9c1d2e3f4a5b6c7:2".to_string(),
             ),
             change: None,
+            payjoin: None,
         };
 
         let string_id_response = response.to_string_id();
         assert_eq!(string_id_response.quote, "TRmjduhIsPxd...");
+    }
+
+    #[test]
+    fn test_old_onchain_json_deserializes_without_payjoin() {
+        let mint_request = r#"{
+            "unit": "sat",
+            "pubkey": "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac"
+        }"#;
+        let _: MintQuoteOnchainRequest = serde_json::from_str(mint_request).unwrap();
+
+        let melt_request = r#"{
+            "request": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            "unit": "sat",
+            "amount": 1000
+        }"#;
+        let request: MeltQuoteOnchainRequest = serde_json::from_str(melt_request).unwrap();
+        assert_eq!(request.payjoin, None);
+    }
+
+    #[test]
+    fn test_onchain_mint_response_accepts_unknown_extension_fields() {
+        let response_json = r#"{
+            "quote": "DSGLX9kevM...",
+            "request": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            "unit": "sat",
+            "expiry": 1701704757,
+            "pubkey": "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+            "amount_paid": 0,
+            "amount_issued": 0,
+            "future_onchain_extension": {
+                "enabled": true
+            }
+        }"#;
+
+        let response: MintQuoteOnchainResponse<String> =
+            serde_json::from_str(response_json).unwrap();
+
+        assert_eq!(response.quote, "DSGLX9kevM...");
+        assert_eq!(response.payjoin, None);
+    }
+
+    #[test]
+    fn test_onchain_payjoin_response_serialization() {
+        let payjoin = PayjoinV2::new(
+            "https://payjoin.example/pj".to_string(),
+            "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
+            "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG",
+            1701704757,
+        )
+        .expect("valid Payjoin keys");
+
+        let response: MintQuoteOnchainResponse<String> = MintQuoteOnchainResponse {
+            quote: "DSGLX9kevM...".to_string(),
+            request: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
+            unit: CurrencyUnit::Sat,
+            method: PaymentMethod::Known(KnownMethod::Onchain),
+            expiry: Some(1701704757),
+            pubkey: PublicKey::from_hex(
+                "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+            )
+            .unwrap(),
+            amount_paid: Amount::from(0),
+            amount_issued: Amount::from(0),
+            updated_at: 0,
+            payjoin: Some(payjoin.clone()),
+        };
+
+        let serialized = serde_json::to_string(&response).unwrap();
+        assert!(
+            serialized.contains(r#""expires_at":1701704757"#),
+            "Cashu JSON must serialize expires_at as a Unix timestamp number"
+        );
+        assert!(
+            !serialized.contains("EX1"),
+            "BIP77 EX1 expiry encoding must not appear in Cashu JSON"
+        );
+        let deserialized: MintQuoteOnchainResponse<String> =
+            serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(deserialized.payjoin, Some(payjoin));
     }
 }

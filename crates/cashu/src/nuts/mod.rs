@@ -32,6 +32,7 @@ pub mod nut27;
 pub mod nut28;
 pub mod nut29;
 pub mod nut30;
+pub mod nut31;
 
 mod auth;
 
@@ -93,3 +94,4 @@ pub use nut30::{
     MeltOnchainRequest, MeltQuoteOnchainRequest, MeltQuoteOnchainResponse, MintQuoteOnchainRequest,
     MintQuoteOnchainResponse,
 };
+pub use nut31::PayjoinV2;

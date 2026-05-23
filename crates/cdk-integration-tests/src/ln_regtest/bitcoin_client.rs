@@ -5,7 +5,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Result;
-use bitcoincore_rpc::bitcoin::{Address, Amount};
+use bitcoincore_rpc::bitcoin::{consensus, Address, Amount, Transaction, Txid};
+use bitcoincore_rpc::json::WalletCreateFundedPsbtOptions;
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 
 /// Bitcoin client
@@ -94,6 +95,73 @@ impl BitcoinClient {
         client.send_to_address(&address, amount, None, None, None, None, None, None)?;
 
         Ok(())
+    }
+
+    /// Create and fund a PSBT paying `amount` sats to `address`.
+    pub fn create_funded_psbt(
+        &self,
+        address: &str,
+        amount: u64,
+        fee_rate_sat_vb: u64,
+    ) -> Result<String> {
+        let client = &self.client;
+
+        let mut outputs = std::collections::HashMap::new();
+        outputs.insert(address.to_string(), Amount::from_sat(amount));
+        let options = WalletCreateFundedPsbtOptions {
+            fee_rate: Some(Amount::from_sat(fee_rate_sat_vb.saturating_mul(1000))),
+            replaceable: Some(false),
+            ..Default::default()
+        };
+
+        Ok(client
+            .wallet_create_funded_psbt(&[], &outputs, None, Some(options), Some(false))?
+            .psbt)
+    }
+
+    /// Sign a PSBT with the regtest Bitcoin Core wallet.
+    pub fn sign_psbt(&self, psbt: &str) -> Result<String> {
+        let client = &self.client;
+        let processed = client.wallet_process_psbt(psbt, Some(true), None, Some(false))?;
+        Ok(processed.psbt)
+    }
+
+    /// Finalize and broadcast a PSBT with the regtest Bitcoin Core wallet.
+    pub fn finalize_and_broadcast_psbt(&self, psbt: &str) -> Result<Txid> {
+        let client = &self.client;
+        let finalized = client.finalize_psbt(psbt, Some(true))?;
+        let tx_hex = finalized
+            .hex
+            .ok_or_else(|| anyhow::anyhow!("finalizepsbt did not return transaction hex"))?;
+        let tx: Transaction = consensus::deserialize(&tx_hex)?;
+        Ok(client.send_raw_transaction(&tx)?)
+    }
+
+    /// Return the input count of the first mempool transaction that pays to
+    /// `address`, if any.
+    ///
+    /// Only the mempool is inspected, so this works without `-txindex` even for
+    /// transactions that do not belong to bitcoind's own wallet (e.g. a Payjoin
+    /// transaction built and broadcast by the mints' BDK wallets). Used by the
+    /// Payjoin tests to prove the combined transaction batches sender and
+    /// receiver inputs before it is mined.
+    pub fn mempool_tx_input_count_to_address(&self, address: &str) -> Result<Option<usize>> {
+        let client = &self.client;
+        let target = Address::from_str(address)?.assume_checked().script_pubkey();
+        for txid in client.get_raw_mempool()? {
+            let tx = match client.get_raw_transaction(&txid, None) {
+                Ok(tx) => tx,
+                Err(_) => continue,
+            };
+            if tx
+                .output
+                .iter()
+                .any(|output| output.script_pubkey == target)
+            {
+                return Ok(Some(tx.input.len()));
+            }
+        }
+        Ok(None)
     }
 
     pub fn get_balance(&self) -> Result<u64> {
