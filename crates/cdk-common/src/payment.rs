@@ -8,7 +8,7 @@ use cashu::util::hex;
 use cashu::{Bolt11Invoice, MeltOptions};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::MintMetricGuard;
-use futures::Stream;
+use futures::{stream, Stream};
 use lightning::offers::offer::Offer;
 use lightning_invoice::ParseOrSemanticError;
 use serde::{Deserialize, Serialize};
@@ -438,6 +438,18 @@ pub trait MintPayment {
     /// Base Settings
     async fn get_settings(&self) -> Result<SettingsResponse, Self::Err>;
 
+    /// Subscribe to a stream of settings updates pushed by the payment processor.
+    ///
+    /// The first item is always the current settings. Subsequent items arrive
+    /// whenever the processor detects a change. Backends that do not support
+    /// live updates return a single-item stream with the current settings.
+    async fn wait_settings(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = SettingsResponse> + Send>>, Self::Err> {
+        let settings = self.get_settings().await?;
+        Ok(Box::pin(stream::once(async move { settings })))
+    }
+
     /// Create a new invoice
     async fn create_incoming_payment_request(
         &self,
@@ -797,6 +809,12 @@ where
         metrics.record(success);
 
         result
+    }
+
+    async fn wait_settings(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = SettingsResponse> + Send>>, Self::Err> {
+        self.inner.wait_settings().await
     }
 
     fn is_payment_event_stream_active(&self) -> bool {

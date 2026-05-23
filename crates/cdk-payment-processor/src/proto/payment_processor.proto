@@ -3,7 +3,7 @@ syntax = "proto3";
 package cdk_payment_processor;
 
 service CdkPaymentProcessor {  
-    rpc GetSettings(EmptyRequest) returns (SettingsResponse) {}
+    rpc GetSettings(EmptyRequest) returns (stream SettingsResponse) {}
     rpc CreatePayment(CreatePaymentRequest) returns (CreatePaymentResponse) {}
     rpc GetPaymentQuote(PaymentQuoteRequest) returns (PaymentQuoteResponse) {}
     rpc MakePayment(MakePaymentRequest) returns (MakePaymentResponse) {}

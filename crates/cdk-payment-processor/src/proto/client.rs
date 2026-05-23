@@ -23,8 +23,28 @@ use crate::proto::cdk_payment_processor_client::CdkPaymentProcessorClient;
 use crate::proto::{
     CheckIncomingPaymentRequest, CheckOutgoingPaymentRequest, CreatePaymentRequest, EmptyRequest,
     IncomingPaymentOptions, IntoProtoAmount, MakePaymentRequest, OutgoingPaymentRequestType,
-    PaymentQuoteRequest,
+    PaymentQuoteRequest, SettingsResponse as ProtoSettingsResponse,
 };
+
+fn from_proto_settings(s: ProtoSettingsResponse) -> cdk_common::payment::SettingsResponse {
+    cdk_common::payment::SettingsResponse {
+        unit: s.unit,
+        bolt11: s.bolt11.map(|b| cdk_common::payment::Bolt11Settings {
+            mpp: b.mpp,
+            amountless: b.amountless,
+            invoice_description: b.invoice_description,
+        }),
+        bolt12: s.bolt12.map(|b| cdk_common::payment::Bolt12Settings {
+            amountless: b.amountless,
+        }),
+        onchain: s.onchain.map(|o| cdk_common::payment::OnchainSettings {
+            confirmations: o.confirmations,
+            min_receive_amount_sat: o.min_receive_amount_sat,
+            min_send_amount_sat: o.min_send_amount_sat,
+        }),
+        custom: s.custom,
+    }
+}
 
 /// Payment Processor
 #[derive(Clone)]
@@ -134,39 +154,53 @@ impl MintPayment for PaymentProcessorClient {
 
     async fn get_settings(&self) -> Result<cdk_common::payment::SettingsResponse, Self::Err> {
         let mut inner = self.inner.clone();
-        let response = inner
+        let mut stream = inner
             .get_settings(Request::new(EmptyRequest {}))
             .await
             .map_err(|err| {
                 tracing::error!("Could not get settings: {}", err);
                 cdk_common::payment::Error::Custom(err.to_string())
+            })?
+            .into_inner();
+
+        let settings = stream
+            .message()
+            .await
+            .map_err(|err| cdk_common::payment::Error::Custom(err.to_string()))?
+            .ok_or_else(|| {
+                cdk_common::payment::Error::Custom("Empty settings stream".to_string())
             })?;
 
-        let settings = response.into_inner();
+        Ok(from_proto_settings(settings))
+    }
 
-        Ok(cdk_common::payment::SettingsResponse {
-            unit: settings.unit,
-            bolt11: settings
-                .bolt11
-                .map(|b| cdk_common::payment::Bolt11Settings {
-                    mpp: b.mpp,
-                    amountless: b.amountless,
-                    invoice_description: b.invoice_description,
-                }),
-            bolt12: settings
-                .bolt12
-                .map(|b| cdk_common::payment::Bolt12Settings {
-                    amountless: b.amountless,
-                }),
-            onchain: settings
-                .onchain
-                .map(|o| cdk_common::payment::OnchainSettings {
-                    confirmations: o.confirmations,
-                    min_receive_amount_sat: o.min_receive_amount_sat,
-                    min_send_amount_sat: o.min_send_amount_sat,
-                }),
-            custom: settings.custom,
-        })
+    async fn wait_settings(
+        &self,
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = cdk_common::payment::SettingsResponse> + Send>>,
+        Self::Err,
+    > {
+        let mut inner = self.inner.clone();
+        let stream = inner
+            .get_settings(Request::new(EmptyRequest {}))
+            .await
+            .map_err(|err| {
+                tracing::error!("Could not open settings stream: {}", err);
+                cdk_common::payment::Error::Custom(err.to_string())
+            })?
+            .into_inner();
+
+        let transformed = stream.filter_map(|item| async {
+            match item {
+                Ok(s) => Some(from_proto_settings(s)),
+                Err(e) => {
+                    tracing::error!("Error in settings stream: {}", e);
+                    None
+                }
+            }
+        });
+
+        Ok(Box::pin(transformed))
     }
 
     /// Create a new invoice

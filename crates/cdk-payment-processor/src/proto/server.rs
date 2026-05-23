@@ -23,6 +23,7 @@ use crate::error::Error;
 use crate::proto::{TryFromProtoAmount, *};
 
 type ResponseStream = Pin<Box<dyn Stream<Item = Result<PaymentEventResponse, Status>> + Send>>;
+type SettingsStream = Pin<Box<dyn Stream<Item = Result<SettingsResponse, Status>> + Send>>;
 
 /// Payment Processor
 #[derive(Clone)]
@@ -180,35 +181,76 @@ impl Drop for PaymentProcessorServer {
     }
 }
 
+fn into_proto_settings(settings: cdk_common::payment::SettingsResponse) -> SettingsResponse {
+    SettingsResponse {
+        unit: settings.unit,
+        bolt11: settings.bolt11.map(|b| super::Bolt11Settings {
+            mpp: b.mpp,
+            amountless: b.amountless,
+            invoice_description: b.invoice_description,
+        }),
+        bolt12: settings.bolt12.map(|b| super::Bolt12Settings {
+            amountless: b.amountless,
+        }),
+        onchain: settings.onchain.map(|o| super::OnchainSettings {
+            confirmations: o.confirmations,
+            min_receive_amount_sat: o.min_receive_amount_sat,
+            min_send_amount_sat: o.min_send_amount_sat,
+        }),
+        custom: settings.custom,
+    }
+}
+
 #[async_trait]
 impl CdkPaymentProcessor for PaymentProcessorServer {
+    type GetSettingsStream = SettingsStream;
+
     async fn get_settings(
         &self,
         _request: Request<EmptyRequest>,
-    ) -> Result<Response<SettingsResponse>, Status> {
-        let settings = self
-            .inner
-            .get_settings()
-            .await
-            .map_err(|_| Status::internal("Could not get settings"))?;
+    ) -> Result<Response<Self::GetSettingsStream>, Status> {
+        let (tx, rx) = mpsc::channel(4);
+        let shutdown = self.shutdown.clone();
+        let inner = self.inner.clone();
 
-        Ok(Response::new(SettingsResponse {
-            unit: settings.unit,
-            bolt11: settings.bolt11.map(|b| super::Bolt11Settings {
-                mpp: b.mpp,
-                amountless: b.amountless,
-                invoice_description: b.invoice_description,
-            }),
-            bolt12: settings.bolt12.map(|b| super::Bolt12Settings {
-                amountless: b.amountless,
-            }),
-            onchain: settings.onchain.map(|o| super::OnchainSettings {
-                confirmations: o.confirmations,
-                min_receive_amount_sat: o.min_receive_amount_sat,
-                min_send_amount_sat: o.min_send_amount_sat,
-            }),
-            custom: settings.custom,
-        }))
+        tokio::spawn(async move {
+            let mut stream = match inner.wait_settings().await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("Could not get settings stream: {}", e);
+                    let _ = tx.send(Err(Status::internal("Could not get settings"))).await;
+                    return;
+                }
+            };
+
+            loop {
+                tokio::select! {
+                    _ = shutdown.notified() => break,
+                    _ = tx.closed() => break,
+                    item = stream.next() => {
+                        match item {
+                            Some(settings) => {
+                                if tx.send(Ok(into_proto_settings(settings))).await.is_err() {
+                                    break;
+                                }
+                            }
+                            None => {
+                                // Backend has no more updates; keep connection alive until
+                                // shutdown or client disconnect
+                                tokio::select! {
+                                    _ = shutdown.notified() => {}
+                                    _ = tx.closed() => {}
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let output_stream = ReceiverStream::new(rx);
+        Ok(Response::new(Box::pin(output_stream) as Self::GetSettingsStream))
     }
 
     async fn create_payment(
