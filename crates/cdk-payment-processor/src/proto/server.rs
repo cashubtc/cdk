@@ -272,6 +272,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                     quote_id: opts.quote_id.parse().map_err(|_| {
                         Status::invalid_argument("Invalid quote_id in Onchain options")
                     })?,
+                    payjoin: None,
                 },
             ),
         };

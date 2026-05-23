@@ -314,6 +314,7 @@ where
                     selected_fee_index: value.selected_fee_index,
                     outpoint: value.payment_proof.clone(),
                     change: None,
+                    payjoin: None,
                 })
             }
             ref method => Self::Custom((
@@ -387,6 +388,7 @@ mod tests {
             selected_fee_index: Some(0),
             outpoint: Some("abcd...ef:0".to_string()),
             change: None,
+            payjoin: None,
         }
     }
 

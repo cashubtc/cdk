@@ -16,6 +16,8 @@ pub mod send;
 mod types;
 
 pub use types::{FailedSendAttemptRecord, FinalizedReceiveIntentRecord, FinalizedSendIntentRecord};
+#[cfg(feature = "payjoin")]
+pub use types::{PayjoinReceiveSessionRecord, PayjoinSendSessionRecord};
 
 /// Primary namespace for BDK KV store operations
 pub const BDK_NAMESPACE: &str = "bdk";
@@ -71,6 +73,14 @@ pub fn finalized_receive_intent_by_quote_namespace(quote_id: &str) -> String {
 
 /// Secondary namespace for finalized send intent quote id index (quote_id -> intent_id)
 pub const FINALIZED_SEND_INTENT_QUOTE_ID_NAMESPACE: &str = "finalized_send_intent_quote_id";
+
+/// Secondary namespace for Payjoin v2 receive sessions keyed by quote id.
+#[cfg(feature = "payjoin")]
+pub const PAYJOIN_RECEIVE_SESSION_NAMESPACE: &str = "payjoin_receive_session";
+
+/// Secondary namespace for Payjoin v2 send sessions keyed by quote id.
+#[cfg(feature = "payjoin")]
+pub const PAYJOIN_SEND_SESSION_NAMESPACE: &str = "payjoin_send_session";
 
 /// Encode an outpoint string for use as a KV store key.
 ///
@@ -207,6 +217,50 @@ impl BdkStorage {
         record.replace_state(new_state.clone());
         self.put_record(&record).await
     }
+
+    /// Store or replace a Payjoin receive session.
+    #[cfg(feature = "payjoin")]
+    pub async fn put_payjoin_receive_session(
+        &self,
+        record: &PayjoinReceiveSessionRecord,
+    ) -> Result<(), Error> {
+        self.put_record(record).await
+    }
+
+    /// Load a Payjoin receive session by quote id.
+    #[cfg(feature = "payjoin")]
+    pub async fn get_payjoin_receive_session(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<PayjoinReceiveSessionRecord>, Error> {
+        self.get_record(quote_id).await
+    }
+
+    /// List all Payjoin receive sessions.
+    #[cfg(feature = "payjoin")]
+    pub async fn get_all_payjoin_receive_sessions(
+        &self,
+    ) -> Result<Vec<PayjoinReceiveSessionRecord>, Error> {
+        self.list_records().await
+    }
+
+    /// Store or replace a Payjoin send session.
+    #[cfg(feature = "payjoin")]
+    pub async fn put_payjoin_send_session(
+        &self,
+        record: &PayjoinSendSessionRecord,
+    ) -> Result<(), Error> {
+        self.put_record(record).await
+    }
+
+    /// Load a Payjoin send session by quote id.
+    #[cfg(feature = "payjoin")]
+    pub async fn get_payjoin_send_session(
+        &self,
+        quote_id: &str,
+    ) -> Result<Option<PayjoinSendSessionRecord>, Error> {
+        self.get_record(quote_id).await
+    }
 }
 
 impl KvRecord for SendIntentRecord {
@@ -266,6 +320,24 @@ impl KvRecord for FinalizedReceiveIntentRecord {
 
     fn key(&self) -> String {
         self.intent_id.to_string()
+    }
+}
+
+#[cfg(feature = "payjoin")]
+impl KvRecord for PayjoinReceiveSessionRecord {
+    const NAMESPACE: &'static str = PAYJOIN_RECEIVE_SESSION_NAMESPACE;
+
+    fn key(&self) -> String {
+        self.quote_id.clone()
+    }
+}
+
+#[cfg(feature = "payjoin")]
+impl KvRecord for PayjoinSendSessionRecord {
+    const NAMESPACE: &'static str = PAYJOIN_SEND_SESSION_NAMESPACE;
+
+    fn key(&self) -> String {
+        self.quote_id.clone()
     }
 }
 

@@ -365,6 +365,15 @@ pub struct Bdk {
     /// Wallet sync interval in seconds
     #[serde(default = "default_bdk_sync_interval_secs")]
     pub sync_interval_secs: u64,
+    /// Payjoin v2 directory URL.
+    #[serde(default)]
+    pub payjoin_directory_url: Option<String>,
+    /// Payjoin v2 OHTTP relay URL.
+    #[serde(default)]
+    pub payjoin_ohttp_relay_url: Option<String>,
+    /// Payjoin v2 session expiry in seconds.
+    #[serde(default = "default_bdk_payjoin_expiry_secs")]
+    pub payjoin_expiry_secs: u64,
 }
 
 #[cfg(feature = "bdk")]
@@ -387,6 +396,9 @@ impl Default for Bdk {
             min_receive_amount_sat: default_bdk_min_receive_amount_sat(),
             min_send_amount_sat: default_bdk_min_send_amount_sat(),
             sync_interval_secs: default_bdk_sync_interval_secs(),
+            payjoin_directory_url: None,
+            payjoin_ohttp_relay_url: None,
+            payjoin_expiry_secs: default_bdk_payjoin_expiry_secs(),
         }
     }
 }
@@ -414,6 +426,35 @@ impl Bdk {
 
         validate_bdk_fee_options(&self.batch_config.fee_options)?;
 
+        match (
+            self.payjoin_directory_url.as_ref(),
+            self.payjoin_ohttp_relay_url.as_ref(),
+        ) {
+            (Some(directory), Some(relay)) => {
+                #[cfg(not(feature = "payjoin"))]
+                {
+                    let _ = (directory, relay);
+                    return Err(
+                        "BDK Payjoin config was provided but cdk-mintd was not built with the payjoin feature"
+                            .to_string(),
+                    );
+                }
+                #[cfg(feature = "payjoin")]
+                cdk_bdk::PayjoinConfig::new(
+                    directory.clone(),
+                    relay.clone(),
+                    Some(self.payjoin_expiry_secs),
+                )?;
+            }
+            (None, None) => {}
+            _ => {
+                return Err(
+                    "BDK Payjoin requires both payjoin_directory_url and payjoin_ohttp_relay_url"
+                        .to_string(),
+                );
+            }
+        }
+
         Ok(())
     }
 }
@@ -436,6 +477,11 @@ fn default_bdk_min_send_amount_sat() -> u64 {
 #[cfg(feature = "bdk")]
 fn default_bdk_sync_interval_secs() -> u64 {
     30
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_payjoin_expiry_secs() -> u64 {
+    cdk_bdk::DEFAULT_PAYJOIN_EXPIRY_SECS
 }
 
 #[cfg(feature = "bdk")]

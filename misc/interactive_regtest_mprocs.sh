@@ -118,10 +118,24 @@ echo
 
 export CDK_MINTD_DATABASE="$CDK_MINTD_DATABASE"
 
+CDK_MINTD_FEATURE_ARGS=""
+if [[ -n "${CDK_MINTD_BDK_PAYJOIN_DIRECTORY_URL:-}" || -n "${CDK_REGTEST_PAYJOIN_DIRECTORY_URL:-}" ]]; then
+    export CDK_MINTD_BDK_PAYJOIN_DIRECTORY_URL="${CDK_MINTD_BDK_PAYJOIN_DIRECTORY_URL:-${CDK_REGTEST_PAYJOIN_DIRECTORY_URL:-}}"
+    export CDK_MINTD_BDK_PAYJOIN_OHTTP_RELAY_URL="${CDK_MINTD_BDK_PAYJOIN_OHTTP_RELAY_URL:-${CDK_REGTEST_PAYJOIN_OHTTP_RELAY_URL:-}}"
+    if [[ -z "$CDK_MINTD_BDK_PAYJOIN_DIRECTORY_URL" || -z "$CDK_MINTD_BDK_PAYJOIN_OHTTP_RELAY_URL" ]]; then
+        echo "❌ Payjoin regtest requires both directory and OHTTP relay URLs"
+        exit 1
+    fi
+    CDK_MINTD_FEATURE_ARGS="--features payjoin"
+    echo "Payjoin enabled for cdk-mintd"
+    echo "Directory: $CDK_MINTD_BDK_PAYJOIN_DIRECTORY_URL"
+    echo "OHTTP relay: $CDK_MINTD_BDK_PAYJOIN_OHTTP_RELAY_URL"
+fi
+
 # Build the necessary binaries
 echo "Building binaries..."
 cargo build -p cdk-integration-tests --bin start_regtest
-cargo build --bin cdk-mintd
+cargo build --bin cdk-mintd $CDK_MINTD_FEATURE_ARGS
 
 echo "Starting regtest network (Bitcoin + Lightning nodes)..."
 cargo run --bin start_regtest -- --enable-logging "$CDK_ITESTS_DIR" &
@@ -173,6 +187,10 @@ echo "export CDK_TEST_MINT_URL=\"$CDK_TEST_MINT_URL\"" >> "$ENV_FILE"
 echo "export CDK_TEST_MINT_URL_2=\"$CDK_TEST_MINT_URL_2\"" >> "$ENV_FILE"
 echo "export CDK_TEST_MINT_URL_3=\"$CDK_TEST_MINT_URL_3\"" >> "$ENV_FILE"
 echo "export CDK_REGTEST_PID=\"$CDK_REGTEST_PID\"" >> "$ENV_FILE"
+if [[ -n "${CDK_MINTD_BDK_PAYJOIN_DIRECTORY_URL:-}" ]]; then
+    echo "export CDK_MINTD_BDK_PAYJOIN_DIRECTORY_URL=\"$CDK_MINTD_BDK_PAYJOIN_DIRECTORY_URL\"" >> "$ENV_FILE"
+    echo "export CDK_MINTD_BDK_PAYJOIN_OHTTP_RELAY_URL=\"$CDK_MINTD_BDK_PAYJOIN_OHTTP_RELAY_URL\"" >> "$ENV_FILE"
+fi
 
 # Get the project root directory (where justfile is located)
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -202,6 +220,10 @@ export CDK_MINTD_BDK_BITCOIND_RPC_PASSWORD="testpass"
 export CDK_MINTD_BDK_NETWORK="regtest"
 export CDK_MINTD_BDK_CHAIN_SOURCE_TYPE="bitcoinrpc"
 export CDK_MINTD_BDK_NUM_CONFS=1
+CDK_MINTD_RUN_FEATURE_ARGS=""
+if [ -n "\${CDK_MINTD_BDK_PAYJOIN_DIRECTORY_URL:-}" ]; then
+  CDK_MINTD_RUN_FEATURE_ARGS="--features payjoin"
+fi
 
 echo "Starting CLN Mint on port 8085..."
 echo "Project root: $PROJECT_ROOT"
@@ -211,7 +233,7 @@ echo "Database type: \$CDK_MINTD_DATABASE"
 echo "Logging: \$CDK_MINTD_LOGGING_OUTPUT (console: \$CDK_MINTD_LOGGING_CONSOLE_LEVEL, file: \$CDK_MINTD_LOGGING_FILE_LEVEL)"
 echo "---"
 
-exec cargo run --bin cdk-mintd
+exec cargo run --bin cdk-mintd \$CDK_MINTD_RUN_FEATURE_ARGS
 EOF
 
 cat > "$CDK_ITESTS_DIR/start_lnd_mint.sh" << EOF
@@ -240,6 +262,10 @@ export CDK_MINTD_BDK_BITCOIND_RPC_PASSWORD="testpass"
 export CDK_MINTD_BDK_NETWORK="regtest"
 export CDK_MINTD_BDK_CHAIN_SOURCE_TYPE="bitcoinrpc"
 export CDK_MINTD_BDK_NUM_CONFS=1
+CDK_MINTD_RUN_FEATURE_ARGS=""
+if [ -n "\${CDK_MINTD_BDK_PAYJOIN_DIRECTORY_URL:-}" ]; then
+  CDK_MINTD_RUN_FEATURE_ARGS="--features payjoin"
+fi
 
 echo "Starting LND Mint on port 8087..."
 echo "Project root: $PROJECT_ROOT"
@@ -249,7 +275,7 @@ echo "Database type: \$CDK_MINTD_DATABASE"
 echo "Logging: \$CDK_MINTD_LOGGING_OUTPUT (console: \$CDK_MINTD_LOGGING_CONSOLE_LEVEL, file: \$CDK_MINTD_LOGGING_FILE_LEVEL)"
 echo "---"
 
-exec cargo run --bin cdk-mintd
+exec cargo run --bin cdk-mintd \$CDK_MINTD_RUN_FEATURE_ARGS
 EOF
 
 cat > "$CDK_ITESTS_DIR/start_ldk_node_mint.sh" << EOF
@@ -288,6 +314,10 @@ export CDK_MINTD_LDK_NODE_LDK_NODE_PORT=8090
 export CDK_MINTD_LDK_NODE_GOSSIP_SOURCE_TYPE="p2p"
 export CDK_MINTD_LDK_NODE_FEE_PERCENT=0.02
 export CDK_MINTD_LDK_NODE_RESERVE_FEE_MIN=2
+CDK_MINTD_RUN_FEATURE_ARGS="ldk-node"
+if [ -n "\${CDK_MINTD_BDK_PAYJOIN_DIRECTORY_URL:-}" ]; then
+  CDK_MINTD_RUN_FEATURE_ARGS="ldk-node,payjoin"
+fi
 
 echo "Starting LDK Node Mint on port 8089..."
 echo "Project root: $PROJECT_ROOT"
@@ -298,7 +328,7 @@ echo "Storage directory: \$CDK_MINTD_LDK_NODE_STORAGE_DIR_PATH"
 echo "Database type: \$CDK_MINTD_DATABASE"
 echo "---"
 
-exec cargo run --bin cdk-mintd --features ldk-node
+exec cargo run --bin cdk-mintd --features \$CDK_MINTD_RUN_FEATURE_ARGS
 EOF
 
 # Make scripts executable

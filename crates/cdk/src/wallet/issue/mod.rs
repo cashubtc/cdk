@@ -167,6 +167,7 @@ impl Wallet {
                 MintQuoteRequest::Onchain(cdk_common::nuts::nut30::MintQuoteOnchainRequest {
                     unit: unit.clone(),
                     pubkey: secret_key.public_key(),
+                    payjoin: None,
                 })
             }
         };
@@ -636,6 +637,7 @@ mod tests {
                 pubkey: SecretKey::generate().public_key(),
                 amount_paid: Amount::from(1_000),
                 amount_issued: Amount::from(250),
+                payjoin: None,
             });
 
         assert_eq!(mint_quote_response_amount(&response), None);

@@ -41,6 +41,16 @@ mod tests;
 
 use melt_saga::{MeltSaga, PaymentOutcome};
 
+fn onchain_payjoin_accepted(extra_json: Option<&serde_json::Value>) -> bool {
+    extra_json
+        .and_then(|extra| extra.get("payjoin"))
+        .cloned()
+        .and_then(|payjoin| {
+            serde_json::from_value::<cdk_common::nuts::nut31::OnchainPayjoinRequest>(payjoin).ok()
+        })
+        .is_some_and(|payjoin| payjoin.is_supported())
+}
+
 fn pending_melt_wait_timeout() -> Duration {
     if cfg!(test) {
         // Bumped from 100ms to 250ms to reduce flake on loaded CI while
@@ -567,6 +577,21 @@ impl Mint {
             // no longer self-referential via the backend response.
             let quote_id = QuoteId::new();
 
+            if melt_request
+                .payjoin
+                .as_ref()
+                .is_some_and(|payjoin| payjoin.is_required() && !payjoin.is_supported())
+            {
+                return Err(Error::InvalidPaymentRequest);
+            }
+
+            let payjoin_metadata = melt_request.payjoin.as_ref().map(|payjoin| {
+                serde_json::json!({
+                    ONCHAIN_PAYJOIN_EXTRA_KEY: payjoin,
+                })
+                .to_string()
+            });
+
             let outgoing_payment_options = cdk_common::payment::OnchainOutgoingPaymentOptions {
                 address: melt_request.request.clone(),
                 amount: melt_request.amount.with_unit(unit.clone()),
@@ -576,7 +601,7 @@ impl Mint {
                 // available `fee_options` and the wallet picks one (echoed back
                 // as `fee_index`) when executing the melt.
                 fee_index: None,
-                metadata: None,
+                metadata: payjoin_metadata,
             };
 
             let payment_quote = ln
@@ -596,6 +621,15 @@ impl Mint {
 
             if payment_quote.unit() != unit {
                 return Err(Error::UnitMismatch);
+            }
+
+            if melt_request
+                .payjoin
+                .as_ref()
+                .is_some_and(|payjoin| payjoin.is_required())
+                && !onchain_payjoin_accepted(payment_quote.extra_json.as_ref())
+            {
+                return Err(Error::InvalidPaymentRequest);
             }
 
             // Enforce the onchain quote-id echo contract: the backend MUST return

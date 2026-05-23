@@ -706,6 +706,8 @@ mod tests {
             60,
             Some(5),
             None,
+            #[cfg(feature = "payjoin")]
+            None,
         )
         .expect("build CdkBdk test instance")
     }

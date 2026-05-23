@@ -413,6 +413,7 @@ mod tests {
                 pubkey,
                 amount_paid: Amount::from(101u64),
                 amount_issued: Amount::from(100u64),
+                payjoin: None,
             },
         ))
         .expect("positive unissued onchain amount should emit");
@@ -544,6 +545,7 @@ mod tests {
                     pubkey,
                     amount_paid: Amount::from(50u64),
                     amount_issued: Amount::from(100u64),
+                    payjoin: None,
                 },
             ))
             .is_none()
@@ -633,6 +635,7 @@ mod tests {
             selected_fee_index: None,
             outpoint: None,
             change: None,
+            payjoin: None,
         }
     }
 

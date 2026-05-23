@@ -55,3 +55,43 @@ pub struct FinalizedReceiveIntentRecord {
     /// When finalization occurred (unix timestamp seconds)
     pub finalized_at: u64,
 }
+
+/// Persisted Payjoin v2 receive session.
+#[cfg(feature = "payjoin")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PayjoinReceiveSessionRecord {
+    /// Quote ID linking this session to an onchain mint quote.
+    pub quote_id: String,
+    /// Fallback address tracked by the normal receive flow.
+    pub fallback_address: String,
+    /// Expected receive amount in satoshis.
+    pub amount_sat: u64,
+    /// Whether the payer required Payjoin for this quote.
+    pub required: bool,
+    /// Session expiry timestamp in unix seconds.
+    pub expires_at: u64,
+    /// Append-only Payjoin event history.
+    pub events: Vec<payjoin::receive::v2::SessionEvent>,
+    /// Whether the session reached a terminal state.
+    pub closed: bool,
+}
+
+/// Persisted Payjoin v2 send session.
+#[cfg(feature = "payjoin")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PayjoinSendSessionRecord {
+    /// Quote ID linking this session to an onchain melt quote.
+    pub quote_id: String,
+    /// Fallback address used if optional Payjoin negotiation fails.
+    pub fallback_address: String,
+    /// Payment amount in satoshis.
+    pub amount_sat: u64,
+    /// Maximum fee accepted by the melt quote.
+    pub max_fee_sat: u64,
+    /// Whether Payjoin was required by the payer.
+    pub required: bool,
+    /// Append-only Payjoin event history.
+    pub events: Vec<payjoin::send::v2::SessionEvent>,
+    /// Whether the session reached a terminal state.
+    pub closed: bool,
+}

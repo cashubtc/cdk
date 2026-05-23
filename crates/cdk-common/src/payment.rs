@@ -17,6 +17,7 @@ use thiserror::Error;
 
 use crate::mint::{MeltPaymentRequest, MeltQuote};
 use crate::nuts::nut30::MeltQuoteOnchainFeeOption;
+use crate::nuts::nut31::OnchainPayjoinRequest;
 use crate::nuts::{CurrencyUnit, MeltQuoteState};
 use crate::{Amount, QuoteId};
 
@@ -238,6 +239,8 @@ pub struct CustomIncomingPaymentOptions {
 pub struct OnchainIncomingPaymentOptions {
     /// Quote ID for the incoming payment
     pub quote_id: QuoteId,
+    /// Optional Payjoin request from the wallet.
+    pub payjoin: Option<OnchainPayjoinRequest>,
 }
 
 /// Options for incoming payments
@@ -408,7 +411,7 @@ impl OutgoingPaymentOptions {
                     max_fee_amount: Some(fee_reserve),
                     quote_id: melt_quote.id,
                     fee_index: melt_quote.selected_fee_index,
-                    metadata: None,
+                    metadata: melt_quote.extra_json.map(|extra| extra.to_string()),
                 }),
             )),
         }

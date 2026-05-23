@@ -349,6 +349,72 @@ impl From<PaymentMethod> for cdk::nuts::PaymentMethod {
     }
 }
 
+/// FFI-compatible BIP77/v2 Payjoin parameters.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct PayjoinV2 {
+    /// BIP77 mailbox endpoint.
+    pub endpoint: String,
+    /// OHTTP relay URL.
+    pub ohttp_relay: String,
+    /// Encoded OHTTP key material.
+    pub ohttp_keys: String,
+    /// Encoded receiver session key.
+    pub receiver_key: String,
+    /// Expiry timestamp.
+    pub expires_at: Option<u64>,
+    /// Whether fallback address payment is allowed.
+    pub required: bool,
+}
+
+impl From<cdk::nuts::PayjoinV2> for PayjoinV2 {
+    fn from(payjoin: cdk::nuts::PayjoinV2) -> Self {
+        Self {
+            endpoint: payjoin.endpoint,
+            ohttp_relay: payjoin.ohttp_relay,
+            ohttp_keys: payjoin.ohttp_keys,
+            receiver_key: payjoin.receiver_key,
+            expires_at: payjoin.expires_at,
+            required: payjoin.required,
+        }
+    }
+}
+
+/// FFI-compatible onchain Payjoin instructions.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct OnchainPayjoin {
+    /// Payjoin version.
+    pub version: u64,
+    /// Version-specific parameters.
+    pub params: PayjoinV2,
+}
+
+impl From<cdk::nuts::OnchainPayjoin> for OnchainPayjoin {
+    fn from(payjoin: cdk::nuts::OnchainPayjoin) -> Self {
+        Self {
+            version: payjoin.version,
+            params: payjoin.params.into(),
+        }
+    }
+}
+
+/// FFI-compatible Payjoin v2 request or acceptance marker.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct OnchainPayjoinRequest {
+    /// Payjoin version.
+    pub version: u64,
+    /// Whether fallback address payment is allowed.
+    pub required: bool,
+}
+
+impl From<cdk::nuts::OnchainPayjoinRequest> for OnchainPayjoinRequest {
+    fn from(payjoin: cdk::nuts::OnchainPayjoinRequest) -> Self {
+        Self {
+            version: payjoin.version,
+            required: payjoin.required,
+        }
+    }
+}
+
 /// FFI-compatible MintQuoteOnchainResponse.
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MintQuoteOnchainResponse {
@@ -366,6 +432,8 @@ pub struct MintQuoteOnchainResponse {
     pub amount_paid: Amount,
     /// Amount already issued for this quote
     pub amount_issued: Amount,
+    /// Optional Payjoin instructions.
+    pub payjoin: Option<OnchainPayjoin>,
 }
 
 impl From<cdk::nuts::MintQuoteOnchainResponse<String>> for MintQuoteOnchainResponse {
@@ -378,6 +446,7 @@ impl From<cdk::nuts::MintQuoteOnchainResponse<String>> for MintQuoteOnchainRespo
             pubkey: response.pubkey.to_string(),
             amount_paid: response.amount_paid.into(),
             amount_issued: response.amount_issued.into(),
+            payjoin: response.payjoin.map(Into::into),
         }
     }
 }
@@ -426,6 +495,8 @@ pub struct MeltQuoteOnchainResponse {
     pub outpoint: Option<String>,
     /// Change blind signatures as JSON, when the mint returns change
     pub change: Option<String>,
+    /// Optional Payjoin v2 acceptance for this quote.
+    pub payjoin: Option<OnchainPayjoinRequest>,
 }
 
 impl From<cdk::nuts::MeltQuoteOnchainResponse<String>> for MeltQuoteOnchainResponse {
@@ -446,6 +517,7 @@ impl From<cdk::nuts::MeltQuoteOnchainResponse<String>> for MeltQuoteOnchainRespo
             selected_fee_index: response.selected_fee_index,
             outpoint: response.outpoint,
             change,
+            payjoin: response.payjoin.map(Into::into),
         }
     }
 }

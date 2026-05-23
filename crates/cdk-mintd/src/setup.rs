@@ -616,6 +616,22 @@ impl OnchainBackendSetup for crate::config::Bdk {
             .map(|onchain| onchain.min_mint.to_u64().max(self.min_receive_amount_sat))
             .unwrap_or(self.min_receive_amount_sat);
 
+        #[cfg(feature = "payjoin")]
+        let payjoin_config = match (
+            self.payjoin_directory_url.as_ref(),
+            self.payjoin_ohttp_relay_url.as_ref(),
+        ) {
+            (Some(directory), Some(relay)) => Some(
+                cdk_bdk::PayjoinConfig::new(
+                    directory.clone(),
+                    relay.clone(),
+                    Some(self.payjoin_expiry_secs),
+                )
+                .map_err(anyhow::Error::msg)?,
+            ),
+            _ => None,
+        };
+
         let bdk = cdk_bdk::CdkBdk::new(
             mnemonic,
             network,
@@ -630,6 +646,8 @@ impl OnchainBackendSetup for crate::config::Bdk {
             self.sync_interval_secs,
             None,
             None,
+            #[cfg(feature = "payjoin")]
+            payjoin_config,
         )?;
 
         Ok(bdk)

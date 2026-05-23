@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
+use cdk_common::nuts::nut31::{OnchainPayjoin, PayjoinV2};
 use cdk_common::nuts::{CurrencyUnit, MeltQuoteState};
 use cdk_common::payment::{
     self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
@@ -220,6 +221,26 @@ fn onchain_melt_request() -> MeltQuoteRequest {
         request: "bcrt1qexampleaddr0000000000000000000000000000".to_string(),
         unit: CurrencyUnit::Sat,
         amount: Amount::from(1_000),
+        payjoin: None,
+    })
+}
+
+fn required_payjoin_melt_request() -> MeltQuoteRequest {
+    MeltQuoteRequest::Onchain(MeltQuoteOnchainRequest {
+        request: "bcrt1qexampleaddr0000000000000000000000000000".to_string(),
+        unit: CurrencyUnit::Sat,
+        amount: Amount::from(1_000),
+        payjoin: Some(OnchainPayjoin {
+            version: cdk_common::PAYJOIN_V2_VERSION,
+            params: PayjoinV2 {
+                endpoint: "https://payjoin.example/pj".to_string(),
+                ohttp_relay: "https://relay.example".to_string(),
+                ohttp_keys: "encoded-ohttp-keys".to_string(),
+                receiver_key: "encoded-receiver-key".to_string(),
+                expires_at: None,
+                required: true,
+            },
+        }),
     })
 }
 
@@ -257,6 +278,18 @@ async fn onchain_quote_uses_mint_generated_id_when_backend_echoes() {
         "request_lookup_id should be the mint-generated QuoteId, not whatever \
          variant the backend happened to return"
     );
+}
+
+#[tokio::test]
+async fn required_payjoin_melt_quote_is_rejected() {
+    let mint = create_onchain_test_mint(EchoBehavior::Echo).await.unwrap();
+
+    let err = mint
+        .get_melt_quote(required_payjoin_melt_request())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, Error::InvalidPaymentRequest));
 }
 
 /// Backend omits `request_lookup_id` entirely — must reject with

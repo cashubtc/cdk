@@ -2,19 +2,80 @@
 //!
 //! This file contains tests for NUT-26 onchain payments against a regtest environment.
 
+use std::path::PathBuf;
+use std::process::Command;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
-use cdk::nuts::{CurrencyUnit, NotificationPayload, PaymentMethod, Proofs, ProofsMethods};
+use cdk::nuts::{
+    CurrencyUnit, MintQuoteOnchainRequest, MintQuoteOnchainResponse, NotificationPayload,
+    OnchainPayjoinRequest, PaymentMethod, Proofs, ProofsMethods, SecretKey, PAYJOIN_V2_VERSION,
+};
 use cdk::wallet::{MeltOutcome, MintConnector, Wallet, WalletSubscription};
 use cdk_integration_tests::get_mint_url_from_env;
 use cdk_integration_tests::init_regtest::init_bitcoin_client;
 use cdk_sqlite::wallet::memory;
 use futures::StreamExt;
 use tokio::time::timeout;
+
+const PAYJOIN_CLI_BIN_ENV: &str = "CDK_PAYJOIN_CLI_BIN";
+const PAYJOIN_DIRECTORY_ENV: &str = "CDK_MINTD_BDK_PAYJOIN_DIRECTORY_URL";
+const PAYJOIN_RELAY_ENV: &str = "CDK_MINTD_BDK_PAYJOIN_OHTTP_RELAY_URL";
+
+async fn request_required_payjoin_mint_quote(
+    mint_url: &str,
+) -> anyhow::Result<MintQuoteOnchainResponse<String>> {
+    let request = MintQuoteOnchainRequest {
+        unit: CurrencyUnit::Sat,
+        pubkey: SecretKey::generate().public_key(),
+        payjoin: Some(OnchainPayjoinRequest {
+            version: PAYJOIN_V2_VERSION,
+            required: true,
+        }),
+    };
+    let url = format!("{}/v1/mint/quote/onchain", mint_url.trim_end_matches('/'));
+    let response = reqwest::Client::new()
+        .post(url)
+        .json(&request)
+        .send()
+        .await?;
+    let response = response.error_for_status()?;
+    Ok(response.json().await?)
+}
+
+async fn fetch_onchain_mint_quote(
+    mint_url: &str,
+    quote_id: &str,
+) -> anyhow::Result<MintQuoteOnchainResponse<String>> {
+    let url = format!(
+        "{}/v1/mint/quote/onchain/{}",
+        mint_url.trim_end_matches('/'),
+        quote_id
+    );
+    let response = reqwest::Client::new().get(url).send().await?;
+    let response = response.error_for_status()?;
+    Ok(response.json().await?)
+}
+
+fn payjoin_cli_workdir() -> PathBuf {
+    std::env::var("CDK_PAYJOIN_CLI_WORKDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::env::temp_dir().join(format!("cdk-payjoin-cli-{}", uuid::Uuid::new_v4()))
+        })
+}
+
+fn format_bip21_amount(amount_sat: u64) -> String {
+    let btc = amount_sat / 100_000_000;
+    let sats = amount_sat % 100_000_000;
+    if sats == 0 {
+        return btc.to_string();
+    }
+    format!("{btc}.{sats:08}").trim_end_matches('0').to_string()
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_onchain_mint() {
@@ -101,6 +162,90 @@ async fn test_onchain_mint() {
 
     assert_eq!(proofs.total_amount().unwrap(), mint_amount.into());
     assert_eq!(wallet.total_balance().await.unwrap(), mint_amount.into());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_onchain_payjoin_mint_with_payjoin_cli() {
+    let payjoin_cli_bin =
+        std::env::var(PAYJOIN_CLI_BIN_ENV).unwrap_or_else(|_| "payjoin-cli".to_string());
+    let payjoin_directory = std::env::var(PAYJOIN_DIRECTORY_ENV)
+        .expect("CDK_MINTD_BDK_PAYJOIN_DIRECTORY_URL must be set for Payjoin regtest");
+    let payjoin_relay = std::env::var(PAYJOIN_RELAY_ENV)
+        .expect("CDK_MINTD_BDK_PAYJOIN_OHTTP_RELAY_URL must be set for Payjoin regtest");
+
+    let bitcoin_client = init_bitcoin_client().expect("Failed to init bitcoin client");
+    let mint_url = get_mint_url_from_env();
+    let mint_amount = 10_000_u64;
+
+    let quote = request_required_payjoin_mint_quote(&mint_url)
+        .await
+        .expect("mint should create a required Payjoin quote");
+    let payjoin = quote
+        .payjoin
+        .as_ref()
+        .expect("required Payjoin quote should include Payjoin params");
+    assert_eq!(payjoin.version, PAYJOIN_V2_VERSION);
+
+    let bip21 = format!(
+        "bitcoin:{}?amount={}&pj={}",
+        quote.request,
+        format_bip21_amount(mint_amount),
+        url::form_urlencoded::byte_serialize(payjoin.params.endpoint.as_bytes())
+            .collect::<String>()
+    );
+
+    let cli_workdir = payjoin_cli_workdir();
+    std::fs::create_dir_all(&cli_workdir).expect("create payjoin-cli workdir");
+    let output = Command::new(&payjoin_cli_bin)
+        .current_dir(&cli_workdir)
+        .arg("--bip77")
+        .arg("--rpchost")
+        .arg("http://127.0.0.1:18443/wallet/wallet")
+        .arg("--rpcuser")
+        .arg("testuser")
+        .arg("--rpcpassword")
+        .arg("testpass")
+        .arg("--pj-directory")
+        .arg(&payjoin_directory)
+        .arg("--ohttp-relays")
+        .arg(&payjoin_relay)
+        .arg("send")
+        .arg(&bip21)
+        .arg("--fee-rate")
+        .arg("1")
+        .output()
+        .expect("run payjoin-cli send");
+
+    assert!(
+        output.status.success(),
+        "payjoin-cli send failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mine_addr = bitcoin_client
+        .get_new_address()
+        .expect("Failed to get address");
+    bitcoin_client
+        .generate_blocks(&mine_addr, 1)
+        .expect("Failed to mine block");
+
+    let paid_quote = timeout(Duration::from_secs(60), async {
+        loop {
+            let quote = fetch_onchain_mint_quote(&mint_url, &quote.quote)
+                .await
+                .expect("fetch onchain mint quote");
+            if quote.amount_paid >= mint_amount.into() {
+                return quote;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .expect("timeout waiting for Payjoin mint quote to be paid");
+
+    assert_eq!(paid_quote.quote, quote.quote);
+    assert!(paid_quote.amount_paid >= mint_amount.into());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

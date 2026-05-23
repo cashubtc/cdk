@@ -43,6 +43,7 @@ impl Wallet {
             request: address.to_string(),
             unit: self.unit.clone(),
             amount,
+            payjoin: None,
         };
 
         let quote_res = self

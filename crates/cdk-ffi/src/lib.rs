@@ -483,6 +483,7 @@ mod tests {
             secret_key: None,
             used_by_operation: None,
             version: 0,
+            payjoin: None,
         };
 
         let mintable =

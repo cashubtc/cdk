@@ -22,6 +22,16 @@ mod auth;
 
 use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
 
+fn onchain_payjoin_accepted(extra_json: Option<&serde_json::Value>) -> bool {
+    extra_json
+        .and_then(|extra| extra.get("payjoin"))
+        .cloned()
+        .and_then(|payjoin| {
+            serde_json::from_value::<cdk_common::nuts::nut31::OnchainPayjoinRequest>(payjoin).ok()
+        })
+        .is_some_and(|payjoin| payjoin.is_supported())
+}
+
 /// Input enum to handle both single and batch mint formats (internal to CDK, not spec)
 #[derive(Debug, Clone)]
 pub enum MintInput {
@@ -220,6 +230,13 @@ impl Mint {
             let ln = self.get_payment_processor(unit.clone(), payment_method.clone())?;
 
             let quote_id = QuoteId::new();
+            let required_onchain_payjoin = match &mint_quote_request {
+                MintQuoteRequest::Onchain(onchain_request) => onchain_request
+                    .payjoin
+                    .as_ref()
+                    .is_some_and(|payjoin| payjoin.required),
+                _ => false,
+            };
 
             let payment_options = match mint_quote_request {
                 MintQuoteRequest::Bolt11(bolt11_request) => {
@@ -319,9 +336,18 @@ impl Mint {
 
                     IncomingPaymentOptions::Custom(Box::new(custom_options))
                 }
-                MintQuoteRequest::Onchain(_) => {
+                MintQuoteRequest::Onchain(onchain_request) => {
+                    if onchain_request
+                        .payjoin
+                        .as_ref()
+                        .is_some_and(|payjoin| payjoin.required && !payjoin.is_supported())
+                    {
+                        return Err(Error::InvalidPaymentRequest);
+                    }
+
                     IncomingPaymentOptions::Onchain(OnchainIncomingPaymentOptions {
                         quote_id: quote_id.clone(),
+                        payjoin: onchain_request.payjoin,
                     })
                 }
             };
@@ -333,6 +359,12 @@ impl Mint {
                     tracing::error!("Could not create invoice: {}", err);
                     Error::InvalidPaymentRequest
                 })?;
+
+            if required_onchain_payjoin
+                && !onchain_payjoin_accepted(create_invoice_response.extra_json.as_ref())
+            {
+                return Err(Error::InvalidPaymentRequest);
+            }
 
             let quote = MintQuote::new(
                 Some(quote_id),
@@ -1019,7 +1051,8 @@ mod batch_mint_tests {
     };
     use cdk_common::{
         Amount, BatchMintRequest, CurrencyUnit, Error, MintQuoteBolt11Request,
-        MintQuoteBolt11Response, MintQuoteState, MintRequest, PaymentMethod, QuoteId,
+        MintQuoteBolt11Response, MintQuoteOnchainRequest, MintQuoteState, MintRequest,
+        OnchainPayjoinRequest, PaymentMethod, QuoteId, SecretKey,
     };
     use cdk_fake_wallet::FakeWallet;
     use futures::Stream;
@@ -1227,6 +1260,28 @@ mod batch_mint_tests {
         tx.commit().await.unwrap();
 
         quote_id
+    }
+
+    #[tokio::test]
+    async fn test_required_onchain_payjoin_mint_quote_is_rejected() {
+        let mint = create_test_mint().await;
+
+        let err = mint
+            .get_mint_quote(
+                MintQuoteOnchainRequest {
+                    unit: CurrencyUnit::Sat,
+                    pubkey: SecretKey::generate().public_key(),
+                    payjoin: Some(OnchainPayjoinRequest {
+                        version: cdk_common::PAYJOIN_V2_VERSION,
+                        required: true,
+                    }),
+                }
+                .into(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::InvalidPaymentRequest));
     }
 
     fn mint_request_for_amount(mint: &Mint, quote: QuoteId, amount: u64) -> MintRequest<QuoteId> {

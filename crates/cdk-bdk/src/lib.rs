@@ -4,16 +4,22 @@
 
 use std::fs;
 use std::future::Future;
+#[cfg(feature = "payjoin")]
+use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+#[cfg(feature = "payjoin")]
+use std::sync::Mutex as StdMutex;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bdk_wallet::bitcoin::Network;
+#[cfg(feature = "payjoin")]
+use bdk_wallet::bitcoin::{OutPoint, Sequence, Transaction, TxIn};
 use bdk_wallet::keys::bip39::Mnemonic;
 use bdk_wallet::keys::{DerivableKey, ExtendedKey};
 use bdk_wallet::rusqlite::Connection;
@@ -22,6 +28,9 @@ use bdk_wallet::{KeychainKind, PersistedWallet, Wallet};
 use cdk_common::common::FeeReserve;
 use cdk_common::database::KVStore;
 use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
+use cdk_common::nuts::nut31::OnchainPayjoin;
+#[cfg(feature = "payjoin")]
+use cdk_common::nuts::nut31::{OnchainPayjoinRequest, PayjoinV2, PAYJOIN_V2_VERSION};
 use cdk_common::payment::{
     CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse, MintPayment,
     OnchainSettings, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse,
@@ -33,13 +42,17 @@ use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
+#[cfg(feature = "payjoin")]
+use uuid::Uuid;
 
 pub use crate::chain::{BitcoinRpcConfig, ChainSource, EsploraConfig};
 pub use crate::error::Error;
 pub use crate::storage::{BdkStorage, FinalizedReceiveIntentRecord, FinalizedSendIntentRecord};
+#[cfg(feature = "payjoin")]
+pub use crate::types::PayjoinConfig;
 pub use crate::types::{
     BatchConfig, FeeEstimationConfig, PaymentMetadata, PaymentTier, SyncConfig,
-    DEFAULT_TARGET_BLOCK_TIME_SECS,
+    DEFAULT_PAYJOIN_EXPIRY_SECS, DEFAULT_TARGET_BLOCK_TIME_SECS,
 };
 
 pub mod chain;
@@ -63,6 +76,8 @@ pub(crate) struct BackgroundTasks {
     pub(crate) cancel: CancellationToken,
     pub(crate) sync: JoinHandle<()>,
     pub(crate) batch: JoinHandle<()>,
+    #[cfg(feature = "payjoin")]
+    pub(crate) payjoin_receive: Option<JoinHandle<()>>,
 }
 
 struct PaymentEventStream {
@@ -107,6 +122,71 @@ impl Drop for PaymentEventStream {
     }
 }
 
+#[cfg(feature = "payjoin")]
+#[derive(Debug, Clone)]
+struct RecordingSessionPersister<E> {
+    events: Arc<StdMutex<Vec<E>>>,
+    closed: Arc<AtomicBool>,
+    _marker: PhantomData<E>,
+}
+
+#[cfg(feature = "payjoin")]
+impl<E> RecordingSessionPersister<E>
+where
+    E: Clone,
+{
+    fn new(events: Vec<E>, closed: bool) -> Self {
+        Self {
+            events: Arc::new(StdMutex::new(events)),
+            closed: Arc::new(AtomicBool::new(closed)),
+            _marker: PhantomData,
+        }
+    }
+
+    fn events(&self) -> Result<Vec<E>, Error> {
+        self.events
+            .lock()
+            .map(|events| events.clone())
+            .map_err(|err| Error::Payjoin(format!("Payjoin session lock poisoned: {}", err)))
+    }
+
+    fn closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(feature = "payjoin")]
+impl<E> payjoin::persist::SessionPersister for RecordingSessionPersister<E>
+where
+    E: Clone + Send + Sync + 'static,
+{
+    type InternalStorageError = std::convert::Infallible;
+    type SessionEvent = E;
+
+    fn save_event(&self, event: &Self::SessionEvent) -> Result<(), Self::InternalStorageError> {
+        if let Ok(mut events) = self.events.lock() {
+            events.push(event.clone());
+        }
+        Ok(())
+    }
+
+    fn load(
+        &self,
+    ) -> Result<Box<dyn Iterator<Item = Self::SessionEvent>>, Self::InternalStorageError> {
+        let events = self
+            .events
+            .lock()
+            .map(|events| events.clone())
+            .unwrap_or_default();
+        Ok(Box::new(events.into_iter()))
+    }
+
+    fn close(&self) -> Result<(), Self::InternalStorageError> {
+        self.closed.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
 impl WalletWithDb {
     pub(crate) fn new(wallet: PersistedWallet<Connection>, db: Connection) -> Self {
         Self { wallet, db }
@@ -146,9 +226,535 @@ pub struct CdkBdk {
     pub(crate) sync_config: SyncConfig,
     /// Cache for fee rate estimation: Tier -> (sat_per_vb, timestamp)
     pub(crate) fee_rate_cache: Arc<Mutex<std::collections::HashMap<PaymentTier, (f64, u64)>>>,
+    /// Payjoin v2 configuration, when compiled and enabled.
+    #[cfg(feature = "payjoin")]
+    pub(crate) payjoin_config: Option<PayjoinConfig>,
 }
 
 impl CdkBdk {
+    fn requested_payjoin(metadata: Option<&str>) -> Option<OnchainPayjoin> {
+        let value = metadata
+            .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())?;
+        value
+            .get("payjoin")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+    }
+
+    #[cfg(feature = "payjoin")]
+    fn accepted_payjoin_extra(payjoin: &OnchainPayjoin) -> serde_json::Value {
+        serde_json::json!({
+            "payjoin": OnchainPayjoinRequest {
+                version: PAYJOIN_V2_VERSION,
+                required: payjoin.is_required(),
+            }
+        })
+    }
+
+    #[cfg(feature = "payjoin")]
+    async fn create_payjoin_receive_extra(
+        &self,
+        quote_id: &cdk_common::QuoteId,
+        address: &bdk_wallet::bitcoin::Address,
+        amount_sat: u64,
+        required: bool,
+    ) -> Result<Option<serde_json::Value>, Error> {
+        let Some(config) = self.payjoin_config() else {
+            if required {
+                return Err(Error::PayjoinUnavailable(
+                    "operator did not configure Payjoin directory and OHTTP relay".to_string(),
+                ));
+            }
+            return Ok(None);
+        };
+
+        let ohttp_keys =
+            payjoin::io::fetch_ohttp_keys(&config.ohttp_relay_url, &config.directory_url)
+                .await
+                .map_err(|err| Error::Payjoin(err.to_string()))?;
+        let persister = RecordingSessionPersister::new(Vec::new(), false);
+        let receiver =
+            payjoin::receive::v2::Receiver::<payjoin::receive::v2::UninitializedReceiver>::create_session(
+                address.clone(),
+                config.directory_url.clone(),
+                ohttp_keys.clone(),
+                Some(Duration::from_secs(config.expiry_secs)),
+            )
+            .save(&persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+
+        let pj_uri = receiver.pj_uri().to_string();
+        let endpoint = extract_bip21_payjoin_endpoint(&pj_uri)?;
+        let receiver_key = extract_payjoin_fragment_value(&endpoint, "RK1").unwrap_or_default();
+        let expires_at = crate::util::unix_now()
+            .checked_add(config.expiry_secs)
+            .unwrap_or(u64::MAX);
+
+        self.storage
+            .put_payjoin_receive_session(&crate::storage::PayjoinReceiveSessionRecord {
+                quote_id: quote_id.to_string(),
+                fallback_address: address.to_string(),
+                amount_sat,
+                required,
+                expires_at,
+                events: persister.events()?,
+                closed: persister.closed(),
+            })
+            .await?;
+
+        let payjoin = OnchainPayjoin {
+            version: PAYJOIN_V2_VERSION,
+            params: PayjoinV2 {
+                endpoint,
+                ohttp_relay: config.ohttp_relay_url.clone(),
+                ohttp_keys: ohttp_keys.to_string(),
+                receiver_key,
+                expires_at: Some(expires_at),
+                required,
+            },
+        };
+
+        Ok(Some(serde_json::json!({ "payjoin": payjoin })))
+    }
+
+    #[cfg(not(feature = "payjoin"))]
+    async fn create_payjoin_receive_extra(
+        &self,
+        _quote_id: &cdk_common::QuoteId,
+        _address: &bdk_wallet::bitcoin::Address,
+        _amount_sat: u64,
+        required: bool,
+    ) -> Result<Option<serde_json::Value>, Error> {
+        if required {
+            return Err(Error::PayjoinUnavailable(
+                "cdk-bdk was built without the payjoin feature".to_string(),
+            ));
+        }
+        Ok(None)
+    }
+
+    #[cfg(feature = "payjoin")]
+    pub(crate) async fn run_payjoin_receive_poller(
+        &self,
+        cancel_token: CancellationToken,
+    ) -> Result<(), Error> {
+        let mut tick = tokio::time::interval(Duration::from_secs(15));
+        tracing::info!("Starting Payjoin receive poller");
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => break,
+                _ = tick.tick() => {
+                    for record in self.storage.get_all_payjoin_receive_sessions().await? {
+                        if record.closed || record.expires_at < crate::util::unix_now() {
+                            continue;
+                        }
+                        if let Err(err) = self.process_payjoin_receive_session(record).await {
+                            tracing::warn!("Payjoin receive session processing failed: {}", err);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "payjoin")]
+    async fn process_payjoin_receive_session(
+        &self,
+        mut record: crate::storage::PayjoinReceiveSessionRecord,
+    ) -> Result<(), Error> {
+        use payjoin::persist::OptionalTransitionOutcome;
+
+        let Some(config) = self.payjoin_config() else {
+            return Ok(());
+        };
+        let fallback_address = bdk_wallet::bitcoin::Address::from_str(&record.fallback_address)
+            .map_err(|err| Error::Payjoin(err.to_string()))?
+            .require_network(self.network)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+        let fallback_script = fallback_address.script_pubkey();
+        let persister = RecordingSessionPersister::new(record.events.clone(), record.closed);
+        let (session, history) = payjoin::receive::v2::replay_event_log(&persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+        if let Some((request, context)) = history
+            .extract_err_req(&config.ohttp_relay_url)
+            .map_err(|err| Error::Payjoin(err.to_string()))?
+        {
+            let response = payjoin_http_request(request).await?;
+            payjoin::receive::v2::process_err_res(&response, context)
+                .map_err(|err| Error::Payjoin(err.to_string()))?;
+            record.closed = true;
+            record.events = persister.events()?;
+            self.storage.put_payjoin_receive_session(&record).await?;
+            return Ok(());
+        }
+
+        let payjoin_proposal = match session {
+            payjoin::receive::v2::ReceiveSession::Initialized(mut receiver) => {
+                let (request, context) = receiver
+                    .extract_req(&config.ohttp_relay_url)
+                    .map_err(|err| Error::Payjoin(err.to_string()))?;
+                let response = payjoin_http_request(request).await?;
+                let unchecked = match receiver
+                    .process_res(&response, context)
+                    .save(&persister)
+                    .map_err(|err| Error::Payjoin(err.to_string()))?
+                {
+                    OptionalTransitionOutcome::Progress(unchecked) => unchecked,
+                    OptionalTransitionOutcome::Stasis(_) => {
+                        record.events = persister.events()?;
+                        record.closed = persister.closed();
+                        self.storage.put_payjoin_receive_session(&record).await?;
+                        return Ok(());
+                    }
+                };
+                Some(
+                    self.accept_payjoin_receive_proposal(unchecked, &fallback_script, &persister)
+                        .await?,
+                )
+            }
+            payjoin::receive::v2::ReceiveSession::UncheckedProposal(unchecked) => Some(
+                self.accept_payjoin_receive_proposal(unchecked, &fallback_script, &persister)
+                    .await?,
+            ),
+            payjoin::receive::v2::ReceiveSession::PayjoinProposal(proposal) => Some(proposal),
+            payjoin::receive::v2::ReceiveSession::TerminalFailure => {
+                record.closed = true;
+                record.events = persister.events()?;
+                self.storage.put_payjoin_receive_session(&record).await?;
+                return Ok(());
+            }
+            _ => None,
+        };
+
+        if let Some(mut proposal) = payjoin_proposal {
+            let (request, context) = proposal
+                .extract_req(&config.ohttp_relay_url)
+                .map_err(|err| Error::Payjoin(err.to_string()))?;
+            let response = payjoin_http_request(request).await?;
+            proposal
+                .process_res(&response, context)
+                .save(&persister)
+                .map_err(|err| Error::Payjoin(err.to_string()))?;
+        }
+
+        record.events = persister.events()?;
+        record.closed = persister.closed();
+        self.storage.put_payjoin_receive_session(&record).await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "payjoin")]
+    async fn accept_payjoin_receive_proposal(
+        &self,
+        unchecked: payjoin::receive::v2::Receiver<payjoin::receive::v2::UncheckedProposal>,
+        fallback_script: &bdk_wallet::bitcoin::Script,
+        persister: &RecordingSessionPersister<payjoin::receive::v2::SessionEvent>,
+    ) -> Result<payjoin::receive::v2::Receiver<payjoin::receive::v2::PayjoinProposal>, Error> {
+        let receiver = unchecked
+            .assume_interactive_receiver()
+            .save(persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+
+        let wallet_with_db = self.wallet_with_db.lock().await;
+        let receiver = receiver
+            .check_inputs_not_owned(|script| Ok(wallet_with_db.wallet.is_mine(script.to_owned())))
+            .save(persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+        let receiver = receiver
+            .check_no_inputs_seen_before(|_| Ok(false))
+            .save(persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+        let receiver = receiver
+            .identify_receiver_outputs(|script| Ok(script == fallback_script))
+            .save(persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+        let receiver = receiver
+            .commit_outputs()
+            .save(persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+
+        let candidate_inputs = wallet_with_db
+            .wallet
+            .list_unspent()
+            .filter_map(|utxo| {
+                let psbt_input = wallet_with_db
+                    .wallet
+                    .get_psbt_input(utxo.clone(), None, true)
+                    .ok()?;
+                payjoin::receive::InputPair::new(
+                    TxIn {
+                        previous_output: utxo.outpoint,
+                        script_sig: Default::default(),
+                        sequence: Sequence::MAX,
+                        witness: Default::default(),
+                    },
+                    psbt_input,
+                )
+                .ok()
+            })
+            .collect::<Vec<_>>();
+        let selected = receiver
+            .try_preserving_privacy(candidate_inputs.clone())
+            .or_else(|_| {
+                candidate_inputs.into_iter().next().ok_or_else(|| {
+                    Error::Payjoin("no Payjoin contribution input available".to_string())
+                })
+            })?;
+        let receiver = receiver
+            .contribute_inputs([selected])
+            .map_err(|err| Error::Payjoin(err.to_string()))?
+            .commit_inputs()
+            .save(persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+        let receiver = receiver
+            .finalize_proposal(
+                |psbt| {
+                    let mut psbt = psbt.clone();
+                    wallet_with_db
+                        .wallet
+                        .sign(&mut psbt, Default::default())
+                        .map_err(|err| -> payjoin::ImplementationError {
+                            Box::new(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                err.to_string(),
+                            ))
+                        })?;
+                    Ok(psbt)
+                },
+                None,
+                None,
+            )
+            .save(persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+        drop(wallet_with_db);
+
+        Ok(receiver)
+    }
+
+    #[cfg(feature = "payjoin")]
+    async fn send_payjoin_payment(
+        &self,
+        quote_id: &cdk_common::QuoteId,
+        address: &str,
+        amount_sat: u64,
+        max_fee_sat: u64,
+        tier: PaymentTier,
+        payjoin: &OnchainPayjoin,
+    ) -> Result<MakePaymentResponse, Error> {
+        use payjoin::persist::OptionalTransitionOutcome;
+        use payjoin::UriExt;
+
+        let fallback_address = bdk_wallet::bitcoin::Address::from_str(address)
+            .map_err(|e| Error::Wallet(e.to_string()))?
+            .require_network(self.network)
+            .map_err(|e| Error::Wallet(e.to_string()))?;
+        let sat_per_vb = self
+            .estimate_fee_rate_sat_per_vb(tier)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    tier = ?tier,
+                    error = %e,
+                    "Payjoin fee-rate estimation failed, using configured fallback"
+                );
+                self.batch_config.fee_estimation.fallback_sat_per_vb
+            });
+        let fee_rate = bdk_wallet::bitcoin::FeeRate::from_sat_per_vb_u32(sat_per_vb.ceil() as u32);
+
+        let mut wallet_with_db = self.wallet_with_db.lock().await;
+        let mut tx_builder = wallet_with_db.wallet.build_tx();
+        tx_builder.add_recipient(
+            fallback_address.clone(),
+            bdk_wallet::bitcoin::Amount::from_sat(amount_sat),
+        );
+        tx_builder.fee_rate(fee_rate);
+        let mut original_psbt = tx_builder
+            .finish()
+            .map_err(|err| Error::Payjoin(format!("Could not build original PSBT: {}", err)))?;
+        let original_fee_sat = original_psbt
+            .fee()
+            .map_err(|err| {
+                Error::Payjoin(format!("Could not calculate original PSBT fee: {}", err))
+            })?
+            .to_sat();
+        if original_fee_sat > max_fee_sat {
+            return Err(Error::Payjoin(format!(
+                "original Payjoin PSBT fee {} exceeds max fee {}",
+                original_fee_sat, max_fee_sat
+            )));
+        }
+        if !wallet_with_db
+            .wallet
+            .sign(&mut original_psbt, Default::default())
+            .map_err(|err| Error::Payjoin(format!("Could not sign original PSBT: {}", err)))?
+        {
+            return Err(Error::CouldNotSign);
+        }
+        wallet_with_db
+            .persist()
+            .map_err(|err| Error::Payjoin(format!("Could not persist wallet: {}", err)))?;
+        drop(wallet_with_db);
+
+        let pj_uri = build_payjoin_uri(address, amount_sat, &payjoin.params.endpoint);
+        let pj_uri = payjoin::Uri::try_from(pj_uri.as_str())
+            .map_err(|err| Error::Payjoin(format!("Invalid Payjoin URI: {}", err)))?
+            .assume_checked()
+            .check_pj_supported()
+            .map_err(|_| {
+                Error::Payjoin("Payjoin URI did not contain supported pj params".to_string())
+            })?;
+        let persister = RecordingSessionPersister::new(Vec::new(), false);
+        let sender = payjoin::send::v2::SenderBuilder::new(original_psbt, pj_uri)
+            .build_recommended(fee_rate)
+            .save(&persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+        self.storage
+            .put_payjoin_send_session(&crate::storage::PayjoinSendSessionRecord {
+                quote_id: quote_id.to_string(),
+                fallback_address: address.to_string(),
+                amount_sat,
+                max_fee_sat,
+                required: payjoin.is_required(),
+                events: persister.events()?,
+                closed: persister.closed(),
+            })
+            .await?;
+
+        let (post_request, post_context) = sender
+            .extract_v2(&payjoin.params.ohttp_relay)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+        let post_response = payjoin_http_request(post_request).await?;
+        let sender = sender
+            .process_response(&post_response, post_context)
+            .save(&persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+        self.storage
+            .put_payjoin_send_session(&crate::storage::PayjoinSendSessionRecord {
+                quote_id: quote_id.to_string(),
+                fallback_address: address.to_string(),
+                amount_sat,
+                max_fee_sat,
+                required: payjoin.is_required(),
+                events: persister.events()?,
+                closed: persister.closed(),
+            })
+            .await?;
+
+        let mut sender = sender;
+        let poll_deadline = payjoin
+            .params
+            .expires_at
+            .unwrap_or_else(|| crate::util::unix_now().saturating_add(300));
+        let proposal_psbt = loop {
+            if crate::util::unix_now() > poll_deadline {
+                return Err(Error::Payjoin("Payjoin sender session expired".to_string()));
+            }
+            let (get_request, get_context) = sender
+                .extract_req(&payjoin.params.ohttp_relay)
+                .map_err(|err| Error::Payjoin(err.to_string()))?;
+            let get_response = payjoin_http_request(get_request).await?;
+            match sender
+                .process_response(&get_response, get_context)
+                .save(&persister)
+                .map_err(|err| Error::Payjoin(err.to_string()))?
+            {
+                OptionalTransitionOutcome::Progress(psbt) => break psbt,
+                OptionalTransitionOutcome::Stasis(next_sender) => {
+                    sender = next_sender;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }
+        };
+        self.storage
+            .put_payjoin_send_session(&crate::storage::PayjoinSendSessionRecord {
+                quote_id: quote_id.to_string(),
+                fallback_address: address.to_string(),
+                amount_sat,
+                max_fee_sat,
+                required: payjoin.is_required(),
+                events: persister.events()?,
+                closed: persister.closed(),
+            })
+            .await?;
+
+        let mut final_psbt = proposal_psbt;
+        let final_fee_sat = final_psbt
+            .fee()
+            .map_err(|err| Error::Payjoin(format!("Could not calculate Payjoin fee: {}", err)))?
+            .to_sat();
+        if final_fee_sat > max_fee_sat {
+            return Err(Error::Payjoin(format!(
+                "Payjoin fee {} exceeds max fee {}",
+                final_fee_sat, max_fee_sat
+            )));
+        }
+
+        let mut wallet_with_db = self.wallet_with_db.lock().await;
+        if !wallet_with_db
+            .wallet
+            .sign(&mut final_psbt, Default::default())
+            .map_err(|err| Error::Payjoin(format!("Could not sign Payjoin PSBT: {}", err)))?
+        {
+            return Err(Error::CouldNotSign);
+        }
+        let tx = final_psbt
+            .extract_tx()
+            .map_err(|err| Error::Payjoin(format!("Could not extract Payjoin tx: {}", err)))?;
+        let txid = tx.compute_txid();
+        wallet_with_db
+            .wallet
+            .apply_unconfirmed_txs([(tx.clone(), crate::util::unix_now())]);
+        if let Err(err) = wallet_with_db.persist() {
+            tracing::warn!(
+                "Could not persist BDK wallet after Payjoin tx apply: {}",
+                err
+            );
+        }
+        drop(wallet_with_db);
+
+        match self.broadcast_transaction_internal(tx.clone()).await {
+            Ok(crate::chain::BroadcastOutcome::Accepted)
+            | Ok(crate::chain::BroadcastOutcome::AlreadyKnown) => {}
+            Err(failure) => {
+                return Err(Error::Payjoin(format!(
+                    "Payjoin broadcast failed: {}",
+                    failure.message
+                )));
+            }
+        }
+
+        let outpoint = find_payment_outpoint(&tx, &fallback_address, amount_sat)
+            .unwrap_or_else(|| OutPoint::new(txid, 0));
+        let pending = crate::send::payment_intent::SendIntent::new(
+            &self.storage,
+            quote_id.to_string(),
+            address.to_string(),
+            amount_sat,
+            max_fee_sat,
+            tier,
+            PaymentMetadata::default(),
+        )
+        .await?;
+        let batch_id = Uuid::new_v4();
+        let batched = pending.assign_to_batch(&self.storage, batch_id).await?;
+        batched
+            .mark_broadcast(
+                &self.storage,
+                txid.to_string(),
+                outpoint.to_string(),
+                final_fee_sat,
+            )
+            .await?;
+
+        Ok(MakePaymentResponse {
+            payment_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
+            payment_proof: None,
+            status: MeltQuoteState::Pending,
+            total_spent: Amount::new(amount_sat + final_fee_sat, CurrencyUnit::Sat),
+        })
+    }
+
     pub(crate) fn validate_send_amount_against_dust(
         &self,
         address: &str,
@@ -246,6 +852,7 @@ impl CdkBdk {
         sync_interval_secs: u64,
         shutdown_timeout_secs: Option<u64>,
         sync_config: Option<SyncConfig>,
+        #[cfg(feature = "payjoin")] payjoin_config: Option<PayjoinConfig>,
     ) -> Result<Self, Error> {
         let storage_dir_path = PathBuf::from(storage_dir_path);
         let storage_dir_path = storage_dir_path.join("bdk_wallet");
@@ -315,7 +922,14 @@ impl CdkBdk {
             sync_interval_secs,
             sync_config: sync_config.unwrap_or_default(),
             fee_rate_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            #[cfg(feature = "payjoin")]
+            payjoin_config,
         })
+    }
+
+    #[cfg(feature = "payjoin")]
+    pub(crate) fn payjoin_config(&self) -> Option<&PayjoinConfig> {
+        self.payjoin_config.as_ref()
     }
 }
 
@@ -387,6 +1001,86 @@ where
     }
 }
 
+#[cfg(feature = "payjoin")]
+fn extract_bip21_payjoin_endpoint(uri: &str) -> Result<String, Error> {
+    let query = uri.split_once('?').map(|(_, query)| query).ok_or_else(|| {
+        Error::Payjoin("Payjoin URI did not include query parameters".to_string())
+    })?;
+
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        if key == "pj" {
+            return Ok(value.into_owned());
+        }
+    }
+
+    Err(Error::Payjoin(
+        "Payjoin URI did not include a pj endpoint".to_string(),
+    ))
+}
+
+#[cfg(feature = "payjoin")]
+fn extract_payjoin_fragment_value(endpoint: &str, prefix: &str) -> Option<String> {
+    let url = url::Url::parse(endpoint).ok()?;
+    url.fragment()?
+        .split('+')
+        .find(|part| part.starts_with(prefix))
+        .map(|part| part.to_string())
+}
+
+#[cfg(feature = "payjoin")]
+fn build_payjoin_uri(address: &str, amount_sat: u64, endpoint: &str) -> String {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("amount", &format_bip21_amount(amount_sat));
+    serializer.append_pair("pj", endpoint);
+    format!("bitcoin:{}?{}", address, serializer.finish())
+}
+
+#[cfg(feature = "payjoin")]
+fn format_bip21_amount(amount_sat: u64) -> String {
+    let btc = amount_sat / 100_000_000;
+    let sats = amount_sat % 100_000_000;
+    if sats == 0 {
+        return btc.to_string();
+    }
+    format!("{btc}.{sats:08}").trim_end_matches('0').to_string()
+}
+
+#[cfg(feature = "payjoin")]
+async fn payjoin_http_request(request: payjoin::Request) -> Result<Vec<u8>, Error> {
+    let response = reqwest::Client::new()
+        .post(request.url)
+        .header(reqwest::header::CONTENT_TYPE, request.content_type)
+        .body(request.body)
+        .send()
+        .await
+        .map_err(|err| Error::Payjoin(err.to_string()))?;
+    if !response.status().is_success() {
+        return Err(Error::Payjoin(format!(
+            "Payjoin HTTP request failed with status {}",
+            response.status()
+        )));
+    }
+    response
+        .bytes()
+        .await
+        .map(|bytes| bytes.to_vec())
+        .map_err(|err| Error::Payjoin(err.to_string()))
+}
+
+#[cfg(feature = "payjoin")]
+fn find_payment_outpoint(
+    tx: &Transaction,
+    address: &bdk_wallet::bitcoin::Address,
+    amount_sat: u64,
+) -> Option<OutPoint> {
+    let script = address.script_pubkey();
+    tx.output
+        .iter()
+        .enumerate()
+        .find(|(_, output)| output.script_pubkey == script && output.value.to_sat() == amount_sat)
+        .map(|(vout, _)| OutPoint::new(tx.compute_txid(), vout as u32))
+}
+
 #[async_trait]
 impl MintPayment for CdkBdk {
     type Err = cdk_common::payment::Error;
@@ -423,10 +1117,27 @@ impl MintPayment for CdkBdk {
             .await;
         });
 
+        #[cfg(feature = "payjoin")]
+        let payjoin_receive_handle = if self.payjoin_config().is_some() {
+            let payjoin_self = self.clone();
+            let payjoin_cancel = cancel.clone();
+            Some(tokio::spawn(async move {
+                supervise("payjoin receive poller", payjoin_cancel, move |cancel| {
+                    let me = payjoin_self.clone();
+                    async move { me.run_payjoin_receive_poller(cancel).await }
+                })
+                .await;
+            }))
+        } else {
+            None
+        };
+
         *tasks_lock = Some(BackgroundTasks {
             cancel,
             sync: sync_handle,
             batch: batch_handle,
+            #[cfg(feature = "payjoin")]
+            payjoin_receive: payjoin_receive_handle,
         });
 
         Ok(())
@@ -445,16 +1156,27 @@ impl MintPayment for CdkBdk {
 
             let sync_aborter = bg.sync.abort_handle();
             let batch_aborter = bg.batch.abort_handle();
+            #[cfg(feature = "payjoin")]
+            let payjoin_receive_aborter =
+                bg.payjoin_receive.as_ref().map(|task| task.abort_handle());
 
             let joined = tokio::time::timeout(self.shutdown_timeout, async move {
                 let _ = bg.sync.await;
                 let _ = bg.batch.await;
+                #[cfg(feature = "payjoin")]
+                if let Some(task) = bg.payjoin_receive {
+                    let _ = task.await;
+                }
             })
             .await;
 
             if joined.is_err() {
                 sync_aborter.abort();
                 batch_aborter.abort();
+                #[cfg(feature = "payjoin")]
+                if let Some(aborter) = payjoin_receive_aborter {
+                    aborter.abort();
+                }
                 tracing::error!(
                     "cdk-bdk background tasks did not exit within {:?}; forced abort",
                     self.shutdown_timeout
@@ -494,6 +1216,44 @@ impl MintPayment for CdkBdk {
             onchain_options.amount.clone().to_u64(),
         )?;
         let amount_sat = onchain_options.amount.clone().to_u64();
+        let requested_payjoin = Self::requested_payjoin(onchain_options.metadata.as_deref());
+        let payjoin_extra = match requested_payjoin {
+            Some(payjoin) if !payjoin.is_supported() && payjoin.is_required() => {
+                return Err(Error::PayjoinUnavailable(format!(
+                    "unsupported Payjoin version {}",
+                    payjoin.version
+                ))
+                .into());
+            }
+            Some(payjoin) if !payjoin.is_supported() => None,
+            Some(payjoin) => {
+                #[cfg(feature = "payjoin")]
+                {
+                    if self.payjoin_config().is_some() {
+                        Some(Self::accepted_payjoin_extra(&payjoin))
+                    } else if payjoin.is_required() {
+                        return Err(Error::PayjoinUnavailable(
+                            "operator did not configure Payjoin directory and OHTTP relay"
+                                .to_string(),
+                        )
+                        .into());
+                    } else {
+                        None
+                    }
+                }
+                #[cfg(not(feature = "payjoin"))]
+                {
+                    if payjoin.is_required() {
+                        return Err(Error::PayjoinUnavailable(
+                            "cdk-bdk was built without the payjoin feature".to_string(),
+                        )
+                        .into());
+                    }
+                    None
+                }
+            }
+            None => None,
+        };
 
         // Estimate fee_reserve for each configured tier so the mint presents
         // only the operator-enabled options. The configured order owns the
@@ -528,7 +1288,7 @@ impl MintPayment for CdkBdk {
             amount: onchain_options.amount,
             fee: Amount::new(cheapest.fee_reserve.into(), CurrencyUnit::Sat),
             state: MeltQuoteState::Unpaid,
-            extra_json: None,
+            extra_json: payjoin_extra,
             estimated_blocks: Some(cheapest.estimated_blocks),
             fee_options: Some(fee_options),
         })
@@ -547,6 +1307,7 @@ impl MintPayment for CdkBdk {
         let address = onchain_options.address;
         let amount = onchain_options.amount;
         let quote_id = onchain_options.quote_id;
+        let requested_payjoin = Self::requested_payjoin(onchain_options.metadata.as_deref());
 
         self.validate_send_amount(&address, amount.clone().to_u64())?;
 
@@ -563,6 +1324,58 @@ impl MintPayment for CdkBdk {
             .tier_for_fee_index(onchain_options.fee_index)
             .map_err(Error::UnknownFeeIndex)?;
         let metadata = PaymentMetadata::from_optional_json(onchain_options.metadata.as_deref());
+        if let Some(payjoin) = requested_payjoin {
+            if !payjoin.is_supported() {
+                if payjoin.is_required() {
+                    return Err(Error::PayjoinUnavailable(format!(
+                        "unsupported Payjoin version {}",
+                        payjoin.version
+                    ))
+                    .into());
+                }
+            } else {
+                #[cfg(feature = "payjoin")]
+                {
+                    if self.payjoin_config().is_some() {
+                        match self
+                            .send_payjoin_payment(
+                                &quote_id,
+                                &address,
+                                amount_sat,
+                                max_fee_sat,
+                                tier,
+                                &payjoin,
+                            )
+                            .await
+                        {
+                            Ok(response) => return Ok(response),
+                            Err(err) if payjoin.is_required() => return Err(err.into()),
+                            Err(err) => {
+                                tracing::warn!(
+                                    quote_id = %quote_id,
+                                    error = %err,
+                                    "Optional Payjoin send failed; falling back to direct onchain send"
+                                );
+                            }
+                        }
+                    } else if payjoin.is_required() {
+                        return Err(Error::PayjoinUnavailable(
+                            "operator did not configure Payjoin directory and OHTTP relay"
+                                .to_string(),
+                        )
+                        .into());
+                    }
+                }
+                #[cfg(not(feature = "payjoin"))]
+                if payjoin.is_required() {
+                    return Err(Error::PayjoinUnavailable(
+                        "cdk-bdk was built without the payjoin feature".to_string(),
+                    )
+                    .into());
+                }
+            }
+        }
+
         let fee_estimate = self
             .estimate_onchain_fee_reserve(&address, amount_sat, tier)
             .await?;
@@ -617,14 +1430,31 @@ impl MintPayment for CdkBdk {
             .wallet
             .reveal_next_address(KeychainKind::External);
         let address_str = address.address.to_string();
+        let payjoin_request = onchain_options.payjoin;
+        let quote_id = onchain_options.quote_id;
 
         wallet_with_db.persist().map_err(|err| {
             tracing::error!("Could not persist to bdk db: {}", err);
 
             Error::BdkPersist
         })?;
+        drop(wallet_with_db);
 
-        let quote_id = onchain_options.quote_id;
+        let extra_json = match payjoin_request {
+            Some(request) if !request.is_supported() && request.required => {
+                return Err(Error::PayjoinUnavailable(format!(
+                    "unsupported Payjoin version {}",
+                    request.version
+                ))
+                .into());
+            }
+            Some(request) if !request.is_supported() => None,
+            Some(request) => {
+                self.create_payjoin_receive_extra(&quote_id, &address.address, 0, request.required)
+                    .await?
+            }
+            None => None,
+        };
 
         self.storage
             .track_receive_address(&address_str, &quote_id.to_string())
@@ -634,7 +1464,7 @@ impl MintPayment for CdkBdk {
             request_lookup_id: PaymentIdentifier::QuoteId(quote_id),
             request: address_str,
             expiry: None,
-            extra_json: None,
+            extra_json,
         })
     }
 
@@ -832,6 +1662,8 @@ mod tests {
             546,
             sync_interval_secs,
             Some(shutdown_timeout_secs),
+            None,
+            #[cfg(feature = "payjoin")]
             None,
         )?;
 
