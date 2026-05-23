@@ -2,39 +2,38 @@
 //!
 //! This file contains tests for NUT-26 onchain payments against a regtest environment.
 
-use std::path::PathBuf;
-use std::process::Command;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
+#[cfg(feature = "payjoin-regtest")]
+use cdk::nuts::nut00::KnownMethod;
+use cdk::nuts::{CurrencyUnit, NotificationPayload, PaymentMethod, Proofs, ProofsMethods};
+#[cfg(feature = "payjoin-regtest")]
 use cdk::nuts::{
-    CurrencyUnit, MintQuoteOnchainRequest, MintQuoteOnchainResponse, NotificationPayload,
-    OnchainPayjoinRequest, PaymentMethod, Proofs, ProofsMethods, SecretKey, PAYJOIN_V2_VERSION,
+    MeltQuoteOnchainRequest, MeltQuoteOnchainResponse, MintQuoteOnchainRequest,
+    MintQuoteOnchainResponse, SecretKey,
 };
 use cdk::wallet::{MeltOutcome, MintConnector, Wallet, WalletSubscription};
+#[cfg(feature = "payjoin-regtest")]
+use cdk_common::payjoin::{format_bip21_amount_from_sats, payjoin_v2_to_bip77_endpoint};
 use cdk_integration_tests::get_mint_url_from_env;
+#[cfg(feature = "payjoin-regtest")]
+use cdk_integration_tests::get_second_mint_url_from_env;
 use cdk_integration_tests::init_regtest::init_bitcoin_client;
 use cdk_sqlite::wallet::memory;
 use futures::StreamExt;
 use tokio::time::timeout;
 
-const PAYJOIN_CLI_BIN_ENV: &str = "CDK_PAYJOIN_CLI_BIN";
-const PAYJOIN_DIRECTORY_ENV: &str = "CDK_MINTD_BDK_PAYJOIN_DIRECTORY_URL";
-const PAYJOIN_RELAY_ENV: &str = "CDK_MINTD_BDK_PAYJOIN_OHTTP_RELAY_URL";
-
-async fn request_required_payjoin_mint_quote(
+#[cfg(feature = "payjoin-regtest")]
+async fn request_payjoin_mint_quote(
     mint_url: &str,
 ) -> anyhow::Result<MintQuoteOnchainResponse<String>> {
     let request = MintQuoteOnchainRequest {
         unit: CurrencyUnit::Sat,
         pubkey: SecretKey::generate().public_key(),
-        payjoin: Some(OnchainPayjoinRequest {
-            version: PAYJOIN_V2_VERSION,
-            required: true,
-        }),
     };
     let url = format!("{}/v1/mint/quote/onchain", mint_url.trim_end_matches('/'));
     let response = reqwest::Client::new()
@@ -46,6 +45,7 @@ async fn request_required_payjoin_mint_quote(
     Ok(response.json().await?)
 }
 
+#[cfg(feature = "payjoin-regtest")]
 async fn fetch_onchain_mint_quote(
     mint_url: &str,
     quote_id: &str,
@@ -60,21 +60,195 @@ async fn fetch_onchain_mint_quote(
     Ok(response.json().await?)
 }
 
-fn payjoin_cli_workdir() -> PathBuf {
-    std::env::var("CDK_PAYJOIN_CLI_WORKDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::env::temp_dir().join(format!("cdk-payjoin-cli-{}", uuid::Uuid::new_v4()))
-        })
+#[cfg(feature = "payjoin-regtest")]
+async fn request_payjoin_melt_quote(
+    mint_url: &str,
+    destination_quote: &MintQuoteOnchainResponse<String>,
+    amount_sat: u64,
+) -> anyhow::Result<MeltQuoteOnchainResponse<String>> {
+    let request = MeltQuoteOnchainRequest {
+        request: destination_quote.request.clone(),
+        unit: CurrencyUnit::Sat,
+        amount: amount_sat.into(),
+        payjoin: destination_quote.payjoin.clone(),
+    };
+    let url = format!("{}/v1/melt/quote/onchain", mint_url.trim_end_matches('/'));
+    let response = reqwest::Client::new()
+        .post(url)
+        .json(&request)
+        .send()
+        .await?;
+    let response = response.error_for_status()?;
+    Ok(response.json().await?)
 }
 
-fn format_bip21_amount(amount_sat: u64) -> String {
-    let btc = amount_sat / 100_000_000;
-    let sats = amount_sat % 100_000_000;
-    if sats == 0 {
-        return btc.to_string();
+#[cfg(feature = "payjoin-regtest")]
+#[derive(Debug)]
+struct NoopSenderPersister;
+
+#[cfg(feature = "payjoin-regtest")]
+impl payjoin::persist::SessionPersister for NoopSenderPersister {
+    type InternalStorageError = std::io::Error;
+    type SessionEvent = payjoin::send::v2::SessionEvent;
+
+    fn save_event(&self, _event: Self::SessionEvent) -> Result<(), Self::InternalStorageError> {
+        Ok(())
     }
-    format!("{btc}.{sats:08}").trim_end_matches('0').to_string()
+
+    fn load(
+        &self,
+    ) -> Result<Box<dyn Iterator<Item = Self::SessionEvent>>, Self::InternalStorageError> {
+        Ok(Box::new(std::iter::empty()))
+    }
+
+    fn close(&self) -> Result<(), Self::InternalStorageError> {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "payjoin-regtest")]
+async fn payjoin_http_request(request: payjoin::Request) -> anyhow::Result<Vec<u8>> {
+    let response = reqwest::Client::new()
+        .post(request.url)
+        .header(reqwest::header::CONTENT_TYPE, request.content_type)
+        .body(request.body)
+        .send()
+        .await?;
+    let response = response.error_for_status()?;
+    Ok(response.bytes().await?.to_vec())
+}
+
+#[cfg(feature = "payjoin-regtest")]
+async fn send_payjoin_with_bitcoin_core(
+    bitcoin_client: &cdk_integration_tests::ln_regtest::bitcoin_client::BitcoinClient,
+    quote: &MintQuoteOnchainResponse<String>,
+    amount_sat: u64,
+) -> anyhow::Result<()> {
+    use payjoin::bitcoin::FeeRate;
+    use payjoin::persist::OptionalTransitionOutcome;
+    use payjoin::UriExt;
+
+    let payjoin = quote
+        .payjoin
+        .as_ref()
+        .expect("Payjoin-enabled mint quote should include Payjoin params");
+    let ohttp_relay_url = std::env::var("CDK_MINTD_BDK_PAYJOIN_OHTTP_RELAY_URL")
+        .or_else(|_| std::env::var("CDK_REGTEST_PAYJOIN_OHTTP_RELAY_URL"))?;
+
+    let bip21 = format!(
+        "bitcoin:{}?amount={}&pj={}",
+        quote.request,
+        format_bip21_amount_from_sats(amount_sat),
+        url::form_urlencoded::byte_serialize(payjoin_v2_to_bip77_endpoint(payjoin)?.as_bytes())
+            .collect::<String>()
+    );
+    let pj_uri = payjoin::Uri::try_from(bip21.as_str())
+        .map_err(|err| anyhow::anyhow!("{err}"))?
+        .assume_checked()
+        .check_pj_supported()
+        .map_err(|_| anyhow::anyhow!("Payjoin URI did not contain supported pj params"))?;
+
+    let original_psbt = bitcoin_client.create_funded_psbt(&quote.request, amount_sat, 1)?;
+    let original_psbt = bitcoin_client.sign_psbt(&original_psbt)?;
+    let original_psbt = payjoin::bitcoin::Psbt::from_str(&original_psbt)?;
+    let fee_rate = FeeRate::from_sat_per_vb_u32(1);
+    let persister = NoopSenderPersister;
+
+    let sender = payjoin::send::v2::SenderBuilder::new(original_psbt, pj_uri)
+        .build_recommended(fee_rate)
+        .map_err(|err| anyhow::anyhow!("{err}"))?
+        .save(&persister)?;
+    let (post_request, post_context) = sender.create_v2_post_request(&ohttp_relay_url)?;
+    let post_response = payjoin_http_request(post_request).await?;
+    let mut sender = sender
+        .process_response(&post_response, post_context)
+        .save(&persister)?;
+
+    let proposal_psbt = timeout(Duration::from_secs(180), async {
+        loop {
+            let (get_request, get_context) = sender.create_poll_request(&ohttp_relay_url)?;
+            let get_response = payjoin_http_request(get_request).await?;
+            match sender
+                .process_response(&get_response, get_context)
+                .save(&persister)?
+            {
+                OptionalTransitionOutcome::Progress(psbt) => return anyhow::Ok(psbt),
+                OptionalTransitionOutcome::Stasis(next_sender) => {
+                    sender = next_sender;
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
+    })
+    .await??;
+
+    let signed_psbt = bitcoin_client.sign_psbt(&proposal_psbt.to_string())?;
+    bitcoin_client.finalize_and_broadcast_psbt(&signed_psbt)?;
+
+    Ok(())
+}
+
+#[cfg(feature = "payjoin-regtest")]
+async fn fund_wallet_with_onchain(
+    wallet: &Wallet,
+    bitcoin_client: &cdk_integration_tests::ln_regtest::bitcoin_client::BitcoinClient,
+    amount_sat: u64,
+) -> anyhow::Result<()> {
+    let mint_quote = wallet
+        .mint_quote(
+            PaymentMethod::from_str("onchain")?,
+            Some(amount_sat.into()),
+            None,
+            None,
+        )
+        .await?;
+
+    bitcoin_client.send_to_address(&mint_quote.request, amount_sat)?;
+    let mine_addr = bitcoin_client.get_new_address()?;
+    bitcoin_client.generate_blocks(&mine_addr, 1)?;
+
+    wallet
+        .wait_and_mint_quote(
+            mint_quote,
+            SplitTarget::default(),
+            None,
+            Duration::from_secs(60),
+        )
+        .await?;
+
+    Ok(())
+}
+
+#[cfg(feature = "payjoin-regtest")]
+fn selected_onchain_melt_quote(
+    wallet: &Wallet,
+    response: &MeltQuoteOnchainResponse<String>,
+) -> anyhow::Result<cdk::wallet::MeltQuote> {
+    let fee_option = response
+        .fee_options
+        .iter()
+        .find(|option| option.fee_index == 1)
+        .or_else(|| response.fee_options.first())
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("Payjoin melt quote did not include fee options"))?;
+
+    Ok(cdk::wallet::MeltQuote {
+        id: response.quote.clone(),
+        mint_url: Some(wallet.mint_url.clone()),
+        unit: response.unit.clone(),
+        amount: response.amount,
+        request: response.request.clone(),
+        fee_reserve: fee_option.fee_reserve,
+        state: response.state,
+        expiry: response.expiry,
+        payment_proof: response.outpoint.clone(),
+        estimated_blocks: Some(fee_option.estimated_blocks),
+        fee_index: Some(fee_option.fee_index),
+        payjoin: response.payjoin.clone(),
+        payment_method: PaymentMethod::Known(KnownMethod::Onchain),
+        used_by_operation: None,
+        version: 0,
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -164,64 +338,36 @@ async fn test_onchain_mint() {
     assert_eq!(wallet.total_balance().await.unwrap(), mint_amount.into());
 }
 
+#[cfg(feature = "payjoin-regtest")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_onchain_payjoin_mint_with_payjoin_cli() {
-    let payjoin_cli_bin =
-        std::env::var(PAYJOIN_CLI_BIN_ENV).unwrap_or_else(|_| "payjoin-cli".to_string());
-    let payjoin_directory = std::env::var(PAYJOIN_DIRECTORY_ENV)
-        .expect("CDK_MINTD_BDK_PAYJOIN_DIRECTORY_URL must be set for Payjoin regtest");
-    let payjoin_relay = std::env::var(PAYJOIN_RELAY_ENV)
-        .expect("CDK_MINTD_BDK_PAYJOIN_OHTTP_RELAY_URL must be set for Payjoin regtest");
-
+async fn test_onchain_payjoin_mint() {
     let bitcoin_client = init_bitcoin_client().expect("Failed to init bitcoin client");
     let mint_url = get_mint_url_from_env();
     let mint_amount = 10_000_u64;
+    let primer_wallet = Wallet::new(
+        &mint_url,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
 
-    let quote = request_required_payjoin_mint_quote(&mint_url)
+    fund_wallet_with_onchain(&primer_wallet, &bitcoin_client, mint_amount)
         .await
-        .expect("mint should create a required Payjoin quote");
-    let payjoin = quote
+        .expect("failed to prime receiver mint with an onchain UTXO");
+
+    let quote = request_payjoin_mint_quote(&mint_url)
+        .await
+        .expect("mint should create a Payjoin-enabled quote");
+    quote
         .payjoin
         .as_ref()
-        .expect("required Payjoin quote should include Payjoin params");
-    assert_eq!(payjoin.version, PAYJOIN_V2_VERSION);
+        .expect("Payjoin-enabled quote should include Payjoin params");
 
-    let bip21 = format!(
-        "bitcoin:{}?amount={}&pj={}",
-        quote.request,
-        format_bip21_amount(mint_amount),
-        url::form_urlencoded::byte_serialize(payjoin.params.endpoint.as_bytes())
-            .collect::<String>()
-    );
-
-    let cli_workdir = payjoin_cli_workdir();
-    std::fs::create_dir_all(&cli_workdir).expect("create payjoin-cli workdir");
-    let output = Command::new(&payjoin_cli_bin)
-        .current_dir(&cli_workdir)
-        .arg("--bip77")
-        .arg("--rpchost")
-        .arg("http://127.0.0.1:18443/wallet/wallet")
-        .arg("--rpcuser")
-        .arg("testuser")
-        .arg("--rpcpassword")
-        .arg("testpass")
-        .arg("--pj-directory")
-        .arg(&payjoin_directory)
-        .arg("--ohttp-relays")
-        .arg(&payjoin_relay)
-        .arg("send")
-        .arg(&bip21)
-        .arg("--fee-rate")
-        .arg("1")
-        .output()
-        .expect("run payjoin-cli send");
-
-    assert!(
-        output.status.success(),
-        "payjoin-cli send failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    send_payjoin_with_bitcoin_core(&bitcoin_client, &quote, mint_amount)
+        .await
+        .expect("Payjoin sender flow should complete");
 
     let mine_addr = bitcoin_client
         .get_new_address()
@@ -246,6 +392,247 @@ async fn test_onchain_payjoin_mint_with_payjoin_cli() {
 
     assert_eq!(paid_quote.quote, quote.quote);
     assert!(paid_quote.amount_paid >= mint_amount.into());
+}
+
+#[cfg(feature = "payjoin-regtest")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_onchain_payjoin_melt_between_mints() {
+    let bitcoin_client = init_bitcoin_client().expect("Failed to init bitcoin client");
+    let payer_mint_url = get_mint_url_from_env();
+    let receiver_mint_url = get_second_mint_url_from_env();
+    let payer_wallet = Wallet::new(
+        &payer_mint_url,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create payer wallet");
+    let receiver_wallet = Wallet::new(
+        &receiver_mint_url,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create receiver wallet");
+
+    fund_wallet_with_onchain(&payer_wallet, &bitcoin_client, 80_000)
+        .await
+        .expect("failed to fund payer wallet");
+    fund_wallet_with_onchain(&receiver_wallet, &bitcoin_client, 10_000)
+        .await
+        .expect("failed to prime receiver mint with a Payjoin contribution UTXO");
+
+    let melt_amount = 20_000_u64;
+    let receiver_quote = request_payjoin_mint_quote(&receiver_mint_url)
+        .await
+        .expect("receiver mint should create a Payjoin-enabled quote");
+    assert!(
+        receiver_quote.payjoin.is_some(),
+        "receiver quote should include Payjoin parameters"
+    );
+
+    let melt_quote_response =
+        request_payjoin_melt_quote(&payer_mint_url, &receiver_quote, melt_amount)
+            .await
+            .expect("payer mint should accept Payjoin melt quote");
+    assert!(
+        melt_quote_response.payjoin.is_some(),
+        "melt quote should confirm Payjoin acceptance"
+    );
+
+    let melt_quote = selected_onchain_melt_quote(&payer_wallet, &melt_quote_response)
+        .expect("failed to select onchain melt quote");
+    let melt_quote = payer_wallet
+        .select_onchain_melt_quote(melt_quote)
+        .await
+        .expect("failed to persist selected melt quote");
+    let prepared = payer_wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .expect("failed to prepare Payjoin melt");
+    let mine_addr = bitcoin_client
+        .get_new_address()
+        .expect("Failed to get address");
+
+    let melt_result = timeout(Duration::from_secs(180), async {
+        let confirm_future = prepared.confirm();
+        tokio::pin!(confirm_future);
+        loop {
+            tokio::select! {
+                res = &mut confirm_future => {
+                    return res.expect("failed to confirm Payjoin melt");
+                }
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                    bitcoin_client.generate_blocks(&mine_addr, 1).unwrap();
+                }
+            }
+        }
+    })
+    .await
+    .expect("timeout waiting for Payjoin melt confirmation");
+
+    assert_eq!(melt_result.state(), cdk::nuts::MeltQuoteState::Paid);
+
+    let paid_receiver_quote = timeout(Duration::from_secs(60), async {
+        loop {
+            let quote = fetch_onchain_mint_quote(&receiver_mint_url, &receiver_quote.quote)
+                .await
+                .expect("fetch receiver onchain mint quote");
+            if quote.amount_paid >= melt_amount.into() {
+                return quote;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .expect("timeout waiting for receiver Payjoin mint quote to be paid");
+
+    assert_eq!(paid_receiver_quote.quote, receiver_quote.quote);
+    assert!(paid_receiver_quote.amount_paid >= melt_amount.into());
+}
+
+/// Drives a Payjoin melt through the async (poller-driven) send path and proves
+/// the broadcast transaction actually batches a receiver-contributed input.
+///
+/// With the asynchronous send design, `make_payment` returns `Pending`
+/// immediately and the mint's background poller posts the original PSBT,
+/// receives the receiver mint's Payjoin proposal, and broadcasts the combined
+/// transaction. We capture that transaction from the mempool *before* mining it
+/// and assert it has at least two inputs: the payer mint's input plus at least
+/// one input contributed by the receiver mint (the defining property of
+/// Payjoin). A non-Payjoin fallback send from the payer mint would spend only
+/// its own input(s).
+#[cfg(feature = "payjoin-regtest")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_onchain_payjoin_melt_batches_sender_and_receiver_inputs() {
+    let bitcoin_client = init_bitcoin_client().expect("Failed to init bitcoin client");
+    let payer_mint_url = get_mint_url_from_env();
+    let receiver_mint_url = get_second_mint_url_from_env();
+    let payer_wallet = Wallet::new(
+        &payer_mint_url,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create payer wallet");
+    let receiver_wallet = Wallet::new(
+        &receiver_mint_url,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create receiver wallet");
+
+    fund_wallet_with_onchain(&payer_wallet, &bitcoin_client, 80_000)
+        .await
+        .expect("failed to fund payer wallet");
+    fund_wallet_with_onchain(&receiver_wallet, &bitcoin_client, 10_000)
+        .await
+        .expect("failed to prime receiver mint with a Payjoin contribution UTXO");
+
+    let melt_amount = 20_000_u64;
+    let receiver_quote = request_payjoin_mint_quote(&receiver_mint_url)
+        .await
+        .expect("receiver mint should create a Payjoin-enabled quote");
+    assert!(
+        receiver_quote.payjoin.is_some(),
+        "receiver quote should include Payjoin parameters"
+    );
+
+    let melt_quote_response =
+        request_payjoin_melt_quote(&payer_mint_url, &receiver_quote, melt_amount)
+            .await
+            .expect("payer mint should accept Payjoin melt quote");
+    assert!(
+        melt_quote_response.payjoin.is_some(),
+        "melt quote should confirm Payjoin acceptance"
+    );
+
+    let melt_quote = selected_onchain_melt_quote(&payer_wallet, &melt_quote_response)
+        .expect("failed to select onchain melt quote");
+    let melt_quote = payer_wallet
+        .select_onchain_melt_quote(melt_quote)
+        .await
+        .expect("failed to persist selected melt quote");
+    let prepared = payer_wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .expect("failed to prepare Payjoin melt");
+
+    // The onchain melt is asynchronous: `make_payment` returns immediately and
+    // the background poller drives the Payjoin negotiation + broadcast.
+    let outcome = prepared
+        .confirm_prefer_async()
+        .await
+        .expect("failed to confirm Payjoin melt");
+    let pending = match outcome {
+        MeltOutcome::Pending(pending) => pending,
+        MeltOutcome::Paid(_) => {
+            panic!("onchain Payjoin melt must be pending, not immediately paid")
+        }
+    };
+
+    // Capture the combined transaction from the mempool before mining it, and
+    // assert it batches a receiver-contributed input.
+    let input_count = timeout(Duration::from_secs(180), async {
+        loop {
+            if let Some(count) = bitcoin_client
+                .mempool_tx_input_count_to_address(&receiver_quote.request)
+                .expect("inspect mempool")
+            {
+                return count;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .expect("timeout waiting for the Payjoin transaction to reach the mempool");
+
+    assert!(
+        input_count >= 2,
+        "Payjoin transaction must batch sender and receiver inputs, got {input_count} input(s)"
+    );
+
+    // Mine until the melt finalizes.
+    let mine_addr = bitcoin_client
+        .get_new_address()
+        .expect("Failed to get address");
+    let finalized = timeout(Duration::from_secs(120), async {
+        let mut finalized_future = Box::pin(std::future::IntoFuture::into_future(pending));
+        loop {
+            tokio::select! {
+                res = &mut finalized_future => break res.expect("failed to finalize Payjoin melt"),
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                    bitcoin_client.generate_blocks(&mine_addr, 1).unwrap();
+                }
+            }
+        }
+    })
+    .await
+    .expect("timeout waiting for Payjoin melt to finalize");
+    assert_eq!(finalized.state(), cdk::nuts::MeltQuoteState::Paid);
+
+    // The receiver mint must be credited the melt amount.
+    let paid_receiver_quote = timeout(Duration::from_secs(60), async {
+        loop {
+            let quote = fetch_onchain_mint_quote(&receiver_mint_url, &receiver_quote.quote)
+                .await
+                .expect("fetch receiver onchain mint quote");
+            if quote.amount_paid >= melt_amount.into() {
+                return quote;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .expect("timeout waiting for receiver Payjoin mint quote to be paid");
+
+    assert_eq!(paid_receiver_quote.quote, receiver_quote.quote);
+    assert!(paid_receiver_quote.amount_paid >= melt_amount.into());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

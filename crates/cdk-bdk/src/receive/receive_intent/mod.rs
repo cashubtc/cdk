@@ -52,6 +52,19 @@ impl ReceiveIntent<Detected> {
             })?;
 
         let quote_id = request;
+        let amount_sat = match storage.get_payjoin_receive_session(&quote_id).await? {
+            Some(record) if record.amount_sat > 0 && amount_sat > record.amount_sat => {
+                tracing::warn!(
+                    quote_id,
+                    outpoint,
+                    detected_amount_sat = amount_sat,
+                    credited_amount_sat = record.amount_sat,
+                    "Capping Payjoin receive credit to the original receiver output amount"
+                );
+                record.amount_sat
+            }
+            _ => amount_sat,
+        };
 
         let record = ReceiveIntentRecord {
             intent_id,
@@ -179,6 +192,81 @@ mod tests {
 
         assert_eq!(intent.state.address, "bcrt1qaddr");
         assert_eq!(intent.state.quote_id, quote_id);
+        assert_eq!(intent.state.amount_sat, 50_000);
+    }
+
+    #[tokio::test]
+    async fn test_detected_creation_caps_payjoin_credit_to_original_receiver_output_amount() {
+        let storage = test_storage().await;
+
+        let address = "bcrt1qaddr".to_string();
+        let quote_id = Uuid::new_v4().to_string();
+        storage
+            .track_receive_address(&address, &quote_id)
+            .await
+            .expect("track address");
+        storage
+            .put_payjoin_receive_session(&crate::storage::PayjoinReceiveSessionRecord {
+                quote_id: quote_id.clone(),
+                fallback_address: address.clone(),
+                amount_sat: 3_000,
+                expires_at: crate::util::unix_now() + 60,
+                events: Vec::new(),
+                closed: false,
+            })
+            .await
+            .expect("store payjoin session");
+
+        let intent = ReceiveIntent::new(
+            &storage,
+            address,
+            "txid_abc".to_string(),
+            "txid_abc:0".to_string(),
+            8_000,
+            100,
+        )
+        .await
+        .expect("create detected intent")
+        .expect("should not be duplicate");
+
+        assert_eq!(intent.state.amount_sat, 3_000);
+    }
+
+    #[tokio::test]
+    async fn test_detected_creation_does_not_cap_when_payjoin_session_has_no_amount() {
+        let storage = test_storage().await;
+
+        let address = "bcrt1qaddr".to_string();
+        let quote_id = Uuid::new_v4().to_string();
+        storage
+            .track_receive_address(&address, &quote_id)
+            .await
+            .expect("track address");
+        storage
+            .put_payjoin_receive_session(&crate::storage::PayjoinReceiveSessionRecord {
+                quote_id: quote_id.clone(),
+                fallback_address: address.clone(),
+                amount_sat: 0,
+                expires_at: crate::util::unix_now() + 60,
+                events: Vec::new(),
+                closed: false,
+            })
+            .await
+            .expect("store payjoin session");
+
+        let intent = ReceiveIntent::new(
+            &storage,
+            address,
+            "txid_abc".to_string(),
+            "txid_abc:0".to_string(),
+            8_000,
+            100,
+        )
+        .await
+        .expect("create detected intent")
+        .expect("should not be duplicate");
+
+        assert_eq!(intent.state.amount_sat, 8_000);
     }
 
     #[tokio::test]

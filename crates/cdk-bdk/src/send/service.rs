@@ -15,6 +15,7 @@ use crate::send::batch_transaction::record::{
 use crate::send::batch_transaction::{allocate_batch_fee, state as batch_state, SendBatch};
 use crate::send::payment_intent::{self, state as intent_state, SendIntent, SendIntentAny};
 use crate::types::PaymentTier;
+use crate::util::parse_checked_address;
 use crate::CdkBdk;
 
 impl CdkBdk {
@@ -373,13 +374,8 @@ impl CdkBdk {
                 highest_tier = PaymentTier::Standard;
             }
 
-            let address = match Address::from_str(&intent.address)
-                .map_err(|e| Error::Wallet(e.to_string()))
-                .and_then(|address| {
-                    address
-                        .require_network(self.network)
-                        .map_err(|e| Error::Wallet(e.to_string()))
-                }) {
+            let address = match parse_checked_address(&intent.address, self.network, Error::Wallet)
+            {
                 Ok(address) => address,
                 Err(e) => {
                     let reason = e.to_string();
@@ -869,10 +865,7 @@ fn derive_vout_assignments_inner(
     let mut assignments = Vec::with_capacity(intents.len());
 
     for (idx, intent) in intents.iter().enumerate() {
-        let address = Address::from_str(intent.address)
-            .map_err(|e| Error::Wallet(e.to_string()))?
-            .require_network(network)
-            .map_err(|e| Error::Wallet(e.to_string()))?;
+        let address = parse_checked_address(intent.address, network, Error::Wallet)?;
         let vout = tx
             .output
             .iter()
@@ -1222,7 +1215,6 @@ mod tests {
                 60,
                 Some(5),
                 None,
-                #[cfg(feature = "payjoin")]
                 None,
             )
             .expect("build CdkBdk test instance")

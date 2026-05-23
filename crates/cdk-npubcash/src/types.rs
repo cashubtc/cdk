@@ -169,6 +169,7 @@ impl From<Quote> for MintQuote {
                 Amount::ZERO
             },
             estimated_blocks: None,
+            payjoin: None,
             used_by_operation: None,
             version: 0,
         }

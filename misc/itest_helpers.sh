@@ -14,7 +14,11 @@ run_bin() {
         "$bin_name" "$@"
     else
         echo "Pre-built binary not found, falling back to: cargo run --bin $bin_name"
-        cargo run --bin "$bin_name" -- "$@"
+        if [ -n "${CDK_BIN_FEATURES:-}" ]; then
+            cargo run --features "$CDK_BIN_FEATURES" --bin "$bin_name" -- "$@"
+        else
+            cargo run --bin "$bin_name" -- "$@"
+        fi
     fi
 }
 
@@ -26,7 +30,11 @@ run_bin_bg() {
         "$bin_name" "$@" &
     else
         echo "Pre-built binary not found, falling back to: cargo run --bin $bin_name"
-        cargo run --bin "$bin_name" -- "$@" &
+        if [ -n "${CDK_BIN_FEATURES:-}" ]; then
+            cargo run --features "$CDK_BIN_FEATURES" --bin "$bin_name" -- "$@" &
+        else
+            cargo run --bin "$bin_name" -- "$@" &
+        fi
     fi
 }
 
@@ -78,6 +86,10 @@ run_test() {
         cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(/^${test_name}$/)" "${nextest_args[@]}"
     else
         echo "Running test '$test_name' via cargo test"
-        cargo test -p cdk-integration-tests --test "$test_name" "$@"
+        if [ -n "${CDK_ITEST_FEATURES:-}" ]; then
+            cargo test -p cdk-integration-tests --features "$CDK_ITEST_FEATURES" --test "$test_name" "$@"
+        else
+            cargo test -p cdk-integration-tests --test "$test_name" "$@"
+        fi
     fi
 }

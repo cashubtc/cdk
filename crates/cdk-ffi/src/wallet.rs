@@ -477,6 +477,27 @@ impl Wallet {
         Ok(quotes.into_iter().map(Into::into).collect())
     }
 
+    /// Fetch available onchain melt quote options with Payjoin instructions.
+    pub async fn quote_onchain_melt_options_with_payjoin(
+        &self,
+        address: String,
+        amount: Amount,
+        max_fee_amount: Option<Amount>,
+        payjoin: PayjoinV2,
+    ) -> Result<Vec<MeltQuote>, FfiError> {
+        let quotes = self
+            .inner
+            .quote_onchain_melt_options_with_payjoin(
+                &address,
+                amount.into(),
+                max_fee_amount.map(Into::into),
+                Some(payjoin.into()),
+            )
+            .await?;
+
+        Ok(quotes.into_iter().map(Into::into).collect())
+    }
+
     /// Persist the selected onchain melt quote before preparing it.
     pub async fn select_onchain_melt_quote(&self, quote: MeltQuote) -> Result<MeltQuote, FfiError> {
         let quote = self

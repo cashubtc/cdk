@@ -41,6 +41,7 @@ fn apply_mint_quote_response(quote: &mut MintQuote, response: &MintQuoteResponse
         MintQuoteResponse::Onchain(response) => {
             quote.amount_paid = response.amount_paid;
             quote.amount_issued = response.amount_issued;
+            quote.payjoin = response.payjoin.clone();
             quote.update_state_from_amounts();
         }
         MintQuoteResponse::Custom { response, .. } => {
@@ -167,7 +168,6 @@ impl Wallet {
                 MintQuoteRequest::Onchain(cdk_common::nuts::nut30::MintQuoteOnchainRequest {
                     unit: unit.clone(),
                     pubkey: secret_key.public_key(),
-                    payjoin: None,
                 })
             }
         };

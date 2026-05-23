@@ -17,6 +17,9 @@ pub struct PayjoinConfig {
     pub ohttp_relay_url: String,
     /// Receiver session expiry in seconds.
     pub expiry_secs: u64,
+    /// DER-encoded localhost TLS certificate for regtest-only Payjoin services.
+    #[cfg(feature = "payjoin-local-https")]
+    pub local_tls_cert_der: Option<Vec<u8>>,
 }
 
 impl PayjoinConfig {
@@ -38,7 +41,16 @@ impl PayjoinConfig {
             directory_url,
             ohttp_relay_url,
             expiry_secs,
+            #[cfg(feature = "payjoin-local-https")]
+            local_tls_cert_der: None,
         })
+    }
+
+    /// Configure a DER-encoded localhost TLS certificate for regtest-only Payjoin services.
+    #[cfg(feature = "payjoin-local-https")]
+    pub fn with_local_tls_cert_der(mut self, cert_der: Vec<u8>) -> Self {
+        self.local_tls_cert_der = Some(cert_der);
+        self
     }
 }
 
@@ -309,7 +321,7 @@ impl PaymentMetadata {
     }
 }
 
-#[cfg(all(test, feature = "payjoin"))]
+#[cfg(test)]
 mod payjoin_tests {
     use super::*;
 

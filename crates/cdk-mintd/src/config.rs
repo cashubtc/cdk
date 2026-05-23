@@ -374,6 +374,9 @@ pub struct Bdk {
     /// Payjoin v2 session expiry in seconds.
     #[serde(default = "default_bdk_payjoin_expiry_secs")]
     pub payjoin_expiry_secs: u64,
+    /// DER-encoded localhost TLS certificate path for regtest-only Payjoin services.
+    #[serde(default)]
+    pub payjoin_local_tls_cert_path: Option<String>,
 }
 
 #[cfg(feature = "bdk")]
@@ -399,6 +402,7 @@ impl Default for Bdk {
             payjoin_directory_url: None,
             payjoin_ohttp_relay_url: None,
             payjoin_expiry_secs: default_bdk_payjoin_expiry_secs(),
+            payjoin_local_tls_cert_path: None,
         }
     }
 }
@@ -431,15 +435,6 @@ impl Bdk {
             self.payjoin_ohttp_relay_url.as_ref(),
         ) {
             (Some(directory), Some(relay)) => {
-                #[cfg(not(feature = "payjoin"))]
-                {
-                    let _ = (directory, relay);
-                    return Err(
-                        "BDK Payjoin config was provided but cdk-mintd was not built with the payjoin feature"
-                            .to_string(),
-                    );
-                }
-                #[cfg(feature = "payjoin")]
                 cdk_bdk::PayjoinConfig::new(
                     directory.clone(),
                     relay.clone(),
@@ -450,6 +445,23 @@ impl Bdk {
             _ => {
                 return Err(
                     "BDK Payjoin requires both payjoin_directory_url and payjoin_ohttp_relay_url"
+                        .to_string(),
+                );
+            }
+        }
+
+        if self.payjoin_local_tls_cert_path.is_some() {
+            #[cfg(not(feature = "payjoin-local-https"))]
+            {
+                return Err(
+                    "BDK Payjoin local TLS cert path requires the payjoin-local-https feature"
+                        .to_string(),
+                );
+            }
+            #[cfg(feature = "payjoin-local-https")]
+            if self.payjoin_directory_url.is_none() || self.payjoin_ohttp_relay_url.is_none() {
+                return Err(
+                    "BDK Payjoin local TLS cert path requires Payjoin directory and OHTTP relay URLs"
                         .to_string(),
                 );
             }
@@ -1333,6 +1345,37 @@ mod tests {
     #[test]
     fn test_bdk_default_min_send_amount_sat() {
         assert_eq!(Bdk::default().min_send_amount_sat, 546);
+    }
+
+    #[cfg(all(feature = "bdk", not(feature = "payjoin-local-https")))]
+    #[test]
+    fn test_bdk_rejects_local_payjoin_tls_cert_without_feature() {
+        let config = Bdk {
+            payjoin_directory_url: Some("https://localhost:1234".to_string()),
+            payjoin_ohttp_relay_url: Some("http://127.0.0.1:5678".to_string()),
+            payjoin_local_tls_cert_path: Some("/tmp/payjoin-local.der".to_string()),
+            ..Default::default()
+        };
+
+        let err = config
+            .validate()
+            .expect_err("local TLS cert path should require payjoin-local-https");
+        assert!(err.contains("payjoin-local-https"));
+    }
+
+    #[cfg(feature = "payjoin-local-https")]
+    #[test]
+    fn test_bdk_accepts_local_payjoin_tls_cert_with_feature() {
+        let config = Bdk {
+            payjoin_directory_url: Some("https://localhost:1234".to_string()),
+            payjoin_ohttp_relay_url: Some("http://127.0.0.1:5678".to_string()),
+            payjoin_local_tls_cert_path: Some("/tmp/payjoin-local.der".to_string()),
+            ..Default::default()
+        };
+
+        config
+            .validate()
+            .expect("local TLS cert path should be accepted with payjoin-local-https");
     }
 
     #[cfg(feature = "bdk")]

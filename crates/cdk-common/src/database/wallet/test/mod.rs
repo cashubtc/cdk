@@ -17,7 +17,7 @@ use web_time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
 use crate::mint_url::MintUrl;
-use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proof, State};
+use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, PayjoinV2, Proof, State};
 use crate::wallet::{
     MeltQuote, MintQuote, OperationData, ProofInfo, SwapOperationData, SwapSagaState, Transaction,
     TransactionDirection, WalletSaga, WalletSagaState,
@@ -134,6 +134,7 @@ fn test_melt_quote() -> MeltQuote {
         payment_proof: None,
         estimated_blocks: None,
         fee_index: None,
+        payjoin: None,
         payment_method: cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         used_by_operation: None,
         version: 0,
@@ -410,6 +411,44 @@ where
     assert!(!quotes.is_empty());
 }
 
+/// Test adding and retrieving mint quotes with Payjoin metadata
+pub async fn add_and_get_mint_quote_payjoin<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let payjoin = PayjoinV2 {
+        endpoint: "https://payjoin.example.com".to_string(),
+        ohttp_keys: "abc123".to_string(),
+        receiver_key: "def456".to_string(),
+        expires_at: 4_102_444_800,
+    };
+    let mut quote = test_mint_quote(mint_url);
+    quote.payment_method = cashu::PaymentMethod::Known(KnownMethod::Onchain);
+    quote.request = "bc1qexamplepayjoinrequest".to_string();
+    quote.estimated_blocks = Some(3);
+    quote.payjoin = Some(payjoin.clone());
+
+    db.add_mint_quote(quote.clone()).await.unwrap();
+
+    let retrieved = db.get_mint_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.payjoin, Some(payjoin.clone()));
+
+    let quotes = db.get_mint_quotes().await.unwrap();
+    let listed = quotes
+        .iter()
+        .find(|listed_quote| listed_quote.id == quote.id)
+        .unwrap();
+    assert_eq!(listed.payjoin, Some(payjoin.clone()));
+
+    let unissued_quotes = db.get_unissued_mint_quotes().await.unwrap();
+    let unissued = unissued_quotes
+        .iter()
+        .find(|listed_quote| listed_quote.id == quote.id)
+        .unwrap();
+    assert_eq!(unissued.payjoin, Some(payjoin));
+}
+
 /// Test getting mint quote in transaction
 pub async fn get_mint_quote_in_transaction<DB>(db: DB)
 where
@@ -466,6 +505,34 @@ where
     // Get all quotes
     let quotes = db.get_melt_quotes().await.unwrap();
     assert!(!quotes.is_empty());
+}
+
+/// Test adding and retrieving melt quotes with Payjoin metadata
+pub async fn add_and_get_melt_quote_payjoin<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let payjoin = PayjoinV2 {
+        endpoint: "https://payjoin.example.com".to_string(),
+        ohttp_keys: "abc123".to_string(),
+        receiver_key: "def456".to_string(),
+        expires_at: 4_102_444_800,
+    };
+    let mut quote = test_melt_quote();
+    quote.payment_method = cashu::PaymentMethod::Known(KnownMethod::Onchain);
+    quote.payjoin = Some(payjoin.clone());
+
+    db.add_melt_quote(quote.clone()).await.unwrap();
+
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.payjoin, Some(payjoin.clone()));
+
+    let quotes = db.get_melt_quotes().await.unwrap();
+    let listed = quotes
+        .iter()
+        .find(|listed_quote| listed_quote.id == quote.id)
+        .unwrap();
+    assert_eq!(listed.payjoin, Some(payjoin));
 }
 
 /// Test getting melt quote in transaction
@@ -1551,9 +1618,11 @@ macro_rules! wallet_db_test {
             get_keys_in_transaction,
             remove_keys,
             add_and_get_mint_quote,
+            add_and_get_mint_quote_payjoin,
             get_mint_quote_in_transaction,
             remove_mint_quote,
             add_and_get_melt_quote,
+            add_and_get_melt_quote_payjoin,
             get_melt_quote_in_transaction,
             remove_melt_quote,
             add_mint_quote_optimistic_locking,

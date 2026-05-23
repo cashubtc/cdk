@@ -3,7 +3,7 @@ use cdk_common::wallet::MeltQuote;
 use cdk_common::{MeltQuoteCreateResponse, MeltQuoteRequest, PaymentMethod};
 use tracing::instrument;
 
-use crate::nuts::MeltQuoteOnchainRequest;
+use crate::nuts::{MeltQuoteOnchainRequest, PayjoinV2};
 use crate::{Amount, Error, Wallet};
 
 fn wallet_melt_quote_from_onchain_response(
@@ -27,6 +27,7 @@ fn wallet_melt_quote_from_onchain_response(
         payment_method: PaymentMethod::Known(KnownMethod::Onchain),
         used_by_operation: None,
         version: 0,
+        payjoin: response.payjoin.clone(),
     }
 }
 
@@ -39,11 +40,25 @@ impl Wallet {
         amount: Amount,
         max_fee_amount: Option<Amount>,
     ) -> Result<Vec<MeltQuote>, Error> {
+        self.quote_onchain_melt_options_with_payjoin(address, amount, max_fee_amount, None)
+            .await
+    }
+
+    /// Fetch available onchain melt quote options, optionally forwarding
+    /// destination Payjoin instructions from an onchain mint quote.
+    #[instrument(skip(self, max_fee_amount, payjoin))]
+    pub async fn quote_onchain_melt_options_with_payjoin(
+        &self,
+        address: &str,
+        amount: Amount,
+        max_fee_amount: Option<Amount>,
+        payjoin: Option<PayjoinV2>,
+    ) -> Result<Vec<MeltQuote>, Error> {
         let quote_request = MeltQuoteOnchainRequest {
             request: address.to_string(),
             unit: self.unit.clone(),
             amount,
-            payjoin: None,
+            payjoin,
         };
 
         let quote_res = self

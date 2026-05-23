@@ -35,6 +35,8 @@ pub const BDK_QUOTE_SAFETY_MULTIPLIER_ENV_VAR: &str = "CDK_MINTD_BDK_QUOTE_SAFET
 pub const BDK_PAYJOIN_DIRECTORY_URL_ENV_VAR: &str = "CDK_MINTD_BDK_PAYJOIN_DIRECTORY_URL";
 pub const BDK_PAYJOIN_OHTTP_RELAY_URL_ENV_VAR: &str = "CDK_MINTD_BDK_PAYJOIN_OHTTP_RELAY_URL";
 pub const BDK_PAYJOIN_EXPIRY_SECS_ENV_VAR: &str = "CDK_MINTD_BDK_PAYJOIN_EXPIRY_SECS";
+pub const BDK_PAYJOIN_LOCAL_TLS_CERT_PATH_ENV_VAR: &str =
+    "CDK_MINTD_BDK_PAYJOIN_LOCAL_TLS_CERT_PATH";
 
 impl Bdk {
     pub fn from_env(mut self) -> Self {
@@ -200,6 +202,10 @@ impl Bdk {
                     );
                 }
             }
+        }
+
+        if let Ok(cert_path) = env::var(BDK_PAYJOIN_LOCAL_TLS_CERT_PATH_ENV_VAR) {
+            self.payjoin_local_tls_cert_path = Some(cert_path);
         }
 
         self

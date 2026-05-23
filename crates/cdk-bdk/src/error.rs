@@ -30,13 +30,20 @@ pub enum Error {
     #[error("Unsupported payment type for onchain backend")]
     UnsupportedOnchain,
 
-    /// Payjoin is required by the wallet but unavailable in this backend.
-    #[error("Payjoin is required but unavailable: {0}")]
-    PayjoinUnavailable(String),
-
     /// Payjoin protocol or IO error.
     #[error("Payjoin error: {0}")]
     Payjoin(String),
+
+    /// Payjoin send failed before the signed original PSBT was shared with
+    /// the receiver.
+    ///
+    /// This is the only Payjoin send failure where the caller may safely fall
+    /// back to a direct onchain send: no signed transaction has been exposed,
+    /// so building a fresh transaction cannot double-spend or double-pay. Any
+    /// other Payjoin send error means the original PSBT is already in the
+    /// receiver's hands and must not be followed by a second transaction.
+    #[error("Payjoin send not started: {0}")]
+    PayjoinSendNotStarted(Box<Error>),
 
     /// Wallet selected a `fee_index` outside the configured BDK fee options.
     #[error("unknown fee_index {0}; expected one of the configured BDK fee options")]

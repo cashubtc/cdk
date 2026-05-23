@@ -7,8 +7,9 @@ use async_trait::async_trait;
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
-use cdk_common::nuts::nut31::{OnchainPayjoin, PayjoinV2};
+use cdk_common::nuts::nut31::PayjoinV2;
 use cdk_common::nuts::{CurrencyUnit, MeltQuoteState};
+use cdk_common::payjoin::{ONCHAIN_PAYJOIN_DESTINATION_EXTRA_KEY, ONCHAIN_PAYJOIN_EXTRA_KEY};
 use cdk_common::payment::{
     self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
     MintPayment, OnchainSettings, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse,
@@ -60,6 +61,7 @@ struct OnchainQuoteMock {
     confirmations: u32,
     echo: EchoBehavior,
     fee_options: FeeOptionsBehavior,
+    accept_payjoin: bool,
 }
 
 impl OnchainQuoteMock {
@@ -72,7 +74,13 @@ impl OnchainQuoteMock {
             confirmations: 1,
             echo,
             fee_options,
+            accept_payjoin: false,
         }
+    }
+
+    fn with_payjoin_acceptance(mut self) -> Self {
+        self.accept_payjoin = true;
+        self
     }
 }
 
@@ -125,12 +133,23 @@ impl MintPayment for OnchainQuoteMock {
             FeeOptionsBehavior::Explicit(options) => (None, Some(options.clone())),
         };
 
+        let extra_json = if self.accept_payjoin {
+            onchain_options
+                .metadata
+                .as_ref()
+                .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
+                .and_then(|value| value.get(ONCHAIN_PAYJOIN_EXTRA_KEY).cloned())
+                .map(|payjoin| serde_json::json!({ ONCHAIN_PAYJOIN_EXTRA_KEY: payjoin }))
+        } else {
+            None
+        };
+
         Ok(PaymentQuoteResponse {
             request_lookup_id,
             amount: self.amount.clone(),
             fee: self.fee.clone(),
             state: MeltQuoteState::Unpaid,
-            extra_json: None,
+            extra_json,
             estimated_blocks,
             fee_options,
         })
@@ -187,9 +206,12 @@ async fn create_onchain_test_mint_with_fee_options(
     echo: EchoBehavior,
     fee_options: FeeOptionsBehavior,
 ) -> Result<Mint, Error> {
-    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
-        Arc::new(OnchainQuoteMock::with_fee_options(echo, fee_options));
+    create_onchain_test_mint_with_backend(OnchainQuoteMock::with_fee_options(echo, fee_options))
+        .await
+}
 
+async fn create_onchain_test_mint_with_backend(backend: OnchainQuoteMock) -> Result<Mint, Error> {
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> = Arc::new(backend);
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
     let mut mint_builder = MintBuilder::new(db.clone());
 
@@ -225,22 +247,54 @@ fn onchain_melt_request() -> MeltQuoteRequest {
     })
 }
 
-fn required_payjoin_melt_request() -> MeltQuoteRequest {
+fn optional_payjoin_melt_request() -> (MeltQuoteRequest, PayjoinV2) {
+    let payjoin = PayjoinV2 {
+        endpoint: "https://payjoin.example/pj".to_string(),
+        ohttp_keys: "12".to_string(),
+        receiver_key: "12".to_string(),
+        expires_at: 4_000_000_000,
+    };
+
+    (
+        MeltQuoteRequest::Onchain(MeltQuoteOnchainRequest {
+            request: "bcrt1qexampleaddr0000000000000000000000000000".to_string(),
+            unit: CurrencyUnit::Sat,
+            amount: Amount::from(1_000),
+            payjoin: Some(payjoin.clone()),
+        }),
+        payjoin,
+    )
+}
+
+fn invalid_payjoin_melt_request() -> MeltQuoteRequest {
+    let payjoin = PayjoinV2 {
+        endpoint: "not a url".to_string(),
+        ohttp_keys: "12".to_string(),
+        receiver_key: "12".to_string(),
+        expires_at: 4_000_000_000,
+    };
+
     MeltQuoteRequest::Onchain(MeltQuoteOnchainRequest {
         request: "bcrt1qexampleaddr0000000000000000000000000000".to_string(),
         unit: CurrencyUnit::Sat,
         amount: Amount::from(1_000),
-        payjoin: Some(OnchainPayjoin {
-            version: cdk_common::PAYJOIN_V2_VERSION,
-            params: PayjoinV2 {
-                endpoint: "https://payjoin.example/pj".to_string(),
-                ohttp_relay: "https://relay.example".to_string(),
-                ohttp_keys: "encoded-ohttp-keys".to_string(),
-                receiver_key: "encoded-receiver-key".to_string(),
-                expires_at: None,
-                required: true,
-            },
-        }),
+        payjoin: Some(payjoin),
+    })
+}
+
+fn expired_payjoin_melt_request() -> MeltQuoteRequest {
+    let payjoin = PayjoinV2 {
+        endpoint: "https://payjoin.example/pj".to_string(),
+        ohttp_keys: "12".to_string(),
+        receiver_key: "12".to_string(),
+        expires_at: 1,
+    };
+
+    MeltQuoteRequest::Onchain(MeltQuoteOnchainRequest {
+        request: "bcrt1qexampleaddr0000000000000000000000000000".to_string(),
+        unit: CurrencyUnit::Sat,
+        amount: Amount::from(1_000),
+        payjoin: Some(payjoin),
     })
 }
 
@@ -281,15 +335,113 @@ async fn onchain_quote_uses_mint_generated_id_when_backend_echoes() {
 }
 
 #[tokio::test]
-async fn required_payjoin_melt_quote_is_rejected() {
-    let mint = create_onchain_test_mint(EchoBehavior::Echo).await.unwrap();
+async fn accepted_payjoin_melt_quote_persists_destination_for_saga_recovery() {
+    let backend = OnchainQuoteMock::with_fee_options(
+        EchoBehavior::Echo,
+        FeeOptionsBehavior::Explicit(vec![MeltQuoteOnchainFeeOption {
+            fee_index: 0,
+            fee_reserve: Amount::from(10),
+            estimated_blocks: 6,
+        }]),
+    )
+    .with_payjoin_acceptance();
+    let mint = create_onchain_test_mint_with_backend(backend)
+        .await
+        .unwrap();
+    let (request, payjoin) = optional_payjoin_melt_request();
+
+    let response = mint.get_melt_quote(request).await.unwrap();
+    let options = match response {
+        cdk_common::MeltQuoteCreateResponse::Onchain(o) => o,
+        other => panic!("expected onchain quote response, got {other:?}"),
+    };
+
+    assert_eq!(
+        options.payjoin,
+        Some(payjoin.clone()),
+        "public response should expose the accepted Payjoin v2 parameters"
+    );
+
+    let stored = mint
+        .localstore()
+        .get_melt_quote(&options.quote)
+        .await
+        .unwrap()
+        .expect("quote must be persisted");
+    let extra_json = stored.extra_json.expect("Payjoin extra JSON must persist");
+
+    assert_eq!(
+        extra_json.get(ONCHAIN_PAYJOIN_EXTRA_KEY),
+        Some(&serde_json::to_value(payjoin.clone()).expect("Payjoin must serialize")),
+        "public Payjoin v2 acceptance should remain present"
+    );
+    assert_eq!(
+        extra_json.get(ONCHAIN_PAYJOIN_DESTINATION_EXTRA_KEY),
+        Some(&serde_json::to_value(payjoin).expect("Payjoin destination must serialize")),
+        "full Payjoin destination must be persisted for saga execution and recovery"
+    );
+}
+
+#[tokio::test]
+async fn invalid_payjoin_melt_quote_is_rejected_before_persisting() {
+    let backend = OnchainQuoteMock::with_fee_options(
+        EchoBehavior::Echo,
+        FeeOptionsBehavior::Explicit(vec![MeltQuoteOnchainFeeOption {
+            fee_index: 0,
+            fee_reserve: Amount::from(10),
+            estimated_blocks: 6,
+        }]),
+    )
+    .with_payjoin_acceptance();
+    let mint = create_onchain_test_mint_with_backend(backend)
+        .await
+        .unwrap();
 
     let err = mint
-        .get_melt_quote(required_payjoin_melt_request())
+        .get_melt_quote(invalid_payjoin_melt_request())
         .await
-        .unwrap_err();
+        .expect_err("invalid Payjoin params must be rejected");
 
-    assert!(matches!(err, Error::InvalidPaymentRequest));
+    assert!(
+        matches!(err, Error::Custom(message) if message.contains("Invalid Payjoin parameters"))
+    );
+    assert!(mint
+        .localstore()
+        .get_melt_quotes()
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn expired_payjoin_melt_quote_is_rejected_before_persisting() {
+    let backend = OnchainQuoteMock::with_fee_options(
+        EchoBehavior::Echo,
+        FeeOptionsBehavior::Explicit(vec![MeltQuoteOnchainFeeOption {
+            fee_index: 0,
+            fee_reserve: Amount::from(10),
+            estimated_blocks: 6,
+        }]),
+    )
+    .with_payjoin_acceptance();
+    let mint = create_onchain_test_mint_with_backend(backend)
+        .await
+        .unwrap();
+
+    let err = mint
+        .get_melt_quote(expired_payjoin_melt_request())
+        .await
+        .expect_err("expired Payjoin params must be rejected");
+
+    assert!(
+        matches!(err, Error::Custom(message) if message.contains("Payjoin parameters are expired"))
+    );
+    assert!(mint
+        .localstore()
+        .get_melt_quotes()
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 /// Backend omits `request_lookup_id` entirely — must reject with

@@ -9,8 +9,7 @@ Payjoin fields. The existing `request` field remains a Bitcoin address and is
 kept as the fallback destination for wallets and mints that do not support
 Payjoin.
 
-This draft specifies BIP77 Payjoin v2 only. Future versions may define
-additional parameter objects under the same wrapper.
+This draft specifies BIP77 Payjoin v2 only.
 
 ## Types
 
@@ -19,38 +18,23 @@ additional parameter objects under the same wrapper.
 ```json
 {
   "endpoint": "https://payjoin.example/pj",
-  "ohttp_relay": "https://relay.example",
   "ohttp_keys": "encoded-ohttp-keys",
   "receiver_key": "encoded-receiver-session-key",
-  "expires_at": 1701704757,
-  "required": false
+  "expires_at": 1701704757
 }
 ```
 
-- `endpoint`: string, BIP77 mailbox endpoint equivalent to the `pj` value.
-- `ohttp_relay`: string, relay URL used for OHTTP requests.
-- `ohttp_keys`: string, encoded OHTTP key material needed by the sender.
-- `receiver_key`: string, encoded receiver session key.
-- `expires_at`: nullable Unix timestamp after which the Payjoin parameters
-  should not be used.
-- `required`: boolean. If true, direct fallback payment to `request` is not
-  allowed.
+- `endpoint`: string, BIP77 mailbox endpoint URL without the receiver fragment
+  parameters.
+- `ohttp_keys`: string, encoded OHTTP key material needed by the sender,
+  without the `OH1` prefix.
+- `receiver_key`: string, encoded receiver session key, without the `RK1`
+  prefix.
+- `expires_at`: Unix timestamp after which the Payjoin parameters should not
+  be used.
 
-### Payjoin Wrapper
-
-```json
-{
-  "version": 2,
-  "params": {
-    "endpoint": "https://payjoin.example/pj",
-    "ohttp_relay": "https://relay.example",
-    "ohttp_keys": "encoded-ohttp-keys",
-    "receiver_key": "encoded-receiver-session-key",
-    "expires_at": 1701704757,
-    "required": false
-  }
-}
-```
+The OHTTP relay is intentionally not part of this structure. Per BIP77, the
+sender wallet chooses the relay it will use.
 
 Implementations MUST NOT require wallets to pass a BIP21 or BIP321 URI. If an
 implementation library internally requires a URI, it is assembled from
@@ -58,21 +42,18 @@ implementation library internally requires a URI, it is assembled from
 
 ## Mint Quote Request
 
-`PostMintQuoteOnchainRequest` MAY include:
+`PostMintQuoteOnchainRequest` is unchanged from NUT-30:
 
 ```json
 {
   "unit": "sat",
-  "pubkey": "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
-  "payjoin": {
-    "version": 2,
-    "required": false
-  }
+  "pubkey": "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac"
 }
 ```
 
-This asks the mint to return Payjoin-capable deposit instructions. If
-`payjoin` is absent, quote creation behaves exactly as NUT-30.
+If a mint is configured for Payjoin receive support, it MAY automatically
+include Payjoin-capable deposit instructions in the response. Wallets do not
+negotiate Payjoin support in mint quote requests.
 
 ## Mint Quote Response
 
@@ -88,21 +69,16 @@ This asks the mint to return Payjoin-capable deposit instructions. If
   "amount_paid": 0,
   "amount_issued": 0,
   "payjoin": {
-    "version": 2,
-    "params": {
-      "endpoint": "https://payjoin.example/pj",
-      "ohttp_relay": "https://relay.example",
-      "ohttp_keys": "encoded-ohttp-keys",
-      "receiver_key": "encoded-receiver-session-key",
-      "expires_at": 1701704757,
-      "required": false
-    }
+    "endpoint": "https://payjoin.example/pj",
+    "ohttp_keys": "encoded-ohttp-keys",
+    "receiver_key": "encoded-receiver-session-key",
+    "expires_at": 1701704757
   }
 }
 ```
 
-`request` remains the fallback Bitcoin address. If `payjoin.params.required` is
-true, wallets that cannot complete Payjoin MUST NOT pay `request` directly.
+`request` remains the fallback Bitcoin address. Wallets MAY attempt Payjoin, but
+MAY also pay `request` directly.
 
 ## Melt Quote Request
 
@@ -114,15 +90,10 @@ true, wallets that cannot complete Payjoin MUST NOT pay `request` directly.
   "unit": "sat",
   "amount": 100000,
   "payjoin": {
-    "version": 2,
-    "params": {
-      "endpoint": "https://payjoin.example/pj",
-      "ohttp_relay": "https://relay.example",
-      "ohttp_keys": "encoded-ohttp-keys",
-      "receiver_key": "encoded-receiver-session-key",
-      "expires_at": 1701704757,
-      "required": false
-    }
+    "endpoint": "https://payjoin.example/pj",
+    "ohttp_keys": "encoded-ohttp-keys",
+    "receiver_key": "encoded-receiver-session-key",
+    "expires_at": 1701704757
   }
 }
 ```
@@ -152,8 +123,10 @@ to send.
   "selected_fee_index": null,
   "outpoint": null,
   "payjoin": {
-    "version": 2,
-    "required": false
+    "endpoint": "https://payjoin.example/pj",
+    "ohttp_keys": "encoded-ohttp-keys",
+    "receiver_key": "encoded-receiver-session-key",
+    "expires_at": 1701704757
   }
 }
 ```
@@ -161,14 +134,9 @@ to send.
 The presence of `payjoin` confirms that the mint accepted Payjoin v2 parameters
 for this quote.
 
-## Fallback And Version Handling
+## Fallback Handling
 
-If `payjoin` is absent, behavior is exactly NUT-30.
+If `payjoin` is absent from any response, behavior is exactly NUT-30.
 
-Unknown Payjoin versions MUST be ignored unless marked `required`. Required
-Payjoin with an unsupported version MUST reject quote creation.
-
-When `required` is true and Payjoin cannot be completed, the sender MUST fail
-without broadcasting a fallback transaction to `request`. When `required` is
-false and Payjoin cannot be completed, the sender MAY fall back to the direct
-onchain payment described by NUT-30.
+If Payjoin cannot be completed, the sender MAY fall back to the direct onchain
+payment described by NUT-30.

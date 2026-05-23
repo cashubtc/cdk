@@ -17,8 +17,8 @@ use thiserror::Error;
 
 use crate::mint::{MeltPaymentRequest, MeltQuote};
 use crate::nuts::nut30::MeltQuoteOnchainFeeOption;
-use crate::nuts::nut31::OnchainPayjoinRequest;
 use crate::nuts::{CurrencyUnit, MeltQuoteState};
+use crate::payjoin::{ONCHAIN_PAYJOIN_DESTINATION_EXTRA_KEY, ONCHAIN_PAYJOIN_EXTRA_KEY};
 use crate::{Amount, QuoteId};
 
 /// CDK Payment Error
@@ -239,8 +239,6 @@ pub struct CustomIncomingPaymentOptions {
 pub struct OnchainIncomingPaymentOptions {
     /// Quote ID for the incoming payment
     pub quote_id: QuoteId,
-    /// Optional Payjoin request from the wallet.
-    pub payjoin: Option<OnchainPayjoinRequest>,
 }
 
 /// Options for incoming payments
@@ -411,11 +409,18 @@ impl OutgoingPaymentOptions {
                     max_fee_amount: Some(fee_reserve),
                     quote_id: melt_quote.id,
                     fee_index: melt_quote.selected_fee_index,
-                    metadata: melt_quote.extra_json.map(|extra| extra.to_string()),
+                    metadata: onchain_melt_payment_metadata(melt_quote.extra_json),
                 }),
             )),
         }
     }
+}
+
+fn onchain_melt_payment_metadata(extra_json: Option<Value>) -> Option<String> {
+    let extra_json = extra_json?;
+    extra_json
+        .get(ONCHAIN_PAYJOIN_DESTINATION_EXTRA_KEY)
+        .map(|payjoin| serde_json::json!({ ONCHAIN_PAYJOIN_EXTRA_KEY: payjoin }).to_string())
 }
 
 /// Mint payment trait
@@ -911,6 +916,100 @@ mod tests {
         // Invalid length for bolt12_payment_hash
         let result_bolt12 = PaymentIdentifier::new("bolt12_payment_hash", "00");
         assert!(matches!(result_bolt12, Err(Error::InvalidHash)));
+    }
+
+    #[test]
+    fn onchain_melt_payment_metadata_uses_persisted_payjoin_destination() {
+        let destination = serde_json::json!({
+            "endpoint": "https://payjoin.example/pj",
+            "ohttp_keys": "12",
+            "receiver_key": "12",
+            "expires_at": 1741276520,
+        });
+        let extra_json = serde_json::json!({
+            ONCHAIN_PAYJOIN_EXTRA_KEY: destination.clone(),
+            ONCHAIN_PAYJOIN_DESTINATION_EXTRA_KEY: destination.clone(),
+        });
+
+        let mut quote = MeltQuote::new_onchain(
+            Some(QuoteId::new()),
+            MeltPaymentRequest::Onchain {
+                address: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq".to_string(),
+            },
+            CurrencyUnit::Sat,
+            Amount::new(4_000, CurrencyUnit::Sat),
+            1_701_704_757,
+            None,
+            Some(extra_json),
+            vec![MeltQuoteOnchainFeeOption {
+                fee_index: 0,
+                fee_reserve: Amount::from(1_000),
+                estimated_blocks: 1,
+            }],
+        )
+        .expect("well-formed onchain quote must construct");
+        quote
+            .select_onchain_fee_option(0)
+            .expect("known fee option must select");
+
+        let options = OutgoingPaymentOptions::from_melt_quote_with_fee(quote)
+            .expect("onchain quote must convert to outgoing payment options");
+        let onchain_options = match options {
+            OutgoingPaymentOptions::Onchain(options) => options,
+            other => panic!("expected onchain payment options, got {other:?}"),
+        };
+
+        let metadata = onchain_options
+            .metadata
+            .expect("payjoin metadata must be present");
+        let metadata: serde_json::Value =
+            serde_json::from_str(&metadata).expect("metadata must be valid JSON");
+
+        assert_eq!(
+            metadata,
+            serde_json::json!({ ONCHAIN_PAYJOIN_EXTRA_KEY: destination })
+        );
+        assert!(
+            metadata
+                .get(ONCHAIN_PAYJOIN_DESTINATION_EXTRA_KEY)
+                .is_none(),
+            "internal persistence key should not be passed through to the backend"
+        );
+    }
+
+    #[test]
+    fn onchain_melt_payment_metadata_ignores_non_payjoin_extra_json() {
+        let mut quote = MeltQuote::new_onchain(
+            Some(QuoteId::new()),
+            MeltPaymentRequest::Onchain {
+                address: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq".to_string(),
+            },
+            CurrencyUnit::Sat,
+            Amount::new(4_000, CurrencyUnit::Sat),
+            1_701_704_757,
+            None,
+            Some(serde_json::json!({
+                "internal_note": "must not reach payment backend",
+            })),
+            vec![MeltQuoteOnchainFeeOption {
+                fee_index: 0,
+                fee_reserve: Amount::from(1_000),
+                estimated_blocks: 1,
+            }],
+        )
+        .expect("well-formed onchain quote must construct");
+        quote
+            .select_onchain_fee_option(0)
+            .expect("known fee option must select");
+
+        let options = OutgoingPaymentOptions::from_melt_quote_with_fee(quote)
+            .expect("onchain quote must convert to outgoing payment options");
+        let onchain_options = match options {
+            OutgoingPaymentOptions::Onchain(options) => options,
+            other => panic!("expected onchain payment options, got {other:?}"),
+        };
+
+        assert_eq!(onchain_options.metadata, None);
     }
 }
 

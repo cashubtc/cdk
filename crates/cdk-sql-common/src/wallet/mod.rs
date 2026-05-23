@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::database::{ConversionError, Error, WalletDatabase};
 use cdk_common::mint_url::MintUrl;
-use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
+use cdk_common::nuts::{MeltQuoteState, MintQuoteState, PayjoinV2};
 use cdk_common::secret::Secret;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
@@ -170,6 +170,7 @@ where
                   payment_method,
                   estimated_blocks,
                   fee_index,
+                  CAST(payjoin AS TEXT) AS payjoin,
                   used_by_operation,
                   version,
                   mint_url
@@ -348,6 +349,7 @@ where
                 amount_issued,
                 amount_paid,
                 estimated_blocks,
+                CAST(payjoin AS TEXT) AS payjoin,
                 used_by_operation,
                 version
             FROM
@@ -385,6 +387,7 @@ where
                 amount_issued,
                 amount_paid,
                 estimated_blocks,
+                CAST(payjoin AS TEXT) AS payjoin,
                 used_by_operation,
                 version
             FROM
@@ -420,6 +423,7 @@ where
                 amount_issued,
                 amount_paid,
                 estimated_blocks,
+                CAST(payjoin AS TEXT) AS payjoin,
                 used_by_operation,
                 version
             FROM
@@ -461,6 +465,7 @@ where
                 payment_method,
                 estimated_blocks,
                 fee_index,
+                CAST(payjoin AS TEXT) AS payjoin,
                 used_by_operation,
                 version,
                 mint_url
@@ -1180,13 +1185,19 @@ where
 
         let expected_version = quote.version;
         let new_version = expected_version.wrapping_add(1);
+        let payjoin = quote
+            .payjoin
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(Error::from)?;
 
-        let rows_affected = query(
-                r#"
+        let query_str = if RM::Connection::name() == "postgres" {
+            r#"
     INSERT INTO mint_quote
-    (id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid, estimated_blocks, version, used_by_operation)
+    (id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid, estimated_blocks, payjoin, version, used_by_operation)
     VALUES
-    (:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid, :estimated_blocks, :version, :used_by_operation)
+    (:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid, :estimated_blocks, (:payjoin)::jsonb, :version, :used_by_operation)
     ON CONFLICT(id) DO UPDATE SET
         mint_url = excluded.mint_url,
         amount = excluded.amount,
@@ -1199,12 +1210,39 @@ where
         amount_issued = excluded.amount_issued,
         amount_paid = excluded.amount_paid,
         estimated_blocks = excluded.estimated_blocks,
+        payjoin = excluded.payjoin,
         version = :new_version,
         used_by_operation = excluded.used_by_operation
     WHERE mint_quote.version = :expected_version
     ;
-            "#,
-            )?
+            "#
+        } else {
+            r#"
+    INSERT INTO mint_quote
+    (id, mint_url, amount, unit, request, state, expiry, secret_key, payment_method, amount_issued, amount_paid, estimated_blocks, payjoin, version, used_by_operation)
+    VALUES
+    (:id, :mint_url, :amount, :unit, :request, :state, :expiry, :secret_key, :payment_method, :amount_issued, :amount_paid, :estimated_blocks, :payjoin, :version, :used_by_operation)
+    ON CONFLICT(id) DO UPDATE SET
+        mint_url = excluded.mint_url,
+        amount = excluded.amount,
+        unit = excluded.unit,
+        request = excluded.request,
+        state = excluded.state,
+        expiry = excluded.expiry,
+        secret_key = excluded.secret_key,
+        payment_method = excluded.payment_method,
+        amount_issued = excluded.amount_issued,
+        amount_paid = excluded.amount_paid,
+        estimated_blocks = excluded.estimated_blocks,
+        payjoin = excluded.payjoin,
+        version = :new_version,
+        used_by_operation = excluded.used_by_operation
+    WHERE mint_quote.version = :expected_version
+    ;
+            "#
+        };
+
+        let rows_affected = query(query_str)?
             .bind("id", quote.id.to_string())
             .bind("mint_url", quote.mint_url.to_string())
             .bind("amount", quote.amount.map(|a| a.to_i64()))
@@ -1217,11 +1255,13 @@ where
             .bind("amount_issued", quote.amount_issued.to_i64())
             .bind("amount_paid", quote.amount_paid.to_i64())
             .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
+            .bind("payjoin", payjoin)
             .bind("version", quote.version as i64)
             .bind("new_version", new_version as i64)
             .bind("expected_version", expected_version as i64)
             .bind("used_by_operation", quote.used_by_operation)
-            .execute(&*conn).await?;
+            .execute(&*conn)
+            .await?;
 
         if rows_affected == 0 {
             return Err(database::Error::ConcurrentUpdate);
@@ -1256,13 +1296,19 @@ where
 
         let expected_version = quote.version;
         let new_version = expected_version.wrapping_add(1);
+        let payjoin = quote
+            .payjoin
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(Error::from)?;
 
-        let rows_affected = query(
+        let query_str = if RM::Connection::name() == "postgres" {
             r#"
  INSERT INTO melt_quote
- (id, unit, amount, request, fee_reserve, state, expiry, payment_proof, payment_method, estimated_blocks, fee_index, version, mint_url, used_by_operation)
+ (id, unit, amount, request, fee_reserve, state, expiry, payment_proof, payment_method, estimated_blocks, fee_index, payjoin, version, mint_url, used_by_operation)
  VALUES
- (:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_proof, :payment_method, :estimated_blocks, :fee_index, :version, :mint_url, :used_by_operation)
+ (:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_proof, :payment_method, :estimated_blocks, :fee_index, (:payjoin)::jsonb, :version, :mint_url, :used_by_operation)
  ON CONFLICT(id) DO UPDATE SET
      unit = excluded.unit,
      amount = excluded.amount,
@@ -1274,31 +1320,59 @@ where
      payment_method = excluded.payment_method,
      estimated_blocks = excluded.estimated_blocks,
      fee_index = excluded.fee_index,
+     payjoin = excluded.payjoin,
      version = :new_version,
      mint_url = excluded.mint_url,
      used_by_operation = excluded.used_by_operation
  WHERE melt_quote.version = :expected_version
  ;
-         "#,
-        )?
-        .bind("id", quote.id.to_string())
-        .bind("unit", quote.unit.to_string())
-        .bind("amount", u64::from(quote.amount) as i64)
-        .bind("request", quote.request)
-        .bind("fee_reserve", u64::from(quote.fee_reserve) as i64)
-        .bind("state", quote.state.to_string())
-        .bind("expiry", quote.expiry as i64)
-        .bind("payment_proof", quote.payment_proof)
-        .bind("payment_method", quote.payment_method.to_string())
-        .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
-        .bind("fee_index", quote.fee_index.map(i64::from))
-        .bind("version", quote.version as i64)
-        .bind("new_version", new_version as i64)
-        .bind("expected_version", expected_version as i64)
-        .bind("mint_url", quote.mint_url.map(|m| m.to_string()))
-        .bind("used_by_operation", quote.used_by_operation)
-        .execute(&*conn)
-        .await?;
+         "#
+        } else {
+            r#"
+ INSERT INTO melt_quote
+ (id, unit, amount, request, fee_reserve, state, expiry, payment_proof, payment_method, estimated_blocks, fee_index, payjoin, version, mint_url, used_by_operation)
+ VALUES
+ (:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_proof, :payment_method, :estimated_blocks, :fee_index, :payjoin, :version, :mint_url, :used_by_operation)
+ ON CONFLICT(id) DO UPDATE SET
+     unit = excluded.unit,
+     amount = excluded.amount,
+     request = excluded.request,
+     fee_reserve = excluded.fee_reserve,
+     state = excluded.state,
+     expiry = excluded.expiry,
+     payment_proof = COALESCE(excluded.payment_proof, melt_quote.payment_proof),
+     payment_method = excluded.payment_method,
+     estimated_blocks = excluded.estimated_blocks,
+     fee_index = excluded.fee_index,
+     payjoin = excluded.payjoin,
+     version = :new_version,
+     mint_url = excluded.mint_url,
+     used_by_operation = excluded.used_by_operation
+ WHERE melt_quote.version = :expected_version
+ ;
+         "#
+        };
+
+        let rows_affected = query(query_str)?
+            .bind("id", quote.id.to_string())
+            .bind("unit", quote.unit.to_string())
+            .bind("amount", u64::from(quote.amount) as i64)
+            .bind("request", quote.request)
+            .bind("fee_reserve", u64::from(quote.fee_reserve) as i64)
+            .bind("state", quote.state.to_string())
+            .bind("expiry", quote.expiry as i64)
+            .bind("payment_proof", quote.payment_proof)
+            .bind("payment_method", quote.payment_method.to_string())
+            .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
+            .bind("fee_index", quote.fee_index.map(i64::from))
+            .bind("payjoin", payjoin)
+            .bind("version", quote.version as i64)
+            .bind("new_version", new_version as i64)
+            .bind("expected_version", expected_version as i64)
+            .bind("mint_url", quote.mint_url.map(|m| m.to_string()))
+            .bind("used_by_operation", quote.used_by_operation)
+            .execute(&*conn)
+            .await?;
 
         if rows_affected == 0 {
             return Err(database::Error::ConcurrentUpdate);
@@ -2004,6 +2078,7 @@ fn sql_row_to_mint_quote(row: Vec<Column>) -> Result<MintQuote, Error> {
             row_amount_minted,
             row_amount_paid,
             estimated_blocks,
+            payjoin,
             used_by_operation,
             version
         ) = row
@@ -2017,6 +2092,10 @@ fn sql_row_to_mint_quote(row: Vec<Column>) -> Result<MintQuote, Error> {
     let version_val: u32 = column_as_number!(version);
     let payment_method =
         PaymentMethod::from_str(&column_as_string!(row_method)).map_err(Error::from)?;
+    let payjoin: Option<PayjoinV2> = column_as_nullable_string!(payjoin)
+        .map(|value| serde_json::from_str(&value))
+        .transpose()
+        .map_err(Error::from)?;
 
     Ok(MintQuote {
         id: column_as_string!(id),
@@ -2031,6 +2110,7 @@ fn sql_row_to_mint_quote(row: Vec<Column>) -> Result<MintQuote, Error> {
         amount_issued: Amount::from(amount_minted),
         amount_paid: Amount::from(amount_paid),
         estimated_blocks: column_as_nullable_number!(estimated_blocks),
+        payjoin,
         used_by_operation: column_as_nullable_string!(used_by_operation),
         version: version_val,
     })
@@ -2050,6 +2130,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<wallet::MeltQuote, Error> {
             row_method,
             estimated_blocks,
             fee_index,
+            payjoin,
             used_by_operation,
             version,
             mint_url
@@ -2063,6 +2144,10 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<wallet::MeltQuote, Error> {
     let fee_reserve_val: u64 = column_as_number!(fee_reserve);
     let expiry_val: u64 = column_as_number!(expiry);
     let version_val: u32 = column_as_number!(version);
+    let payjoin: Option<PayjoinV2> = column_as_nullable_string!(payjoin)
+        .map(|value| serde_json::from_str(&value))
+        .transpose()
+        .map_err(Error::from)?;
 
     Ok(wallet::MeltQuote {
         id: column_as_string!(id),
@@ -2076,6 +2161,7 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<wallet::MeltQuote, Error> {
         payment_proof: column_as_nullable_string!(payment_proof),
         estimated_blocks: column_as_nullable_number!(estimated_blocks),
         fee_index: column_as_nullable_number!(fee_index),
+        payjoin,
         payment_method,
         used_by_operation: column_as_nullable_string!(used_by_operation),
         version: version_val,

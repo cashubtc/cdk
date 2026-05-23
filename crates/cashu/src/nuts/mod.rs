@@ -94,4 +94,4 @@ pub use nut30::{
     MeltOnchainRequest, MeltQuoteOnchainRequest, MeltQuoteOnchainResponse, MintQuoteOnchainRequest,
     MintQuoteOnchainResponse,
 };
-pub use nut31::{OnchainPayjoin, OnchainPayjoinRequest, PayjoinV2, PAYJOIN_V2_VERSION};
+pub use nut31::PayjoinV2;

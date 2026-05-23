@@ -15,9 +15,10 @@ pub mod receive;
 pub mod send;
 mod types;
 
-pub use types::{FailedSendAttemptRecord, FinalizedReceiveIntentRecord, FinalizedSendIntentRecord};
-#[cfg(feature = "payjoin")]
-pub use types::{PayjoinReceiveSessionRecord, PayjoinSendSessionRecord};
+pub use types::{
+    FailedSendAttemptRecord, FinalizedReceiveIntentRecord, FinalizedSendIntentRecord,
+    PayjoinReceiveSessionRecord, PayjoinSendSessionRecord,
+};
 
 /// Primary namespace for BDK KV store operations
 pub const BDK_NAMESPACE: &str = "bdk";
@@ -75,11 +76,12 @@ pub fn finalized_receive_intent_by_quote_namespace(quote_id: &str) -> String {
 pub const FINALIZED_SEND_INTENT_QUOTE_ID_NAMESPACE: &str = "finalized_send_intent_quote_id";
 
 /// Secondary namespace for Payjoin v2 receive sessions keyed by quote id.
-#[cfg(feature = "payjoin")]
 pub const PAYJOIN_RECEIVE_SESSION_NAMESPACE: &str = "payjoin_receive_session";
 
+/// Secondary namespace for Payjoin v2 receive input outpoints.
+pub const PAYJOIN_RECEIVE_INPUT_OUTPOINT_NAMESPACE: &str = "payjoin_receive_input_outpoint";
+
 /// Secondary namespace for Payjoin v2 send sessions keyed by quote id.
-#[cfg(feature = "payjoin")]
 pub const PAYJOIN_SEND_SESSION_NAMESPACE: &str = "payjoin_send_session";
 
 /// Encode an outpoint string for use as a KV store key.
@@ -87,7 +89,7 @@ pub const PAYJOIN_SEND_SESSION_NAMESPACE: &str = "payjoin_send_session";
 /// The KV store only allows ASCII letters, numbers, underscore, and
 /// hyphen. Outpoint strings contain `:` (e.g. `txid:vout`), so we
 /// replace it with `-`.
-fn outpoint_to_key(outpoint: &str) -> String {
+pub(crate) fn outpoint_to_key(outpoint: &str) -> String {
     outpoint.replace(':', "-")
 }
 
@@ -219,7 +221,6 @@ impl BdkStorage {
     }
 
     /// Store or replace a Payjoin receive session.
-    #[cfg(feature = "payjoin")]
     pub async fn put_payjoin_receive_session(
         &self,
         record: &PayjoinReceiveSessionRecord,
@@ -228,7 +229,6 @@ impl BdkStorage {
     }
 
     /// Load a Payjoin receive session by quote id.
-    #[cfg(feature = "payjoin")]
     pub async fn get_payjoin_receive_session(
         &self,
         quote_id: &str,
@@ -237,15 +237,87 @@ impl BdkStorage {
     }
 
     /// List all Payjoin receive sessions.
-    #[cfg(feature = "payjoin")]
     pub async fn get_all_payjoin_receive_sessions(
         &self,
     ) -> Result<Vec<PayjoinReceiveSessionRecord>, Error> {
         self.list_records().await
     }
 
+    /// Delete a Payjoin receive session by quote id.
+    pub async fn delete_payjoin_receive_session(&self, quote_id: &str) -> Result<(), Error> {
+        self.delete_record::<PayjoinReceiveSessionRecord>(quote_id)
+            .await
+    }
+
+    /// Return whether a Payjoin receive input outpoint was previously seen.
+    pub async fn is_payjoin_input_seen(&self, outpoint: &str) -> Result<bool, Error> {
+        let outpoint_key = outpoint_to_key(outpoint);
+        self.kv_store
+            .kv_read(
+                BDK_NAMESPACE,
+                PAYJOIN_RECEIVE_INPUT_OUTPOINT_NAMESPACE,
+                &outpoint_key,
+            )
+            .await
+            .map(|entry| entry.is_some())
+            .map_err(Error::from)
+    }
+
+    /// Return when a Payjoin receive input outpoint was first seen, if any.
+    #[cfg(test)]
+    pub async fn get_payjoin_seen_input_seen_at(
+        &self,
+        outpoint: &str,
+    ) -> Result<Option<u64>, Error> {
+        let outpoint_key = outpoint_to_key(outpoint);
+        let seen_at_bytes = self
+            .kv_store
+            .kv_read(
+                BDK_NAMESPACE,
+                PAYJOIN_RECEIVE_INPUT_OUTPOINT_NAMESPACE,
+                &outpoint_key,
+            )
+            .await
+            .map_err(Error::from)?;
+
+        let Some(seen_at_bytes) = seen_at_bytes else {
+            return Ok(None);
+        };
+
+        let seen_at = String::from_utf8(seen_at_bytes)
+            .map_err(|e| Error::Wallet(format!("Invalid Payjoin input index entry: {}", e)))?;
+        let seen_at = seen_at
+            .parse::<u64>()
+            .map_err(|e| Error::Wallet(format!("Invalid Payjoin input seen timestamp: {}", e)))?;
+        Ok(Some(seen_at))
+    }
+
+    /// Mark Payjoin receive input outpoints as seen.
+    pub async fn mark_payjoin_inputs_seen(&self, outpoints: &[String]) -> Result<(), Error> {
+        let seen_at = crate::util::unix_now().to_string();
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(Error::from)?;
+
+        for outpoint in outpoints {
+            let outpoint_key = outpoint_to_key(outpoint);
+            tx.kv_write(
+                BDK_NAMESPACE,
+                PAYJOIN_RECEIVE_INPUT_OUTPOINT_NAMESPACE,
+                &outpoint_key,
+                seen_at.as_bytes(),
+            )
+            .await
+            .map_err(Error::from)?;
+        }
+
+        tx.commit().await.map_err(Error::from)?;
+        Ok(())
+    }
+
     /// Store or replace a Payjoin send session.
-    #[cfg(feature = "payjoin")]
     pub async fn put_payjoin_send_session(
         &self,
         record: &PayjoinSendSessionRecord,
@@ -254,12 +326,18 @@ impl BdkStorage {
     }
 
     /// Load a Payjoin send session by quote id.
-    #[cfg(feature = "payjoin")]
     pub async fn get_payjoin_send_session(
         &self,
         quote_id: &str,
     ) -> Result<Option<PayjoinSendSessionRecord>, Error> {
         self.get_record(quote_id).await
+    }
+
+    /// List all Payjoin send sessions.
+    pub async fn get_all_payjoin_send_sessions(
+        &self,
+    ) -> Result<Vec<PayjoinSendSessionRecord>, Error> {
+        self.list_records().await
     }
 }
 
@@ -323,7 +401,6 @@ impl KvRecord for FinalizedReceiveIntentRecord {
     }
 }
 
-#[cfg(feature = "payjoin")]
 impl KvRecord for PayjoinReceiveSessionRecord {
     const NAMESPACE: &'static str = PAYJOIN_RECEIVE_SESSION_NAMESPACE;
 
@@ -332,7 +409,6 @@ impl KvRecord for PayjoinReceiveSessionRecord {
     }
 }
 
-#[cfg(feature = "payjoin")]
 impl KvRecord for PayjoinSendSessionRecord {
     const NAMESPACE: &'static str = PAYJOIN_SEND_SESSION_NAMESPACE;
 
@@ -376,6 +452,89 @@ mod tests {
                 created_at: 1_700_000_000,
             },
         }
+    }
+
+    #[tokio::test]
+    async fn test_delete_payjoin_receive_session() {
+        let storage = test_storage().await;
+        let quote_id = Uuid::new_v4().to_string();
+        let record = PayjoinReceiveSessionRecord {
+            quote_id: quote_id.clone(),
+            fallback_address: "bcrt1qaddr".to_string(),
+            amount_sat: 1_000,
+            expires_at: 1_700_000_000,
+            events: Vec::new(),
+            closed: true,
+        };
+
+        storage
+            .put_payjoin_receive_session(&record)
+            .await
+            .expect("store session");
+        assert!(storage
+            .get_payjoin_receive_session(&quote_id)
+            .await
+            .expect("load session")
+            .is_some());
+
+        storage
+            .delete_payjoin_receive_session(&quote_id)
+            .await
+            .expect("delete session");
+
+        assert!(storage
+            .get_payjoin_receive_session(&quote_id)
+            .await
+            .expect("load deleted session")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_mark_payjoin_inputs_seen_indexes_outpoints() {
+        let storage = test_storage().await;
+        let outpoints = vec![
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0".to_string(),
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:1".to_string(),
+        ];
+        let unrelated_outpoint =
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:2".to_string();
+        let before = crate::util::unix_now();
+
+        storage
+            .mark_payjoin_inputs_seen(&outpoints)
+            .await
+            .expect("mark inputs seen");
+        let after = crate::util::unix_now();
+
+        assert!(storage
+            .is_payjoin_input_seen(&outpoints[0])
+            .await
+            .expect("check seen input"));
+        assert!(storage
+            .is_payjoin_input_seen(&outpoints[1])
+            .await
+            .expect("check seen input"));
+        assert!(!storage
+            .is_payjoin_input_seen(&unrelated_outpoint)
+            .await
+            .expect("check unrelated input"));
+
+        let seen_at = storage
+            .get_payjoin_seen_input_seen_at(&outpoints[0])
+            .await
+            .expect("load seen timestamp")
+            .expect("timestamp is stored");
+        assert!(
+            (before..=after).contains(&seen_at),
+            "timestamp {seen_at} should be between {before} and {after}"
+        );
+        assert_eq!(
+            storage
+                .get_payjoin_seen_input_seen_at(&unrelated_outpoint)
+                .await
+                .expect("load unrelated timestamp"),
+            None
+        );
     }
 
     // ── Serialization round-trip tests ─────────────────────────────
