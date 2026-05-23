@@ -13,7 +13,9 @@ use cdk_common::nuts::nut_ctf::{
     CtfMergeRequest, CtfSplitRequest, RedeemOutcomeRequest, RegisterConditionRequest,
     RegisterPartitionRequest,
 };
-use cdk_common::nuts::{Id, PreMintSecrets, SwapRequest, Witness};
+use cdk_common::nuts::{
+    Conditions, Id, PreMintSecrets, SecretKey, SigFlag, SpendingConditions, SwapRequest, Witness,
+};
 use cdk_common::{Amount, CurrencyUnit};
 
 use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
@@ -88,6 +90,49 @@ fn create_premint(
     let pre_mint =
         PreMintSecrets::random(keyset_id, amount, &SplitTarget::None, &fee_and_amounts.into())
             .unwrap();
+    let blinded_messages = pre_mint.blinded_messages().to_vec();
+    (blinded_messages, pre_mint)
+}
+
+/// Helper: create P2PK 2-of-2 PreMintSecrets for a given keyset.
+fn create_p2pk_premint(
+    mint: &crate::mint::Mint,
+    keyset_id: Id,
+    amount: Amount,
+) -> (Vec<cdk_common::nuts::BlindedMessage>, PreMintSecrets) {
+    let keys = mint
+        .keyset_pubkeys(&keyset_id)
+        .unwrap()
+        .keysets
+        .first()
+        .unwrap()
+        .keys
+        .clone();
+
+    let fee_and_amounts: (u64, Vec<u64>) =
+        (0, keys.iter().map(|(a, _)| a.to_u64()).collect::<Vec<_>>());
+    let seller_key = SecretKey::generate();
+    let buyer_key = SecretKey::generate();
+    let conditions = Conditions::new(
+        None,
+        Some(vec![buyer_key.public_key()]),
+        Some(vec![seller_key.public_key()]),
+        Some(2),
+        Some(SigFlag::SigInputs),
+        None,
+    )
+    .unwrap();
+    let spending_conditions =
+        SpendingConditions::new_p2pk(seller_key.public_key(), Some(conditions));
+
+    let pre_mint = PreMintSecrets::with_conditions(
+        keyset_id,
+        amount,
+        &SplitTarget::None,
+        &spending_conditions,
+        &fee_and_amounts.into(),
+    )
+    .unwrap();
     let blinded_messages = pre_mint.blinded_messages().to_vec();
     (blinded_messages, pre_mint)
 }
@@ -446,6 +491,73 @@ async fn test_swap_allows_same_conditional_outcome_inputs_and_outputs() {
     assert!(refreshed_proofs
         .iter()
         .all(|proof| proof.keyset_id == yes_keyset_id));
+}
+
+/// Test that regular swap allows conditional trading into P2PK locked outputs
+/// and unlocked change within the same outcome collection.
+#[tokio::test]
+async fn test_swap_allows_same_conditional_outcome_p2pk_lock_and_change() {
+    let mint = create_test_mint().await.unwrap();
+    let oracle = create_test_oracle();
+    let (_, hex_tlv) = create_test_announcement(&oracle, &["YES", "NO"], "test-event");
+
+    let input_amount = Amount::from(136);
+    let regular_proofs = mint_test_proofs(&mint, input_amount).await.unwrap();
+
+    let condition_response = mint
+        .register_condition(enum_condition_request("Conditional P2PK transfer test", vec![hex_tlv]))
+        .await
+        .unwrap();
+
+    let partition_response = mint
+        .register_partition(
+            &condition_response.condition_id,
+            RegisterPartitionRequest {
+                collateral: "sat".to_string(),
+                partition: None,
+                parent_collection_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let yes_keyset_id = *partition_response.keysets.get("YES").unwrap();
+    let conditional_proofs =
+        swap_to_conditional(&mint, regular_proofs, yes_keyset_id, input_amount).await;
+
+    let (mut lock_outputs, lock_pre_mint) =
+        create_p2pk_premint(&mint, yes_keyset_id, Amount::from(100));
+    let (mut change_outputs, change_pre_mint) =
+        create_premint(&mint, yes_keyset_id, Amount::from(36));
+    lock_outputs.append(&mut change_outputs);
+
+    let keys = mint
+        .keyset_pubkeys(&yes_keyset_id)
+        .unwrap()
+        .keysets
+        .first()
+        .unwrap()
+        .keys
+        .clone();
+    let swap_request = SwapRequest::new(conditional_proofs, lock_outputs);
+    let swap_response = mint
+        .process_swap_request(swap_request)
+        .await
+        .expect("same-outcome conditional P2PK lock swap should succeed");
+
+    let mut rs = lock_pre_mint.rs();
+    rs.extend(change_pre_mint.rs());
+    let mut secrets = lock_pre_mint.secrets();
+    secrets.extend(change_pre_mint.secrets());
+    let refreshed_proofs = construct_proofs(swap_response.signatures, rs, secrets, &keys).unwrap();
+
+    assert!(refreshed_proofs
+        .iter()
+        .all(|proof| proof.keyset_id == yes_keyset_id));
+    let refreshed_total = refreshed_proofs
+        .iter()
+        .fold(Amount::ZERO, |sum, proof| sum + proof.amount);
+    assert_eq!(refreshed_total, input_amount);
 }
 
 /// Test that regular swap rejects conditional keyset inputs to regular outputs
