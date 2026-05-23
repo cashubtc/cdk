@@ -594,6 +594,7 @@ release m="":
     "-p cdk-ffi"
     "-p cdk-axum"
     "-p cdk-mint-rpc"
+    "-p cdk-bdk"
     "-p cdk-cln"
     "-p cdk-lnd"
     "-p cdk-lnbits"
