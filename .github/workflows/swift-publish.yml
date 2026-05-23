@@ -397,21 +397,23 @@ jobs:
           git merge "${RELEASE_BRANCH}" --squash
           git commit -m "release: ${TAG}"
 
-      - name: Push branches and tag
+      - name: Push branches (without tag)
         working-directory: cdk-swift
         run: |
           git checkout "${RELEASE_BRANCH}"
           git push origin "${RELEASE_BRANCH}"
           git checkout "${DEFAULT_BRANCH}"
-          git tag "${TAG}"
-          git push origin "${DEFAULT_BRANCH}" --tags
+          git push origin "${DEFAULT_BRANCH}"
 
-      - name: Create release on cdk-swift (creates tag and uploads asset)
+      - name: Create release on cdk-swift (creates tag and uploads asset atomically)
+        working-directory: cdk-swift
         env:
           GH_TOKEN: ${{ secrets.SWIFT_DEPLOY_KEY }}
         run: |
+          COMMIT_SHA=$(git rev-parse HEAD)
           gh release create "${TAG}" \
             --repo ${{ vars.CDK_SWIFT_REPO }} \
+            --target "${COMMIT_SHA}" \
             --title "Release ${TAG}" \
             --generate-notes \
             artifacts/CashuDevKitFFI.xcframework.zip
