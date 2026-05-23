@@ -129,6 +129,7 @@ impl Lnd {
                     mpp: true,
                     amountless: true,
                     invoice_description: true,
+                    ..Default::default()
                 }),
                 bolt12: None,
                 onchain: None,

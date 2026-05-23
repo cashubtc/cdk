@@ -496,12 +496,18 @@ impl MintPayment for FakeWallet {
                 mpp: true,
                 amountless: false,
                 invoice_description: true,
+                receive_limits: None,
+                send_limits: None,
             }),
-            bolt12: Some(payment::Bolt12Settings { amountless: false }),
+            bolt12: Some(payment::Bolt12Settings {
+                amountless: false,
+                receive_limits: None,
+                send_limits: None,
+            }),
             onchain: Some(payment::OnchainSettings {
                 confirmations: 1,
-                min_receive_amount_sat: 1,
-                min_send_amount_sat: 1,
+                receive_limits: payment::AmountLimitSettings { min: Some(1), max: None },
+                send_limits: payment::AmountLimitSettings { min: Some(1), max: None },
             }),
             custom: self.custom_payment_methods.clone(),
         })

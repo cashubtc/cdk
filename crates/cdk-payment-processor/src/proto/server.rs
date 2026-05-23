@@ -181,6 +181,15 @@ impl Drop for PaymentProcessorServer {
     }
 }
 
+fn into_proto_amount_limits(
+    l: cdk_common::payment::AmountLimitSettings,
+) -> super::AmountLimitSettings {
+    super::AmountLimitSettings {
+        min: l.min.unwrap_or(0),
+        max: l.max.unwrap_or(0),
+    }
+}
+
 fn into_proto_settings(settings: cdk_common::payment::SettingsResponse) -> SettingsResponse {
     SettingsResponse {
         unit: settings.unit,
@@ -188,14 +197,18 @@ fn into_proto_settings(settings: cdk_common::payment::SettingsResponse) -> Setti
             mpp: b.mpp,
             amountless: b.amountless,
             invoice_description: b.invoice_description,
+            receive_limits: b.receive_limits.map(into_proto_amount_limits),
+            send_limits: b.send_limits.map(into_proto_amount_limits),
         }),
         bolt12: settings.bolt12.map(|b| super::Bolt12Settings {
             amountless: b.amountless,
+            receive_limits: b.receive_limits.map(into_proto_amount_limits),
+            send_limits: b.send_limits.map(into_proto_amount_limits),
         }),
         onchain: settings.onchain.map(|o| super::OnchainSettings {
             confirmations: o.confirmations,
-            min_receive_amount_sat: o.min_receive_amount_sat,
-            min_send_amount_sat: o.min_send_amount_sat,
+            receive_limits: Some(into_proto_amount_limits(o.receive_limits)),
+            send_limits: Some(into_proto_amount_limits(o.send_limits)),
         }),
         custom: settings.custom,
     }

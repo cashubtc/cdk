@@ -68,6 +68,8 @@ pub struct MintBuilder {
     blind_auth_endpoints: Vec<ProtectedEndpoint>,
     blind_auth_configured: bool,
     payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
+    /// Operator-configured limits per processor, used for live settings updates.
+    processor_limits: HashMap<PaymentProcessorKey, MintMeltLimits>,
     supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     use_keyset_v2: Option<bool>,
@@ -111,6 +113,7 @@ impl MintBuilder {
             blind_auth_endpoints: Vec::new(),
             blind_auth_configured: false,
             payment_processors: HashMap::new(),
+            processor_limits: HashMap::new(),
             supported_units: HashMap::new(),
             custom_paths: HashMap::new(),
             use_keyset_v2: None,
@@ -427,12 +430,23 @@ impl MintBuilder {
                         self.mint_info.nuts.nut15 = mpp;
                     }
 
+                    let (mint_min, mint_max) = apply_processor_limits(
+                        limits.mint_min,
+                        limits.mint_max,
+                        bolt11_settings.receive_limits.as_ref(),
+                    );
+                    let (melt_min, melt_max) = apply_processor_limits(
+                        limits.melt_min,
+                        limits.melt_max,
+                        bolt11_settings.send_limits.as_ref(),
+                    );
+
                     // Add to NUT04 (mint)
                     let mint_method_settings = MintMethodSettings {
                         method: method.clone(),
                         unit: unit.clone(),
-                        min_amount: Some(limits.mint_min),
-                        max_amount: Some(limits.mint_max),
+                        min_amount: Some(mint_min),
+                        max_amount: Some(mint_max),
                         options: Some(MintMethodOptions::Bolt11 {
                             description: bolt11_settings.invoice_description,
                         }),
@@ -444,8 +458,8 @@ impl MintBuilder {
                     let melt_method_settings = MeltMethodSettings {
                         method: method.clone(),
                         unit: unit.clone(),
-                        min_amount: Some(limits.melt_min),
-                        max_amount: Some(limits.melt_max),
+                        min_amount: Some(melt_min),
+                        max_amount: Some(melt_max),
                         options: Some(MeltMethodOptions::Bolt11 {
                             amountless: bolt11_settings.amountless,
                         }),
@@ -456,25 +470,36 @@ impl MintBuilder {
             }
             // Handle bolt12 methods
             PaymentMethod::Known(KnownMethod::Bolt12) => {
-                if settings.bolt12.is_some() {
+                if let Some(ref bolt12_settings) = settings.bolt12 {
+                    let (mint_min, mint_max) = apply_processor_limits(
+                        limits.mint_min,
+                        limits.mint_max,
+                        bolt12_settings.receive_limits.as_ref(),
+                    );
+                    let (melt_min, melt_max) = apply_processor_limits(
+                        limits.melt_min,
+                        limits.melt_max,
+                        bolt12_settings.send_limits.as_ref(),
+                    );
+
                     // Add to NUT04 (mint) - bolt12 doesn't have specific options yet
                     let mint_method_settings = MintMethodSettings {
                         method: method.clone(),
                         unit: unit.clone(),
-                        min_amount: Some(limits.mint_min),
-                        max_amount: Some(limits.mint_max),
-                        options: None, // No bolt12-specific options in NUT04 yet
+                        min_amount: Some(mint_min),
+                        max_amount: Some(mint_max),
+                        options: None,
                     };
                     self.mint_info.nuts.nut04.methods.push(mint_method_settings);
                     self.mint_info.nuts.nut04.disabled = false;
 
-                    // Add to NUT05 (melt) - bolt12 doesn't have specific options in MeltMethodOptions yet
+                    // Add to NUT05 (melt)
                     let melt_method_settings = MeltMethodSettings {
                         method: method.clone(),
                         unit: unit.clone(),
-                        min_amount: Some(limits.melt_min),
-                        max_amount: Some(limits.melt_max),
-                        options: None, // No bolt12-specific options in NUT05 yet
+                        min_amount: Some(melt_min),
+                        max_amount: Some(melt_max),
+                        options: None,
                     };
                     self.mint_info.nuts.nut05.methods.push(melt_method_settings);
                     self.mint_info.nuts.nut05.disabled = false;
@@ -501,7 +526,7 @@ impl MintBuilder {
                         unit: unit.clone(),
                         min_amount: Some(limits.melt_min),
                         max_amount: Some(limits.melt_max),
-                        options: None, // No custom-specific options in NUT05 yet
+                        options: None,
                     };
                     self.mint_info.nuts.nut05.methods.push(melt_method_settings);
                     self.mint_info.nuts.nut05.disabled = false;
@@ -510,17 +535,15 @@ impl MintBuilder {
             // Handle onchain methods
             PaymentMethod::Known(KnownMethod::Onchain) => {
                 if let Some(onchain_settings) = settings.onchain {
-                    let mint_min = Amount::from(
-                        limits
-                            .mint_min
-                            .to_u64()
-                            .max(onchain_settings.min_receive_amount_sat),
+                    let (mint_min, mint_max) = apply_processor_limits(
+                        limits.mint_min,
+                        limits.mint_max,
+                        Some(&onchain_settings.receive_limits),
                     );
-                    let melt_min = Amount::from(
-                        limits
-                            .melt_min
-                            .to_u64()
-                            .max(onchain_settings.min_send_amount_sat),
+                    let (melt_min, melt_max) = apply_processor_limits(
+                        limits.melt_min,
+                        limits.melt_max,
+                        Some(&onchain_settings.send_limits),
                     );
 
                     // Add to NUT04 (mint)
@@ -528,7 +551,7 @@ impl MintBuilder {
                         method: method.clone(),
                         unit: unit.clone(),
                         min_amount: Some(mint_min),
-                        max_amount: Some(limits.mint_max),
+                        max_amount: Some(mint_max),
                         options: Some(MintMethodOptions::Onchain {
                             confirmations: onchain_settings.confirmations,
                         }),
@@ -541,7 +564,7 @@ impl MintBuilder {
                         method: method.clone(),
                         unit: unit.clone(),
                         min_amount: Some(melt_min),
-                        max_amount: Some(limits.melt_max),
+                        max_amount: Some(melt_max),
                         options: None,
                     };
                     self.mint_info.nuts.nut05.methods.push(melt_method_settings);
@@ -555,6 +578,7 @@ impl MintBuilder {
             self.configure_unit(key.unit.clone(), Default::default())?;
         }
 
+        self.processor_limits.insert(key.clone(), limits);
         self.payment_processors.insert(key, payment_processor);
         Ok(())
     }
@@ -700,6 +724,7 @@ impl MintBuilder {
                 self.localstore,
                 auth_localstore,
                 self.payment_processors,
+                self.processor_limits,
                 self.max_inputs,
                 self.max_outputs,
             )
@@ -710,6 +735,7 @@ impl MintBuilder {
             signatory,
             self.localstore,
             self.payment_processors,
+            self.processor_limits,
             self.max_inputs,
             self.max_outputs,
         )
@@ -736,6 +762,28 @@ impl MintBuilder {
 
         self.build_with_signatory(signatory).await
     }
+}
+
+/// Compute effective (min, max) by applying processor-reported constraints on top of
+/// operator-configured limits:
+///   effective_min = max(processor.min, operator_min)  — strictest lower bound
+///   effective_max = min(processor.max, operator_max)  — strictest upper bound
+///
+/// A `None` bound in `proc_limits` means the processor has no constraint for that bound.
+pub(crate) fn apply_processor_limits(
+    operator_min: Amount,
+    operator_max: Amount,
+    proc_limits: Option<&cdk_common::payment::AmountLimitSettings>,
+) -> (Amount, Amount) {
+    let eff_min = proc_limits
+        .and_then(|l| l.min)
+        .map(|m| Amount::from(operator_min.to_u64().max(m)))
+        .unwrap_or(operator_min);
+    let eff_max = proc_limits
+        .and_then(|l| l.max)
+        .map(|m| Amount::from(operator_max.to_u64().min(m)))
+        .unwrap_or(operator_max);
+    (eff_min, eff_max)
 }
 
 /// Mint and Melt Limits
@@ -773,7 +821,7 @@ mod tests {
     use bip39::Mnemonic;
     use cdk_common::nut21::{Method, RoutePath};
     use cdk_common::payment::{
-        Bolt11Settings, Bolt12Settings, CreateIncomingPaymentResponse, Event,
+        AmountLimitSettings, Bolt11Settings, Bolt12Settings, CreateIncomingPaymentResponse, Event,
         IncomingPaymentOptions, MakePaymentResponse, OnchainSettings, OutgoingPaymentOptions,
         PaymentIdentifier, PaymentQuoteResponse, SettingsResponse,
     };
@@ -1062,6 +1110,7 @@ mod tests {
             mpp: true,
             amountless: true,
             invoice_description: true,
+            ..Default::default()
         };
 
         let settings = SettingsResponse {
@@ -1182,9 +1231,10 @@ mod tests {
             .unwrap();
 
         let bolt11_settings = Bolt11Settings {
-            mpp: false, // MPP disabled
+            mpp: false,
             amountless: false,
             invoice_description: false,
+            ..Default::default()
         };
 
         let settings = SettingsResponse {
@@ -1231,7 +1281,7 @@ mod tests {
             )
             .unwrap();
 
-        let bolt12_settings = Bolt12Settings { amountless: true };
+        let bolt12_settings = Bolt12Settings { amountless: true, ..Default::default() };
 
         let settings = SettingsResponse {
             unit: "sat".to_string(),
@@ -1400,8 +1450,8 @@ mod tests {
             bolt12: None,
             onchain: Some(OnchainSettings {
                 confirmations: 6,
-                min_receive_amount_sat: 1000,
-                min_send_amount_sat: 546,
+                receive_limits: AmountLimitSettings { min: Some(1000), max: None },
+                send_limits: AmountLimitSettings { min: Some(546), max: None },
             }),
             custom: HashMap::new(),
         };
@@ -1445,8 +1495,8 @@ mod tests {
             bolt12: None,
             onchain: Some(OnchainSettings {
                 confirmations: 1,
-                min_receive_amount_sat: 1000,
-                min_send_amount_sat: 546,
+                receive_limits: AmountLimitSettings { min: Some(1000), max: None },
+                send_limits: AmountLimitSettings { min: Some(546), max: None },
             }),
             custom: HashMap::new(),
         };
@@ -1481,8 +1531,8 @@ mod tests {
             bolt12: None,
             onchain: Some(OnchainSettings {
                 confirmations: 1,
-                min_receive_amount_sat: 1000,
-                min_send_amount_sat: 546,
+                receive_limits: AmountLimitSettings { min: Some(1000), max: None },
+                send_limits: AmountLimitSettings { min: Some(546), max: None },
             }),
             custom: HashMap::new(),
         };
@@ -1532,6 +1582,7 @@ mod tests {
             mpp: false,
             amountless: true,
             invoice_description: false,
+            ..Default::default()
         };
         let settings1 = SettingsResponse {
             unit: "sat".to_string(),
@@ -1554,7 +1605,7 @@ mod tests {
             .unwrap();
 
         // Add Bolt12
-        let bolt12_settings = Bolt12Settings { amountless: false };
+        let bolt12_settings = Bolt12Settings { amountless: false, ..Default::default() };
         let settings2 = SettingsResponse {
             unit: "sat".to_string(),
             bolt11: None,

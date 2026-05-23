@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package cdk_payment_processor;
 
-service CdkPaymentProcessor {  
+service CdkPaymentProcessor {
     rpc GetSettings(EmptyRequest) returns (stream SettingsResponse) {}
     rpc CreatePayment(CreatePaymentRequest) returns (CreatePaymentResponse) {}
     rpc GetPaymentQuote(PaymentQuoteRequest) returns (PaymentQuoteResponse) {}
@@ -13,6 +13,11 @@ service CdkPaymentProcessor {
 }
 
 message EmptyRequest {}
+
+message AmountLimitSettings {
+    uint64 min = 1;
+    uint64 max = 2;
+}
 
 message AmountMessage {
   uint64 value = 1;
@@ -29,18 +34,22 @@ message SettingsResponse {
 
 message OnchainSettings {
     uint32 confirmations = 1;
-    uint64 min_receive_amount_sat = 2;
-    uint64 min_send_amount_sat = 3;
+    AmountLimitSettings receive_limits = 2;
+    AmountLimitSettings send_limits = 3;
 }
 
 message Bolt12Settings {
     bool amountless = 2;
+    AmountLimitSettings receive_limits = 3;
+    AmountLimitSettings send_limits = 4;
 }
 
 message Bolt11Settings {
     bool mpp = 1;
     bool amountless = 2;
     bool invoice_description = 5;
+    AmountLimitSettings receive_limits = 3;
+    AmountLimitSettings send_limits = 4;
 }
 
 

@@ -627,6 +627,21 @@ impl PaymentQuoteResponse {
     }
 }
 
+/// Amount limit settings reported by the payment processor.
+///
+/// `None` means the processor does not constrain that bound; the operator's
+/// configured limit is used as-is.  `Some(x)` means the processor enforces
+/// `x` and the effective limit is computed as:
+///   effective_min = max(processor_min, operator_min)
+///   effective_max = min(processor_max, operator_max)
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AmountLimitSettings {
+    /// Minimum amount set by the backend (None = no constraint)
+    pub min: Option<u64>,
+    /// Maximum amount set by the backend (None = no constraint)
+    pub max: Option<u64>,
+}
+
 /// BOLT11 settings
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Bolt11Settings {
@@ -636,6 +651,12 @@ pub struct Bolt11Settings {
     pub amountless: bool,
     /// Invoice description supported
     pub invoice_description: bool,
+    /// Receive (mint) amount limits from the backend (None = no constraints)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receive_limits: Option<AmountLimitSettings>,
+    /// Send (melt) amount limits from the backend (None = no constraints)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_limits: Option<AmountLimitSettings>,
 }
 
 /// BOLT12 settings
@@ -643,6 +664,12 @@ pub struct Bolt11Settings {
 pub struct Bolt12Settings {
     /// Amountless offer support
     pub amountless: bool,
+    /// Receive (mint) amount limits from the backend (None = no constraints)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receive_limits: Option<AmountLimitSettings>,
+    /// Send (melt) amount limits from the backend (None = no constraints)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_limits: Option<AmountLimitSettings>,
 }
 
 /// Onchain settings
@@ -650,10 +677,12 @@ pub struct Bolt12Settings {
 pub struct OnchainSettings {
     /// Number of confirmations required
     pub confirmations: u32,
-    /// Minimum incoming onchain payment amount accepted by the backend
-    pub min_receive_amount_sat: u64,
-    /// Minimum outgoing onchain payment amount accepted by the backend
-    pub min_send_amount_sat: u64,
+    /// Receive (mint) amount limits from the backend
+    #[serde(default)]
+    pub receive_limits: AmountLimitSettings,
+    /// Send (melt) amount limits from the backend
+    #[serde(default)]
+    pub send_limits: AmountLimitSettings,
 }
 
 /// Payment processor settings response

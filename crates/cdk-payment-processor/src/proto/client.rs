@@ -26,6 +26,15 @@ use crate::proto::{
     PaymentQuoteRequest, SettingsResponse as ProtoSettingsResponse,
 };
 
+fn from_proto_amount_limits(
+    l: crate::proto::AmountLimitSettings,
+) -> cdk_common::payment::AmountLimitSettings {
+    cdk_common::payment::AmountLimitSettings {
+        min: (l.min > 0).then_some(l.min),
+        max: (l.max > 0).then_some(l.max),
+    }
+}
+
 fn from_proto_settings(s: ProtoSettingsResponse) -> cdk_common::payment::SettingsResponse {
     cdk_common::payment::SettingsResponse {
         unit: s.unit,
@@ -33,14 +42,24 @@ fn from_proto_settings(s: ProtoSettingsResponse) -> cdk_common::payment::Setting
             mpp: b.mpp,
             amountless: b.amountless,
             invoice_description: b.invoice_description,
+            receive_limits: b.receive_limits.map(from_proto_amount_limits),
+            send_limits: b.send_limits.map(from_proto_amount_limits),
         }),
         bolt12: s.bolt12.map(|b| cdk_common::payment::Bolt12Settings {
             amountless: b.amountless,
+            receive_limits: b.receive_limits.map(from_proto_amount_limits),
+            send_limits: b.send_limits.map(from_proto_amount_limits),
         }),
         onchain: s.onchain.map(|o| cdk_common::payment::OnchainSettings {
             confirmations: o.confirmations,
-            min_receive_amount_sat: o.min_receive_amount_sat,
-            min_send_amount_sat: o.min_send_amount_sat,
+            receive_limits: o
+                .receive_limits
+                .map(from_proto_amount_limits)
+                .unwrap_or_default(),
+            send_limits: o
+                .send_limits
+                .map(from_proto_amount_limits)
+                .unwrap_or_default(),
         }),
         custom: s.custom,
     }
