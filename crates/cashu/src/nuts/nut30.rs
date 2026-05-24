@@ -16,7 +16,6 @@ use crate::{Amount, Proofs};
 ///
 /// Request for an onchain mint quote. Requires a pubkey (NUT-20).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintQuoteOnchainRequest {
     /// Unit wallet would like to mint
     pub unit: CurrencyUnit,
@@ -34,7 +33,6 @@ pub struct MintQuoteOnchainRequest {
 /// cannot silently deserialize as another method (for example `MintQuoteBolt12Response`
 /// which carries an `amount` field Onchain does not have).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(bound = "Q: Serialize + DeserializeOwned")]
 #[serde(deny_unknown_fields)]
 pub struct MintQuoteOnchainResponse<Q> {
@@ -90,7 +88,6 @@ impl From<MintQuoteOnchainResponse<QuoteId>> for MintQuoteOnchainResponse<String
 ///
 /// Request for an onchain melt quote.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MeltQuoteOnchainRequest {
     /// Bitcoin address to send to
     pub request: String,
@@ -105,7 +102,6 @@ pub struct MeltQuoteOnchainRequest {
 /// Request to execute an onchain melt quote. The wallet selects one of the
 /// quote's fee options by including that option's `fee_index` value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(bound = "Q: Serialize + DeserializeOwned")]
 pub struct MeltOnchainRequest<Q> {
     /// Quote ID
@@ -113,13 +109,8 @@ pub struct MeltOnchainRequest<Q> {
     /// Selected fee option index from the quote's `fee_options`
     pub fee_index: u32,
     /// Proofs
-    #[cfg_attr(feature = "swagger", schema(value_type = Vec<crate::Proof>))]
     pub inputs: Proofs,
     /// Blinded messages that can be used to return overpaid onchain fee reserve
-    #[cfg_attr(
-        feature = "swagger",
-        schema(value_type = Option<Vec<crate::BlindedMessage>>)
-    )]
     pub outputs: Option<Vec<BlindedMessage>>,
 }
 
@@ -146,7 +137,6 @@ where
 /// - MUST NOT contain two items with the same `fee_index`.
 /// - The list is fixed for the lifetime of the quote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MeltQuoteOnchainFeeOption {
     /// Server-assigned identifier the wallet echoes back to select this option
     pub fee_index: u32,
@@ -168,7 +158,6 @@ pub struct MeltQuoteOnchainFeeOption {
 /// silently deserialize as `MeltQuoteBolt11Response` (which carries `fee_reserve`
 /// at the top level, while onchain carries it inside `fee_options`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(bound = "Q: Serialize + DeserializeOwned")]
 #[serde(deny_unknown_fields)]
 pub struct MeltQuoteOnchainResponse<Q> {
@@ -198,10 +187,6 @@ pub struct MeltQuoteOnchainResponse<Q> {
     pub outpoint: Option<String>,
     /// Blind signatures for overpaid onchain fee reserve
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "swagger",
-        schema(value_type = Option<Vec<crate::BlindSignature>>)
-    )]
     pub change: Option<Vec<BlindSignature>>,
 }
 

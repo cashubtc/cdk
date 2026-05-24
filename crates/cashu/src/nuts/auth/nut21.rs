@@ -19,7 +19,6 @@ pub enum Error {
 
 /// Clear Auth Settings
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct Settings {
     /// Openid discovery
     pub openid_discovery: String,
@@ -91,7 +90,6 @@ impl<'de> Deserialize<'de> for Settings {
 
 /// List of the methods and paths that are protected
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct ProtectedEndpoint {
     /// HTTP Method
     pub method: Method,
@@ -118,7 +116,6 @@ impl ProtectedEndpoint {
 /// HTTP method
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum Method {
     /// Get
     Get,
@@ -128,7 +125,6 @@ pub enum Method {
 
 /// Route path
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum RoutePath {
     /// Wildcard route path prefix
     Wildcard(String),

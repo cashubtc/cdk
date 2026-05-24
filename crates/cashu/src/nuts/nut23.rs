@@ -30,7 +30,6 @@ pub enum Error {
 
 /// Mint quote request [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintQuoteBolt11Request {
     /// Amount
     pub amount: Amount,
@@ -47,7 +46,6 @@ pub struct MintQuoteBolt11Request {
 /// Possible states of a quote
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = MintQuoteState))]
 pub enum QuoteState {
     /// Quote has not been paid
     #[default]
@@ -83,7 +81,6 @@ impl FromStr for QuoteState {
 
 /// Mint quote response [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(bound = "Q: Serialize + DeserializeOwned")]
 pub struct MintQuoteBolt11Response<Q> {
     /// Quote Id
@@ -140,10 +137,8 @@ impl From<MintQuoteBolt11Response<QuoteId>> for MintQuoteBolt11Response<String> 
 
 /// BOLT11 melt quote request [NUT-23]
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MeltQuoteBolt11Request {
     /// Bolt11 invoice to be paid
-    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub request: Bolt11Invoice,
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
@@ -154,7 +149,6 @@ pub struct MeltQuoteBolt11Request {
 /// Melt Options
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum MeltOptions {
     /// Mpp Options
     Mpp {
@@ -204,7 +198,6 @@ impl MeltOptions {
 
 /// Amountless payment
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct Amountless {
     /// Amount to pay in msat
     pub amount_msat: Amount,
@@ -241,7 +234,6 @@ impl MeltQuoteBolt11Request {
 
 /// Melt quote response [NUT-05]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(bound = "Q: Serialize + DeserializeOwned")]
 pub struct MeltQuoteBolt11Response<Q> {
     /// Quote Id

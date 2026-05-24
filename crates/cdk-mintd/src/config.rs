@@ -66,12 +66,6 @@ pub struct Info {
     #[serde(default)]
     pub logging: LoggingConfig,
 
-    /// When this is set to true, the mint exposes a Swagger UI for it's API at
-    /// `[listen_host]:[listen_port]/swagger-ui`
-    ///
-    /// This requires `mintd` was built with the `swagger` feature flag.
-    pub enable_swagger_ui: Option<bool>,
-
     /// When this is set to true, the mint exposes a very simple info page at `/`
     /// showing the mint name and description.
     ///
@@ -98,7 +92,6 @@ impl Default for Info {
             input_fee_ppk: None,
             use_keyset_v2: None,
             http_cache: cache::Config::default(),
-            enable_swagger_ui: None,
             enable_info_page: Some(true),
             logging: LoggingConfig::default(),
             quote_ttl: None,
@@ -127,7 +120,6 @@ impl std::fmt::Debug for Info {
             .field("use_keyset_v2", &self.use_keyset_v2)
             .field("http_cache", &self.http_cache)
             .field("logging", &self.logging)
-            .field("enable_swagger_ui", &self.enable_swagger_ui)
             .field("enable_info_page", &self.enable_info_page)
             .finish()
     }
@@ -1233,7 +1225,6 @@ mod tests {
             listen_host: "127.0.0.1".to_string(),
             listen_port: 8080,
             mnemonic: Some("".to_string()), // Empty mnemonic
-            enable_swagger_ui: Some(false),
             ..Default::default()
         };
 

@@ -22,7 +22,6 @@ pub enum Error {
 /// State of Proof
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum State {
     /// Spent
     Spent,
@@ -71,21 +70,17 @@ impl FromStr for State {
 
 /// Check spendable request [NUT-07]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct CheckStateRequest {
     /// Y's of the proofs to check
     #[serde(rename = "Ys")]
-    #[cfg_attr(feature = "swagger", schema(value_type = Vec<String>, max_items = 1_000))]
     pub ys: Vec<PublicKey>,
 }
 
 /// Proof state [NUT-07]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct ProofState {
     /// Y of proof
     #[serde(rename = "Y")]
-    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub y: PublicKey,
     /// State of proof
     pub state: State,
@@ -105,7 +100,6 @@ impl From<(PublicKey, State)> for ProofState {
 
 /// Check Spendable Response [NUT-07]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct CheckStateResponse {
     /// Proof states
     pub states: Vec<ProofState>,

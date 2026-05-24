@@ -355,12 +355,11 @@
             null;
 
         # Build ALL dependencies once - this is what gets cached by Cachix
-        # Note: We exclude swagger feature as it tries to download assets during build
         workspaceDeps = craneLib.buildDepsOnly (
           commonCraneArgs
           // {
             pname = "cdk-deps";
-            # Build deps for workspace - swagger excluded (downloads during build)
+            # Build deps for workspace
             cargoExtraArgs = "--workspace";
           }
         );
@@ -726,10 +725,10 @@
         # MSRV build check definitions
         # ========================================
         msrvChecks = {
-          # Core library with all features (except swagger which breaks MSRV)
+          # Core library with all features
           "cdk-all-features" = "-p cdk --features \"mint,wallet\"";
 
-          # Mintd with all backends, databases, and features (no swagger)
+          # Mintd with all backends, databases, and features
           "cdk-mintd-all" =
             "-p cdk-mintd --no-default-features --features \"cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,redis,management-rpc\"";
 

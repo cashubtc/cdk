@@ -42,7 +42,6 @@ pub enum Error {
 
 /// Blind auth settings
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct Settings {
     /// Max number of blind auth tokens that can be minted per request
     pub bat_max_mint: u64,
@@ -149,17 +148,14 @@ pub enum AuthRequired {
 
 /// Auth Proofs
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct AuthProof {
     /// `Keyset id`
     #[serde(rename = "id")]
     pub keyset_id: Id,
     /// Secret message
-    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub secret: Secret,
     /// Unblinded signature
     #[serde(rename = "C")]
-    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub c: PublicKey,
     /// Auth Proof Dleq
     pub dleq: Option<ProofDleq>,
@@ -259,10 +255,8 @@ impl std::str::FromStr for BlindAuthToken {
 
 /// Mint auth request [NUT-XX]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintAuthRequest {
     /// Outputs
-    #[cfg_attr(feature = "swagger", schema(max_items = 1_000))]
     pub outputs: Vec<BlindedMessage>,
 }
 

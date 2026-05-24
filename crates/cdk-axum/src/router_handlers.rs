@@ -87,14 +87,6 @@ macro_rules! post_cache_wrapper_with_prefer {
 
 post_cache_wrapper!(post_swap, SwapRequest, SwapResponse);
 
-#[cfg_attr(feature = "swagger", utoipa::path(
-    get,
-    context_path = "/v1",
-    path = "/keys",
-    responses(
-        (status = 200, description = "Successful response", body = KeysResponse, content_type = "application/json")
-    )
-))]
 /// Get the public keys of the newest mint keyset
 ///
 /// This endpoint returns a dictionary of all supported token values of the mint and their associated public key.
@@ -105,18 +97,6 @@ pub(crate) async fn get_keys(
     Ok(Json(state.mint.pubkeys()))
 }
 
-#[cfg_attr(feature = "swagger", utoipa::path(
-    get,
-    context_path = "/v1",
-    path = "/keys/{keyset_id}",
-    params(
-        ("keyset_id" = String, description = "The keyset ID"),
-    ),
-    responses(
-        (status = 200, description = "Successful response", body = KeysResponse, content_type = "application/json"),
-        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
-    )
-))]
 /// Get the public keys of a specific keyset
 ///
 /// Get the public keys of the mint from a specific keyset ID.
@@ -133,15 +113,6 @@ pub(crate) async fn get_keyset_pubkeys(
     Ok(Json(pubkeys))
 }
 
-#[cfg_attr(feature = "swagger", utoipa::path(
-    get,
-    context_path = "/v1",
-    path = "/keysets",
-    responses(
-        (status = 200, description = "Successful response", body = KeysetResponse, content_type = "application/json"),
-        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
-    )
-))]
 /// Get all active keyset IDs of the mint
 ///
 /// This endpoint returns a list of keysets that the mint currently supports and will accept tokens from.
@@ -170,16 +141,6 @@ pub(crate) async fn ws_handler(
     Ok(ws.on_upgrade(|ws| main_websocket(ws, state)))
 }
 
-#[cfg_attr(feature = "swagger", utoipa::path(
-    post,
-    context_path = "/v1",
-    path = "/checkstate",
-    request_body(content = CheckStateRequest, description = "State params", content_type = "application/json"),
-    responses(
-        (status = 200, description = "Successful response", body = CheckStateResponse, content_type = "application/json"),
-        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
-    )
-))]
 /// Check whether a proof is spent already or is pending in a transaction
 ///
 /// Check whether a secret has been spent already or not.
@@ -206,14 +167,6 @@ pub(crate) async fn post_check(
     Ok(Json(state))
 }
 
-#[cfg_attr(feature = "swagger", utoipa::path(
-    get,
-    context_path = "/v1",
-    path = "/info",
-    responses(
-        (status = 200, description = "Successful response", body = MintInfo)
-    )
-))]
 /// Mint information, operator contact information, and other info
 #[instrument(skip_all)]
 pub(crate) async fn get_mint_info(
@@ -233,16 +186,6 @@ pub(crate) async fn get_mint_info(
     ))
 }
 
-#[cfg_attr(feature = "swagger", utoipa::path(
-    post,
-    context_path = "/v1",
-    path = "/swap",
-    request_body(content = SwapRequest, description = "Swap params", content_type = "application/json"),
-    responses(
-        (status = 200, description = "Successful response", body = SwapResponse, content_type = "application/json"),
-        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
-    )
-))]
 /// Swap inputs for outputs of the same value
 ///
 /// Requests a set of Proofs to be swapped for another set of BlindSignatures.
@@ -275,16 +218,6 @@ pub(crate) async fn post_swap(
     Ok(Json(swap_response))
 }
 
-#[cfg_attr(feature = "swagger", utoipa::path(
-    post,
-    context_path = "/v1",
-    path = "/restore",
-    request_body(content = RestoreRequest, description = "Restore params", content_type = "application/json"),
-    responses(
-        (status = 200, description = "Successful response", body = RestoreResponse, content_type = "application/json"),
-        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
-    )
-))]
 /// Restores blind signature for a set of outputs.
 #[instrument(skip_all, fields(outputs_count = ?payload.outputs.len()))]
 pub(crate) async fn post_restore(

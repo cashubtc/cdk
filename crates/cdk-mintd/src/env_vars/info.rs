@@ -59,12 +59,6 @@ impl Info {
             }
         }
 
-        if let Ok(swagger_str) = env::var(ENV_ENABLE_SWAGGER) {
-            if let Ok(enable) = swagger_str.parse() {
-                self.enable_swagger_ui = Some(enable);
-            }
-        }
-
         if let Ok(info_page_str) = env::var(ENV_ENABLE_INFO_PAGE) {
             if let Ok(enable) = info_page_str.parse() {
                 self.enable_info_page = Some(enable);

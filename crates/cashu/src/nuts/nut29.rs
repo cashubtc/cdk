@@ -23,7 +23,6 @@ pub enum Error {
 
 /// NUT-29 Settings for mint info
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct Settings {
     /// Maximum number of quotes allowed in a single batch request
     #[serde(skip_serializing_if = "Option::is_none")]

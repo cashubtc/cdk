@@ -12,7 +12,6 @@ readme = "README.md"
 
 [features]
 default = ["mint", "wallet"]
-swagger = ["dep:utoipa"]
 mint = []
 wallet = []
 nostr = ["dep:nostr-sdk"]
@@ -30,7 +29,6 @@ lightning.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 url.workspace = true
-utoipa = { workspace = true, optional = true }
 serde_json.workspace = true
 serde_with.workspace = true
 strum.workspace = true

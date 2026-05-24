@@ -12,7 +12,6 @@ readme = "README.md"
 
 [features]
 redis = ["dep:redis"]
-swagger = ["cdk/swagger", "dep:utoipa"]
 prometheus = ["dep:cdk-prometheus"]
 info-page = ["dep:maud"]
 
@@ -25,7 +24,6 @@ cdk = { workspace = true, features = [
 ]}
 tokio.workspace = true
 tracing.workspace = true
-utoipa = { workspace = true, optional = true }
 futures.workspace = true
 cdk-prometheus = { workspace = true , optional = true}
 moka = { version = "0.12.10", features = ["future"] }

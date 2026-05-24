@@ -40,10 +40,8 @@ pub struct PreSwap {
 
 /// Swap Request [NUT-03]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct SwapRequest {
     /// Proofs that are to be spent in a `Swap`
-    #[cfg_attr(feature = "swagger", schema(value_type = Vec<crate::Proof>))]
     inputs: Proofs,
     /// Blinded Messages for Mint to sign
     outputs: Vec<BlindedMessage>,
@@ -121,7 +119,6 @@ impl super::nut10::SpendingConditionVerification for SwapRequest {
 
 /// Split Response [NUT-06]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct SwapResponse {
     /// Promises
     pub signatures: Vec<BlindSignature>,

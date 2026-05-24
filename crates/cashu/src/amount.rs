@@ -48,7 +48,6 @@ pub enum Error {
 /// Note: `PartialOrd` is implemented manually for `Amount<CurrencyUnit>` to return `None`
 /// when comparing amounts with different units. `Ord` is only implemented for `Amount<()>`.
 #[derive(Debug, Hash, PartialEq, Eq)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct Amount<U = ()> {
     value: u64,
     unit: U,

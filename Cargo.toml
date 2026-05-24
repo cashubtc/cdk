@@ -96,10 +96,6 @@ tracing-appender = "0.2"
 uniffi = "0.30"
 url = "2.3"
 uuid = { version = "1.17", features = ["v4", "serde"] }
-utoipa = { version = "5.3.1", features = [
-    "preserve_order",
-    "preserve_path_order",
-]}
 maud = { version = "0.27.0", features = ["axum"] }
 serde_with = "3"
 reqwest = { version = "0.12", default-features = false, features = [

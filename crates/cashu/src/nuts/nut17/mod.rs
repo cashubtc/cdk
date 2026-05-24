@@ -30,7 +30,6 @@ pub struct Params<I> {
 
 /// Check state Settings
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct SupportedSettings {
     /// Supported methods
     pub supported: Vec<SupportedMethods>,
@@ -38,7 +37,6 @@ pub struct SupportedSettings {
 
 /// Supported WS Methods
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct SupportedMethods {
     /// Payment Method
     pub method: PaymentMethod,
@@ -119,7 +117,6 @@ impl WsCommand {
 
 /// WebSocket commands supported by the Cashu mint
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum WsCommand {
     /// Command to request a Lightning invoice for minting tokens
     Bolt11MintQuote,

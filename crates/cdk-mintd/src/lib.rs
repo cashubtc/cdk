@@ -63,8 +63,6 @@ use tower_http::trace::TraceLayer;
 use tracing_appender::{non_blocking, rolling};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::EnvFilter;
-#[cfg(feature = "swagger")]
-use utoipa::OpenApi;
 
 pub mod cli;
 pub mod config;
@@ -1388,15 +1386,6 @@ async fn start_services_with_shutdown(
         mint_service = mint_service.merge(router);
     }
 
-    #[cfg(feature = "swagger")]
-    {
-        if settings.info.enable_swagger_ui.unwrap_or(false) {
-            mint_service = mint_service.merge(
-                utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
-                    .url("/api-docs/openapi.json", cdk_axum::ApiDoc::openapi()),
-            );
-        }
-    }
     // Create a broadcast channel to share shutdown signal between services
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
 

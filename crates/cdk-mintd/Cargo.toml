@@ -25,8 +25,6 @@ ldk-node = ["dep:cdk-ldk-node"]
 bdk = ["dep:cdk-bdk", "cdk-bdk/bitcoin-rpc", "cdk-bdk/esplora"]
 grpc-processor = ["dep:cdk-payment-processor", "cdk-signatory/grpc"]
 sqlcipher = ["sqlite", "cdk-sqlite/sqlcipher"]
-# MSRV is not committed to with swagger enabled
-swagger = ["cdk-axum/swagger", "dep:utoipa", "dep:utoipa-swagger-ui"]
 redis = ["cdk-axum/redis"]
 prometheus = ["cdk/prometheus", "dep:cdk-prometheus", "cdk-sqlite?/prometheus", "cdk-axum/prometheus"]
 info-page = ["cdk-axum/info-page"]
@@ -69,8 +67,6 @@ tower-http = { workspace = true, features = ["compression-full", "decompression-
 tower.workspace = true
 lightning-invoice.workspace = true
 home.workspace = true
-utoipa = { workspace = true, optional = true }
-utoipa-swagger-ui = { version = "9.0.0", features = ["axum"], optional = true }
 
 [lints]
 workspace = true

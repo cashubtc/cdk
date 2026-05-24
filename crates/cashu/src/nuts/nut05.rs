@@ -37,7 +37,6 @@ pub enum Error {
 /// Possible states of a quote
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = MeltQuoteState))]
 pub enum QuoteState {
     /// Quote has not been paid
     #[default]
@@ -81,20 +80,17 @@ impl FromStr for QuoteState {
 
 /// Melt Bolt11 Request [NUT-05]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(bound = "Q: Serialize + DeserializeOwned")]
 pub struct MeltRequest<Q> {
     /// Quote ID
     quote: Q,
     /// Proofs
-    #[cfg_attr(feature = "swagger", schema(value_type = Vec<crate::Proof>))]
     inputs: Proofs,
     /// Blinded Message that can be used to return change [NUT-08]
     /// Amount field of BlindedMessages `SHOULD` be set to zero
     outputs: Option<Vec<BlindedMessage>>,
     /// Whether the client prefers asynchronous processing
     #[serde(default)]
-    #[cfg_attr(feature = "swagger", schema(value_type = bool))]
     prefer_async: bool,
     /// Selected fee option index for onchain melts
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -225,7 +221,6 @@ where
 
 /// Melt Method Settings
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MeltMethodSettings {
     /// Payment Method e.g. bolt11
     pub method: PaymentMethod,
@@ -387,7 +382,6 @@ impl<'de> Deserialize<'de> for MeltMethodSettings {
 
 /// Mint Method settings options
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(untagged)]
 pub enum MeltMethodOptions {
     /// Bolt11 Options
@@ -433,7 +427,6 @@ impl Settings {
 
 /// Melt Settings
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = nut05::Settings))]
 pub struct Settings {
     /// Methods to melt
     pub methods: Vec<MeltMethodSettings>,
@@ -460,7 +453,6 @@ impl Settings {
 /// The `extra` field allows payment-method-specific fields to be included
 /// without being nested. When serialized, extra fields merge into the parent JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MeltQuoteCustomRequest {
     /// Custom payment method name
     pub method: String,
@@ -473,7 +465,6 @@ pub struct MeltQuoteCustomRequest {
     /// These fields are flattened into the JSON representation, allowing
     /// custom payment methods to include additional data.
     #[serde(flatten, default, skip_serializing_if = "serde_json::Value::is_null")]
-    #[cfg_attr(feature = "swagger", schema(value_type = Object, additional_properties = true))]
     pub extra: serde_json::Value,
 }
 
@@ -501,7 +492,6 @@ pub struct MeltQuoteCustomRequest {
 /// its fields can be promoted from `extra` to well-defined struct fields without
 /// breaking existing clients.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(bound = "Q: Serialize + for<'a> Deserialize<'a>")]
 pub struct MeltQuoteCustomResponse<Q> {
     /// Quote ID
@@ -532,7 +522,6 @@ pub struct MeltQuoteCustomResponse<Q> {
     /// These fields are flattened into the JSON representation, allowing
     /// custom payment methods to include additional data without nesting.
     #[serde(flatten, default, skip_serializing_if = "serde_json::Value::is_null")]
-    #[cfg_attr(feature = "swagger", schema(value_type = Object, additional_properties = true))]
     pub extra: serde_json::Value,
 }
 

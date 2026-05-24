@@ -55,7 +55,6 @@ pub enum Error {
 
 /// Keyset version
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum KeySetVersion {
     /// Version 00
     Version00,
@@ -110,7 +109,6 @@ impl fmt::Display for KeySetVersion {
 
 /// Keyset ID bytes
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub enum IdBytes {
     /// Bytes for v1
     V1([u8; 7]),
@@ -134,7 +132,6 @@ impl IdBytes {
 /// which mint or keyset it was generated from.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct Id {
     version: KeySetVersion,
     id: IdBytes,
@@ -385,7 +382,6 @@ impl From<Id> for String {
 /// In case of v2, this is the 8-byte prefix
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct ShortKeysetId {
     /// The version of the short keyset
     version: KeySetVersion,
@@ -481,7 +477,6 @@ impl From<ShortKeysetId> for String {
 /// Ids of mints keyset ids
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KeysetResponse {
     /// set of public key ids that the mint generates
     #[serde_as(as = "VecSkipError<_>")]
@@ -490,10 +485,8 @@ pub struct KeysetResponse {
 
 /// Keyset
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KeySet {
     /// Keyset [`Id`]
-    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub id: Id,
     /// Keyset [`CurrencyUnit`]
     pub unit: CurrencyUnit,
@@ -536,10 +529,8 @@ impl KeySet {
 
 /// KeySetInfo
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct KeySetInfo {
     /// Keyset [`Id`]
-    #[cfg_attr(feature = "swagger", schema(value_type = String))]
     pub id: Id,
     /// Keyset [`CurrencyUnit`]
     pub unit: CurrencyUnit,

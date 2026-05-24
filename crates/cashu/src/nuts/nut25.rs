@@ -23,7 +23,6 @@ pub enum Error {
 
 /// Mint quote request [NUT-24]
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintQuoteBolt12Request {
     /// Amount
     pub amount: Option<Amount>,
@@ -37,7 +36,6 @@ pub struct MintQuoteBolt12Request {
 
 /// Mint quote response [NUT-24]
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(bound = "Q: Serialize + for<'a> Deserialize<'a>")]
 pub struct MintQuoteBolt12Response<Q> {
     /// Quote Id
@@ -93,7 +91,6 @@ impl From<MintQuoteBolt12Response<QuoteId>> for MintQuoteBolt12Response<String> 
 
 /// Melt quote request [NUT-18]
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MeltQuoteBolt12Request {
     /// Bolt12 invoice to be paid
     pub request: String,

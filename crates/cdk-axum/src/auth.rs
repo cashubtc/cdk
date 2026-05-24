@@ -6,8 +6,6 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-#[cfg(feature = "swagger")]
-use cdk::error::ErrorResponse;
 use cdk::nuts::{
     AuthToken, BlindAuthToken, KeysResponse, KeysetResponse, MintAuthRequest, MintResponse,
 };
@@ -86,15 +84,6 @@ where
     }
 }
 
-#[cfg_attr(feature = "swagger", utoipa::path(
-    get,
-    context_path = "/v1/auth/blind",
-    path = "/keysets",
-    responses(
-        (status = 200, description = "Successful response", body = KeysetResponse, content_type = "application/json"),
-        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
-    )
-))]
 /// Get all active keyset IDs of the mint
 ///
 /// This endpoint returns a list of keysets that the mint currently supports and will accept tokens from.
@@ -104,14 +93,6 @@ pub async fn get_auth_keysets(
     Ok(Json(state.mint.auth_keysets()))
 }
 
-#[cfg_attr(feature = "swagger", utoipa::path(
-    get,
-    context_path = "/v1/auth/blind",
-    path = "/keys",
-    responses(
-        (status = 200, description = "Successful response", body = KeysResponse, content_type = "application/json")
-    )
-))]
 /// Get the public keys of the newest blind auth mint keyset
 ///
 /// This endpoint returns a dictionary of all supported token values of the mint and their associated public key.
@@ -131,16 +112,6 @@ pub async fn get_blind_auth_keys(
 /// Requests the minting of tokens belonging to a paid payment request.
 ///
 /// Call this endpoint after `POST /v1/mint/quote`.
-#[cfg_attr(feature = "swagger", utoipa::path(
-    post,
-    context_path = "/v1/auth",
-    path = "/blind/mint",
-    request_body(content = MintAuthRequest, description = "Request params", content_type = "application/json"),
-    responses(
-        (status = 200, description = "Successful response", body = MintResponse, content_type = "application/json"),
-        (status = 500, description = "Server error", body = ErrorResponse, content_type = "application/json")
-    )
-))]
 pub async fn post_mint_auth(
     auth: AuthHeader,
     State(state): State<MintState>,

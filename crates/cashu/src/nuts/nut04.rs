@@ -33,14 +33,11 @@ pub enum Error {
 
 /// Mint request [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(bound = "Q: Serialize + DeserializeOwned")]
 pub struct MintRequest<Q> {
     /// Quote id
-    #[cfg_attr(feature = "swagger", schema(max_length = 1_000))]
     pub quote: Q,
     /// Outputs
-    #[cfg_attr(feature = "swagger", schema(max_items = 1_000))]
     pub outputs: Vec<BlindedMessage>,
     /// Signature
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -74,7 +71,6 @@ impl<Q> MintRequest<Q> {
 
 /// Mint response [NUT-04]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintResponse {
     /// Blinded Signatures
     pub signatures: Vec<BlindSignature>,
@@ -82,7 +78,6 @@ pub struct MintResponse {
 
 /// Mint Method Settings
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintMethodSettings {
     /// Payment Method e.g. bolt11
     pub method: PaymentMethod,
@@ -274,7 +269,6 @@ impl<'de> Deserialize<'de> for MintMethodSettings {
 
 /// Mint Method settings options
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(untagged)]
 pub enum MintMethodOptions {
     /// Bolt11 Options
@@ -293,7 +287,6 @@ pub enum MintMethodOptions {
 
 /// Mint Settings
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema), schema(as = nut04::Settings))]
 pub struct Settings {
     /// Methods to mint
     pub methods: Vec<MintMethodSettings>,
@@ -353,7 +346,6 @@ impl Settings {
 /// The `extra` field allows payment-method-specific fields to be included
 /// without being nested. When serialized, extra fields merge into the parent JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct MintQuoteCustomRequest {
     /// Amount to mint
     pub amount: Amount,
@@ -372,7 +364,6 @@ pub struct MintQuoteCustomRequest {
     /// This enables proper validation layering: the mint verifies well-defined
     /// fields while passing extra through to the payment processor.
     #[serde(flatten, default, skip_serializing_if = "serde_json::Value::is_null")]
-    #[cfg_attr(feature = "swagger", schema(value_type = Object, additional_properties = true))]
     pub extra: serde_json::Value,
 }
 
@@ -401,7 +392,6 @@ pub struct MintQuoteCustomRequest {
 /// its fields can be promoted from `extra` to well-defined struct fields without
 /// breaking existing clients (e.g., bolt12's `amount_paid` and `amount_issued`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 #[serde(bound = "Q: Serialize + for<'a> Deserialize<'a>")]
 pub struct MintQuoteCustomResponse<Q> {
     /// Quote ID
@@ -430,7 +420,6 @@ pub struct MintQuoteCustomResponse<Q> {
     /// These fields are flattened into the JSON representation, allowing
     /// custom payment methods to include additional data without nesting.
     #[serde(flatten, default, skip_serializing_if = "serde_json::Value::is_null")]
-    #[cfg_attr(feature = "swagger", schema(value_type = Object, additional_properties = true))]
     pub extra: serde_json::Value,
 }
 
