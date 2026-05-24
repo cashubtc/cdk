@@ -282,6 +282,21 @@ mod tests {
     }
 
     #[test]
+    fn test_send_options_invalid_conditions_returns_error() {
+        let options = SendOptions {
+            conditions: Some(SpendingConditions::P2PK {
+                pubkey: "not_a_valid_pubkey".to_string(),
+                conditions: None,
+            }),
+            ..Default::default()
+        };
+
+        let result: Result<cdk::wallet::SendOptions, _> = options.try_into();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_send_options_json_defaults_new_p2pk_fields() {
         let json = r#"{
             "memo": null,

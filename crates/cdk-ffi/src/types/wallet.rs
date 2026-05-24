@@ -231,7 +231,7 @@ impl TryFrom<SendOptions> for cdk::wallet::SendOptions {
 
         Ok(cdk::wallet::SendOptions {
             memo: opts.memo.map(Into::into),
-            conditions: opts.conditions.and_then(|c| c.try_into().ok()),
+            conditions: opts.conditions.map(TryInto::try_into).transpose()?,
             amount_split_target: opts.amount_split_target.into(),
             send_kind: opts.send_kind.into(),
             include_fee: opts.include_fee,

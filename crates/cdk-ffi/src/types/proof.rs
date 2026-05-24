@@ -527,7 +527,7 @@ pub fn encode_proof_info(info: ProofInfo) -> Result<String, FfiError> {
         y: info.y.try_into()?,
         mint_url: info.mint_url.try_into()?,
         state: info.state.into(),
-        spending_condition: info.spending_condition.and_then(|c| c.try_into().ok()),
+        spending_condition: info.spending_condition.map(TryInto::try_into).transpose()?,
         unit: info.unit.into(),
         used_by_operation: info
             .used_by_operation
