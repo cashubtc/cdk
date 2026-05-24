@@ -416,7 +416,7 @@ jobs:
             --target "${COMMIT_SHA}" \
             --title "Release ${TAG}" \
             --generate-notes \
-            artifacts/CashuDevKitFFI.xcframework.zip
+            ../artifacts/CashuDevKitFFI.xcframework.zip
 
       - name: Clean up release branch
         working-directory: cdk-swift
