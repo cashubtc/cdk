@@ -388,22 +388,9 @@ jobs:
           git diff --cached --quiet && echo "No changes to commit" && exit 0
           git commit -m "release: ${TAG} — add Swift sources and Package.swift"
 
-      - name: Merge to default branch
+      - name: Push release branch
         working-directory: cdk-swift
-        run: |
-          DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
-          echo "DEFAULT_BRANCH=${DEFAULT_BRANCH}" >> "$GITHUB_ENV"
-          git checkout "${DEFAULT_BRANCH}"
-          git merge "${RELEASE_BRANCH}" --squash
-          git commit -m "release: ${TAG}"
-
-      - name: Push branches (without tag)
-        working-directory: cdk-swift
-        run: |
-          git checkout "${RELEASE_BRANCH}"
-          git push origin "${RELEASE_BRANCH}"
-          git checkout "${DEFAULT_BRANCH}"
-          git push origin "${DEFAULT_BRANCH}"
+        run: git push origin "${RELEASE_BRANCH}"
 
       - name: Create release on cdk-swift (creates tag and uploads asset atomically)
         working-directory: cdk-swift
@@ -417,6 +404,16 @@ jobs:
             --title "Release ${TAG}" \
             --generate-notes \
             ../artifacts/CashuDevKitFFI.xcframework.zip
+
+      - name: Merge to default branch
+        working-directory: cdk-swift
+        run: |
+          DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
+          echo "DEFAULT_BRANCH=${DEFAULT_BRANCH}" >> "$GITHUB_ENV"
+          git checkout "${DEFAULT_BRANCH}"
+          git merge "${RELEASE_BRANCH}" --squash
+          git commit -m "release: ${TAG}"
+          git push origin "${DEFAULT_BRANCH}"
 
       - name: Clean up release branch
         working-directory: cdk-swift
