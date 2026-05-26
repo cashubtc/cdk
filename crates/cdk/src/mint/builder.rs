@@ -392,6 +392,12 @@ impl MintBuilder {
             unit: unit.clone(),
             method: method.clone(),
         };
+        if self.payment_processors.contains_key(&key) {
+            return Err(Error::Custom(format!(
+                "Duplicate payment processor for unit {} and method {}",
+                unit, method
+            )));
+        }
 
         let settings = payment_processor.get_settings().await?;
 
@@ -943,6 +949,54 @@ mod tests {
         let mpp_method = &mint_info.nuts.nut15.methods[0];
         assert_eq!(mpp_method.method, method);
         assert_eq!(mpp_method.unit, unit);
+    }
+
+    #[tokio::test]
+    async fn test_add_payment_processor_rejects_duplicate_unit_method() {
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let mut builder = MintBuilder::new(localstore);
+
+        let settings = SettingsResponse {
+            unit: "sat".to_string(),
+            bolt11: Some(Bolt11Settings {
+                mpp: false,
+                amountless: false,
+                invoice_description: false,
+            }),
+            bolt12: None,
+            onchain: None,
+            custom: HashMap::new(),
+        };
+        let unit = CurrencyUnit::Sat;
+        let method = PaymentMethod::Known(KnownMethod::Bolt11);
+        let limits = MintMeltLimits::new(100, 10000);
+
+        builder
+            .add_payment_processor(
+                unit.clone(),
+                method.clone(),
+                limits,
+                Arc::new(MockPaymentProcessor {
+                    settings: settings.clone(),
+                }),
+            )
+            .await
+            .unwrap();
+
+        let err = builder
+            .add_payment_processor(
+                unit,
+                method,
+                limits,
+                Arc::new(MockPaymentProcessor { settings }),
+            )
+            .await
+            .expect_err("duplicate unit/method pair should be rejected");
+
+        assert!(matches!(
+            err,
+            Error::Custom(message) if message.contains("Duplicate payment processor")
+        ));
     }
 
     #[tokio::test]

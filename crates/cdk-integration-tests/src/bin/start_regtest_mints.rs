@@ -423,10 +423,10 @@ fn create_onchain_settings(port: u16) -> cdk_mintd::config::Settings {
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
         limits: cdk_mintd::config::Limits::default(),
-        ln: cdk_mintd::config::Ln {
+        ln: vec![cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::None,
             ..Default::default()
-        },
+        }],
         onchain: None, // Will be set by apply_onchain_settings
         ..Default::default()
     }

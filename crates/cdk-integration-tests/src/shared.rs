@@ -188,15 +188,16 @@ pub fn create_fake_wallet_settings(
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
         limits: cdk_mintd::config::Limits::default(),
-        ln: cdk_mintd::config::Ln {
+        ln: vec![cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::FakeWallet,
+            unit: cdk::nuts::CurrencyUnit::Sat,
             invoice_description: None,
             min_mint: DEFAULT_MIN_MINT.into(),
             max_mint: DEFAULT_MAX_MINT.into(),
             min_melt: DEFAULT_MIN_MELT.into(),
             max_melt: DEFAULT_MAX_MELT.into(),
             ..Default::default()
-        },
+        }],
         cln: None,
         lnbits: None,
         lnd: None,
@@ -248,15 +249,16 @@ pub fn create_cln_settings(
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
         limits: cdk_mintd::config::Limits::default(),
-        ln: cdk_mintd::config::Ln {
+        ln: vec![cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::Cln,
+            unit: cdk::nuts::CurrencyUnit::Sat,
             invoice_description: None,
             min_mint: DEFAULT_MIN_MINT.into(),
             max_mint: DEFAULT_MAX_MINT.into(),
             min_melt: DEFAULT_MIN_MELT.into(),
             max_melt: DEFAULT_MAX_MELT.into(),
             ..Default::default()
-        },
+        }],
         onchain: None,
         cln: Some(cln_config),
         lnbits: None,
@@ -303,15 +305,16 @@ pub fn create_lnd_settings(
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
         limits: cdk_mintd::config::Limits::default(),
-        ln: cdk_mintd::config::Ln {
+        ln: vec![cdk_mintd::config::Ln {
             ln_backend: cdk_mintd::config::LnBackend::Lnd,
+            unit: cdk::nuts::CurrencyUnit::Sat,
             invoice_description: None,
             min_mint: DEFAULT_MIN_MINT.into(),
             max_mint: DEFAULT_MAX_MINT.into(),
             min_melt: DEFAULT_MIN_MELT.into(),
             max_melt: DEFAULT_MAX_MELT.into(),
             ..Default::default()
-        },
+        }],
         onchain: None,
         lnd: Some(lnd_config),
         fake_wallet: None,
