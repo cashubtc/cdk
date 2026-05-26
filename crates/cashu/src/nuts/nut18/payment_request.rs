@@ -36,6 +36,18 @@ pub struct PaymentRequest {
     #[serde(rename = "m")]
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub mints: Vec<MintUrl>,
+    /// Mints strict flag
+    #[serde(rename = "ms")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mints_strict: Option<bool>,
+    /// Additional fee reserve for payments from non-preferred mints
+    #[serde(rename = "fr")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fee_reserve: Option<Amount>,
+    /// Supported payment methods the mint must support
+    #[serde(rename = "sm")]
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub supported_methods: Vec<String>,
     /// Description
     #[serde(rename = "d")]
     pub description: Option<String>,
@@ -102,6 +114,9 @@ pub struct PaymentRequestBuilder {
     unit: Option<CurrencyUnit>,
     single_use: Option<bool>,
     mints: Vec<MintUrl>,
+    mints_strict: Option<bool>,
+    fee_reserve: Option<Amount>,
+    supported_methods: Vec<String>,
     description: Option<String>,
     transports: Vec<Transport>,
     nut10: Option<Nut10SecretRequest>,
@@ -150,6 +165,27 @@ impl PaymentRequestBuilder {
         self
     }
 
+    /// Set mints strict flag
+    pub fn mints_strict(mut self, mints_strict: bool) -> Self {
+        self.mints_strict = Some(mints_strict);
+        self
+    }
+
+    /// Set fee reserve for payments from non-preferred mints
+    pub fn fee_reserve<A>(mut self, fee_reserve: A) -> Self
+    where
+        A: Into<Amount>,
+    {
+        self.fee_reserve = Some(fee_reserve.into());
+        self
+    }
+
+    /// Set supported payment methods
+    pub fn supported_methods(mut self, methods: Vec<String>) -> Self {
+        self.supported_methods = methods;
+        self
+    }
+
     /// Set description
     pub fn description<S: Into<String>>(mut self, description: S) -> Self {
         self.description = Some(description.into());
@@ -182,6 +218,9 @@ impl PaymentRequestBuilder {
             unit: self.unit,
             single_use: self.single_use,
             mints: self.mints,
+            mints_strict: self.mints_strict,
+            fee_reserve: self.fee_reserve,
+            supported_methods: self.supported_methods,
             description: self.description,
             transports: self.transports,
             nut10: self.nut10,
@@ -249,6 +288,9 @@ mod tests {
             mints: vec!["https://nofees.testnut.cashu.space"
                 .parse()
                 .expect("valid mint url")],
+            mints_strict: None,
+            fee_reserve: None,
+            supported_methods: vec![],
             description: None,
             transports: vec![transport.clone()],
             nut10: None,
@@ -693,6 +735,9 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            mints_strict: None,
+            fee_reserve: None,
+            supported_methods: vec![],
             description: Some("Test both formats".to_string()),
             transports: vec![],
             nut10: None,

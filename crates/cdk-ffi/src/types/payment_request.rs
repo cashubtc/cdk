@@ -159,6 +159,21 @@ impl PaymentRequest {
         self.inner.mints.iter().map(|m| m.to_string()).collect()
     }
 
+    /// Get whether the mint list is strict
+    pub fn mints_strict(&self) -> Option<bool> {
+        self.inner.mints_strict
+    }
+
+    /// Get the fee reserve for payments from non-preferred mints
+    pub fn fee_reserve(&self) -> Option<Amount> {
+        self.inner.fee_reserve.map(|a| a.into())
+    }
+
+    /// Get the list of supported payment methods the mint must support
+    pub fn supported_methods(&self) -> Vec<String> {
+        self.inner.supported_methods.clone()
+    }
+
     /// Get the description
     pub fn description(&self) -> Option<String> {
         self.inner.description.clone()
