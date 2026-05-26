@@ -1109,4 +1109,4 @@ test-nitro-node:
   cargo build -p cdk-nitro
   cd bindings/react-native/test
   npm install
-  npm test
+  npm run test:all

@@ -14,16 +14,25 @@ on:
         required: false
 env:
   CARGO_TERM_COLOR: ${{ vars.CARGO_TERM_COLOR }}
+  TAG: ${{ inputs.release_tag }}
+  CDK_REF: ${{ inputs.cdk_ref || inputs.release_tag }}
+  RELEASE_BRANCH: release/${{ inputs.release_tag }}
 
 jobs:
   nitro-sync-sources:
     name: "nitro: Sync sources to cdk-nitro"
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve variables
+        run: |
+          CDK_VER="${{ inputs.cdk_version }}"
+          echo "CDK_VER=${CDK_VER:-${TAG#v}}" >> "$GITHUB_ENV"
+          echo "RELEASE_VER=${TAG#v}" >> "$GITHUB_ENV"
+
       - name: Checkout monorepo
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.cdk_ref || inputs.release_tag }}
+          ref: ${{ env.CDK_REF }}
 
       - name: Clone cdk-nitro
         run: |
@@ -45,10 +54,6 @@ jobs:
 
       - name: Update versions and resolve workspace references
         run: |
-          TAG="${{ inputs.release_tag }}"
-          CDK_VER="${{ inputs.cdk_version }}"
-          CDK_VER="${CDK_VER:-${TAG#v}}"
-          RELEASE_VER="${TAG#v}"
           echo "Setting CDK version to ${CDK_VER}, release version to ${RELEASE_VER}"
 
           # Helper: extract a value from [workspace.package] in root Cargo.toml
@@ -100,8 +105,6 @@ jobs:
       - name: Push to cdk-nitro release branch
         working-directory: cdk-nitro
         run: |
-          TAG="${{ inputs.release_tag }}"
-          RELEASE_BRANCH="release/v${TAG#v}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -B "${RELEASE_BRANCH}"
@@ -141,8 +144,6 @@ jobs:
       - name: Clone cdk-nitro
         shell: bash
         run: |
-          TAG="${{ inputs.release_tag }}"
-          RELEASE_BRANCH="release/v${TAG#v}"
           git clone --branch "${RELEASE_BRANCH}" \
             https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_NITRO_REPO }}.git cdk-nitro
 
@@ -150,7 +151,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: cdk
-          ref: ${{ inputs.cdk_ref || inputs.release_tag }}
+          ref: ${{ env.CDK_REF }}
           fetch-depth: 1
 
       - name: Install Nix
@@ -218,7 +219,7 @@ jobs:
       - name: Checkout monorepo (for C header)
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.cdk_ref || inputs.release_tag }}
+          ref: ${{ env.CDK_REF }}
           sparse-checkout: bindings/react-native/cpp/cdk_nitro.h
           sparse-checkout-cone-mode: false
 
@@ -258,8 +259,6 @@ jobs:
     steps:
       - name: Clone cdk-nitro
         run: |
-          TAG="${{ inputs.release_tag }}"
-          RELEASE_BRANCH="release/v${TAG#v}"
           git clone --branch "${RELEASE_BRANCH}" \
             https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_NITRO_REPO }}.git cdk-nitro
 
@@ -305,19 +304,11 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
           git diff --cached --quiet && echo "No changes to commit" && exit 0
-          git commit -m "release: ${{ inputs.release_tag }} — add prebuilt binaries"
+          git commit -m "release: ${TAG} — add prebuilt binaries"
 
-      - name: Merge to default branch, tag
+      - name: Push release branch
         working-directory: cdk-nitro
-        run: |
-          TAG="${{ inputs.release_tag }}"
-          RELEASE_BRANCH="release/v${TAG#v}"
-          DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
-          echo "DEFAULT_BRANCH=${DEFAULT_BRANCH}" >> "$GITHUB_ENV"
-          echo "RELEASE_BRANCH=${RELEASE_BRANCH}" >> "$GITHUB_ENV"
-          git checkout "${DEFAULT_BRANCH}"
-          git merge "${RELEASE_BRANCH}" --squash
-          git commit -m "release: ${TAG}"
+        run: git push origin "${RELEASE_BRANCH}"
 
       - name: Publish to npm
         working-directory: cdk-nitro
@@ -325,29 +316,34 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ -z "${NPM_TOKEN}" ]; then
-            echo "::warning::NPM_TOKEN secret is not set — skipping npm publish. The package is still available via git: npm install github:${{ vars.CDK_NITRO_REPO }}#${{ inputs.release_tag }}"
+            echo "::warning::NPM_TOKEN secret is not set — skipping npm publish. The package is still available via git: npm install github:${{ vars.CDK_NITRO_REPO }}#${TAG}"
             exit 0
           fi
           echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
           npm publish --access public
           rm -f .npmrc
 
-      - name: Git cleanup
+      - name: Create release on cdk-nitro (creates tag and uploads asset atomically)
         working-directory: cdk-nitro
-        run: |
-          TAG="${{ inputs.release_tag }}"
-          git checkout "${RELEASE_BRANCH}"
-          git push origin "${RELEASE_BRANCH}"
-          git checkout "${DEFAULT_BRANCH}"
-          git tag "${TAG}"
-          git push origin "${DEFAULT_BRANCH}" --tags
-          git push origin --delete "${RELEASE_BRANCH}"
-
-      - name: Create release on cdk-nitro
         env:
           GH_TOKEN: ${{ secrets.FFI_DEPLOY_KEY }}
         run: |
-          gh release create "${{ inputs.release_tag }}" \
+          COMMIT_SHA=$(git rev-parse HEAD)
+          gh release create "${TAG}" \
             --repo ${{ vars.CDK_NITRO_REPO }} \
-            --title "Release ${{ inputs.release_tag }}" \
+            --target "${COMMIT_SHA}" \
+            --title "Release ${TAG}" \
             --generate-notes
+
+      - name: Merge to default branch
+        working-directory: cdk-nitro
+        run: |
+          DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
+          git checkout "${DEFAULT_BRANCH}"
+          git merge "${RELEASE_BRANCH}" --squash
+          git commit -m "release: ${TAG}"
+          git push origin "${DEFAULT_BRANCH}"
+
+      - name: Clean up release branch
+        working-directory: cdk-nitro
+        run: git push origin --delete "${RELEASE_BRANCH}"
