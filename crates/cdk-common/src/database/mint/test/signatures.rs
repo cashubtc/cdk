@@ -231,6 +231,56 @@ where
     assert!(total >= Amount::from(600));
 }
 
+/// Test that issued_count increments once per blind signature, regardless of amount
+pub async fn get_issued_count<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error> + MintSignaturesDatabase<Err = Error>,
+{
+    let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
+
+    let bm1 = SecretKey::generate().public_key();
+    let bm2 = SecretKey::generate().public_key();
+    let bm3 = SecretKey::generate().public_key();
+
+    let sig1 = BlindSignature {
+        amount: Amount::from(100u64),
+        keyset_id,
+        c: SecretKey::generate().public_key(),
+        dleq: None,
+    };
+    let sig2 = BlindSignature {
+        amount: Amount::from(200u64),
+        keyset_id,
+        c: SecretKey::generate().public_key(),
+        dleq: None,
+    };
+    let sig3 = BlindSignature {
+        amount: Amount::from(300u64),
+        keyset_id,
+        c: SecretKey::generate().public_key(),
+        dleq: None,
+    };
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_blind_signatures(&[bm1], &[sig1], None)
+        .await
+        .unwrap();
+    tx.add_blind_signatures(&[bm2], &[sig2], None)
+        .await
+        .unwrap();
+    tx.add_blind_signatures(&[bm3], &[sig3], None)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let counts = db.get_total_issued_count().await.unwrap();
+    let count = counts.get(&keyset_id).copied().unwrap_or(0);
+    assert!(
+        count >= 3,
+        "expected at least 3 issued signatures, got {count}"
+    );
+}
+
 /// Test retrieving non-existent blind signatures
 pub async fn get_nonexistent_blind_signatures<DB>(db: DB)
 where
@@ -273,4 +323,49 @@ where
         .await;
     assert!(result.is_err());
     tx.rollback().await.unwrap();
+}
+
+/// Test that issued_count does NOT increment when a duplicate blind message is rejected
+pub async fn issued_count_not_incremented_on_duplicate<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error> + MintSignaturesDatabase<Err = Error>,
+{
+    let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
+    let blinded_message = SecretKey::generate().public_key();
+
+    let sig = BlindSignature {
+        amount: Amount::from(100u64),
+        keyset_id,
+        c: SecretKey::generate().public_key(),
+        dleq: None,
+    };
+
+    // First insert — counter should reach 1
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_blind_signatures(&[blinded_message], std::slice::from_ref(&sig), None)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let counts_before = db.get_total_issued_count().await.unwrap();
+    let count_before = counts_before.get(&keyset_id).copied().unwrap_or(0);
+    assert!(
+        count_before >= 1,
+        "expected count >= 1 after first insert, got {count_before}"
+    );
+
+    // Duplicate attempt — tx aborts, counter must stay the same
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let result = tx
+        .add_blind_signatures(&[blinded_message], std::slice::from_ref(&sig), None)
+        .await;
+    assert!(result.is_err());
+    tx.rollback().await.unwrap();
+
+    let counts_after = db.get_total_issued_count().await.unwrap();
+    let count_after = counts_after.get(&keyset_id).copied().unwrap_or(0);
+    assert_eq!(
+        count_before, count_after,
+        "issued_count must not increment on duplicate rejection"
+    );
 }
