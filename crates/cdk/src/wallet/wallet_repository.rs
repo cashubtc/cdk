@@ -738,8 +738,9 @@ impl WalletRepository {
 
         // Get the keysets for this mint using the token's unit
         let wallet = self.get_wallet(&mint_url, &unit).await?;
-        let keysets = wallet.get_mint_keysets(KeysetFilter::Active).await?;
-        // Extract proofs using the keysets
+        // Use `All` so tokens containing proofs from inactive/rotated keysets
+        // can still be decoded; their short ids must resolve to a full id.
+        let keysets = wallet.get_mint_keysets(KeysetFilter::All).await?;
         let proofs = token.proofs(&keysets)?;
 
         // Get the memo

@@ -766,9 +766,13 @@ pub trait Wallet: Send + Sync {
         filter: KeysetFilter,
     ) -> Result<Vec<Self::KeySetInfo>, Self::Error>;
 
-    /// Load active keysets (alias for get_mint_keysets with Active filter)
+    /// Load all keysets (active and inactive) for token operations.
+    ///
+    /// Token operations need to resolve short keyset ids in proofs to their
+    /// full ids, and proofs from inactive/rotated keysets are still valid, so
+    /// callers handling tokens must see all keysets.
     async fn load_mint_keysets(&self) -> Result<Vec<Self::KeySetInfo>, Self::Error> {
-        self.get_mint_keysets(KeysetFilter::Active).await
+        self.get_mint_keysets(KeysetFilter::All).await
     }
 
     /// Fetch the active keyset with lowest fees

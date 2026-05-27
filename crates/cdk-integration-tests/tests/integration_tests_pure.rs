@@ -2250,6 +2250,113 @@ async fn test_restore_after_keyset_rotation() {
     );
 }
 
+/// Regression test for #1994: token operations must accept proofs from inactive (rotated) keysets.
+///
+/// Before the fix, `Wallet::load_mint_keysets()` returned only active keysets. Token operations
+/// such as `receive` and `prepare_melt_token` use that list to resolve the short keyset id
+/// embedded in V2 proofs to the full id. If the token's keyset had been rotated out (inactive),
+/// the lookup failed and the wallet could neither swap nor melt the token.
+///
+/// Scenario covered:
+/// 1. Mint starts on a V2 keyset (rotation #1).
+/// 2. Sender mints sats under that keyset and produces a token while it is still active.
+/// 3. Mint rotates again to a new V2 keyset; the previous V2 keyset becomes inactive.
+/// 4. A fresh receiver wallet must still be able to `receive` the token.
+/// 5. Independently, a wallet must still be able to `prepare_melt_token` against a token from
+///    the now-inactive keyset.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_token_ops_accept_inactive_keyset_proofs() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+
+    // Rotation #1 -> active keyset is V2 ("A").
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        0,
+        true,
+        None,
+    )
+    .await
+    .expect("first rotation");
+
+    let sender = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create sender wallet");
+
+    // Sender funds enough to produce two independent tokens later.
+    fund_wallet(sender.clone(), 100, None)
+        .await
+        .expect("Failed to fund sender");
+
+    // Build the receive-test token while keyset A is still active.
+    let token_for_receive = sender
+        .prepare_send(Amount::from(20), SendOptions::default())
+        .await
+        .expect("prepare send (receive)")
+        .confirm(None)
+        .await
+        .expect("confirm send (receive)");
+
+    // Build the melt-test token while keyset A is still active.
+    let token_for_melt = sender
+        .prepare_send(Amount::from(40), SendOptions::default())
+        .await
+        .expect("prepare send (melt)")
+        .confirm(None)
+        .await
+        .expect("confirm send (melt)");
+
+    // Rotation #2 -> keyset A is now inactive; both tokens reference an inactive V2 keyset.
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        0,
+        true,
+        None,
+    )
+    .await
+    .expect("second rotation");
+
+    // --- receive path ---
+    let receiver = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create receiver wallet");
+
+    let received = receiver
+        .receive(&token_for_receive.to_string(), ReceiveOptions::default())
+        .await
+        .expect("receive must succeed for token from inactive keyset");
+    assert_eq!(received, Amount::from(20));
+
+    // --- melt path (prepare_melt_token) ---
+    // We need a melt quote on the same wallet that will consume the token.
+    let melter = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create melter wallet");
+
+    let fake_invoice = create_fake_invoice(30_000, "inactive keyset melt".to_string());
+    let melt_quote = melter
+        .melt_quote(PaymentMethod::BOLT11, fake_invoice.to_string(), None, None)
+        .await
+        .expect("create melt quote");
+
+    let prepared = melter
+        .prepare_melt_token(
+            &melt_quote.id,
+            &token_for_melt.to_string(),
+            std::collections::HashMap::new(),
+        )
+        .await
+        .expect("prepare_melt_token must succeed for token from inactive keyset");
+
+    // Cancel rather than execute the melt; this test asserts the keyset-resolution path,
+    // not the LN settlement, and leaves the fake LN backend untouched.
+    prepared.cancel().await.expect("cancel prepared melt");
+}
+
 #[derive(Debug, Default)]
 struct CustomPaymentProcessor {
     /// Captures the quote_id seen by `get_payment_quote` so tests can assert

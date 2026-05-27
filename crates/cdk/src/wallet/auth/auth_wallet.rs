@@ -243,11 +243,12 @@ impl AuthWallet {
         self.load_mint_keysets().await
     }
 
-    /// Get the first active blind auth keyset - always goes online
+    /// Get the first blind auth keyset returned by the mint - always goes online
     ///
-    /// This method always goes online to refresh keysets from the mint and then returns
-    /// the first active keyset found. Use this when you need the most up-to-date
-    /// keyset information for blind auth operations.
+    /// Refreshes keysets from the mint and returns the first one. Note that the
+    /// underlying `refresh_keysets` does not filter by `active`, so this returns
+    /// whichever auth keyset the mint lists first (typically the only one in
+    /// practice for `CurrencyUnit::Auth`).
     #[instrument(skip(self))]
     pub async fn fetch_active_keyset(&self) -> Result<KeySetInfo, Error> {
         let auth_keysets = self.refresh_keysets().await?;

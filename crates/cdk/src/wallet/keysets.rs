@@ -27,10 +27,16 @@ impl Wallet {
             .ok_or(Error::UnknownKeySet)
     }
 
-    /// Alias of get_mint_keysets, kept for backwards compatibility reasons
+    /// Load all mint keysets (active and inactive) for token operations.
+    ///
+    /// Token operations such as receive, melt, P2PK/DLEQ verification, and
+    /// payment-request decoding must resolve the short keyset id embedded in a
+    /// token to its full id. Proofs from rotated (inactive) keysets are still
+    /// valid and the wallet must be able to swap or melt them, so all keysets
+    /// are returned here regardless of `active` status.
     #[instrument(skip(self))]
     pub async fn load_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
-        self.get_mint_keysets(KeysetFilter::Active).await
+        self.get_mint_keysets(KeysetFilter::All).await
     }
 
     /// Get keysets for this wallet's unit from the metadata cache
@@ -74,8 +80,10 @@ impl Wallet {
     /// Refresh keysets by fetching the latest from mint - always fetches fresh data
     ///
     /// Forces a fresh fetch of keyset information from the mint server,
-    /// updating the metadata cache and database. Use this when you need
-    /// the most up-to-date keyset information.
+    /// updating the metadata cache and database. Returns all keysets for this
+    /// wallet's unit (active and inactive) so callers handling tokens can
+    /// resolve short keyset ids from rotated keysets; pair with
+    /// `KeySetInfosMethods::active` if only active keysets are needed.
     #[instrument(skip(self))]
     pub async fn refresh_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
         tracing::debug!("Refreshing keysets from mint");
@@ -87,7 +95,7 @@ impl Wallet {
             .keysets
             .values()
             .filter_map(|keyset| {
-                if keyset.unit == self.unit && keyset.active {
+                if keyset.unit == self.unit {
                     Some((*keyset.clone()).clone())
                 } else {
                     None
