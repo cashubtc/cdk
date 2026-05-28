@@ -1116,6 +1116,7 @@ impl Settings {
             .map(|onchain| &onchain.onchain_backend)
             .unwrap_or(&OnchainBackend::None);
 
+        #[cfg(feature = "bdk")]
         let has_fake_wallet_ln_backend = self
             .ln
             .iter()
