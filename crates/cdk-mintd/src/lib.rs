@@ -751,7 +751,13 @@ async fn configure_onchain_backend(
                     anyhow!("BDK onchain backend selected but [bdk] config section is missing")
                 })?;
                 let bdk = bdk_settings
-                    .setup(settings, cdk::nuts::CurrencyUnit::Sat, None, _work_dir, _kv_store)
+                    .setup(
+                        settings,
+                        cdk::nuts::CurrencyUnit::Sat,
+                        None,
+                        _work_dir,
+                        _kv_store,
+                    )
                     .await?;
                 let bdk = Arc::new(bdk);
 
