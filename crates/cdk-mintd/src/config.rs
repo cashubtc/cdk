@@ -1120,12 +1120,10 @@ impl Settings {
             .ln
             .iter()
             .any(|ln| ln.ln_backend == LnBackend::FakeWallet);
-        let has_real_ln_backend = self.ln.iter().any(|ln| match ln.ln_backend {
-            LnBackend::None => false,
-            LnBackend::FakeWallet => false,
-            #[allow(unreachable_patterns)]
-            _ => true,
-        });
+        let has_real_ln_backend = self
+            .ln
+            .iter()
+            .any(|ln| !matches!(ln.ln_backend, LnBackend::None | LnBackend::FakeWallet));
 
         match onchain_backend {
             #[cfg(feature = "bdk")]

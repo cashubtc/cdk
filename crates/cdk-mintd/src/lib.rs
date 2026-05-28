@@ -780,12 +780,10 @@ async fn configure_onchain_backend(
                     .ln
                     .iter()
                     .any(|ln| ln.ln_backend != LnBackend::None);
-                let has_real_ln_backend = settings.ln.iter().any(|ln| match ln.ln_backend {
-                    LnBackend::None => false,
-                    LnBackend::FakeWallet => false,
-                    #[allow(unreachable_patterns)]
-                    _ => true,
-                });
+                let has_real_ln_backend = settings
+                    .ln
+                    .iter()
+                    .any(|ln| !matches!(ln.ln_backend, LnBackend::None | LnBackend::FakeWallet));
 
                 if !has_lightning_backend {
                     let mint_melt_limits = MintMeltLimits {
