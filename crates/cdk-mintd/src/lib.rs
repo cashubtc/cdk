@@ -28,16 +28,6 @@ use cdk::nuts::nut00::KnownMethod;
 ))]
 use cdk::nuts::nut17::SupportedMethods;
 use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path};
-#[cfg(any(
-    feature = "cln",
-    feature = "lnbits",
-    feature = "lnd",
-    feature = "ldk-node",
-    feature = "fakewallet",
-    feature = "bdk",
-    feature = "grpc-processor"
-))]
-use cdk::nuts::CurrencyUnit;
 use cdk::nuts::{
     AuthRequired, ContactInfo, Method, MintVersion, PaymentMethod, ProtectedEndpoint, RoutePath,
 };
@@ -554,7 +544,7 @@ async fn configure_lightning_backend(
                 let cln = cln_settings
                     .setup(
                         settings,
-                        CurrencyUnit::Msat,
+                        cdk::nuts::CurrencyUnit::Msat,
                         None,
                         work_dir,
                         _kv_store.clone(),
@@ -600,7 +590,7 @@ async fn configure_lightning_backend(
                 let lnd = lnd_settings
                     .setup(
                         settings,
-                        CurrencyUnit::Msat,
+                        cdk::nuts::CurrencyUnit::Msat,
                         None,
                         work_dir,
                         _kv_store.clone(),
@@ -761,15 +751,25 @@ async fn configure_onchain_backend(
                     anyhow!("BDK onchain backend selected but [bdk] config section is missing")
                 })?;
                 let bdk = bdk_settings
-                    .setup(settings, CurrencyUnit::Sat, None, _work_dir, _kv_store)
+                    .setup(settings, cdk::nuts::CurrencyUnit::Sat, None, _work_dir, _kv_store)
                     .await?;
+                let bdk = Arc::new(bdk);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
                     mint_builder,
-                    CurrencyUnit::Sat,
+                    cdk::nuts::CurrencyUnit::Sat,
                     mint_melt_limits,
-                    Arc::new(bdk),
+                    bdk.clone(),
+                )
+                .await?;
+
+                mint_builder = configure_backend_for_unit(
+                    settings,
+                    mint_builder,
+                    cdk::nuts::CurrencyUnit::Sat,
+                    mint_melt_limits,
+                    bdk,
                 )
                 .await?;
             }
