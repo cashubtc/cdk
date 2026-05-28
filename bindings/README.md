@@ -136,6 +136,12 @@ just ffi-release-go 0.17.0
 - The version tag (e.g. `v0.17.0`) must exist on the remote
 - The `FFI_DEPLOY_KEY` GitHub secret must have write access to `cdk-dart`,
   `cdk-kotlin`, and `cdk-swift` repos
+- Kotlin publishing requires the `SONATYPE_USERNAME`, `SONATYPE_PASSWORD`,
+  `SIGNING_KEY`, and `SIGNING_PASSWORD` GitHub secrets
+- The `CDK_DART_REPO`, `CDK_KOTLIN_REPO`, and `CDK_SWIFT_REPO` GitHub
+  Actions variables must point to the target binding repositories
+- `CACHIX_AUTH_TOKEN` is optional; when present, Kotlin release builds can use
+  the authenticated Cachix cache
 - `gh` CLI must be authenticated for just commands
 
 ## Credits
