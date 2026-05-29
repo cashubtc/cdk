@@ -1893,10 +1893,9 @@ mod tests {
 
         let localstore = Arc::new(memory::empty().await.unwrap());
         let builder = MintBuilder::new(localstore);
-        let err =
-            configure_onchain_backend(&settings, builder, None, &std::env::temp_dir(), None)
-                .await
-                .expect_err("fakewallet onchain with real LN should bail");
+        let err = configure_onchain_backend(&settings, builder, None, &std::env::temp_dir(), None)
+            .await
+            .expect_err("fakewallet onchain with real LN should bail");
 
         assert!(
             err.to_string().contains("fakewallet"),
@@ -1922,10 +1921,9 @@ mod tests {
 
         let localstore = Arc::new(memory::empty().await.unwrap());
         let builder = MintBuilder::new(localstore);
-        let err =
-            configure_mint_builder(&settings, builder, None, &std::env::temp_dir(), None)
-                .await
-                .expect_err("no payment backends should bail");
+        let err = configure_mint_builder(&settings, builder, None, &std::env::temp_dir(), None)
+            .await
+            .expect_err("no payment backends should bail");
 
         assert!(
             err.to_string().contains("At least one payment backend"),
@@ -1960,10 +1958,9 @@ mod tests {
 
         let localstore = Arc::new(memory::empty().await.unwrap());
         let builder = MintBuilder::new(localstore);
-        let err =
-            configure_mint_builder(&settings, builder, None, &std::env::temp_dir(), None)
-                .await
-                .expect_err("fake wallet with BDK onchain should bail");
+        let err = configure_mint_builder(&settings, builder, None, &std::env::temp_dir(), None)
+            .await
+            .expect_err("fake wallet with BDK onchain should bail");
 
         assert!(
             err.to_string().contains("fakewallet") && err.to_string().contains("bdk"),
@@ -2097,10 +2094,9 @@ mod tests {
 
         let localstore = Arc::new(memory::empty().await.unwrap());
         let builder = MintBuilder::new(localstore);
-        let err =
-            configure_onchain_backend(&settings, builder, None, &std::env::temp_dir(), None)
-                .await
-                .expect_err("missing fake_wallet config should bail");
+        let err = configure_onchain_backend(&settings, builder, None, &std::env::temp_dir(), None)
+            .await
+            .expect_err("missing fake_wallet config should bail");
 
         assert!(
             err.to_string().contains("Fake wallet config"),
