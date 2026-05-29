@@ -1127,9 +1127,11 @@ impl Settings {
 
         // A fake Lightning backend cannot be combined with a real one.
         if has_fake_wallet_ln_backend && has_real_ln_backend {
-            return Err("ln_backend = \"fakewallet\" cannot be combined with a real \
+            return Err(
+                "ln_backend = \"fakewallet\" cannot be combined with a real \
                  Lightning backend; use only fakewallet backends or only real backends"
-                .to_string());
+                    .to_string(),
+            );
         }
 
         match onchain_backend {
