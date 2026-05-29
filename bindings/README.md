@@ -134,6 +134,8 @@ just ffi-release-go 0.17.0
 ### Prerequisites
 
 - The version tag (e.g. `v0.17.0`) must exist on the remote
+- Dart, Kotlin, and Swift release workflows check out `refs/tags/<release_tag>`
+  and reject `cdk_ref` values that differ from `release_tag`
 - The `FFI_DEPLOY_KEY` GitHub secret must have write access to `cdk-dart`,
   `cdk-kotlin`, and `cdk-swift` repos
 - Kotlin publishing requires the `SONATYPE_USERNAME`, `SONATYPE_PASSWORD`,

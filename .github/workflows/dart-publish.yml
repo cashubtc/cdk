@@ -1,5 +1,8 @@
 name: "FFI - Dart Bindings"
 
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
     inputs:
@@ -10,7 +13,7 @@ on:
         description: 'CDK dependency version (e.g. 0.17.0). Defaults to release_tag without the "v" prefix.'
         required: false
       cdk_ref:
-        description: 'CDK git ref to publish from. Defaults to release_tag.'
+        description: 'CDK git ref to publish from. Must match release_tag.'
         required: false
   workflow_call:
     inputs:
@@ -30,8 +33,33 @@ env:
   RELEASE_BRANCH: release/${{ inputs.release_tag }}
 
 jobs:
+  validate-release-ref:
+    name: "dart: Validate release ref"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate release ref
+        shell: bash
+        run: |
+          if [[ "${CDK_REF}" != "${TAG}" ]]; then
+            echo "::error::cdk_ref must match release_tag (${TAG}); got ${CDK_REF}"
+            exit 1
+          fi
+
+          if [[ ! "${TAG}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::release_tag must be a version tag such as v0.17.0; got ${TAG}"
+            exit 1
+          fi
+
+      - name: Verify release tag exists
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          fetch-depth: 1
+          persist-credentials: false
+
   dart-sync-sources:
     name: "dart: Sync sources to cdk-dart"
+    needs: [validate-release-ref]
     runs-on: ubuntu-latest
     steps:
       - name: Resolve variables
@@ -43,11 +71,20 @@ jobs:
       - name: Checkout monorepo
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.CDK_REF }}
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
 
       - name: Clone cdk-dart
+        env:
+          FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
         run: |
-          git clone https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
+          auth_header() {
+            printf 'AUTHORIZATION: basic '
+            printf 'x-access-token:%s' "${FFI_DEPLOY_KEY}" | base64 | tr -d '\n'
+          }
+
+          git -c "http.extraheader=$(auth_header)" \
+            clone https://github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
 
       - name: Copy bindings/dart to cdk-dart
         run: |
@@ -124,14 +161,21 @@ jobs:
 
       - name: Push to cdk-dart release branch
         working-directory: cdk-dart
+        env:
+          FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
         run: |
+          auth_header() {
+            printf 'AUTHORIZATION: basic '
+            printf 'x-access-token:%s' "${FFI_DEPLOY_KEY}" | base64 | tr -d '\n'
+          }
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "${RELEASE_BRANCH}"
           git add -A
           git diff --cached --quiet && echo "No changes to commit" && exit 0
           git commit -m "sync: update sources for ${TAG}"
-          git push origin "${RELEASE_BRANCH}"
+          git -c "http.extraheader=$(auth_header)" push origin "${RELEASE_BRANCH}"
 
   dart-build-native:
     name: "dart: Build ${{ matrix.target }}"
@@ -178,9 +222,17 @@ jobs:
     steps:
       - name: Clone cdk-dart
         shell: bash
+        env:
+          FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
         run: |
-          git clone --branch "${RELEASE_BRANCH}" \
-            https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
+          auth_header() {
+            printf 'AUTHORIZATION: basic '
+            printf 'x-access-token:%s' "${FFI_DEPLOY_KEY}" | base64 | tr -d '\n'
+          }
+
+          git -c "http.extraheader=$(auth_header)" \
+            clone --branch "${RELEASE_BRANCH}" \
+            https://github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -247,9 +299,17 @@ jobs:
     needs: [dart-build-native]
     steps:
       - name: Clone cdk-dart
+        env:
+          FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
         run: |
-          git clone --branch "${RELEASE_BRANCH}" \
-            https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
+          auth_header() {
+            printf 'AUTHORIZATION: basic '
+            printf 'x-access-token:%s' "${FFI_DEPLOY_KEY}" | base64 | tr -d '\n'
+          }
+
+          git -c "http.extraheader=$(auth_header)" \
+            clone --branch "${RELEASE_BRANCH}" \
+            https://github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
 
       - name: Download all native artifacts
         uses: actions/download-artifact@v4
@@ -291,7 +351,15 @@ jobs:
 
       - name: Push release branch
         working-directory: cdk-dart
-        run: git push origin "${RELEASE_BRANCH}"
+        env:
+          FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
+        run: |
+          auth_header() {
+            printf 'AUTHORIZATION: basic '
+            printf 'x-access-token:%s' "${FFI_DEPLOY_KEY}" | base64 | tr -d '\n'
+          }
+
+          git -c "http.extraheader=$(auth_header)" push origin "${RELEASE_BRANCH}"
 
       - name: Create per-platform release archives
         run: |
@@ -330,14 +398,29 @@ jobs:
 
       - name: Merge to default branch
         working-directory: cdk-dart
+        env:
+          FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
         run: |
+          auth_header() {
+            printf 'AUTHORIZATION: basic '
+            printf 'x-access-token:%s' "${FFI_DEPLOY_KEY}" | base64 | tr -d '\n'
+          }
+
           DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
           echo "DEFAULT_BRANCH=${DEFAULT_BRANCH}" >> "$GITHUB_ENV"
           git checkout "${DEFAULT_BRANCH}"
           git merge "${RELEASE_BRANCH}" --squash
           git commit -m "release: ${TAG}"
-          git push origin "${DEFAULT_BRANCH}"
+          git -c "http.extraheader=$(auth_header)" push origin "${DEFAULT_BRANCH}"
 
       - name: Clean up release branch
         working-directory: cdk-dart
-        run: git push origin --delete "${RELEASE_BRANCH}"
+        env:
+          FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
+        run: |
+          auth_header() {
+            printf 'AUTHORIZATION: basic '
+            printf 'x-access-token:%s' "${FFI_DEPLOY_KEY}" | base64 | tr -d '\n'
+          }
+
+          git -c "http.extraheader=$(auth_header)" push origin --delete "${RELEASE_BRANCH}"

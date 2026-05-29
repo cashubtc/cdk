@@ -1,5 +1,8 @@
 name: "FFI - Publish All Bindings"
 
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
     inputs:
@@ -10,7 +13,7 @@ on:
         description: 'CDK dependency version (e.g. 0.17.0). Defaults to release_tag without the "v" prefix.'
         required: false
       cdk_ref:
-        description: "CDK git ref to publish from. Defaults to release_tag."
+        description: "CDK git ref to publish from. Must match release_tag."
         required: false
 
 jobs:
