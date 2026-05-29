@@ -1742,6 +1742,372 @@ mod tests {
         assert!(err.to_string().contains("Duplicate payment processor"));
     }
 
+    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[tokio::test]
+    async fn empty_ln_vec_returns_unchanged_builder() {
+        use cdk::mint::MintBuilder;
+        use cdk_sqlite::mint::memory;
+
+        let settings = config::Settings {
+            ln: vec![],
+            ..Default::default()
+        };
+
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let builder = MintBuilder::new(localstore);
+        let builder =
+            configure_lightning_backend(&settings, builder, None, &std::env::temp_dir(), None)
+                .await
+                .expect("empty ln should succeed");
+
+        let mint_info = builder.current_mint_info();
+        assert!(
+            mint_info.nuts.nut04.methods.is_empty(),
+            "no backends should be registered"
+        );
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[tokio::test]
+    async fn ln_backend_none_logs_and_continues() {
+        use cdk::mint::MintBuilder;
+        use cdk_sqlite::mint::memory;
+
+        use crate::config::{Ln, LnBackend};
+
+        let settings = config::Settings {
+            ln: vec![Ln {
+                ln_backend: LnBackend::None,
+                unit: CurrencyUnit::Sat,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let builder = MintBuilder::new(localstore);
+        let builder =
+            configure_lightning_backend(&settings, builder, None, &std::env::temp_dir(), None)
+                .await
+                .expect("LnBackend::None should succeed");
+
+        let mint_info = builder.current_mint_info();
+        assert!(
+            mint_info.nuts.nut04.methods.is_empty(),
+            "LnBackend::None should not register any methods"
+        );
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[tokio::test]
+    async fn onchain_backend_none_returns_unchanged() {
+        use cdk::mint::MintBuilder;
+        use cdk_sqlite::mint::memory;
+
+        use crate::config::{Onchain, OnchainBackend};
+
+        let settings = config::Settings {
+            onchain: Some(Onchain {
+                onchain_backend: OnchainBackend::None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let builder = MintBuilder::new(localstore);
+        let builder =
+            configure_onchain_backend(&settings, builder, None, &std::env::temp_dir(), None)
+                .await
+                .expect("OnchainBackend::None should succeed");
+
+        let mint_info = builder.current_mint_info();
+        assert!(
+            mint_info.nuts.nut04.methods.is_empty(),
+            "OnchainBackend::None should not register any methods"
+        );
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[tokio::test]
+    async fn fakewallet_onchain_no_lightning_configures_onchain_methods() {
+        use cdk::mint::MintBuilder;
+        use cdk_sqlite::mint::memory;
+
+        use crate::config::{FakeWallet, Ln, LnBackend, Onchain, OnchainBackend};
+
+        let settings = config::Settings {
+            ln: vec![Ln {
+                ln_backend: LnBackend::None,
+                ..Default::default()
+            }],
+            onchain: Some(Onchain {
+                onchain_backend: OnchainBackend::FakeWallet,
+                ..Default::default()
+            }),
+            fake_wallet: Some(FakeWallet::default()),
+            ..Default::default()
+        };
+
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let builder = MintBuilder::new(localstore);
+        let builder =
+            configure_onchain_backend(&settings, builder, None, &std::env::temp_dir(), None)
+                .await
+                .expect("fakewallet onchain should succeed");
+
+        let mint_info = builder.current_mint_info();
+        let methods: Vec<_> = mint_info
+            .nuts
+            .nut04
+            .methods
+            .iter()
+            .map(|m| m.method.clone())
+            .collect();
+        assert!(
+            methods.contains(&PaymentMethod::Known(KnownMethod::Onchain)),
+            "expected onchain method, got {methods:?}"
+        );
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "cln", feature = "sqlite"))]
+    #[tokio::test]
+    async fn fakewallet_onchain_with_real_ln_bails() {
+        use cdk::mint::MintBuilder;
+        use cdk_sqlite::mint::memory;
+
+        use crate::config::{Ln, LnBackend, Onchain, OnchainBackend};
+
+        let settings = config::Settings {
+            ln: vec![Ln {
+                ln_backend: LnBackend::Cln,
+                unit: CurrencyUnit::Sat,
+                ..Default::default()
+            }],
+            onchain: Some(Onchain {
+                onchain_backend: OnchainBackend::FakeWallet,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let builder = MintBuilder::new(localstore);
+        let err =
+            configure_onchain_backend(&settings, builder, None, &std::env::temp_dir(), None)
+                .await
+                .expect_err("fakewallet onchain with real LN should bail");
+
+        assert!(
+            err.to_string().contains("fakewallet"),
+            "error should mention fakewallet: {err}"
+        );
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[tokio::test]
+    async fn configure_mint_builder_no_backends_bails() {
+        use cdk::mint::MintBuilder;
+        use cdk_sqlite::mint::memory;
+
+        use crate::config::{Ln, LnBackend};
+
+        let settings = config::Settings {
+            ln: vec![Ln {
+                ln_backend: LnBackend::None,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let builder = MintBuilder::new(localstore);
+        let err =
+            configure_mint_builder(&settings, builder, None, &std::env::temp_dir(), None)
+                .await
+                .expect_err("no payment backends should bail");
+
+        assert!(
+            err.to_string().contains("At least one payment backend"),
+            "error should mention missing backends: {err}"
+        );
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "sqlite", feature = "bdk"))]
+    #[tokio::test]
+    async fn configure_mint_builder_fake_wallet_with_bdk_onchain_bails() {
+        use cdk::mint::MintBuilder;
+        use cdk_sqlite::mint::memory;
+
+        use crate::config::{Bdk, FakeWallet, Ln, LnBackend, Onchain, OnchainBackend};
+
+        let settings = config::Settings {
+            ln: vec![Ln {
+                ln_backend: LnBackend::FakeWallet,
+                ..Default::default()
+            }],
+            onchain: Some(Onchain {
+                onchain_backend: OnchainBackend::Bdk,
+                ..Default::default()
+            }),
+            fake_wallet: Some(FakeWallet::default()),
+            bdk: Some(Bdk {
+                network: Some("mainnet".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let builder = MintBuilder::new(localstore);
+        let err =
+            configure_mint_builder(&settings, builder, None, &std::env::temp_dir(), None)
+                .await
+                .expect_err("fake wallet with BDK onchain should bail");
+
+        assert!(
+            err.to_string().contains("fakewallet") && err.to_string().contains("bdk"),
+            "error should mention backend pairing validation: {err}"
+        );
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[tokio::test]
+    async fn configure_backend_for_methods_registers_websockets_and_fee() {
+        use cdk::mint::MintBuilder;
+        use cdk_sqlite::mint::memory;
+
+        use crate::config::{FakeWallet, Ln, LnBackend};
+
+        let settings = config::Settings {
+            ln: vec![Ln {
+                ln_backend: LnBackend::FakeWallet,
+                unit: CurrencyUnit::Sat,
+                ..Default::default()
+            }],
+            fake_wallet: Some(FakeWallet::default()),
+            info: config::Info {
+                input_fee_ppk: Some(100),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let builder = MintBuilder::new(localstore);
+
+        let fake_wallet = settings.fake_wallet.clone().expect("fake wallet config");
+        let fake = fake_wallet
+            .setup(
+                &settings,
+                CurrencyUnit::Sat,
+                None,
+                &std::env::temp_dir(),
+                None,
+            )
+            .await
+            .expect("fake wallet setup");
+
+        let mint_melt_limits = cdk::mint::MintMeltLimits {
+            mint_min: 1.into(),
+            mint_max: 500_000.into(),
+            melt_min: 1.into(),
+            melt_max: 500_000.into(),
+        };
+
+        let builder = configure_backend_for_methods(
+            &settings,
+            builder,
+            CurrencyUnit::Sat,
+            mint_melt_limits,
+            Arc::new(fake),
+            vec![PaymentMethod::Known(KnownMethod::Bolt11)],
+        )
+        .await
+        .expect("configure_backend_for_methods should succeed");
+
+        let mint_info = builder.current_mint_info();
+        assert!(
+            !mint_info.nuts.nut04.methods.is_empty(),
+            "bolt11 method should be registered"
+        );
+        assert!(
+            !mint_info.nuts.nut17.supported.is_empty(),
+            "websocket support should be configured"
+        );
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[tokio::test]
+    async fn fakewallet_onchain_with_fake_ln_does_not_duplicate() {
+        use cdk::mint::MintBuilder;
+        use cdk_sqlite::mint::memory;
+
+        use crate::config::{FakeWallet, Ln, LnBackend, Onchain, OnchainBackend};
+
+        let settings = config::Settings {
+            ln: vec![Ln {
+                ln_backend: LnBackend::FakeWallet,
+                unit: CurrencyUnit::Sat,
+                ..Default::default()
+            }],
+            onchain: Some(Onchain {
+                onchain_backend: OnchainBackend::FakeWallet,
+                ..Default::default()
+            }),
+            fake_wallet: Some(FakeWallet::default()),
+            ..Default::default()
+        };
+
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let builder = MintBuilder::new(localstore);
+        let builder =
+            configure_onchain_backend(&settings, builder, None, &std::env::temp_dir(), None)
+                .await
+                .expect("fakewallet onchain with fake LN should succeed without duplicating");
+
+        let mint_info = builder.current_mint_info();
+        assert!(
+            mint_info.nuts.nut04.methods.is_empty(),
+            "when has_lightning_backend is true and no real LN, fakewallet onchain should skip; got {:?}",
+            mint_info.nuts.nut04.methods
+        );
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[tokio::test]
+    async fn fakewallet_onchain_missing_fake_wallet_config_bails() {
+        use cdk::mint::MintBuilder;
+        use cdk_sqlite::mint::memory;
+
+        use crate::config::{Ln, LnBackend, Onchain, OnchainBackend};
+
+        let settings = config::Settings {
+            ln: vec![Ln {
+                ln_backend: LnBackend::None,
+                ..Default::default()
+            }],
+            onchain: Some(Onchain {
+                onchain_backend: OnchainBackend::FakeWallet,
+                ..Default::default()
+            }),
+            fake_wallet: None,
+            ..Default::default()
+        };
+
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let builder = MintBuilder::new(localstore);
+        let err =
+            configure_onchain_backend(&settings, builder, None, &std::env::temp_dir(), None)
+                .await
+                .expect_err("missing fake_wallet config should bail");
+
+        assert!(
+            err.to_string().contains("Fake wallet config"),
+            "error should mention missing config: {err}"
+        );
+    }
+
     #[test]
     fn test_postgres_auth_url_validation() {
         // Test that the auth database config requires explicit configuration
