@@ -1116,7 +1116,6 @@ impl Settings {
             .map(|onchain| &onchain.onchain_backend)
             .unwrap_or(&OnchainBackend::None);
 
-        #[cfg(feature = "bdk")]
         let has_fake_wallet_ln_backend = self
             .ln
             .iter()
@@ -1125,6 +1124,13 @@ impl Settings {
             .ln
             .iter()
             .any(|ln| !matches!(ln.ln_backend, LnBackend::None | LnBackend::FakeWallet));
+
+        // A fake Lightning backend cannot be combined with a real one.
+        if has_fake_wallet_ln_backend && has_real_ln_backend {
+            return Err("ln_backend = \"fakewallet\" cannot be combined with a real \
+                 Lightning backend; use only fakewallet backends or only real backends"
+                .to_string());
+        }
 
         match onchain_backend {
             #[cfg(feature = "bdk")]
@@ -1669,6 +1675,31 @@ target_block_time_secs = 300
         settings
             .validate_backend_pairing()
             .expect("fake onchain-only backend pairing should pass");
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "cln"))]
+    #[test]
+    fn test_fakewallet_ln_with_real_ln_rejected() {
+        let settings = Settings {
+            ln: vec![
+                Ln {
+                    ln_backend: LnBackend::FakeWallet,
+                    ..Default::default()
+                },
+                Ln {
+                    ln_backend: LnBackend::Cln,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let err = settings
+            .validate_backend_pairing()
+            .expect_err("fake LN combined with real LN should fail");
+
+        assert!(err.contains("fakewallet"));
+        assert!(err.contains("real Lightning"));
     }
 
     #[cfg(feature = "fakewallet")]

@@ -766,15 +766,6 @@ async fn configure_onchain_backend(
                     mint_builder,
                     cdk::nuts::CurrencyUnit::Sat,
                     mint_melt_limits,
-                    bdk.clone(),
-                )
-                .await?;
-
-                mint_builder = configure_backend_for_unit(
-                    settings,
-                    mint_builder,
-                    cdk::nuts::CurrencyUnit::Sat,
-                    mint_melt_limits,
                     bdk,
                 )
                 .await?;
@@ -1673,7 +1664,7 @@ mod tests {
 
     use super::*;
 
-    #[cfg(feature = "fakewallet")]
+    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
     #[tokio::test]
     async fn fakewallet_dispatcher_uses_ln_entry_unit() {
         use cdk::mint::MintBuilder;
@@ -1716,7 +1707,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "fakewallet")]
+    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
     #[tokio::test]
     async fn duplicate_ln_unit_method_pair_is_rejected() {
         use cdk::mint::MintBuilder;
