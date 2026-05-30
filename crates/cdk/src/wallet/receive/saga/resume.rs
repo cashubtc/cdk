@@ -66,6 +66,17 @@ impl Wallet {
                 );
                 self.recover_or_compensate_receive(&saga.id, data).await
             }
+            ReceiveSagaState::OfflinePendingReceive => {
+                // This saga is metadata storage for an offline receive that has not yet
+                // been finalized. The proofs are in PendingReceive state and are owned
+                // by `finalize_pending_receives`. Do not compensate — doing so would
+                // silently delete valid proofs the user hasn't collected yet.
+                tracing::debug!(
+                    "Receive saga {} is an offline pending receive — skipping recovery",
+                    saga.id
+                );
+                Ok(RecoveryAction::Skipped)
+            }
         }
     }
 
