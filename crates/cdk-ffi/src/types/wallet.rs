@@ -457,6 +457,47 @@ pub fn encode_receive_options(options: ReceiveOptions) -> Result<String, FfiErro
     Ok(serde_json::to_string(&options)?)
 }
 
+/// FFI-compatible Offline Receive options
+///
+/// DLEQ proof verification is always performed for offline receives
+/// since it is the only way to verify token authenticity without
+/// contacting the mint.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, uniffi::Record)]
+pub struct OfflineReceiveOptions {
+    /// Optional minimum locktime required for the token (Unix timestamp)
+    pub minimum_locktime: Option<u64>,
+    /// Require the token to be P2PK locked
+    pub require_locked: bool,
+}
+
+impl From<OfflineReceiveOptions> for cdk_common::wallet::OfflineReceiveOptions {
+    fn from(opts: OfflineReceiveOptions) -> Self {
+        Self {
+            minimum_locktime: opts.minimum_locktime,
+            require_locked: opts.require_locked,
+        }
+    }
+}
+
+impl OfflineReceiveOptions {
+    /// Convert OfflineReceiveOptions to JSON string
+    pub fn to_json(&self) -> Result<String, FfiError> {
+        Ok(serde_json::to_string(self)?)
+    }
+}
+
+/// Decode OfflineReceiveOptions from JSON string
+#[uniffi::export]
+pub fn decode_offline_receive_options(json: String) -> Result<OfflineReceiveOptions, FfiError> {
+    Ok(serde_json::from_str(&json)?)
+}
+
+/// Encode OfflineReceiveOptions to JSON string
+#[uniffi::export]
+pub fn encode_offline_receive_options(options: OfflineReceiveOptions) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&options)?)
+}
+
 /// FFI-compatible NUT-13 restore options
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct NUT13Options {

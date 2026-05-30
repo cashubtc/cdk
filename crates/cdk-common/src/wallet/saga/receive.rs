@@ -13,6 +13,11 @@ pub enum ReceiveSagaState {
     ProofsPending,
     /// Swap request sent to mint, awaiting signatures for new proofs
     SwapRequested,
+    /// Proofs accepted offline (DLEQ-verified), stored as PendingReceive awaiting
+    /// `finalize_pending_receives`. This saga holds the original token string so
+    /// the memo and proof grouping survive until the wallet comes back online.
+    /// Recovery must NOT compensate this state — `finalize_pending_receives` owns it.
+    OfflinePendingReceive,
 }
 
 impl std::fmt::Display for ReceiveSagaState {
@@ -20,6 +25,7 @@ impl std::fmt::Display for ReceiveSagaState {
         match self {
             ReceiveSagaState::ProofsPending => write!(f, "proofs_pending"),
             ReceiveSagaState::SwapRequested => write!(f, "swap_requested"),
+            ReceiveSagaState::OfflinePendingReceive => write!(f, "offline_pending_receive"),
         }
     }
 }
@@ -30,6 +36,7 @@ impl std::str::FromStr for ReceiveSagaState {
         match s {
             "proofs_pending" => Ok(ReceiveSagaState::ProofsPending),
             "swap_requested" => Ok(ReceiveSagaState::SwapRequested),
+            "offline_pending_receive" => Ok(ReceiveSagaState::OfflinePendingReceive),
             _ => Err(Error::InvalidOperationState),
         }
     }
