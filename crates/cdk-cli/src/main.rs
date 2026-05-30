@@ -96,6 +96,8 @@ enum Commands {
     Transfer(sub_commands::transfer::TransferSubCommand),
     /// Reclaim pending proofs that are no longer pending
     CheckPending,
+    /// Finalize pending receives by contacting the mint and swapping
+    FinalizeReceives(sub_commands::finalize_receives::FinalizeReceivesSubCommand),
     /// Check incoming payments for stored payment requests.
     CheckRequests,
     /// View mint info
@@ -297,6 +299,10 @@ async fn main() -> Result<()> {
         }
         Commands::CheckPending => {
             sub_commands::check_pending::check_pending(&wallet_repository).await
+        }
+        Commands::FinalizeReceives(sub_command_args) => {
+            sub_commands::finalize_receives::finalize_receives(&wallet_repository, sub_command_args)
+                .await
         }
         Commands::CheckRequests => {
             sub_commands::check_requests::check_requests(&wallet_repository).await

@@ -62,6 +62,11 @@ impl WalletTrait for super::Wallet {
     }
 
     #[instrument(skip(self))]
+    async fn total_pending_receive_balance(&self) -> Result<Amount, Self::Error> {
+        self.total_pending_receive_balance().await
+    }
+
+    #[instrument(skip(self))]
     async fn total_reserved_balance(&self) -> Result<Amount, Self::Error> {
         self.total_reserved_balance().await
     }
@@ -204,6 +209,20 @@ impl WalletTrait for super::Wallet {
         token: Option<String>,
     ) -> Result<Amount, Self::Error> {
         self.receive_proofs(proofs, options, memo, token).await
+    }
+
+    #[instrument(skip(self, encoded_token, options))]
+    async fn receive_offline(
+        &self,
+        encoded_token: &str,
+        options: cdk_common::wallet::OfflineReceiveOptions,
+    ) -> Result<Amount, Self::Error> {
+        self.receive_offline(encoded_token, options).await
+    }
+
+    #[instrument(skip(self))]
+    async fn finalize_pending_receives(&self) -> Result<Amount, Self::Error> {
+        self.finalize_pending_receives().await
     }
 
     #[instrument(skip(self, options))]
