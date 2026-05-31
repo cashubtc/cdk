@@ -521,6 +521,9 @@ async fn configure_lightning_backend(
         return Ok(mint_builder);
     }
 
+    #[cfg(feature = "fakewallet")]
+    let mut configure_fake_wallet_keyset_rotations = false;
+
     for ln_entry in &settings.ln {
         let mint_melt_limits = MintMeltLimits {
             mint_min: ln_entry.min_mint,
@@ -638,24 +641,7 @@ async fn configure_lightning_backend(
                 )
                 .await?;
 
-                for rotation_cfg in &fake_wallet.keyset_rotations {
-                    use cdk::mint::KeysetRotation;
-
-                    let amounts = cdk::mint::UnitConfig::default().amounts;
-                    let final_expiry = if rotation_cfg.expired {
-                        Some(cdk::util::unix_time().saturating_sub(3600))
-                    } else {
-                        None
-                    };
-
-                    mint_builder = mint_builder.with_keyset_rotation(KeysetRotation {
-                        unit: rotation_cfg.unit.clone(),
-                        amounts,
-                        input_fee_ppk: rotation_cfg.input_fee_ppk,
-                        use_keyset_v2: rotation_cfg.version == "v2",
-                        final_expiry,
-                    });
-                }
+                configure_fake_wallet_keyset_rotations = true;
             }
             #[cfg(feature = "grpc-processor")]
             LnBackend::GrpcProcessor => {
@@ -721,7 +707,42 @@ async fn configure_lightning_backend(
         };
     }
 
+    #[cfg(feature = "fakewallet")]
+    if configure_fake_wallet_keyset_rotations {
+        let fake_wallet = settings.fake_wallet.as_ref().ok_or_else(|| {
+            anyhow!("Fake wallet backend selected but [fake_wallet] config section is missing")
+        })?;
+        mint_builder = configure_fake_wallet_keyset_rotations_once(mint_builder, fake_wallet);
+    }
+
     Ok(mint_builder)
+}
+
+#[cfg(feature = "fakewallet")]
+fn configure_fake_wallet_keyset_rotations_once(
+    mut mint_builder: MintBuilder,
+    fake_wallet: &config::FakeWallet,
+) -> MintBuilder {
+    for rotation_cfg in &fake_wallet.keyset_rotations {
+        use cdk::mint::KeysetRotation;
+
+        let amounts = cdk::mint::UnitConfig::default().amounts;
+        let final_expiry = if rotation_cfg.expired {
+            Some(cdk::util::unix_time().saturating_sub(3600))
+        } else {
+            None
+        };
+
+        mint_builder = mint_builder.with_keyset_rotation(KeysetRotation {
+            unit: rotation_cfg.unit.clone(),
+            amounts,
+            input_fee_ppk: rotation_cfg.input_fee_ppk,
+            use_keyset_v2: rotation_cfg.version == "v2",
+            final_expiry,
+        });
+    }
+
+    mint_builder
 }
 
 /// Configures Onchain backend based on the specified backend type
