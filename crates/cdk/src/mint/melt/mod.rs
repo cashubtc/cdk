@@ -541,127 +541,131 @@ impl Mint {
         melt_request: &MeltQuoteOnchainRequest,
     ) -> Result<MeltQuoteOnchainResponse<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("get_melt_onchain_quote");
+        let metrics = super::MintMetricGuard::new("get_melt_onchain_quote");
 
-        let unit = &melt_request.unit;
+        let result = async {
+            let unit = &melt_request.unit;
 
-        let ln = self
-            .payment_processors
-            .get(&PaymentProcessorKey::new(
-                unit.clone(),
-                PaymentMethod::Known(KnownMethod::Onchain),
-            ))
-            .ok_or_else(|| {
-                tracing::info!("Could not get ln backend for {}, onchain ", unit);
-                Error::UnsupportedUnit
-            })?;
+            let ln = self
+                .payment_processors
+                .get(&PaymentProcessorKey::new(
+                    unit.clone(),
+                    PaymentMethod::Known(KnownMethod::Onchain),
+                ))
+                .ok_or_else(|| {
+                    tracing::info!("Could not get ln backend for {}, onchain ", unit);
+                    Error::UnsupportedUnit
+                })?;
 
-        // Generate the authoritative `QuoteId` on the mint side *before*
-        // calling the backend. The onchain contract
-        // ([`OnchainOutgoingPaymentOptions.quote_id`]) requires backends to
-        // echo this value verbatim in
-        // [`PaymentQuoteResponse.request_lookup_id`] as
-        // `PaymentIdentifier::QuoteId(..)`; we validate that echo below and
-        // use our locally-generated id as the `MeltQuote.id` so the flow is
-        // no longer self-referential via the backend response.
-        let quote_id = QuoteId::new_uuid();
+            // Generate the authoritative `QuoteId` on the mint side *before*
+            // calling the backend. The onchain contract
+            // ([`OnchainOutgoingPaymentOptions.quote_id`]) requires backends to
+            // echo this value verbatim in
+            // [`PaymentQuoteResponse.request_lookup_id`] as
+            // `PaymentIdentifier::QuoteId(..)`; we validate that echo below and
+            // use our locally-generated id as the `MeltQuote.id` so the flow is
+            // no longer self-referential via the backend response.
+            let quote_id = QuoteId::new_uuid();
 
-        let outgoing_payment_options = cdk_common::payment::OnchainOutgoingPaymentOptions {
-            address: melt_request.request.clone(),
-            amount: melt_request.amount.with_unit(unit.clone()),
-            max_fee_amount: None,
-            quote_id: quote_id.clone(),
-            // No selection at quote creation: the backend enumerates all
-            // available `fee_options` and the wallet picks one (echoed back
-            // as `fee_index`) when executing the melt.
-            fee_index: None,
-            metadata: None,
-        };
-
-        let payment_quote = ln
-            .get_payment_quote(
-                unit,
-                OutgoingPaymentOptions::Onchain(Box::new(outgoing_payment_options)),
-            )
-            .await
-            .map_err(|err| {
-                tracing::error!(
-                    "Could not get payment quote for mint quote, {} onchain, {}",
-                    unit,
-                    err
-                );
-                err
-            })?;
-
-        if payment_quote.unit() != unit {
-            return Err(Error::UnitMismatch);
-        }
-
-        // Enforce the onchain quote-id echo contract: the backend MUST return
-        // `Some(PaymentIdentifier::QuoteId(quote_id))` matching the value we
-        // supplied. Anything else is a contract violation; reject loudly
-        // instead of silently accepting whatever the backend decided to
-        // synthesize.
-        match &payment_quote.request_lookup_id {
-            Some(PaymentIdentifier::QuoteId(id)) if id == &quote_id => {}
-            got => {
-                return Err(Error::OnchainQuoteLookupIdMismatch {
-                    expected: quote_id,
-                    got: got.clone(),
-                });
-            }
-        }
-
-        // Validate using processor quote amount for currency conversion
-        self.check_melt_request_acceptable(
-            payment_quote.amount.clone(),
-            PaymentMethod::Known(KnownMethod::Onchain),
-            melt_request.request.clone(),
-            None,
-        )
-        .await?;
-
-        let melt_ttl = self.quote_ttl().await?.melt_ttl;
-
-        // Store `request_lookup_id` deterministically from the mint-generated
-        // `quote_id` rather than cloning the backend response, so the
-        // persisted lookup id no longer depends on backend behavior beyond
-        // the validated echo.
-        let request_lookup_id = Some(PaymentIdentifier::QuoteId(quote_id.clone()));
-
-        // Onchain backends must return explicit `fee_options`; the mint
-        // validates them before persisting the quote.
-        let Some(fee_options) = payment_quote.fee_options.clone() else {
-            return Err(Error::OnchainFeeOptionsEmpty);
-        };
-
-        // `MeltQuote::new_onchain` applies the NUT validation. Failures are
-        // returned before the quote is persisted, so a backend that violates
-        // the contract never leaves state behind in the mint.
-        let quote = MeltQuote::new_onchain(
-            Some(quote_id),
-            MeltPaymentRequest::Onchain {
+            let outgoing_payment_options = cdk_common::payment::OnchainOutgoingPaymentOptions {
                 address: melt_request.request.clone(),
-            },
-            unit.clone(),
-            payment_quote.amount,
-            unix_time() + melt_ttl,
-            request_lookup_id,
-            payment_quote.extra_json,
-            fee_options,
-        )?;
+                amount: melt_request.amount.with_unit(unit.clone()),
+                max_fee_amount: None,
+                quote_id: quote_id.clone(),
+                // No selection at quote creation: the backend enumerates all
+                // available `fee_options` and the wallet picks one (echoed back
+                // as `fee_index`) when executing the melt.
+                fee_index: None,
+                metadata: None,
+            };
 
-        let mut tx = self.localstore.begin_transaction().await?;
-        tx.add_melt_quote(quote.clone()).await?;
-        tx.commit().await?;
+            let payment_quote = ln
+                .get_payment_quote(
+                    unit,
+                    OutgoingPaymentOptions::Onchain(Box::new(outgoing_payment_options)),
+                )
+                .await
+                .map_err(|err| {
+                    tracing::error!(
+                        "Could not get payment quote for mint quote, {} onchain, {}",
+                        unit,
+                        err
+                    );
+                    err
+                })?;
+
+            if payment_quote.unit() != unit {
+                return Err(Error::UnitMismatch);
+            }
+
+            // Enforce the onchain quote-id echo contract: the backend MUST return
+            // `Some(PaymentIdentifier::QuoteId(quote_id))` matching the value we
+            // supplied. Anything else is a contract violation; reject loudly
+            // instead of silently accepting whatever the backend decided to
+            // synthesize.
+            match &payment_quote.request_lookup_id {
+                Some(PaymentIdentifier::QuoteId(id)) if id == &quote_id => {}
+                got => {
+                    return Err(Error::OnchainQuoteLookupIdMismatch {
+                        expected: quote_id,
+                        got: got.clone(),
+                    });
+                }
+            }
+
+            // Validate using processor quote amount for currency conversion
+            self.check_melt_request_acceptable(
+                payment_quote.amount.clone(),
+                PaymentMethod::Known(KnownMethod::Onchain),
+                melt_request.request.clone(),
+                None,
+            )
+            .await?;
+
+            let melt_ttl = self.quote_ttl().await?.melt_ttl;
+
+            // Store `request_lookup_id` deterministically from the mint-generated
+            // `quote_id` rather than cloning the backend response, so the
+            // persisted lookup id no longer depends on backend behavior beyond
+            // the validated echo.
+            let request_lookup_id = Some(PaymentIdentifier::QuoteId(quote_id.clone()));
+
+            // Onchain backends must return explicit `fee_options`; the mint
+            // validates them before persisting the quote.
+            let Some(fee_options) = payment_quote.fee_options.clone() else {
+                return Err(Error::OnchainFeeOptionsEmpty);
+            };
+
+            // `MeltQuote::new_onchain` applies the NUT validation. Failures are
+            // returned before the quote is persisted, so a backend that violates
+            // the contract never leaves state behind in the mint.
+            let quote = MeltQuote::new_onchain(
+                Some(quote_id),
+                MeltPaymentRequest::Onchain {
+                    address: melt_request.request.clone(),
+                },
+                unit.clone(),
+                payment_quote.amount,
+                unix_time() + melt_ttl,
+                request_lookup_id,
+                payment_quote.extra_json,
+                fee_options,
+            )?;
+
+            let mut tx = self.localstore.begin_transaction().await?;
+            tx.add_melt_quote(quote.clone()).await?;
+            tx.commit().await?;
+
+            Ok(quote.into())
+        }
+        .await;
 
         #[cfg(feature = "prometheus")]
         {
-            METRICS.dec_in_flight_requests("get_melt_onchain_quote");
-            METRICS.record_mint_operation("get_melt_onchain_quote", true);
+            metrics.record(result.is_ok());
         }
 
-        Ok(quote.into())
+        result
     }
 
     /// Implementation of get_melt_custom_quote

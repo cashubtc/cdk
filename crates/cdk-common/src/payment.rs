@@ -360,6 +360,7 @@ impl OutgoingPaymentOptions {
             Self::Bolt11(_) => "bolt11",
             Self::Bolt12(_) => "bolt12",
             Self::Custom(options) => options.method.as_str(),
+            Self::Onchain(_) => "onchain",
         }
     }
 
