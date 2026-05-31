@@ -125,7 +125,11 @@ where
 
             #[cfg(feature = "prometheus")]
             {
-                let in_use = self.pool.max_size - self.pool.semaphore.available_permits();
+                let in_use = self
+                    .pool
+                    .max_size
+                    .saturating_sub(self.pool.semaphore.available_permits())
+                    .saturating_sub(1);
                 METRICS.set_db_connections_active(in_use as i64);
 
                 let duration = self.start_time.elapsed().as_secs_f64();
@@ -245,6 +249,15 @@ where
                 start_time: std::time::Instant::now(),
             }),
             Err(e) => {
+                #[cfg(feature = "prometheus")]
+                {
+                    let in_use = self
+                        .max_size
+                        .saturating_sub(self.semaphore.available_permits())
+                        .saturating_sub(1);
+                    METRICS.set_db_connections_active(in_use as i64);
+                }
+
                 // Permit is dropped here, releasing the slot back to the semaphore.
                 Err(e)
             }
@@ -272,7 +285,7 @@ where
 #[cfg(all(test, feature = "prometheus"))]
 mod tests {
     use std::fmt;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -422,10 +435,16 @@ mod tests {
 
         let pool = Pool::<TestPool>::new(test_config(2, false));
 
-        let first = pool.get().expect("first resource should be checked out");
+        let first = pool
+            .get()
+            .await
+            .expect("first resource should be checked out");
         assert_eq!(db_connections_active(), 1.0);
 
-        let second = pool.get().expect("second resource should be checked out");
+        let second = pool
+            .get()
+            .await
+            .expect("second resource should be checked out");
         assert_eq!(db_connections_active(), 2.0);
 
         drop(first);
@@ -433,7 +452,7 @@ mod tests {
 
         drop(second);
         assert_eq!(db_connections_active(), 0.0);
-        assert_eq!(pool.in_use.load(Ordering::Relaxed), 0);
+        assert_eq!(pool.semaphore.available_permits(), pool.max_size);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -442,10 +461,10 @@ mod tests {
         METRICS.set_db_connections_active(0);
 
         let pool = Pool::<TestPool>::new(test_config(1, true));
-        let result = pool.get();
+        let result = pool.get().await;
 
         assert!(matches!(result, Err(Error::Resource(_))));
         assert_eq!(db_connections_active(), 0.0);
-        assert_eq!(pool.in_use.load(Ordering::Relaxed), 0);
+        assert_eq!(pool.semaphore.available_permits(), pool.max_size);
     }
 }

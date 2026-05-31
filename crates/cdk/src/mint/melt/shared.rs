@@ -11,6 +11,8 @@ use cdk_common::database::{self, DynMintDatabase};
 use cdk_common::mint::{self as mint_types};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, Proofs, State};
 use cdk_common::{Amount, CurrencyUnit, Error, PublicKey, QuoteId};
+#[cfg(feature = "prometheus")]
+use cdk_prometheus::METRICS;
 use cdk_signatory::signatory::SignatoryKeySet;
 
 use crate::mint::subscription::PubSubManager;
@@ -46,6 +48,31 @@ pub fn get_keyset_fee_and_amounts(
         })
         .next()
         .unwrap_or_else(|| (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into())
+}
+
+#[cfg(feature = "prometheus")]
+fn amount_as_sats(amount: &Amount<CurrencyUnit>) -> Option<f64> {
+    amount.to_msat().ok().map(|msats| msats as f64 / 1000.0)
+}
+
+#[cfg(feature = "prometheus")]
+fn record_confirmed_payment_metrics(quote: &MeltQuote, total_spent: &Amount<CurrencyUnit>) {
+    let payment_method = quote.payment_method.as_str();
+    let quote_amount = quote.amount();
+
+    METRICS.record_payment_total(payment_method);
+
+    if let Some(quote_amount_sats) = amount_as_sats(&quote_amount) {
+        METRICS.record_payment_amount(payment_method, quote_amount_sats);
+    }
+
+    if let Ok(quote_amount) = quote_amount.convert_to(total_spent.unit()) {
+        if let Ok(payment_fee) = total_spent.checked_sub(&quote_amount) {
+            if let Some(payment_fee_sats) = amount_as_sats(&payment_fee) {
+                METRICS.record_payment_fee(payment_method, payment_fee_sats);
+            }
+        }
+    }
 }
 
 /// Rolls back a melt quote by removing all setup artifacts and resetting state.
@@ -662,6 +689,9 @@ pub async fn finalize_melt_quote(
         return Ok(if sigs.is_empty() { None } else { Some(sigs) });
     }
 
+    #[cfg(feature = "prometheus")]
+    let should_record_payment_metrics = locked_quote.state != MeltQuoteState::Paid;
+
     // Check if TX1 already completed (e.g., crash between TX1 commit and TX2 commit).
     // If the quote is already Paid, proofs are already Spent — calling finalize_melt_core
     // would fail on the Paid→Paid and Spent→Spent state transitions. Skip directly to
@@ -792,6 +822,11 @@ pub async fn finalize_melt_quote(
     );
 
     tracing::info!("Successfully finalized melt quote {}", quote.id);
+
+    #[cfg(feature = "prometheus")]
+    if should_record_payment_metrics {
+        record_confirmed_payment_metrics(&quote, &total_spent);
+    }
 
     Ok(change_sigs)
 }

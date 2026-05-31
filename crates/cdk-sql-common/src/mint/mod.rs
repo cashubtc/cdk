@@ -278,7 +278,10 @@ mod tests {
             fail_commit,
             fail_rollback,
         });
-        let conn = pool.get().expect("test resource should be checked out");
+        let conn = pool
+            .get()
+            .await
+            .expect("test resource should be checked out");
         let inner = ConnectionWithTransaction::new(conn)
             .await
             .expect("test transaction should begin");

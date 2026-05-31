@@ -964,71 +964,48 @@ impl Mint {
                             // Step 4: Finalize (TX2 - marks spent, issues change)
                             payment_saga.finalize().await
                         }
-                        Ok(PaymentOutcome::Pending) => {
-                            // Wait for the background task to complete the payment
-                            let kind = match quote_for_spawn.payment_method {
-                                PaymentMethod::Known(KnownMethod::Bolt11) => Kind::Bolt11MeltQuote,
-                                PaymentMethod::Known(KnownMethod::Bolt12) => Kind::Bolt12MeltQuote,
-                                PaymentMethod::Known(KnownMethod::Onchain) => {
-                                    Kind::OnchainMeltQuote
-                                }
-                                PaymentMethod::Custom(ref method) => {
-                                    Kind::Custom(format!("{}_melt_quote", method))
-                                }
-                            };
-
-                            let params = Params {
-                                id: Arc::new(crate::subscription::SubId::from(format!(
-                                    "melt_sync_wait_{}",
-                                    quote_id_for_log
-                                ))),
-                                kind,
-                                filters: vec![quote_id_for_log.to_string()],
-                            };
-
-                            let mut sub = match pubsub.subscribe(params) {
-                                Ok(sub) => sub,
-                                Err(_err) => return Err(Error::Internal),
-                            };
-
-                            let start = Instant::now();
-                            let mut last_status_recheck = start
-                                .checked_sub(pending_melt_status_recheck_interval())
-                                .unwrap_or(start);
-                            let mut last_backend_error: Option<String> = None;
-
-                            loop {
-                                if let Some(response) =
-                                    Self::load_settled_melt_response(&localstore, &quote_id_for_log)
-                                        .await?
-                                {
-                                    return Ok(response);
-                                }
-
-                                if start.elapsed() >= pending_melt_wait_timeout() {
-                                    return Err(Error::PendingMeltTimeout { last_backend_error });
-                                }
-
-                                if last_status_recheck.elapsed()
-                                    >= pending_melt_status_recheck_interval()
-                                {
-                                    match Self::reconcile_pending_melt_quote(
-                                        &mint_for_spawn,
-                                        &localstore,
-                                        &pubsub,
-                                        &quote_id_for_log,
-                                    )
-                                    .await?
-                                    {
-                                        Some(err_string) => {
-                                            last_backend_error = Some(err_string);
-                                        }
-                                        None => {
-                                            last_backend_error = None;
-                                        }
+                        Ok(PaymentOutcome::Pending {
+                            #[cfg(feature = "prometheus")]
+                            metrics,
+                        }) => {
+                            let result = async {
+                                // Wait for the background task to complete the payment
+                                let kind = match quote_for_spawn.payment_method {
+                                    PaymentMethod::Known(KnownMethod::Bolt11) => {
+                                        Kind::Bolt11MeltQuote
                                     }
-                                    last_status_recheck = Instant::now();
+                                    PaymentMethod::Known(KnownMethod::Bolt12) => {
+                                        Kind::Bolt12MeltQuote
+                                    }
+                                    PaymentMethod::Known(KnownMethod::Onchain) => {
+                                        Kind::OnchainMeltQuote
+                                    }
+                                    PaymentMethod::Custom(ref method) => {
+                                        Kind::Custom(format!("{}_melt_quote", method))
+                                    }
+                                };
 
+                                let params = Params {
+                                    id: Arc::new(crate::subscription::SubId::from(format!(
+                                        "melt_sync_wait_{}",
+                                        quote_id_for_log
+                                    ))),
+                                    kind,
+                                    filters: vec![quote_id_for_log.to_string()],
+                                };
+
+                                let mut sub = match pubsub.subscribe(params) {
+                                    Ok(sub) => sub,
+                                    Err(_err) => return Err(Error::Internal),
+                                };
+
+                                let start = Instant::now();
+                                let mut last_status_recheck = start
+                                    .checked_sub(pending_melt_status_recheck_interval())
+                                    .unwrap_or(start);
+                                let mut last_backend_error: Option<String> = None;
+
+                                loop {
                                     if let Some(response) = Self::load_settled_melt_response(
                                         &localstore,
                                         &quote_id_for_log,
@@ -1037,44 +1014,33 @@ impl Mint {
                                     {
                                         return Ok(response);
                                     }
-                                }
 
-                                let Ok(maybe_event) = tokio::time::timeout(
-                                    pending_melt_notification_wait_interval(),
-                                    sub.recv(),
-                                )
-                                .await
-                                else {
-                                    continue;
-                                };
+                                    if start.elapsed() >= pending_melt_wait_timeout() {
+                                        return Err(Error::PendingMeltTimeout {
+                                            last_backend_error,
+                                        });
+                                    }
 
-                                if let Some(event) = maybe_event {
-                                    let (event_quote_id, state) = match event.into_inner() {
-                                        NotificationPayload::MeltQuoteBolt11Response(r) => {
-                                            (r.quote, r.state)
-                                        }
-                                        NotificationPayload::MeltQuoteBolt12Response(r) => {
-                                            (r.quote, r.state)
-                                        }
-                                        NotificationPayload::CustomMeltQuoteResponse(_, r) => {
-                                            (r.quote, r.state)
-                                        }
-                                        // Onchain is the one method where the subscription
-                                        // fast-path is most valuable, because confirmation is
-                                        // inherently asynchronous. We subscribe to
-                                        // `OnchainMeltQuote` events above (see `Kind` mapping)
-                                        // and must handle them here; otherwise onchain waiters
-                                        // would rely solely on polling via
-                                        // `reconcile_pending_melt_quote`.
-                                        NotificationPayload::MeltQuoteOnchainResponse(r) => {
-                                            (r.quote, r.state)
-                                        }
-                                        _ => continue,
-                                    };
-
-                                    if event_quote_id == quote_id_for_log
-                                        && state != MeltQuoteState::Pending
+                                    if last_status_recheck.elapsed()
+                                        >= pending_melt_status_recheck_interval()
                                     {
+                                        match Self::reconcile_pending_melt_quote(
+                                            &mint_for_spawn,
+                                            &localstore,
+                                            &pubsub,
+                                            &quote_id_for_log,
+                                        )
+                                        .await?
+                                        {
+                                            Some(err_string) => {
+                                                last_backend_error = Some(err_string);
+                                            }
+                                            None => {
+                                                last_backend_error = None;
+                                            }
+                                        }
+                                        last_status_recheck = Instant::now();
+
                                         if let Some(response) = Self::load_settled_melt_response(
                                             &localstore,
                                             &quote_id_for_log,
@@ -1084,8 +1050,64 @@ impl Mint {
                                             return Ok(response);
                                         }
                                     }
+
+                                    let Ok(maybe_event) = tokio::time::timeout(
+                                        pending_melt_notification_wait_interval(),
+                                        sub.recv(),
+                                    )
+                                    .await
+                                    else {
+                                        continue;
+                                    };
+
+                                    if let Some(event) = maybe_event {
+                                        let (event_quote_id, state) = match event.into_inner() {
+                                            NotificationPayload::MeltQuoteBolt11Response(r) => {
+                                                (r.quote, r.state)
+                                            }
+                                            NotificationPayload::MeltQuoteBolt12Response(r) => {
+                                                (r.quote, r.state)
+                                            }
+                                            NotificationPayload::CustomMeltQuoteResponse(_, r) => {
+                                                (r.quote, r.state)
+                                            }
+                                            // Onchain is the one method where the subscription
+                                            // fast-path is most valuable, because confirmation is
+                                            // inherently asynchronous. We subscribe to
+                                            // `OnchainMeltQuote` events above (see `Kind` mapping)
+                                            // and must handle them here; otherwise onchain waiters
+                                            // would rely solely on polling via
+                                            // `reconcile_pending_melt_quote`.
+                                            NotificationPayload::MeltQuoteOnchainResponse(r) => {
+                                                (r.quote, r.state)
+                                            }
+                                            _ => continue,
+                                        };
+
+                                        if event_quote_id == quote_id_for_log
+                                            && state != MeltQuoteState::Pending
+                                        {
+                                            if let Some(response) =
+                                                Self::load_settled_melt_response(
+                                                    &localstore,
+                                                    &quote_id_for_log,
+                                                )
+                                                .await?
+                                            {
+                                                return Ok(response);
+                                            }
+                                        }
+                                    }
                                 }
                             }
+                            .await;
+
+                            #[cfg(feature = "prometheus")]
+                            if let Some(metrics) = metrics {
+                                metrics.record(result.is_ok());
+                            }
+
+                            result
                         }
                         Err(err) => Err(err),
                     }

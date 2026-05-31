@@ -626,14 +626,20 @@ impl MeltSaga<SetupComplete> {
                             "Lightning payment for quote {} unknown.",
                             self.state_data.quote.id
                         );
-                        return Ok(PaymentOutcome::Pending);
+                        return Ok(PaymentOutcome::Pending {
+                            #[cfg(feature = "prometheus")]
+                            metrics: self.metrics,
+                        });
                     }
                     MeltQuoteState::Pending => {
                         tracing::warn!(
                             "LN payment pending, proofs remain pending for quote: {}",
                             self.state_data.quote.id
                         );
-                        return Ok(PaymentOutcome::Pending);
+                        return Ok(PaymentOutcome::Pending {
+                            #[cfg(feature = "prometheus")]
+                            metrics: self.metrics,
+                        });
                     }
                 }
             }
@@ -976,7 +982,12 @@ pub enum PaymentOutcome {
     /// Payment is still pending at the backend. Inputs and outputs remain
     /// reserved and the quote is left in `Pending`; finalization or rollback
     /// will happen later via a payment event or a status-check reconciliation.
-    Pending,
+    Pending {
+        /// Metrics guard carried into the pending waiter so the operation is
+        /// recorded when the waiter reaches a terminal result.
+        #[cfg(feature = "prometheus")]
+        metrics: Option<MintMetricGuard>,
+    },
 }
 
 impl<S> MeltSaga<S> {

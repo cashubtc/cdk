@@ -308,7 +308,7 @@ mod tests {
             crate::mint::melt::melt_saga::PaymentOutcome::Confirmed(confirmed_saga) => {
                 confirmed_saga
             }
-            crate::mint::melt::melt_saga::PaymentOutcome::Pending => {
+            crate::mint::melt::melt_saga::PaymentOutcome::Pending { .. } => {
                 panic!("Expected confirmed payment outcome")
             }
         };

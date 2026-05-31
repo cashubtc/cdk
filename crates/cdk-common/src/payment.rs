@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use cashu::util::hex;
 use cashu::{Bolt11Invoice, MeltOptions};
 #[cfg(feature = "prometheus")]
-use cdk_prometheus::{MintMetricGuard, METRICS};
+use cdk_prometheus::MintMetricGuard;
 use futures::Stream;
 use lightning::offers::offer::Offer;
 use lightning_invoice::ParseOrSemanticError;
@@ -354,16 +354,6 @@ pub enum OutgoingPaymentOptions {
 }
 
 impl OutgoingPaymentOptions {
-    /// Return the low-cardinality payment method label used for metrics.
-    pub fn payment_method_label(&self) -> &str {
-        match self {
-            Self::Bolt11(_) => "bolt11",
-            Self::Bolt12(_) => "bolt12",
-            Self::Custom(options) => options.method.as_str(),
-            Self::Onchain(_) => "onchain",
-        }
-    }
-
     /// Creates payment options from a melt quote
     pub fn from_melt_quote_with_fee(
         melt_quote: MeltQuote,
@@ -799,21 +789,10 @@ where
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
         let metrics = MintMetricGuard::new("make_payment");
-        let payment_method = options.payment_method_label().to_string();
 
         let result = self.inner.make_payment(unit, options).await;
 
         let success = result.is_ok();
-
-        if let Ok(ref payment) = result {
-            if payment.status == MeltQuoteState::Paid {
-                METRICS.record_payment_total(&payment_method);
-
-                if let Ok(total_spent_sats) = payment.total_spent.to_sat() {
-                    METRICS.record_payment_amount(&payment_method, total_spent_sats as f64);
-                }
-            }
-        }
 
         metrics.record(success);
 
