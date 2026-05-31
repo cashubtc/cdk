@@ -125,19 +125,31 @@ and NUT-05 custom payment flows. Configure methods in `config.toml` with one
 entry per method and unit:
 
 ```toml
+[[ln]]
+ln_backend = "fakewallet"
+unit = "sat"
+
+[[ln]]
+ln_backend = "fakewallet"
+unit = "usd"
+
 [fake_wallet]
-supported_units = ["sat", "usd"]
 custom_payment_methods = [
     { method = "paypal", unit = "sat" },
     { method = "venmo", unit = "usd" },
 ]
 ```
 
-For Docker or env-only setups, use a comma-separated list of `method:unit`
-pairs:
+For a single fake wallet unit, the legacy `[ln]` table is still accepted and
+defaults to `unit = "sat"`. For multiple fake wallet units, use one `[[ln]]`
+entry per unit.
+
+For Docker or env-only setups, set `CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS` to
+register multiple fake wallet units:
 
 ```bash
 export CDK_MINTD_LN_BACKEND=fakewallet
+export CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS=sat,usd
 export CDK_MINTD_FAKE_WALLET_CUSTOM_PAYMENT_METHODS=paypal:sat,venmo:usd
 ```
 
@@ -307,6 +319,7 @@ environment:
   - CDK_MINTD_DATABASE=sqlite
   - CDK_MINTD_LISTEN_HOST=0.0.0.0
   - CDK_MINTD_LISTEN_PORT=8085
+  - CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS=sat,usd
   - CDK_MINTD_FAKE_WALLET_CUSTOM_PAYMENT_METHODS=paypal:sat,venmo:usd
 ```
 

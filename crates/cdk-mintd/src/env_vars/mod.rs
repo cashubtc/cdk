@@ -168,7 +168,17 @@ impl Settings {
         #[cfg(feature = "fakewallet")]
         {
             // Fake wallet has defaults so it is always Some if feature enabled
-            self.fake_wallet = Some(self.fake_wallet.clone().unwrap_or_default().from_env());
+            let fake_wallet_supported_units_from_env =
+                env::var(ENV_FAKE_WALLET_SUPPORTED_UNITS).is_ok();
+            let fake_wallet = self.fake_wallet.clone().unwrap_or_default().from_env();
+            let supported_units_configured =
+                fake_wallet.supported_units != vec![cdk::nuts::CurrencyUnit::Sat];
+
+            if fake_wallet_supported_units_from_env || supported_units_configured {
+                self.expand_single_fake_wallet_ln_entry(&fake_wallet);
+            }
+
+            self.fake_wallet = Some(fake_wallet);
         }
 
         #[cfg(feature = "lnd")]
@@ -249,5 +259,39 @@ impl Settings {
             .map_err(|err| anyhow!(err))?;
 
         Ok(self.clone())
+    }
+
+    #[cfg(feature = "fakewallet")]
+    fn expand_single_fake_wallet_ln_entry(&mut self, fake_wallet: &crate::config::FakeWallet) {
+        let fake_wallet_ln_index = self
+            .ln
+            .iter()
+            .enumerate()
+            .filter_map(|(index, ln)| (ln.ln_backend == LnBackend::FakeWallet).then_some(index))
+            .collect::<Vec<_>>();
+
+        if fake_wallet_ln_index.len() != 1 {
+            return;
+        }
+
+        let mut units = Vec::new();
+        for unit in &fake_wallet.supported_units {
+            if !units.contains(unit) {
+                units.push(unit.clone());
+            }
+        }
+
+        if units.is_empty() {
+            return;
+        }
+
+        let index = fake_wallet_ln_index[0];
+        let base_ln = self.ln[index].clone();
+        let expanded_ln = units.into_iter().map(|unit| Ln {
+            unit,
+            ..base_ln.clone()
+        });
+
+        self.ln.splice(index..=index, expanded_ln);
     }
 }

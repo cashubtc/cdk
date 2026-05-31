@@ -2109,6 +2109,14 @@ max_melt = 500000
         );
         assert_eq!(fakewallet_config.min_delay_time, 0);
         assert_eq!(fakewallet_config.max_delay_time, 5);
+        assert_eq!(
+            settings
+                .ln
+                .iter()
+                .map(|ln| ln.unit.clone())
+                .collect::<Vec<_>>(),
+            vec![CurrencyUnit::Sat, CurrencyUnit::Msat]
+        );
 
         // Cleanup env vars
         env::remove_var(crate::env_vars::ENV_LN_BACKEND);

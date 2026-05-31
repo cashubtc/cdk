@@ -103,7 +103,15 @@ connection_timeout_seconds = 10
 #   unit = "sat"
 #   [[ln]]
 #   ln_backend = "lnbits"
-#   unit = "eur"
+#   unit = "msat"
+#
+# Fake wallet multi-unit testing uses one fakewallet [[ln]] entry per unit:
+#   [[ln]]
+#   ln_backend = "fakewallet"
+#   unit = "sat"
+#   [[ln]]
+#   ln_backend = "fakewallet"
+#   unit = "usd"
 
 [ln]
 # Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits', 'ldknode' or 'none' (if onchain is enabled)
