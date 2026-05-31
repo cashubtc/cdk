@@ -780,7 +780,7 @@ impl WalletRepository {
     ) -> Result<Vec<cdk_common::wallet::Transaction>, Error> {
         let mut transactions = Vec::new();
 
-        for (_, wallet) in self.wallets.read().await.iter() {
+        for wallet in self.wallets.read().await.values() {
             let wallet_transactions = wallet.list_transactions(direction).await?;
             transactions.extend(wallet_transactions);
         }

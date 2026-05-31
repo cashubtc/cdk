@@ -92,6 +92,12 @@ async fn start_fake_mint(
                 version: "v2".into(),
                 expired: false,
             },
+            cdk_mintd::config::FakeWalletKeysetRotation {
+                unit: CurrencyUnit::Usd,
+                input_fee_ppk: 0,
+                version: "v1".into(),
+                expired: false,
+            },
         ],
     });
 

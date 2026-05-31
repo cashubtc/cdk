@@ -62,7 +62,7 @@ pub use onchain::*;
 #[cfg(feature = "prometheus")]
 pub use prometheus::*;
 
-use crate::config::{DatabaseEngine, LnBackend, OnchainBackend, Settings};
+use crate::config::{DatabaseEngine, Ln, LnBackend, OnchainBackend, Settings};
 
 impl Settings {
     pub fn from_env(&mut self) -> Result<Self> {
@@ -96,7 +96,25 @@ impl Settings {
 
         self.info = self.info.clone().from_env();
         self.mint_info = self.mint_info.clone().from_env();
-        self.ln = self.ln.clone().from_env();
+        // CDK_MINTD_LN_* env vars only apply when there is exactly one
+        // configured Lightning entry. Multi-backend setups must choose units
+        // and backends in the config file so env overrides do not collapse them.
+        match self.ln.len() {
+            0 => {
+                let ln = Ln::default().from_env();
+                if ln.ln_backend != LnBackend::None {
+                    self.ln.push(ln);
+                }
+            }
+            1 => {
+                self.ln[0] = self.ln[0].clone().from_env();
+            }
+            _ => {
+                tracing::warn!(
+                    "CDK_MINTD_LN_* environment variables ignored: multiple [[ln]] entries configured"
+                );
+            }
+        }
         self.onchain = Some(self.onchain.clone().unwrap_or_default().from_env());
         self.limits = self.limits.clone().from_env();
 
@@ -176,7 +194,11 @@ impl Settings {
         #[cfg(feature = "grpc-processor")]
         {
             let grpc_processor = self.grpc_processor.clone().unwrap_or_default().from_env();
-            if grpc_processor.supported_units.is_empty() {
+            let grpc_processor_configured = self
+                .ln
+                .iter()
+                .any(|ln| ln.ln_backend == LnBackend::GrpcProcessor);
+            if grpc_processor.supported_units.is_empty() && !grpc_processor_configured {
                 self.grpc_processor = None;
             } else {
                 self.grpc_processor = Some(grpc_processor);
@@ -193,30 +215,34 @@ impl Settings {
             }
         }
 
-        match self.ln.ln_backend {
-            #[cfg(feature = "cln")]
-            LnBackend::Cln => {}
-            #[cfg(feature = "lnbits")]
-            LnBackend::LNbits => {}
-            #[cfg(feature = "fakewallet")]
-            LnBackend::FakeWallet => {}
-            #[cfg(feature = "lnd")]
-            LnBackend::Lnd => {}
-            #[cfg(feature = "ldk-node")]
-            LnBackend::LdkNode => {}
-            #[cfg(feature = "grpc-processor")]
-            LnBackend::GrpcProcessor => {}
-            LnBackend::None => {
-                if let Some(ref onchain) = self.onchain {
-                    if onchain.onchain_backend == OnchainBackend::None {
-                        bail!("At least one payment backend (Lightning or On-chain) must be set");
-                    }
-                } else {
-                    bail!("At least one payment backend (Lightning or On-chain) must be set");
-                }
+        for ln in &self.ln {
+            match ln.ln_backend {
+                #[cfg(feature = "cln")]
+                LnBackend::Cln => {}
+                #[cfg(feature = "lnbits")]
+                LnBackend::LNbits => {}
+                #[cfg(feature = "fakewallet")]
+                LnBackend::FakeWallet => {}
+                #[cfg(feature = "lnd")]
+                LnBackend::Lnd => {}
+                #[cfg(feature = "ldk-node")]
+                LnBackend::LdkNode => {}
+                #[cfg(feature = "grpc-processor")]
+                LnBackend::GrpcProcessor => {}
+                LnBackend::None => {}
+                #[allow(unreachable_patterns)]
+                _ => bail!("Selected Ln backend is not enabled in this build"),
             }
-            #[allow(unreachable_patterns)]
-            _ => bail!("Selected Ln backend is not enabled in this build"),
+        }
+
+        let has_lightning_backend = self.ln.iter().any(|ln| ln.ln_backend != LnBackend::None);
+        let has_onchain_backend = self
+            .onchain
+            .as_ref()
+            .map(|onchain| onchain.onchain_backend != OnchainBackend::None)
+            .unwrap_or(false);
+        if !has_lightning_backend && !has_onchain_backend {
+            bail!("At least one payment backend (Lightning or On-chain) must be set");
         }
 
         self.validate_backend_pairing()
