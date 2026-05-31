@@ -12,7 +12,7 @@ use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id};
 use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
 #[cfg(feature = "prometheus")]
-use cdk_prometheus::global;
+use cdk_prometheus::{global, METRICS};
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
 use nut21::ProtectedEndpoint;
@@ -51,6 +51,33 @@ const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";
 const CDK_MINT_CONFIG_SECONDARY_NAMESPACE: &str = "config";
 const CDK_MINT_CONFIG_KV_KEY: &str = "mint_info";
 const CDK_MINT_QUOTE_TTL_KV_KEY: &str = "quote_ttl";
+
+#[cfg(feature = "prometheus")]
+struct MintMetricGuard {
+    operation: &'static str,
+}
+
+#[cfg(feature = "prometheus")]
+impl MintMetricGuard {
+    fn new(operation: &'static str) -> Self {
+        METRICS.inc_in_flight_requests(operation);
+        Self { operation }
+    }
+
+    fn record(self, success: bool) {
+        METRICS.record_mint_operation(self.operation, success);
+        if !success {
+            METRICS.record_error();
+        }
+    }
+}
+
+#[cfg(feature = "prometheus")]
+impl Drop for MintMetricGuard {
+    fn drop(&mut self) {
+        METRICS.dec_in_flight_requests(self.operation);
+    }
+}
 
 /// Cashu Mint
 #[derive(Clone)]
