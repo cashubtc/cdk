@@ -13,14 +13,14 @@ pub mod process;
 
 // Re-exports for convenience
 pub use error::{PrometheusError, Result};
-pub use metrics::{global, CdkMetrics, METRICS};
+pub use metrics::{CdkMetrics, MintMetricGuard, METRICS};
 #[cfg(feature = "system-metrics")]
 pub use process::SystemMetrics;
 // Re-export prometheus crate for custom metrics
 pub use prometheus;
 pub use server::{PrometheusBuilder, PrometheusConfig, PrometheusServer};
 
-/// Macro for recording metrics with optional fallback to global instance
+/// Macro for recording metrics with optional fallback to [`METRICS`]
 ///
 /// Usage:
 /// ```rust
@@ -32,7 +32,7 @@ pub use server::{PrometheusBuilder, PrometheusConfig, PrometheusServer};
 ///     record_mint_operation("operation", true);
 /// });
 ///
-/// // Direct global calls
+/// // Direct calls on METRICS
 /// record_metrics!({
 ///     dec_in_flight_requests("operation");
 ///     record_mint_operation("operation", true);
@@ -40,7 +40,7 @@ pub use server::{PrometheusBuilder, PrometheusConfig, PrometheusServer};
 /// ```
 #[macro_export]
 macro_rules! record_metrics {
-    // Pattern for using optional metrics with fallback to global
+    // Pattern for using optional metrics with fallback to METRICS
     ($metrics_opt:expr => { $($method:ident($($arg:expr),*));* $(;)? }) => {
         #[cfg(feature = "prometheus")]
         {
@@ -50,18 +50,18 @@ macro_rules! record_metrics {
                 )*
             } else {
                 $(
-                    $crate::global::$method($($arg),*);
+                    $crate::METRICS.$method($($arg),*);
                 )*
             }
         }
     };
 
-    // Pattern for using global metrics directly
+    // Pattern for using METRICS directly
     ({ $($method:ident($($arg:expr),*));* $(;)? }) => {
         #[cfg(feature = "prometheus")]
         {
             $(
-                $crate::global::$method($($arg),*);
+                $crate::METRICS.$method($($arg),*);
             )*
         }
     };

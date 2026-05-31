@@ -16,6 +16,17 @@ pub mod mint;
 #[cfg(feature = "wallet")]
 pub mod wallet;
 
+#[cfg(all(test, feature = "prometheus"))]
+mod metrics_test_lock {
+    use tokio::sync::{Mutex, MutexGuard};
+
+    static METRICS_TEST_LOCK: Mutex<()> = Mutex::const_new(());
+
+    pub(crate) async fn lock() -> MutexGuard<'static, ()> {
+        METRICS_TEST_LOCK.lock().await
+    }
+}
+
 #[cfg(feature = "mint")]
 pub use mint::SQLMintDatabase;
 #[cfg(feature = "wallet")]

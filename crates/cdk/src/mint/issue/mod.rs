@@ -13,8 +13,6 @@ use cdk_common::{
     MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteOnchainResponse, MintQuoteState,
     MintRequest, MintResponse, NotificationPayload, PublicKey,
 };
-#[cfg(feature = "prometheus")]
-use cdk_prometheus::METRICS;
 use tracing::instrument;
 
 use crate::mint::verification::MAX_REQUEST_FIELD_LEN;
@@ -204,7 +202,7 @@ impl Mint {
         mint_quote_request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("get_mint_quote");
+        let metrics = super::MintMetricGuard::new("get_mint_quote");
 
         let result = async {
             // Use the new getters for cleaner code
@@ -386,11 +384,7 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            METRICS.dec_in_flight_requests("get_mint_quote");
-            METRICS.record_mint_operation("get_mint_quote", result.is_ok());
-            if result.is_err() {
-                METRICS.record_error();
-            }
+            metrics.record(result.is_ok());
         }
 
         result
@@ -404,7 +398,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn mint_quotes(&self) -> Result<Vec<MintQuote>, Error> {
         #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("mint_quotes");
+        let metrics = super::MintMetricGuard::new("mint_quotes");
 
         let result = async {
             let quotes = self.localstore.get_mint_quotes().await?;
@@ -414,11 +408,7 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            METRICS.dec_in_flight_requests("mint_quotes");
-            METRICS.record_mint_operation("mint_quotes", result.is_ok());
-            if result.is_err() {
-                METRICS.record_error();
-            }
+            metrics.record(result.is_ok());
         }
 
         result
@@ -441,7 +431,7 @@ impl Mint {
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<(), Error> {
         #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("pay_mint_quote_for_request_id");
+        let metrics = super::MintMetricGuard::new("pay_mint_quote_for_request_id");
         let result = async {
             if wait_payment_response.payment_amount.value() == 0 {
                 tracing::warn!(
@@ -486,11 +476,7 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            METRICS.dec_in_flight_requests("pay_mint_quote_for_request_id");
-            METRICS.record_mint_operation("pay_mint_quote_for_request_id", result.is_ok());
-            if result.is_err() {
-                METRICS.record_error();
-            }
+            metrics.record(result.is_ok());
         }
 
         result
@@ -521,7 +507,7 @@ impl Mint {
         wait_payment_response: WaitPaymentResponse,
     ) -> Result<bool, Error> {
         #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("pay_mint_quote");
+        let metrics = super::MintMetricGuard::new("pay_mint_quote");
 
         let result =
             async { Self::handle_mint_quote_payment(tx, mint_quote, wait_payment_response).await }
@@ -529,11 +515,7 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            METRICS.dec_in_flight_requests("pay_mint_quote");
-            METRICS.record_mint_operation("pay_mint_quote", result.is_ok());
-            if result.is_err() {
-                METRICS.record_error();
-            }
+            metrics.record(result.is_ok());
         }
 
         result
@@ -556,7 +538,7 @@ impl Mint {
         quote_id: &QuoteId,
     ) -> Result<MintQuoteResponse<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("check_mint_quote");
+        let metrics = super::MintMetricGuard::new("check_mint_quote");
         let result: Result<MintQuoteResponse<QuoteId>, Error> = async {
             Ok(self
                 .check_mint_quotes(std::slice::from_ref(quote_id))
@@ -569,11 +551,7 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            METRICS.dec_in_flight_requests("check_mint_quote");
-            METRICS.record_mint_operation("check_mint_quote", result.is_ok());
-            if result.is_err() {
-                METRICS.record_error();
-            }
+            metrics.record(result.is_ok());
         }
 
         result
@@ -596,7 +574,7 @@ impl Mint {
         quote_ids: &[QuoteId],
     ) -> Result<Vec<MintQuoteResponse<QuoteId>>, Error> {
         #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("check_mint_quotes");
+        let metrics = super::MintMetricGuard::new("check_mint_quotes");
 
         let result = async {
             if quote_ids.is_empty() {
@@ -628,11 +606,7 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            METRICS.dec_in_flight_requests("check_mint_quotes");
-            METRICS.record_mint_operation("check_mint_quotes", result.is_ok());
-            if result.is_err() {
-                METRICS.record_error();
-            }
+            metrics.record(result.is_ok());
         }
 
         result
@@ -658,7 +632,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn process_mint_request(&self, input: MintInput) -> Result<MintResponse, Error> {
         #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("process_mint_request");
+        let metrics = super::MintMetricGuard::new("process_mint_request");
 
         let result = async {
             // Phase 1: Validate input structure
@@ -1008,11 +982,7 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            METRICS.dec_in_flight_requests("process_mint_request");
-            METRICS.record_mint_operation("process_mint_request", result.is_ok());
-            if result.is_err() {
-                METRICS.record_error();
-            }
+            metrics.record(result.is_ok());
         }
         result
     }

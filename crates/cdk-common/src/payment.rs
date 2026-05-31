@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use cashu::util::hex;
 use cashu::{Bolt11Invoice, MeltOptions};
 #[cfg(feature = "prometheus")]
-use cdk_prometheus::METRICS;
+use cdk_prometheus::{MintMetricGuard, METRICS};
 use futures::Stream;
 use lightning::offers::offer::Offer;
 use lightning_invoice::ParseOrSemanticError;
@@ -354,6 +354,16 @@ pub enum OutgoingPaymentOptions {
 }
 
 impl OutgoingPaymentOptions {
+    /// Return the low-cardinality payment method label used for metrics.
+    pub fn payment_method_label(&self) -> &str {
+        match self {
+            Self::Bolt11(_) => "bolt11",
+            Self::Bolt12(_) => "bolt12",
+            Self::Custom(options) => options.method.as_str(),
+            Self::Onchain(_) => "onchain",
+        }
+    }
+
     /// Creates payment options from a melt quote
     pub fn from_melt_quote_with_fee(
         melt_quote: MeltQuote,
@@ -715,39 +725,30 @@ where
     type Err = T::Err;
 
     async fn start(&self) -> Result<(), Self::Err> {
-        let start = std::time::Instant::now();
-        METRICS.inc_in_flight_requests("start");
+        let metrics = MintMetricGuard::new("start");
 
         let result = self.inner.start().await;
 
-        let duration = start.elapsed().as_secs_f64();
-        METRICS.record_mint_operation_histogram("start", result.is_ok(), duration);
-        METRICS.dec_in_flight_requests("start");
+        metrics.record(result.is_ok());
 
         result
     }
 
     async fn stop(&self) -> Result<(), Self::Err> {
-        let start = std::time::Instant::now();
-        METRICS.inc_in_flight_requests("stop");
+        let metrics = MintMetricGuard::new("stop");
 
         let result = self.inner.stop().await;
 
-        let duration = start.elapsed().as_secs_f64();
-        METRICS.record_mint_operation_histogram("stop", result.is_ok(), duration);
-        METRICS.dec_in_flight_requests("stop");
+        metrics.record(result.is_ok());
 
         result
     }
     async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
-        let start = std::time::Instant::now();
-        METRICS.inc_in_flight_requests("get_settings");
+        let metrics = MintMetricGuard::new("get_settings");
 
         let result = self.inner.get_settings().await;
 
-        let duration = start.elapsed().as_secs_f64();
-        METRICS.record_mint_operation_histogram("get_settings", result.is_ok(), duration);
-        METRICS.dec_in_flight_requests("get_settings");
+        metrics.record(result.is_ok());
 
         result
     }
@@ -756,18 +757,11 @@ where
         &self,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
-        let start = std::time::Instant::now();
-        METRICS.inc_in_flight_requests("create_incoming_payment_request");
+        let metrics = MintMetricGuard::new("create_incoming_payment_request");
 
         let result = self.inner.create_incoming_payment_request(options).await;
 
-        let duration = start.elapsed().as_secs_f64();
-        METRICS.record_mint_operation_histogram(
-            "create_incoming_payment_request",
-            result.is_ok(),
-            duration,
-        );
-        METRICS.dec_in_flight_requests("create_incoming_payment_request");
+        metrics.record(result.is_ok());
 
         result
     }
@@ -777,38 +771,24 @@ where
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
-        let start = std::time::Instant::now();
-        METRICS.inc_in_flight_requests("get_payment_quote");
+        let metrics = MintMetricGuard::new("get_payment_quote");
 
         let result = self.inner.get_payment_quote(unit, options).await;
 
-        let duration = start.elapsed().as_secs_f64();
-        let success = result.is_ok();
-
-        if let Ok(ref quote) = result {
-            let amount: f64 = quote.amount.value() as f64;
-            let fee: f64 = quote.fee.value() as f64;
-            METRICS.record_lightning_payment(amount, fee);
-        }
-
-        METRICS.record_mint_operation_histogram("get_payment_quote", success, duration);
-        METRICS.dec_in_flight_requests("get_payment_quote");
+        metrics.record(result.is_ok());
 
         result
     }
     async fn wait_payment_event(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
-        let start = std::time::Instant::now();
-        METRICS.inc_in_flight_requests("wait_payment_event");
+        let metrics = MintMetricGuard::new("wait_payment_event");
 
         let result = self.inner.wait_payment_event().await;
 
-        let duration = start.elapsed().as_secs_f64();
         let success = result.is_ok();
 
-        METRICS.record_mint_operation_histogram("wait_payment_event", success, duration);
-        METRICS.dec_in_flight_requests("wait_payment_event");
+        metrics.record(success);
 
         result
     }
@@ -818,16 +798,24 @@ where
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        let start = std::time::Instant::now();
-        METRICS.inc_in_flight_requests("make_payment");
+        let metrics = MintMetricGuard::new("make_payment");
+        let payment_method = options.payment_method_label().to_string();
 
         let result = self.inner.make_payment(unit, options).await;
 
-        let duration = start.elapsed().as_secs_f64();
         let success = result.is_ok();
 
-        METRICS.record_mint_operation_histogram("make_payment", success, duration);
-        METRICS.dec_in_flight_requests("make_payment");
+        if let Ok(ref payment) = result {
+            if payment.status == MeltQuoteState::Paid {
+                METRICS.record_payment_total(&payment_method);
+
+                if let Ok(total_spent_sats) = payment.total_spent.to_sat() {
+                    METRICS.record_payment_amount(&payment_method, total_spent_sats as f64);
+                }
+            }
+        }
+
+        metrics.record(success);
 
         result
     }
@@ -844,21 +832,14 @@ where
         &self,
         payment_identifier: &PaymentIdentifier,
     ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
-        let start = std::time::Instant::now();
-        METRICS.inc_in_flight_requests("check_incoming_payment_status");
+        let metrics = MintMetricGuard::new("check_incoming_payment_status");
 
         let result = self
             .inner
             .check_incoming_payment_status(payment_identifier)
             .await;
 
-        let duration = start.elapsed().as_secs_f64();
-        METRICS.record_mint_operation_histogram(
-            "check_incoming_payment_status",
-            result.is_ok(),
-            duration,
-        );
-        METRICS.dec_in_flight_requests("check_incoming_payment_status");
+        metrics.record(result.is_ok());
 
         result
     }
@@ -867,16 +848,13 @@ where
         &self,
         payment_identifier: &PaymentIdentifier,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        let start = std::time::Instant::now();
-        METRICS.inc_in_flight_requests("check_outgoing_payment");
+        let metrics = MintMetricGuard::new("check_outgoing_payment");
 
         let result = self.inner.check_outgoing_payment(payment_identifier).await;
 
-        let duration = start.elapsed().as_secs_f64();
         let success = result.is_ok();
 
-        METRICS.record_mint_operation_histogram("check_outgoing_payment", success, duration);
-        METRICS.dec_in_flight_requests("check_outgoing_payment");
+        metrics.record(success);
 
         result
     }

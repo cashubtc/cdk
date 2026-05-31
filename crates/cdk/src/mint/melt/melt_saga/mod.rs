@@ -11,7 +11,7 @@ use cdk_common::{
     State,
 };
 #[cfg(feature = "prometheus")]
-use cdk_prometheus::METRICS;
+use cdk_prometheus::MintMetricGuard;
 use tokio::sync::Mutex;
 use tracing::instrument;
 
@@ -134,9 +134,9 @@ pub struct MeltSaga<S> {
     compensations: Arc<Mutex<VecDeque<Box<dyn CompensatingAction>>>>,
     /// Operation ID (used for saga tracking, generated upfront)
     operation_id: uuid::Uuid,
-    /// Tracks if metrics were incremented (for cleanup)
+    /// Tracks melt metrics through the saga lifecycle.
     #[cfg(feature = "prometheus")]
-    metrics_incremented: bool,
+    metrics: Option<MintMetricGuard>,
     /// State-specific data
     state_data: S,
 }
@@ -144,7 +144,7 @@ pub struct MeltSaga<S> {
 impl MeltSaga<Initial> {
     pub fn new(mint: Arc<super::Mint>, db: DynMintDatabase, pubsub: Arc<PubSubManager>) -> Self {
         #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("melt_bolt11");
+        let metrics = Some(MintMetricGuard::new("melt_bolt11"));
 
         let operation_id = uuid::Uuid::new_v4();
 
@@ -155,7 +155,7 @@ impl MeltSaga<Initial> {
             compensations: Arc::new(Mutex::new(VecDeque::new())),
             operation_id,
             #[cfg(feature = "prometheus")]
-            metrics_incremented: true,
+            metrics,
             state_data: Initial { operation_id },
         }
     }
@@ -427,7 +427,7 @@ impl MeltSaga<Initial> {
             compensations: self.compensations,
             operation_id: self.operation_id,
             #[cfg(feature = "prometheus")]
-            metrics_incremented: self.metrics_incremented,
+            metrics: self.metrics,
             state_data: SetupComplete {
                 quote: quote.inner(),
             },
@@ -647,7 +647,7 @@ impl MeltSaga<SetupComplete> {
             compensations: self.compensations,
             operation_id: self.operation_id,
             #[cfg(feature = "prometheus")]
-            metrics_incremented: self.metrics_incremented,
+            metrics: self.metrics,
             state_data: PaymentConfirmed {
                 quote: self.state_data.quote,
                 payment_result,
@@ -952,9 +952,8 @@ impl MeltSaga<PaymentConfirmed> {
         self.compensations.lock().await.clear();
 
         #[cfg(feature = "prometheus")]
-        if self.metrics_incremented {
-            METRICS.dec_in_flight_requests("melt_bolt11");
-            METRICS.record_mint_operation("melt_bolt11", true);
+        if let Some(metrics) = self.metrics.take() {
+            metrics.record(true);
         }
 
         self.state_data.quote.payment_proof = payment_proof;
@@ -989,6 +988,9 @@ impl<S> MeltSaga<S> {
     /// This is called internally by saga methods when they need to compensate.
     #[instrument(skip_all)]
     async fn compensate_all(self) -> Result<(), Error> {
+        #[cfg(feature = "prometheus")]
+        let metrics = self.metrics;
+
         let mut compensations = self.compensations.lock().await;
 
         if compensations.is_empty() {
@@ -996,10 +998,8 @@ impl<S> MeltSaga<S> {
         }
 
         #[cfg(feature = "prometheus")]
-        if self.metrics_incremented {
-            METRICS.dec_in_flight_requests("melt_bolt11");
-            METRICS.record_mint_operation("melt_bolt11", false);
-            METRICS.record_error();
+        if let Some(metrics) = metrics {
+            metrics.record(false);
         }
 
         tracing::warn!("Running {} compensating actions", compensations.len());

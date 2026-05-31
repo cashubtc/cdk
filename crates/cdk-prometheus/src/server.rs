@@ -1,12 +1,21 @@
+use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use prometheus::{Registry, TextEncoder};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
 use crate::metrics::METRICS;
 #[cfg(feature = "system-metrics")]
 use crate::process::SystemMetrics;
+
+const MAX_REQUEST_BYTES: usize = 4096;
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+type MetricsHandler = Arc<dyn Fn() -> String + Send + Sync + 'static>;
 
 /// Configuration for the Prometheus server
 #[derive(Debug, Clone)]
@@ -43,6 +52,97 @@ pub struct PrometheusServer {
     registry: Arc<Registry>,
     #[cfg(feature = "system-metrics")]
     system_metrics: Option<SystemMetrics>,
+}
+
+fn request_matches_path(request: &str, metrics_path: &str) -> bool {
+    let Some(request_line) = request.lines().next() else {
+        return false;
+    };
+
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next();
+    let target = parts.next();
+    let version = parts.next();
+
+    if method != Some("GET") || target.is_none() || version.is_none() {
+        return false;
+    }
+
+    let target_path = target
+        .and_then(|target| target.split('?').next())
+        .unwrap_or_default();
+
+    target_path == metrics_path
+}
+
+async fn read_request(stream: &mut TcpStream) -> io::Result<Option<String>> {
+    let mut request = Vec::with_capacity(1024);
+    let mut buffer = [0_u8; 1024];
+
+    loop {
+        let bytes_read = tokio::time::timeout(READ_TIMEOUT, stream.read(&mut buffer))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "timed out reading request"))??;
+
+        if bytes_read == 0 {
+            if request.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+
+        request.extend_from_slice(&buffer[..bytes_read]);
+
+        if request.windows(2).any(|window| window == b"\r\n")
+            || request.contains(&b'\n')
+            || request.len() >= MAX_REQUEST_BYTES
+        {
+            break;
+        }
+    }
+
+    Ok(Some(String::from_utf8_lossy(&request).to_string()))
+}
+
+async fn write_response(
+    stream: &mut TcpStream,
+    status: &str,
+    content_type: &str,
+    body: &str,
+) -> io::Result<()> {
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
+    );
+
+    tokio::time::timeout(WRITE_TIMEOUT, stream.write_all(response.as_bytes()))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "timed out writing response"))??;
+
+    Ok(())
+}
+
+async fn handle_connection(
+    mut stream: TcpStream,
+    metrics_path: String,
+    metrics_handler: MetricsHandler,
+) -> io::Result<()> {
+    let Some(request) = read_request(&mut stream).await? else {
+        return Ok(());
+    };
+
+    if request_matches_path(&request, &metrics_path) {
+        let metrics = metrics_handler();
+        write_response(
+            &mut stream,
+            "200 OK",
+            "text/plain; version=0.0.4; charset=utf-8",
+            &metrics,
+        )
+        .await
+    } else {
+        write_response(&mut stream, "404 Not Found", "text/plain", "Not Found").await
+    }
 }
 
 impl PrometheusServer {
@@ -84,8 +184,8 @@ impl PrometheusServer {
     fn create_metrics_handler(
         registry: Arc<Registry>,
         #[cfg(feature = "system-metrics")] system_metrics: Option<SystemMetrics>,
-    ) -> impl Fn() -> String {
-        move || {
+    ) -> MetricsHandler {
+        Arc::new(move || {
             let encoder = TextEncoder::new();
 
             // Collect metrics from our registry
@@ -114,22 +214,21 @@ impl PrometheusServer {
                     tracing::error!("Failed to encode metrics: {e}");
                     format!("Failed to encode metrics: {e}")
                 })
-        }
+        })
     }
 
     /// Start the Prometheus HTTP server
     ///
     /// # Errors
-    /// This function always returns Ok as errors are handled internally
+    /// Returns an error if the server cannot bind to the configured address
     pub async fn start(
         self,
         shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> crate::Result<()> {
-        // Create and start the exporter
         let binding = self.config.bind_address;
         let registry_clone = Arc::<Registry>::clone(&self.registry);
+        let path = self.config.metrics_path.clone();
 
-        // Create a handler that exposes our registry
         #[cfg(feature = "system-metrics")]
         let metrics_handler =
             Self::create_metrics_handler(registry_clone, self.system_metrics.clone());
@@ -137,116 +236,74 @@ impl PrometheusServer {
         #[cfg(not(feature = "system-metrics"))]
         let metrics_handler = Self::create_metrics_handler(registry_clone);
 
-        // Start the exporter in a background task
-        let path = self.config.metrics_path.clone();
+        let listener = TcpListener::bind(binding).await.map_err(|source| {
+            crate::error::PrometheusError::ServerBind {
+                address: binding.to_string(),
+                source,
+            }
+        })?;
 
-        // Create a channel for signaling the server task to shutdown
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        tracing::info!("Started Prometheus server on {} at path {}", binding, path);
 
-        // Spawn the server task
-        let server_handle = tokio::spawn(async move {
-            // We're using a simple HTTP server to expose our metrics
-            use std::io::{Read, Write};
-            use std::net::TcpListener;
+        tokio::pin!(shutdown_signal);
 
-            // Create a TCP listener
-            let listener = match TcpListener::bind(binding) {
-                Ok(listener) => {
-                    // Set non-blocking mode to allow for shutdown checking
-                    if let Err(e) = listener.set_nonblocking(true) {
-                        tracing::error!("Failed to set non-blocking mode: {e}");
-                        return;
-                    }
-                    listener
-                }
-                Err(e) => {
-                    tracing::error!("Failed to bind TCP listener: {e}");
-                    return;
-                }
-            };
-            tracing::info!("Started Prometheus server on {} at path {}", binding, path);
-
-            // Accept connections with shutdown signal handling
-            loop {
-                // Check for shutdown signal
-                if shutdown_rx.try_recv().is_ok() {
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_signal => {
                     tracing::info!("Shutdown signal received, stopping Prometheus server");
                     break;
                 }
+                accept_result = listener.accept() => {
+                    match accept_result {
+                        Ok((stream, _peer_addr)) => {
+                            let metrics_path = path.clone();
+                            let metrics_handler = Arc::clone(&metrics_handler);
 
-                // Try to accept a connection (non-blocking)
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        // Handle the connection
-                        let mut buffer = [0; 1024];
-                        match stream.read(&mut buffer) {
-                            Ok(0) => {}
-                            Ok(bytes_read) => {
-                                // Convert the buffer to a string
-                                let request = String::from_utf8_lossy(&buffer[..bytes_read]);
-
-                                // Check if the request is for our metrics path
-                                if request.contains(&format!("GET {path} HTTP")) {
-                                    // Get the metrics
-                                    let metrics = metrics_handler();
-
-                                    // Write the response
-                                    let response = format!(
-                                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
-                                        metrics.len(),
-                                        metrics
-                                    );
-
-                                    if let Err(e) = stream.write_all(response.as_bytes()) {
-                                        tracing::error!("Failed to write response: {e}");
-                                    }
-                                } else {
-                                    // Write a 404 response
-                                    let response = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\n\r\nNot Found";
-                                    if let Err(e) = stream.write_all(response.as_bytes()) {
-                                        tracing::error!("Failed to write response: {e}");
-                                    }
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    handle_connection(stream, metrics_path, metrics_handler).await
+                                {
+                                    tracing::warn!("Failed to serve Prometheus scrape: {e}");
                                 }
-                            }
-                            Err(e) => {
-                                tracing::error!("Failed to read from stream: {e}");
-                            }
+                            });
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to accept connection: {e}");
+                            tokio::time::sleep(Duration::from_millis(100)).await;
                         }
                     }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        // No connection available, continue the loop
-                        tokio::time::sleep(Duration::from_millis(10)).await;
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to accept connection: {e}");
-                        // Add a small delay to prevent busy looping on persistent errors
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
                 }
-            }
-
-            tracing::info!("Prometheus server stopped");
-        });
-
-        // Wait for the shutdown signal
-        shutdown_signal.await;
-
-        // Signal the server to shutdown
-        let _ = shutdown_tx.send(());
-
-        // Wait for the server task to complete (with a timeout)
-        match tokio::time::timeout(Duration::from_secs(5), server_handle).await {
-            Ok(result) => {
-                if let Err(e) = result {
-                    tracing::error!("Server task failed: {e}");
-                }
-            }
-            Err(_) => {
-                tracing::warn!("Server shutdown timed out after 5 seconds");
             }
         }
 
+        tracing::info!("Prometheus server stopped");
+
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::request_matches_path;
+
+    #[test]
+    fn request_matching_requires_exact_request_target() {
+        assert!(request_matches_path(
+            "GET /metrics HTTP/1.1\r\n\r\n",
+            "/metrics"
+        ));
+        assert!(request_matches_path(
+            "GET /metrics?name=value HTTP/1.1\r\n\r\n",
+            "/metrics"
+        ));
+        assert!(!request_matches_path(
+            "GET /not-metrics HTTP/1.1\r\nX-Path: /metrics\r\n\r\n",
+            "/metrics"
+        ));
+        assert!(!request_matches_path(
+            "POST /metrics HTTP/1.1\r\n\r\n",
+            "/metrics"
+        ));
     }
 }
 

@@ -1,9 +1,9 @@
 # CDK Prometheus
 
-A small, focused crate that provides Prometheus metrics for CDK-based services. It bundles a ready-to-use metrics registry, a background HTTP server to expose metrics, helper functions for common CDK domains (HTTP, auth, Lightning, DB, mint operations), and an ergonomic macro for conditional metrics recording.
+A small, focused crate that provides Prometheus metrics for CDK-based services. It bundles a ready-to-use metrics registry, a background HTTP server to expose metrics, common CDK metrics (HTTP, auth, payments, DB, mint operations), and an ergonomic macro for conditional metrics recording.
 
-- Out-of-the-box metrics for HTTP, auth, Lightning payments, database, and mint operations
-- Global, lazily-initialized metrics instance you can use anywhere
+- Out-of-the-box metrics for HTTP, auth, payments by method, database, and mint operations
+- Lazily-initialized METRICS instance you can use anywhere
 - Optional background server to expose metrics on /metrics
 - Re-exports the prometheus crate for custom instrumentation
 - Optional system metrics (feature-gated)
@@ -52,48 +52,51 @@ fn main() -> anyhow::Result<()> { let _handle = start_background_server_with_met
 ## Recording metrics
 
 You can record metrics using:
-- The global helpers (simple functions)
-- The global singleton METRICS (direct methods)
+- The METRICS singleton (direct methods)
 - The record_metrics! macro (conditional recording with an optional instance)
 
-### Global helpers
-```rust 
-use cdk_prometheus::global;
-fn handle_request() { 
-    global::record_http_request("/health", "200"); global::record_http_request_duration(0.003, "/health");
-    global::record_auth_attempt();
-    global::record_auth_success();
-    
-    // Lightning and DB
-    global::record_lightning_payment(1500.0, 2.0); // amount, fee (both in base units you track)
-    global::record_db_operation(0.015, "select_user");
-    global::set_db_connections_active(8);
-    
-    // Mint operations
-    global::inc_in_flight_requests("get_payment_quote");
-    // ... do work ...
-    global::record_mint_operation("get_payment_quote", true);
-    global::record_mint_operation_histogram("get_payment_quote", true, 0.021);
-    global::dec_in_flight_requests("get_payment_quote");
-    
-    // Errors
-    global::record_error();
-}
-``` 
-
-### Using the global METRICS instance directly
+### Using METRICS directly
 ```rust 
 use cdk_prometheus::METRICS;
-fn do_db_work() { METRICS.record_db_operation(0.005, "update_user"); }
+
+fn handle_request() {
+    METRICS.record_http_request("/health", "200");
+    METRICS.record_http_request_duration(0.003, "/health");
+    METRICS.record_auth_attempt();
+    METRICS.record_auth_success();
+    
+    // Payments and DB
+    METRICS.record_payment("bolt11", 1500.0, 2.0); // amount, fee in sats
+    METRICS.record_db_operation(0.015, "select_user");
+    METRICS.set_db_connections_active(8);
+    
+    // Mint operations
+    METRICS.inc_in_flight_requests("get_payment_quote");
+    // ... do work ...
+    METRICS.record_mint_operation("get_payment_quote", true);
+    METRICS.record_mint_operation_histogram("get_payment_quote", true, 0.021);
+    METRICS.dec_in_flight_requests("get_payment_quote");
+    
+    // Errors
+    METRICS.record_error();
+}
 ``` 
 
 ### Using the record_metrics! macro
 
-The macro lets you write grouped calls concisely and optionally pass an instance to use; if no instance is present, it automatically falls back to the global helpers. At call-site, wrap your invocations with a prometheus feature so they can be disabled in minimal builds.
+The macro lets you write grouped calls concisely and optionally pass an instance to use; if no instance is present, it automatically falls back to METRICS. At call-site, wrap your invocations with a prometheus feature so they can be disabled in minimal builds.
 ```rust 
 use cdk_prometheus::record_metrics;
-fn run_operation(metrics_opt: Option<cdk_prometheus::CdkMetrics>) { // Use instance if present, otherwise fallback to global record_metrics!(metrics_opt => { inc_in_flight_requests("make_payment"); record_mint_operation("make_payment", true); record_mint_operation_histogram("make_payment", true, 0.123); dec_in_flight_requests("make_payment"); });
-    // Or call directly on the global helpers
+
+fn run_operation(metrics_opt: Option<cdk_prometheus::CdkMetrics>) {
+    record_metrics!(metrics_opt => {
+        inc_in_flight_requests("make_payment");
+        record_mint_operation("make_payment", true);
+        record_mint_operation_histogram("make_payment", true, 0.123);
+        dec_in_flight_requests("make_payment");
+    });
+
+    // Or record directly on METRICS
     record_metrics!({
         record_error();
     });
@@ -117,19 +120,23 @@ Notes:
 The default CDK metrics instance (CdkMetrics) registers and maintains counters, histograms, and gauges for common areas:
 - HTTP: request totals, durations
 - Auth: attempts and successes
-- Lightning: payment totals, amounts, fees
+- Payments: confirmed totals, amounts, and fees labeled by method
 - Database: operation totals, latencies, active connections
 - Mint: operation totals, in-flight gauges, per-operation latencies
 - Errors: a general counter
 
-You can use these immediately through the global helpers or the METRICS instance.
+You can use these immediately through the METRICS instance.
 
 ## Adding custom metrics
 
 This crate re-exports the prometheus crate and exposes the underlying Registry so you can define and register your own metrics:
 ```rust 
-use cdk_prometheus::{prometheus, global};
-fn register_custom_metric() -> Result<(), prometheus::Error> { let my_counter = prometheus::IntCounter::new("my_counter", "A custom counter")?; let registry = global::registry(); // Arcregistry.register(Box::new(my_counter.clone()))?;
+use cdk_prometheus::{prometheus, METRICS};
+
+fn register_custom_metric() -> Result<(), prometheus::Error> {
+    let my_counter = prometheus::IntCounter::new("my_counter", "A custom counter")?;
+    let registry = METRICS.registry();
+    registry.register(Box::new(my_counter.clone()))?;
     my_counter.inc();
     Ok(())
 }

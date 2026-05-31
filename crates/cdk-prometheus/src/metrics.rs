@@ -1,11 +1,54 @@
 use std::sync::Arc;
+use std::time::Instant;
 
-use prometheus::{
-    Histogram, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Registry,
-};
+use prometheus::{HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Registry};
 
 /// Global metrics instance
 pub static METRICS: std::sync::LazyLock<CdkMetrics> = std::sync::LazyLock::new(CdkMetrics::default);
+
+/// RAII guard for recording mint operation metrics.
+///
+/// The guard increments the in-flight gauge when it is created, records the
+/// operation count and duration when [`Self::record`] is called, and always
+/// decrements the in-flight gauge when it is dropped.
+#[derive(Debug)]
+pub struct MintMetricGuard {
+    operation: &'static str,
+    start_time: Instant,
+}
+
+impl MintMetricGuard {
+    /// Start tracking a mint operation.
+    #[must_use]
+    pub fn new(operation: &'static str) -> Self {
+        METRICS.inc_in_flight_requests(operation);
+
+        Self {
+            operation,
+            start_time: Instant::now(),
+        }
+    }
+
+    /// Record the operation result and duration.
+    pub fn record(self, success: bool) {
+        METRICS.record_mint_operation(self.operation, success);
+        METRICS.record_mint_operation_histogram(
+            self.operation,
+            success,
+            self.start_time.elapsed().as_secs_f64(),
+        );
+
+        if !success {
+            METRICS.record_error();
+        }
+    }
+}
+
+impl Drop for MintMetricGuard {
+    fn drop(&mut self) {
+        METRICS.dec_in_flight_requests(self.operation);
+    }
+}
 
 /// Custom metrics for CDK applications
 #[derive(Clone, Debug)]
@@ -20,10 +63,10 @@ pub struct CdkMetrics {
     auth_attempts_total: IntCounter,
     auth_successes_total: IntCounter,
 
-    // Lightning metrics
-    lightning_payments_total: IntCounter,
-    lightning_payment_amount: Histogram,
-    lightning_payment_fees: Histogram,
+    // Payment metrics
+    payments_total: IntCounterVec,
+    payment_amount: HistogramVec,
+    payment_fees: HistogramVec,
 
     // Database metrics
     db_operations_total: IntCounter,
@@ -53,9 +96,9 @@ impl CdkMetrics {
         // Create and register authentication metrics
         let (auth_attempts_total, auth_successes_total) = Self::create_auth_metrics(&registry)?;
 
-        // Create and register Lightning metrics
-        let (lightning_payments_total, lightning_payment_amount, lightning_payment_fees) =
-            Self::create_lightning_metrics(&registry)?;
+        // Create and register payment metrics
+        let (payments_total, payment_amount, payment_fees) =
+            Self::create_payment_metrics(&registry)?;
 
         // Create and register database metrics
         let (db_operations_total, db_operation_duration, db_connections_active) =
@@ -74,9 +117,9 @@ impl CdkMetrics {
             http_request_duration,
             auth_attempts_total,
             auth_successes_total,
-            lightning_payments_total,
-            lightning_payment_amount,
-            lightning_payment_fees,
+            payments_total,
+            payment_amount,
+            payment_fees,
             db_operations_total,
             db_operation_duration,
             db_connections_active,
@@ -131,25 +174,27 @@ impl CdkMetrics {
         Ok((auth_attempts_total, auth_successes_total))
     }
 
-    /// Create and register Lightning metrics
+    /// Create and register payment metrics
     ///
     /// # Errors
     /// Returns an error if any of the metrics cannot be created or registered
-    fn create_lightning_metrics(
+    fn create_payment_metrics(
         registry: &Registry,
-    ) -> crate::Result<(IntCounter, Histogram, Histogram)> {
+    ) -> crate::Result<(IntCounterVec, HistogramVec, HistogramVec)> {
         let wallet_operations_total =
             IntCounter::new("cdk_wallet_operations_total", "Total wallet operations")?;
         registry.register(Box::new(wallet_operations_total))?;
 
-        let lightning_payments_total =
-            IntCounter::new("cdk_lightning_payments_total", "Total Lightning payments")?;
-        registry.register(Box::new(lightning_payments_total.clone()))?;
+        let payments_total = IntCounterVec::new(
+            prometheus::Opts::new("cdk_payments_total", "Total confirmed payments"),
+            &["method"],
+        )?;
+        registry.register(Box::new(payments_total.clone()))?;
 
-        let lightning_payment_amount = Histogram::with_opts(
+        let payment_amount = HistogramVec::new(
             prometheus::HistogramOpts::new(
-                "cdk_lightning_payment_amount_sats",
-                "Lightning payment amounts in satoshis",
+                "cdk_payment_amount_sats",
+                "Confirmed payment amounts in satoshis",
             )
             .buckets(vec![
                 1.0,
@@ -160,23 +205,21 @@ impl CdkMetrics {
                 100_000.0,
                 1_000_000.0,
             ]),
+            &["method"],
         )?;
-        registry.register(Box::new(lightning_payment_amount.clone()))?;
+        registry.register(Box::new(payment_amount.clone()))?;
 
-        let lightning_payment_fees = Histogram::with_opts(
+        let payment_fees = HistogramVec::new(
             prometheus::HistogramOpts::new(
-                "cdk_lightning_payment_fees_sats",
-                "Lightning payment fees in satoshis",
+                "cdk_payment_fees_sats",
+                "Confirmed payment fees in satoshis",
             )
             .buckets(vec![0.0, 1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1000.0]),
+            &["method"],
         )?;
-        registry.register(Box::new(lightning_payment_fees.clone()))?;
+        registry.register(Box::new(payment_fees.clone()))?;
 
-        Ok((
-            lightning_payments_total,
-            lightning_payment_amount,
-            lightning_payment_fees,
-        ))
+        Ok((payments_total, payment_amount, payment_fees))
     }
 
     /// Create and register database metrics
@@ -299,12 +342,29 @@ impl CdkMetrics {
         self.auth_successes_total.inc();
     }
 
-    // Lightning metrics methods
-    /// Record a Lightning payment
-    pub fn record_lightning_payment(&self, amount: f64, fee: f64) {
-        self.lightning_payments_total.inc();
-        self.lightning_payment_amount.observe(amount);
-        self.lightning_payment_fees.observe(fee);
+    // Payment metrics methods
+    /// Record a confirmed payment with known amount and fee in sats.
+    pub fn record_payment(&self, method: &str, amount: f64, fee: f64) {
+        self.record_payment_total(method);
+        self.record_payment_amount(method, amount);
+        self.record_payment_fee(method, fee);
+    }
+
+    /// Record a confirmed payment.
+    pub fn record_payment_total(&self, method: &str) {
+        self.payments_total.with_label_values(&[method]).inc();
+    }
+
+    /// Record a confirmed payment amount in sats.
+    pub fn record_payment_amount(&self, method: &str, amount: f64) {
+        self.payment_amount
+            .with_label_values(&[method])
+            .observe(amount);
+    }
+
+    /// Record a confirmed payment fee in sats.
+    pub fn record_payment_fee(&self, method: &str, fee: f64) {
+        self.payment_fees.with_label_values(&[method]).observe(fee);
     }
 
     // Database metrics methods
@@ -370,72 +430,143 @@ impl Default for CdkMetrics {
     }
 }
 
-/// Helper functions for recording metrics using the global instance
-pub mod global {
-    use super::METRICS;
+#[cfg(test)]
+mod tests {
+    use std::sync::{Mutex, MutexGuard};
+    use std::time::Duration;
 
-    /// Record an HTTP request using the global metrics instance
-    pub fn record_http_request(endpoint: &str, status: &str) {
-        METRICS.record_http_request(endpoint, status);
+    use super::{MintMetricGuard, METRICS};
+
+    static METRICS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn metrics_lock() -> MutexGuard<'static, ()> {
+        METRICS_TEST_LOCK
+            .lock()
+            .expect("metrics test lock should not be poisoned")
     }
 
-    /// Record HTTP request duration using the global metrics instance
-    pub fn record_http_request_duration(duration_seconds: f64, endpoint: &str) {
-        METRICS.record_http_request_duration(duration_seconds, endpoint);
+    #[test]
+    fn mint_metric_guard_records_success_and_balances_in_flight() {
+        let _lock = metrics_lock();
+        let operation = "test_guard_success";
+        let in_flight = METRICS
+            .mint_in_flight_requests
+            .with_label_values(&[operation]);
+        let success_count = METRICS
+            .mint_operations_total
+            .with_label_values(&[operation, "success"]);
+        let error_count = METRICS
+            .mint_operations_total
+            .with_label_values(&[operation, "error"]);
+        let duration = METRICS
+            .mint_operation_duration
+            .with_label_values(&[operation, "success"]);
+
+        let in_flight_before = in_flight.get();
+        let success_count_before = success_count.get();
+        let error_count_before = error_count.get();
+        let duration_count_before = duration.get_sample_count();
+        let errors_before = METRICS.errors_total.get();
+
+        let guard = MintMetricGuard::new(operation);
+        assert_eq!(in_flight.get(), in_flight_before + 1);
+
+        std::thread::sleep(Duration::from_millis(1));
+        guard.record(true);
+
+        assert_eq!(in_flight.get(), in_flight_before);
+        assert_eq!(success_count.get(), success_count_before + 1);
+        assert_eq!(error_count.get(), error_count_before);
+        assert_eq!(duration.get_sample_count(), duration_count_before + 1);
+        assert_eq!(METRICS.errors_total.get(), errors_before);
     }
 
-    /// Record authentication attempt using the global metrics instance
-    pub fn record_auth_attempt() {
-        METRICS.record_auth_attempt();
+    #[test]
+    fn mint_metric_guard_records_error_and_global_error_count() {
+        let _lock = metrics_lock();
+        let operation = "test_guard_error";
+        let in_flight = METRICS
+            .mint_in_flight_requests
+            .with_label_values(&[operation]);
+        let error_count = METRICS
+            .mint_operations_total
+            .with_label_values(&[operation, "error"]);
+        let duration = METRICS
+            .mint_operation_duration
+            .with_label_values(&[operation, "error"]);
+
+        let in_flight_before = in_flight.get();
+        let error_count_before = error_count.get();
+        let duration_count_before = duration.get_sample_count();
+        let errors_before = METRICS.errors_total.get();
+
+        let guard = MintMetricGuard::new(operation);
+        assert_eq!(in_flight.get(), in_flight_before + 1);
+
+        guard.record(false);
+
+        assert_eq!(in_flight.get(), in_flight_before);
+        assert_eq!(error_count.get(), error_count_before + 1);
+        assert_eq!(duration.get_sample_count(), duration_count_before + 1);
+        assert_eq!(METRICS.errors_total.get(), errors_before + 1);
     }
 
-    /// Record authentication success using the global metrics instance
-    pub fn record_auth_success() {
-        METRICS.record_auth_success();
+    #[test]
+    fn mint_metric_guard_drop_without_record_only_balances_in_flight() {
+        let _lock = metrics_lock();
+        let operation = "test_guard_drop_without_record";
+        let in_flight = METRICS
+            .mint_in_flight_requests
+            .with_label_values(&[operation]);
+        let success_count = METRICS
+            .mint_operations_total
+            .with_label_values(&[operation, "success"]);
+        let error_count = METRICS
+            .mint_operations_total
+            .with_label_values(&[operation, "error"]);
+        let success_duration = METRICS
+            .mint_operation_duration
+            .with_label_values(&[operation, "success"]);
+        let error_duration = METRICS
+            .mint_operation_duration
+            .with_label_values(&[operation, "error"]);
+
+        let in_flight_before = in_flight.get();
+        let success_count_before = success_count.get();
+        let error_count_before = error_count.get();
+        let success_duration_before = success_duration.get_sample_count();
+        let error_duration_before = error_duration.get_sample_count();
+        let errors_before = METRICS.errors_total.get();
+
+        {
+            let _guard = MintMetricGuard::new(operation);
+            assert_eq!(in_flight.get(), in_flight_before + 1);
+        }
+
+        assert_eq!(in_flight.get(), in_flight_before);
+        assert_eq!(success_count.get(), success_count_before);
+        assert_eq!(error_count.get(), error_count_before);
+        assert_eq!(success_duration.get_sample_count(), success_duration_before);
+        assert_eq!(error_duration.get_sample_count(), error_duration_before);
+        assert_eq!(METRICS.errors_total.get(), errors_before);
     }
 
-    /// Record Lightning payment using the global metrics instance
-    pub fn record_lightning_payment(amount: f64, fee: f64) {
-        METRICS.record_lightning_payment(amount, fee);
-    }
+    #[test]
+    fn payment_metrics_are_labeled_by_method() {
+        let _lock = metrics_lock();
+        let method = "test_payment_method";
+        let payments = METRICS.payments_total.with_label_values(&[method]);
+        let amount = METRICS.payment_amount.with_label_values(&[method]);
+        let fee = METRICS.payment_fees.with_label_values(&[method]);
 
-    /// Record database operation using the global metrics instance
-    pub fn record_db_operation(duration_seconds: f64, op: &str) {
-        METRICS.record_db_operation(duration_seconds, op);
-    }
+        let payments_before = payments.get();
+        let amount_count_before = amount.get_sample_count();
+        let fee_count_before = fee.get_sample_count();
 
-    /// Set database connections active using the global metrics instance
-    pub fn set_db_connections_active(count: i64) {
-        METRICS.set_db_connections_active(count);
-    }
+        METRICS.record_payment(method, 21.0, 1.0);
 
-    /// Record error using the global metrics instance
-    pub fn record_error() {
-        METRICS.record_error();
-    }
-
-    /// Record mint operation using the global metrics instance
-    pub fn record_mint_operation(operation: &str, success: bool) {
-        METRICS.record_mint_operation(operation, success);
-    }
-
-    /// Record mint operation with histogram using the global metrics instance
-    pub fn record_mint_operation_histogram(operation: &str, success: bool, duration_seconds: f64) {
-        METRICS.record_mint_operation_histogram(operation, success, duration_seconds);
-    }
-
-    /// Increment in-flight requests using the global metrics instance
-    pub fn inc_in_flight_requests(operation: &str) {
-        METRICS.inc_in_flight_requests(operation);
-    }
-
-    /// Decrement in-flight requests using the global metrics instance
-    pub fn dec_in_flight_requests(operation: &str) {
-        METRICS.dec_in_flight_requests(operation);
-    }
-
-    /// Get the metrics registry from the global instance
-    pub fn registry() -> std::sync::Arc<prometheus::Registry> {
-        METRICS.registry()
+        assert_eq!(payments.get(), payments_before + 1);
+        assert_eq!(amount.get_sample_count(), amount_count_before + 1);
+        assert_eq!(fee.get_sample_count(), fee_count_before + 1);
     }
 }

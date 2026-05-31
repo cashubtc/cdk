@@ -12,7 +12,7 @@ use axum::middleware::Next;
 #[cfg(feature = "prometheus")]
 use axum::response::Response;
 #[cfg(feature = "prometheus")]
-use cdk_prometheus::global;
+use cdk_prometheus::METRICS;
 
 /// Global metrics middleware that uses the singleton instance.
 /// This version doesn't require access to MintState and can be used in any Axum application.
@@ -34,8 +34,8 @@ pub async fn global_metrics_middleware(
     let request_duration = start_time.elapsed().as_secs_f64();
 
     // Always use global metrics
-    global::record_http_request(&endpoint_path, &status_code);
-    global::record_http_request_duration(request_duration, &endpoint_path);
+    METRICS.record_http_request(&endpoint_path, &status_code);
+    METRICS.record_http_request_duration(request_duration, &endpoint_path);
 
     response
 }
