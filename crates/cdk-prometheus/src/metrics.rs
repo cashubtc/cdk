@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use prometheus::{
     Histogram, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Registry,
@@ -6,6 +7,50 @@ use prometheus::{
 
 /// Global metrics instance
 pub static METRICS: std::sync::LazyLock<CdkMetrics> = std::sync::LazyLock::new(CdkMetrics::default);
+
+/// RAII guard for recording mint operation metrics.
+///
+/// The guard increments the in-flight gauge when it is created, records the
+/// operation count and duration when [`Self::record`] is called, and always
+/// decrements the in-flight gauge when it is dropped.
+#[derive(Debug)]
+pub struct MintMetricGuard {
+    operation: &'static str,
+    start_time: Instant,
+}
+
+impl MintMetricGuard {
+    /// Start tracking a mint operation.
+    #[must_use]
+    pub fn new(operation: &'static str) -> Self {
+        METRICS.inc_in_flight_requests(operation);
+
+        Self {
+            operation,
+            start_time: Instant::now(),
+        }
+    }
+
+    /// Record the operation result and duration.
+    pub fn record(self, success: bool) {
+        METRICS.record_mint_operation(self.operation, success);
+        METRICS.record_mint_operation_histogram(
+            self.operation,
+            success,
+            self.start_time.elapsed().as_secs_f64(),
+        );
+
+        if !success {
+            METRICS.record_error();
+        }
+    }
+}
+
+impl Drop for MintMetricGuard {
+    fn drop(&mut self) {
+        METRICS.dec_in_flight_requests(self.operation);
+    }
+}
 
 /// Custom metrics for CDK applications
 #[derive(Clone, Debug)]

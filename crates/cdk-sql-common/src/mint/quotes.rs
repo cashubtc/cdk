@@ -20,7 +20,7 @@ use cdk_common::{
     Amount, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, PaymentMethod, PublicKey,
 };
 #[cfg(feature = "prometheus")]
-use cdk_prometheus::METRICS;
+use cdk_prometheus::MintMetricGuard;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
@@ -1164,29 +1164,21 @@ where
 
     async fn get_mint_quote(&self, quote_id: &QuoteId) -> Result<Option<MintQuote>, Self::Err> {
         #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("get_mint_quote");
+        let metrics = MintMetricGuard::new("get_mint_quote");
 
-        #[cfg(feature = "prometheus")]
-        let start_time = std::time::Instant::now();
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-
-        let result = get_mint_quote_inner(&*conn, quote_id, false).await;
+        let result = async {
+            let conn = self
+                .pool
+                .get()
+                .await
+                .map_err(|e| Error::Database(Box::new(e)))?;
+            get_mint_quote_inner(&*conn, quote_id, false).await
+        }
+        .await;
 
         #[cfg(feature = "prometheus")]
         {
-            let success = result.is_ok();
-
-            METRICS.record_mint_operation("get_mint_quote", success);
-            METRICS.record_mint_operation_histogram(
-                "get_mint_quote",
-                success,
-                start_time.elapsed().as_secs_f64(),
-            );
-            METRICS.dec_in_flight_requests("get_mint_quote");
+            metrics.record(result.is_ok());
         }
 
         result
@@ -1275,29 +1267,21 @@ where
         quote_id: &QuoteId,
     ) -> Result<Option<mint::MeltQuote>, Self::Err> {
         #[cfg(feature = "prometheus")]
-        METRICS.inc_in_flight_requests("get_melt_quote");
+        let metrics = MintMetricGuard::new("get_melt_quote");
 
-        #[cfg(feature = "prometheus")]
-        let start_time = std::time::Instant::now();
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-
-        let result = get_melt_quote_inner(&*conn, quote_id, false).await;
+        let result = async {
+            let conn = self
+                .pool
+                .get()
+                .await
+                .map_err(|e| Error::Database(Box::new(e)))?;
+            get_melt_quote_inner(&*conn, quote_id, false).await
+        }
+        .await;
 
         #[cfg(feature = "prometheus")]
         {
-            let success = result.is_ok();
-
-            METRICS.record_mint_operation("get_melt_quote", success);
-            METRICS.record_mint_operation_histogram(
-                "get_melt_quote",
-                success,
-                start_time.elapsed().as_secs_f64(),
-            );
-            METRICS.dec_in_flight_requests("get_melt_quote");
+            metrics.record(result.is_ok());
         }
 
         result

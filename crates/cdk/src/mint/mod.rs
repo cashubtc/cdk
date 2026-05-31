@@ -12,7 +12,7 @@ use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id};
 use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
 #[cfg(feature = "prometheus")]
-use cdk_prometheus::{global, METRICS};
+use cdk_prometheus::MintMetricGuard;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet};
 use futures::StreamExt;
 use nut21::ProtectedEndpoint;
@@ -51,33 +51,6 @@ const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";
 const CDK_MINT_CONFIG_SECONDARY_NAMESPACE: &str = "config";
 const CDK_MINT_CONFIG_KV_KEY: &str = "mint_info";
 const CDK_MINT_QUOTE_TTL_KV_KEY: &str = "quote_ttl";
-
-#[cfg(feature = "prometheus")]
-struct MintMetricGuard {
-    operation: &'static str,
-}
-
-#[cfg(feature = "prometheus")]
-impl MintMetricGuard {
-    fn new(operation: &'static str) -> Self {
-        METRICS.inc_in_flight_requests(operation);
-        Self { operation }
-    }
-
-    fn record(self, success: bool) {
-        METRICS.record_mint_operation(self.operation, success);
-        if !success {
-            METRICS.record_error();
-        }
-    }
-}
-
-#[cfg(feature = "prometheus")]
-impl Drop for MintMetricGuard {
-    fn drop(&mut self) {
-        METRICS.dec_in_flight_requests(self.operation);
-    }
-}
 
 /// Cashu Mint
 #[derive(Clone)]
@@ -1144,14 +1117,13 @@ impl Mint {
         }
 
         #[cfg(feature = "prometheus")]
-        global::inc_in_flight_requests("blind_sign");
+        let metrics = MintMetricGuard::new("blind_sign");
 
         let result = self.signatory.blind_sign(blinded_message).await;
 
         #[cfg(feature = "prometheus")]
         {
-            global::dec_in_flight_requests("blind_sign");
-            global::record_mint_operation("blind_sign", result.is_ok());
+            metrics.record(result.is_ok());
         }
 
         result
@@ -1163,14 +1135,13 @@ impl Mint {
         // This ignore P2PK and HTLC, as all NUT-10 spending conditions are
         // checked elsewhere.
         #[cfg(feature = "prometheus")]
-        global::inc_in_flight_requests("verify_proofs");
+        let metrics = MintMetricGuard::new("verify_proofs");
 
         let result = self.signatory.verify_proofs(proofs).await;
 
         #[cfg(feature = "prometheus")]
         {
-            global::dec_in_flight_requests("verify_proofs");
-            global::record_mint_operation("verify_proofs", result.is_ok());
+            metrics.record(result.is_ok());
         }
 
         result
@@ -1180,7 +1151,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         #[cfg(feature = "prometheus")]
-        global::inc_in_flight_requests("restore");
+        let metrics = MintMetricGuard::new("restore");
 
         let result = async {
             let output_len = request.outputs.len();
@@ -1271,8 +1242,7 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            global::dec_in_flight_requests("restore");
-            global::record_mint_operation("restore", result.is_ok());
+            metrics.record(result.is_ok());
         }
 
         result
@@ -1282,7 +1252,7 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn total_issued(&self) -> Result<HashMap<Id, Amount>, Error> {
         #[cfg(feature = "prometheus")]
-        global::inc_in_flight_requests("total_issued");
+        let metrics = MintMetricGuard::new("total_issued");
 
         let result = async {
             let mut total_issued = self.localstore.get_total_issued().await?;
@@ -1295,8 +1265,7 @@ impl Mint {
 
         #[cfg(feature = "prometheus")]
         {
-            global::dec_in_flight_requests("total_issued");
-            global::record_mint_operation("total_issued", result.is_ok());
+            metrics.record(result.is_ok());
         }
 
         result
@@ -1306,9 +1275,9 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn total_redeemed(&self) -> Result<HashMap<Id, Amount>, Error> {
         #[cfg(feature = "prometheus")]
-        global::inc_in_flight_requests("total_redeemed");
+        let metrics = MintMetricGuard::new("total_redeemed");
 
-        let total_redeemed = async {
+        let result = async {
             let mut total_redeemed = self.localstore.get_total_redeemed().await?;
             for keyset in self.keysets().keysets {
                 total_redeemed.entry(keyset.id).or_default();
@@ -1318,9 +1287,11 @@ impl Mint {
         .await;
 
         #[cfg(feature = "prometheus")]
-        global::dec_in_flight_requests("total_redeemed");
+        {
+            metrics.record(result.is_ok());
+        }
 
-        total_redeemed
+        result
     }
 }
 

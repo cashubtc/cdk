@@ -13,7 +13,7 @@ pub mod process;
 
 // Re-exports for convenience
 pub use error::{PrometheusError, Result};
-pub use metrics::{global, CdkMetrics, METRICS};
+pub use metrics::{global, CdkMetrics, MintMetricGuard, METRICS};
 #[cfg(feature = "system-metrics")]
 pub use process::SystemMetrics;
 // Re-export prometheus crate for custom metrics

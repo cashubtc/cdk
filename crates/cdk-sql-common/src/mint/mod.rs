@@ -34,7 +34,7 @@ mod migrations {
 
 pub use auth::SQLMintAuthDatabase;
 #[cfg(feature = "prometheus")]
-use cdk_prometheus::METRICS;
+use cdk_prometheus::MintMetricGuard;
 use migrations::MIGRATIONS;
 
 /// Mint SQL Database
@@ -91,25 +91,28 @@ where
     type Err = Error;
 
     async fn commit(self: Box<Self>) -> Result<(), Error> {
+        #[cfg(feature = "prometheus")]
+        let metrics = MintMetricGuard::new("transaction_commit");
+
         let result = self.inner.commit().await;
+
         #[cfg(feature = "prometheus")]
         {
-            let success = result.is_ok();
-            METRICS.record_mint_operation("transaction_commit", success);
-            METRICS.record_mint_operation_histogram("transaction_commit", success, 1.0);
+            metrics.record(result.is_ok());
         }
 
         Ok(result?)
     }
 
     async fn rollback(self: Box<Self>) -> Result<(), Error> {
+        #[cfg(feature = "prometheus")]
+        let metrics = MintMetricGuard::new("transaction_rollback");
+
         let result = self.inner.rollback().await;
 
         #[cfg(feature = "prometheus")]
         {
-            let success = result.is_ok();
-            METRICS.record_mint_operation("transaction_rollback", success);
-            METRICS.record_mint_operation_histogram("transaction_rollback", success, 1.0);
+            metrics.record(result.is_ok());
         }
         Ok(result?)
     }
