@@ -232,7 +232,7 @@ unit = "sat"
 
 [[ln]]
 ln_backend = "lnbits"
-unit = "eur"
+unit = "msat"
 
 [cln]
 rpc_path = "/home/bitcoin/.lightning/bitcoin/lightning-rpc"
@@ -243,7 +243,7 @@ invoice_api_key = "..."
 lnbits_api = "https://lnbits.example.com"
 ```
 
-Each `[[ln]]` block carries its own `min_mint`, `max_mint`, `min_melt`, `max_melt` if you want different limits per unit. If two configured backends expose the same `(unit, method)` pair, startup is rejected.
+Each `[[ln]]` block carries its own `min_mint`, `max_mint`, `min_melt`, `max_melt` if you want different limits per unit. The configured unit must match the backend's reported unit, except for the supported `sat`/`msat` conversion pair. If two configured backends expose the same `(unit, method)` pair, startup is rejected.
 
 The legacy single `[ln]` form is still accepted; it's equivalent to one `[[ln]]` entry with `unit = "sat"` (the default). `CDK_MINTD_LN_*` environment variables only apply when there is exactly one (or zero) `[[ln]]` entry — multi-backend setups must be configured via the file.
 

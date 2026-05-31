@@ -832,6 +832,7 @@ async fn configure_backend_for_unit(
     backend: Arc<dyn MintPayment<Err = cdk_common::payment::Error> + Send + Sync>,
 ) -> Result<MintBuilder> {
     let payment_settings = backend.get_settings().await?;
+    validate_backend_unit(&unit, &payment_settings.unit)?;
 
     let mut methods = Vec::new();
 
@@ -902,6 +903,36 @@ async fn configure_backend_for_methods(
     }
 
     Ok(mint_builder)
+}
+
+fn validate_backend_unit(
+    configured_unit: &cdk::nuts::CurrencyUnit,
+    backend_unit: &str,
+) -> Result<()> {
+    let backend_unit = cdk::nuts::CurrencyUnit::from_str(backend_unit)
+        .with_context(|| format!("Payment backend returned invalid unit `{backend_unit}`"))?;
+
+    if units_are_compatible(&backend_unit, configured_unit) {
+        return Ok(());
+    }
+
+    bail!(
+        "Payment backend reports unit {} but config registers unit {}; only matching units or sat/msat conversions are supported",
+        backend_unit,
+        configured_unit
+    )
+}
+
+fn units_are_compatible(
+    backend_unit: &cdk::nuts::CurrencyUnit,
+    configured_unit: &cdk::nuts::CurrencyUnit,
+) -> bool {
+    backend_unit == configured_unit
+        || matches!(
+            (backend_unit, configured_unit),
+            (cdk::nuts::CurrencyUnit::Sat, cdk::nuts::CurrencyUnit::Msat)
+                | (cdk::nuts::CurrencyUnit::Msat, cdk::nuts::CurrencyUnit::Sat)
+        )
 }
 
 /// Configures cache settings with support for custom payment methods
@@ -1704,6 +1735,30 @@ mod tests {
         assert!(
             !units.contains(&CurrencyUnit::Sat),
             "Sat would only appear if supported_units leaked through; got {units:?}"
+        );
+    }
+
+    #[test]
+    fn backend_unit_validation_allows_matching_units() {
+        validate_backend_unit(&CurrencyUnit::Eur, "EUR").expect("matching units should pass");
+    }
+
+    #[test]
+    fn backend_unit_validation_allows_sat_msat_pair() {
+        validate_backend_unit(&CurrencyUnit::Sat, "MSAT")
+            .expect("sat/msat compatible units should pass");
+        validate_backend_unit(&CurrencyUnit::Msat, "SAT")
+            .expect("msat/sat compatible units should pass");
+    }
+
+    #[test]
+    fn backend_unit_validation_rejects_unsupported_conversion() {
+        let err = validate_backend_unit(&CurrencyUnit::Eur, "SAT")
+            .expect_err("sat backend should not advertise eur");
+
+        assert!(
+            err.to_string().contains("only matching units"),
+            "error should explain the supported conversions: {err}"
         );
     }
 
