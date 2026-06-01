@@ -10,7 +10,7 @@ Add to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/{{CDK_SWIFT_REPO}}", from: "0.16.0"),
+    .package(url: "https://github.com/cashubtc/cdk-swift", from: "0.16.0"),
 ]
 ```
 
@@ -26,7 +26,7 @@ Then add `"Cdk"` as a dependency of your target:
 
 1. Open your project in Xcode
 2. Go to **File > Add Package Dependencies...**
-3. Enter `https://github.com/{{CDK_SWIFT_REPO}}`
+3. Enter `https://github.com/cashubtc/cdk-swift`
 4. Select the version rule (e.g. "Up to Next Major Version" from `0.16.0`)
 5. Click **Add Package**
 6. Select the `Cdk` library and add it to your target
@@ -73,7 +73,7 @@ print("Balance: \(balance.value) sats")
 
 ## Pre-built binaries
 
-The Swift package uses a pre-built `CashuDevKitFFI.xcframework` downloaded automatically via SPM from [GitHub releases](https://github.com/{{CDK_SWIFT_REPO}}/releases).
+The Swift package uses a pre-built `CashuDevKitFFI.xcframework` downloaded automatically via SPM from [GitHub releases](https://github.com/cashubtc/cdk-swift/releases).
 
 Supported platforms:
 

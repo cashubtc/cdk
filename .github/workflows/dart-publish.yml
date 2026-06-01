@@ -159,9 +159,6 @@ jobs:
           echo "---"
           cat cdk-dart/rust/Cargo.toml
 
-      - name: Replace README placeholders
-        run: sed -i 's|{{CDK_DART_REPO}}|${{ vars.CDK_DART_REPO }}|g' cdk-dart/README.md
-
       - name: Push to cdk-dart release branch
         working-directory: cdk-dart
         env:
