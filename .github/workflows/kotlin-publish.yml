@@ -450,6 +450,7 @@ jobs:
           SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
         run: |
           nix develop -L ../cdk#kotlin-publish --command \
+            env -u ANDROID_SDK_ROOT \
             ./gradlew \
               :cdk-jvm:publishMavenPublicationToSonatypeRepository \
               :cdk-jvm-natives:publishAllPublicationsToSonatypeRepository \
