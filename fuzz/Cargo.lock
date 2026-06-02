@@ -132,7 +132,7 @@ checksum = "5dd9dc738b7a8311c7ade152424974d8115f2cdad61e8dab8dac9f2362298510"
 
 [[package]]
 name = "cashu"
-version = "0.17.0-rc.1"
+version = "0.17.0-rc.2"
 dependencies = [
  "bitcoin",
  "cbor-diag",
