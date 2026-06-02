@@ -878,6 +878,13 @@
             pgStatus
             pgConnect
 
+            # Redis
+            redis
+            startRedisSingle
+            stopRedisSingle
+            startRedisCluster
+            stopRedisCluster
+
             # Needed for github ci
             libz
           ]
@@ -930,6 +937,20 @@
           echo "  stop-postgres   - Stop PostgreSQL (run before exiting)" >&2
           echo "  pg-status       - Check PostgreSQL status" >&2
           echo "  pg-connect      - Connect to PostgreSQL with psql" >&2
+          echo "" >&2
+        '';
+
+        redisShellHook = ''
+          # Redis environment variables (single-node defaults)
+          export CDK_MINTD_CACHE_REDIS_URL="redis://127.0.0.1:6379"
+          export CDK_MINTD_CACHE_REDIS_CLUSTER_NODES="redis://127.0.0.1:7001,redis://127.0.0.1:7002,redis://127.0.0.1:7003"
+
+          echo "" >&2
+          echo "Redis commands available:" >&2
+          echo "  start-redis-single   - Start a single-node Redis on port 6379" >&2
+          echo "  stop-redis-single    - Stop the single-node Redis" >&2
+          echo "  start-redis-cluster  - Start a 3-node Redis cluster on ports 7001-7003" >&2
+          echo "  stop-redis-cluster   - Stop the Redis cluster" >&2
           echo "" >&2
         '';
 
@@ -1007,6 +1028,155 @@
         # Script to connect to PostgreSQL
         pgConnect = pkgs.writeShellScriptBin "pg-connect" ''
           ${pkgs.postgresql_16}/bin/psql "postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
+        '';
+
+        # Script to start a 3-node Redis cluster (ports 7001-7003)
+        startRedisCluster = pkgs.writeShellScriptBin "start-redis-cluster" ''
+          set -e
+          REDIS_DIR="$PWD/.redis_cluster"
+          mkdir -p "$REDIS_DIR"
+
+          _start_node() {
+            local port=$1
+            local pidfile="$REDIS_DIR/redis-$port.pid"
+
+            # Skip if already running
+            _pid=""
+            [ -f "$pidfile" ] && _pid=$(cat "$pidfile" 2>/dev/null || true)
+            if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+              echo "Redis node on port $port already running (pid $_pid)"
+              return
+            fi
+
+            ${pkgs.redis}/bin/redis-server \
+              --port $port \
+              --cluster-enabled yes \
+              --cluster-config-file "$REDIS_DIR/nodes-$port.conf" \
+              --cluster-node-timeout 5000 \
+              --cluster-announce-ip 127.0.0.1 \
+              --appendonly no \
+              --save "" \
+              --daemonize yes \
+              --logfile "$REDIS_DIR/redis-$port.log" \
+              --pidfile "$pidfile"
+
+            echo "Started Redis node on port $port"
+          }
+
+          echo "Starting Redis cluster nodes..."
+          _start_node 7001
+          _start_node 7002
+          _start_node 7003
+
+          # Wait for all nodes to be ready
+          echo "Waiting for nodes to be ready..."
+          for port in 7001 7002 7003; do
+            ready=0
+            for i in $(seq 1 20); do
+              if ${pkgs.redis}/bin/redis-cli -p $port ping 2>/dev/null | grep -q PONG; then
+                ready=1
+                break
+              fi
+              sleep 0.5
+            done
+            if [ "$ready" -eq 0 ]; then
+              echo "ERROR: Redis node on port $port failed to start within 10 seconds" >&2
+              exit 1
+            fi
+          done
+
+          # Create the cluster if not already formed
+          CLUSTER_STATE=$(${pkgs.redis}/bin/redis-cli -p 7001 cluster info 2>/dev/null | grep cluster_state | cut -d: -f2 | tr -d '[:space:]')
+          if [ "$CLUSTER_STATE" = "ok" ]; then
+            echo "Redis cluster already initialized"
+          else
+            echo "Forming Redis cluster..."
+            ${pkgs.redis}/bin/redis-cli --cluster create \
+              127.0.0.1:7001 127.0.0.1:7002 127.0.0.1:7003 \
+              --cluster-replicas 0 --cluster-yes
+          fi
+
+          echo "Redis cluster ready. Nodes: redis://127.0.0.1:7001, redis://127.0.0.1:7002, redis://127.0.0.1:7003"
+        '';
+
+        # Script to stop the Redis cluster
+        stopRedisCluster = pkgs.writeShellScriptBin "stop-redis-cluster" ''
+          REDIS_DIR="$PWD/.redis_cluster"
+          for port in 7001 7002 7003; do
+            pidfile="$REDIS_DIR/redis-$port.pid"
+            if [ -f "$pidfile" ]; then
+              pid=$(cat "$pidfile")
+              if kill -0 "$pid" 2>/dev/null; then
+                echo "Stopping Redis node on port $port (pid $pid)..."
+                kill "$pid"
+              else
+                echo "Redis node on port $port not running (stale pid file)"
+              fi
+              rm -f "$pidfile"
+            else
+              echo "No pid file for Redis node on port $port"
+            fi
+          done
+          echo "Redis cluster stopped."
+        '';
+
+        # Script to start a single-node Redis (port 6379)
+        startRedisSingle = pkgs.writeShellScriptBin "start-redis-single" ''
+          set -e
+          REDIS_DIR="$PWD/.redis_single"
+          mkdir -p "$REDIS_DIR"
+          PIDFILE="$REDIS_DIR/redis-6379.pid"
+
+          # Skip if already running
+          _pid=""
+          [ -f "$PIDFILE" ] && _pid=$(cat "$PIDFILE" 2>/dev/null || true)
+          if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+            echo "Single-node Redis already running (pid $_pid)"
+            exit 0
+          fi
+
+          ${pkgs.redis}/bin/redis-server \
+            --port 6379 \
+            --appendonly no \
+            --save "" \
+            --daemonize yes \
+            --logfile "$REDIS_DIR/redis-6379.log" \
+            --pidfile "$PIDFILE"
+
+          # Wait for the node to be ready
+          ready=0
+          for i in $(seq 1 20); do
+            if ${pkgs.redis}/bin/redis-cli -p 6379 ping 2>/dev/null | grep -q PONG; then
+              ready=1
+              break
+            fi
+            sleep 0.5
+          done
+          if [ "$ready" -eq 0 ]; then
+            echo "ERROR: Single-node Redis failed to start within 10 seconds" >&2
+            exit 1
+          fi
+
+          echo "Single-node Redis ready at redis://127.0.0.1:6379"
+        '';
+
+        # Script to stop the single-node Redis
+        stopRedisSingle = pkgs.writeShellScriptBin "stop-redis-single" ''
+          REDIS_DIR="$PWD/.redis_single"
+          PIDFILE="$REDIS_DIR/redis-6379.pid"
+          if [ -f "$PIDFILE" ]; then
+            pid=$(cat "$PIDFILE")
+            if kill -0 "$pid" 2>/dev/null; then
+              echo "Stopping single-node Redis (pid $pid)..."
+              kill "$pid"
+            else
+              echo "Single-node Redis not running (stale pid file)"
+            fi
+            rm -f "$PIDFILE"
+          else
+            echo "No pid file for single-node Redis"
+          fi
+          echo "Single-node Redis stopped."
         '';
 
         # Helper to build a statically-linked binary package (Linux only)
@@ -1365,7 +1535,7 @@
 
             stable = pkgs.mkShell (
               {
-                shellHook = commonShellHook + pgShellHook;
+                shellHook = commonShellHook + pgShellHook + redisShellHook;
                 buildInputs = baseBuildInputs ++ [
                   stable_toolchain
                 ];
@@ -1377,7 +1547,7 @@
 
             regtest = pkgs.mkShell (
               {
-                shellHook = commonShellHook + pgShellHook;
+                shellHook = commonShellHook + pgShellHook + redisShellHook;
                 buildInputs =
                   baseBuildInputs
                   ++ regtestBuildInputs

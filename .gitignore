@@ -18,6 +18,8 @@ static-bin/
 .aider*
 **/postgres_data/
 .pg_data/
+.redis_cluster/
+.redis_single/
 **/.env
 logs/
 tor-data

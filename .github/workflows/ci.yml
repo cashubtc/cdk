@@ -315,8 +315,26 @@ jobs:
         if: always()
         run: docker compose -f misc/supabase/docker-compose.yml down -v
 
-  regtest-itest:
-    name: "Integration regtest tests"
+  # Tests that require a running Redis cluster
+  redis-tests:
+    name: "Redis Cache Tests"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Run clippy and tests for Redis cache
+        run: nix develop -i -L .#regtest --command just test-redis
+
+  regtest-ln-itest:
+    name: "Integration regtest LN tests"
     runs-on: self-hosted
     timeout-minutes: 30
     needs: [pre-commit-checks, build-itest-binaries]

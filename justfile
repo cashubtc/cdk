@@ -203,6 +203,36 @@ test-pure db="memory":
     CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test nwc_e2e -- --test-threads 1
   fi
 
+# Run Redis cache clippy and unit tests against both single-node and cluster Redis.
+# Starts a single-node Redis (port 6379) and a 3-node cluster (ports 7001-7003)
+# using Nix-managed scripts, mirrors both code paths in cdk-axum cache.
+test-redis:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+
+  # Start both Redis topologies and stop them on exit
+  trap 'stop-redis-single; stop-redis-cluster' EXIT
+  start-redis-single
+  start-redis-cluster
+
+  # Lint once (compile-time only, topology is irrelevant for clippy)
+  CDK_MINTD_CACHE_BACKEND=redis \
+  CDK_MINTD_CACHE_REDIS_USE_CLUSTER=false \
+  CDK_MINTD_CACHE_REDIS_URL=redis://127.0.0.1:6379 \
+    cargo clippy -p cdk-axum --features redis -- -D warnings
+
+  # Run the full lib test suite once with both endpoint vars present.
+  # Each test constructs its own topology explicitly so a single invocation
+  # exercises both the single-node and cluster paths.
+  CDK_MINTD_CACHE_BACKEND=redis \
+  CDK_MINTD_CACHE_REDIS_URL=redis://127.0.0.1:6379 \
+  CDK_MINTD_CACHE_REDIS_CLUSTER_NODES=redis://127.0.0.1:7001,redis://127.0.0.1:7002,redis://127.0.0.1:7003 \
+    cargo test -p cdk-axum --features redis,integration-tests --lib
+
+
 # Mutation Testing Commands
 
 # Run mutation tests on a specific crate
