@@ -60,8 +60,11 @@ impl Mint {
         {
             let mut conditional_input: Option<(String, String)> = None;
             let mut saw_regular_input = false;
+            let mut input_keysets: Vec<String> = Vec::new();
+            let mut input_collections: Vec<String> = Vec::new();
 
             for proof in input_proofs {
+                input_keysets.push(proof.keyset_id.to_string());
                 match self
                     .localstore
                     .get_condition_for_keyset(&proof.keyset_id)
@@ -73,8 +76,16 @@ impl Mint {
                             .as_ref()
                             .is_some_and(|expected| expected != &current)
                         {
+                            tracing::debug!(
+                                input_keysets = ?input_keysets,
+                                input_collections = ?input_collections,
+                                offending_keyset = %proof.keyset_id,
+                                offending_collection = ?current,
+                                "Rejecting conditional swap: inputs use different conditional keysets"
+                            );
                             return Err(Error::InputsMustUseSameConditionalKeyset);
                         }
+                        input_collections.push(format!("{}:{}", current.0, current.1));
                         conditional_input = Some(current);
                     }
                     None => saw_regular_input = true,
@@ -83,19 +94,47 @@ impl Mint {
 
             if let Some(expected) = conditional_input {
                 if saw_regular_input {
+                    tracing::debug!(
+                        input_keysets = ?input_keysets,
+                        input_collections = ?input_collections,
+                        expected_collection = ?expected,
+                        "Rejecting conditional swap: conditional and regular inputs were mixed"
+                    );
                     return Err(Error::InputsMustUseSameConditionalKeyset);
                 }
 
+                let mut output_keysets: Vec<String> = Vec::new();
+                let mut output_collections: Vec<String> = Vec::new();
                 for output in swap_request.outputs() {
+                    output_keysets.push(output.keyset_id.to_string());
                     match self
                         .localstore
                         .get_condition_for_keyset(&output.keyset_id)
                         .await?
                     {
-                        Some((ref condition_id, _outcome_collection, ref outcome_collection_id))
-                            if condition_id == &expected.0
-                                && outcome_collection_id == &expected.1 => {}
-                        _ => return Err(Error::InputsMustUseSameConditionalKeyset),
+                        Some((
+                            ref condition_id,
+                            _outcome_collection,
+                            ref outcome_collection_id,
+                        )) if condition_id == &expected.0
+                            && outcome_collection_id == &expected.1 =>
+                        {
+                            output_collections
+                                .push(format!("{}:{}", condition_id, outcome_collection_id));
+                        }
+                        other => {
+                            tracing::debug!(
+                                input_keysets = ?input_keysets,
+                                input_collections = ?input_collections,
+                                output_keysets = ?output_keysets,
+                                output_collections = ?output_collections,
+                                offending_output_keyset = %output.keyset_id,
+                                offending_output_collection = ?other,
+                                expected_collection = ?expected,
+                                "Rejecting conditional swap: output keyset does not match conditional inputs"
+                            );
+                            return Err(Error::InputsMustUseSameConditionalKeyset);
+                        }
                     }
                 }
             }
