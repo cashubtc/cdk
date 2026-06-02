@@ -90,7 +90,7 @@ tower-http = { version = "0.6.1", features = ["compression-full", "decompression
 tokio-tungstenite = { version = "0.26.0", default-features = false }
 tokio-stream = "0.1.15"
 tracing = { version = "0.1", default-features = false, features = ["attributes", "log"] }
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 uniffi = "0.30"
 url = "2.3"

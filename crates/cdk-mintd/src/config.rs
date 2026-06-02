@@ -29,7 +29,29 @@ impl std::str::FromStr for LoggingOutput {
             "file" => Ok(LoggingOutput::File),
             "both" => Ok(LoggingOutput::Both),
             _ => Err(format!(
-                "Unknown logging output: {s}. Valid options: stdout, file, both"
+                "Unknown logging output: {s}. Valid options: stderr, file, both"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LoggingFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+impl std::str::FromStr for LoggingFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "text" => Ok(LoggingFormat::Text),
+            "json" => Ok(LoggingFormat::Json),
+            _ => Err(format!(
+                "Unknown logging format: {s}. Valid options: text, json"
             )),
         }
     }
@@ -37,10 +59,13 @@ impl std::str::FromStr for LoggingOutput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LoggingConfig {
-    /// Where to output logs: stdout, file, or both
+    /// Where to output logs: stderr, file, or both
     #[serde(default)]
     pub output: LoggingOutput,
-    /// Log level for console output (when stdout or both)
+    /// Log formatter: text or json
+    #[serde(default)]
+    pub format: LoggingFormat,
+    /// Log level for console output (when stderr or both)
     pub console_level: Option<String>,
     /// Log level for file output (when file or both)
     pub file_level: Option<String>,

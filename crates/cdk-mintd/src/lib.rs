@@ -135,11 +135,11 @@ pub fn setup_tracing(
     let tungstenite = "tungstenite=warn";
     let tokio_postgres = "tokio_postgres=warn";
 
-    let env_filter = EnvFilter::new(format!(
+    let default_filters = format!(
         "{default_filter},{hyper_filter},{h2_filter},{tower_filter},{tower_http},{rustls},{tungstenite},{tokio_postgres}"
-    ));
+    );
 
-    use config::LoggingOutput;
+    use config::{LoggingFormat, LoggingOutput};
     match logging_config.output {
         LoggingOutput::Stderr => {
             // Console output only (stderr)
@@ -152,13 +152,23 @@ pub fn setup_tracing(
 
             let stderr = std::io::stderr.with_max_level(console_level);
 
-            tracing_subscriber::fmt()
-                .with_env_filter(env_filter)
+            let subscriber = tracing_subscriber::fmt()
+                .with_env_filter(
+                    EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| EnvFilter::new(default_filters.clone())),
+                )
                 .with_ansi(false)
-                .with_writer(stderr)
-                .init();
+                .with_writer(stderr);
+            match &logging_config.format {
+                LoggingFormat::Text => subscriber.init(),
+                LoggingFormat::Json => subscriber.json().init(),
+            }
 
-            tracing::info!("Logging initialized: console only ({}+)", console_level);
+            tracing::info!(
+                "Logging initialized: console only ({}+, {:?})",
+                console_level,
+                logging_config.format
+            );
             Ok(None)
         }
         LoggingOutput::File => {
@@ -180,16 +190,23 @@ pub fn setup_tracing(
 
             let file_writer = non_blocking_appender.with_max_level(file_level);
 
-            tracing_subscriber::fmt()
-                .with_env_filter(env_filter)
+            let subscriber = tracing_subscriber::fmt()
+                .with_env_filter(
+                    EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| EnvFilter::new(default_filters.clone())),
+                )
                 .with_ansi(false)
-                .with_writer(file_writer)
-                .init();
+                .with_writer(file_writer);
+            match &logging_config.format {
+                LoggingFormat::Text => subscriber.init(),
+                LoggingFormat::Json => subscriber.json().init(),
+            }
 
             tracing::info!(
-                "Logging initialized: file only at {}/cdk-mintd.log ({}+)",
+                "Logging initialized: file only at {}/cdk-mintd.log ({}+, {:?})",
                 logs_dir.display(),
-                file_level
+                file_level,
+                logging_config.format
             );
             Ok(Some(guard))
         }
@@ -220,17 +237,24 @@ pub fn setup_tracing(
             let stderr = std::io::stderr.with_max_level(console_level);
             let file_writer = non_blocking_appender.with_max_level(file_level);
 
-            tracing_subscriber::fmt()
-                .with_env_filter(env_filter)
+            let subscriber = tracing_subscriber::fmt()
+                .with_env_filter(
+                    EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| EnvFilter::new(default_filters)),
+                )
                 .with_ansi(false)
-                .with_writer(stderr.and(file_writer))
-                .init();
+                .with_writer(stderr.and(file_writer));
+            match &logging_config.format {
+                LoggingFormat::Text => subscriber.init(),
+                LoggingFormat::Json => subscriber.json().init(),
+            }
 
             tracing::info!(
-                "Logging initialized: console ({}+) and file at {}/cdk-mintd.log ({}+)",
+                "Logging initialized: console ({}+) and file at {}/cdk-mintd.log ({}+, {:?})",
                 console_level,
                 logs_dir.display(),
-                file_level
+                file_level,
+                logging_config.format
             );
             Ok(Some(guard))
         }

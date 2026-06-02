@@ -6,7 +6,7 @@ use std::str::FromStr;
 use cdk_common::common::QuoteTTL;
 
 use super::common::*;
-use crate::config::{Info, LoggingOutput};
+use crate::config::{Info, LoggingFormat, LoggingOutput};
 
 impl Info {
     pub fn from_env(mut self) -> Self {
@@ -83,8 +83,19 @@ impl Info {
                 self.logging.output = output;
             } else {
                 tracing::warn!(
-                    "Invalid logging output '{}' in environment variable. Valid options: stdout, file, both",
+                    "Invalid logging output '{}' in environment variable. Valid options: stderr, file, both",
                     output_str
+                );
+            }
+        }
+
+        if let Ok(format_str) = env::var(ENV_LOGGING_FORMAT) {
+            if let Ok(format) = LoggingFormat::from_str(&format_str) {
+                self.logging.format = format;
+            } else {
+                tracing::warn!(
+                    "Invalid logging format '{}' in environment variable. Valid options: text, json",
+                    format_str
                 );
             }
         }
