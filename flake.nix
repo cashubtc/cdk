@@ -123,7 +123,7 @@
 
         # Toolchains
         # latest stable
-        stable_toolchain = pkgs.rust-bin.stable."1.95.0".default.override {
+        stable_toolchain = pkgs.rust-bin.stable."1.96.0".default.override {
           targets = [
             "wasm32-unknown-unknown"
             "aarch64-apple-ios"
@@ -169,7 +169,7 @@
         # Stable toolchain with musl target for static builds (Linux only)
         static_toolchain =
           if muslTarget != null then
-            pkgs.rust-bin.stable."1.94.0".default.override
+            pkgs.rust-bin.stable."1.96.0".default.override
               {
                 targets = [ muslTarget ];
               }
@@ -1385,7 +1385,7 @@
                 androidSdk = androidComposition.androidsdk;
                 ndkHome = "${androidSdk}/libexec/android-sdk/ndk/27.0.12077973";
                 toolchainBin = "${ndkHome}/toolchains/llvm/prebuilt/linux-x86_64/bin";
-                buildToolchain = pkgs.rust-bin.stable."1.95.0".default.override {
+                buildToolchain = pkgs.rust-bin.stable."1.96.0".default.override {
                   targets = [
                     "aarch64-linux-android"
                     "armv7-linux-androideabi"
