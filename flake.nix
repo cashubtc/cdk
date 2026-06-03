@@ -382,7 +382,9 @@
                 commonCraneArgsStatic
                 // {
                   pname = "cdk-deps-static";
-                  cargoExtraArgs = "--workspace";
+                  # Cache only the static release binaries' dependency set. FFI
+                  # binding crates build cdylibs, which musl targets do not support.
+                  cargoExtraArgs = "-p cdk-mintd -p cdk-cli --features cdk-mintd/ldk-node,cdk-mintd/postgres,cdk-mintd/prometheus,cdk-mintd/redis";
                 }
               )
           else
