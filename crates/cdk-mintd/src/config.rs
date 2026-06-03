@@ -1215,13 +1215,12 @@ mod tests {
 
     use super::*;
 
-    #[cfg(feature = "bdk")]
-    fn bdk_env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static BDK_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-        BDK_ENV_LOCK
+        ENV_LOCK
             .lock()
-            .expect("BDK env test lock should not be poisoned")
+            .expect("env test lock should not be poisoned")
     }
 
     #[cfg(feature = "bdk")]
@@ -1317,7 +1316,7 @@ min_send_amount_sat = 1200
     #[cfg(feature = "bdk")]
     #[test]
     fn test_bdk_env_min_send_amount_sat_override() {
-        let _guard = bdk_env_lock();
+        let _guard = env_lock();
         clear_bdk_env_vars();
         std::env::set_var(crate::env_vars::ENV_ONCHAIN_BACKEND, "bdk");
         std::env::set_var(crate::env_vars::BDK_NETWORK_ENV_VAR, "regtest");
@@ -1447,7 +1446,7 @@ target_block_time_secs = 300
     #[cfg(feature = "bdk")]
     #[test]
     fn test_bdk_env_fee_options_override() {
-        let _guard = bdk_env_lock();
+        let _guard = env_lock();
         clear_bdk_env_vars();
         std::env::set_var(crate::env_vars::ENV_ONCHAIN_BACKEND, "bdk");
         std::env::set_var(crate::env_vars::BDK_NETWORK_ENV_VAR, "regtest");
@@ -1479,7 +1478,7 @@ target_block_time_secs = 300
     #[cfg(feature = "bdk")]
     #[test]
     fn test_bdk_env_target_block_time_override() {
-        let _guard = bdk_env_lock();
+        let _guard = env_lock();
         clear_bdk_env_vars();
         std::env::set_var(crate::env_vars::ENV_ONCHAIN_BACKEND, "bdk");
         std::env::set_var(crate::env_vars::BDK_NETWORK_ENV_VAR, "regtest");
@@ -1859,6 +1858,8 @@ max_delay_time = 3
     /// This test runs sequentially for all enabled backends to avoid env var interference.
     #[test]
     fn test_env_var_only_config_all_backends() {
+        let _guard = env_lock();
+
         // Run each backend test sequentially
         #[cfg(feature = "lnd")]
         test_lnd_env_config();
@@ -1883,6 +1884,8 @@ max_delay_time = 3
     #[test]
     fn test_prometheus_toml_config_survives_env_overlay() {
         use std::{env, fs};
+
+        let _guard = env_lock();
 
         env::remove_var(crate::env_vars::ENV_LN_BACKEND);
         env::remove_var(crate::env_vars::ENV_PROMETHEUS_ENABLED);
