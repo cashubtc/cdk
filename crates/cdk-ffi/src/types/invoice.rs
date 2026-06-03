@@ -94,3 +94,39 @@ pub fn decode_invoice(invoice_str: String) -> Result<DecodedInvoice, FfiError> {
     let decoded = cdk::invoice::decode_invoice(&invoice_str)?;
     Ok(decoded.into())
 }
+
+#[cfg(test)]
+mod tests {
+    use core::time::Duration;
+
+    use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
+    use lightning::offers::offer::OfferBuilder;
+
+    use super::*;
+
+    fn test_bolt12_offer() -> String {
+        let secp_ctx = Secp256k1::new();
+        let secret_key =
+            SecretKey::from_slice(&[42; 32]).expect("static secret key should be valid");
+        let keys = Keypair::from_secret_key(&secp_ctx, &secret_key);
+        let pubkey = PublicKey::from(keys);
+
+        OfferBuilder::new(pubkey)
+            .description("coffee".to_string())
+            .amount_msats(123_000)
+            .absolute_expiry(Duration::from_secs(1_700_000_000))
+            .build()
+            .expect("offer should build")
+            .to_string()
+    }
+
+    #[test]
+    fn test_decode_bolt12_offer() {
+        let decoded = decode_invoice(test_bolt12_offer()).expect("offer should decode");
+
+        assert_eq!(decoded.payment_type, PaymentType::Bolt12);
+        assert_eq!(decoded.amount_msat, Some(123_000));
+        assert_eq!(decoded.expiry, Some(1_700_000_000));
+        assert_eq!(decoded.description, Some("coffee".to_string()));
+    }
+}

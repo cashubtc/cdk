@@ -77,36 +77,52 @@ pub fn decode_invoice(invoice_str: &str) -> Result<DecodedInvoice, Error> {
         });
     }
 
-    // Try to parse as Bolt12
-    if let Ok(offer) = Offer::from_str(invoice_str) {
-        let amount_msat = offer.amount().and_then(|amount| {
-            // Bolt12 amounts can be in different currencies
-            // For now, we only extract if it's in Bitcoin (millisatoshis)
-            match amount {
-                lightning::offers::offer::Amount::Bitcoin { amount_msats } => Some(amount_msats),
-                _ => None,
-            }
-        });
+    let offer = Offer::from_str(invoice_str).map_err(|_| Error::InvalidInvoice)?;
 
-        let expiry = offer.absolute_expiry().map(|duration| duration.as_secs());
+    let amount_msat = offer.amount().and_then(|amount| {
+        // Bolt12 amounts can be in different currencies. For now, only extract Bitcoin amounts.
+        match amount {
+            lightning::offers::offer::Amount::Bitcoin { amount_msats } => Some(amount_msats),
+            _ => None,
+        }
+    });
 
-        let description = offer.description().map(|d| d.to_string());
+    let expiry = offer.absolute_expiry().map(|duration| duration.as_secs());
 
-        return Ok(DecodedInvoice {
-            payment_type: PaymentType::Bolt12,
-            amount_msat,
-            expiry,
-            description,
-        });
-    }
+    let description = offer.description().map(|d| d.to_string());
 
-    // If both parsing attempts failed
-    Err(Error::InvalidInvoice)
+    Ok(DecodedInvoice {
+        payment_type: PaymentType::Bolt12,
+        amount_msat,
+        expiry,
+        description,
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use core::time::Duration;
+
+    use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
+    use lightning::offers::offer::OfferBuilder;
+
     use super::*;
+
+    fn test_bolt12_offer() -> String {
+        let secp_ctx = Secp256k1::new();
+        let secret_key =
+            SecretKey::from_slice(&[42; 32]).expect("static secret key should be valid");
+        let keys = Keypair::from_secret_key(&secp_ctx, &secret_key);
+        let pubkey = PublicKey::from(keys);
+
+        OfferBuilder::new(pubkey)
+            .description("coffee".to_string())
+            .amount_msats(123_000)
+            .absolute_expiry(Duration::from_secs(1_700_000_000))
+            .build()
+            .expect("offer should build")
+            .to_string()
+    }
 
     #[test]
     fn test_decode_bolt11() {
@@ -125,5 +141,15 @@ mod tests {
     fn test_invalid_invoice() {
         let result = decode_invoice("invalid_string");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_bolt12_offer() {
+        let decoded = decode_invoice(&test_bolt12_offer()).expect("offer should decode");
+
+        assert_eq!(decoded.payment_type, PaymentType::Bolt12);
+        assert_eq!(decoded.amount_msat, Some(123_000));
+        assert_eq!(decoded.expiry, Some(1_700_000_000));
+        assert_eq!(decoded.description, Some("coffee".to_string()));
     }
 }

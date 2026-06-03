@@ -52,6 +52,8 @@ supabase = ["cdk-supabase"]
 npubcash = ["cdk-npubcash", "nostr-sdk"]
 
 [dev-dependencies]
+bitcoin.workspace = true
+lightning.workspace = true
 
 [[bin]]
 name = "uniffi-bindgen"
