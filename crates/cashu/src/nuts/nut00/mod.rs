@@ -1546,6 +1546,23 @@ mod tests {
         assert!(!PaymentMethod::Custom("bolt12".to_string()).is_bolt12());
     }
 
+    /// Tests that is_onchain correctly identifies onchain payment methods.
+    ///
+    /// Mutant testing: Kills mutations that:
+    /// - Replace is_onchain with true
+    /// - Replace is_onchain with false
+    #[test]
+    fn test_is_onchain_comprehensive() {
+        assert!(PaymentMethod::Known(KnownMethod::Onchain).is_onchain());
+
+        assert!(!PaymentMethod::BOLT11.is_onchain());
+        assert!(!PaymentMethod::BOLT12.is_onchain());
+        assert!(!PaymentMethod::Known(KnownMethod::Bolt11).is_onchain());
+        assert!(!PaymentMethod::Known(KnownMethod::Bolt12).is_onchain());
+        assert!(!PaymentMethod::Custom("anything".to_string()).is_onchain());
+        assert!(!PaymentMethod::Custom("onchain".to_string()).is_onchain());
+    }
+
     #[test]
     fn test_witness_serialization() {
         let htlc_witness = HTLCWitness {

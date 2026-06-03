@@ -750,6 +750,14 @@ mod tests {
             max_amount: None,
             options: Some(MintMethodOptions::Bolt11 { description: true }),
         });
+
+        assert_mint_method_settings_field_count(&MintMethodSettings {
+            method: PaymentMethod::Known(KnownMethod::Onchain),
+            unit: CurrencyUnit::Sat,
+            min_amount: None,
+            max_amount: None,
+            options: Some(MintMethodOptions::Onchain { confirmations: 3 }),
+        });
     }
 
     #[test]
@@ -785,6 +793,24 @@ mod tests {
 
         // Verify the description is at the top level
         assert_eq!(parsed["description"], json!(true));
+    }
+
+    #[test]
+    fn test_mint_method_settings_does_not_serialize_false_description() {
+        let settings = MintMethodSettings {
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            unit: CurrencyUnit::Sat,
+            min_amount: None,
+            max_amount: None,
+            options: Some(MintMethodOptions::Bolt11 { description: false }),
+        };
+
+        let serialized = to_string(&settings).unwrap();
+        let parsed: serde_json::Value = from_str(&serialized).unwrap();
+
+        assert_eq!(parsed["method"], json!("bolt11"));
+        assert!(parsed.get("description").is_none());
+        assert!(parsed.get("options").is_none());
     }
 
     #[test]
@@ -896,5 +922,92 @@ mod tests {
 
         let err = from_str::<MintMethodSettings>(json_str).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn test_mint_method_settings_visitor_reports_expected_type() {
+        let err = from_str::<MintMethodSettings>("[]").unwrap_err();
+
+        assert!(err.to_string().contains("a MintMethodSettings structure"));
+    }
+
+    #[test]
+    fn test_get_settings_requires_exact_method_and_unit_match() {
+        let bolt11_msat = MintMethodSettings {
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            unit: CurrencyUnit::Msat,
+            min_amount: Some(Amount::from(1)),
+            max_amount: None,
+            options: None,
+        };
+        let bolt12_sat = MintMethodSettings {
+            method: PaymentMethod::Known(KnownMethod::Bolt12),
+            unit: CurrencyUnit::Sat,
+            min_amount: Some(Amount::from(2)),
+            max_amount: None,
+            options: None,
+        };
+        let bolt11_sat = MintMethodSettings {
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            unit: CurrencyUnit::Sat,
+            min_amount: Some(Amount::from(3)),
+            max_amount: None,
+            options: None,
+        };
+        let settings = Settings::new(
+            vec![bolt11_msat.clone(), bolt12_sat.clone(), bolt11_sat.clone()],
+            false,
+        );
+
+        assert_eq!(
+            settings.get_settings(&CurrencyUnit::Sat, &PaymentMethod::BOLT11),
+            Some(bolt11_sat)
+        );
+        assert_eq!(
+            settings.get_settings(
+                &CurrencyUnit::Msat,
+                &PaymentMethod::Known(KnownMethod::Bolt12)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn test_remove_settings_requires_exact_method_and_unit_match() {
+        let bolt11_msat = MintMethodSettings {
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            unit: CurrencyUnit::Msat,
+            min_amount: Some(Amount::from(1)),
+            max_amount: None,
+            options: None,
+        };
+        let bolt12_sat = MintMethodSettings {
+            method: PaymentMethod::Known(KnownMethod::Bolt12),
+            unit: CurrencyUnit::Sat,
+            min_amount: Some(Amount::from(2)),
+            max_amount: None,
+            options: None,
+        };
+        let bolt11_sat = MintMethodSettings {
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            unit: CurrencyUnit::Sat,
+            min_amount: Some(Amount::from(3)),
+            max_amount: None,
+            options: None,
+        };
+        let mut settings = Settings::new(
+            vec![bolt11_msat.clone(), bolt12_sat.clone(), bolt11_sat.clone()],
+            false,
+        );
+
+        assert_eq!(
+            settings.remove_settings(&CurrencyUnit::Sat, &PaymentMethod::BOLT11),
+            Some(bolt11_sat.clone())
+        );
+        assert_eq!(settings.methods, vec![bolt11_msat, bolt12_sat]);
+        assert_eq!(
+            settings.remove_settings(&CurrencyUnit::Sat, &PaymentMethod::BOLT11),
+            None
+        );
     }
 }
