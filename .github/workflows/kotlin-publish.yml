@@ -15,6 +15,10 @@ on:
       cdk_ref:
         description: 'CDK git ref to publish from. Must match release_tag.'
         required: false
+      prerelease:
+        description: 'Mark the GitHub release as a pre-release'
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       release_tag:
@@ -26,6 +30,10 @@ on:
       cdk_ref:
         type: string
         required: false
+      prerelease:
+        type: boolean
+        required: false
+        default: false
 env:
   CARGO_TERM_COLOR: ${{ vars.CARGO_TERM_COLOR }}
   TAG: ${{ inputs.release_tag }}
@@ -468,7 +476,8 @@ jobs:
             --repo ${{ vars.CDK_KOTLIN_REPO }} \
             --target "${COMMIT_SHA}" \
             --title "Release ${TAG}" \
-            --generate-notes
+            --generate-notes \
+            ${{ inputs.prerelease && '--prerelease' || '' }}
 
       - name: Merge to default branch
         working-directory: cdk-kotlin

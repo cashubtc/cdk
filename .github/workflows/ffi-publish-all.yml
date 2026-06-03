@@ -17,38 +17,63 @@ on:
         required: false
 
 jobs:
+  detect-prerelease:
+    name: "Detect pre-release"
+    runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - name: Check semver pre-release
+        id: check
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          if [[ "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-.+ ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Pre-release detected: ${TAG}"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
   dart:
     name: "Trigger Dart bindings"
+    needs: detect-prerelease
     uses: ./.github/workflows/dart-publish.yml
     with:
       release_tag: ${{ inputs.release_tag }}
       cdk_version: ${{ inputs.cdk_version }}
       cdk_ref: ${{ inputs.cdk_ref }}
+      prerelease: ${{ needs.detect-prerelease.outputs.prerelease == 'true' }}
     secrets: inherit
 
   kotlin:
     name: "Trigger Kotlin bindings"
+    needs: detect-prerelease
     uses: ./.github/workflows/kotlin-publish.yml
     with:
       release_tag: ${{ inputs.release_tag }}
       cdk_version: ${{ inputs.cdk_version }}
       cdk_ref: ${{ inputs.cdk_ref }}
+      prerelease: ${{ needs.detect-prerelease.outputs.prerelease == 'true' }}
     secrets: inherit
 
   swift:
     name: "Trigger Swift bindings"
+    needs: detect-prerelease
     uses: ./.github/workflows/swift-publish.yml
     with:
       release_tag: ${{ inputs.release_tag }}
       cdk_version: ${{ inputs.cdk_version }}
       cdk_ref: ${{ inputs.cdk_ref }}
+      prerelease: ${{ needs.detect-prerelease.outputs.prerelease == 'true' }}
     secrets: inherit
 
   go:
     name: "Trigger Go bindings"
+    needs: detect-prerelease
     uses: ./.github/workflows/go-publish.yml
     with:
       release_tag: ${{ inputs.release_tag }}
       cdk_version: ${{ inputs.cdk_version }}
       cdk_ref: ${{ inputs.cdk_ref }}
+      prerelease: ${{ needs.detect-prerelease.outputs.prerelease == 'true' }}
     secrets: inherit
