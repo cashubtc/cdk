@@ -6,6 +6,7 @@ plugins {
 }
 
 group = property("GROUP") as String
+version = property("VERSION_NAME") as String
 
 nexusPublishing {
     repositories {
