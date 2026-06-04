@@ -308,6 +308,53 @@ docker-compose --profile ldk-node up
 
 - **`cashubtc/mintd:latest`** - Standard mint with default features
 - **`cashubtc/mintd-ldk-node:latest`** - Mint with LDK Node support
+- **`cashubtc/mintd:latest-hardened`** - Shell-less standard mint image built from `scratch`
+
+### Hardened Image
+
+The hardened image is built from `scratch` and contains only the static `cdk-mintd`
+binary, CA certificates, and `/data`. It has no `/bin/sh`, `curl`, `tar`, package
+manager, or debug tools. The image runs as UID/GID `10001:10001` and defaults the
+CDK work directory to `/data`.
+
+Run it with a read-only root filesystem and a writable `/data` mount:
+
+```bash
+docker run --rm \
+  --read-only \
+  --user 10001:10001 \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --mount type=volume,src=cdk_mintd_data,dst=/data \
+  -p 8085:8085 \
+  -e CDK_MINTD_URL=https://example.com \
+  -e CDK_MINTD_LN_BACKEND=fakewallet \
+  -e CDK_MINTD_LISTEN_HOST=0.0.0.0 \
+  -e CDK_MINTD_LISTEN_PORT=8085 \
+  -e CDK_MINTD_DATABASE=sqlite \
+  -e CDK_MINTD_CACHE_BACKEND=memory \
+  cashubtc/mintd:latest-hardened
+```
+
+Or use the Compose file that applies the same runtime hardening:
+
+```bash
+docker-compose -f docker-compose.hardened.yaml up
+```
+
+The Dockerfile expects a prebuilt Linux static binary named `cdk-mintd` in the
+build context. This matches the release workflow. For a local Linux build with
+Nix:
+
+```bash
+nix build .#cdk-mintd-static
+mkdir -p docker-build
+cp ./result/bin/* ./docker-build/cdk-mintd
+cp Dockerfile.hardened ./docker-build/Dockerfile
+docker build --platform linux/arm64 -t cashubtc/mintd:local-hardened ./docker-build
+```
+
+For amd64, use `--platform linux/amd64` and build the matching static binary.
 
 ### Configuration via Environment Variables
 
