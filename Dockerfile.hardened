@@ -1,0 +1,29 @@
+# syntax=docker/dockerfile:1.7
+
+FROM alpine:3.21 AS rootfs
+
+RUN apk add --no-cache ca-certificates && \
+    mkdir -p /data && \
+    chown 10001:10001 /data
+
+FROM scratch
+
+LABEL org.opencontainers.image.title="CDK Mintd Hardened" \
+    org.opencontainers.image.description="Shell-less CDK mintd image with a static binary and scratch runtime"
+
+COPY --from=rootfs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=rootfs --chown=10001:10001 /data /data
+COPY --chown=0:0 --chmod=0555 cdk-mintd /usr/local/bin/cdk-mintd
+
+ENV CDK_MINTD_WORK_DIR=/data \
+    HOME=/data \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    SQLITE_TMPDIR=/data \
+    TMPDIR=/data
+
+WORKDIR /data
+USER 10001:10001
+VOLUME ["/data"]
+EXPOSE 8085 9000
+
+ENTRYPOINT ["/usr/local/bin/cdk-mintd"]

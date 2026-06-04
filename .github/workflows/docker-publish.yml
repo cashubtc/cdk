@@ -32,10 +32,16 @@ jobs:
         variant:
           - name: standard
             nix_target: cdk-mintd-static
+            dockerfile: Dockerfile.static
             tag_suffix: ""
           - name: ldk-node
             nix_target: cdk-mintd-ldk-static
+            dockerfile: Dockerfile.static
             tag_suffix: "-ldk-node"
+          - name: hardened
+            nix_target: cdk-mintd-static
+            dockerfile: Dockerfile.hardened
+            tag_suffix: "-hardened"
     runs-on: ${{ matrix.arch.runner }}
     timeout-minutes: 120
     permissions:
@@ -66,7 +72,7 @@ jobs:
           nix build .#${{ matrix.variant.nix_target }} -L
           mkdir -p ./docker-build
           cp -f ./result/bin/* ./docker-build/cdk-mintd
-          cp Dockerfile.static ./docker-build/Dockerfile
+          cp ${{ matrix.variant.dockerfile }} ./docker-build/Dockerfile
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -118,6 +124,8 @@ jobs:
             tag_suffix: ""
           - name: ldk-node
             tag_suffix: "-ldk-node"
+          - name: hardened
+            tag_suffix: "-hardened"
 
     steps:
       - name: Login to Docker Hub
