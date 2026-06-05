@@ -133,6 +133,13 @@ mod tests {
     }
 
     #[test]
+    fn test_quote_id_from_uuid_preserves_uuid() {
+        let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+
+        assert_eq!(QuoteId::from(uuid), QuoteId::UUID(uuid));
+    }
+
+    #[test]
     fn test_quote_id_display_base64() {
         // Test BASE64 display - should output the string as-is
         let base64_str = "SGVsbG8gV29ybGQh"; // "Hello World!" with proper padding
@@ -144,5 +151,30 @@ mod tests {
         // Verify roundtrip works for base64
         let parsed: QuoteId = displayed.parse().unwrap();
         assert_eq!(base64_id, parsed);
+    }
+
+    #[test]
+    fn test_quote_id_deserialize_uuid_preserves_uuid() {
+        let quote_id: QuoteId =
+            serde_json::from_str(r#""550e8400-e29b-41d4-a716-446655440000""#).unwrap();
+
+        assert_eq!(
+            quote_id,
+            QuoteId::UUID(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap())
+        );
+    }
+
+    #[test]
+    fn test_quote_id_deserialize_base64_preserves_base64() {
+        let quote_id: QuoteId = serde_json::from_str(r#""SGVsbG8gV29ybGQh""#).unwrap();
+
+        assert_eq!(quote_id, QuoteId::BASE64("SGVsbG8gV29ybGQh".to_string()));
+    }
+
+    #[test]
+    fn test_quote_id_deserialize_rejects_invalid_id() {
+        let err = serde_json::from_str::<QuoteId>(r#""not a quote id""#).unwrap_err();
+
+        assert!(err.to_string().contains("QuoteId must be either a UUID"));
     }
 }

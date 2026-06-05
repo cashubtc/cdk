@@ -569,6 +569,38 @@ mod tests {
     use crate::nut00::KnownMethod;
 
     #[test]
+    fn test_quote_state_display_outputs_wire_values() {
+        assert_eq!(QuoteState::Unpaid.to_string(), "UNPAID");
+        assert_eq!(QuoteState::Paid.to_string(), "PAID");
+        assert_eq!(QuoteState::Pending.to_string(), "PENDING");
+        assert_eq!(QuoteState::Unknown.to_string(), "UNKNOWN");
+        assert_eq!(QuoteState::Failed.to_string(), "FAILED");
+    }
+
+    #[test]
+    fn test_quote_state_from_str_accepts_wire_values() {
+        assert_eq!("UNPAID".parse::<QuoteState>().unwrap(), QuoteState::Unpaid);
+        assert_eq!("PAID".parse::<QuoteState>().unwrap(), QuoteState::Paid);
+        assert_eq!(
+            "PENDING".parse::<QuoteState>().unwrap(),
+            QuoteState::Pending
+        );
+        assert_eq!(
+            "UNKNOWN".parse::<QuoteState>().unwrap(),
+            QuoteState::Unknown
+        );
+        assert_eq!("FAILED".parse::<QuoteState>().unwrap(), QuoteState::Failed);
+    }
+
+    #[test]
+    fn test_quote_state_from_str_rejects_unknown_value() {
+        assert!(matches!(
+            "unknown".parse::<QuoteState>(),
+            Err(Error::UnknownState)
+        ));
+    }
+
+    #[test]
     fn test_melt_method_settings_top_level_amountless() {
         // Create JSON with top-level amountless
         let json_str = r#"{
