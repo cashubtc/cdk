@@ -159,6 +159,15 @@ impl PaymentRequest {
         self.inner.mints.iter().map(|m| m.to_string()).collect()
     }
 
+    /// Get the list of preferred mint URLs
+    pub fn preferred_mints(&self) -> Vec<String> {
+        self.inner
+            .preferred_mints
+            .iter()
+            .map(|m| m.to_string())
+            .collect()
+    }
+
     /// Get the description
     pub fn description(&self) -> Option<String> {
         self.inner.description.clone()
@@ -200,6 +209,8 @@ pub struct CreateRequestParams {
     pub nostr_relays: Option<Vec<String>>,
     /// Optional list of mint URLs the receiver trusts. If not provided, the wallet's current mints for the requested unit will be used.
     pub mints: Option<Vec<String>>,
+    /// Optional list of preferred mint URLs. Mints in this list are preferred over the ones in `mints`. Mutually exclusive with `mints`.
+    pub preferred_mints: Option<Vec<String>>,
 }
 
 impl Default for CreateRequestParams {
@@ -216,6 +227,7 @@ impl Default for CreateRequestParams {
             http_url: None,
             nostr_relays: None,
             mints: None,
+            preferred_mints: None,
         }
     }
 }
@@ -234,6 +246,7 @@ impl From<CreateRequestParams> for cdk::wallet::payment_request::CreateRequestPa
             http_url: params.http_url,
             nostr_relays: params.nostr_relays,
             mints: params.mints,
+            preferred_mints: params.preferred_mints,
         }
     }
 }
@@ -252,6 +265,7 @@ impl From<cdk::wallet::payment_request::CreateRequestParams> for CreateRequestPa
             http_url: params.http_url,
             nostr_relays: params.nostr_relays,
             mints: params.mints,
+            preferred_mints: params.preferred_mints,
         }
     }
 }
@@ -503,6 +517,32 @@ mod tests {
         assert_eq!(params.num_sigs, 1);
         assert_eq!(params.transport, "none");
         assert!(params.amount.is_none());
+        assert!(params.preferred_mints.is_none());
+        assert!(params.mints.is_none());
+    }
+
+    #[test]
+    fn test_create_request_params_conversion() {
+        let params = CreateRequestParams {
+            amount: Some(100),
+            unit: "sat".to_string(),
+            description: Some("Test".to_string()),
+            pubkeys: Some(vec!["key".to_string()]),
+            num_sigs: 2,
+            hash: Some("hash".to_string()),
+            preimage: Some("preimage".to_string()),
+            transport: "nostr".to_string(),
+            http_url: Some("http".to_string()),
+            nostr_relays: Some(vec!["relay".to_string()]),
+            mints: Some(vec!["mint".to_string()]),
+            preferred_mints: Some(vec!["pref".to_string()]),
+        };
+
+        let cdk_params: cdk::wallet::payment_request::CreateRequestParams = params.clone().into();
+        assert_eq!(cdk_params.preferred_mints, params.preferred_mints);
+
+        let back: CreateRequestParams = cdk_params.into();
+        assert_eq!(back.preferred_mints, params.preferred_mints);
     }
 
     #[test]
