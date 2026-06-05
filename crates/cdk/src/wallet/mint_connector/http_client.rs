@@ -740,35 +740,16 @@ where
         self.transport.http_get(url, auth_token).await
     }
 
-    /// CTF split [NUT-CTF-split-merge]
+    /// CTF convert [NUT-CTF-split-merge]
     #[cfg(feature = "conditional-tokens")]
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
-    async fn post_ctf_split(
+    async fn post_ctf_convert(
         &self,
-        request: crate::nuts::nut_ctf::CtfSplitRequest,
-    ) -> Result<crate::nuts::nut_ctf::CtfSplitResponse, Error> {
-        let url = self.mint_url.join_paths(&["v1", "ctf", "split"])?;
+        request: crate::nuts::nut_ctf::CtfConvertRequest,
+    ) -> Result<crate::nuts::nut_ctf::CtfConvertResponse, Error> {
+        let url = self.mint_url.join_paths(&["v1", "ctf", "convert"])?;
         #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::Swap)
-            .await?;
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-        self.transport.http_post(url, auth_token, &request).await
-    }
-
-    /// CTF merge [NUT-CTF-split-merge]
-    #[cfg(feature = "conditional-tokens")]
-    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
-    async fn post_ctf_merge(
-        &self,
-        request: crate::nuts::nut_ctf::CtfMergeRequest,
-    ) -> Result<crate::nuts::nut_ctf::CtfMergeResponse, Error> {
-        let url = self.mint_url.join_paths(&["v1", "ctf", "merge"])?;
-        #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::Swap)
-            .await?;
+        let auth_token = self.get_auth_token(Method::Post, RoutePath::Swap).await?;
         #[cfg(not(feature = "auth"))]
         let auth_token = None;
         self.transport.http_post(url, auth_token, &request).await

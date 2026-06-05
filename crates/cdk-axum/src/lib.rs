@@ -244,8 +244,7 @@ pub async fn create_mint_router_with_custom_cache(
         )
         .route("/conditional_keysets", get(get_conditional_keysets))
         .route("/redeem_outcome", post(post_redeem_outcome))
-        .route("/ctf/split", post(post_ctf_split))
-        .route("/ctf/merge", post(post_ctf_merge));
+        .route("/ctf/convert", post(post_ctf_convert));
 
     let mut mint_router = Router::new().nest("/v1", v1_router);
 

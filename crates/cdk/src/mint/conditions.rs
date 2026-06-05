@@ -5,12 +5,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cdk_common::mint::{StoredCondition, StoredPartition};
 use cdk_common::nuts::nut_ctf::{
-    compute_condition_id, compute_condition_id_numeric, compute_outcome_collection_id, dlc,
-    from_hex, parse_outcome_collection, to_hex, validate_partition, AttestationState,
-    AttestationStatus, ConditionInfo, ConditionalKeysetsResponse, GetConditionsResponse,
-    PartitionInfoEntry, RegisterConditionRequest, RegisterConditionResponse,
-    RegisterPartitionRequest, RegisterPartitionResponse, MAX_ANNOUNCEMENT_HEX_LENGTH,
-    MAX_ANNOUNCEMENTS, MAX_PARTITION_KEYS, MAX_TAGS_JSON_LENGTH, ZERO_COLLECTION_ID,
+    canonical_outcome_collection, compute_condition_id, compute_condition_id_numeric,
+    compute_outcome_collection_id, dlc, from_hex, parse_outcome_collection, to_hex,
+    validate_partition, AttestationState, AttestationStatus, ConditionInfo,
+    ConditionalKeysetsResponse, GetConditionsResponse, PartitionInfoEntry,
+    RegisterConditionRequest, RegisterConditionResponse, RegisterPartitionRequest,
+    RegisterPartitionResponse, MAX_ANNOUNCEMENTS, MAX_ANNOUNCEMENT_HEX_LENGTH, MAX_PARTITION_KEYS,
+    MAX_TAGS_JSON_LENGTH, ZERO_COLLECTION_ID,
 };
 use tracing::instrument;
 
@@ -89,12 +90,12 @@ impl Mint {
         let is_numeric = request.condition_type == "numeric";
         let (_outcomes, _outcome_count, condition_id_bytes) = if is_numeric {
             // NUT-CTF-numeric: numeric condition
-            let lo_bound = request.lo_bound.ok_or_else(|| {
-                Error::Custom("lo_bound required for numeric conditions".into())
-            })?;
-            let hi_bound = request.hi_bound.ok_or_else(|| {
-                Error::Custom("hi_bound required for numeric conditions".into())
-            })?;
+            let lo_bound = request
+                .lo_bound
+                .ok_or_else(|| Error::Custom("lo_bound required for numeric conditions".into()))?;
+            let hi_bound = request
+                .hi_bound
+                .ok_or_else(|| Error::Custom("hi_bound required for numeric conditions".into()))?;
             if lo_bound >= hi_bound {
                 return Err(Error::Custom(format!(
                     "lo_bound ({}) must be less than hi_bound ({})",
@@ -213,18 +214,26 @@ impl Mint {
             .await?
             .ok_or(Error::ConditionNotFound)?;
 
-        // 2. Extract outcomes from stored announcements
-        let announcements: Vec<String> =
-            serde_json::from_str(&condition.announcements_json)?;
+        // 2. Extract outcomes in canonical index order
+        let announcements: Vec<String> = serde_json::from_str(&condition.announcements_json)?;
         if announcements.is_empty() {
             return Err(Error::ConditionNotFound);
         }
-        let first_ann = dlc::parse_oracle_announcement(&announcements[0])?;
-        let outcomes = dlc::extract_outcomes(&first_ann)?;
+        let outcomes = if condition.condition_type == "numeric" {
+            vec!["HI".to_string(), "LO".to_string()]
+        } else {
+            let first_ann = dlc::parse_oracle_announcement(&announcements[0])?;
+            dlc::extract_outcomes(&first_ann)?
+        };
 
         // 3. Determine partition keys
         let partition: Vec<String> = if let Some(ref p) = request.partition {
-            p.clone()
+            p.iter()
+                .map(|key| {
+                    let members = parse_outcome_collection(key);
+                    canonical_outcome_collection(&outcomes, &members).map_err(Error::from)
+                })
+                .collect::<Result<Vec<_>, _>>()?
         } else {
             outcomes.clone()
         };
@@ -271,10 +280,7 @@ impl Mint {
         let is_root = parent_collection_id_hex == ZERO_COLLECTION_ID;
         let unit = if is_root {
             cdk_common::CurrencyUnit::from_str(&request.collateral).map_err(|_| {
-                Error::Custom(format!(
-                    "Invalid collateral unit: {}",
-                    request.collateral
-                ))
+                Error::Custom(format!("Invalid collateral unit: {}", request.collateral))
             })?
         } else {
             // Nested partition: collateral is an outcome_collection_id.
@@ -284,33 +290,24 @@ impl Mint {
                 .get_conditional_keysets_for_condition(condition_id)
                 .await?;
             let parent_keyset_id = parent_keysets.values().next().ok_or_else(|| {
-                Error::Custom(
-                    "No parent keysets found for nested partition".to_string(),
-                )
+                Error::Custom("No parent keysets found for nested partition".to_string())
             })?;
             let parent_info = self.keysets.load();
             let info = parent_info
                 .iter()
                 .find(|k| k.id == *parent_keyset_id)
-                .ok_or_else(|| {
-                    Error::Custom("Parent keyset not found in memory".to_string())
-                })?;
+                .ok_or_else(|| Error::Custom("Parent keyset not found in memory".to_string()))?;
             info.unit.clone()
         };
 
         let mut keysets = std::collections::HashMap::new();
         let amounts = (0..32).map(|n| 2u64.pow(n)).collect::<Vec<u64>>();
 
-        for partition_key in &partition {
-            // Normalize: parse outcomes from the key, sort, rejoin
-            let mut elements = parse_outcome_collection(partition_key);
-            elements.sort();
-            let outcome_collection_string = elements.join("|");
-
+        for outcome_collection_string in &partition {
             let outcome_collection_id_bytes = compute_outcome_collection_id(
                 &parent_collection_id_bytes,
                 &condition_id_bytes,
-                &outcome_collection_string,
+                outcome_collection_string,
             )?;
             let outcome_collection_id = to_hex(&outcome_collection_id_bytes);
 
@@ -319,7 +316,7 @@ impl Mint {
                 .create_conditional_keyset(
                     unit.clone(),
                     condition_id,
-                    &outcome_collection_string,
+                    outcome_collection_string,
                     &outcome_collection_id,
                     amounts.clone(),
                     0,
@@ -327,7 +324,7 @@ impl Mint {
                 )
                 .await?;
 
-            keysets.insert(outcome_collection_string, keyset.id);
+            keysets.insert(outcome_collection_string.clone(), keyset.id);
         }
 
         // 8. Persist partition only after all keysets were created successfully
@@ -395,8 +392,7 @@ impl Mint {
         &self,
         condition: StoredCondition,
     ) -> Result<ConditionInfo, Error> {
-        let announcements: Vec<String> =
-            serde_json::from_str(&condition.announcements_json)?;
+        let announcements: Vec<String> = serde_json::from_str(&condition.announcements_json)?;
 
         // Load partitions for this condition
         let stored_partitions = self
@@ -413,17 +409,13 @@ impl Mint {
         // Build partition info entries
         let mut partitions = Vec::new();
         for sp in stored_partitions {
-            let partition_keys: Vec<String> =
-                serde_json::from_str(&sp.partition_json)?;
+            let partition_keys: Vec<String> = serde_json::from_str(&sp.partition_json)?;
 
             // Filter keysets that belong to this partition
             let mut partition_keysets = std::collections::HashMap::new();
             for key in &partition_keys {
-                let mut elements = parse_outcome_collection(key);
-                elements.sort();
-                let oc_string = elements.join("|");
-                if let Some(kid) = all_keysets.get(&oc_string) {
-                    partition_keysets.insert(oc_string, *kid);
+                if let Some(kid) = all_keysets.get(key) {
+                    partition_keysets.insert(key.clone(), *kid);
                 }
             }
 

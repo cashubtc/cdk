@@ -3,10 +3,13 @@
 //! <https://github.com/cashubtc/nuts/blob/main/CTF.md>
 
 use std::collections::{HashMap, HashSet};
+use std::marker::PhantomData;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
-use serde::{Deserialize, Serialize};
+use serde::de::{MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
+use unicode_normalization::UnicodeNormalization;
 
 use super::nut00::{BlindSignature, BlindedMessage, Proofs};
 use super::nut02::Id;
@@ -72,6 +75,9 @@ pub enum Error {
     /// Empty outcome string
     #[error("Empty outcome string is not allowed")]
     EmptyOutcomeString,
+    /// Full-set or single-element partition
+    #[error("Partition must contain at least two non-full outcome collections")]
+    FullSetOrSingleElementPartition,
     /// Conflicting oracle attestations
     #[error("Oracle signatures attest to different outcomes")]
     ConflictingOracleAttestations,
@@ -277,55 +283,95 @@ pub enum AttestationStatus {
     Violation,
 }
 
-// --- NUT-CTF-split-merge Split/Merge Types ---
+// --- NUT-CTF-split-merge Convert Types ---
 
-/// POST /v1/ctf/split request body
+fn zero_parent_collection_id() -> Option<String> {
+    Some(ZERO_COLLECTION_ID.to_string())
+}
+
+fn deserialize_unique_map<'de, D, K, V>(deserializer: D) -> Result<HashMap<K, V>, D::Error>
+where
+    D: Deserializer<'de>,
+    K: Deserialize<'de> + Eq + std::hash::Hash,
+    V: Deserialize<'de>,
+{
+    struct UniqueMapVisitor<K, V> {
+        marker: PhantomData<fn() -> HashMap<K, V>>,
+    }
+
+    impl<'de, K, V> Visitor<'de> for UniqueMapVisitor<K, V>
+    where
+        K: Deserialize<'de> + Eq + std::hash::Hash,
+        V: Deserialize<'de>,
+    {
+        type Value = HashMap<K, V>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a map with unique keys")
+        }
+
+        fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let mut values = HashMap::with_capacity(access.size_hint().unwrap_or(0));
+            while let Some((key, value)) = access.next_entry()? {
+                if values.insert(key, value).is_some() {
+                    return Err(serde::de::Error::custom("duplicate map key"));
+                }
+            }
+            Ok(values)
+        }
+    }
+
+    deserializer.deserialize_map(UniqueMapVisitor {
+        marker: PhantomData,
+    })
+}
+
+/// POST /v1/ctf/convert request body
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CtfSplitRequest {
+pub struct CtfConvertRequest {
     /// Condition identifier
     pub condition_id: String,
-    /// Input proofs (regular keyset for root, parent collection keyset for nested)
-    pub inputs: Proofs,
-    /// Output blinded messages per outcome collection key
+    /// Parent collection ID for nested conditions. Defaults to the root collection.
+    #[serde(
+        default = "zero_parent_collection_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_collection_id: Option<String>,
+    /// Input proofs per outcome collection key, or "*" for collateral.
+    #[serde(deserialize_with = "deserialize_unique_map")]
+    pub inputs: HashMap<String, Proofs>,
+    /// Output blinded messages per outcome collection key, or "*" for collateral.
+    #[serde(deserialize_with = "deserialize_unique_map")]
     pub outputs: HashMap<String, Vec<BlindedMessage>>,
 }
 
-/// POST /v1/ctf/split response body
+/// POST /v1/ctf/convert response body
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CtfSplitResponse {
-    /// Blind signatures per outcome collection key
+pub struct CtfConvertResponse {
+    /// Blind signatures per request output key.
     pub signatures: HashMap<String, Vec<BlindSignature>>,
 }
 
-/// POST /v1/ctf/merge request body
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CtfMergeRequest {
-    /// Condition identifier
-    pub condition_id: String,
-    /// Input proofs per outcome collection key (from conditional keysets)
-    pub inputs: HashMap<String, Proofs>,
-    /// Output blinded messages (regular keyset for root, parent collection keyset for nested)
-    pub outputs: Vec<BlindedMessage>,
-}
-
-/// POST /v1/ctf/merge response body
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CtfMergeResponse {
-    /// Blind signatures for the outputs
-    pub signatures: Vec<BlindSignature>,
-}
-
-/// NUT-06 mint info extension for NUT-CTF-split-merge (split/merge)
+/// NUT-06 mint info extension for NUT-CTF-split-merge (convert)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
 pub struct NutCtfSplitMergeSettings {
-    /// Whether NUT-CTF-split-merge (CTF split/merge) is supported
+    /// Whether NUT-CTF-split-merge (CTF convert) is supported
     pub supported: bool,
+    /// Maximum supported nesting depth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<u32>,
 }
 
 impl Default for NutCtfSplitMergeSettings {
     fn default() -> Self {
-        Self { supported: true }
+        Self {
+            supported: true,
+            max_depth: None,
+        }
     }
 }
 
@@ -584,7 +630,7 @@ pub fn compute_outcome_collection_id(
     condition_id: &[u8; 32],
     outcome_collection_string: &str,
 ) -> Result<[u8; 32], Error> {
-    use bitcoin::secp256k1::{PublicKey as SecpPublicKey, XOnlyPublicKey, Parity};
+    use bitcoin::secp256k1::{Parity, PublicKey as SecpPublicKey, XOnlyPublicKey};
 
     // 1. Tagged hash: condition_id || outcome_collection_string
     let mut msg = Vec::new();
@@ -615,18 +661,36 @@ pub fn compute_outcome_collection_id(
     }
 }
 
+/// Escape a single outcome component for an outcome collection string.
+pub fn escape_outcome_component(outcome: &str) -> String {
+    outcome.replace('\\', "\\\\").replace('|', "\\|")
+}
+
 /// Parse outcome collection string into individual outcomes.
 ///
-/// Handles escaping: `\|` is a literal pipe, `|` is a separator.
+/// Handles escaping: `\|` is a literal pipe, `\\` is a literal backslash, and
+/// `|` is a separator.
 pub fn parse_outcome_collection(oc: &str) -> Vec<String> {
     let mut outcomes = Vec::new();
     let mut current = String::new();
     let chars: Vec<char> = oc.chars().collect();
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] == '\\' && i + 1 < chars.len() && chars[i + 1] == '|' {
-            current.push('|');
-            i += 2;
+        if chars[i] == '\\' && i + 1 < chars.len() {
+            match chars[i + 1] {
+                '|' => {
+                    current.push('|');
+                    i += 2;
+                }
+                '\\' => {
+                    current.push('\\');
+                    i += 2;
+                }
+                _ => {
+                    current.push(chars[i]);
+                    i += 1;
+                }
+            }
         } else if chars[i] == '|' {
             outcomes.push(std::mem::take(&mut current));
             i += 1;
@@ -639,28 +703,88 @@ pub fn parse_outcome_collection(oc: &str) -> Vec<String> {
     outcomes
 }
 
+/// Canonicalize an outcome collection according to the condition's outcome order.
+pub fn canonical_outcome_collection(
+    outcomes_in_index_order: &[String],
+    members: &[String],
+) -> Result<String, Error> {
+    if members.is_empty() {
+        return Err(Error::EmptyOutcomeString);
+    }
+
+    let ordered_outcomes: Vec<String> = outcomes_in_index_order
+        .iter()
+        .map(|o| o.nfc().collect())
+        .collect();
+    let mut member_set = HashSet::new();
+
+    for member in members {
+        let normalized = member.nfc().collect::<String>();
+        if normalized.is_empty() {
+            return Err(Error::EmptyOutcomeString);
+        }
+        if normalized == "*" {
+            return Err(Error::FullSetOrSingleElementPartition);
+        }
+        if !ordered_outcomes.iter().any(|o| o == &normalized) {
+            return Err(Error::IncompletePartition);
+        }
+        if !member_set.insert(normalized) {
+            return Err(Error::OverlappingOutcomeCollections);
+        }
+    }
+
+    if member_set.len() == ordered_outcomes.len() {
+        return Err(Error::FullSetOrSingleElementPartition);
+    }
+
+    let canonical = ordered_outcomes
+        .iter()
+        .filter(|outcome| member_set.contains(*outcome))
+        .map(|outcome| escape_outcome_component(outcome))
+        .collect::<Vec<_>>()
+        .join("|");
+
+    Ok(canonical)
+}
+
 /// Validate that partition keys form a valid partition of all outcomes.
 ///
 /// Returns Ok(()) if:
 /// 1. No empty outcome strings
 /// 2. Disjoint: no outcome appears in multiple collections
 /// 3. Complete: every outcome appears in exactly one collection
+/// 4. The partition contains at least two collections and no full-set collection
 pub fn validate_partition(outcomes: &[String], partition: &[String]) -> Result<(), Error> {
+    if partition.len() < 2 {
+        return Err(Error::FullSetOrSingleElementPartition);
+    }
+
     let all_outcomes: HashSet<&str> = outcomes.iter().map(String::as_str).collect();
     let mut covered = HashSet::new();
 
     for key in partition {
         let oc_outcomes = parse_outcome_collection(key);
+        let mut collection_covered = HashSet::new();
         for outcome in &oc_outcomes {
             if outcome.is_empty() {
                 return Err(Error::EmptyOutcomeString);
             }
+            if outcome == "*" {
+                return Err(Error::FullSetOrSingleElementPartition);
+            }
             if !all_outcomes.contains(outcome.as_str()) {
                 return Err(Error::IncompletePartition);
+            }
+            if !collection_covered.insert(outcome.clone()) {
+                return Err(Error::OverlappingOutcomeCollections);
             }
             if !covered.insert(outcome.clone()) {
                 return Err(Error::OverlappingOutcomeCollections);
             }
+        }
+        if collection_covered.len() == all_outcomes.len() {
+            return Err(Error::FullSetOrSingleElementPartition);
         }
     }
 
@@ -686,10 +810,7 @@ pub fn from_hex(hex: &str) -> Result<Vec<u8>, Error> {
     }
     (0..hex.len())
         .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&hex[i..i + 2], 16)
-                .map_err(|_| Error::InvalidConditionId)
-        })
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|_| Error::InvalidConditionId))
         .collect()
 }
 
@@ -734,19 +855,13 @@ mod tests {
     #[test]
     fn test_parse_outcome_collection() {
         assert_eq!(parse_outcome_collection("YES"), vec!["YES"]);
-        assert_eq!(
-            parse_outcome_collection("ALICE|BOB"),
-            vec!["ALICE", "BOB"]
-        );
+        assert_eq!(parse_outcome_collection("ALICE|BOB"), vec!["ALICE", "BOB"]);
         assert_eq!(
             parse_outcome_collection("ALICE|BOB|CAROL"),
             vec!["ALICE", "BOB", "CAROL"]
         );
         // Escaped pipe
-        assert_eq!(
-            parse_outcome_collection("A\\|B|C"),
-            vec!["A|B", "C"]
-        );
+        assert_eq!(parse_outcome_collection("A\\|B|C"), vec!["A|B", "C"]);
     }
 
     #[test]
@@ -754,17 +869,17 @@ mod tests {
         let outcomes = vec!["A".into(), "B".into(), "C".into()];
 
         // Individual outcomes
-        assert!(validate_partition(
-            &outcomes,
-            &["A".into(), "B".into(), "C".into()]
-        )
-        .is_ok());
+        assert!(validate_partition(&outcomes, &["A".into(), "B".into(), "C".into()]).is_ok());
 
         // Outcome collections
         assert!(validate_partition(&outcomes, &["A|B".into(), "C".into()]).is_ok());
 
-        // Single collection covering all
-        assert!(validate_partition(&outcomes, &["A|B|C".into()]).is_ok());
+        // Single collection covering all is represented only as collateral.
+        let result = validate_partition(&outcomes, &["A|B|C".into()]);
+        assert!(matches!(
+            result,
+            Err(Error::FullSetOrSingleElementPartition)
+        ));
     }
 
     #[test]
@@ -778,7 +893,10 @@ mod tests {
     fn test_validate_partition_incomplete() {
         let outcomes = vec!["A".into(), "B".into(), "C".into()];
         let result = validate_partition(&outcomes, &["A|B".into()]);
-        assert!(matches!(result, Err(Error::IncompletePartition)));
+        assert!(matches!(
+            result,
+            Err(Error::FullSetOrSingleElementPartition)
+        ));
     }
 
     #[test]
@@ -856,7 +974,10 @@ mod tests {
 
         let cid2 = [0xcd; 32];
         let oc3 = compute_outcome_collection_id(&parent, &cid2, "YES").unwrap();
-        assert_ne!(oc1_a, oc3, "different condition IDs must produce different IDs");
+        assert_ne!(
+            oc1_a, oc3,
+            "different condition IDs must produce different IDs"
+        );
     }
 
     #[test]
@@ -869,7 +990,10 @@ mod tests {
         // With a non-zero parent, result should differ
         let parent_nonzero = oc_root; // use the root result as parent
         let oc_nested = compute_outcome_collection_id(&parent_nonzero, &cid, "YES").unwrap();
-        assert_ne!(oc_root, oc_nested, "different parents must produce different IDs");
+        assert_ne!(
+            oc_root, oc_nested,
+            "different parents must produce different IDs"
+        );
     }
 
     #[test]
@@ -901,7 +1025,10 @@ mod tests {
         let outcomes = vec!["A".into(), "B".into()];
         // Empty partition = incomplete
         let result = validate_partition(&outcomes, &[]);
-        assert!(matches!(result, Err(Error::IncompletePartition)));
+        assert!(matches!(
+            result,
+            Err(Error::FullSetOrSingleElementPartition)
+        ));
     }
 
     #[test]
@@ -936,7 +1063,10 @@ mod tests {
         // But "oracle_sigs" (the array field) will be present, so check for the value key
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         let sig_entry = &value["oracle_sigs"][0];
-        assert!(sig_entry.get("oracle_sig").is_none(), "oracle_sig should be skipped when None");
+        assert!(
+            sig_entry.get("oracle_sig").is_none(),
+            "oracle_sig should be skipped when None"
+        );
         let deser: OracleWitness = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(witness, deser);
     }
@@ -990,7 +1120,10 @@ mod tests {
 
         let enum_id = compute_condition_id(&pubkeys, event_id, 2);
         let numeric_id = compute_condition_id_numeric(&pubkeys, event_id, 2, 0, 100000, 0);
-        assert_ne!(enum_id, numeric_id, "numeric and enum condition IDs should differ");
+        assert_ne!(
+            enum_id, numeric_id,
+            "numeric and enum condition IDs should differ"
+        );
     }
 
     #[test]

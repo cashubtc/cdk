@@ -8,11 +8,11 @@ use cashu::quote_id::QuoteId;
 use cashu::Amount;
 
 use super::{DbTransactionFinalizer, Error};
-#[cfg(feature = "conditional-tokens")]
-use crate::mint::{StoredCondition, StoredPartition};
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
 };
+#[cfg(feature = "conditional-tokens")]
+use crate::mint::{StoredCondition, StoredPartition};
 use crate::nuts::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
     State,
@@ -169,10 +169,10 @@ pub trait KeysDatabase {
         created_at: u64,
     ) -> Result<(), Self::Err> {
         let _ = (keyset_info, created_at);
-        Err(Error::Internal(
-            "add_conditional_keyset not implemented by this backend".to_string(),
+        Err(
+            Error::Internal("add_conditional_keyset not implemented by this backend".to_string())
+                .into(),
         )
-        .into())
     }
 
     /// Load every conditional keyset row from the dedicated table.
@@ -639,7 +639,8 @@ pub trait ConditionsDatabase {
     async fn add_condition(&self, condition: StoredCondition) -> Result<(), Self::Err>;
 
     /// Get a condition by condition_id
-    async fn get_condition(&self, condition_id: &str) -> Result<Option<StoredCondition>, Self::Err>;
+    async fn get_condition(&self, condition_id: &str)
+        -> Result<Option<StoredCondition>, Self::Err>;
 
     /// Get all conditions, with optional cursor-based pagination and status filter
     async fn get_conditions(

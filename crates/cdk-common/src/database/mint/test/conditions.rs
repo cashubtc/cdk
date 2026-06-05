@@ -149,11 +149,7 @@ where
         .await
         .unwrap();
 
-    let updated = db
-        .get_condition(&cond.condition_id)
-        .await
-        .unwrap()
-        .unwrap();
+    let updated = db.get_condition(&cond.condition_id).await.unwrap().unwrap();
     assert_eq!(updated.attestation_status, "attested");
     assert_eq!(updated.winning_outcome, Some("YES".to_string()));
     assert_eq!(updated.attested_at, Some(2000000));
@@ -168,12 +164,7 @@ where
     db.add_condition(cond.clone()).await.unwrap();
 
     let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
-    let info = test_conditional_keyset_info(
-        keyset_id,
-        &cond.condition_id,
-        "YES",
-        &"ee".repeat(32),
-    );
+    let info = test_conditional_keyset_info(keyset_id, &cond.condition_id, "YES", &"ee".repeat(32));
     <DB as KeysDatabase>::add_conditional_keyset(&db, info, 1000000)
         .await
         .unwrap();
@@ -199,8 +190,7 @@ where
 
     let info_yes =
         test_conditional_keyset_info(ks_yes, &cond.condition_id, "YES", &"e1".repeat(32));
-    let info_no =
-        test_conditional_keyset_info(ks_no, &cond.condition_id, "NO", &"e2".repeat(32));
+    let info_no = test_conditional_keyset_info(ks_no, &cond.condition_id, "NO", &"e2".repeat(32));
     <DB as KeysDatabase>::add_conditional_keyset(&db, info_yes, 1000000)
         .await
         .unwrap();
@@ -379,11 +369,7 @@ where
 
     // Filter by both returns all
     let both = db
-        .get_conditions(
-            None,
-            None,
-            &["pending".to_string(), "attested".to_string()],
-        )
+        .get_conditions(None, None, &["pending".to_string(), "attested".to_string()])
         .await
         .unwrap();
     assert_eq!(both.len(), 2);

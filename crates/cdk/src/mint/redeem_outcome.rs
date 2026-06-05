@@ -5,8 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cdk_common::nuts::nut_ctf::dlc;
 use cdk_common::nuts::nut_ctf::{
-    compute_numeric_payout, from_hex, parse_outcome_collection, to_hex, OracleWitness,
-    RedeemOutcomeRequest, RedeemOutcomeResponse, MAX_ORACLE_WITNESS_SIGS,
+    compute_numeric_payout, compute_outcome_collection_id, from_hex, parse_outcome_collection,
+    to_hex, OracleWitness, RedeemOutcomeRequest, RedeemOutcomeResponse, MAX_ORACLE_WITNESS_SIGS,
+    ZERO_COLLECTION_ID,
 };
 use cdk_common::nuts::Witness;
 use tracing::instrument;
@@ -151,7 +152,9 @@ fn verify_numeric_threshold(
 
 /// Record the attestation result and handle concurrent attestation races.
 async fn record_attestation(
-    localstore: &(dyn cdk_common::database::MintDatabase<cdk_common::database::Error> + Send + Sync),
+    localstore: &(dyn cdk_common::database::MintDatabase<cdk_common::database::Error>
+          + Send
+          + Sync),
     condition_id: &str,
     winning_value: &str,
 ) -> Result<(), Error> {
@@ -161,7 +164,12 @@ async fn record_attestation(
         .as_secs();
 
     let updated = localstore
-        .update_condition_attestation(condition_id, STATUS_ATTESTED, Some(winning_value), Some(now))
+        .update_condition_attestation(
+            condition_id,
+            STATUS_ATTESTED,
+            Some(winning_value),
+            Some(now),
+        )
         .await
         .map_err(Error::Database)?;
 
@@ -201,7 +209,7 @@ impl Mint {
         let input_keyset_id = inputs[0].keyset_id;
 
         // 2. Look up the condition for this keyset
-        let (condition_id, outcome_collection, _outcome_collection_id) = self
+        let (condition_id, outcome_collection, outcome_collection_id) = self
             .localstore
             .get_condition_for_keyset(&input_keyset_id)
             .await?
@@ -213,7 +221,17 @@ impl Mint {
             .await?
             .ok_or(Error::ConditionNotFound)?;
 
-        // 3. Verify all outputs use a regular (non-conditional), active keyset
+        // 3. Verify all outputs use the collateral keyset for this nesting level:
+        // regular keyset at root, parent collection's conditional keyset when nested.
+        let parent_collection_id = self
+            .parent_collection_for_input_keyset(
+                &condition_id,
+                &outcome_collection,
+                &outcome_collection_id,
+            )
+            .await?;
+        let is_root_redemption = parent_collection_id == ZERO_COLLECTION_ID;
+
         let output_keyset_ids: HashSet<_> = outputs.iter().map(|o| o.keyset_id).collect();
         for oid in &output_keyset_ids {
             // Check keyset exists and is active
@@ -221,10 +239,12 @@ impl Mint {
             if !keyset_info.active {
                 return Err(Error::InactiveKeyset);
             }
-            // Check it's not a conditional keyset
-            let is_conditional = self.localstore.get_condition_for_keyset(oid).await?;
-            if is_conditional.is_some() {
-                return Err(Error::OutputsMustUseRegularKeyset);
+            let conditional = self.localstore.get_condition_for_keyset(oid).await?;
+            match (is_root_redemption, conditional) {
+                (true, None) => {}
+                (false, Some((_, _, output_collection_id)))
+                    if output_collection_id == parent_collection_id => {}
+                _ => return Err(Error::OutputsMustUseRegularKeyset),
             }
         }
 
@@ -252,6 +272,44 @@ impl Mint {
             )
             .await
         }
+    }
+
+    async fn parent_collection_for_input_keyset(
+        &self,
+        condition_id: &str,
+        outcome_collection: &str,
+        outcome_collection_id: &str,
+    ) -> Result<String, Error> {
+        let condition_id_bytes: [u8; 32] = from_hex(condition_id)
+            .map_err(|_| Error::InvalidConditionId)?
+            .try_into()
+            .map_err(|_| Error::InvalidConditionId)?;
+        let stored_partitions = self
+            .localstore
+            .get_partitions_for_condition(condition_id)
+            .await?;
+
+        for partition in stored_partitions {
+            let partition_keys: Vec<String> = serde_json::from_str(&partition.partition_json)?;
+            if !partition_keys.iter().any(|key| key == outcome_collection) {
+                continue;
+            }
+
+            let parent_bytes: [u8; 32] = from_hex(&partition.parent_collection_id)
+                .map_err(|_| Error::InvalidConditionId)?
+                .try_into()
+                .map_err(|_| Error::InvalidConditionId)?;
+            let recomputed = compute_outcome_collection_id(
+                &parent_bytes,
+                &condition_id_bytes,
+                outcome_collection,
+            )?;
+            if to_hex(&recomputed) == outcome_collection_id {
+                return Ok(partition.parent_collection_id);
+            }
+        }
+
+        Err(Error::ConditionNotFound)
     }
 
     /// NUT-CTF: Enum winner-take-all redemption
@@ -287,14 +345,11 @@ impl Mint {
 
             let mut winning_collection = None;
             for sp in &stored_partitions {
-                let partition_keys: Vec<String> =
-                    serde_json::from_str(&sp.partition_json)?;
+                let partition_keys: Vec<String> = serde_json::from_str(&sp.partition_json)?;
                 for key in &partition_keys {
                     let outcomes = parse_outcome_collection(key);
                     if outcomes.iter().any(|o| o.as_str() == attested_outcome) {
-                        let mut elements = parse_outcome_collection(key);
-                        elements.sort();
-                        winning_collection = Some(elements.join("|"));
+                        winning_collection = Some(key.clone());
                         break;
                     }
                 }
@@ -303,8 +358,7 @@ impl Mint {
                 }
             }
 
-            let winning_collection =
-                winning_collection.ok_or(Error::OracleNotAttestedOutcome)?;
+            let winning_collection = winning_collection.ok_or(Error::OracleNotAttestedOutcome)?;
 
             if outcome_collection != winning_collection {
                 return Err(Error::OracleNotAttestedOutcome);
@@ -318,11 +372,7 @@ impl Mint {
             let output_amount: u64 = outputs.iter().map(|o| u64::from(o.amount)).sum();
 
             if input_amount < output_amount {
-                return Err(Error::TransactionUnbalanced(
-                    input_amount,
-                    output_amount,
-                    0,
-                ));
+                return Err(Error::TransactionUnbalanced(input_amount, output_amount, 0));
             }
 
             let input_verification = self.verify_inputs(inputs).await?;
@@ -352,11 +402,7 @@ impl Mint {
         let output_amount: u64 = outputs.iter().map(|o| u64::from(o.amount)).sum();
 
         if input_amount < output_amount {
-            return Err(Error::TransactionUnbalanced(
-                input_amount,
-                output_amount,
-                0,
-            ));
+            return Err(Error::TransactionUnbalanced(input_amount, output_amount, 0));
         }
 
         // 7. Verify inputs and execute swap saga
@@ -394,12 +440,12 @@ impl Mint {
             return Err(Error::OracleNotAttestedOutcome);
         }
 
-        let lo_bound = condition.lo_bound.ok_or_else(|| {
-            Error::Custom("Numeric condition missing lo_bound".into())
-        })?;
-        let hi_bound = condition.hi_bound.ok_or_else(|| {
-            Error::Custom("Numeric condition missing hi_bound".into())
-        })?;
+        let lo_bound = condition
+            .lo_bound
+            .ok_or_else(|| Error::Custom("Numeric condition missing lo_bound".into()))?;
+        let hi_bound = condition
+            .hi_bound
+            .ok_or_else(|| Error::Custom("Numeric condition missing hi_bound".into()))?;
 
         // Determine the attested value. For the "not yet attested" branch,
         // verify the oracle witness up front but defer record_attestation until
@@ -442,11 +488,7 @@ impl Mint {
         let fee: u64 = fee_breakdown.total.into();
 
         if my_payout < fee || output_amount > (my_payout - fee) {
-            return Err(Error::TransactionUnbalanced(
-                my_payout,
-                output_amount,
-                fee,
-            ));
+            return Err(Error::TransactionUnbalanced(my_payout, output_amount, fee));
         }
 
         // Verify inputs and execute via unbalanced swap saga

@@ -17,9 +17,9 @@ pub type MintSqliteAuthDatabase = SQLMintAuthDatabase<SqliteConnectionManager>;
 mod test {
     use std::fs::remove_file;
 
-    use cdk_common::mint_db_test;
     #[cfg(feature = "conditional-tokens")]
     use cdk_common::mint_db_conditional_test;
+    use cdk_common::mint_db_test;
     use cdk_sql_common::pool::Pool;
     use cdk_sql_common::stmt::query;
 

@@ -26,10 +26,7 @@ pub fn extract_event_id(announcement: &OracleAnnouncement) -> String {
 
 /// Extract the oracle's x-only public key bytes from a parsed announcement.
 pub fn extract_oracle_pubkey(announcement: &OracleAnnouncement) -> Vec<u8> {
-    announcement
-        .oracle_public_key
-        .serialize()
-        .to_vec()
+    announcement.oracle_public_key.serialize().to_vec()
 }
 
 /// Extract outcomes from an event descriptor.
@@ -67,15 +64,13 @@ pub fn extract_digit_decomposition(
     announcement: &OracleAnnouncement,
 ) -> Result<DigitDecompositionInfo, Error> {
     match &announcement.oracle_event.event_descriptor {
-        EventDescriptor::DigitDecompositionEvent(dd) => {
-            Ok(DigitDecompositionInfo {
-                base: dd.base as u64,
-                is_signed: dd.is_signed,
-                nb_digits: dd.nb_digits as usize,
-                unit: dd.unit.clone(),
-                precision: dd.precision,
-            })
-        }
+        EventDescriptor::DigitDecompositionEvent(dd) => Ok(DigitDecompositionInfo {
+            base: dd.base as u64,
+            is_signed: dd.is_signed,
+            nb_digits: dd.nb_digits as usize,
+            unit: dd.unit.clone(),
+            precision: dd.precision,
+        }),
         EventDescriptor::EnumEvent(_) => Err(Error::Dlc(
             "Expected digit decomposition event but got enum event".into(),
         )),
@@ -97,13 +92,11 @@ pub fn verify_digit_attestation(
     is_signed: bool,
 ) -> Result<i64, Error> {
     if digit_sigs.len() != nonce_points.len() {
-        return Err(Error::DigitSignatureVerificationFailed(
-            format!(
-                "Expected {} digit signatures but got {}",
-                nonce_points.len(),
-                digit_sigs.len()
-            ),
-        ));
+        return Err(Error::DigitSignatureVerificationFailed(format!(
+            "Expected {} digit signatures but got {}",
+            nonce_points.len(),
+            digit_sigs.len()
+        )));
     }
 
     let nb_digits = digit_sigs.len();
@@ -112,13 +105,13 @@ pub fn verify_digit_attestation(
     // Determine sign
     let sign: i64 = if is_signed {
         // First digit is sign: "+" or "-"
-        let sign_outcome = find_attested_digit(
-            oracle_pubkey,
-            &digit_sigs[0],
-            &nonce_points[0],
-            &["+", "-"],
-        )?;
-        if sign_outcome == "+" { 1 } else { -1 }
+        let sign_outcome =
+            find_attested_digit(oracle_pubkey, &digit_sigs[0], &nonce_points[0], &["+", "-"])?;
+        if sign_outcome == "+" {
+            1
+        } else {
+            -1
+        }
     } else {
         1
     };
@@ -129,17 +122,11 @@ pub fn verify_digit_attestation(
         let digit_outcomes: Vec<String> = (0..base).map(|d| d.to_string()).collect();
         let digit_strs: Vec<&str> = digit_outcomes.iter().map(|s| s.as_str()).collect();
 
-        let digit_str = find_attested_digit(
-            oracle_pubkey,
-            &digit_sigs[i],
-            &nonce_points[i],
-            &digit_strs,
-        )?;
+        let digit_str =
+            find_attested_digit(oracle_pubkey, &digit_sigs[i], &nonce_points[i], &digit_strs)?;
 
         let digit_val: i64 = digit_str.parse().map_err(|_| {
-            Error::DigitSignatureVerificationFailed(
-                format!("Invalid digit value: {}", digit_str),
-            )
+            Error::DigitSignatureVerificationFailed(format!("Invalid digit value: {}", digit_str))
         })?;
 
         // Most significant digit first
@@ -171,9 +158,7 @@ fn find_attested_digit(
 
 /// Extract the nonce points (R-values) from the oracle event.
 pub fn extract_nonce_points(event: &OracleEvent) -> Vec<XOnlyPublicKey> {
-    event
-        .oracle_nonces
-        .clone()
+    event.oracle_nonces.clone()
 }
 
 /// Verify a DLC oracle attestation signature.
@@ -194,12 +179,11 @@ pub fn verify_oracle_attestation(
     let secp = Secp256k1::verification_only();
 
     // Parse oracle public key
-    let pk = XOnlyPublicKey::from_slice(oracle_pubkey)
-        .map_err(|_| Error::InvalidOracleSignature)?;
+    let pk =
+        XOnlyPublicKey::from_slice(oracle_pubkey).map_err(|_| Error::InvalidOracleSignature)?;
 
     // Parse the 64-byte signature
-    let sig = Signature::from_slice(oracle_sig)
-        .map_err(|_| Error::InvalidOracleSignature)?;
+    let sig = Signature::from_slice(oracle_sig).map_err(|_| Error::InvalidOracleSignature)?;
 
     // Compute the tagged hash message for DLC attestation verification
     // e = tagged_hash("DLC/oracle/attestation/v0", R || P || msg)
@@ -220,9 +204,7 @@ pub fn verify_oracle_attestation(
 ///
 /// Delegates to `dlc-messages`' own `OracleAnnouncement::validate()`, which
 /// signs/verifies over raw `Writeable::write()` bytes (no TLV wrapper).
-pub fn verify_announcement_signature(
-    announcement: &OracleAnnouncement,
-) -> Result<(), Error> {
+pub fn verify_announcement_signature(announcement: &OracleAnnouncement) -> Result<(), Error> {
     let secp = Secp256k1::verification_only();
     announcement
         .validate(&secp)
@@ -245,10 +227,7 @@ mod tests {
 
         let parsed = parse_oracle_announcement(&hex_tlv).expect("parse should succeed");
         assert_eq!(parsed.oracle_public_key, original.oracle_public_key);
-        assert_eq!(
-            parsed.oracle_event.event_id,
-            original.oracle_event.event_id
-        );
+        assert_eq!(parsed.oracle_event.event_id, original.oracle_event.event_id);
     }
 
     #[test]
@@ -306,7 +285,11 @@ mod tests {
             outcome,
             &oracle.nonce_public,
         );
-        assert!(result.is_ok(), "valid attestation should verify: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "valid attestation should verify: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -450,7 +433,6 @@ mod tests {
         use crate::nuts::nut_ctf::test_helpers::{
             create_digit_decomposition_announcement, sign_digit_attestation,
         };
-        use crate::nuts::nut_ctf::from_hex;
 
         let oracle = create_test_oracle();
         let (ann, _) =

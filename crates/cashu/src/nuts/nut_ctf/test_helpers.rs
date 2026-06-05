@@ -228,11 +228,13 @@ pub fn create_digit_decomposition_announcement(
     precision: i32,
     event_id: &str,
 ) -> (dlc_messages::oracle_msgs::OracleAnnouncement, String) {
-    use dlc_messages::oracle_msgs::{DigitDecompositionEventDescriptor, OracleEvent, OracleAnnouncement};
-    use dlc_messages::ser_impls::write_as_tlv;
     use bitcoin::hashes::sha256::Hash as Sha256Hash;
     use bitcoin::hashes::Hash;
     use bitcoin::secp256k1::{Keypair, Message, Secp256k1};
+    use dlc_messages::oracle_msgs::{
+        DigitDecompositionEventDescriptor, OracleAnnouncement, OracleEvent,
+    };
+    use dlc_messages::ser_impls::write_as_tlv;
 
     let secp = Secp256k1::new();
 

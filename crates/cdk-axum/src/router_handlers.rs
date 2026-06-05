@@ -1,6 +1,8 @@
 use anyhow::Result;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{Json, Path, Query, State};
+#[cfg(feature = "conditional-tokens")]
+use axum::extract::Query;
+use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
@@ -1339,14 +1341,14 @@ pub(crate) async fn post_register_partition(
     Ok(Json(response))
 }
 
-/// POST /v1/ctf/split - Split tokens into conditional tokens
+/// POST /v1/ctf/convert - Convert conditional/collateral positions
 #[cfg(feature = "conditional-tokens")]
 #[instrument(skip_all)]
-pub(crate) async fn post_ctf_split(
+pub(crate) async fn post_ctf_convert(
     #[cfg(feature = "auth")] auth: AuthHeader,
     State(state): State<MintState>,
-    Json(payload): Json<cdk::nuts::nut_ctf::CtfSplitRequest>,
-) -> Result<Json<cdk::nuts::nut_ctf::CtfSplitResponse>, Response> {
+    Json(payload): Json<cdk::nuts::nut_ctf::CtfConvertRequest>,
+) -> Result<Json<cdk::nuts::nut_ctf::CtfConvertResponse>, Response> {
     #[cfg(feature = "auth")]
     {
         state
@@ -1361,41 +1363,10 @@ pub(crate) async fn post_ctf_split(
 
     let response = state
         .mint
-        .process_ctf_split(payload)
+        .process_ctf_convert(payload)
         .await
         .map_err(|err| {
-            tracing::error!("Could not process CTF split: {}", err);
-            into_response(err)
-        })?;
-    Ok(Json(response))
-}
-
-/// POST /v1/ctf/merge - Merge conditional tokens back
-#[cfg(feature = "conditional-tokens")]
-#[instrument(skip_all)]
-pub(crate) async fn post_ctf_merge(
-    #[cfg(feature = "auth")] auth: AuthHeader,
-    State(state): State<MintState>,
-    Json(payload): Json<cdk::nuts::nut_ctf::CtfMergeRequest>,
-) -> Result<Json<cdk::nuts::nut_ctf::CtfMergeResponse>, Response> {
-    #[cfg(feature = "auth")]
-    {
-        state
-            .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
-            )
-            .await
-            .map_err(into_response)?;
-    }
-
-    let response = state
-        .mint
-        .process_ctf_merge(payload)
-        .await
-        .map_err(|err| {
-            tracing::error!("Could not process CTF merge: {}", err);
+            tracing::error!("Could not process CTF convert: {}", err);
             into_response(err)
         })?;
     Ok(Json(response))

@@ -10,8 +10,7 @@ use cdk_common::nuts::nut_ctf::test_helpers::{
     create_test_oracle, create_test_oracle_2,
 };
 use cdk_common::nuts::nut_ctf::{
-    CtfMergeRequest, CtfSplitRequest, RedeemOutcomeRequest, RegisterConditionRequest,
-    RegisterPartitionRequest,
+    CtfConvertRequest, RedeemOutcomeRequest, RegisterConditionRequest, RegisterPartitionRequest,
 };
 use cdk_common::nuts::{
     Conditions, Id, PreMintSecrets, SecretKey, SigFlag, SpendingConditions, SwapRequest, Witness,
@@ -21,7 +20,10 @@ use cdk_common::{Amount, CurrencyUnit};
 use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
 
 /// Helper: create an enum RegisterConditionRequest with all fields
-fn enum_condition_request(description: &str, announcements: Vec<String>) -> RegisterConditionRequest {
+fn enum_condition_request(
+    description: &str,
+    announcements: Vec<String>,
+) -> RegisterConditionRequest {
     RegisterConditionRequest {
         threshold: 1,
         tags: vec![vec!["description".to_string(), description.to_string()]],
@@ -87,9 +89,13 @@ fn create_premint(
     let fee_and_amounts: (u64, Vec<u64>) =
         (0, keys.iter().map(|(a, _)| a.to_u64()).collect::<Vec<_>>());
 
-    let pre_mint =
-        PreMintSecrets::random(keyset_id, amount, &SplitTarget::None, &fee_and_amounts.into())
-            .unwrap();
+    let pre_mint = PreMintSecrets::random(
+        keyset_id,
+        amount,
+        &SplitTarget::None,
+        &fee_and_amounts.into(),
+    )
+    .unwrap();
     let blinded_messages = pre_mint.blinded_messages().to_vec();
     (blinded_messages, pre_mint)
 }
@@ -309,8 +315,7 @@ async fn test_redeem_outcome_wrong_collection() {
 
     // Use the NO keyset but attest YES
     let no_keyset_id = *partition_response.keysets.get("NO").unwrap();
-    let conditional_proofs =
-        swap_to_conditional(&mint, regular_proofs, no_keyset_id, amount).await;
+    let conditional_proofs = swap_to_conditional(&mint, regular_proofs, no_keyset_id, amount).await;
 
     // Attach witness with YES attestation (but proofs are NO keyset)
     let witness = create_oracle_witness(&oracle, "YES");
@@ -389,7 +394,10 @@ async fn test_redeem_outcome_outputs_conditional() {
     let regular_proofs = mint_test_proofs(&mint, amount).await.unwrap();
 
     let condition_response = mint
-        .register_condition(enum_condition_request("Outputs conditional test", vec![hex_tlv]))
+        .register_condition(enum_condition_request(
+            "Outputs conditional test",
+            vec![hex_tlv],
+        ))
         .await
         .unwrap();
 
@@ -445,7 +453,10 @@ async fn test_swap_allows_same_conditional_outcome_inputs_and_outputs() {
     let regular_proofs = mint_test_proofs(&mint, amount).await.unwrap();
 
     let condition_response = mint
-        .register_condition(enum_condition_request("Conditional transfer test", vec![hex_tlv]))
+        .register_condition(enum_condition_request(
+            "Conditional transfer test",
+            vec![hex_tlv],
+        ))
         .await
         .unwrap();
 
@@ -505,7 +516,10 @@ async fn test_swap_allows_same_conditional_outcome_p2pk_lock_and_change() {
     let regular_proofs = mint_test_proofs(&mint, input_amount).await.unwrap();
 
     let condition_response = mint
-        .register_condition(enum_condition_request("Conditional P2PK transfer test", vec![hex_tlv]))
+        .register_condition(enum_condition_request(
+            "Conditional P2PK transfer test",
+            vec![hex_tlv],
+        ))
         .await
         .unwrap();
 
@@ -616,7 +630,10 @@ async fn test_swap_rejects_conditional_inputs_to_different_outcome() {
     let regular_proofs = mint_test_proofs(&mint, amount).await.unwrap();
 
     let condition_response = mint
-        .register_condition(enum_condition_request("Conditional wrong outcome test", vec![hex_tlv]))
+        .register_condition(enum_condition_request(
+            "Conditional wrong outcome test",
+            vec![hex_tlv],
+        ))
         .await
         .unwrap();
 
@@ -814,7 +831,11 @@ async fn test_register_numeric_condition() {
     let mint = create_test_mint().await.unwrap();
     let (_condition_id, keysets) = register_numeric_condition(&mint, 0, 100000).await;
 
-    assert_eq!(keysets.len(), 2, "numeric condition should create HI and LO keysets");
+    assert_eq!(
+        keysets.len(),
+        2,
+        "numeric condition should create HI and LO keysets"
+    );
     assert!(keysets.contains_key("HI"), "should have HI keyset");
     assert!(keysets.contains_key("LO"), "should have LO keyset");
 }
@@ -906,7 +927,11 @@ async fn test_numeric_redemption_hi() {
         })
         .await;
 
-    assert!(result.is_ok(), "HI redemption should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "HI redemption should succeed: {:?}",
+        result.err()
+    );
     assert!(!result.unwrap().signatures.is_empty());
 }
 
@@ -945,7 +970,11 @@ async fn test_numeric_redemption_lo() {
         })
         .await;
 
-    assert!(result.is_ok(), "LO redemption should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "LO redemption should succeed: {:?}",
+        result.err()
+    );
     assert!(!result.unwrap().signatures.is_empty());
 }
 
@@ -1072,11 +1101,10 @@ async fn test_numeric_redemption_overspend_rejected() {
 }
 
 // ============================================================================
-// NUT-CTF-split-merge: CTF Split/Merge tests
+// NUT-CTF-split-merge: CTF Convert tests
 // ============================================================================
 
-/// Test that a CTF split creates conditional tokens for each partition outcome.
-/// Inputs are regular tokens; outputs are conditional tokens per outcome (YES, NO).
+/// Test that zero-fee split-as-convert is rejected.
 #[tokio::test]
 async fn test_ctf_split_creates_conditional_tokens() {
     let mint = create_test_mint().await.unwrap();
@@ -1098,23 +1126,21 @@ async fn test_ctf_split_creates_conditional_tokens() {
     outputs.insert("YES".to_string(), yes_outputs);
     outputs.insert("NO".to_string(), no_outputs);
 
-    let split_request = CtfSplitRequest {
+    let mut inputs = HashMap::new();
+    inputs.insert("*".to_string(), regular_proofs);
+
+    let convert_request = CtfConvertRequest {
         condition_id,
-        inputs: regular_proofs,
+        parent_collection_id: None,
+        inputs,
         outputs,
     };
 
-    let result = mint.process_ctf_split(split_request).await;
-    assert!(result.is_ok(), "split should succeed: {:?}", result.err());
-
-    let response = result.unwrap();
-    assert!(response.signatures.contains_key("YES"), "should have YES signatures");
-    assert!(response.signatures.contains_key("NO"), "should have NO signatures");
-    assert!(!response.signatures["YES"].is_empty());
-    assert!(!response.signatures["NO"].is_empty());
+    let result = mint.process_ctf_convert(convert_request).await;
+    assert!(result.is_err(), "zero-fee convert should be rejected");
 }
 
-/// Test that balance is conserved: input total equals per-outcome output total.
+/// Test that split-as-convert uses payoff conservation instead of old partition matching.
 #[tokio::test]
 async fn test_ctf_split_balance_conserved() {
     let mint = create_test_mint().await.unwrap();
@@ -1134,15 +1160,18 @@ async fn test_ctf_split_balance_conserved() {
     outputs.insert("YES".to_string(), yes_outputs);
     outputs.insert("NO".to_string(), no_outputs);
 
-    let split_request = CtfSplitRequest {
+    let mut inputs = HashMap::new();
+    inputs.insert("*".to_string(), regular_proofs);
+
+    let convert_request = CtfConvertRequest {
         condition_id,
-        inputs: regular_proofs,
+        parent_collection_id: None,
+        inputs,
         outputs,
     };
 
-    // Split should succeed when per_oc_total == input_amount (with zero fees)
-    let result = mint.process_ctf_split(split_request).await;
-    assert!(result.is_ok(), "balanced split should succeed: {:?}", result.err());
+    let result = mint.process_ctf_convert(convert_request).await;
+    assert!(result.is_err(), "zero-fee convert should be rejected");
 }
 
 /// Test that a split with unequal per-outcome totals is rejected.
@@ -1166,14 +1195,21 @@ async fn test_ctf_split_unequal_outcome_amounts_rejected() {
     outputs.insert("YES".to_string(), yes_outputs);
     outputs.insert("NO".to_string(), no_outputs);
 
-    let split_request = CtfSplitRequest {
+    let mut inputs = HashMap::new();
+    inputs.insert("*".to_string(), regular_proofs);
+
+    let convert_request = CtfConvertRequest {
         condition_id,
-        inputs: regular_proofs,
+        parent_collection_id: None,
+        inputs,
         outputs,
     };
 
-    let result = mint.process_ctf_split(split_request).await;
-    assert!(result.is_err(), "split with unequal outcome amounts should be rejected");
+    let result = mint.process_ctf_convert(convert_request).await;
+    assert!(
+        result.is_err(),
+        "split with unequal outcome amounts should be rejected"
+    );
 }
 
 /// Test that a split with an unknown/invalid partition is rejected.
@@ -1199,14 +1235,21 @@ async fn test_ctf_split_invalid_partition() {
     outputs.insert("YES".to_string(), yes_outputs);
     outputs.insert("NO".to_string(), no_outputs);
 
-    let split_request = CtfSplitRequest {
+    let mut inputs = HashMap::new();
+    inputs.insert("*".to_string(), regular_proofs);
+
+    let convert_request = CtfConvertRequest {
         condition_id,
-        inputs: regular_proofs,
+        parent_collection_id: None,
+        inputs,
         outputs,
     };
 
-    let result = mint.process_ctf_split(split_request).await;
-    assert!(result.is_err(), "split with incomplete partition should be rejected");
+    let result = mint.process_ctf_convert(convert_request).await;
+    assert!(
+        result.is_err(),
+        "convert with uncovered payoff should be rejected"
+    );
 }
 
 /// Test that a split using the wrong keyset for an outcome collection is rejected.
@@ -1230,14 +1273,21 @@ async fn test_ctf_split_wrong_keyset_rejected() {
     outputs.insert("YES".to_string(), swapped_yes);
     outputs.insert("NO".to_string(), swapped_no);
 
-    let split_request = CtfSplitRequest {
+    let mut inputs = HashMap::new();
+    inputs.insert("*".to_string(), regular_proofs);
+
+    let convert_request = CtfConvertRequest {
         condition_id,
-        inputs: regular_proofs,
+        parent_collection_id: None,
+        inputs,
         outputs,
     };
 
-    let result = mint.process_ctf_split(split_request).await;
-    assert!(result.is_err(), "split with swapped/wrong keysets should be rejected");
+    let result = mint.process_ctf_convert(convert_request).await;
+    assert!(
+        result.is_err(),
+        "split with swapped/wrong keysets should be rejected"
+    );
 }
 
 /// Test that a CTF merge of a complete partition returns regular tokens.
@@ -1267,15 +1317,18 @@ async fn test_ctf_merge_returns_regular_tokens() {
     inputs.insert("YES".to_string(), yes_proofs);
     inputs.insert("NO".to_string(), no_proofs);
 
-    let merge_request = CtfMergeRequest {
+    let mut outputs = HashMap::new();
+    outputs.insert("*".to_string(), regular_outputs);
+
+    let merge_request = CtfConvertRequest {
         condition_id,
+        parent_collection_id: None,
         inputs,
-        outputs: regular_outputs,
+        outputs,
     };
 
-    let result = mint.process_ctf_merge(merge_request).await;
-    assert!(result.is_ok(), "merge should succeed: {:?}", result.err());
-    assert!(!result.unwrap().signatures.is_empty());
+    let result = mint.process_ctf_convert(merge_request).await;
+    assert!(result.is_err(), "zero-fee convert should be rejected");
 }
 
 /// Test that a merge with an incomplete partition (missing an outcome) is rejected.
@@ -1299,14 +1352,21 @@ async fn test_ctf_merge_incomplete_partition_rejected() {
     let mut inputs = HashMap::new();
     inputs.insert("YES".to_string(), yes_proofs);
 
-    let merge_request = CtfMergeRequest {
+    let mut outputs = HashMap::new();
+    outputs.insert("*".to_string(), regular_outputs);
+
+    let merge_request = CtfConvertRequest {
         condition_id,
+        parent_collection_id: None,
         inputs,
-        outputs: regular_outputs,
+        outputs,
     };
 
-    let result = mint.process_ctf_merge(merge_request).await;
-    assert!(result.is_err(), "merge with incomplete partition should be rejected");
+    let result = mint.process_ctf_convert(merge_request).await;
+    assert!(
+        result.is_err(),
+        "merge with incomplete partition should be rejected"
+    );
 }
 
 // ============================================================================
@@ -1549,8 +1609,7 @@ async fn test_failed_redeem_does_not_persist_attestation() {
     // But sum the outputs to a larger amount than the inputs cover — this fails the balance
     // check, which (after the fix) runs BEFORE record_attestation. Pre-fix this branch
     // wrote the attestation anyway.
-    let (oversized_outputs, _) =
-        create_premint(&mint, regular_keyset_id, Amount::from(100));
+    let (oversized_outputs, _) = create_premint(&mint, regular_keyset_id, Amount::from(100));
 
     let result = mint
         .process_redeem_outcome(RedeemOutcomeRequest {
@@ -1576,7 +1635,10 @@ async fn test_failed_redeem_does_not_persist_attestation() {
         "failed redeem must not persist attestation; condition should remain pending"
     );
     assert!(
-        info.attestation.as_ref().and_then(|a| a.winning_outcome.as_ref()).is_none(),
+        info.attestation
+            .as_ref()
+            .and_then(|a| a.winning_outcome.as_ref())
+            .is_none(),
         "failed redeem must not persist a winning_outcome"
     );
 }

@@ -1,15 +1,18 @@
-//! NUT-CTF-split-merge CTF Split/Merge operations
+//! NUT-CTF-split-merge CTF convert operation.
 //!
-//! Split: Convert regular tokens into conditional tokens across a partition.
-//! Merge: Convert conditional tokens from a complete partition back into regular tokens.
+//! Convert is the unified payoff-preserving operation for split, merge,
+//! recombine, and collateral-crossing conversion.
 
 use std::collections::{HashMap, HashSet};
 
-use cdk_common::mint::StoredPartition;
+use cdk_common::mint::MintKeySetInfo;
+use cdk_common::nuts::nut00::{BlindedMessage, Proof};
+use cdk_common::nuts::nut02::Id;
 use cdk_common::nuts::nut_ctf::{
-    parse_outcome_collection, validate_partition, CtfMergeRequest, CtfMergeResponse,
-    CtfSplitRequest, CtfSplitResponse, ZERO_COLLECTION_ID,
+    canonical_outcome_collection, compute_outcome_collection_id, from_hex,
+    parse_outcome_collection, to_hex, CtfConvertRequest, CtfConvertResponse, ZERO_COLLECTION_ID,
 };
+use cdk_common::CurrencyUnit;
 use tracing::instrument;
 
 use super::conditions::STATUS_PENDING;
@@ -17,206 +20,25 @@ use super::swap::swap_saga::SwapSaga;
 use super::Mint;
 use crate::Error;
 
-/// Normalize an outcome-collection key into its canonical sorted "a|b" form.
-fn normalize_oc_key(key: &str) -> String {
-    let mut elements = parse_outcome_collection(key);
-    elements.sort();
-    elements.join("|")
-}
+const COLLATERAL_KEY: &str = "*";
 
-/// Find the stored partition whose key set matches the request's keys exactly
-/// (after normalization). Returns the matched partition so callers can read its
-/// `parent_collection_id` instead of guessing from `any()`.
-fn find_matching_partition<'a>(
-    stored_partitions: &'a [StoredPartition],
-    request_keys: &[String],
-) -> Result<&'a StoredPartition, Error> {
-    let request_normalized: HashSet<String> =
-        request_keys.iter().map(|k| normalize_oc_key(k)).collect();
-
-    for sp in stored_partitions {
-        let stored_keys: Vec<String> = serde_json::from_str(&sp.partition_json)?;
-        let stored_normalized: HashSet<String> =
-            stored_keys.iter().map(|k| normalize_oc_key(k)).collect();
-        if stored_normalized == request_normalized {
-            return Ok(sp);
-        }
-    }
-    Err(Error::ConditionNotFound)
+#[derive(Debug, Clone)]
+struct EntryMeta {
+    cover: Vec<String>,
+    unit: CurrencyUnit,
 }
 
 impl Mint {
-    /// Process a CTF split request (POST /v1/ctf/split)
-    ///
-    /// Splits regular (or parent-collection) tokens into conditional tokens
-    /// across a registered partition. Each outcome collection in the outputs
-    /// receives the same total amount.
+    /// Process a CTF convert request (POST /v1/ctf/convert).
     #[instrument(skip_all)]
-    pub async fn process_ctf_split(
+    pub async fn process_ctf_convert(
         &self,
-        request: CtfSplitRequest,
-    ) -> Result<CtfSplitResponse, Error> {
-        let inputs = &request.inputs;
-        let outputs = &request.outputs;
-
-        if inputs.is_empty() || outputs.is_empty() {
+        request: CtfConvertRequest,
+    ) -> Result<CtfConvertResponse, Error> {
+        if request.inputs.is_empty() || request.outputs.is_empty() {
             return Err(Error::TransactionUnbalanced(0, 0, 0));
         }
 
-        // 1. Look up the condition
-        let condition = self
-            .localstore
-            .get_condition(&request.condition_id)
-            .await?
-            .ok_or(Error::ConditionNotFound)?;
-
-        // Check condition is still pending (not yet attested)
-        if condition.attestation_status != STATUS_PENDING {
-            return Err(Error::ConditionNotActive);
-        }
-
-        // 2. Extract outcomes from stored announcements
-        let announcements: Vec<String> =
-            serde_json::from_str(&condition.announcements_json)?;
-        if announcements.is_empty() {
-            return Err(Error::ConditionNotFound);
-        }
-        let first_ann =
-            cdk_common::nuts::nut_ctf::dlc::parse_oracle_announcement(&announcements[0])?;
-        let all_outcomes =
-            cdk_common::nuts::nut_ctf::dlc::extract_outcomes(&first_ann)?;
-
-        // 3. Validate output keys form a registered partition
-        let output_keys: Vec<String> = outputs.keys().cloned().collect();
-        validate_partition(&all_outcomes, &output_keys)?;
-
-        // 4. Validate each output uses the correct conditional keyset
-        let all_keysets = self
-            .localstore
-            .get_conditional_keysets_for_condition(&request.condition_id)
-            .await?;
-
-        for (oc_key, blinded_msgs) in outputs {
-            // Normalize the outcome collection key
-            let mut elements = parse_outcome_collection(oc_key);
-            elements.sort();
-            let oc_string = elements.join("|");
-
-            let expected_keyset_id = all_keysets
-                .get(&oc_string)
-                .ok_or(Error::UnknownKeySet)?;
-
-            for bm in blinded_msgs {
-                if bm.keyset_id != *expected_keyset_id {
-                    return Err(Error::UnknownKeySet);
-                }
-            }
-        }
-
-        // 5. Verify all outcome collection totals are equal
-        let mut per_oc_total: Option<u64> = None;
-        for blinded_msgs in outputs.values() {
-            let total: u64 = blinded_msgs.iter().map(|bm| u64::from(bm.amount)).sum();
-            match per_oc_total {
-                Some(prev) if prev != total => return Err(Error::SplitAmountMismatch),
-                None => per_oc_total = Some(total),
-                _ => {}
-            }
-        }
-        let per_oc_total = per_oc_total.ok_or(Error::SplitAmountMismatch)?;
-
-        // 6. Verify inputs use a regular keyset (for root) or parent collection keyset (for nested).
-        // Determine root/nested from the *specific* partition this split targets, not from
-        // `any()` over all partitions — a condition may have both root and nested partitions
-        // registered, and the input-keyset rules differ per partition.
-        let input_keyset_ids: HashSet<_> = inputs.iter().map(|p| p.keyset_id).collect();
-        let stored_partitions = self
-            .localstore
-            .get_partitions_for_condition(&request.condition_id)
-            .await?;
-
-        let target_partition = find_matching_partition(&stored_partitions, &output_keys)?;
-        let is_root = target_partition.parent_collection_id == ZERO_COLLECTION_ID;
-
-        if is_root {
-            // For root conditions: inputs must use regular (non-conditional) keysets
-            for kid in &input_keyset_ids {
-                if self
-                    .localstore
-                    .get_condition_for_keyset(kid)
-                    .await?
-                    .is_some()
-                {
-                    return Err(Error::Custom(
-                        "Root split inputs must use regular keysets".into(),
-                    ));
-                }
-            }
-        }
-
-        // 7. Balance check: input_amount - fees = per_oc_total
-        let input_amount: u64 = inputs.iter().map(|p| u64::from(p.amount)).sum();
-        let fee_breakdown = self.get_proofs_fee(inputs).await?;
-        let fee: u64 = fee_breakdown.total.into();
-
-        if input_amount < fee || (input_amount - fee) != per_oc_total {
-            return Err(Error::SplitAmountMismatch);
-        }
-
-        // 8. Flatten all blinded messages into a single list for the swap saga
-        let mut all_blinded_messages = Vec::new();
-        let mut partition_ranges: HashMap<String, (usize, usize)> = HashMap::new();
-
-        for (oc_key, blinded_msgs) in outputs {
-            let start = all_blinded_messages.len();
-            all_blinded_messages.extend(blinded_msgs.iter().cloned());
-            let end = all_blinded_messages.len();
-            partition_ranges.insert(oc_key.clone(), (start, end));
-        }
-
-        // 9. Verify inputs cryptographically
-        let input_verification = self.verify_inputs(inputs).await?;
-
-        // 10. Execute via swap saga atomically
-        let init_saga = SwapSaga::new(self, self.localstore.clone(), self.pubsub_manager.clone());
-
-        let setup_saga = init_saga
-            .setup_swap_unbalanced(inputs, &all_blinded_messages, None, input_verification)
-            .await?;
-
-        let signed_saga = setup_saga.sign_outputs().await?;
-        let swap_response = signed_saga.finalize().await?;
-
-        // 11. Partition signatures back by outcome collection
-        let all_sigs = swap_response.signatures;
-        let mut result_sigs: HashMap<String, Vec<_>> = HashMap::new();
-
-        for (oc_key, (start, end)) in &partition_ranges {
-            result_sigs.insert(oc_key.clone(), all_sigs[*start..*end].to_vec());
-        }
-
-        Ok(CtfSplitResponse {
-            signatures: result_sigs,
-        })
-    }
-
-    /// Process a CTF merge request (POST /v1/ctf/merge)
-    ///
-    /// Merges conditional tokens from a complete partition back into
-    /// regular (or parent-collection) tokens.
-    #[instrument(skip_all)]
-    pub async fn process_ctf_merge(
-        &self,
-        request: CtfMergeRequest,
-    ) -> Result<CtfMergeResponse, Error> {
-        let inputs = &request.inputs;
-        let outputs = &request.outputs;
-
-        if inputs.is_empty() || outputs.is_empty() {
-            return Err(Error::TransactionUnbalanced(0, 0, 0));
-        }
-
-        // 1. Look up the condition
         let condition = self
             .localstore
             .get_condition(&request.condition_id)
@@ -224,114 +46,366 @@ impl Mint {
             .ok_or(Error::ConditionNotFound)?;
 
         if condition.attestation_status != STATUS_PENDING {
-            return Err(Error::ConditionNotActive);
+            return Err(Error::ConvertNotPermitted);
         }
 
-        // 2. Extract outcomes
-        let announcements: Vec<String> =
-            serde_json::from_str(&condition.announcements_json)?;
-        if announcements.is_empty() {
-            return Err(Error::ConditionNotFound);
-        }
-        let first_ann =
-            cdk_common::nuts::nut_ctf::dlc::parse_oracle_announcement(&announcements[0])?;
-        let all_outcomes =
-            cdk_common::nuts::nut_ctf::dlc::extract_outcomes(&first_ann)?;
+        let parent_collection_id = request
+            .parent_collection_id
+            .as_deref()
+            .unwrap_or(ZERO_COLLECTION_ID);
+        let parent_bytes = hex_32(parent_collection_id)?;
+        let condition_bytes = hex_32(&request.condition_id)?;
+        let outcomes = self.condition_outcomes(&condition).await?;
 
-        // 3. Validate input keys form a complete partition
-        let input_keys: Vec<String> = inputs.keys().cloned().collect();
-        validate_partition(&all_outcomes, &input_keys)?;
+        let mut expected_unit: Option<CurrencyUnit> = None;
+        let mut input_vector = zero_vector(&outcomes);
+        let mut output_vector = zero_vector(&outcomes);
 
-        // 4. Validate each input proof uses the correct conditional keyset
-        let all_keysets = self
-            .localstore
-            .get_conditional_keysets_for_condition(&request.condition_id)
-            .await?;
+        let mut all_input_proofs = Vec::new();
+        let mut seen_secrets = HashSet::new();
 
-        for (oc_key, proofs) in inputs {
-            let mut elements = parse_outcome_collection(oc_key);
-            elements.sort();
-            let oc_string = elements.join("|");
+        for (key, proofs) in &request.inputs {
+            if proofs.is_empty() {
+                return Err(Error::TransactionUnbalanced(0, 0, 0));
+            }
 
-            let expected_keyset_id = all_keysets
-                .get(&oc_string)
-                .ok_or(Error::UnknownKeySet)?;
+            let meta = self
+                .resolve_input_entry(
+                    key,
+                    proofs,
+                    &request.condition_id,
+                    &condition_bytes,
+                    parent_collection_id,
+                    &parent_bytes,
+                    &outcomes,
+                )
+                .await?;
+            check_unit(&mut expected_unit, &meta.unit)?;
+            add_proof_amounts(&mut input_vector, &meta.cover, proofs)?;
 
             for proof in proofs {
-                if proof.keyset_id != *expected_keyset_id {
-                    return Err(Error::UnknownKeySet);
+                if !seen_secrets.insert(proof.secret.to_string()) {
+                    return Err(Error::DuplicateInputs);
                 }
+                all_input_proofs.push(proof.clone());
             }
         }
 
-        // 5. Verify all per-outcome input amounts are equal
-        let mut per_oc_total: Option<u64> = None;
-        for proofs in inputs.values() {
-            let total: u64 = proofs.iter().map(|p| u64::from(p.amount)).sum();
-            match per_oc_total {
-                Some(prev) if prev != total => return Err(Error::MergeAmountMismatch),
-                None => per_oc_total = Some(total),
-                _ => {}
+        let mut all_blinded_messages = Vec::new();
+        let mut output_ranges = HashMap::new();
+
+        for (key, outputs) in &request.outputs {
+            if outputs.is_empty() {
+                return Err(Error::TransactionUnbalanced(0, 0, 0));
             }
-        }
-        let per_oc_total = per_oc_total.ok_or(Error::MergeAmountMismatch)?;
 
-        // 6. Validate outputs use regular keyset (for root) or parent keyset (for nested).
-        // Determine root/nested from the *specific* partition this merge targets, not from
-        // `any()` over all partitions.
-        let stored_partitions = self
-            .localstore
-            .get_partitions_for_condition(&request.condition_id)
-            .await?;
+            let meta = self
+                .resolve_output_entry(
+                    key,
+                    outputs,
+                    &request.condition_id,
+                    &condition_bytes,
+                    parent_collection_id,
+                    &parent_bytes,
+                    &outcomes,
+                )
+                .await?;
+            check_unit(&mut expected_unit, &meta.unit)?;
+            add_output_amounts(&mut output_vector, &meta.cover, outputs)?;
 
-        let target_partition = find_matching_partition(&stored_partitions, &input_keys)?;
-        let is_root = target_partition.parent_collection_id == ZERO_COLLECTION_ID;
-
-        if is_root {
-            let output_keyset_ids: HashSet<_> = outputs.iter().map(|o| o.keyset_id).collect();
-            for kid in &output_keyset_ids {
-                if self
-                    .localstore
-                    .get_condition_for_keyset(kid)
-                    .await?
-                    .is_some()
-                {
-                    return Err(Error::OutputsMustUseRegularKeyset);
-                }
-            }
-        }
-
-        // 7. Balance check: per_oc_total - fees(all_inputs) = output_amount
-        let output_amount: u64 = outputs.iter().map(|o| u64::from(o.amount)).sum();
-
-        // Flatten all inputs for fee calculation
-        let mut all_input_proofs = Vec::new();
-        for proofs in inputs.values() {
-            all_input_proofs.extend(proofs.iter().cloned());
+            let start = all_blinded_messages.len();
+            all_blinded_messages.extend(outputs.iter().cloned());
+            let end = all_blinded_messages.len();
+            output_ranges.insert(key.clone(), (start, end));
         }
 
         let fee_breakdown = self.get_proofs_fee(&all_input_proofs).await?;
         let fee: u64 = fee_breakdown.total.into();
-
-        if per_oc_total < fee || (per_oc_total - fee) != output_amount {
-            return Err(Error::MergeAmountMismatch);
+        if fee == 0 {
+            return Err(Error::ConvertPayoffFeeViolation);
         }
 
-        // 8. Verify all inputs cryptographically
+        for outcome in &outcomes {
+            let input_amount = *input_vector
+                .get(outcome)
+                .ok_or(Error::ConvertPayoffFeeViolation)?;
+            let output_amount = *output_vector
+                .get(outcome)
+                .ok_or(Error::ConvertPayoffFeeViolation)?;
+            if input_amount < fee || output_amount != input_amount - fee {
+                return Err(Error::ConvertPayoffFeeViolation);
+            }
+        }
+
         let input_verification = self.verify_inputs(&all_input_proofs).await?;
-
-        // 9. Execute via swap saga atomically
         let init_saga = SwapSaga::new(self, self.localstore.clone(), self.pubsub_manager.clone());
-
         let setup_saga = init_saga
-            .setup_swap_unbalanced(&all_input_proofs, outputs, None, input_verification)
+            .setup_swap_unbalanced(
+                &all_input_proofs,
+                &all_blinded_messages,
+                None,
+                input_verification,
+            )
             .await?;
-
         let signed_saga = setup_saga.sign_outputs().await?;
         let swap_response = signed_saga.finalize().await?;
 
-        Ok(CtfMergeResponse {
-            signatures: swap_response.signatures,
+        let all_sigs = swap_response.signatures;
+        let mut signatures = HashMap::new();
+        for (key, (start, end)) in output_ranges {
+            signatures.insert(key, all_sigs[start..end].to_vec());
+        }
+
+        Ok(CtfConvertResponse { signatures })
+    }
+
+    async fn resolve_input_entry(
+        &self,
+        key: &str,
+        proofs: &[Proof],
+        condition_id: &str,
+        condition_id_bytes: &[u8; 32],
+        parent_collection_id: &str,
+        parent_collection_id_bytes: &[u8; 32],
+        outcomes: &[String],
+    ) -> Result<EntryMeta, Error> {
+        if key == COLLATERAL_KEY {
+            let unit = self
+                .validate_collateral_proof_keysets(proofs, parent_collection_id)
+                .await?;
+            return Ok(EntryMeta {
+                cover: outcomes.to_vec(),
+                unit,
+            });
+        }
+
+        let canonical = canonical_from_key(key, outcomes)?;
+        if canonical != key {
+            return Err(Error::ConvertPayoffFeeViolation);
+        }
+
+        let expected_collection_id =
+            expected_collection_id(parent_collection_id_bytes, condition_id_bytes, &canonical)?;
+
+        let mut unit = None;
+        for proof in proofs {
+            let keyset_info = self.active_keyset_info(&proof.keyset_id)?;
+            check_unit(&mut unit, &keyset_info.unit)?;
+            let (stored_condition_id, stored_collection, stored_collection_id) = self
+                .localstore
+                .get_condition_for_keyset(&proof.keyset_id)
+                .await?
+                .ok_or(Error::OutputsMustUseRegularKeyset)?;
+
+            if stored_condition_id != condition_id
+                || stored_collection != canonical
+                || stored_collection_id != expected_collection_id
+            {
+                return Err(Error::OutputsMustUseRegularKeyset);
+            }
+        }
+
+        Ok(EntryMeta {
+            cover: parse_outcome_collection(&canonical),
+            unit: unit.ok_or(Error::UnknownKeySet)?,
         })
     }
+
+    async fn resolve_output_entry(
+        &self,
+        key: &str,
+        outputs: &[BlindedMessage],
+        condition_id: &str,
+        condition_id_bytes: &[u8; 32],
+        parent_collection_id: &str,
+        parent_collection_id_bytes: &[u8; 32],
+        outcomes: &[String],
+    ) -> Result<EntryMeta, Error> {
+        if key == COLLATERAL_KEY {
+            let unit = self
+                .validate_collateral_output_keysets(outputs, parent_collection_id)
+                .await?;
+            return Ok(EntryMeta {
+                cover: outcomes.to_vec(),
+                unit,
+            });
+        }
+
+        let canonical = canonical_from_key(key, outcomes)?;
+        if canonical != key {
+            return Err(Error::ConvertPayoffFeeViolation);
+        }
+
+        let expected_collection_id =
+            expected_collection_id(parent_collection_id_bytes, condition_id_bytes, &canonical)?;
+
+        let mut unit = None;
+        for output in outputs {
+            let keyset_info = self.active_keyset_info(&output.keyset_id)?;
+            check_unit(&mut unit, &keyset_info.unit)?;
+            let (stored_condition_id, stored_collection, stored_collection_id) = self
+                .localstore
+                .get_condition_for_keyset(&output.keyset_id)
+                .await?
+                .ok_or(Error::OutputsMustUseRegularKeyset)?;
+
+            if stored_condition_id != condition_id
+                || stored_collection != canonical
+                || stored_collection_id != expected_collection_id
+            {
+                return Err(Error::OutputsMustUseRegularKeyset);
+            }
+        }
+
+        Ok(EntryMeta {
+            cover: parse_outcome_collection(&canonical),
+            unit: unit.ok_or(Error::UnknownKeySet)?,
+        })
+    }
+
+    async fn validate_collateral_proof_keysets(
+        &self,
+        proofs: &[Proof],
+        parent_collection_id: &str,
+    ) -> Result<CurrencyUnit, Error> {
+        let mut unit = None;
+        let is_root = parent_collection_id == ZERO_COLLECTION_ID;
+        for proof in proofs {
+            let keyset_info = self.active_keyset_info(&proof.keyset_id)?;
+            check_unit(&mut unit, &keyset_info.unit)?;
+            let condition_keyset = self
+                .localstore
+                .get_condition_for_keyset(&proof.keyset_id)
+                .await?;
+            match (is_root, condition_keyset) {
+                (true, None) => {}
+                (false, Some((_, _, outcome_collection_id)))
+                    if outcome_collection_id == parent_collection_id => {}
+                _ => return Err(Error::OutputsMustUseRegularKeyset),
+            }
+        }
+        unit.ok_or(Error::UnknownKeySet)
+    }
+
+    async fn validate_collateral_output_keysets(
+        &self,
+        outputs: &[BlindedMessage],
+        parent_collection_id: &str,
+    ) -> Result<CurrencyUnit, Error> {
+        let mut unit = None;
+        let is_root = parent_collection_id == ZERO_COLLECTION_ID;
+        for output in outputs {
+            let keyset_info = self.active_keyset_info(&output.keyset_id)?;
+            check_unit(&mut unit, &keyset_info.unit)?;
+            let condition_keyset = self
+                .localstore
+                .get_condition_for_keyset(&output.keyset_id)
+                .await?;
+            match (is_root, condition_keyset) {
+                (true, None) => {}
+                (false, Some((_, _, outcome_collection_id)))
+                    if outcome_collection_id == parent_collection_id => {}
+                _ => return Err(Error::OutputsMustUseRegularKeyset),
+            }
+        }
+        unit.ok_or(Error::UnknownKeySet)
+    }
+
+    fn active_keyset_info(&self, keyset_id: &Id) -> Result<MintKeySetInfo, Error> {
+        let keyset_info = self
+            .get_keyset_info(keyset_id)
+            .ok_or(Error::UnknownKeySet)?;
+        if !keyset_info.active {
+            return Err(Error::InactiveKeyset);
+        }
+        Ok(keyset_info)
+    }
+
+    async fn condition_outcomes(
+        &self,
+        condition: &cdk_common::mint::StoredCondition,
+    ) -> Result<Vec<String>, Error> {
+        if condition.condition_type == "numeric" {
+            return Ok(vec!["HI".to_string(), "LO".to_string()]);
+        }
+
+        let announcements: Vec<String> = serde_json::from_str(&condition.announcements_json)?;
+        let first_announcement = announcements.first().ok_or(Error::ConditionNotFound)?;
+        let parsed = cdk_common::nuts::nut_ctf::dlc::parse_oracle_announcement(first_announcement)?;
+        cdk_common::nuts::nut_ctf::dlc::extract_outcomes(&parsed).map_err(Error::from)
+    }
+}
+
+fn hex_32(hex: &str) -> Result<[u8; 32], Error> {
+    let bytes = from_hex(hex)?;
+    bytes.try_into().map_err(|_| Error::InvalidConditionId)
+}
+
+fn canonical_from_key(key: &str, outcomes: &[String]) -> Result<String, Error> {
+    let members = parse_outcome_collection(key);
+    canonical_outcome_collection(outcomes, &members).map_err(Error::from)
+}
+
+fn expected_collection_id(
+    parent_collection_id: &[u8; 32],
+    condition_id: &[u8; 32],
+    canonical: &str,
+) -> Result<String, Error> {
+    let id = compute_outcome_collection_id(parent_collection_id, condition_id, canonical)?;
+    Ok(to_hex(&id))
+}
+
+fn zero_vector(outcomes: &[String]) -> HashMap<String, u64> {
+    outcomes
+        .iter()
+        .map(|outcome| (outcome.clone(), 0u64))
+        .collect()
+}
+
+fn check_unit(expected: &mut Option<CurrencyUnit>, actual: &CurrencyUnit) -> Result<(), Error> {
+    match expected {
+        Some(unit) if unit != actual => Err(Error::MultipleUnits),
+        Some(_) => Ok(()),
+        None => {
+            *expected = Some(actual.clone());
+            Ok(())
+        }
+    }
+}
+
+fn add_proof_amounts(
+    vector: &mut HashMap<String, u64>,
+    cover: &[String],
+    proofs: &[Proof],
+) -> Result<(), Error> {
+    let total: u64 = proofs.iter().map(|proof| u64::from(proof.amount)).sum();
+    add_amount_to_cover(vector, cover, total)
+}
+
+fn add_output_amounts(
+    vector: &mut HashMap<String, u64>,
+    cover: &[String],
+    outputs: &[BlindedMessage],
+) -> Result<(), Error> {
+    let total: u64 = outputs.iter().map(|output| u64::from(output.amount)).sum();
+    add_amount_to_cover(vector, cover, total)
+}
+
+fn add_amount_to_cover(
+    vector: &mut HashMap<String, u64>,
+    cover: &[String],
+    amount: u64,
+) -> Result<(), Error> {
+    if amount == 0 {
+        return Err(Error::ConvertPayoffFeeViolation);
+    }
+    for outcome in cover {
+        let current = vector
+            .get_mut(outcome)
+            .ok_or(Error::ConvertPayoffFeeViolation)?;
+        *current = current
+            .checked_add(amount)
+            .ok_or(Error::ConvertPayoffFeeViolation)?;
+    }
+    Ok(())
 }

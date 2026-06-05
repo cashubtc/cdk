@@ -254,9 +254,10 @@ where
         let outcome_collection = keyset_info.outcome_collection.as_ref().ok_or_else(|| {
             Error::Internal("add_conditional_keyset: outcome_collection missing".to_string())
         })?;
-        let outcome_collection_id = keyset_info.outcome_collection_id.as_ref().ok_or_else(|| {
-            Error::Internal("add_conditional_keyset: outcome_collection_id missing".to_string())
-        })?;
+        let outcome_collection_id =
+            keyset_info.outcome_collection_id.as_ref().ok_or_else(|| {
+                Error::Internal("add_conditional_keyset: outcome_collection_id missing".to_string())
+            })?;
 
         query(
             r#"

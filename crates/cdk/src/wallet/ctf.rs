@@ -1,10 +1,9 @@
 //! Wallet-side CTF (Conditional Token Framework) operations
 
 use cdk_common::nuts::nut_ctf::{
-    ConditionInfo, ConditionalKeysetsResponse, CtfMergeRequest, CtfMergeResponse, CtfSplitRequest,
-    CtfSplitResponse, GetConditionsResponse, RedeemOutcomeRequest, RedeemOutcomeResponse,
-    RegisterConditionRequest, RegisterConditionResponse, RegisterPartitionRequest,
-    RegisterPartitionResponse,
+    ConditionInfo, ConditionalKeysetsResponse, CtfConvertRequest, CtfConvertResponse,
+    GetConditionsResponse, RedeemOutcomeRequest, RedeemOutcomeResponse, RegisterConditionRequest,
+    RegisterConditionResponse, RegisterPartitionRequest, RegisterPartitionResponse,
 };
 use tracing::instrument;
 
@@ -62,25 +61,18 @@ impl Wallet {
         limit: Option<u64>,
         active: Option<bool>,
     ) -> Result<ConditionalKeysetsResponse, Error> {
-        self.client.get_conditional_keysets(since, limit, active).await
+        self.client
+            .get_conditional_keysets(since, limit, active)
+            .await
     }
 
-    /// Split regular tokens into conditional tokens
+    /// Convert conditional/collateral positions.
     #[instrument(skip(self, request))]
-    pub async fn ctf_split(
+    pub async fn ctf_convert(
         &self,
-        request: CtfSplitRequest,
-    ) -> Result<CtfSplitResponse, Error> {
-        self.client.post_ctf_split(request).await
-    }
-
-    /// Merge conditional tokens back into regular tokens
-    #[instrument(skip(self, request))]
-    pub async fn ctf_merge(
-        &self,
-        request: CtfMergeRequest,
-    ) -> Result<CtfMergeResponse, Error> {
-        self.client.post_ctf_merge(request).await
+        request: CtfConvertRequest,
+    ) -> Result<CtfConvertResponse, Error> {
+        self.client.post_ctf_convert(request).await
     }
 
     /// Redeem winning conditional tokens for regular tokens

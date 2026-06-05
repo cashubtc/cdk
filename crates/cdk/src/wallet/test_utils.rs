@@ -775,18 +775,10 @@ impl MintConnector for MockMintConnector {
     }
 
     #[cfg(feature = "conditional-tokens")]
-    async fn post_ctf_split(
+    async fn post_ctf_convert(
         &self,
-        _request: crate::nuts::nut_ctf::CtfSplitRequest,
-    ) -> Result<crate::nuts::nut_ctf::CtfSplitResponse, Error> {
-        unimplemented!()
-    }
-
-    #[cfg(feature = "conditional-tokens")]
-    async fn post_ctf_merge(
-        &self,
-        _request: crate::nuts::nut_ctf::CtfMergeRequest,
-    ) -> Result<crate::nuts::nut_ctf::CtfMergeResponse, Error> {
+        _request: crate::nuts::nut_ctf::CtfConvertRequest,
+    ) -> Result<crate::nuts::nut_ctf::CtfConvertResponse, Error> {
         unimplemented!()
     }
 

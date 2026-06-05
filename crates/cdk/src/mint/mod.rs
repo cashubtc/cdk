@@ -32,8 +32,6 @@ mod check_spendable;
 #[cfg(feature = "conditional-tokens")]
 mod conditions;
 mod issue;
-#[cfg(feature = "conditional-tokens")]
-mod split_merge;
 mod keysets;
 mod ln;
 mod melt;
@@ -41,6 +39,8 @@ mod proofs;
 #[cfg(feature = "conditional-tokens")]
 mod redeem_outcome;
 mod saga_recovery;
+#[cfg(feature = "conditional-tokens")]
+mod split_merge;
 mod start_up_check;
 mod subscription;
 mod swap;

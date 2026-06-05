@@ -402,9 +402,9 @@ pub enum Error {
     #[cfg(feature = "conditional-tokens")]
     #[error("Inputs must use the same conditional keyset")]
     InputsMustUseSameConditionalKeyset,
-    /// Outputs must use a regular keyset (13017)
+    /// Invalid keyset for collateral/output side (13017)
     #[cfg(feature = "conditional-tokens")]
-    #[error("Outputs must use a regular keyset")]
+    #[error("Invalid keyset for collateral/output side")]
     OutputsMustUseRegularKeyset,
     /// Invalid condition ID (13020)
     #[cfg(feature = "conditional-tokens")]
@@ -414,18 +414,18 @@ pub enum Error {
     #[cfg(feature = "conditional-tokens")]
     #[error("Condition not found")]
     ConditionNotFound,
-    /// Split amount mismatch (13022)
+    /// Convert payoff/fee violation (13041)
     #[cfg(feature = "conditional-tokens")]
-    #[error("Split amount mismatch")]
-    SplitAmountMismatch,
-    /// Condition not active (13024)
+    #[error("Convert payoff/fee violation")]
+    ConvertPayoffFeeViolation,
+    /// Convert not permitted for this condition (13042)
     #[cfg(feature = "conditional-tokens")]
-    #[error("Condition not active")]
-    ConditionNotActive,
-    /// Merge amount mismatch (13025)
+    #[error("Convert not permitted for this condition")]
+    ConvertNotPermitted,
+    /// Full-set or single-element partition (13043)
     #[cfg(feature = "conditional-tokens")]
-    #[error("Merge amount mismatch")]
-    MergeAmountMismatch,
+    #[error("Partition must contain at least two non-full outcome collections")]
+    FullSetOrSingleElementPartition,
     /// Oracle threshold not met (13027)
     #[cfg(feature = "conditional-tokens")]
     #[error("Oracle threshold not met")]
@@ -446,11 +446,11 @@ pub enum Error {
     #[cfg(feature = "conditional-tokens")]
     #[error("Maximum condition depth exceeded")]
     MaxConditionDepthExceeded,
-    /// Hash to curve failed (13041)
+    /// Hash to curve failed (13044)
     #[cfg(feature = "conditional-tokens")]
     #[error("Hash to curve failed")]
     HashToCurveFailed,
-    /// EC point operation failed (13042)
+    /// EC point operation failed (13045)
     #[cfg(feature = "conditional-tokens")]
     #[error("EC point operation failed")]
     EcPointOperationFailed,
@@ -717,9 +717,9 @@ impl Error {
             | Self::OutputsMustUseRegularKeyset
             | Self::InvalidConditionId
             | Self::ConditionNotFound
-            | Self::SplitAmountMismatch
-            | Self::ConditionNotActive
-            | Self::MergeAmountMismatch
+            | Self::ConvertPayoffFeeViolation
+            | Self::ConvertNotPermitted
+            | Self::FullSetOrSingleElementPartition
             | Self::OracleThresholdNotMet
             | Self::ConditionAlreadyExists
             | Self::OverlappingOutcomeCollections
@@ -1069,18 +1069,18 @@ impl From<Error> for ErrorResponse {
                 detail: err.to_string(),
             },
             #[cfg(feature = "conditional-tokens")]
-            Error::SplitAmountMismatch => ErrorResponse {
-                code: ErrorCode::SplitAmountMismatch,
+            Error::ConvertPayoffFeeViolation => ErrorResponse {
+                code: ErrorCode::ConvertPayoffFeeViolation,
                 detail: err.to_string(),
             },
             #[cfg(feature = "conditional-tokens")]
-            Error::ConditionNotActive => ErrorResponse {
-                code: ErrorCode::ConditionNotActive,
+            Error::ConvertNotPermitted => ErrorResponse {
+                code: ErrorCode::ConvertNotPermitted,
                 detail: err.to_string(),
             },
             #[cfg(feature = "conditional-tokens")]
-            Error::MergeAmountMismatch => ErrorResponse {
-                code: ErrorCode::MergeAmountMismatch,
+            Error::FullSetOrSingleElementPartition => ErrorResponse {
+                code: ErrorCode::FullSetOrSingleElementPartition,
                 detail: err.to_string(),
             },
             #[cfg(feature = "conditional-tokens")]
@@ -1383,7 +1383,7 @@ pub enum ErrorCode {
     /// Inputs must use the same conditional keyset (13016)
     #[cfg(feature = "conditional-tokens")]
     InputsMustUseSameConditionalKeyset,
-    /// Outputs must use a regular keyset (13017)
+    /// Invalid keyset for collateral/output side (13017)
     #[cfg(feature = "conditional-tokens")]
     OutputsMustUseRegularKeyset,
     /// Invalid condition ID (13020)
@@ -1392,15 +1392,15 @@ pub enum ErrorCode {
     /// Condition not found (13021)
     #[cfg(feature = "conditional-tokens")]
     ConditionNotFound,
-    /// Split amount mismatch (13022)
+    /// Convert payoff/fee violation (13041)
     #[cfg(feature = "conditional-tokens")]
-    SplitAmountMismatch,
-    /// Condition not active (13024)
+    ConvertPayoffFeeViolation,
+    /// Convert not permitted for this condition (13042)
     #[cfg(feature = "conditional-tokens")]
-    ConditionNotActive,
-    /// Merge amount mismatch (13025)
+    ConvertNotPermitted,
+    /// Full-set or single-element partition (13043)
     #[cfg(feature = "conditional-tokens")]
-    MergeAmountMismatch,
+    FullSetOrSingleElementPartition,
     /// Oracle threshold not met (13027)
     #[cfg(feature = "conditional-tokens")]
     OracleThresholdNotMet,
@@ -1428,10 +1428,10 @@ pub enum ErrorCode {
     /// Maximum condition depth exceeded (13040)
     #[cfg(feature = "conditional-tokens")]
     MaxConditionDepthExceeded,
-    /// Hash to curve failed (13041)
+    /// Hash to curve failed (13044)
     #[cfg(feature = "conditional-tokens")]
     HashToCurveFailed,
-    /// EC point operation failed (13042)
+    /// EC point operation failed (13045)
     #[cfg(feature = "conditional-tokens")]
     EcPointOperationFailed,
 
@@ -1521,12 +1521,6 @@ impl ErrorCode {
             #[cfg(feature = "conditional-tokens")]
             13021 => Self::ConditionNotFound,
             #[cfg(feature = "conditional-tokens")]
-            13022 => Self::SplitAmountMismatch,
-            #[cfg(feature = "conditional-tokens")]
-            13024 => Self::ConditionNotActive,
-            #[cfg(feature = "conditional-tokens")]
-            13025 => Self::MergeAmountMismatch,
-            #[cfg(feature = "conditional-tokens")]
             13027 => Self::OracleThresholdNotMet,
             #[cfg(feature = "conditional-tokens")]
             13028 => Self::ConditionAlreadyExists,
@@ -1545,9 +1539,15 @@ impl ErrorCode {
             #[cfg(feature = "conditional-tokens")]
             13040 => Self::MaxConditionDepthExceeded,
             #[cfg(feature = "conditional-tokens")]
-            13041 => Self::HashToCurveFailed,
+            13041 => Self::ConvertPayoffFeeViolation,
             #[cfg(feature = "conditional-tokens")]
-            13042 => Self::EcPointOperationFailed,
+            13042 => Self::ConvertNotPermitted,
+            #[cfg(feature = "conditional-tokens")]
+            13043 => Self::FullSetOrSingleElementPartition,
+            #[cfg(feature = "conditional-tokens")]
+            13044 => Self::HashToCurveFailed,
+            #[cfg(feature = "conditional-tokens")]
+            13045 => Self::EcPointOperationFailed,
             // 20xxx - Quote/Payment errors
             20001 => Self::QuoteNotPaid,
             20002 => Self::TokensAlreadyIssued,
@@ -1612,12 +1612,6 @@ impl ErrorCode {
             #[cfg(feature = "conditional-tokens")]
             Self::ConditionNotFound => 13021,
             #[cfg(feature = "conditional-tokens")]
-            Self::SplitAmountMismatch => 13022,
-            #[cfg(feature = "conditional-tokens")]
-            Self::ConditionNotActive => 13024,
-            #[cfg(feature = "conditional-tokens")]
-            Self::MergeAmountMismatch => 13025,
-            #[cfg(feature = "conditional-tokens")]
             Self::OracleThresholdNotMet => 13027,
             #[cfg(feature = "conditional-tokens")]
             Self::ConditionAlreadyExists => 13028,
@@ -1636,9 +1630,15 @@ impl ErrorCode {
             #[cfg(feature = "conditional-tokens")]
             Self::MaxConditionDepthExceeded => 13040,
             #[cfg(feature = "conditional-tokens")]
-            Self::HashToCurveFailed => 13041,
+            Self::ConvertPayoffFeeViolation => 13041,
             #[cfg(feature = "conditional-tokens")]
-            Self::EcPointOperationFailed => 13042,
+            Self::ConvertNotPermitted => 13042,
+            #[cfg(feature = "conditional-tokens")]
+            Self::FullSetOrSingleElementPartition => 13043,
+            #[cfg(feature = "conditional-tokens")]
+            Self::HashToCurveFailed => 13044,
+            #[cfg(feature = "conditional-tokens")]
+            Self::EcPointOperationFailed => 13045,
             // 20xxx - Quote/Payment errors
             Self::QuoteNotPaid => 20001,
             Self::TokensAlreadyIssued => 20002,
@@ -1707,9 +1707,7 @@ impl From<cashu::nuts::nut_ctf::Error> for Error {
             cashu::nuts::nut_ctf::Error::ConditionalKeysetRequiresWitness => {
                 Self::ConditionalKeysetRequiresWitness
             }
-            cashu::nuts::nut_ctf::Error::OracleNotAttestedOutcome => {
-                Self::OracleNotAttestedOutcome
-            }
+            cashu::nuts::nut_ctf::Error::OracleNotAttestedOutcome => Self::OracleNotAttestedOutcome,
             cashu::nuts::nut_ctf::Error::InputsMustUseSameConditionalKeyset => {
                 Self::InputsMustUseSameConditionalKeyset
             }
@@ -1726,6 +1724,9 @@ impl From<cashu::nuts::nut_ctf::Error> for Error {
             }
             cashu::nuts::nut_ctf::Error::EmptyOutcomeString => {
                 Self::Custom("Empty outcome string is not allowed".into())
+            }
+            cashu::nuts::nut_ctf::Error::FullSetOrSingleElementPartition => {
+                Self::FullSetOrSingleElementPartition
             }
             cashu::nuts::nut_ctf::Error::ConflictingOracleAttestations => {
                 Self::OracleNotAttestedOutcome

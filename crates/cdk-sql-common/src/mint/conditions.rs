@@ -123,8 +123,7 @@ fn sql_row_to_keyset_mapping(row: Vec<Column>) -> Result<(String, Id), Error> {
 /// Columns selected by every `conditional_keyset` read path. The first 10
 /// columns match `sql_row_to_keyset_info` exactly so the base parser can be
 /// reused; the last 4 are the conditional-specific fields.
-pub(crate) const CONDITIONAL_KEYSET_COLUMNS: &str =
-    "id, unit, active, valid_from, valid_to, \
+pub(crate) const CONDITIONAL_KEYSET_COLUMNS: &str = "id, unit, active, valid_from, valid_to, \
      derivation_path, derivation_path_index, amounts, input_fee_ppk, issuer_version, \
      condition_id, outcome_collection, outcome_collection_id, created_at";
 
@@ -284,7 +283,10 @@ where
         Ok(())
     }
 
-    async fn get_condition(&self, condition_id: &str) -> Result<Option<StoredCondition>, Self::Err> {
+    async fn get_condition(
+        &self,
+        condition_id: &str,
+    ) -> Result<Option<StoredCondition>, Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
 
         let row = query(
@@ -360,9 +362,7 @@ where
 
         let rows = stmt.fetch_all(&*conn).await?;
 
-        rows.into_iter()
-            .map(sql_row_to_stored_condition)
-            .collect()
+        rows.into_iter().map(sql_row_to_stored_condition).collect()
     }
 
     async fn update_condition_attestation(
@@ -426,11 +426,11 @@ where
         limit: Option<u64>,
         active: Option<bool>,
     ) -> Result<Vec<ConditionalKeySetInfo>, Self::Err> {
-        let rows = self
-            .query_conditional_keysets(since, limit, active)
-            .await?;
+        let rows = self.query_conditional_keysets(since, limit, active).await?;
         rows.into_iter()
-            .map(|(info, created_at)| mint_keyset_info_to_conditional_keyset_info(&info, created_at))
+            .map(|(info, created_at)| {
+                mint_keyset_info_to_conditional_keyset_info(&info, created_at)
+            })
             .collect()
     }
 
@@ -507,8 +507,6 @@ where
         .fetch_all(&*conn)
         .await?;
 
-        rows.into_iter()
-            .map(sql_row_to_stored_partition)
-            .collect()
+        rows.into_iter().map(sql_row_to_stored_partition).collect()
     }
 }
