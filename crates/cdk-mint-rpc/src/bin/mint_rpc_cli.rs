@@ -82,6 +82,8 @@ enum Commands {
     UpdateName(subcommands::UpdateNameCommand),
     /// Update icon url
     UpdateIconUrl(subcommands::UpdateIconUrlCommand),
+    /// Update terms of service URL
+    UpdateTosUrl(subcommands::UpdateTosUrlCommand),
     /// Add Url
     AddUrl(subcommands::AddUrlCommand),
     /// Remove Url
@@ -178,6 +180,7 @@ async fn main() -> Result<()> {
             );
             println!("motd: {}", info.motd.unwrap_or("None".to_string()));
             println!("icon_url: {}", info.icon_url.unwrap_or("None".to_string()));
+            println!("tos_url: {}", info.tos_url.unwrap_or("None".to_string()));
 
             for url in info.urls {
                 println!("mint_url: {url}");
@@ -203,6 +206,9 @@ async fn main() -> Result<()> {
         }
         Commands::UpdateIconUrl(sub_command_args) => {
             subcommands::update_icon_url(&mut client, &sub_command_args).await?;
+        }
+        Commands::UpdateTosUrl(sub_command_args) => {
+            subcommands::update_tos_url(&mut client, &sub_command_args).await?;
         }
         Commands::AddUrl(sub_command_args) => {
             subcommands::add_url(&mut client, &sub_command_args).await?;

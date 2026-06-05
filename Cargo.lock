@@ -1623,8 +1623,11 @@ name = "cdk-mint-rpc"
 version = "0.17.0-rc.3"
 dependencies = [
  "anyhow",
+ "bip39",
  "cdk",
  "cdk-common",
+ "cdk-fake-wallet",
+ "cdk-sqlite",
  "clap",
  "home",
  "prost 0.14.3",
