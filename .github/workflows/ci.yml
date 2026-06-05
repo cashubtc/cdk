@@ -26,8 +26,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -46,8 +46,8 @@ jobs:
     needs: pre-commit-checks
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -65,7 +65,7 @@ jobs:
       examples: ${{ steps.examples.outputs.examples }}
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Get example check names
         id: examples
         run: |
@@ -85,8 +85,8 @@ jobs:
         example: ${{ fromJson(needs.discover-examples.outputs.examples) }}
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -110,7 +110,7 @@ jobs:
       checks: ${{ steps.checks.outputs.checks }}
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Get check names
         id: checks
         run: |
@@ -133,8 +133,8 @@ jobs:
         check: ${{ fromJson(needs.discover-checks.outputs.checks) }}
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -153,8 +153,8 @@ jobs:
     needs: pre-commit-checks
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -180,8 +180,8 @@ jobs:
     needs: pre-commit-checks
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -201,8 +201,8 @@ jobs:
         database: [SQLITE, POSTGRES]
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -225,8 +225,8 @@ jobs:
         database: [SQLITE, POSTGRES]
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -249,8 +249,8 @@ jobs:
         database: [SQLITE, POSTGRES]
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -273,8 +273,8 @@ jobs:
         database: [memory, sqlite, redb]
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -300,8 +300,8 @@ jobs:
         ln: [FAKEWALLET, CLN, LND]
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -322,7 +322,7 @@ jobs:
       checks: ${{ steps.checks.outputs.checks }}
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Get MSRV check names
         id: checks
         run: |
@@ -342,8 +342,8 @@ jobs:
         check: ${{ fromJson(needs.discover-msrv-checks.outputs.checks) }}
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -361,7 +361,7 @@ jobs:
       checks: ${{ steps.checks.outputs.checks }}
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Get WASM check names
         id: checks
         run: |
@@ -381,8 +381,8 @@ jobs:
         check: ${{ fromJson(needs.discover-wasm-checks.outputs.checks) }}
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -402,8 +402,8 @@ jobs:
         database: [SQLITE]
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -435,8 +435,8 @@ jobs:
     needs: pre-commit-checks
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -452,8 +452,8 @@ jobs:
     needs: docs
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -469,8 +469,8 @@ jobs:
     needs: pre-commit-checks
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -486,8 +486,8 @@ jobs:
     needs: pre-commit-checks
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -496,7 +496,7 @@ jobs:
       - name: Generate Coverage
         run: nix develop -i -L .#integration --command just coverage
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
@@ -509,8 +509,8 @@ jobs:
     needs: pre-commit-checks
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -528,8 +528,8 @@ jobs:
     needs: pre-commit-checks
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -547,8 +547,8 @@ jobs:
     needs: pre-commit-checks
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -566,9 +566,9 @@ jobs:
     needs: pre-commit-checks
     steps:
       - name: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: cachix/cachix-action@v16
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}

@@ -59,7 +59,7 @@ jobs:
           fi
 
       - name: Verify release tag exists
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: refs/tags/${{ env.TAG }}
           fetch-depth: 1
@@ -77,7 +77,7 @@ jobs:
           echo "RELEASE_VER=${TAG#v}" >> "$GITHUB_ENV"
 
       - name: Checkout monorepo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: refs/tags/${{ env.TAG }}
           persist-credentials: false
@@ -239,7 +239,7 @@ jobs:
             https://github.com/${{ vars.CDK_KOTLIN_REPO }}.git cdk-kotlin
 
       - name: Checkout CDK (for Nix flake)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: cdk
           ref: refs/tags/${{ env.TAG }}
@@ -250,7 +250,7 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@main
 
       - name: Setup Cachix
-        uses: cachix/cachix-action@v16
+        uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -340,7 +340,7 @@ jobs:
             https://github.com/${{ vars.CDK_KOTLIN_REPO }}.git cdk-kotlin
 
       - name: Checkout CDK (for Nix flake)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: cdk
           ref: refs/tags/${{ env.TAG }}
@@ -348,7 +348,7 @@ jobs:
           persist-credentials: false
 
       - uses: DeterminateSystems/nix-installer-action@main
-      - uses: cachix/cachix-action@v16
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}

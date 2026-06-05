@@ -50,7 +50,7 @@ jobs:
           echo "RELEASE_VER=${TAG#v}" >> "$GITHUB_ENV"
 
       - name: Checkout monorepo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ env.CDK_REF }}
 
@@ -170,7 +170,7 @@ jobs:
 
     steps:
       - name: Checkout monorepo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ env.CDK_REF }}
 
