@@ -30,10 +30,10 @@ url.workspace = true
 once_cell.workspace = true
 urlencoding = "2.1"
 aes-gcm = "0.10"
-paste = "1.0.15"
+paste.workspace = true
 
 [dev-dependencies]
-mockito = "1"
+mockito = { version = "1", default-features = false }
 
 [lints]
 workspace = true

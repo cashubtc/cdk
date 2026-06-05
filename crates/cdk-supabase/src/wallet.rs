@@ -2964,19 +2964,17 @@ mod tests {
 
     use bitcoin::base64::engine::general_purpose;
     use bitcoin::base64::Engine as _;
-    use cdk_common::database::Error as DatabaseError;
-    use cdk_common::database::WalletDatabase;
+    use cdk_common::database::{Error as DatabaseError, WalletDatabase};
     #[cfg(feature = "integration-tests")]
     use cdk_common::wallet_db_test;
     use mockito::Matcher;
     use serde_json::json;
     use url::Url;
 
+    use super::*;
     #[cfg(feature = "integration-tests")]
     use crate::Error;
     use crate::SupabaseWalletDatabase;
-
-    use super::*;
 
     fn extract_schema_versions(schema_sql: &str) -> Vec<u32> {
         const PREFIX: &str = "VALUES ('schema_version', '";

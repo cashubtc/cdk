@@ -198,8 +198,8 @@ jobs:
     needs: pre-commit-checks
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - uses: cachix/cachix-action@v16
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
