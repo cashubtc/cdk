@@ -83,6 +83,9 @@ pub struct Mint {
     max_inputs: usize,
     /// Maximum number of outputs allowed per transaction
     max_outputs: usize,
+    /// Maximum number of outcomes allowed per conditional-token condition
+    #[cfg(feature = "conditional-tokens")]
+    max_outcomes_per_condition: usize,
 }
 
 impl std::fmt::Debug for Mint {
@@ -109,6 +112,7 @@ impl Mint {
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
         max_inputs: usize,
         max_outputs: usize,
+        #[cfg(feature = "conditional-tokens")] max_outcomes_per_condition: usize,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
@@ -118,6 +122,8 @@ impl Mint {
             payment_processors,
             max_inputs,
             max_outputs,
+            #[cfg(feature = "conditional-tokens")]
+            max_outcomes_per_condition,
         )
         .await
     }
@@ -131,6 +137,7 @@ impl Mint {
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
         max_inputs: usize,
         max_outputs: usize,
+        #[cfg(feature = "conditional-tokens")] max_outcomes_per_condition: usize,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
@@ -140,6 +147,8 @@ impl Mint {
             payment_processors,
             max_inputs,
             max_outputs,
+            #[cfg(feature = "conditional-tokens")]
+            max_outcomes_per_condition,
         )
         .await
     }
@@ -154,6 +163,7 @@ impl Mint {
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
         max_inputs: usize,
         max_outputs: usize,
+        #[cfg(feature = "conditional-tokens")] max_outcomes_per_condition: usize,
     ) -> Result<Self, Error> {
         let keysets = signatory.keysets().await?;
         if !keysets
@@ -254,6 +264,8 @@ impl Mint {
             task_state: Arc::new(Mutex::new(TaskState::default())),
             max_inputs,
             max_outputs,
+            #[cfg(feature = "conditional-tokens")]
+            max_outcomes_per_condition,
         })
     }
 

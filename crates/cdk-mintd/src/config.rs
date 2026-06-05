@@ -713,6 +713,9 @@ pub struct Limits {
     /// Maximum number of outputs allowed per transaction (mint/swap/melt)
     #[serde(default = "default_max_outputs")]
     pub max_outputs: usize,
+    /// Maximum number of outcomes allowed per conditional-token condition
+    #[serde(default = "default_max_outcomes_per_condition")]
+    pub max_outcomes_per_condition: usize,
 }
 
 impl Default for Limits {
@@ -720,6 +723,7 @@ impl Default for Limits {
         Self {
             max_inputs: 1000,
             max_outputs: 1000,
+            max_outcomes_per_condition: default_max_outcomes_per_condition(),
         }
     }
 }
@@ -730,6 +734,10 @@ fn default_max_inputs() -> usize {
 
 fn default_max_outputs() -> usize {
     1000
+}
+
+fn default_max_outcomes_per_condition() -> usize {
+    255
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

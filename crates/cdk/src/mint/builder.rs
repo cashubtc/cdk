@@ -19,6 +19,8 @@ use super::Nuts;
 use crate::amount::Amount;
 use crate::cdk_database;
 use crate::mint::Mint;
+#[cfg(feature = "conditional-tokens")]
+use crate::nuts::nut_ctf::MAX_OUTCOMES;
 use crate::nuts::{
     ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
     MppMethodSettings, PaymentMethod, ProtectedEndpoint,
@@ -71,6 +73,8 @@ pub struct MintBuilder {
     keyset_rotations: Vec<KeysetRotation>,
     max_inputs: usize,
     max_outputs: usize,
+    #[cfg(feature = "conditional-tokens")]
+    max_outcomes_per_condition: usize,
     max_batch_size: Option<u64>,
 }
 
@@ -111,6 +115,8 @@ impl MintBuilder {
             keyset_rotations: Vec::new(),
             max_inputs: 1000,
             max_outputs: 1000,
+            #[cfg(feature = "conditional-tokens")]
+            max_outcomes_per_condition: MAX_OUTCOMES,
             max_batch_size: None,
         }
     }
@@ -300,6 +306,13 @@ impl MintBuilder {
     pub fn with_limits(mut self, max_inputs: usize, max_outputs: usize) -> Self {
         self.max_inputs = max_inputs;
         self.max_outputs = max_outputs;
+        self
+    }
+
+    /// Set conditional-token registration limits.
+    #[cfg(feature = "conditional-tokens")]
+    pub fn with_ctf_limits(mut self, max_outcomes_per_condition: usize) -> Self {
+        self.max_outcomes_per_condition = max_outcomes_per_condition;
         self
     }
 
@@ -618,6 +631,8 @@ impl MintBuilder {
                 self.payment_processors,
                 self.max_inputs,
                 self.max_outputs,
+                #[cfg(feature = "conditional-tokens")]
+                self.max_outcomes_per_condition,
             )
             .await;
         }
@@ -628,6 +643,8 @@ impl MintBuilder {
             self.payment_processors,
             self.max_inputs,
             self.max_outputs,
+            #[cfg(feature = "conditional-tokens")]
+            self.max_outcomes_per_condition,
         )
         .await
     }

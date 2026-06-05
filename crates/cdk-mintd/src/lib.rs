@@ -418,6 +418,9 @@ async fn configure_mint_builder(
     let mint_builder =
         mint_builder.with_limits(settings.limits.max_inputs, settings.limits.max_outputs);
 
+    #[cfg(feature = "conditional-tokens")]
+    let mint_builder = mint_builder.with_ctf_limits(settings.limits.max_outcomes_per_condition);
+
     Ok(mint_builder)
 }
 

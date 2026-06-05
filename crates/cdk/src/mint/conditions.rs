@@ -10,8 +10,8 @@ use cdk_common::nuts::nut_ctf::{
     validate_partition, AttestationState, AttestationStatus, ConditionInfo,
     ConditionalKeysetsResponse, GetConditionsResponse, PartitionInfoEntry,
     RegisterConditionRequest, RegisterConditionResponse, RegisterPartitionRequest,
-    RegisterPartitionResponse, MAX_ANNOUNCEMENTS, MAX_ANNOUNCEMENT_HEX_LENGTH, MAX_PARTITION_KEYS,
-    MAX_TAGS_JSON_LENGTH, ZERO_COLLECTION_ID,
+    RegisterPartitionResponse, MAX_ANNOUNCEMENTS, MAX_ANNOUNCEMENT_HEX_LENGTH, MAX_OUTCOMES,
+    MAX_PARTITION_KEYS, MAX_TAGS_JSON_LENGTH, ZERO_COLLECTION_ID,
 };
 use tracing::instrument;
 
@@ -121,10 +121,18 @@ impl Mint {
         } else {
             // NUT-CTF: enum condition
             let outcomes = dlc::extract_outcomes(&announcements[0])?;
+            if outcomes.len() > self.max_outcomes_per_condition {
+                return Err(Error::Custom(format!(
+                    "Outcome count {} exceeds configured maximum of {}",
+                    outcomes.len(),
+                    self.max_outcomes_per_condition
+                )));
+            }
             let outcome_count = u8::try_from(outcomes.len()).map_err(|_| {
                 Error::Custom(format!(
-                    "Outcome count {} exceeds maximum of 255",
-                    outcomes.len()
+                    "Outcome count {} exceeds protocol maximum of {}",
+                    outcomes.len(),
+                    MAX_OUTCOMES
                 ))
             })?;
             let cid = compute_condition_id(&oracle_pubkeys, &event_id, outcome_count);

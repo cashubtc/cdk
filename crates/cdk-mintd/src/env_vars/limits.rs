@@ -6,6 +6,7 @@ use crate::config::Limits;
 
 pub const ENV_MAX_INPUTS: &str = "CDK_MINTD_MAX_INPUTS";
 pub const ENV_MAX_OUTPUTS: &str = "CDK_MINTD_MAX_OUTPUTS";
+pub const ENV_MAX_OUTCOMES_PER_CONDITION: &str = "CDK_MINTD_MAX_OUTCOMES_PER_CONDITION";
 
 impl Limits {
     /// Override limits with environment variables if set
@@ -21,6 +22,12 @@ impl Limits {
         if let Ok(max_outputs_str) = env::var(ENV_MAX_OUTPUTS) {
             if let Ok(max_outputs) = max_outputs_str.parse::<usize>() {
                 limits.max_outputs = max_outputs;
+            }
+        }
+
+        if let Ok(max_outcomes_str) = env::var(ENV_MAX_OUTCOMES_PER_CONDITION) {
+            if let Ok(max_outcomes) = max_outcomes_str.parse::<usize>() {
+                limits.max_outcomes_per_condition = max_outcomes;
             }
         }
 
