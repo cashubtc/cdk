@@ -24,6 +24,16 @@ fn main() -> Result<()> {
         #[cfg(not(feature = "sqlcipher"))]
         let password = None;
 
+        if let Some(cdk_mintd::cli::Subcommand::MigrateNutshell { nutshell_db }) = args.subcommand {
+            let _guard = if args.enable_logging {
+                Some(cdk_mintd::setup_tracing(&work_dir, &settings.info.logging)?)
+            } else {
+                None
+            };
+            cdk_mintd::migrate::run_migration(&work_dir, &settings, &nutshell_db, password).await?;
+            return Ok(());
+        }
+
         cdk_mintd::run_mintd(
             &work_dir,
             &settings,
