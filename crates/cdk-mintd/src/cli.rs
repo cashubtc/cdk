@@ -52,6 +52,15 @@ pub struct CLIArgs {
 pub enum Commands {
     /// Manage the database-backed mintd configuration.
     Config(ConfigArgs),
+    /// Migrate from a Nutshell database
+    MigrateNutshell {
+        /// Path to nutshell sqlite DB file or nutshell postgres connection string
+        #[arg(
+            long,
+            help = "Path to nutshell sqlite DB file or nutshell postgres connection string"
+        )]
+        nutshell_db: String,
+    },
 }
 
 /// Arguments for database-backed configuration management.
@@ -216,5 +225,20 @@ mod tests {
     fn no_subcommand_still_parses_daemon_startup() {
         let args = CLIArgs::try_parse_from(["cdk-mintd"]).expect("daemon arguments should parse");
         assert!(args.command.is_none());
+    }
+
+    #[test]
+    fn parses_migrate_nutshell_command() {
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "migrate-nutshell",
+            "--nutshell-db",
+            "/tmp/nutshell.sqlite3",
+        ])
+        .expect("nutshell migration command should parse");
+        assert!(matches!(
+            args.command,
+            Some(Commands::MigrateNutshell { .. })
+        ));
     }
 }
