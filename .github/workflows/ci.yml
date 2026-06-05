@@ -636,7 +636,19 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Build native library and generate bindings
-        run: nix develop -L .#bindings --command just binding-go
+        run: |
+          result=$(nix build -L .#go-bindings --print-out-paths --no-link)
+          lib=$(find "$result/lib" -type f -name 'libcdk_ffi_go.*' -print -quit)
+          if [ -z "$lib" ]; then
+            echo "ERROR: Could not find libcdk_ffi_go in $result/lib"
+            ls -la "$result/lib"
+            exit 1
+          fi
+          rm -rf target/bindings/go
+          mkdir -p target/bindings/go target/release
+          cp -r "$result"/bindings/* target/bindings/go/
+          cp "$lib" target/release/
+          chmod -R u+w target/bindings/go target/release/$(basename "$lib")
       - name: Run Go tests
         run: nix develop -L .#bindings --command just test-go
 
