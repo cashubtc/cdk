@@ -1310,8 +1310,9 @@ async fn test_ctf_merge_returns_regular_tokens() {
     let yes_proofs = swap_to_conditional(&mint, yes_regular, yes_keyset_id, face_amount).await;
     let no_proofs = swap_to_conditional(&mint, no_regular, no_keyset_id, face_amount).await;
 
-    // Merge YES + NO back into regular tokens
-    let (regular_outputs, _) = create_premint(&mint, regular_keyset_id, face_amount);
+    // Merge YES + NO back into regular tokens. Conditional keysets charge 1 ppk,
+    // so the two input proofs pay one base unit total.
+    let (regular_outputs, _) = create_premint(&mint, regular_keyset_id, Amount::from(7));
 
     let mut inputs = HashMap::new();
     inputs.insert("YES".to_string(), yes_proofs);
@@ -1328,7 +1329,11 @@ async fn test_ctf_merge_returns_regular_tokens() {
     };
 
     let result = mint.process_ctf_convert(merge_request).await;
-    assert!(result.is_err(), "zero-fee convert should be rejected");
+    assert!(
+        result.is_ok(),
+        "conditional-input convert should pay one base unit: {:?}",
+        result.err()
+    );
 }
 
 /// Test that a merge with an incomplete partition (missing an outcome) is rejected.

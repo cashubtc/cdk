@@ -327,7 +327,7 @@ impl Mint {
                     outcome_collection_string,
                     &outcome_collection_id,
                     amounts.clone(),
-                    0,
+                    1,
                     None,
                 )
                 .await?;

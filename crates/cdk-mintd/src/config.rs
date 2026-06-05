@@ -120,7 +120,7 @@ impl Default for Info {
             mnemonic: None,
             signatory_url: None,
             signatory_certs: None,
-            input_fee_ppk: None,
+            input_fee_ppk: Some(1),
             use_keyset_v2: None,
             http_cache: cache::Config::default(),
             enable_swagger_ui: None,
