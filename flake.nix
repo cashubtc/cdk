@@ -823,13 +823,15 @@
           # PostgreSQL environment variables
           export CDK_MINTD_DATABASE_URL="postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
 
-          echo ""
-          echo "PostgreSQL commands available:"
-          echo "  start-postgres  - Initialize and start PostgreSQL"
-          echo "  stop-postgres   - Stop PostgreSQL (run before exiting)"
-          echo "  pg-status       - Check PostgreSQL status"
-          echo "  pg-connect      - Connect to PostgreSQL with psql"
-          echo ""
+          # Informational banner goes to stderr so it never corrupts the stdout of
+          # commands run via `nix develop --command ... > file` (e.g. CI schema dumps).
+          echo "" >&2
+          echo "PostgreSQL commands available:" >&2
+          echo "  start-postgres  - Initialize and start PostgreSQL" >&2
+          echo "  stop-postgres   - Stop PostgreSQL (run before exiting)" >&2
+          echo "  pg-status       - Check PostgreSQL status" >&2
+          echo "  pg-connect      - Connect to PostgreSQL with psql" >&2
+          echo "" >&2
         '';
 
         # PostgreSQL configuration

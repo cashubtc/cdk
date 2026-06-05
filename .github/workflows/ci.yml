@@ -190,8 +190,89 @@ jobs:
       - name: Run clippy and tests for cdk-postgres
         run: nix develop -i -L .#regtest --command bash -c "start-postgres && cargo clippy -p cdk-postgres -- -D warnings && cargo test -p cdk-postgres"
 
-  regtest-ln-itest:
-    name: "Integration regtest LN tests"
+# Tests for cdk-supabase that require a local Supabase stack (PostgREST + GoTrue + PostgreSQL)
+  supabase-tests:
+    name: "Supabase Tests"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Start Supabase local stack
+        run: |
+          docker compose -f misc/supabase/docker-compose.yml up -d
+          # Wait until PostgREST is reachable (it starts after Postgres is healthy)
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:54321/rest/v1/ -H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRFA0NiK7kyqd6gq8zofHRnNe0pZzjJAVHf3nQzRoFk" > /dev/null 2>&1; then
+              echo "Supabase REST API is ready"
+              break
+            fi
+            echo "Waiting for Supabase... ($i/30)"
+            sleep 3
+          done
+      - name: Apply CDK wallet schema
+        env:
+          SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRFA0NiK7kyqd6gq8zofHRnNe0pZzjJAVHf3nQzRoFk"
+        run: |
+          # Generate the schema inside the Nix dev shell, then apply it via the
+          # host's Docker CLI (which is not on the Nix shell PATH).
+          schema_file="$(mktemp)"
+          trap 'rm -f "$schema_file"' EXIT
+
+          nix develop -i -L .#stable --command cargo run --quiet -p cdk-supabase --example print_schema > "$schema_file"
+
+          # Apply the schema. ON_ERROR_STOP makes psql fail (and the step fail)
+          # if any statement errors, instead of silently leaving a partial schema.
+          docker compose -f misc/supabase/docker-compose.yml exec -T -e PGPASSWORD=supabase db \
+            psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres < "$schema_file"
+
+          # PostgREST caches the DB schema at startup. Since we just created the
+          # tables/functions, force a schema-cache reload so the REST API serves
+          # them (otherwise every write returns HTTP 404 "table not found").
+          docker compose -f misc/supabase/docker-compose.yml exec -T -e PGPASSWORD=supabase db \
+            psql -U supabase_admin -d postgres -c "NOTIFY pgrst, 'reload schema';"
+
+          # Wait until PostgREST actually serves our schema before running tests.
+          # schema_info is readable by the anon role, so a 200 here means the
+          # reloaded cache includes our tables. Use only the apikey header (no
+          # Authorization bearer) so PostgREST resolves the anon role directly.
+          ready=0
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" \
+              "http://localhost:54321/rest/v1/schema_info?limit=1" \
+              -H "apikey: ${SUPABASE_ANON_KEY}")
+            if [ "$code" = "200" ]; then
+              echo "PostgREST schema cache is ready"
+              ready=1
+              break
+            fi
+            echo "Waiting for PostgREST schema cache... ($i/30, got HTTP $code)"
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "PostgREST never served the applied schema" >&2
+            docker compose -f misc/supabase/docker-compose.yml logs rest >&2 || true
+            exit 1
+          fi
+      - name: Run clippy and tests for cdk-supabase
+        env:
+          SUPABASE_URL: "http://localhost:54321"
+          # Well-known anon key for the default JWT secret used in docker-compose.yml
+          SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRFA0NiK7kyqd6gq8zofHRnNe0pZzjJAVHf3nQzRoFk"
+        run: nix develop -i -L -k SUPABASE_URL -k SUPABASE_ANON_KEY .#stable --command bash -c "cargo clippy -p cdk-supabase --features integration-tests -- -D warnings && cargo test -p cdk-supabase --features integration-tests -- --test-threads 4 && cargo test -p cdk-ffi --features supabase --no-run"
+      - name: Stop Supabase local stack
+        if: always()
+        run: docker compose -f misc/supabase/docker-compose.yml down -v
+
+  regtest-itest:
+    name: "Integration regtest tests"
     runs-on: self-hosted
     timeout-minutes: 30
     needs: [pre-commit-checks, build-itest-binaries]
