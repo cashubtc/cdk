@@ -73,6 +73,26 @@ impl AuthWallet {
         }
     }
 
+    /// Create an [`AuthWallet`] backed by a caller-provided auth client.
+    pub fn with_auth_client(
+        mint_url: MintUrl,
+        auth_client: Arc<dyn AuthMintConnector + Send + Sync>,
+        localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
+        metadata_cache: Arc<MintMetadataCache>,
+        protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
+        oidc_client: Option<OidcClient>,
+    ) -> Self {
+        Self {
+            mint_url,
+            localstore,
+            metadata_cache,
+            protected_endpoints: Arc::new(RwLock::new(protected_endpoints)),
+            refresh_token: Arc::new(RwLock::new(None)),
+            auth_client,
+            oidc_client: Arc::new(RwLock::new(oidc_client)),
+        }
+    }
+
     /// Get the current auth token
     #[instrument(skip(self))]
     pub async fn get_auth_token(&self) -> Result<AuthToken, Error> {
