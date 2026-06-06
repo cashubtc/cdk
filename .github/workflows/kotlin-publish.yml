@@ -247,7 +247,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
+        uses: DeterminateSystems/nix-installer-action@v22
 
       - name: Setup Cachix
         uses: cachix/cachix-action@v17
@@ -303,7 +303,7 @@ jobs:
 
       - name: Upload generated bindings
         if: matrix.target == 'aarch64-apple-darwin'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kotlin-bindings-generated
           path: cdk-kotlin/generated-bindings/
@@ -316,7 +316,7 @@ jobs:
              "dist/${{ matrix.target }}-${{ matrix.artifact }}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kotlin-native-${{ matrix.target }}
           path: dist/
@@ -347,7 +347,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/nix-installer-action@v22
       - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
@@ -356,7 +356,7 @@ jobs:
         continue-on-error: true
 
       - name: Download all native artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: ./artifacts
           pattern: kotlin-native-*
@@ -423,7 +423,7 @@ jobs:
           done
 
       - name: Download generated bindings
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: kotlin-bindings-generated
           path: cdk-kotlin/cdk-jvm/src/main/kotlin

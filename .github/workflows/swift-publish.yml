@@ -254,7 +254,7 @@ jobs:
              dist/${{ matrix.target }}-${{ matrix.artifact }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: swift-native-${{ matrix.target }}
           path: dist/
@@ -281,7 +281,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Download all native artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: ./artifacts
           pattern: swift-native-*
@@ -392,13 +392,13 @@ jobs:
           echo "XCFramework checksum: ${CHECKSUM}"
 
       - name: Upload XCFramework artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: swift-xcframework
           path: build/xcframework/CashuDevKitFFI.xcframework.zip
 
       - name: Upload Swift sources artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: swift-sources-generated
           path: cdk-swift/Sources/Cdk/
@@ -422,13 +422,13 @@ jobs:
             https://github.com/${{ vars.CDK_SWIFT_REPO }}.git cdk-swift
 
       - name: Download XCFramework
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: swift-xcframework
           path: ./artifacts
 
       - name: Download generated Swift sources
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: swift-sources-generated
           path: cdk-swift/Sources/Cdk
