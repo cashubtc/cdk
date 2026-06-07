@@ -25,7 +25,7 @@ pub struct WalletBuilder {
     seed: Option<[u8; 64]>,
     use_http_subscription: bool,
     client: Option<Arc<dyn MintConnector + Send + Sync>>,
-    metadata_cache_ttl: Option<Duration>,
+    metadata_cache_ttl: Arc<RwLock<Option<Duration>>>,
     metadata_cache: Option<Arc<MintMetadataCache>>,
     metadata_caches: HashMap<MintUrl, Arc<MintMetadataCache>>,
 }
@@ -50,7 +50,7 @@ impl Default for WalletBuilder {
             auth_wallet: None,
             seed: None,
             client: None,
-            metadata_cache_ttl: Some(Duration::from_secs(3600)),
+            metadata_cache_ttl: Arc::new(RwLock::new(Some(Duration::from_secs(3600)))),
             use_http_subscription: false,
             metadata_cache: None,
             metadata_caches: HashMap::new(),
@@ -84,8 +84,10 @@ impl WalletBuilder {
     /// (unless manually refreshed).
     ///
     /// The default value is 1 hour (3600 seconds).
-    pub fn set_metadata_cache_ttl(mut self, metadata_cache_ttl: Option<Duration>) -> Self {
-        self.metadata_cache_ttl = metadata_cache_ttl;
+    pub fn set_metadata_cache_ttl(self, metadata_cache_ttl: Option<Duration>) -> Self {
+        // Write into the shared cell rather than replacing it, so any AuthWallet
+        // already created from this builder observes the updated value.
+        *self.metadata_cache_ttl.write() = metadata_cache_ttl;
         self
     }
 
@@ -200,6 +202,7 @@ impl WalletBuilder {
             Some(AuthToken::ClearAuth(cat)),
             localstore,
             metadata_cache,
+            self.metadata_cache_ttl.clone(),
             HashMap::new(),
             None,
         ));
@@ -248,7 +251,7 @@ impl WalletBuilder {
             unit,
             localstore,
             metadata_cache,
-            metadata_cache_ttl: Arc::new(RwLock::new(metadata_cache_ttl)),
+            metadata_cache_ttl,
             target_proof_count: self.target_proof_count.unwrap_or(3),
             auth_wallet: Arc::new(TokioRwLock::new(auth_wallet)),
             #[cfg(feature = "npubcash")]
@@ -267,6 +270,9 @@ mod tests {
     #[test]
     fn test_default_ttl() {
         let builder = WalletBuilder::default();
-        assert_eq!(builder.metadata_cache_ttl, Some(Duration::from_secs(3600)));
+        assert_eq!(
+            *builder.metadata_cache_ttl.read(),
+            Some(Duration::from_secs(3600))
+        );
     }
 }

@@ -437,6 +437,7 @@ impl Wallet {
                         None,
                         self.localstore.clone(),
                         self.metadata_cache.clone(),
+                        self.metadata_cache_ttl.clone(),
                         mint_info.protected_endpoints(),
                         oidc_client,
                     );
