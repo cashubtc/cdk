@@ -141,6 +141,9 @@ pub struct RegisterConditionRequest {
     /// Optional regular ecash proofs paying the registration fee.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fee: Option<Proofs>,
+    /// Optional blank regular ecash outputs for registration fee change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outputs: Option<Vec<BlindedMessage>>,
     /// Condition type: "enum" (default) or "numeric"
     #[serde(default = "default_condition_type")]
     #[serde(skip_serializing_if = "is_default_condition_type")]
@@ -175,6 +178,9 @@ pub struct RegisterConditionResponse {
     pub condition_id: String,
     /// Mapping of outcome_collection -> keyset_id
     pub keysets: HashMap<String, Id>,
+    /// Optional regular ecash change from overpaid registration fee inputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change: Option<Vec<BlindSignature>>,
 }
 
 /// GET /v1/conditions query parameters

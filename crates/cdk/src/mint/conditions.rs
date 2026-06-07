@@ -12,6 +12,7 @@ use cdk_common::nuts::nut_ctf::{
     RegisterConditionRequest, RegisterConditionResponse, MAX_ANNOUNCEMENTS,
     MAX_ANNOUNCEMENT_HEX_LENGTH, MAX_OUTCOMES, MAX_OUTCOME_COLLECTIONS, MAX_TAGS_JSON_LENGTH,
 };
+use cdk_common::nuts::{BlindSignature, BlindedMessage};
 use tracing::instrument;
 
 use super::Mint;
@@ -32,6 +33,14 @@ const CONDITION_TYPE_NUMERIC: &str = "numeric";
 const KEYSET_POLICY_NONE: &str = "none";
 const KEYSET_POLICY_ONE_VS_REST: &str = "one-vs-rest";
 const KEYSET_POLICY_ALL: &str = "all";
+
+struct RegistrationFeeVerification {
+    proofs: cdk_common::Proofs,
+    amount: cdk_common::Amount<cdk_common::CurrencyUnit>,
+    change_messages: Vec<BlindedMessage>,
+    change_blinded_secrets: Vec<cdk_common::PublicKey>,
+    change: Vec<BlindSignature>,
+}
 
 impl Mint {
     /// Register a new condition (POST /v1/conditions)
@@ -202,6 +211,7 @@ impl Mint {
             return Ok(RegisterConditionResponse {
                 condition_id,
                 keysets: existing_keysets,
+                change: None,
             });
         }
 
@@ -222,8 +232,13 @@ impl Mint {
                 .as_deref()
                 .ok_or(Error::RegistrationFeeInsufficient)?;
             Some(
-                self.verify_registration_fee(request.fee.as_ref(), collateral, required_fee)
-                    .await?,
+                self.verify_registration_fee(
+                    request.fee.as_ref(),
+                    request.outputs.as_deref(),
+                    collateral,
+                    required_fee,
+                )
+                .await?,
             )
         } else {
             None
@@ -264,17 +279,20 @@ impl Mint {
             .collect::<HashMap<_, _>>();
 
         let mut tx = self.localstore.begin_transaction().await?;
-        if let Some((fee_proofs, fee_amount)) = fee_verification {
+        if let Some(fee_verification) = &fee_verification {
             let operation = cdk_common::mint::Operation::new(
                 uuid::Uuid::new_v4(),
                 cdk_common::mint::OperationKind::Swap,
                 cdk_common::Amount::ZERO,
-                fee_amount.clone().into(),
-                fee_amount.into(),
+                fee_verification.amount.clone().into(),
+                fee_verification.amount.clone().into(),
                 None,
                 None,
             );
-            let mut fee_records = match tx.add_proofs(fee_proofs, None, &operation).await {
+            let mut fee_records = match tx
+                .add_proofs(fee_verification.proofs.clone(), None, &operation)
+                .await
+            {
                 Ok(records) => records,
                 Err(err) => {
                     tx.rollback().await?;
@@ -290,6 +308,26 @@ impl Mint {
             {
                 tx.rollback().await?;
                 return Err(err);
+            }
+            if !fee_verification.change_messages.is_empty() {
+                if let Err(err) = tx
+                    .add_blinded_messages(None, &fee_verification.change_messages, &operation)
+                    .await
+                {
+                    tx.rollback().await?;
+                    return Err(err.into());
+                }
+                if let Err(err) = tx
+                    .add_blind_signatures(
+                        &fee_verification.change_blinded_secrets,
+                        &fee_verification.change,
+                        None,
+                    )
+                    .await
+                {
+                    tx.rollback().await?;
+                    return Err(err.into());
+                }
             }
         }
         if let Err(err) = tx.add_condition(stored).await {
@@ -311,6 +349,9 @@ impl Mint {
         Ok(RegisterConditionResponse {
             condition_id,
             keysets,
+            change: fee_verification.and_then(|verification| {
+                (!verification.change.is_empty()).then_some(verification.change)
+            }),
         })
     }
 
@@ -329,15 +370,10 @@ impl Mint {
     async fn verify_registration_fee(
         &self,
         fee: Option<&cdk_common::Proofs>,
+        outputs: Option<&[BlindedMessage]>,
         collateral: &str,
         required_fee: u64,
-    ) -> Result<
-        (
-            cdk_common::Proofs,
-            cdk_common::Amount<cdk_common::CurrencyUnit>,
-        ),
-        Error,
-    > {
+    ) -> Result<RegistrationFeeVerification, Error> {
         let fee = fee.ok_or(Error::RegistrationFeeInsufficient)?;
         if fee.is_empty() {
             return Err(Error::RegistrationFeeInsufficient);
@@ -368,7 +404,87 @@ impl Mint {
             return Err(Error::RegistrationFeeInsufficient);
         }
 
-        Ok((fee.clone(), verification.amount))
+        let change_amount = verification
+            .amount
+            .value()
+            .checked_sub(required_fee)
+            .ok_or(Error::AmountOverflow)?;
+        let (change_messages, change_blinded_secrets, change) = if change_amount > 0 {
+            self.sign_registration_fee_change(outputs, collateral_unit, change_amount)
+                .await?
+        } else {
+            (Vec::new(), Vec::new(), Vec::new())
+        };
+
+        Ok(RegistrationFeeVerification {
+            proofs: fee.clone(),
+            amount: verification.amount,
+            change_messages,
+            change_blinded_secrets,
+            change,
+        })
+    }
+
+    async fn sign_registration_fee_change(
+        &self,
+        outputs: Option<&[BlindedMessage]>,
+        collateral_unit: cdk_common::CurrencyUnit,
+        change_amount: u64,
+    ) -> Result<
+        (
+            Vec<BlindedMessage>,
+            Vec<cdk_common::PublicKey>,
+            Vec<BlindSignature>,
+        ),
+        Error,
+    > {
+        let outputs = outputs.ok_or(Error::RegistrationFeeChangeOutputs)?;
+        if outputs.is_empty() {
+            return Err(Error::RegistrationFeeChangeOutputs);
+        }
+        if outputs.len() > self.max_outputs {
+            return Err(Error::RegistrationFeeChangeOutputs);
+        }
+        Mint::check_outputs_unique(outputs).map_err(|_| Error::RegistrationFeeChangeOutputs)?;
+        let output_unit = self.verify_outputs_keyset(outputs)?;
+        if output_unit != collateral_unit {
+            return Err(Error::OutputsMustUseRegularKeyset);
+        }
+        for output in outputs {
+            if self
+                .localstore
+                .get_condition_for_keyset(&output.keyset_id)
+                .await?
+                .is_some()
+            {
+                return Err(Error::OutputsMustUseRegularKeyset);
+            }
+        }
+
+        let fee_and_amounts =
+            super::melt::shared::get_keyset_fee_and_amounts(&self.keysets, outputs);
+        let amounts = cdk_common::Amount::from(change_amount)
+            .split(&fee_and_amounts)
+            .map_err(|_| Error::RegistrationFeeChangeOutputs)?;
+        if outputs.len() < amounts.len() {
+            return Err(Error::RegistrationFeeChangeOutputs);
+        }
+
+        let change_messages = amounts
+            .iter()
+            .zip(outputs.iter().cloned())
+            .map(|(amount, mut output)| {
+                output.amount = *amount;
+                output
+            })
+            .collect::<Vec<_>>();
+        let change_blinded_secrets = change_messages
+            .iter()
+            .map(|message| message.blinded_secret)
+            .collect::<Vec<_>>();
+        let change = self.blind_sign(change_messages.clone()).await?;
+
+        Ok((change_messages, change_blinded_secrets, change))
     }
 
     fn requested_outcome_collections(

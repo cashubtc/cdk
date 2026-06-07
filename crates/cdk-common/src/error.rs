@@ -446,6 +446,10 @@ pub enum Error {
     #[cfg(feature = "conditional-tokens")]
     #[error("Missing or insufficient registration fee")]
     RegistrationFeeInsufficient,
+    /// Insufficient or invalid registration fee change outputs (13047)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Insufficient or invalid registration fee change outputs")]
+    RegistrationFeeChangeOutputs,
     /// Hash to curve failed (13045)
     #[cfg(feature = "conditional-tokens")]
     #[error("Hash to curve failed")]
@@ -725,6 +729,7 @@ impl Error {
             | Self::OverlappingOutcomeCollections
             | Self::IncompletePartition
             | Self::RegistrationFeeInsufficient
+            | Self::RegistrationFeeChangeOutputs
             | Self::HashToCurveFailed
             | Self::EcPointOperationFailed
             | Self::InvalidNumericRange
@@ -1109,6 +1114,11 @@ impl From<Error> for ErrorResponse {
                 detail: err.to_string(),
             },
             #[cfg(feature = "conditional-tokens")]
+            Error::RegistrationFeeChangeOutputs => ErrorResponse {
+                code: ErrorCode::RegistrationFeeChangeOutputs,
+                detail: err.to_string(),
+            },
+            #[cfg(feature = "conditional-tokens")]
             Error::HashToCurveFailed => ErrorResponse {
                 code: ErrorCode::HashToCurveFailed,
                 detail: err.to_string(),
@@ -1428,6 +1438,9 @@ pub enum ErrorCode {
     /// Missing or insufficient registration fee (13044)
     #[cfg(feature = "conditional-tokens")]
     RegistrationFeeInsufficient,
+    /// Insufficient or invalid registration fee change outputs (13047)
+    #[cfg(feature = "conditional-tokens")]
+    RegistrationFeeChangeOutputs,
     /// Hash to curve failed (13045)
     #[cfg(feature = "conditional-tokens")]
     HashToCurveFailed,
@@ -1548,6 +1561,8 @@ impl ErrorCode {
             13045 => Self::HashToCurveFailed,
             #[cfg(feature = "conditional-tokens")]
             13046 => Self::EcPointOperationFailed,
+            #[cfg(feature = "conditional-tokens")]
+            13047 => Self::RegistrationFeeChangeOutputs,
             // 20xxx - Quote/Payment errors
             20001 => Self::QuoteNotPaid,
             20002 => Self::TokensAlreadyIssued,
@@ -1639,6 +1654,8 @@ impl ErrorCode {
             Self::HashToCurveFailed => 13045,
             #[cfg(feature = "conditional-tokens")]
             Self::EcPointOperationFailed => 13046,
+            #[cfg(feature = "conditional-tokens")]
+            Self::RegistrationFeeChangeOutputs => 13047,
             // 20xxx - Quote/Payment errors
             Self::QuoteNotPaid => 20001,
             Self::TokensAlreadyIssued => 20002,

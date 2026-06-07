@@ -40,6 +40,7 @@ fn enum_condition_request(
         collateral: Some("sat".to_string()),
         outcome_collections,
         fee: None,
+        outputs: None,
         condition_type: "enum".to_string(),
         lo_bound: None,
         hi_bound: None,
@@ -830,6 +831,78 @@ async fn test_register_condition_charges_registration_fee_once() {
     let second = mint.register_condition(request).await.unwrap();
     assert_eq!(second.condition_id, first.condition_id);
     assert_eq!(second.keysets, first.keysets);
+    assert!(
+        second.change.is_none(),
+        "idempotent retry must not return change"
+    );
+}
+
+#[tokio::test]
+async fn test_register_condition_returns_registration_fee_change() {
+    let mint = create_test_mint().await.unwrap();
+    let mut mint_info = mint.mint_info().await.unwrap();
+    mint_info.nuts.nut_ctf = Some(NutCtfSettings {
+        registration_fee_base: 2,
+        registration_fee_per_keyset: 3,
+        ..NutCtfSettings::default()
+    });
+    mint.set_mint_info(mint_info).await.unwrap();
+
+    let fee_proofs = mint_test_proofs(&mint, Amount::from(16)).await.unwrap();
+    let fee_ys = fee_proofs.ys().unwrap();
+    let regular_keyset_id = get_regular_keyset_id(&mint);
+    let (change_outputs, _) = create_premint(&mint, regular_keyset_id, Amount::from(8));
+
+    let oracle = create_test_oracle();
+    let (_, hex_tlv) = create_test_announcement(&oracle, &["YES", "NO"], "fee-change");
+    let mut request = enum_condition_request("Fee change", vec![hex_tlv]);
+    request.fee = Some(fee_proofs);
+    request.outputs = Some(change_outputs);
+
+    let response = mint.register_condition(request).await.unwrap();
+    let change = response.change.expect("overpaid fee should return change");
+    assert_eq!(change.iter().map(|sig| sig.amount.to_u64()).sum::<u64>(), 8);
+    assert!(change.iter().all(|sig| sig.keyset_id == regular_keyset_id));
+
+    let states = mint.localstore().get_proofs_states(&fee_ys).await.unwrap();
+    assert!(
+        states.iter().all(|state| *state == Some(State::Spent)),
+        "fee proofs must be marked spent after successful paid registration"
+    );
+}
+
+#[tokio::test]
+async fn test_register_condition_rejects_overpaid_fee_without_change_outputs() {
+    let mint = create_test_mint().await.unwrap();
+    let mut mint_info = mint.mint_info().await.unwrap();
+    mint_info.nuts.nut_ctf = Some(NutCtfSettings {
+        registration_fee_base: 2,
+        registration_fee_per_keyset: 3,
+        ..NutCtfSettings::default()
+    });
+    mint.set_mint_info(mint_info).await.unwrap();
+
+    let fee_proofs = mint_test_proofs(&mint, Amount::from(16)).await.unwrap();
+    let fee_ys = fee_proofs.ys().unwrap();
+
+    let oracle = create_test_oracle();
+    let (_, hex_tlv) = create_test_announcement(&oracle, &["YES", "NO"], "fee-no-change");
+    let mut request = enum_condition_request("Fee no change outputs", vec![hex_tlv]);
+    request.fee = Some(fee_proofs);
+
+    let result = mint.register_condition(request).await;
+    assert!(matches!(result, Err(Error::RegistrationFeeChangeOutputs)));
+    assert!(mint
+        .get_conditions(None, None, &[])
+        .await
+        .unwrap()
+        .conditions
+        .is_empty());
+    let states = mint.localstore().get_proofs_states(&fee_ys).await.unwrap();
+    assert!(
+        states.iter().all(|state| state.is_none()),
+        "rejected registration must not consume fee proofs"
+    );
 }
 
 #[tokio::test]
@@ -998,6 +1071,7 @@ async fn register_numeric_condition(
         collateral: Some("sat".to_string()),
         outcome_collections: Some(vec!["HI".to_string(), "LO".to_string()]),
         fee: None,
+        outputs: None,
         condition_type: "numeric".to_string(),
         lo_bound: Some(lo_bound),
         hi_bound: Some(hi_bound),
@@ -1049,6 +1123,7 @@ async fn test_numeric_condition_id_differs_from_enum() {
             collateral: Some("sat".to_string()),
             outcome_collections: Some(vec!["HI".to_string(), "LO".to_string()]),
             fee: None,
+            outputs: None,
             condition_type: "numeric".to_string(),
             lo_bound: Some(0),
             hi_bound: Some(100000),
@@ -1615,6 +1690,7 @@ async fn test_redeem_outcome_multi_oracle_threshold() {
             collateral: Some("sat".to_string()),
             outcome_collections: Some(vec!["YES".to_string(), "NO".to_string()]),
             fee: None,
+            outputs: None,
             condition_type: "enum".to_string(),
             lo_bound: None,
             hi_bound: None,
@@ -1722,6 +1798,7 @@ async fn test_redeem_rejects_duplicate_oracle_sigs() {
             collateral: Some("sat".to_string()),
             outcome_collections: Some(vec!["YES".to_string(), "NO".to_string()]),
             fee: None,
+            outputs: None,
             condition_type: "enum".to_string(),
             lo_bound: None,
             hi_bound: None,
