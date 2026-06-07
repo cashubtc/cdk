@@ -763,6 +763,12 @@ pub struct MintInfo {
     /// NUT-CTF default keyset creation policy: none, one-vs-rest, or all.
     #[cfg(feature = "conditional-tokens")]
     pub ctf_default_keyset_creation: Option<String>,
+    /// NUT-CTF flat registration fee per new condition.
+    #[cfg(feature = "conditional-tokens")]
+    pub ctf_registration_fee_base: Option<u64>,
+    /// NUT-CTF registration fee per created keyset.
+    #[cfg(feature = "conditional-tokens")]
+    pub ctf_registration_fee_per_keyset: Option<u64>,
 }
 
 #[cfg(feature = "management-rpc")]

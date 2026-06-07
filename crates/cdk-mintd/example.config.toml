@@ -63,6 +63,9 @@ tti = 60
 # tos_url = "https://example.com/terms-of-service"
 # NUT-CTF default keyset creation policy: "none", "one-vs-rest", or "all"
 # ctf_default_keyset_creation = "one-vs-rest"
+# NUT-CTF registration fee policy, denominated in the condition collateral unit.
+# ctf_registration_fee_base = 0
+# ctf_registration_fee_per_keyset = 0
 
 
 [database]

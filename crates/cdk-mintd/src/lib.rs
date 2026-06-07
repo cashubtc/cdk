@@ -497,6 +497,21 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
             builder = builder.with_ctf_default_keyset_creation(policy.to_string());
         }
     }
+    #[cfg(feature = "conditional-tokens")]
+    if settings.mint_info.ctf_registration_fee_base.is_some()
+        || settings.mint_info.ctf_registration_fee_per_keyset.is_some()
+    {
+        builder = builder.with_ctf_registration_fee(
+            settings
+                .mint_info
+                .ctf_registration_fee_base
+                .unwrap_or_default(),
+            settings
+                .mint_info
+                .ctf_registration_fee_per_keyset
+                .unwrap_or_default(),
+        );
+    }
 
     builder = builder.with_keyset_v2(settings.info.use_keyset_v2);
 

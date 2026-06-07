@@ -442,11 +442,15 @@ pub enum Error {
     #[cfg(feature = "conditional-tokens")]
     #[error("Unknown outcome in outcome collection")]
     IncompletePartition,
-    /// Hash to curve failed (13044)
+    /// Missing or insufficient registration fee (13044)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Missing or insufficient registration fee")]
+    RegistrationFeeInsufficient,
+    /// Hash to curve failed (13045)
     #[cfg(feature = "conditional-tokens")]
     #[error("Hash to curve failed")]
     HashToCurveFailed,
-    /// EC point operation failed (13045)
+    /// EC point operation failed (13046)
     #[cfg(feature = "conditional-tokens")]
     #[error("EC point operation failed")]
     EcPointOperationFailed,
@@ -720,6 +724,7 @@ impl Error {
             | Self::ConditionAlreadyExists
             | Self::OverlappingOutcomeCollections
             | Self::IncompletePartition
+            | Self::RegistrationFeeInsufficient
             | Self::HashToCurveFailed
             | Self::EcPointOperationFailed
             | Self::InvalidNumericRange
@@ -1099,6 +1104,11 @@ impl From<Error> for ErrorResponse {
                 detail: err.to_string(),
             },
             #[cfg(feature = "conditional-tokens")]
+            Error::RegistrationFeeInsufficient => ErrorResponse {
+                code: ErrorCode::RegistrationFeeInsufficient,
+                detail: err.to_string(),
+            },
+            #[cfg(feature = "conditional-tokens")]
             Error::HashToCurveFailed => ErrorResponse {
                 code: ErrorCode::HashToCurveFailed,
                 detail: err.to_string(),
@@ -1415,10 +1425,13 @@ pub enum ErrorCode {
     /// Unknown outcome in outcome collection (13038)
     #[cfg(feature = "conditional-tokens")]
     IncompletePartition,
-    /// Hash to curve failed (13044)
+    /// Missing or insufficient registration fee (13044)
+    #[cfg(feature = "conditional-tokens")]
+    RegistrationFeeInsufficient,
+    /// Hash to curve failed (13045)
     #[cfg(feature = "conditional-tokens")]
     HashToCurveFailed,
-    /// EC point operation failed (13045)
+    /// EC point operation failed (13046)
     #[cfg(feature = "conditional-tokens")]
     EcPointOperationFailed,
 
@@ -1530,9 +1543,11 @@ impl ErrorCode {
             #[cfg(feature = "conditional-tokens")]
             13043 => Self::FullSetOrSingleElementPartition,
             #[cfg(feature = "conditional-tokens")]
-            13044 => Self::HashToCurveFailed,
+            13044 => Self::RegistrationFeeInsufficient,
             #[cfg(feature = "conditional-tokens")]
-            13045 => Self::EcPointOperationFailed,
+            13045 => Self::HashToCurveFailed,
+            #[cfg(feature = "conditional-tokens")]
+            13046 => Self::EcPointOperationFailed,
             // 20xxx - Quote/Payment errors
             20001 => Self::QuoteNotPaid,
             20002 => Self::TokensAlreadyIssued,
@@ -1619,9 +1634,11 @@ impl ErrorCode {
             #[cfg(feature = "conditional-tokens")]
             Self::FullSetOrSingleElementPartition => 13043,
             #[cfg(feature = "conditional-tokens")]
-            Self::HashToCurveFailed => 13044,
+            Self::RegistrationFeeInsufficient => 13044,
             #[cfg(feature = "conditional-tokens")]
-            Self::EcPointOperationFailed => 13045,
+            Self::HashToCurveFailed => 13045,
+            #[cfg(feature = "conditional-tokens")]
+            Self::EcPointOperationFailed => 13046,
             // 20xxx - Quote/Payment errors
             Self::QuoteNotPaid => 20001,
             Self::TokensAlreadyIssued => 20002,

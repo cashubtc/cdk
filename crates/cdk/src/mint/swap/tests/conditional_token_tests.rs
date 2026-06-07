@@ -13,9 +13,10 @@ use cdk_common::nuts::nut_ctf::{
     CtfConvertRequest, NutCtfSettings, RedeemOutcomeRequest, RegisterConditionRequest,
 };
 use cdk_common::nuts::{
-    Conditions, Id, PreMintSecrets, SecretKey, SigFlag, SpendingConditions, SwapRequest, Witness,
+    Conditions, Id, PreMintSecrets, ProofsMethods, SecretKey, SigFlag, SpendingConditions,
+    SwapRequest, Witness,
 };
-use cdk_common::{Amount, CurrencyUnit};
+use cdk_common::{Amount, CurrencyUnit, State};
 
 use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
 use crate::Error;
@@ -38,6 +39,7 @@ fn enum_condition_request(
         announcements,
         collateral: Some("sat".to_string()),
         outcome_collections,
+        fee: None,
         condition_type: "enum".to_string(),
         lo_bound: None,
         hi_bound: None,
@@ -798,6 +800,118 @@ async fn test_register_condition_missing_collateral_fails_before_store() {
 }
 
 #[tokio::test]
+async fn test_register_condition_charges_registration_fee_once() {
+    let mint = create_test_mint().await.unwrap();
+    let mut mint_info = mint.mint_info().await.unwrap();
+    mint_info.nuts.nut_ctf = Some(NutCtfSettings {
+        registration_fee_base: 2,
+        registration_fee_per_keyset: 3,
+        ..NutCtfSettings::default()
+    });
+    mint.set_mint_info(mint_info).await.unwrap();
+
+    let fee_proofs = mint_test_proofs(&mint, Amount::from(8)).await.unwrap();
+    let fee_ys = fee_proofs.ys().unwrap();
+
+    let oracle = create_test_oracle();
+    let (_, hex_tlv) = create_test_announcement(&oracle, &["YES", "NO"], "fee-once");
+    let mut request = enum_condition_request("Fee once", vec![hex_tlv]);
+    request.fee = Some(fee_proofs);
+
+    let first = mint.register_condition(request.clone()).await.unwrap();
+    assert_eq!(first.keysets.len(), 2);
+
+    let states = mint.localstore().get_proofs_states(&fee_ys).await.unwrap();
+    assert!(
+        states.iter().all(|state| *state == Some(State::Spent)),
+        "fee proofs must be marked spent"
+    );
+
+    let second = mint.register_condition(request).await.unwrap();
+    assert_eq!(second.condition_id, first.condition_id);
+    assert_eq!(second.keysets, first.keysets);
+}
+
+#[tokio::test]
+async fn test_register_condition_rejects_missing_registration_fee_before_store() {
+    let mint = create_test_mint().await.unwrap();
+    let mut mint_info = mint.mint_info().await.unwrap();
+    mint_info.nuts.nut_ctf = Some(NutCtfSettings {
+        registration_fee_base: 1,
+        ..NutCtfSettings::default()
+    });
+    mint.set_mint_info(mint_info).await.unwrap();
+
+    let oracle = create_test_oracle();
+    let (_, hex_tlv) = create_test_announcement(&oracle, &["YES", "NO"], "missing-fee");
+    let request = enum_condition_request("Missing fee", vec![hex_tlv]);
+
+    let result = mint.register_condition(request).await;
+    assert!(matches!(result, Err(Error::RegistrationFeeInsufficient)));
+    assert!(mint
+        .get_conditions(None, None, &[])
+        .await
+        .unwrap()
+        .conditions
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_register_condition_rejects_insufficient_registration_fee() {
+    let mint = create_test_mint().await.unwrap();
+    let mut mint_info = mint.mint_info().await.unwrap();
+    mint_info.nuts.nut_ctf = Some(NutCtfSettings {
+        registration_fee_base: 2,
+        registration_fee_per_keyset: 3,
+        ..NutCtfSettings::default()
+    });
+    mint.set_mint_info(mint_info).await.unwrap();
+
+    let oracle = create_test_oracle();
+    let (_, hex_tlv) = create_test_announcement(&oracle, &["YES", "NO"], "insufficient-fee");
+    let mut request = enum_condition_request("Insufficient fee", vec![hex_tlv]);
+    request.fee = Some(mint_test_proofs(&mint, Amount::from(7)).await.unwrap());
+
+    let result = mint.register_condition(request).await;
+    assert!(matches!(result, Err(Error::RegistrationFeeInsufficient)));
+    assert!(mint
+        .get_conditions(None, None, &[])
+        .await
+        .unwrap()
+        .conditions
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_register_condition_rejects_conditional_registration_fee() {
+    let mint = create_test_mint().await.unwrap();
+    let oracle = create_test_oracle();
+    let (_, first_hex) = create_test_announcement(&oracle, &["YES", "NO"], "fee-source");
+    let regular_proofs = mint_test_proofs(&mint, Amount::from(8)).await.unwrap();
+    let first = mint
+        .register_condition(enum_condition_request("Fee source", vec![first_hex]))
+        .await
+        .unwrap();
+    let yes_keyset_id = *first.keysets.get("YES").unwrap();
+    let conditional_fee =
+        swap_to_conditional(&mint, regular_proofs, yes_keyset_id, Amount::from(8)).await;
+
+    let mut mint_info = mint.mint_info().await.unwrap();
+    mint_info.nuts.nut_ctf = Some(NutCtfSettings {
+        registration_fee_base: 1,
+        ..NutCtfSettings::default()
+    });
+    mint.set_mint_info(mint_info).await.unwrap();
+
+    let (_, second_hex) = create_test_announcement(&oracle, &["UP", "DOWN"], "conditional-fee");
+    let mut request = enum_condition_request("Conditional fee", vec![second_hex]);
+    request.fee = Some(conditional_fee);
+
+    let result = mint.register_condition(request).await;
+    assert!(matches!(result, Err(Error::OutputsMustUseRegularKeyset)));
+}
+
+#[tokio::test]
 async fn test_overlapping_collection_redeems_for_any_member() {
     let mint = create_test_mint().await.unwrap();
     let regular_keyset_id = get_regular_keyset_id(&mint);
@@ -883,6 +997,7 @@ async fn register_numeric_condition(
         announcements: vec![hex_tlv],
         collateral: Some("sat".to_string()),
         outcome_collections: Some(vec!["HI".to_string(), "LO".to_string()]),
+        fee: None,
         condition_type: "numeric".to_string(),
         lo_bound: Some(lo_bound),
         hi_bound: Some(hi_bound),
@@ -933,6 +1048,7 @@ async fn test_numeric_condition_id_differs_from_enum() {
             announcements: vec![numeric_hex],
             collateral: Some("sat".to_string()),
             outcome_collections: Some(vec!["HI".to_string(), "LO".to_string()]),
+            fee: None,
             condition_type: "numeric".to_string(),
             lo_bound: Some(0),
             hi_bound: Some(100000),
@@ -1498,6 +1614,7 @@ async fn test_redeem_outcome_multi_oracle_threshold() {
             announcements: vec![hex_tlv1, hex_tlv2],
             collateral: Some("sat".to_string()),
             outcome_collections: Some(vec!["YES".to_string(), "NO".to_string()]),
+            fee: None,
             condition_type: "enum".to_string(),
             lo_bound: None,
             hi_bound: None,
@@ -1604,6 +1721,7 @@ async fn test_redeem_rejects_duplicate_oracle_sigs() {
             announcements: vec![hex_tlv1, hex_tlv2],
             collateral: Some("sat".to_string()),
             outcome_collections: Some(vec!["YES".to_string(), "NO".to_string()]),
+            fee: None,
             condition_type: "enum".to_string(),
             lo_bound: None,
             hi_bound: None,

@@ -100,6 +100,21 @@ pub struct SignatoryKeySet {
     pub condition_id: Option<String>,
 }
 
+#[cfg(feature = "conditional-tokens")]
+#[derive(Debug, Clone)]
+/// Conditional keyset material prepared by the signatory.
+///
+/// The mint persists `info` in its registration transaction and returns
+/// `keyset` on the wire. The signatory reloads from storage after the
+/// transaction commits, so failed registrations do not leave in-memory
+/// signing keys without matching database rows.
+pub struct PreparedConditionalKeySet {
+    /// Public keyset response data
+    pub keyset: SignatoryKeySet,
+    /// Full keyset metadata row to persist transactionally
+    pub info: MintKeySetInfo,
+}
+
 impl From<&SignatoryKeySet> for KeySet {
     fn from(val: &SignatoryKeySet) -> Self {
         val.to_owned().into()
@@ -191,9 +206,13 @@ pub trait Signatory {
     /// Generate new keyset
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error>;
 
-    /// Create a conditional keyset for a specific condition and outcome collection (NUT-CTF)
+    /// Prepare a conditional keyset for a specific condition and outcome collection (NUT-CTF).
+    ///
+    /// This does not persist the keyset or add it to the in-memory signing map.
+    /// The mint must commit the returned `info` in its registration transaction
+    /// and then call `reload_keysets_from_storage`.
     #[cfg(feature = "conditional-tokens")]
-    async fn create_conditional_keyset(
+    async fn prepare_conditional_keyset(
         &self,
         unit: CurrencyUnit,
         condition_id: &str,
@@ -202,7 +221,7 @@ pub trait Signatory {
         amounts: Vec<u64>,
         input_fee_ppk: u64,
         final_expiry: Option<u64>,
-    ) -> Result<SignatoryKeySet, Error> {
+    ) -> Result<PreparedConditionalKeySet, Error> {
         let _ = (
             unit,
             condition_id,
@@ -213,7 +232,13 @@ pub trait Signatory {
             final_expiry,
         );
         Err(Error::Custom(
-            "Conditional keysets not supported by this signatory".to_string(),
+            "Conditional keyset preparation is not supported by this signatory".to_string(),
         ))
+    }
+
+    /// Reload keysets from persistent storage after an external transaction commits.
+    #[cfg(feature = "conditional-tokens")]
+    async fn reload_keysets_from_storage(&self) -> Result<(), Error> {
+        Ok(())
     }
 }

@@ -158,6 +158,9 @@ impl Mint {
             is_numeric,
             &default_keyset_creation,
         )?;
+        let required_fee = self
+            .required_registration_fee(requested_collections.len())
+            .await?;
 
         // 4. Check for existing condition (idempotency or conflict)
         if let Some(existing) = self.localstore.get_condition(&condition_id).await? {
@@ -202,15 +205,29 @@ impl Mint {
             });
         }
 
-        if !requested_collections.is_empty() {
+        if !requested_collections.is_empty() || required_fee > 0 {
             let collateral = request.collateral.as_deref().ok_or_else(|| {
                 Error::Custom(
-                    "collateral is required when creating outcome collection keysets".to_string(),
+                    "collateral is required when creating keysets or paying registration fees"
+                        .to_string(),
                 )
             })?;
             cdk_common::CurrencyUnit::from_str(collateral)
                 .map_err(|_| Error::Custom(format!("Invalid collateral unit: {}", collateral)))?;
         }
+
+        let fee_verification = if required_fee > 0 {
+            let collateral = request
+                .collateral
+                .as_deref()
+                .ok_or(Error::RegistrationFeeInsufficient)?;
+            Some(
+                self.verify_registration_fee(request.fee.as_ref(), collateral, required_fee)
+                    .await?,
+            )
+        } else {
+            None
+        };
 
         // 5. Store the condition
         let now = SystemTime::now()
@@ -233,38 +250,125 @@ impl Mint {
             precision: request.precision,
         };
 
-        self.localstore.add_condition(stored).await?;
-
-        let keysets = match self
-            .create_condition_keysets(
+        let prepared_keysets = self
+            .prepare_condition_keysets(
                 &condition_id,
                 &condition_id_bytes,
                 &requested_collections,
                 request.collateral.as_deref(),
             )
-            .await
-        {
-            Ok(keysets) => keysets,
-            Err(err) => {
-                if let Err(cleanup_err) = self
-                    .localstore
-                    .delete_condition_registration(&condition_id)
-                    .await
-                {
-                    tracing::error!(
-                        condition_id = %condition_id,
-                        error = %cleanup_err,
-                        "failed to clean up partial condition registration"
-                    );
+            .await?;
+        let keysets = prepared_keysets
+            .iter()
+            .map(|(collection, prepared)| (collection.clone(), prepared.keyset.id))
+            .collect::<HashMap<_, _>>();
+
+        let mut tx = self.localstore.begin_transaction().await?;
+        if let Some((fee_proofs, fee_amount)) = fee_verification {
+            let operation = cdk_common::mint::Operation::new(
+                uuid::Uuid::new_v4(),
+                cdk_common::mint::OperationKind::Swap,
+                cdk_common::Amount::ZERO,
+                fee_amount.clone().into(),
+                fee_amount.into(),
+                None,
+                None,
+            );
+            let mut fee_records = match tx.add_proofs(fee_proofs, None, &operation).await {
+                Ok(records) => records,
+                Err(err) => {
+                    tx.rollback().await?;
+                    return Err(err.into());
                 }
+            };
+            if let Err(err) = crate::Mint::update_proofs_state(
+                &mut tx,
+                &mut fee_records,
+                cdk_common::State::Spent,
+            )
+            .await
+            {
+                tx.rollback().await?;
                 return Err(err);
             }
-        };
+        }
+        if let Err(err) = tx.add_condition(stored).await {
+            tx.rollback().await?;
+            return Err(err.into());
+        }
+        for (_, prepared) in prepared_keysets {
+            if let Err(err) = tx.add_conditional_keyset(prepared.info, now).await {
+                tx.rollback().await?;
+                return Err(err.into());
+            }
+        }
+        tx.commit().await?;
+
+        self.signatory.reload_keysets_from_storage().await?;
+        let new_keysets = self.signatory.keysets().await?;
+        self.keysets.store(new_keysets.keysets.into());
 
         Ok(RegisterConditionResponse {
             condition_id,
             keysets,
         })
+    }
+
+    async fn required_registration_fee(&self, num_keysets: usize) -> Result<u64, Error> {
+        let settings = self.mint_info().await?.nuts.nut_ctf.unwrap_or_default();
+        let per_keyset = settings
+            .registration_fee_per_keyset
+            .checked_mul(num_keysets as u64)
+            .ok_or(Error::AmountOverflow)?;
+        settings
+            .registration_fee_base
+            .checked_add(per_keyset)
+            .ok_or(Error::AmountOverflow)
+    }
+
+    async fn verify_registration_fee(
+        &self,
+        fee: Option<&cdk_common::Proofs>,
+        collateral: &str,
+        required_fee: u64,
+    ) -> Result<
+        (
+            cdk_common::Proofs,
+            cdk_common::Amount<cdk_common::CurrencyUnit>,
+        ),
+        Error,
+    > {
+        let fee = fee.ok_or(Error::RegistrationFeeInsufficient)?;
+        if fee.is_empty() {
+            return Err(Error::RegistrationFeeInsufficient);
+        }
+
+        let collateral_unit = cdk_common::CurrencyUnit::from_str(collateral)
+            .map_err(|_| Error::Custom(format!("Invalid collateral unit: {}", collateral)))?;
+
+        for proof in fee {
+            if self
+                .localstore
+                .get_condition_for_keyset(&proof.keyset_id)
+                .await?
+                .is_some()
+            {
+                return Err(Error::OutputsMustUseRegularKeyset);
+            }
+            let keyset_info = self
+                .get_keyset_info(&proof.keyset_id)
+                .ok_or(Error::UnknownKeySet)?;
+            if keyset_info.unit != collateral_unit {
+                return Err(Error::OutputsMustUseRegularKeyset);
+            }
+        }
+
+        let verification = self.verify_inputs(fee).await?;
+        if verification.amount.value() < required_fee {
+            return Err(Error::RegistrationFeeInsufficient);
+        }
+
+        Ok((fee.clone(), verification.amount))
     }
 
     fn requested_outcome_collections(
@@ -433,15 +537,15 @@ impl Mint {
         Ok(collections)
     }
 
-    async fn create_condition_keysets(
+    async fn prepare_condition_keysets(
         &self,
         condition_id: &str,
         condition_id_bytes: &[u8; 32],
         outcome_collections: &[String],
         collateral: Option<&str>,
-    ) -> Result<HashMap<String, cdk_common::nuts::nut02::Id>, Error> {
+    ) -> Result<Vec<(String, cdk_signatory::signatory::PreparedConditionalKeySet)>, Error> {
         if outcome_collections.is_empty() {
-            return Ok(HashMap::new());
+            return Ok(Vec::new());
         }
 
         let collateral = collateral.ok_or_else(|| {
@@ -453,7 +557,7 @@ impl Mint {
             .map_err(|_| Error::Custom(format!("Invalid collateral unit: {}", collateral)))?;
         let parent_collection_id_bytes = [0u8; 32];
         let amounts = (0..32).map(|n| 2u64.pow(n)).collect::<Vec<u64>>();
-        let mut keysets = HashMap::new();
+        let mut keysets = Vec::with_capacity(outcome_collections.len());
 
         for outcome_collection_string in outcome_collections {
             let outcome_collection_id_bytes = compute_outcome_collection_id(
@@ -465,7 +569,7 @@ impl Mint {
 
             let keyset = self
                 .signatory
-                .create_conditional_keyset(
+                .prepare_conditional_keyset(
                     unit.clone(),
                     condition_id,
                     outcome_collection_string,
@@ -476,11 +580,8 @@ impl Mint {
                 )
                 .await?;
 
-            keysets.insert(outcome_collection_string.clone(), keyset.id);
+            keysets.push((outcome_collection_string.clone(), keyset));
         }
-
-        let new_keysets = self.signatory.keysets().await?;
-        self.keysets.store(new_keysets.keysets.into());
 
         Ok(keysets)
     }

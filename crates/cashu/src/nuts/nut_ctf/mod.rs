@@ -138,6 +138,9 @@ pub struct RegisterConditionRequest {
     /// Outcome collections to create keysets for. Omitted means mint default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome_collections: Option<Vec<String>>,
+    /// Optional regular ecash proofs paying the registration fee.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fee: Option<Proofs>,
     /// Condition type: "enum" (default) or "numeric"
     #[serde(default = "default_condition_type")]
     #[serde(skip_serializing_if = "is_default_condition_type")]
@@ -457,6 +460,12 @@ pub struct NutCtfSettings {
     /// Default keyset creation rule: none, one-vs-rest, or all.
     #[serde(default = "default_keyset_creation")]
     pub default_keyset_creation: String,
+    /// Flat registration fee per new condition.
+    #[serde(default)]
+    pub registration_fee_base: u64,
+    /// Additional registration fee per created keyset.
+    #[serde(default)]
+    pub registration_fee_per_keyset: u64,
 }
 
 fn default_keyset_creation() -> String {
@@ -470,6 +479,8 @@ impl Default for NutCtfSettings {
             dlc_version: Some("0".to_string()),
             vesting_period: Some(2592000), // 30 days
             default_keyset_creation: default_keyset_creation(),
+            registration_fee_base: 0,
+            registration_fee_per_keyset: 0,
         }
     }
 }
@@ -950,6 +961,8 @@ mod tests {
             dlc_version: Some("0".to_string()),
             vesting_period: None,
             default_keyset_creation: "none".to_string(),
+            registration_fee_base: 0,
+            registration_fee_per_keyset: 0,
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         assert!(!json.contains("vesting_period"));

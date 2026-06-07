@@ -3,13 +3,13 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use cdk_common::database::mint::ConditionsDatabase;
+use cdk_common::database::mint::{ConditionsDatabase, ConditionsTransaction};
 use cdk_common::database::Error;
 use cdk_common::mint::{MintKeySetInfo, StoredCondition};
 use cdk_common::nuts::nut_ctf::ConditionalKeySetInfo;
 use cdk_common::nuts::Id;
 
-use super::SQLMintDatabase;
+use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
 use crate::{column_as_number, column_as_string, unpack_into};
@@ -162,6 +162,127 @@ fn mint_keyset_info_to_conditional_keyset_info(
     })
 }
 
+fn validate_conditional_keyset_info(
+    keyset_info: &MintKeySetInfo,
+) -> Result<(String, String, String), Error> {
+    let condition_id = keyset_info.condition_id.as_deref().ok_or_else(|| {
+        Error::Internal("add_conditional_keyset: condition_id missing".to_string())
+    })?;
+    let outcome_collection = keyset_info.outcome_collection.as_deref().ok_or_else(|| {
+        Error::Internal("add_conditional_keyset: outcome_collection missing".to_string())
+    })?;
+    let outcome_collection_id = keyset_info
+        .outcome_collection_id
+        .as_deref()
+        .ok_or_else(|| {
+            Error::Internal("add_conditional_keyset: outcome_collection_id missing".to_string())
+        })?;
+
+    Ok((
+        condition_id.to_string(),
+        outcome_collection.to_string(),
+        outcome_collection_id.to_string(),
+    ))
+}
+
+async fn insert_condition<EX>(executor: &EX, condition: StoredCondition) -> Result<(), Error>
+where
+    EX: crate::database::DatabaseExecutor,
+{
+    query(
+        r#"
+        INSERT INTO conditions (
+            condition_id, threshold, tags_json, announcements_json,
+            attestation_status, winning_outcome, attested_at, created_at,
+            condition_type, lo_bound, hi_bound, precision
+        ) VALUES (
+            :condition_id, :threshold, :tags_json, :announcements_json,
+            :attestation_status, :winning_outcome, :attested_at, :created_at,
+            :condition_type, :lo_bound, :hi_bound, :precision
+        )
+        "#,
+    )?
+    .bind("condition_id", condition.condition_id)
+    .bind("threshold", condition.threshold as i64)
+    .bind("tags_json", condition.tags_json)
+    .bind("announcements_json", condition.announcements_json)
+    .bind("attestation_status", condition.attestation_status)
+    .bind("winning_outcome", condition.winning_outcome)
+    .bind("attested_at", condition.attested_at.map(|a| a as i64))
+    .bind("created_at", condition.created_at as i64)
+    .bind("condition_type", condition.condition_type)
+    .bind("lo_bound", condition.lo_bound)
+    .bind("hi_bound", condition.hi_bound)
+    .bind("precision", condition.precision.map(|p| p as i64))
+    .execute(executor)
+    .await?;
+
+    Ok(())
+}
+
+async fn insert_conditional_keyset<EX>(
+    executor: &EX,
+    keyset_info: MintKeySetInfo,
+    created_at: u64,
+) -> Result<(), Error>
+where
+    EX: crate::database::DatabaseExecutor,
+{
+    let (condition_id, outcome_collection, outcome_collection_id) =
+        validate_conditional_keyset_info(&keyset_info)?;
+
+    query(
+        r#"
+        INSERT INTO conditional_keyset (
+            id, unit, active, valid_from, valid_to, derivation_path,
+            derivation_path_index, amounts, input_fee_ppk, issuer_version,
+            condition_id, outcome_collection, outcome_collection_id, created_at
+        ) VALUES (
+            :id, :unit, :active, :valid_from, :valid_to, :derivation_path,
+            :derivation_path_index, :amounts, :input_fee_ppk, :issuer_version,
+            :condition_id, :outcome_collection, :outcome_collection_id, :created_at
+        )
+        ON CONFLICT(id) DO UPDATE SET
+            unit = excluded.unit,
+            active = excluded.active,
+            valid_from = excluded.valid_from,
+            valid_to = excluded.valid_to,
+            derivation_path = excluded.derivation_path,
+            derivation_path_index = excluded.derivation_path_index,
+            amounts = excluded.amounts,
+            input_fee_ppk = excluded.input_fee_ppk,
+            issuer_version = excluded.issuer_version,
+            condition_id = excluded.condition_id,
+            outcome_collection = excluded.outcome_collection,
+            outcome_collection_id = excluded.outcome_collection_id
+        "#,
+    )?
+    .bind("id", keyset_info.id.to_string())
+    .bind("unit", keyset_info.unit.to_string())
+    .bind("active", keyset_info.active)
+    .bind("valid_from", keyset_info.valid_from as i64)
+    .bind("valid_to", keyset_info.final_expiry.map(|v| v as i64))
+    .bind("derivation_path", keyset_info.derivation_path.to_string())
+    .bind("derivation_path_index", keyset_info.derivation_path_index)
+    .bind(
+        "amounts",
+        serde_json::to_string(&keyset_info.amounts).map_err(|e| Error::Internal(e.to_string()))?,
+    )
+    .bind("input_fee_ppk", keyset_info.input_fee_ppk as i64)
+    .bind(
+        "issuer_version",
+        keyset_info.issuer_version.map(|v| v.to_string()),
+    )
+    .bind("condition_id", condition_id)
+    .bind("outcome_collection", outcome_collection)
+    .bind("outcome_collection_id", outcome_collection_id)
+    .bind("created_at", created_at as i64)
+    .execute(executor)
+    .await?;
+
+    Ok(())
+}
+
 impl<RM> SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
@@ -229,36 +350,7 @@ where
 
     async fn add_condition(&self, condition: StoredCondition) -> Result<(), Self::Err> {
         let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-
-        query(
-            r#"
-            INSERT INTO conditions (
-                condition_id, threshold, tags_json, announcements_json,
-                attestation_status, winning_outcome, attested_at, created_at,
-                condition_type, lo_bound, hi_bound, precision
-            ) VALUES (
-                :condition_id, :threshold, :tags_json, :announcements_json,
-                :attestation_status, :winning_outcome, :attested_at, :created_at,
-                :condition_type, :lo_bound, :hi_bound, :precision
-            )
-            "#,
-        )?
-        .bind("condition_id", condition.condition_id)
-        .bind("threshold", condition.threshold as i64)
-        .bind("tags_json", condition.tags_json)
-        .bind("announcements_json", condition.announcements_json)
-        .bind("attestation_status", condition.attestation_status)
-        .bind("winning_outcome", condition.winning_outcome)
-        .bind("attested_at", condition.attested_at.map(|a| a as i64))
-        .bind("created_at", condition.created_at as i64)
-        .bind("condition_type", condition.condition_type)
-        .bind("lo_bound", condition.lo_bound)
-        .bind("hi_bound", condition.hi_bound)
-        .bind("precision", condition.precision.map(|p| p as i64))
-        .execute(&*conn)
-        .await?;
-
-        Ok(())
+        insert_condition(&*conn, condition).await
     }
 
     async fn delete_condition_registration(&self, condition_id: &str) -> Result<(), Self::Err> {
@@ -468,5 +560,25 @@ where
             }
             None => Ok(None),
         }
+    }
+}
+
+#[async_trait]
+impl<RM> ConditionsTransaction for SQLTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    type Err = Error;
+
+    async fn add_condition(&mut self, condition: StoredCondition) -> Result<(), Self::Err> {
+        insert_condition(&self.inner, condition).await
+    }
+
+    async fn add_conditional_keyset(
+        &mut self,
+        keyset_info: MintKeySetInfo,
+        created_at: u64,
+    ) -> Result<(), Self::Err> {
+        insert_conditional_keyset(&self.inner, keyset_info, created_at).await
     }
 }

@@ -330,6 +330,21 @@ impl MintBuilder {
         self
     }
 
+    /// Set the conditional-token registration fee policy advertised in mint info.
+    #[cfg(feature = "conditional-tokens")]
+    pub fn with_ctf_registration_fee(mut self, base: u64, per_keyset: u64) -> Self {
+        let mut settings = self
+            .mint_info
+            .nuts
+            .nut_ctf
+            .take()
+            .unwrap_or_else(NutCtfSettings::default);
+        settings.registration_fee_base = base;
+        settings.registration_fee_per_keyset = per_keyset;
+        self.mint_info.nuts.nut_ctf = Some(settings);
+        self
+    }
+
     /// Set batch minting settings (NUT-29)
     ///
     /// Configures the maximum number of quotes allowed in a single batch request

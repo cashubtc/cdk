@@ -16,6 +16,11 @@ pub const ENV_MINT_CONTACT_EMAIL: &str = "CDK_MINTD_MINT_CONTACT_EMAIL";
 pub const ENV_MINT_TOS_URL: &str = "CDK_MINTD_MINT_TOS_URL";
 #[cfg(feature = "conditional-tokens")]
 pub const ENV_MINT_CTF_DEFAULT_KEYSET_CREATION: &str = "CDK_MINTD_CTF_DEFAULT_KEYSET_CREATION";
+#[cfg(feature = "conditional-tokens")]
+pub const ENV_MINT_CTF_REGISTRATION_FEE_BASE: &str = "CDK_MINTD_CTF_REGISTRATION_FEE_BASE";
+#[cfg(feature = "conditional-tokens")]
+pub const ENV_MINT_CTF_REGISTRATION_FEE_PER_KEYSET: &str =
+    "CDK_MINTD_CTF_REGISTRATION_FEE_PER_KEYSET";
 
 impl MintInfo {
     pub fn from_env(mut self) -> Self {
@@ -63,6 +68,18 @@ impl MintInfo {
         #[cfg(feature = "conditional-tokens")]
         if let Ok(policy) = env::var(ENV_MINT_CTF_DEFAULT_KEYSET_CREATION) {
             self.ctf_default_keyset_creation = Some(policy);
+        }
+        #[cfg(feature = "conditional-tokens")]
+        if let Ok(base) = env::var(ENV_MINT_CTF_REGISTRATION_FEE_BASE) {
+            if let Ok(base) = base.parse() {
+                self.ctf_registration_fee_base = Some(base);
+            }
+        }
+        #[cfg(feature = "conditional-tokens")]
+        if let Ok(per_keyset) = env::var(ENV_MINT_CTF_REGISTRATION_FEE_PER_KEYSET) {
+            if let Ok(per_keyset) = per_keyset.parse() {
+                self.ctf_registration_fee_per_keyset = Some(per_keyset);
+            }
         }
 
         self

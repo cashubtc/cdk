@@ -16,7 +16,9 @@ use tracing::instrument;
 use crate::common::{
     check_unit_string_collision, create_new_keyset, derivation_path_from_unit, init_keysets,
 };
-use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
+use crate::signatory::{
+    PreparedConditionalKeySet, RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets,
+};
 
 /// In-memory Signatory
 ///
@@ -269,7 +271,7 @@ impl Signatory for DbSignatory {
 
     #[cfg(feature = "conditional-tokens")]
     #[tracing::instrument(skip(self))]
-    async fn create_conditional_keyset(
+    async fn prepare_conditional_keyset(
         &self,
         unit: CurrencyUnit,
         condition_id: &str,
@@ -278,7 +280,7 @@ impl Signatory for DbSignatory {
         amounts: Vec<u64>,
         input_fee_ppk: u64,
         final_expiry: Option<u64>,
-    ) -> Result<SignatoryKeySet, Error> {
+    ) -> Result<PreparedConditionalKeySet, Error> {
         let (keyset, mut info) = crate::common::create_conditional_keyset(
             &self.secp_ctx,
             self.xpriv,
@@ -294,29 +296,17 @@ impl Signatory for DbSignatory {
         info.outcome_collection = Some(outcome_collection.to_string());
         info.active = true;
 
-        // Persist to the dedicated `conditional_keyset` table (NOT the shared
-        // `keyset` table). This keeps `get_active_keysets()` returning exactly
-        // one primary keyset per unit, which is what `reload_keys_from_db`
-        // relies on for the non-conditional active-keyset marking.
-        let created_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let public = (&(info.clone(), keyset)).into();
 
-        self.localstore
-            .add_conditional_keyset(info.clone(), created_at)
-            .await?;
+        Ok(PreparedConditionalKeySet {
+            keyset: public,
+            info,
+        })
+    }
 
-        // Insert directly into the in-memory signing map so subsequent
-        // blind_sign / verify_proofs can find this keyset without reloading
-        // the entire DB. Conditional keysets are never added to
-        // `active_keysets` (that map has "one primary per unit" semantics).
-        self.keysets
-            .write()
-            .await
-            .insert(info.id, (info.clone(), keyset.clone()));
-
-        Ok((&(info, keyset)).into())
+    #[cfg(feature = "conditional-tokens")]
+    async fn reload_keysets_from_storage(&self) -> Result<(), Error> {
+        self.reload_keys_from_db().await
     }
 }
 

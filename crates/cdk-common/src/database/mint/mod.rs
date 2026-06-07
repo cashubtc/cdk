@@ -631,6 +631,24 @@ pub trait CompletedOperationsDatabase {
 /// Conditions Database trait (NUT-CTF)
 #[cfg(feature = "conditional-tokens")]
 #[async_trait]
+pub trait ConditionsTransaction {
+    /// Conditions transaction error
+    type Err: Into<Error> + From<Error>;
+
+    /// Add a stored condition in the current transaction.
+    async fn add_condition(&mut self, condition: StoredCondition) -> Result<(), Self::Err>;
+
+    /// Add a conditional keyset row in the current transaction.
+    async fn add_conditional_keyset(
+        &mut self,
+        keyset_info: MintKeySetInfo,
+        created_at: u64,
+    ) -> Result<(), Self::Err>;
+}
+
+/// Conditions Database trait (NUT-CTF)
+#[cfg(feature = "conditional-tokens")]
+#[async_trait]
 pub trait ConditionsDatabase {
     /// Conditions Database Error
     type Err: Into<Error> + From<Error>;
@@ -690,6 +708,7 @@ pub trait ConditionsDatabase {
 }
 
 /// Base database writer
+#[cfg(not(feature = "conditional-tokens"))]
 pub trait Transaction<Error>:
     DbTransactionFinalizer<Err = Error>
     + QuotesTransaction<Err = Error>
@@ -698,6 +717,20 @@ pub trait Transaction<Error>:
     + KVStoreTransaction<Error>
     + SagaTransaction<Err = Error>
     + CompletedOperationsTransaction<Err = Error>
+{
+}
+
+/// Base database writer with NUT-CTF condition registration writes.
+#[cfg(feature = "conditional-tokens")]
+pub trait Transaction<Error>:
+    DbTransactionFinalizer<Err = Error>
+    + QuotesTransaction<Err = Error>
+    + SignaturesTransaction<Err = Error>
+    + ProofsTransaction<Err = Error>
+    + KVStoreTransaction<Error>
+    + SagaTransaction<Err = Error>
+    + CompletedOperationsTransaction<Err = Error>
+    + ConditionsTransaction<Err = Error>
 {
 }
 
