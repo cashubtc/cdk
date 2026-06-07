@@ -28,14 +28,10 @@ pub struct MintQuoteOnchainRequest {
 ///
 /// Response containing the onchain quote details.
 ///
-/// `deny_unknown_fields` is intentional: the `NotificationPayload` enum is
-/// `#[serde(untagged)]` and several quote-response variants share a large
-/// overlap of field names. Rejecting unknown fields ensures an onchain payload
-/// cannot silently deserialize as another method (for example `MintQuoteBolt12Response`
-/// which carries an `amount` field Onchain does not have).
+/// Unknown fields are accepted to preserve forward compatibility when mints
+/// add optional onchain extensions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "Q: Serialize + DeserializeOwned")]
-#[serde(deny_unknown_fields)]
 pub struct MintQuoteOnchainResponse<Q> {
     /// Quote Id
     pub quote: Q,
@@ -161,14 +157,10 @@ pub struct MeltQuoteOnchainFeeOption {
 /// The `POST /v1/melt/quote/onchain` endpoint returns one quote with one or
 /// more `fee_options`. The wallet chooses one option when executing the quote.
 ///
-/// `deny_unknown_fields` is intentional: the `NotificationPayload` enum is
-/// `#[serde(untagged)]` and melt-quote responses for different methods share
-/// many field names. Rejecting unknown fields ensures an onchain payload cannot
-/// silently deserialize as `MeltQuoteBolt11Response` (which carries `fee_reserve`
-/// at the top level, while onchain carries it inside `fee_options`).
+/// Unknown fields are accepted to preserve forward compatibility when mints
+/// add optional onchain extensions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "Q: Serialize + DeserializeOwned")]
-#[serde(deny_unknown_fields)]
 pub struct MeltQuoteOnchainResponse<Q> {
     /// Quote Id
     pub quote: Q,

@@ -34,8 +34,8 @@ pub struct WsUnsubscribeResponse<I> {
 ///
 /// This is the notification that is sent to the client when an event matches a
 /// subscription
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound = "T: Serialize + DeserializeOwned, I: Serialize + DeserializeOwned")]
+#[derive(Debug, Clone, Serialize)]
+#[serde(bound(serialize = "T: Serialize + DeserializeOwned, I: Serialize + DeserializeOwned"))]
 pub struct NotificationInner<T, I>
 where
     T: Clone,
@@ -158,8 +158,8 @@ pub struct WsErrorResponse {
 }
 
 /// Message from the server to the client
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound = "I: Serialize + DeserializeOwned")]
+#[derive(Debug, Clone, Serialize)]
+#[serde(bound(serialize = "I: Serialize + DeserializeOwned"))]
 #[serde(untagged)]
 pub enum WsMessageOrResponse<I> {
     /// A response to a request
