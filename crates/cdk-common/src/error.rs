@@ -422,9 +422,9 @@ pub enum Error {
     #[cfg(feature = "conditional-tokens")]
     #[error("Convert not permitted for this condition")]
     ConvertNotPermitted,
-    /// Full-set or single-element partition (13043)
+    /// Full-set or reserved outcome collection (13043)
     #[cfg(feature = "conditional-tokens")]
-    #[error("Partition must contain at least two non-full outcome collections")]
+    #[error("Full-set or reserved outcome collection")]
     FullSetOrSingleElementPartition,
     /// Oracle threshold not met (13027)
     #[cfg(feature = "conditional-tokens")]
@@ -434,18 +434,14 @@ pub enum Error {
     #[cfg(feature = "conditional-tokens")]
     #[error("Condition already exists with different configuration")]
     ConditionAlreadyExists,
-    /// Overlapping outcome collections (13037)
+    /// Duplicate canonical outcome collection (13037)
     #[cfg(feature = "conditional-tokens")]
-    #[error("Overlapping outcome collections")]
+    #[error("Duplicate canonical outcome collection")]
     OverlappingOutcomeCollections,
-    /// Incomplete partition (13038)
+    /// Unknown outcome in outcome collection (13038)
     #[cfg(feature = "conditional-tokens")]
-    #[error("Incomplete partition")]
+    #[error("Unknown outcome in outcome collection")]
     IncompletePartition,
-    /// Maximum condition depth exceeded (13040)
-    #[cfg(feature = "conditional-tokens")]
-    #[error("Maximum condition depth exceeded")]
-    MaxConditionDepthExceeded,
     /// Hash to curve failed (13044)
     #[cfg(feature = "conditional-tokens")]
     #[error("Hash to curve failed")]
@@ -724,7 +720,6 @@ impl Error {
             | Self::ConditionAlreadyExists
             | Self::OverlappingOutcomeCollections
             | Self::IncompletePartition
-            | Self::MaxConditionDepthExceeded
             | Self::HashToCurveFailed
             | Self::EcPointOperationFailed
             | Self::InvalidNumericRange
@@ -1104,11 +1099,6 @@ impl From<Error> for ErrorResponse {
                 detail: err.to_string(),
             },
             #[cfg(feature = "conditional-tokens")]
-            Error::MaxConditionDepthExceeded => ErrorResponse {
-                code: ErrorCode::MaxConditionDepthExceeded,
-                detail: err.to_string(),
-            },
-            #[cfg(feature = "conditional-tokens")]
             Error::HashToCurveFailed => ErrorResponse {
                 code: ErrorCode::HashToCurveFailed,
                 detail: err.to_string(),
@@ -1398,7 +1388,7 @@ pub enum ErrorCode {
     /// Convert not permitted for this condition (13042)
     #[cfg(feature = "conditional-tokens")]
     ConvertNotPermitted,
-    /// Full-set or single-element partition (13043)
+    /// Full-set or reserved outcome collection (13043)
     #[cfg(feature = "conditional-tokens")]
     FullSetOrSingleElementPartition,
     /// Oracle threshold not met (13027)
@@ -1419,15 +1409,12 @@ pub enum ErrorCode {
     /// Payout calculation overflow (13033)
     #[cfg(feature = "conditional-tokens")]
     PayoutCalculationOverflow,
-    /// Overlapping outcome collections (13037)
+    /// Duplicate canonical outcome collection (13037)
     #[cfg(feature = "conditional-tokens")]
     OverlappingOutcomeCollections,
-    /// Incomplete partition (13038)
+    /// Unknown outcome in outcome collection (13038)
     #[cfg(feature = "conditional-tokens")]
     IncompletePartition,
-    /// Maximum condition depth exceeded (13040)
-    #[cfg(feature = "conditional-tokens")]
-    MaxConditionDepthExceeded,
     /// Hash to curve failed (13044)
     #[cfg(feature = "conditional-tokens")]
     HashToCurveFailed,
@@ -1537,8 +1524,6 @@ impl ErrorCode {
             #[cfg(feature = "conditional-tokens")]
             13038 => Self::IncompletePartition,
             #[cfg(feature = "conditional-tokens")]
-            13040 => Self::MaxConditionDepthExceeded,
-            #[cfg(feature = "conditional-tokens")]
             13041 => Self::ConvertPayoffFeeViolation,
             #[cfg(feature = "conditional-tokens")]
             13042 => Self::ConvertNotPermitted,
@@ -1627,8 +1612,6 @@ impl ErrorCode {
             Self::OverlappingOutcomeCollections => 13037,
             #[cfg(feature = "conditional-tokens")]
             Self::IncompletePartition => 13038,
-            #[cfg(feature = "conditional-tokens")]
-            Self::MaxConditionDepthExceeded => 13040,
             #[cfg(feature = "conditional-tokens")]
             Self::ConvertPayoffFeeViolation => 13041,
             #[cfg(feature = "conditional-tokens")]

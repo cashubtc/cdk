@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use cdk_common::database::mint::ConditionsDatabase;
 use cdk_common::database::Error;
-use cdk_common::mint::{MintKeySetInfo, StoredCondition, StoredPartition};
+use cdk_common::mint::{MintKeySetInfo, StoredCondition};
 use cdk_common::nuts::nut_ctf::ConditionalKeySetInfo;
 use cdk_common::nuts::Id;
 
@@ -78,28 +78,6 @@ fn sql_row_to_stored_condition(row: Vec<Column>) -> Result<StoredCondition, Erro
         lo_bound: lo_bound_val,
         hi_bound: hi_bound_val,
         precision: precision_val,
-    })
-}
-
-fn sql_row_to_stored_partition(row: Vec<Column>) -> Result<StoredPartition, Error> {
-    unpack_into!(
-        let (
-            condition_id,
-            partition_json,
-            collateral,
-            parent_collection_id,
-            created_at
-        ) = row
-    );
-
-    let created_at_val: u64 = column_as_number!(created_at);
-
-    Ok(StoredPartition {
-        condition_id: column_as_string!(&condition_id),
-        partition_json: column_as_string!(&partition_json),
-        collateral: column_as_string!(&collateral),
-        parent_collection_id: column_as_string!(&parent_collection_id),
-        created_at: created_at_val,
     })
 }
 
@@ -277,6 +255,32 @@ where
         .bind("lo_bound", condition.lo_bound)
         .bind("hi_bound", condition.hi_bound)
         .bind("precision", condition.precision.map(|p| p as i64))
+        .execute(&*conn)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn delete_condition_registration(&self, condition_id: &str) -> Result<(), Self::Err> {
+        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
+
+        query(
+            r#"
+            DELETE FROM conditional_keyset
+            WHERE condition_id = :condition_id
+            "#,
+        )?
+        .bind("condition_id", condition_id.to_string())
+        .execute(&*conn)
+        .await?;
+
+        query(
+            r#"
+            DELETE FROM conditions
+            WHERE condition_id = :condition_id
+            "#,
+        )?
+        .bind("condition_id", condition_id.to_string())
         .execute(&*conn)
         .await?;
 
@@ -464,49 +468,5 @@ where
             }
             None => Ok(None),
         }
-    }
-
-    async fn add_partition(&self, partition: StoredPartition) -> Result<(), Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-
-        query(
-            r#"
-            INSERT INTO condition_partitions (
-                condition_id, partition_json, collateral, parent_collection_id, created_at
-            ) VALUES (
-                :condition_id, :partition_json, :collateral, :parent_collection_id, :created_at
-            )
-            "#,
-        )?
-        .bind("condition_id", partition.condition_id)
-        .bind("partition_json", partition.partition_json)
-        .bind("collateral", partition.collateral)
-        .bind("parent_collection_id", partition.parent_collection_id)
-        .bind("created_at", partition.created_at as i64)
-        .execute(&*conn)
-        .await?;
-
-        Ok(())
-    }
-
-    async fn get_partitions_for_condition(
-        &self,
-        condition_id: &str,
-    ) -> Result<Vec<StoredPartition>, Self::Err> {
-        let conn = self.pool.get().map_err(|e| Error::Database(Box::new(e)))?;
-
-        let rows = query(
-            r#"
-            SELECT condition_id, partition_json, collateral, parent_collection_id, created_at
-            FROM condition_partitions
-            WHERE condition_id = :condition_id
-            ORDER BY created_at ASC
-            "#,
-        )?
-        .bind("condition_id", condition_id.to_string())
-        .fetch_all(&*conn)
-        .await?;
-
-        rows.into_iter().map(sql_row_to_stored_partition).collect()
     }
 }

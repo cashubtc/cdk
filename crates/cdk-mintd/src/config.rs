@@ -760,6 +760,9 @@ pub struct MintInfo {
     pub contact_email: Option<String>,
     /// URL to the terms of service
     pub tos_url: Option<String>,
+    /// NUT-CTF default keyset creation policy: none, one-vs-rest, or all.
+    #[cfg(feature = "conditional-tokens")]
+    pub ctf_default_keyset_creation: Option<String>,
 }
 
 #[cfg(feature = "management-rpc")]

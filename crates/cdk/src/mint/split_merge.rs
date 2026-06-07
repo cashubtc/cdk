@@ -53,6 +53,9 @@ impl Mint {
             .parent_collection_id
             .as_deref()
             .unwrap_or(ZERO_COLLECTION_ID);
+        if parent_collection_id != ZERO_COLLECTION_ID {
+            return Err(Error::ConvertPayoffFeeViolation);
+        }
         let parent_bytes = hex_32(parent_collection_id)?;
         let condition_bytes = hex_32(&request.condition_id)?;
         let outcomes = self.condition_outcomes(&condition).await?;

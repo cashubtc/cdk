@@ -491,6 +491,13 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
         }
     }
 
+    #[cfg(feature = "conditional-tokens")]
+    if let Some(policy) = &settings.mint_info.ctf_default_keyset_creation {
+        if !policy.is_empty() {
+            builder = builder.with_ctf_default_keyset_creation(policy.to_string());
+        }
+    }
+
     builder = builder.with_keyset_v2(settings.info.use_keyset_v2);
 
     builder

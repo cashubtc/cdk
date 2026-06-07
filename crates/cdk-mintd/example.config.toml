@@ -61,6 +61,8 @@ tti = 60
 # Nostr pubkey of mint (Hex)
 # contact_nostr_public_key = ""
 # tos_url = "https://example.com/terms-of-service"
+# NUT-CTF default keyset creation policy: "none", "one-vs-rest", or "all"
+# ctf_default_keyset_creation = "one-vs-rest"
 
 
 [database]

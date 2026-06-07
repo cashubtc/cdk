@@ -6,7 +6,7 @@ use bitcoin::bip32::DerivationPath;
 use cashu::{CurrencyUnit, Id};
 
 use crate::database::mint::{ConditionsDatabase, Database, Error, KeysDatabase};
-use crate::mint::{MintKeySetInfo, StoredCondition, StoredPartition};
+use crate::mint::{MintKeySetInfo, StoredCondition};
 
 /// Build a minimal conditional keyset info for tests. The amounts/derivation_path
 /// values are arbitrary but syntactically valid.
@@ -47,16 +47,6 @@ fn test_condition(condition_id: &str) -> StoredCondition {
         lo_bound: None,
         hi_bound: None,
         precision: None,
-    }
-}
-
-fn test_partition(condition_id: &str) -> StoredPartition {
-    StoredPartition {
-        condition_id: condition_id.to_string(),
-        partition_json: r#"["YES","NO"]"#.to_string(),
-        collateral: "sat".to_string(),
-        parent_collection_id: "00".repeat(32),
-        created_at: 1000000,
     }
 }
 
@@ -238,70 +228,6 @@ where
     let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
     let result = db.get_condition_for_keyset(&keyset_id).await.unwrap();
     assert!(result.is_none());
-}
-
-/// Test add and get partitions for a condition
-pub async fn add_and_get_partitions<DB>(db: DB)
-where
-    DB: Database<Error> + ConditionsDatabase<Err = Error>,
-{
-    let cond = test_condition(&"a2".repeat(32));
-    db.add_condition(cond.clone()).await.unwrap();
-
-    let partition = test_partition(&cond.condition_id);
-    db.add_partition(partition.clone()).await.unwrap();
-
-    let partitions = db
-        .get_partitions_for_condition(&cond.condition_id)
-        .await
-        .unwrap();
-    assert_eq!(partitions.len(), 1);
-    assert_eq!(partitions[0].condition_id, cond.condition_id);
-    assert_eq!(partitions[0].partition_json, r#"["YES","NO"]"#);
-    assert_eq!(partitions[0].collateral, "sat");
-    assert_eq!(partitions[0].parent_collection_id, "00".repeat(32));
-}
-
-/// Test multiple partitions for the same condition
-pub async fn get_partitions_multiple<DB>(db: DB)
-where
-    DB: Database<Error> + ConditionsDatabase<Err = Error>,
-{
-    let cond = test_condition(&"a3".repeat(32));
-    db.add_condition(cond.clone()).await.unwrap();
-
-    let mut p1 = test_partition(&cond.condition_id);
-    p1.partition_json = r#"["YES","NO"]"#.to_string();
-    p1.collateral = "sat".to_string();
-
-    let mut p2 = test_partition(&cond.condition_id);
-    p2.partition_json = r#"["A|B","C"]"#.to_string();
-    p2.collateral = "usd".to_string();
-    p2.created_at = 2000000;
-
-    db.add_partition(p1).await.unwrap();
-    db.add_partition(p2).await.unwrap();
-
-    let partitions = db
-        .get_partitions_for_condition(&cond.condition_id)
-        .await
-        .unwrap();
-    assert_eq!(partitions.len(), 2);
-}
-
-/// Test get_partitions returns empty for condition with no partitions
-pub async fn get_partitions_empty<DB>(db: DB)
-where
-    DB: Database<Error> + ConditionsDatabase<Err = Error>,
-{
-    let cond = test_condition(&"a4".repeat(32));
-    db.add_condition(cond.clone()).await.unwrap();
-
-    let partitions = db
-        .get_partitions_for_condition(&cond.condition_id)
-        .await
-        .unwrap();
-    assert!(partitions.is_empty());
 }
 
 /// Test get_conditions with limit parameter

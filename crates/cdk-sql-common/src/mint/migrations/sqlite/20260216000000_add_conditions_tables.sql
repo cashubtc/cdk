@@ -10,17 +10,6 @@ CREATE TABLE IF NOT EXISTS conditions (
     created_at INTEGER NOT NULL
 );
 
--- NUT-CTF: Conditional tokens - condition partitions table
-CREATE TABLE IF NOT EXISTS condition_partitions (
-    condition_id TEXT NOT NULL,
-    partition_json TEXT NOT NULL,
-    collateral TEXT NOT NULL,
-    parent_collection_id TEXT NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000',
-    created_at INTEGER NOT NULL,
-    PRIMARY KEY (condition_id, partition_json),
-    FOREIGN KEY (condition_id) REFERENCES conditions(condition_id)
-);
-
 -- NUT-CTF: Conditional tokens - conditional keysets table
 --
 -- Standalone table mirroring `keyset` schema plus CTF-specific columns.

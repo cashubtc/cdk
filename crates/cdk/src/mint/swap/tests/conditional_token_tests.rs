@@ -10,7 +10,7 @@ use cdk_common::nuts::nut_ctf::test_helpers::{
     create_test_oracle, create_test_oracle_2,
 };
 use cdk_common::nuts::nut_ctf::{
-    CtfConvertRequest, RedeemOutcomeRequest, RegisterConditionRequest, RegisterPartitionRequest,
+    CtfConvertRequest, NutCtfSettings, RedeemOutcomeRequest, RegisterConditionRequest,
 };
 use cdk_common::nuts::{
     Conditions, Id, PreMintSecrets, SecretKey, SigFlag, SpendingConditions, SwapRequest, Witness,
@@ -18,16 +18,26 @@ use cdk_common::nuts::{
 use cdk_common::{Amount, CurrencyUnit};
 
 use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
+use crate::Error;
 
 /// Helper: create an enum RegisterConditionRequest with all fields
 fn enum_condition_request(
     description: &str,
     announcements: Vec<String>,
 ) -> RegisterConditionRequest {
+    let outcome_collections = announcements.first().map(|announcement| {
+        let parsed = cdk_common::nuts::nut_ctf::dlc::parse_oracle_announcement(announcement)
+            .expect("test announcement should parse");
+        cdk_common::nuts::nut_ctf::dlc::extract_outcomes(&parsed)
+            .expect("test announcement should contain enum outcomes")
+    });
+
     RegisterConditionRequest {
         threshold: 1,
         tags: vec![vec!["description".to_string(), description.to_string()]],
         announcements,
+        collateral: Some("sat".to_string()),
+        outcome_collections,
         condition_type: "enum".to_string(),
         lo_bound: None,
         hi_bound: None,
@@ -44,31 +54,22 @@ fn get_regular_keyset_id(mint: &crate::mint::Mint) -> Id {
         .expect("mint should have an active SAT keyset")
 }
 
-/// Register a test condition and partition, returning (condition_id, keysets map)
+/// Register a test condition, returning (condition_id, keysets map)
 async fn register_test_condition(
     mint: &crate::mint::Mint,
     outcomes: &[&str],
-    partition: Option<Vec<String>>,
+    outcome_collections: Option<Vec<String>>,
 ) -> (String, HashMap<String, Id>) {
     let oracle = create_test_oracle();
     let (_, hex_tlv) = create_test_announcement(&oracle, outcomes, "test-event");
 
-    let request = enum_condition_request("Test condition", vec![hex_tlv]);
+    let mut request = enum_condition_request("Test condition", vec![hex_tlv]);
+    if let Some(collections) = outcome_collections {
+        request.outcome_collections = Some(collections);
+    }
 
     let condition_response = mint.register_condition(request).await.unwrap();
-    let condition_id = condition_response.condition_id;
-
-    let partition_request = RegisterPartitionRequest {
-        collateral: "sat".to_string(),
-        partition,
-        parent_collection_id: None,
-    };
-
-    let partition_response = mint
-        .register_partition(&condition_id, partition_request)
-        .await
-        .unwrap();
-    (condition_id, partition_response.keysets)
+    (condition_response.condition_id, condition_response.keysets)
 }
 
 /// Helper: create PreMintSecrets for a given keyset
@@ -98,6 +99,10 @@ fn create_premint(
     .unwrap();
     let blinded_messages = pre_mint.blinded_messages().to_vec();
     (blinded_messages, pre_mint)
+}
+
+fn after_conditional_input_fee(amount: Amount) -> Amount {
+    amount - Amount::from(1)
 }
 
 /// Helper: create P2PK 2-of-2 PreMintSecrets for a given keyset.
@@ -173,7 +178,7 @@ async fn swap_to_conditional(
     .unwrap()
 }
 
-/// Test that registering a condition creates keysets for each partition key
+/// Test that registering a condition creates keysets for each outcome collection
 #[tokio::test]
 async fn test_register_condition_creates_keysets() {
     let mint = create_test_mint().await.unwrap();
@@ -200,6 +205,30 @@ async fn test_register_condition_idempotent() {
     assert_eq!(response1.condition_id, response2.condition_id);
 }
 
+#[tokio::test]
+async fn test_register_condition_rejects_different_keyset_set() {
+    let mint = create_test_mint().await.unwrap();
+    let oracle = create_test_oracle();
+    let (_, hex_tlv) = create_test_announcement(&oracle, &["A", "B", "C"], "one-shot-event");
+
+    let mut request = enum_condition_request("One-shot condition", vec![hex_tlv]);
+    request.outcome_collections = Some(vec!["A".to_string(), "B".to_string(), "C".to_string()]);
+    mint.register_condition(request.clone()).await.unwrap();
+
+    request
+        .outcome_collections
+        .as_mut()
+        .unwrap()
+        .push("A|B".to_string());
+
+    let result = mint.register_condition(request).await;
+    assert!(
+        matches!(result, Err(Error::ConditionAlreadyExists)),
+        "re-registering with a different keyset set must fail with ConditionAlreadyExists: {:?}",
+        result.err()
+    );
+}
+
 /// Test get_conditions returns registered conditions
 #[tokio::test]
 async fn test_get_conditions_returns_registered() {
@@ -220,8 +249,8 @@ async fn test_get_condition_by_id() {
     let info = mint.get_condition(&condition_id).await.unwrap();
     assert_eq!(info.condition_id, condition_id);
     assert_eq!(info.threshold, 1);
-    assert_eq!(info.partitions.len(), 1);
-    assert_eq!(info.partitions[0].keysets, keysets);
+    assert_eq!(info.keysets.len(), 2);
+    assert_eq!(info.keysets, keysets);
 }
 
 /// Full redeem outcome flow:
@@ -243,20 +272,7 @@ async fn test_redeem_outcome_valid() {
         .await
         .unwrap();
 
-    // 3. Register partition
-    let partition_response = mint
-        .register_partition(
-            &condition_response.condition_id,
-            RegisterPartitionRequest {
-                collateral: "sat".to_string(),
-                partition: None,
-                parent_collection_id: None,
-            },
-        )
-        .await
-        .unwrap();
-
-    let yes_keyset_id = *partition_response.keysets.get("YES").unwrap();
+    let yes_keyset_id = *condition_response.keysets.get("YES").unwrap();
 
     // 4. Swap regular proofs to conditional
     let conditional_proofs =
@@ -270,7 +286,11 @@ async fn test_redeem_outcome_valid() {
     }
 
     // 6. Create regular output blinded messages for redemption
-    let (regular_outputs, _) = create_premint(&mint, regular_keyset_id, amount);
+    let (regular_outputs, _) = create_premint(
+        &mint,
+        regular_keyset_id,
+        after_conditional_input_fee(amount),
+    );
 
     // 7. Redeem
     let redeem_response = mint
@@ -300,21 +320,8 @@ async fn test_redeem_outcome_wrong_collection() {
         .register_condition(enum_condition_request("Test wrong outcome", vec![hex_tlv]))
         .await
         .unwrap();
-
-    let partition_response = mint
-        .register_partition(
-            &condition_response.condition_id,
-            RegisterPartitionRequest {
-                collateral: "sat".to_string(),
-                partition: None,
-                parent_collection_id: None,
-            },
-        )
-        .await
-        .unwrap();
-
     // Use the NO keyset but attest YES
-    let no_keyset_id = *partition_response.keysets.get("NO").unwrap();
+    let no_keyset_id = *condition_response.keysets.get("NO").unwrap();
     let conditional_proofs = swap_to_conditional(&mint, regular_proofs, no_keyset_id, amount).await;
 
     // Attach witness with YES attestation (but proofs are NO keyset)
@@ -352,20 +359,7 @@ async fn test_redeem_outcome_no_witness() {
         .register_condition(enum_condition_request("No witness test", vec![hex_tlv]))
         .await
         .unwrap();
-
-    let partition_response = mint
-        .register_partition(
-            &condition_response.condition_id,
-            RegisterPartitionRequest {
-                collateral: "sat".to_string(),
-                partition: None,
-                parent_collection_id: None,
-            },
-        )
-        .await
-        .unwrap();
-
-    let yes_keyset_id = *partition_response.keysets.get("YES").unwrap();
+    let yes_keyset_id = *condition_response.keysets.get("YES").unwrap();
     let conditional_proofs =
         swap_to_conditional(&mint, regular_proofs, yes_keyset_id, amount).await;
 
@@ -400,21 +394,8 @@ async fn test_redeem_outcome_outputs_conditional() {
         ))
         .await
         .unwrap();
-
-    let partition_response = mint
-        .register_partition(
-            &condition_response.condition_id,
-            RegisterPartitionRequest {
-                collateral: "sat".to_string(),
-                partition: None,
-                parent_collection_id: None,
-            },
-        )
-        .await
-        .unwrap();
-
-    let yes_keyset_id = *partition_response.keysets.get("YES").unwrap();
-    let no_keyset_id = *partition_response.keysets.get("NO").unwrap();
+    let yes_keyset_id = *condition_response.keysets.get("YES").unwrap();
+    let no_keyset_id = *condition_response.keysets.get("NO").unwrap();
 
     let conditional_proofs =
         swap_to_conditional(&mint, regular_proofs, yes_keyset_id, amount).await;
@@ -459,24 +440,12 @@ async fn test_swap_allows_same_conditional_outcome_inputs_and_outputs() {
         ))
         .await
         .unwrap();
-
-    let partition_response = mint
-        .register_partition(
-            &condition_response.condition_id,
-            RegisterPartitionRequest {
-                collateral: "sat".to_string(),
-                partition: None,
-                parent_collection_id: None,
-            },
-        )
-        .await
-        .unwrap();
-
-    let yes_keyset_id = *partition_response.keysets.get("YES").unwrap();
+    let yes_keyset_id = *condition_response.keysets.get("YES").unwrap();
     let conditional_proofs =
         swap_to_conditional(&mint, regular_proofs, yes_keyset_id, amount).await;
 
-    let (conditional_outputs, pre_mint) = create_premint(&mint, yes_keyset_id, amount);
+    let output_amount = after_conditional_input_fee(amount);
+    let (conditional_outputs, pre_mint) = create_premint(&mint, yes_keyset_id, output_amount);
     let keys = mint
         .keyset_pubkeys(&yes_keyset_id)
         .unwrap()
@@ -502,6 +471,10 @@ async fn test_swap_allows_same_conditional_outcome_inputs_and_outputs() {
     assert!(refreshed_proofs
         .iter()
         .all(|proof| proof.keyset_id == yes_keyset_id));
+    let refreshed_total = refreshed_proofs
+        .iter()
+        .fold(Amount::ZERO, |sum, proof| sum + proof.amount);
+    assert_eq!(refreshed_total, output_amount);
 }
 
 /// Test that regular swap allows conditional trading into P2PK locked outputs
@@ -522,27 +495,14 @@ async fn test_swap_allows_same_conditional_outcome_p2pk_lock_and_change() {
         ))
         .await
         .unwrap();
-
-    let partition_response = mint
-        .register_partition(
-            &condition_response.condition_id,
-            RegisterPartitionRequest {
-                collateral: "sat".to_string(),
-                partition: None,
-                parent_collection_id: None,
-            },
-        )
-        .await
-        .unwrap();
-
-    let yes_keyset_id = *partition_response.keysets.get("YES").unwrap();
+    let yes_keyset_id = *condition_response.keysets.get("YES").unwrap();
     let conditional_proofs =
         swap_to_conditional(&mint, regular_proofs, yes_keyset_id, input_amount).await;
 
     let (mut lock_outputs, lock_pre_mint) =
         create_p2pk_premint(&mint, yes_keyset_id, Amount::from(100));
     let (mut change_outputs, change_pre_mint) =
-        create_premint(&mint, yes_keyset_id, Amount::from(36));
+        create_premint(&mint, yes_keyset_id, Amount::from(35));
     lock_outputs.append(&mut change_outputs);
 
     let keys = mint
@@ -571,7 +531,7 @@ async fn test_swap_allows_same_conditional_outcome_p2pk_lock_and_change() {
     let refreshed_total = refreshed_proofs
         .iter()
         .fold(Amount::ZERO, |sum, proof| sum + proof.amount);
-    assert_eq!(refreshed_total, input_amount);
+    assert_eq!(refreshed_total, after_conditional_input_fee(input_amount));
 }
 
 /// Test that regular swap rejects conditional keyset inputs to regular outputs
@@ -590,20 +550,7 @@ async fn test_swap_rejects_conditional_inputs() {
         .register_condition(enum_condition_request("Swap reject test", vec![hex_tlv]))
         .await
         .unwrap();
-
-    let partition_response = mint
-        .register_partition(
-            &condition_response.condition_id,
-            RegisterPartitionRequest {
-                collateral: "sat".to_string(),
-                partition: None,
-                parent_collection_id: None,
-            },
-        )
-        .await
-        .unwrap();
-
-    let yes_keyset_id = *partition_response.keysets.get("YES").unwrap();
+    let yes_keyset_id = *condition_response.keysets.get("YES").unwrap();
     let conditional_proofs =
         swap_to_conditional(&mint, regular_proofs, yes_keyset_id, amount).await;
 
@@ -636,21 +583,8 @@ async fn test_swap_rejects_conditional_inputs_to_different_outcome() {
         ))
         .await
         .unwrap();
-
-    let partition_response = mint
-        .register_partition(
-            &condition_response.condition_id,
-            RegisterPartitionRequest {
-                collateral: "sat".to_string(),
-                partition: None,
-                parent_collection_id: None,
-            },
-        )
-        .await
-        .unwrap();
-
-    let yes_keyset_id = *partition_response.keysets.get("YES").unwrap();
-    let no_keyset_id = *partition_response.keysets.get("NO").unwrap();
+    let yes_keyset_id = *condition_response.keysets.get("YES").unwrap();
+    let no_keyset_id = *condition_response.keysets.get("NO").unwrap();
     let conditional_proofs =
         swap_to_conditional(&mint, regular_proofs, yes_keyset_id, amount).await;
 
@@ -685,20 +619,7 @@ async fn test_redeem_second_uses_stored_attestation() {
         ))
         .await
         .unwrap();
-
-    let partition_response = mint
-        .register_partition(
-            &condition_response.condition_id,
-            RegisterPartitionRequest {
-                collateral: "sat".to_string(),
-                partition: None,
-                parent_collection_id: None,
-            },
-        )
-        .await
-        .unwrap();
-
-    let yes_keyset_id = *partition_response.keysets.get("YES").unwrap();
+    let yes_keyset_id = *condition_response.keysets.get("YES").unwrap();
 
     // First redemption with valid witness
     {
@@ -711,7 +632,11 @@ async fn test_redeem_second_uses_stored_attestation() {
             proof.witness = Some(Witness::OracleWitness(witness.clone()));
         }
 
-        let (regular_outputs, _) = create_premint(&mint, regular_keyset_id, amount1);
+        let (regular_outputs, _) = create_premint(
+            &mint,
+            regular_keyset_id,
+            after_conditional_input_fee(amount1),
+        );
 
         mint.process_redeem_outcome(RedeemOutcomeRequest {
             inputs: proofs_with_witness,
@@ -733,7 +658,11 @@ async fn test_redeem_second_uses_stored_attestation() {
             proof.witness = Some(Witness::OracleWitness(witness.clone()));
         }
 
-        let (regular_outputs, _) = create_premint(&mint, regular_keyset_id, amount2);
+        let (regular_outputs, _) = create_premint(
+            &mint,
+            regular_keyset_id,
+            after_conditional_input_fee(amount2),
+        );
 
         mint.process_redeem_outcome(RedeemOutcomeRequest {
             inputs: proofs_with_witness,
@@ -744,41 +673,190 @@ async fn test_redeem_second_uses_stored_attestation() {
     }
 }
 
-/// Test registering condition with custom partition
+/// Test registering condition with custom outcome collections
 #[tokio::test]
-async fn test_register_condition_with_partition() {
+async fn test_register_condition_with_custom_outcome_collections() {
     let mint = create_test_mint().await.unwrap();
     let oracle = create_test_oracle();
     let (_, hex_tlv) = create_test_announcement(&oracle, &["A", "B", "C"], "game-event");
 
-    let condition_response = mint
-        .register_condition(enum_condition_request("Partition test", vec![hex_tlv]))
-        .await
-        .unwrap();
+    let mut request = enum_condition_request("Outcome collection test", vec![hex_tlv]);
+    request.outcome_collections = Some(vec![
+        "A".to_string(),
+        "B".to_string(),
+        "C".to_string(),
+        "A|B".to_string(),
+        "B|C".to_string(),
+        "A|C".to_string(),
+    ]);
 
-    let partition_response = mint
-        .register_partition(
-            &condition_response.condition_id,
-            RegisterPartitionRequest {
-                collateral: "sat".to_string(),
-                partition: Some(vec!["A|B".to_string(), "C".to_string()]),
-                parent_collection_id: None,
-            },
-        )
-        .await
-        .unwrap();
+    let condition_response = mint.register_condition(request).await.unwrap();
 
     assert_eq!(
-        partition_response.keysets.len(),
-        2,
-        "should create one keyset per partition key"
+        condition_response.keysets.len(),
+        6,
+        "should create one keyset per requested outcome collection"
     );
+    for collection in ["A", "B", "C", "A|B", "B|C", "A|C"] {
+        assert!(
+            condition_response.keysets.contains_key(collection),
+            "keysets: {:?}",
+            condition_response.keysets
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_register_condition_one_vs_rest_default_creates_managed_keysets() {
+    let mint = create_test_mint().await.unwrap();
+    let mut mint_info = mint.mint_info().await.unwrap();
+    mint_info.nuts.nut_ctf = Some(NutCtfSettings {
+        default_keyset_creation: "one-vs-rest".to_string(),
+        ..NutCtfSettings::default()
+    });
+    mint.set_mint_info(mint_info).await.unwrap();
+
+    let oracle = create_test_oracle();
+    let (_, hex_tlv) = create_test_announcement(&oracle, &["A", "B", "C"], "one-vs-rest-default");
+    let mut request = enum_condition_request("One-vs-rest default", vec![hex_tlv]);
+    request.outcome_collections = None;
+
+    let condition_response = mint.register_condition(request).await.unwrap();
+
+    assert_eq!(condition_response.keysets.len(), 6);
+    for collection in ["A", "B|C", "B", "A|C", "C", "A|B"] {
+        assert!(
+            condition_response.keysets.contains_key(collection),
+            "keysets: {:?}",
+            condition_response.keysets
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_register_condition_one_vs_rest_rejects_client_collections() {
+    let mint = create_test_mint().await.unwrap();
+    let mut mint_info = mint.mint_info().await.unwrap();
+    mint_info.nuts.nut_ctf = Some(NutCtfSettings {
+        default_keyset_creation: "one-vs-rest".to_string(),
+        ..NutCtfSettings::default()
+    });
+    mint.set_mint_info(mint_info).await.unwrap();
+
+    let oracle = create_test_oracle();
+    let (_, hex_tlv) = create_test_announcement(&oracle, &["A", "B", "C"], "one-vs-rest-explicit");
+    let mut request = enum_condition_request("One-vs-rest explicit", vec![hex_tlv]);
+    request.outcome_collections = Some(vec!["A".to_string(), "B".to_string()]);
+
+    let result = mint.register_condition(request).await;
     assert!(
-        partition_response.keysets.contains_key("A|B"),
-        "keysets: {:?}",
-        partition_response.keysets
+        result.is_err(),
+        "managed default keyset policy must reject client-defined collections"
     );
-    assert!(partition_response.keysets.contains_key("C"));
+}
+
+#[tokio::test]
+async fn test_register_condition_all_default_rejects_client_collections() {
+    let mint = create_test_mint().await.unwrap();
+    let mut mint_info = mint.mint_info().await.unwrap();
+    mint_info.nuts.nut_ctf = Some(NutCtfSettings {
+        default_keyset_creation: "all".to_string(),
+        ..NutCtfSettings::default()
+    });
+    mint.set_mint_info(mint_info).await.unwrap();
+
+    let oracle = create_test_oracle();
+    let (_, hex_tlv) = create_test_announcement(&oracle, &["A", "B", "C"], "all-default");
+    let mut request = enum_condition_request("All default explicit", vec![hex_tlv]);
+    request.outcome_collections = Some(vec!["A".to_string(), "B".to_string()]);
+
+    let result = mint.register_condition(request).await;
+    assert!(
+        result.is_err(),
+        "all default keyset policy must reject client-defined collections"
+    );
+}
+
+#[tokio::test]
+async fn test_register_condition_missing_collateral_fails_before_store() {
+    let mint = create_test_mint().await.unwrap();
+    let oracle = create_test_oracle();
+    let (_, hex_tlv) = create_test_announcement(&oracle, &["A", "B"], "missing-collateral");
+
+    let mut request = enum_condition_request("Missing collateral", vec![hex_tlv]);
+    request.collateral = None;
+    request.outcome_collections = Some(vec!["A".to_string(), "B".to_string()]);
+
+    let result = mint.register_condition(request).await;
+    assert!(result.is_err(), "missing collateral must fail");
+
+    let conditions = mint.get_conditions(None, None, &[]).await.unwrap();
+    assert!(
+        conditions.conditions.is_empty(),
+        "failed registration must not leave a stored condition"
+    );
+}
+
+#[tokio::test]
+async fn test_overlapping_collection_redeems_for_any_member() {
+    let mint = create_test_mint().await.unwrap();
+    let regular_keyset_id = get_regular_keyset_id(&mint);
+    let oracle = create_test_oracle();
+    let (_, hex_tlv) = create_test_announcement(&oracle, &["A", "B", "C"], "overlap-redeem");
+    let amount = Amount::from(16);
+
+    let regular_proofs_a = mint_test_proofs(&mint, amount).await.unwrap();
+    let regular_proofs_c = mint_test_proofs(&mint, amount).await.unwrap();
+
+    let mut request = enum_condition_request("Overlap redeem", vec![hex_tlv]);
+    request.outcome_collections = Some(vec![
+        "A".to_string(),
+        "B".to_string(),
+        "C".to_string(),
+        "A|B".to_string(),
+        "B|C".to_string(),
+        "A|C".to_string(),
+    ]);
+    let condition_response = mint.register_condition(request).await.unwrap();
+    let ab_keyset_id = *condition_response.keysets.get("A|B").unwrap();
+
+    let ab_proofs = swap_to_conditional(&mint, regular_proofs_a, ab_keyset_id, amount).await;
+    let witness_a = create_oracle_witness(&oracle, "A");
+    let mut proofs_with_witness = ab_proofs;
+    for proof in &mut proofs_with_witness {
+        proof.witness = Some(Witness::OracleWitness(witness_a.clone()));
+    }
+    let (regular_outputs, _) = create_premint(
+        &mint,
+        regular_keyset_id,
+        after_conditional_input_fee(amount),
+    );
+    let result = mint
+        .process_redeem_outcome(RedeemOutcomeRequest {
+            inputs: proofs_with_witness,
+            outputs: regular_outputs,
+        })
+        .await;
+    assert!(
+        result.is_ok(),
+        "A|B should redeem when A is attested: {:?}",
+        result.err()
+    );
+
+    let ab_proofs = swap_to_conditional(&mint, regular_proofs_c, ab_keyset_id, amount).await;
+    let witness_c = create_oracle_witness(&oracle, "C");
+    let mut proofs_with_witness = ab_proofs;
+    for proof in &mut proofs_with_witness {
+        proof.witness = Some(Witness::OracleWitness(witness_c.clone()));
+    }
+    let (regular_outputs, _) = create_premint(&mint, regular_keyset_id, amount);
+    let result = mint
+        .process_redeem_outcome(RedeemOutcomeRequest {
+            inputs: proofs_with_witness,
+            outputs: regular_outputs,
+        })
+        .await;
+    assert!(result.is_err(), "A|B should not redeem when C is attested");
 }
 
 // ============================================================================
@@ -803,6 +881,8 @@ async fn register_numeric_condition(
             "Numeric test condition".to_string(),
         ]],
         announcements: vec![hex_tlv],
+        collateral: Some("sat".to_string()),
+        outcome_collections: Some(vec!["HI".to_string(), "LO".to_string()]),
         condition_type: "numeric".to_string(),
         lo_bound: Some(lo_bound),
         hi_bound: Some(hi_bound),
@@ -812,17 +892,7 @@ async fn register_numeric_condition(
     let condition_response = mint.register_condition(request).await.unwrap();
     let condition_id = condition_response.condition_id;
 
-    let partition_request = RegisterPartitionRequest {
-        collateral: "sat".to_string(),
-        partition: None,
-        parent_collection_id: None,
-    };
-
-    let partition_response = mint
-        .register_partition(&condition_id, partition_request)
-        .await
-        .unwrap();
-    (condition_id, partition_response.keysets)
+    (condition_id, condition_response.keysets)
 }
 
 /// Test registering a numeric condition creates HI/LO keysets
@@ -861,6 +931,8 @@ async fn test_numeric_condition_id_differs_from_enum() {
             threshold: 1,
             tags: vec![vec!["description".to_string(), "Numeric test".to_string()]],
             announcements: vec![numeric_hex],
+            collateral: Some("sat".to_string()),
+            outcome_collections: Some(vec!["HI".to_string(), "LO".to_string()]),
             condition_type: "numeric".to_string(),
             lo_bound: Some(0),
             hi_bound: Some(100000),
@@ -886,8 +958,7 @@ async fn test_numeric_condition_info() {
     assert_eq!(info.lo_bound, Some(1000));
     assert_eq!(info.hi_bound, Some(50000));
     assert_eq!(info.precision, Some(0));
-    assert_eq!(info.partitions.len(), 1);
-    assert_eq!(info.partitions[0].keysets.len(), 2);
+    assert_eq!(info.keysets.len(), 2);
 }
 
 /// Test numeric redemption: HI holder redeems proportional payout
@@ -918,7 +989,11 @@ async fn test_numeric_redemption_hi() {
 
     // HI payout = floor(100 * 50000 / 100000) = 50
     let hi_payout = Amount::from(50);
-    let (regular_outputs, _) = create_premint(&mint, regular_keyset_id, hi_payout);
+    let (regular_outputs, _) = create_premint(
+        &mint,
+        regular_keyset_id,
+        after_conditional_input_fee(hi_payout),
+    );
 
     let result = mint
         .process_redeem_outcome(RedeemOutcomeRequest {
@@ -961,7 +1036,11 @@ async fn test_numeric_redemption_lo() {
 
     // LO payout = 100 - 50 = 50
     let lo_payout = Amount::from(50);
-    let (regular_outputs, _) = create_premint(&mint, regular_keyset_id, lo_payout);
+    let (regular_outputs, _) = create_premint(
+        &mint,
+        regular_keyset_id,
+        after_conditional_input_fee(lo_payout),
+    );
 
     let result = mint
         .process_redeem_outcome(RedeemOutcomeRequest {
@@ -1001,7 +1080,11 @@ async fn test_numeric_boundary_lo() {
         proof.witness = Some(Witness::OracleWitness(witness.clone()));
     }
 
-    let (regular_outputs, _) = create_premint(&mint, regular_keyset_id, face_amount);
+    let (regular_outputs, _) = create_premint(
+        &mint,
+        regular_keyset_id,
+        after_conditional_input_fee(face_amount),
+    );
 
     let result = mint
         .process_redeem_outcome(RedeemOutcomeRequest {
@@ -1045,7 +1128,11 @@ async fn test_numeric_boundary_hi() {
 
     // HI gets floor(100 * 99999/100000) = 99
     let hi_payout = Amount::from(99);
-    let (regular_outputs, _) = create_premint(&mint, regular_keyset_id, hi_payout);
+    let (regular_outputs, _) = create_premint(
+        &mint,
+        regular_keyset_id,
+        after_conditional_input_fee(hi_payout),
+    );
 
     let result = mint
         .process_redeem_outcome(RedeemOutcomeRequest {
@@ -1409,6 +1496,8 @@ async fn test_redeem_outcome_multi_oracle_threshold() {
                 "2-of-2 oracle condition".to_string(),
             ]],
             announcements: vec![hex_tlv1, hex_tlv2],
+            collateral: Some("sat".to_string()),
+            outcome_collections: Some(vec!["YES".to_string(), "NO".to_string()]),
             condition_type: "enum".to_string(),
             lo_bound: None,
             hi_bound: None,
@@ -1416,20 +1505,7 @@ async fn test_redeem_outcome_multi_oracle_threshold() {
         })
         .await
         .unwrap();
-
-    let partition_response = mint
-        .register_partition(
-            &condition_response.condition_id,
-            RegisterPartitionRequest {
-                collateral: "sat".to_string(),
-                partition: None,
-                parent_collection_id: None,
-            },
-        )
-        .await
-        .unwrap();
-
-    let yes_keyset_id = *partition_response.keysets.get("YES").unwrap();
+    let yes_keyset_id = *condition_response.keysets.get("YES").unwrap();
 
     // --- Attempt 1: only oracle1 sig — should fail (threshold not met) ---
     {
@@ -1443,7 +1519,11 @@ async fn test_redeem_outcome_multi_oracle_threshold() {
             proof.witness = Some(Witness::OracleWitness(witness_one.clone()));
         }
 
-        let (regular_outputs, _) = create_premint(&mint, regular_keyset_id, amount);
+        let (regular_outputs, _) = create_premint(
+            &mint,
+            regular_keyset_id,
+            after_conditional_input_fee(amount),
+        );
 
         let result = mint
             .process_redeem_outcome(RedeemOutcomeRequest {
@@ -1470,7 +1550,11 @@ async fn test_redeem_outcome_multi_oracle_threshold() {
             proof.witness = Some(Witness::OracleWitness(witness_both.clone()));
         }
 
-        let (regular_outputs, _) = create_premint(&mint, regular_keyset_id, amount);
+        let (regular_outputs, _) = create_premint(
+            &mint,
+            regular_keyset_id,
+            after_conditional_input_fee(amount),
+        );
 
         let result = mint
             .process_redeem_outcome(RedeemOutcomeRequest {
@@ -1518,6 +1602,8 @@ async fn test_redeem_rejects_duplicate_oracle_sigs() {
                 "Dup oracle test".to_string(),
             ]],
             announcements: vec![hex_tlv1, hex_tlv2],
+            collateral: Some("sat".to_string()),
+            outcome_collections: Some(vec!["YES".to_string(), "NO".to_string()]),
             condition_type: "enum".to_string(),
             lo_bound: None,
             hi_bound: None,
@@ -1525,20 +1611,7 @@ async fn test_redeem_rejects_duplicate_oracle_sigs() {
         })
         .await
         .unwrap();
-
-    let partition_response = mint
-        .register_partition(
-            &condition_response.condition_id,
-            RegisterPartitionRequest {
-                collateral: "sat".to_string(),
-                partition: None,
-                parent_collection_id: None,
-            },
-        )
-        .await
-        .unwrap();
-
-    let yes_keyset_id = *partition_response.keysets.get("YES").unwrap();
+    let yes_keyset_id = *condition_response.keysets.get("YES").unwrap();
     let conditional_proofs =
         swap_to_conditional(&mint, regular_proofs, yes_keyset_id, amount).await;
 
@@ -1587,19 +1660,7 @@ async fn test_failed_redeem_does_not_persist_attestation() {
         .unwrap();
     let condition_id = condition_response.condition_id.clone();
 
-    let partition_response = mint
-        .register_partition(
-            &condition_id,
-            RegisterPartitionRequest {
-                collateral: "sat".to_string(),
-                partition: None,
-                parent_collection_id: None,
-            },
-        )
-        .await
-        .unwrap();
-
-    let yes_keyset_id = *partition_response.keysets.get("YES").unwrap();
+    let yes_keyset_id = *condition_response.keysets.get("YES").unwrap();
     let conditional_proofs =
         swap_to_conditional(&mint, regular_proofs, yes_keyset_id, amount).await;
 

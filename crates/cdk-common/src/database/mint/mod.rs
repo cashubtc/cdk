@@ -8,11 +8,11 @@ use cashu::quote_id::QuoteId;
 use cashu::Amount;
 
 use super::{DbTransactionFinalizer, Error};
+#[cfg(feature = "conditional-tokens")]
+use crate::mint::StoredCondition;
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
 };
-#[cfg(feature = "conditional-tokens")]
-use crate::mint::{StoredCondition, StoredPartition};
 use crate::nuts::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
     State,
@@ -638,6 +638,12 @@ pub trait ConditionsDatabase {
     /// Add a stored condition
     async fn add_condition(&self, condition: StoredCondition) -> Result<(), Self::Err>;
 
+    /// Delete a condition and any conditional keysets created for the same registration attempt.
+    ///
+    /// Used to clean up partial condition registration failures so one-shot
+    /// condition registration cannot strand an unrepairable condition row.
+    async fn delete_condition_registration(&self, condition_id: &str) -> Result<(), Self::Err>;
+
     /// Get a condition by condition_id
     async fn get_condition(&self, condition_id: &str)
         -> Result<Option<StoredCondition>, Self::Err>;
@@ -681,15 +687,6 @@ pub trait ConditionsDatabase {
         &self,
         keyset_id: &Id,
     ) -> Result<Option<(String, String, String)>, Self::Err>;
-
-    /// Add a stored partition
-    async fn add_partition(&self, partition: StoredPartition) -> Result<(), Self::Err>;
-
-    /// Get partitions for a condition
-    async fn get_partitions_for_condition(
-        &self,
-        condition_id: &str,
-    ) -> Result<Vec<StoredPartition>, Self::Err>;
 }
 
 /// Base database writer

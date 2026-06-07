@@ -145,9 +145,6 @@ pub enum RoutePath {
     /// Single Condition (GET /v1/conditions/{id})
     #[cfg(feature = "conditional-tokens")]
     Condition,
-    /// Condition Partitions (POST /v1/conditions/{id}/partitions)
-    #[cfg(feature = "conditional-tokens")]
-    ConditionPartitions,
     /// Conditional Keysets (GET /v1/conditional_keysets)
     #[cfg(feature = "conditional-tokens")]
     ConditionalKeysets,
@@ -196,11 +193,10 @@ impl std::str::FromStr for RoutePath {
                 // Conditional token paths with dynamic segments
                 #[cfg(feature = "conditional-tokens")]
                 {
-                    if let Some(rest) = s.strip_prefix("/v1/conditions/") {
-                        if rest.ends_with("/partitions") {
-                            return Ok(RoutePath::ConditionPartitions);
+                    if let Some(condition_id) = s.strip_prefix("/v1/conditions/") {
+                        if !condition_id.is_empty() && !condition_id.contains('/') {
+                            return Ok(RoutePath::Condition);
                         }
-                        return Ok(RoutePath::Condition);
                     }
                 }
                 // Unknown path - this might be an old database value or config
@@ -237,7 +233,6 @@ impl RoutePath {
         {
             paths.push(RoutePath::Conditions);
             paths.push(RoutePath::Condition);
-            paths.push(RoutePath::ConditionPartitions);
             paths.push(RoutePath::ConditionalKeysets);
             paths.push(RoutePath::RedeemOutcome);
         }
@@ -315,10 +310,6 @@ impl std::fmt::Display for RoutePath {
             RoutePath::Conditions => write!(f, "/v1/conditions"),
             #[cfg(feature = "conditional-tokens")]
             RoutePath::Condition => write!(f, "/v1/conditions/{{condition_id}}"),
-            #[cfg(feature = "conditional-tokens")]
-            RoutePath::ConditionPartitions => {
-                write!(f, "/v1/conditions/{{condition_id}}/partitions")
-            }
             #[cfg(feature = "conditional-tokens")]
             RoutePath::ConditionalKeysets => write!(f, "/v1/conditional_keysets"),
             #[cfg(feature = "conditional-tokens")]

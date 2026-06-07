@@ -1309,38 +1309,6 @@ pub(crate) async fn get_conditional_keysets(
     Ok(Json(response))
 }
 
-/// POST /v1/conditions/{condition_id}/partitions - Register a partition for a condition
-#[cfg(feature = "conditional-tokens")]
-#[instrument(skip_all)]
-pub(crate) async fn post_register_partition(
-    #[cfg(feature = "auth")] auth: AuthHeader,
-    State(state): State<MintState>,
-    Path(condition_id): Path<String>,
-    Json(payload): Json<cdk::nuts::nut_ctf::RegisterPartitionRequest>,
-) -> Result<Json<cdk::nuts::nut_ctf::RegisterPartitionResponse>, Response> {
-    #[cfg(feature = "auth")]
-    {
-        state
-            .mint
-            .verify_auth(
-                auth.into(),
-                &ProtectedEndpoint::new(Method::Post, RoutePath::ConditionPartitions),
-            )
-            .await
-            .map_err(into_response)?;
-    }
-
-    let response = state
-        .mint
-        .register_partition(&condition_id, payload)
-        .await
-        .map_err(|err| {
-            tracing::error!("Could not register partition: {}", err);
-            into_response(err)
-        })?;
-    Ok(Json(response))
-}
-
 /// POST /v1/ctf/convert - Convert conditional/collateral positions
 #[cfg(feature = "conditional-tokens")]
 #[instrument(skip_all)]

@@ -1427,19 +1427,3 @@ pub struct StoredCondition {
 fn default_condition_type() -> String {
     "enum".to_string()
 }
-
-/// Stored partition in the database (NUT-CTF)
-#[cfg(feature = "conditional-tokens")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredPartition {
-    /// Condition identifier this partition belongs to
-    pub condition_id: String,
-    /// Partition keys (JSON array)
-    pub partition_json: String,
-    /// Collateral unit or outcome_collection_id
-    pub collateral: String,
-    /// Parent collection ID (32 zero bytes hex for root)
-    pub parent_collection_id: String,
-    /// Created at timestamp
-    pub created_at: u64,
-}

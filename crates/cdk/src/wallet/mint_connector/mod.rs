@@ -156,14 +156,6 @@ pub trait MintConnector: Debug {
         request: crate::nuts::nut_ctf::RegisterConditionRequest,
     ) -> Result<crate::nuts::nut_ctf::RegisterConditionResponse, Error>;
 
-    /// Register a partition [NUT-CTF]
-    #[cfg(feature = "conditional-tokens")]
-    async fn post_register_partition(
-        &self,
-        condition_id: &str,
-        request: crate::nuts::nut_ctf::RegisterPartitionRequest,
-    ) -> Result<crate::nuts::nut_ctf::RegisterPartitionResponse, Error>;
-
     /// Get conditional keysets [NUT-CTF]
     #[cfg(feature = "conditional-tokens")]
     async fn get_conditional_keysets(

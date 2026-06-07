@@ -348,15 +348,6 @@ impl MintConnector for DirectMintConnection {
     }
 
     #[cfg(feature = "conditional-tokens")]
-    async fn post_register_partition(
-        &self,
-        _condition_id: &str,
-        _request: cdk::nuts::nut_ctf::RegisterPartitionRequest,
-    ) -> Result<cdk::nuts::nut_ctf::RegisterPartitionResponse, Error> {
-        unimplemented!()
-    }
-
-    #[cfg(feature = "conditional-tokens")]
     async fn get_conditional_keysets(
         &self,
         _since: Option<u64>,

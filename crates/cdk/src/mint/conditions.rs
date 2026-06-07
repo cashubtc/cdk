@@ -1,17 +1,16 @@
 //! NUT-CTF Conditional token condition registration and query logic
 
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cdk_common::mint::{StoredCondition, StoredPartition};
+use cdk_common::mint::StoredCondition;
 use cdk_common::nuts::nut_ctf::{
     canonical_outcome_collection, compute_condition_id, compute_condition_id_numeric,
-    compute_outcome_collection_id, dlc, from_hex, parse_outcome_collection, to_hex,
-    validate_partition, AttestationState, AttestationStatus, ConditionInfo,
-    ConditionalKeysetsResponse, GetConditionsResponse, PartitionInfoEntry,
-    RegisterConditionRequest, RegisterConditionResponse, RegisterPartitionRequest,
-    RegisterPartitionResponse, MAX_ANNOUNCEMENTS, MAX_ANNOUNCEMENT_HEX_LENGTH, MAX_OUTCOMES,
-    MAX_PARTITION_KEYS, MAX_TAGS_JSON_LENGTH, ZERO_COLLECTION_ID,
+    compute_outcome_collection_id, dlc, parse_outcome_collection, to_hex, AttestationState,
+    AttestationStatus, ConditionInfo, ConditionalKeysetsResponse, GetConditionsResponse,
+    RegisterConditionRequest, RegisterConditionResponse, MAX_ANNOUNCEMENTS,
+    MAX_ANNOUNCEMENT_HEX_LENGTH, MAX_OUTCOMES, MAX_OUTCOME_COLLECTIONS, MAX_TAGS_JSON_LENGTH,
 };
 use tracing::instrument;
 
@@ -28,11 +27,16 @@ const VALID_CONDITION_STATUSES: &[&str] = &["pending", "attested", "expired", "v
 pub(super) const STATUS_PENDING: &str = "pending";
 pub(super) const STATUS_ATTESTED: &str = "attested";
 
+const CONDITION_TYPE_ENUM: &str = "enum";
+const CONDITION_TYPE_NUMERIC: &str = "numeric";
+const KEYSET_POLICY_NONE: &str = "none";
+const KEYSET_POLICY_ONE_VS_REST: &str = "one-vs-rest";
+const KEYSET_POLICY_ALL: &str = "all";
+
 impl Mint {
     /// Register a new condition (POST /v1/conditions)
     ///
-    /// This only registers the condition itself (oracle announcements, threshold, etc.)
-    /// without creating any keysets. Keysets are created via `register_partition`.
+    /// Registers the condition and creates any requested outcome-collection keysets.
     #[instrument(skip_all)]
     pub async fn register_condition(
         &self,
@@ -87,8 +91,16 @@ impl Mint {
         let event_id = dlc::extract_event_id(&announcements[0]);
 
         // 3. Branch on condition_type
-        let is_numeric = request.condition_type == "numeric";
-        let (_outcomes, _outcome_count, condition_id_bytes) = if is_numeric {
+        if request.condition_type != CONDITION_TYPE_ENUM
+            && request.condition_type != CONDITION_TYPE_NUMERIC
+        {
+            return Err(Error::Custom(format!(
+                "Unsupported condition_type: {}",
+                request.condition_type
+            )));
+        }
+        let is_numeric = request.condition_type == CONDITION_TYPE_NUMERIC;
+        let (outcomes, _outcome_count, condition_id_bytes) = if is_numeric {
             // NUT-CTF-numeric: numeric condition
             let lo_bound = request
                 .lo_bound
@@ -139,6 +151,13 @@ impl Mint {
             (outcomes, outcome_count, cid)
         };
         let condition_id = to_hex(&condition_id_bytes);
+        let default_keyset_creation = self.default_keyset_creation_policy().await?;
+        let requested_collections = self.requested_outcome_collections(
+            &outcomes,
+            &request,
+            is_numeric,
+            &default_keyset_creation,
+        )?;
 
         // 4. Check for existing condition (idempotency or conflict)
         if let Some(existing) = self.localstore.get_condition(&condition_id).await? {
@@ -166,8 +185,31 @@ impl Mint {
             {
                 return Err(Error::ConditionAlreadyExists);
             }
-            // Parameters match — idempotent return
-            return Ok(RegisterConditionResponse { condition_id });
+
+            let existing_keysets = self
+                .localstore
+                .get_conditional_keysets_for_condition(&condition_id)
+                .await?;
+            let existing_set: HashSet<String> = existing_keysets.keys().cloned().collect();
+            let requested_set: HashSet<String> = requested_collections.iter().cloned().collect();
+            if existing_set != requested_set {
+                return Err(Error::ConditionAlreadyExists);
+            }
+
+            return Ok(RegisterConditionResponse {
+                condition_id,
+                keysets: existing_keysets,
+            });
+        }
+
+        if !requested_collections.is_empty() {
+            let collateral = request.collateral.as_deref().ok_or_else(|| {
+                Error::Custom(
+                    "collateral is required when creating outcome collection keysets".to_string(),
+                )
+            })?;
+            cdk_common::CurrencyUnit::from_str(collateral)
+                .map_err(|_| Error::Custom(format!("Invalid collateral unit: {}", collateral)))?;
         }
 
         // 5. Store the condition
@@ -193,128 +235,230 @@ impl Mint {
 
         self.localstore.add_condition(stored).await?;
 
-        Ok(RegisterConditionResponse { condition_id })
+        let keysets = match self
+            .create_condition_keysets(
+                &condition_id,
+                &condition_id_bytes,
+                &requested_collections,
+                request.collateral.as_deref(),
+            )
+            .await
+        {
+            Ok(keysets) => keysets,
+            Err(err) => {
+                if let Err(cleanup_err) = self
+                    .localstore
+                    .delete_condition_registration(&condition_id)
+                    .await
+                {
+                    tracing::error!(
+                        condition_id = %condition_id,
+                        error = %cleanup_err,
+                        "failed to clean up partial condition registration"
+                    );
+                }
+                return Err(err);
+            }
+        };
+
+        Ok(RegisterConditionResponse {
+            condition_id,
+            keysets,
+        })
     }
 
-    /// Register a partition for a condition (POST /v1/conditions/{condition_id}/partitions)
-    ///
-    /// Creates conditional keysets for each outcome collection in the partition.
-    #[instrument(skip_all)]
-    pub async fn register_partition(
+    fn requested_outcome_collections(
         &self,
-        condition_id: &str,
-        request: RegisterPartitionRequest,
-    ) -> Result<RegisterPartitionResponse, Error> {
-        // 0. Validate partition size limits
-        if let Some(ref p) = request.partition {
-            if p.len() > MAX_PARTITION_KEYS {
-                return Err(Error::Custom(format!(
-                    "Partition keys exceed maximum of {}",
-                    MAX_PARTITION_KEYS
-                )));
+        outcomes: &[String],
+        request: &RegisterConditionRequest,
+        is_numeric: bool,
+        default_keyset_creation: &str,
+    ) -> Result<Vec<String>, Error> {
+        if request.outcome_collections.is_some()
+            && matches!(
+                default_keyset_creation,
+                KEYSET_POLICY_ONE_VS_REST | KEYSET_POLICY_ALL
+            )
+        {
+            return Err(Error::Custom(format!(
+                "outcome_collections must be omitted when default_keyset_creation is {}",
+                default_keyset_creation
+            )));
+        };
+
+        let raw = match (is_numeric, request.outcome_collections.as_ref()) {
+            (true, Some(collections)) => collections.clone(),
+            (true, None) => vec!["HI".to_string(), "LO".to_string()],
+            (false, Some(collections)) => collections.clone(),
+            (false, None) => self.default_outcome_collections(outcomes, default_keyset_creation)?,
+        };
+
+        if raw.len() > MAX_OUTCOME_COLLECTIONS {
+            return Err(Error::Custom(format!(
+                "Outcome collections exceed maximum of {}",
+                MAX_OUTCOME_COLLECTIONS
+            )));
+        }
+
+        let mut canonical = Vec::with_capacity(raw.len());
+        let mut seen = HashSet::with_capacity(raw.len());
+        for key in raw {
+            let members = parse_outcome_collection(&key);
+            let collection =
+                canonical_outcome_collection(outcomes, &members).map_err(Error::from)?;
+            if !seen.insert(collection.clone()) {
+                return Err(Error::OverlappingOutcomeCollections);
+            }
+            canonical.push(collection);
+        }
+
+        if is_numeric {
+            let expected: HashSet<String> =
+                ["HI".to_string(), "LO".to_string()].into_iter().collect();
+            let actual: HashSet<String> = canonical.iter().cloned().collect();
+            if actual != expected {
+                return Err(Error::Custom(
+                    "Numeric conditions only support HI and LO outcome collections".to_string(),
+                ));
             }
         }
 
-        // 1. Look up the condition
-        let condition = self
-            .localstore
-            .get_condition(condition_id)
+        Ok(canonical)
+    }
+
+    async fn default_keyset_creation_policy(&self) -> Result<String, Error> {
+        let policy = self
+            .mint_info()
             .await?
-            .ok_or(Error::ConditionNotFound)?;
+            .nuts
+            .nut_ctf
+            .map(|settings| settings.default_keyset_creation)
+            .unwrap_or_else(|| KEYSET_POLICY_NONE.to_string());
 
-        // 2. Extract outcomes in canonical index order
-        let announcements: Vec<String> = serde_json::from_str(&condition.announcements_json)?;
-        if announcements.is_empty() {
-            return Err(Error::ConditionNotFound);
+        match policy.as_str() {
+            KEYSET_POLICY_NONE | KEYSET_POLICY_ONE_VS_REST | KEYSET_POLICY_ALL => Ok(policy),
+            _ => Err(Error::Custom(format!(
+                "Unsupported default_keyset_creation policy: {}",
+                policy
+            ))),
         }
-        let outcomes = if condition.condition_type == "numeric" {
-            vec!["HI".to_string(), "LO".to_string()]
-        } else {
-            let first_ann = dlc::parse_oracle_announcement(&announcements[0])?;
-            dlc::extract_outcomes(&first_ann)?
-        };
+    }
 
-        // 3. Determine partition keys
-        let partition: Vec<String> = if let Some(ref p) = request.partition {
-            p.iter()
-                .map(|key| {
-                    let members = parse_outcome_collection(key);
-                    canonical_outcome_collection(&outcomes, &members).map_err(Error::from)
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            outcomes.clone()
-        };
-
-        // 4. Validate partition (disjoint + complete)
-        validate_partition(&outcomes, &partition)?;
-
-        // 5. Parse parent_collection_id
-        let parent_collection_id_hex = request
-            .parent_collection_id
-            .clone()
-            .unwrap_or_else(|| ZERO_COLLECTION_ID.to_string());
-        if parent_collection_id_hex.len() != 64 {
-            return Err(Error::InvalidConditionId);
+    fn default_outcome_collections(
+        &self,
+        outcomes: &[String],
+        policy: &str,
+    ) -> Result<Vec<String>, Error> {
+        match policy {
+            KEYSET_POLICY_NONE => Ok(Vec::new()),
+            KEYSET_POLICY_ONE_VS_REST => self.one_vs_rest_collections(outcomes),
+            KEYSET_POLICY_ALL => self.all_non_full_collections(outcomes),
+            _ => Err(Error::Custom(format!(
+                "Unsupported default_keyset_creation policy: {}",
+                policy
+            ))),
         }
-        let parent_collection_id_bytes: [u8; 32] = from_hex(&parent_collection_id_hex)
-            .map_err(|_| Error::InvalidConditionId)?
-            .try_into()
-            .map_err(|_| Error::InvalidConditionId)?;
+    }
 
-        let condition_id_bytes: [u8; 32] = from_hex(condition_id)
-            .map_err(|_| Error::InvalidConditionId)?
-            .try_into()
-            .map_err(|_| Error::InvalidConditionId)?;
+    fn one_vs_rest_collections(&self, outcomes: &[String]) -> Result<Vec<String>, Error> {
+        let mut collections = Vec::with_capacity(outcomes.len().saturating_mul(2));
+        let mut seen = HashSet::new();
 
-        // 6. Prepare partition (persisted after keysets succeed)
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        for outcome in outcomes {
+            let singleton = canonical_outcome_collection(outcomes, std::slice::from_ref(outcome))
+                .map_err(Error::from)?;
+            if seen.insert(singleton.clone()) {
+                collections.push(singleton);
+            }
 
-        let stored_partition = StoredPartition {
-            condition_id: condition_id.to_string(),
-            partition_json: serde_json::to_string(&partition)?,
-            collateral: request.collateral.clone(),
-            parent_collection_id: parent_collection_id_hex.clone(),
-            created_at: now,
-        };
-
-        // 7. Create conditional keysets via signatory
-        // For root partitions (parent is zero), collateral is a currency unit string.
-        // For nested partitions, collateral is an outcome_collection_id; look up the
-        // parent keyset's unit instead.
-        let is_root = parent_collection_id_hex == ZERO_COLLECTION_ID;
-        let unit = if is_root {
-            cdk_common::CurrencyUnit::from_str(&request.collateral).map_err(|_| {
-                Error::Custom(format!("Invalid collateral unit: {}", request.collateral))
-            })?
-        } else {
-            // Nested partition: collateral is an outcome_collection_id.
-            // Look up the parent keyset to determine the unit.
-            let parent_keysets = self
-                .localstore
-                .get_conditional_keysets_for_condition(condition_id)
-                .await?;
-            let parent_keyset_id = parent_keysets.values().next().ok_or_else(|| {
-                Error::Custom("No parent keysets found for nested partition".to_string())
-            })?;
-            let parent_info = self.keysets.load();
-            let info = parent_info
+            let complement_members = outcomes
                 .iter()
-                .find(|k| k.id == *parent_keyset_id)
-                .ok_or_else(|| Error::Custom("Parent keyset not found in memory".to_string()))?;
-            info.unit.clone()
-        };
+                .filter(|candidate| *candidate != outcome)
+                .cloned()
+                .collect::<Vec<_>>();
+            if complement_members.is_empty() {
+                continue;
+            }
+            let complement =
+                canonical_outcome_collection(outcomes, &complement_members).map_err(Error::from)?;
+            if seen.insert(complement.clone()) {
+                collections.push(complement);
+            }
+        }
 
-        let mut keysets = std::collections::HashMap::new();
+        if collections.len() > MAX_OUTCOME_COLLECTIONS {
+            return Err(Error::Custom(format!(
+                "default_keyset_creation one-vs-rest expands to {} outcome collections, exceeding maximum of {}",
+                collections.len(),
+                MAX_OUTCOME_COLLECTIONS
+            )));
+        }
+
+        Ok(collections)
+    }
+
+    fn all_non_full_collections(&self, outcomes: &[String]) -> Result<Vec<String>, Error> {
+        if outcomes.len() >= usize::BITS as usize {
+            return Err(Error::Custom(
+                "default_keyset_creation all exceeds platform subset capacity".to_string(),
+            ));
+        }
+
+        let count = (1usize << outcomes.len()).saturating_sub(2);
+        if count > MAX_OUTCOME_COLLECTIONS {
+            return Err(Error::Custom(format!(
+                "default_keyset_creation all expands to {} outcome collections, exceeding maximum of {}",
+                count,
+                MAX_OUTCOME_COLLECTIONS
+            )));
+        }
+
+        let mut collections = Vec::with_capacity(count);
+        for mask in 1usize..((1usize << outcomes.len()) - 1) {
+            let members = outcomes
+                .iter()
+                .enumerate()
+                .filter_map(|(index, outcome)| {
+                    if mask & (1usize << index) != 0 {
+                        Some(outcome.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            collections
+                .push(canonical_outcome_collection(outcomes, &members).map_err(Error::from)?);
+        }
+
+        Ok(collections)
+    }
+
+    async fn create_condition_keysets(
+        &self,
+        condition_id: &str,
+        condition_id_bytes: &[u8; 32],
+        outcome_collections: &[String],
+        collateral: Option<&str>,
+    ) -> Result<HashMap<String, cdk_common::nuts::nut02::Id>, Error> {
+        if outcome_collections.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let collateral = collateral.ok_or_else(|| {
+            Error::Custom(
+                "collateral is required when creating outcome collection keysets".to_string(),
+            )
+        })?;
+        let unit = cdk_common::CurrencyUnit::from_str(collateral)
+            .map_err(|_| Error::Custom(format!("Invalid collateral unit: {}", collateral)))?;
+        let parent_collection_id_bytes = [0u8; 32];
         let amounts = (0..32).map(|n| 2u64.pow(n)).collect::<Vec<u64>>();
+        let mut keysets = HashMap::new();
 
-        for outcome_collection_string in &partition {
+        for outcome_collection_string in outcome_collections {
             let outcome_collection_id_bytes = compute_outcome_collection_id(
                 &parent_collection_id_bytes,
-                &condition_id_bytes,
+                condition_id_bytes,
                 outcome_collection_string,
             )?;
             let outcome_collection_id = to_hex(&outcome_collection_id_bytes);
@@ -335,15 +479,10 @@ impl Mint {
             keysets.insert(outcome_collection_string.clone(), keyset.id);
         }
 
-        // 8. Persist partition only after all keysets were created successfully
-        self.localstore.add_partition(stored_partition).await?;
-
-        // Refresh the Mint's cached keyset list from the signatory so the new
-        // conditional keysets are reachable in-memory for swaps / redemption.
         let new_keysets = self.signatory.keysets().await?;
         self.keysets.store(new_keysets.keysets.into());
 
-        Ok(RegisterPartitionResponse { keysets })
+        Ok(keysets)
     }
 
     /// Get all conditions (GET /v1/conditions)
@@ -373,8 +512,8 @@ impl Mint {
         let conditions = self.localstore.get_conditions(since, limit, status).await?;
         let mut infos = Vec::new();
 
-        // TODO: N+1 query — build_condition_info runs 2 DB queries per condition
-        // (get_partitions + get_keysets). Batch when condition count grows.
+        // TODO: N+1 query — build_condition_info loads keysets per condition.
+        // Batch when condition count grows.
         for condition in conditions {
             let info = self.build_condition_info(condition).await?;
             infos.push(info);
@@ -395,53 +534,24 @@ impl Mint {
         self.build_condition_info(condition).await
     }
 
-    /// Build a ConditionInfo from a StoredCondition, including partitions and keysets
+    /// Build a ConditionInfo from a StoredCondition, including keysets
     async fn build_condition_info(
         &self,
         condition: StoredCondition,
     ) -> Result<ConditionInfo, Error> {
         let announcements: Vec<String> = serde_json::from_str(&condition.announcements_json)?;
 
-        // Load partitions for this condition
-        let stored_partitions = self
-            .localstore
-            .get_partitions_for_condition(&condition.condition_id)
-            .await?;
-
-        // Load all keyset mappings for this condition
-        let all_keysets = self
+        let keysets = self
             .localstore
             .get_conditional_keysets_for_condition(&condition.condition_id)
             .await?;
-
-        // Build partition info entries
-        let mut partitions = Vec::new();
-        for sp in stored_partitions {
-            let partition_keys: Vec<String> = serde_json::from_str(&sp.partition_json)?;
-
-            // Filter keysets that belong to this partition
-            let mut partition_keysets = std::collections::HashMap::new();
-            for key in &partition_keys {
-                if let Some(kid) = all_keysets.get(key) {
-                    partition_keysets.insert(key.clone(), *kid);
-                }
-            }
-
-            partitions.push(PartitionInfoEntry {
-                partition: partition_keys,
-                collateral: sp.collateral,
-                parent_collection_id: sp.parent_collection_id,
-                keysets: partition_keysets,
-                registered_at: sp.created_at,
-            });
-        }
 
         Ok(ConditionInfo {
             condition_id: condition.condition_id,
             threshold: condition.threshold,
             tags: serde_json::from_str(&condition.tags_json).unwrap_or_default(),
             announcements,
-            partitions,
+            keysets,
             attestation: Some(AttestationState {
                 status: match condition.attestation_status.as_str() {
                     STATUS_ATTESTED => AttestationStatus::Attested,

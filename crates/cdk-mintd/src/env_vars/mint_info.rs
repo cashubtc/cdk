@@ -14,6 +14,8 @@ pub const ENV_MINT_MOTD: &str = "CDK_MINTD_MINT_MOTD";
 pub const ENV_MINT_CONTACT_NOSTR: &str = "CDK_MINTD_MINT_CONTACT_NOSTR";
 pub const ENV_MINT_CONTACT_EMAIL: &str = "CDK_MINTD_MINT_CONTACT_EMAIL";
 pub const ENV_MINT_TOS_URL: &str = "CDK_MINTD_MINT_TOS_URL";
+#[cfg(feature = "conditional-tokens")]
+pub const ENV_MINT_CTF_DEFAULT_KEYSET_CREATION: &str = "CDK_MINTD_CTF_DEFAULT_KEYSET_CREATION";
 
 impl MintInfo {
     pub fn from_env(mut self) -> Self {
@@ -56,6 +58,11 @@ impl MintInfo {
 
         if let Ok(tos_url) = env::var(ENV_MINT_TOS_URL) {
             self.tos_url = Some(tos_url);
+        }
+
+        #[cfg(feature = "conditional-tokens")]
+        if let Ok(policy) = env::var(ENV_MINT_CTF_DEFAULT_KEYSET_CREATION) {
+            self.ctf_default_keyset_creation = Some(policy);
         }
 
         self

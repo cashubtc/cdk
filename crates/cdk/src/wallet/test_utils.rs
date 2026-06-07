@@ -756,15 +756,6 @@ impl MintConnector for MockMintConnector {
     }
 
     #[cfg(feature = "conditional-tokens")]
-    async fn post_register_partition(
-        &self,
-        _condition_id: &str,
-        _request: crate::nuts::nut_ctf::RegisterPartitionRequest,
-    ) -> Result<crate::nuts::nut_ctf::RegisterPartitionResponse, Error> {
-        unimplemented!()
-    }
-
-    #[cfg(feature = "conditional-tokens")]
     async fn get_conditional_keysets(
         &self,
         _since: Option<u64>,

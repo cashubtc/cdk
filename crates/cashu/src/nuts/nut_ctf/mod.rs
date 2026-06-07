@@ -30,11 +30,11 @@ pub enum Error {
     /// Condition not found
     #[error("Condition not found")]
     ConditionNotFound,
-    /// Overlapping outcome collections in partition
-    #[error("Overlapping outcome collections in partition")]
+    /// Duplicate canonical outcome collection
+    #[error("Duplicate canonical outcome collection")]
     OverlappingOutcomeCollections,
-    /// Incomplete partition
-    #[error("Incomplete partition: not all outcomes are covered")]
+    /// Unknown outcome in outcome collection
+    #[error("Unknown outcome in outcome collection")]
     IncompletePartition,
     /// Invalid oracle signature
     #[error("Invalid oracle signature")]
@@ -75,8 +75,8 @@ pub enum Error {
     /// Empty outcome string
     #[error("Empty outcome string is not allowed")]
     EmptyOutcomeString,
-    /// Full-set or single-element partition
-    #[error("Partition must contain at least two non-full outcome collections")]
+    /// Full-set or reserved outcome collection
+    #[error("Full-set or reserved outcome collection")]
     FullSetOrSingleElementPartition,
     /// Conflicting oracle attestations
     #[error("Oracle signatures attest to different outcomes")]
@@ -102,8 +102,8 @@ pub const ZERO_COLLECTION_ID: &str =
 /// Maximum number of outcomes allowed per condition (must fit in u8 for condition_id hashing)
 pub const MAX_OUTCOMES: usize = 255;
 
-/// Maximum number of partition keys per partition registration
-pub const MAX_PARTITION_KEYS: usize = 256;
+/// Maximum number of outcome collection keysets per condition registration
+pub const MAX_OUTCOME_COLLECTIONS: usize = 256;
 
 /// Maximum number of oracle announcements per condition
 pub const MAX_ANNOUNCEMENTS: usize = 32;
@@ -132,6 +132,12 @@ pub struct RegisterConditionRequest {
     pub tags: Vec<Vec<String>>,
     /// Array of hex-encoded oracle announcement TLV bytes
     pub announcements: Vec<String>,
+    /// Collateral unit for root conditional keysets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collateral: Option<String>,
+    /// Outcome collections to create keysets for. Omitted means mint default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome_collections: Option<Vec<String>>,
     /// Condition type: "enum" (default) or "numeric"
     #[serde(default = "default_condition_type")]
     #[serde(skip_serializing_if = "is_default_condition_type")]
@@ -164,42 +170,8 @@ fn default_threshold() -> u32 {
 pub struct RegisterConditionResponse {
     /// Computed condition identifier (64 hex characters)
     pub condition_id: String,
-}
-
-/// POST /v1/conditions/{condition_id}/partitions request body
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegisterPartitionRequest {
-    /// For root conditions: a NUT-00 unit string. For nested: an outcome_collection_id hex string.
-    pub collateral: String,
-    /// Partition keys (optional, defaults to individual outcomes)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub partition: Option<Vec<String>>,
-    /// Parent collection ID (optional, defaults to 32 zero bytes for root)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_collection_id: Option<String>,
-}
-
-/// POST /v1/conditions/{condition_id}/partitions response body
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegisterPartitionResponse {
     /// Mapping of outcome_collection -> keyset_id
     pub keysets: HashMap<String, Id>,
-}
-
-/// Partition info entry for ConditionInfo
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PartitionInfoEntry {
-    /// Partition keys
-    pub partition: Vec<String>,
-    /// Collateral unit or outcome_collection_id
-    pub collateral: String,
-    /// Parent collection ID
-    pub parent_collection_id: String,
-    /// Mapping of outcome_collection -> keyset_id
-    pub keysets: HashMap<String, Id>,
-    /// Unix timestamp when this partition was registered
-    #[serde(default)]
-    pub registered_at: u64,
 }
 
 /// GET /v1/conditions query parameters
@@ -235,8 +207,9 @@ pub struct ConditionInfo {
     pub tags: Vec<Vec<String>>,
     /// Hex-encoded oracle announcement TLV bytes
     pub announcements: Vec<String>,
-    /// Registered partitions with their keysets
-    pub partitions: Vec<PartitionInfoEntry>,
+    /// Registered root-level outcome collection keysets
+    #[serde(default)]
+    pub keysets: HashMap<String, Id>,
     /// Attestation state (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attestation: Option<AttestationState>,
@@ -334,7 +307,7 @@ where
 pub struct CtfConvertRequest {
     /// Condition identifier
     pub condition_id: String,
-    /// Parent collection ID for nested conditions. Defaults to the root collection.
+    /// Reserved for future nested conditions. Must be omitted or all zeros.
     #[serde(
         default = "zero_parent_collection_id",
         skip_serializing_if = "Option::is_none"
@@ -361,17 +334,11 @@ pub struct CtfConvertResponse {
 pub struct NutCtfSplitMergeSettings {
     /// Whether NUT-CTF-split-merge (CTF convert) is supported
     pub supported: bool,
-    /// Maximum supported nesting depth.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_depth: Option<u32>,
 }
 
 impl Default for NutCtfSplitMergeSettings {
     fn default() -> Self {
-        Self {
-            supported: true,
-            max_depth: None,
-        }
+        Self { supported: true }
     }
 }
 
@@ -487,6 +454,13 @@ pub struct NutCtfSettings {
     /// Vesting period in seconds after event maturity
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vesting_period: Option<u64>,
+    /// Default keyset creation rule: none, one-vs-rest, or all.
+    #[serde(default = "default_keyset_creation")]
+    pub default_keyset_creation: String,
+}
+
+fn default_keyset_creation() -> String {
+    "none".to_string()
 }
 
 impl Default for NutCtfSettings {
@@ -495,6 +469,7 @@ impl Default for NutCtfSettings {
             supported: true,
             dlc_version: Some("0".to_string()),
             vesting_period: Some(2592000), // 30 days
+            default_keyset_creation: default_keyset_creation(),
         }
     }
 }
@@ -703,6 +678,11 @@ pub fn parse_outcome_collection(oc: &str) -> Vec<String> {
     outcomes
 }
 
+/// Normalize a single outcome atom.
+pub fn normalize_outcome(outcome: &str) -> String {
+    outcome.nfc().collect()
+}
+
 /// Canonicalize an outcome collection according to the condition's outcome order.
 pub fn canonical_outcome_collection(
     outcomes_in_index_order: &[String],
@@ -714,12 +694,12 @@ pub fn canonical_outcome_collection(
 
     let ordered_outcomes: Vec<String> = outcomes_in_index_order
         .iter()
-        .map(|o| o.nfc().collect())
+        .map(|o| normalize_outcome(o))
         .collect();
     let mut member_set = HashSet::new();
 
     for member in members {
-        let normalized = member.nfc().collect::<String>();
+        let normalized = normalize_outcome(member);
         if normalized.is_empty() {
             return Err(Error::EmptyOutcomeString);
         }
@@ -746,53 +726,6 @@ pub fn canonical_outcome_collection(
         .join("|");
 
     Ok(canonical)
-}
-
-/// Validate that partition keys form a valid partition of all outcomes.
-///
-/// Returns Ok(()) if:
-/// 1. No empty outcome strings
-/// 2. Disjoint: no outcome appears in multiple collections
-/// 3. Complete: every outcome appears in exactly one collection
-/// 4. The partition contains at least two collections and no full-set collection
-pub fn validate_partition(outcomes: &[String], partition: &[String]) -> Result<(), Error> {
-    if partition.len() < 2 {
-        return Err(Error::FullSetOrSingleElementPartition);
-    }
-
-    let all_outcomes: HashSet<&str> = outcomes.iter().map(String::as_str).collect();
-    let mut covered = HashSet::new();
-
-    for key in partition {
-        let oc_outcomes = parse_outcome_collection(key);
-        let mut collection_covered = HashSet::new();
-        for outcome in &oc_outcomes {
-            if outcome.is_empty() {
-                return Err(Error::EmptyOutcomeString);
-            }
-            if outcome == "*" {
-                return Err(Error::FullSetOrSingleElementPartition);
-            }
-            if !all_outcomes.contains(outcome.as_str()) {
-                return Err(Error::IncompletePartition);
-            }
-            if !collection_covered.insert(outcome.clone()) {
-                return Err(Error::OverlappingOutcomeCollections);
-            }
-            if !covered.insert(outcome.clone()) {
-                return Err(Error::OverlappingOutcomeCollections);
-            }
-        }
-        if collection_covered.len() == all_outcomes.len() {
-            return Err(Error::FullSetOrSingleElementPartition);
-        }
-    }
-
-    if covered.len() != all_outcomes.len() {
-        return Err(Error::IncompletePartition);
-    }
-
-    Ok(())
 }
 
 /// Convert bytes to hex string
@@ -862,41 +795,6 @@ mod tests {
         );
         // Escaped pipe
         assert_eq!(parse_outcome_collection("A\\|B|C"), vec!["A|B", "C"]);
-    }
-
-    #[test]
-    fn test_validate_partition_valid() {
-        let outcomes = vec!["A".into(), "B".into(), "C".into()];
-
-        // Individual outcomes
-        assert!(validate_partition(&outcomes, &["A".into(), "B".into(), "C".into()]).is_ok());
-
-        // Outcome collections
-        assert!(validate_partition(&outcomes, &["A|B".into(), "C".into()]).is_ok());
-
-        // Single collection covering all is represented only as collateral.
-        let result = validate_partition(&outcomes, &["A|B|C".into()]);
-        assert!(matches!(
-            result,
-            Err(Error::FullSetOrSingleElementPartition)
-        ));
-    }
-
-    #[test]
-    fn test_validate_partition_overlapping() {
-        let outcomes = vec!["A".into(), "B".into(), "C".into()];
-        let result = validate_partition(&outcomes, &["A|B".into(), "B|C".into()]);
-        assert!(matches!(result, Err(Error::OverlappingOutcomeCollections)));
-    }
-
-    #[test]
-    fn test_validate_partition_incomplete() {
-        let outcomes = vec!["A".into(), "B".into(), "C".into()];
-        let result = validate_partition(&outcomes, &["A|B".into()]);
-        assert!(matches!(
-            result,
-            Err(Error::FullSetOrSingleElementPartition)
-        ));
     }
 
     #[test]
@@ -997,41 +895,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_partition_extra_outcome() {
-        let outcomes = vec!["A".into(), "B".into()];
-        // "C" is not in outcomes
-        let result = validate_partition(&outcomes, &["A".into(), "B".into(), "C".into()]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_validate_partition_duplicate_in_single_key() {
-        let outcomes = vec!["A".into(), "B".into()];
-        // "A|A" duplicates A
-        let result = validate_partition(&outcomes, &["A|A".into(), "B".into()]);
-        assert!(matches!(result, Err(Error::OverlappingOutcomeCollections)));
-    }
-
-    #[test]
-    fn test_validate_partition_empty_outcome_string() {
-        let outcomes = vec!["A".into(), "B".into(), "C".into()];
-        // "A||B" parses as ["A", "", "B"] — empty string should be rejected
-        let result = validate_partition(&outcomes, &["A||B".into(), "C".into()]);
-        assert!(matches!(result, Err(Error::EmptyOutcomeString)));
-    }
-
-    #[test]
-    fn test_validate_partition_empty() {
-        let outcomes = vec!["A".into(), "B".into()];
-        // Empty partition = incomplete
-        let result = validate_partition(&outcomes, &[]);
-        assert!(matches!(
-            result,
-            Err(Error::FullSetOrSingleElementPartition)
-        ));
-    }
-
-    #[test]
     fn test_oracle_witness_serde_roundtrip() {
         let witness = OracleWitness {
             oracle_sigs: vec![OracleSig {
@@ -1077,6 +940,7 @@ mod tests {
         assert!(settings.supported);
         assert_eq!(settings.dlc_version, Some("0".to_string()));
         assert!(settings.vesting_period.is_some());
+        assert_eq!(settings.default_keyset_creation, "none");
     }
 
     #[test]
@@ -1085,6 +949,7 @@ mod tests {
             supported: true,
             dlc_version: Some("0".to_string()),
             vesting_period: None,
+            default_keyset_creation: "none".to_string(),
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         assert!(!json.contains("vesting_period"));

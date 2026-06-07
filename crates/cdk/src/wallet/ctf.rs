@@ -3,7 +3,7 @@
 use cdk_common::nuts::nut_ctf::{
     ConditionInfo, ConditionalKeysetsResponse, CtfConvertRequest, CtfConvertResponse,
     GetConditionsResponse, RedeemOutcomeRequest, RedeemOutcomeResponse, RegisterConditionRequest,
-    RegisterConditionResponse, RegisterPartitionRequest, RegisterPartitionResponse,
+    RegisterConditionResponse,
 };
 use tracing::instrument;
 
@@ -37,18 +37,6 @@ impl Wallet {
         request: RegisterConditionRequest,
     ) -> Result<RegisterConditionResponse, Error> {
         self.client.post_register_condition(request).await
-    }
-
-    /// Register a partition for a condition on the mint
-    #[instrument(skip(self, request))]
-    pub async fn register_partition(
-        &self,
-        condition_id: &str,
-        request: RegisterPartitionRequest,
-    ) -> Result<RegisterPartitionResponse, Error> {
-        self.client
-            .post_register_partition(condition_id, request)
-            .await
     }
 
     /// Get all conditional keysets from the mint

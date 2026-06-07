@@ -605,8 +605,11 @@ impl TryFrom<Nuts> for cdk::nuts::Nuts {
             nut20: cdk::nuts::nut06::SupportedSettings {
                 supported: n.nut20_supported,
             },
+            #[cfg(feature = "conditional-tokens")]
             nut_ctf: None,
+            #[cfg(feature = "conditional-tokens")]
             nut_ctf_split_merge: None,
+            #[cfg(feature = "conditional-tokens")]
             nut_ctf_numeric: None,
             nut21: n.nut21.map(|s| s.try_into()).transpose()?,
             nut22: n.nut22.map(|s| s.try_into()).transpose()?,

@@ -22,9 +22,8 @@ use crate::nuts::nut00::{KnownMethod, PaymentMethod};
 use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
     AuthToken, BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse,
-    Id, KeySet, KeysResponse, KeysetResponse, MeltQuoteBolt12Response, MeltQuoteCustomResponse,
-    MeltRequest, MintInfo, MintRequest, MintResponse, RestoreRequest, RestoreResponse, SwapRequest,
-    SwapResponse,
+    Id, KeySet, KeysResponse, KeysetResponse, MeltRequest, MintInfo, MintRequest, MintResponse,
+    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
 
@@ -682,26 +681,6 @@ where
         #[cfg(feature = "auth")]
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::Conditions)
-            .await?;
-        #[cfg(not(feature = "auth"))]
-        let auth_token = None;
-        self.transport.http_post(url, auth_token, &request).await
-    }
-
-    /// Register a partition [NUT-CTF]
-    #[cfg(feature = "conditional-tokens")]
-    #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
-    async fn post_register_partition(
-        &self,
-        condition_id: &str,
-        request: crate::nuts::nut_ctf::RegisterPartitionRequest,
-    ) -> Result<crate::nuts::nut_ctf::RegisterPartitionResponse, Error> {
-        let url = self
-            .mint_url
-            .join_paths(&["v1", "conditions", condition_id, "partitions"])?;
-        #[cfg(feature = "auth")]
-        let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::ConditionPartitions)
             .await?;
         #[cfg(not(feature = "auth"))]
         let auth_token = None;

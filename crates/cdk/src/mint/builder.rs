@@ -20,7 +20,7 @@ use crate::amount::Amount;
 use crate::cdk_database;
 use crate::mint::Mint;
 #[cfg(feature = "conditional-tokens")]
-use crate::nuts::nut_ctf::MAX_OUTCOMES;
+use crate::nuts::nut_ctf::{NutCtfSettings, MAX_OUTCOMES};
 use crate::nuts::{
     ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
     MppMethodSettings, PaymentMethod, ProtectedEndpoint,
@@ -313,6 +313,20 @@ impl MintBuilder {
     #[cfg(feature = "conditional-tokens")]
     pub fn with_ctf_limits(mut self, max_outcomes_per_condition: usize) -> Self {
         self.max_outcomes_per_condition = max_outcomes_per_condition;
+        self
+    }
+
+    /// Set the default conditional-token keyset creation policy advertised in mint info.
+    #[cfg(feature = "conditional-tokens")]
+    pub fn with_ctf_default_keyset_creation(mut self, policy: String) -> Self {
+        let mut settings = self
+            .mint_info
+            .nuts
+            .nut_ctf
+            .take()
+            .unwrap_or_else(NutCtfSettings::default);
+        settings.default_keyset_creation = policy;
+        self.mint_info.nuts.nut_ctf = Some(settings);
         self
     }
 
