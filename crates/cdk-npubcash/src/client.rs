@@ -104,7 +104,7 @@ impl NpubCashClient {
             let url = self.build_quotes_url(offset, since)?;
 
             // Fetch the current page
-            let response: QuotesResponse = self.authenticated_request(url.as_str(), "GET").await?;
+            let response: QuotesResponse = self.authenticated_get(url.as_str()).await?;
 
             // Collect quotes from this page
             let fetched_count = response.data.quotes.len();
@@ -230,33 +230,34 @@ impl NpubCashClient {
         tokio::time::sleep(tokio::time::Duration::from_millis(THROTTLE_DELAY_MS)).await;
     }
 
-    /// Make an authenticated HTTP request to the API
+    /// Make an authenticated GET request to the API
     ///
     /// This method handles authentication, sends the request, and parses the response.
     ///
     /// # Arguments
     ///
     /// * `url` - Full URL to request
-    /// * `method` - HTTP method (e.g., "GET", "POST")
     ///
     /// # Errors
     ///
     /// Returns an error if authentication fails, request fails, or response parsing fails
-    async fn authenticated_request<T>(&self, url: &str, method: &str) -> Result<T>
+    async fn authenticated_get<T>(&self, url: &str) -> Result<T>
     where
         T: serde::de::DeserializeOwned,
     {
+        const METHOD: &str = "GET";
+
         // Extract URL for authentication (without query parameters)
         let url_for_auth = crate::extract_auth_url(url)?;
 
         // Get authentication token
         let auth_token = self
             .auth_provider
-            .get_auth_token(&url_for_auth, method)
+            .get_auth_token(&url_for_auth, METHOD)
             .await?;
 
         // Send the HTTP request with authentication headers
-        tracing::debug!("Making {} request to {}", method, url);
+        tracing::debug!("Making {} request to {}", METHOD, url);
         let response = self
             .http_client
             .get(url)
