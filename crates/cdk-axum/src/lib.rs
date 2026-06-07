@@ -116,6 +116,9 @@ pub async fn create_mint_router_with_custom_cache(
         mint_router = mint_router.route("/", get(get_index));
     }
 
+    // Proof-of-reserves attestation bundle, served from a file written by the payment processor.
+    mint_router = mint_router.route("/audit/latest.json", get(get_audit_latest));
+
     let mint_router = {
         let auth_router = create_auth_router(state.clone());
         mint_router.nest("/v1", auth_router)

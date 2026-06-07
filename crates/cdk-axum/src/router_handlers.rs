@@ -15,6 +15,30 @@ use tracing::instrument;
 
 use crate::auth::AuthHeader;
 use crate::ws::main_websocket;
+
+/// Serve the proof-of-reserves attestation bundle (written by the payment processor to a file).
+/// Path from env `CDK_AUDIT_BUNDLE_PATH`, default `~/mint/audit/latest.json`. 404 if absent.
+/// CORS-open so wallets can fetch it from any origin.
+pub(crate) async fn get_audit_latest() -> Response {
+    let path = std::env::var("CDK_AUDIT_BUNDLE_PATH").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        format!("{home}/mint/audit/latest.json")
+    });
+    match std::fs::read(&path) {
+        Ok(bytes) => Response::builder()
+            .status(StatusCode::OK)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header(axum::http::header::CACHE_CONTROL, "no-cache")
+            .header(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .body(axum::body::Body::from(bytes))
+            .unwrap(),
+        Err(_) => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .body(axum::body::Body::from("no attestation available"))
+            .unwrap(),
+    }
+}
 use crate::MintState;
 
 /// Macro to add cache to endpoint
@@ -866,7 +890,7 @@ pub(crate) async fn get_index(
     if has_onchain_mint {
         experimental_features.push((
             "Proof of Reserves",
-            "Reserve attestations via Bark, independently verifiable against the Ark server's key.",
+            "Reserve attestations via Bark, independently verifiable.",
         ));
     }
 
