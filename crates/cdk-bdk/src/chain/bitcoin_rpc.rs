@@ -306,6 +306,25 @@ pub(crate) async fn broadcast_bitcoin_rpc(
     }
 }
 
+/// Dry-run check whether a transaction would be accepted to the mempool via
+/// Bitcoin Core's `testmempoolaccept`. The `Client` is synchronous, so this is a
+/// blocking call intended to be used inside the payjoin `can_broadcast` closure.
+pub(crate) fn accepts_broadcast_bitcoin_rpc(
+    config: &BitcoinRpcConfig,
+    tx: &Transaction,
+) -> Result<bool, Error> {
+    let rpc_client = Client::new(
+        &format!("http://{}:{}", config.host, config.port),
+        Auth::UserPass(config.user.clone(), config.password.clone()),
+    )?;
+
+    let results = rpc_client.test_mempool_accept(&[tx.raw_hex()])?;
+    Ok(results
+        .first()
+        .map(|result| result.allowed)
+        .unwrap_or(false))
+}
+
 pub(crate) async fn fetch_fee_rate_bitcoin_rpc(
     config: &BitcoinRpcConfig,
     target_blocks: u16,

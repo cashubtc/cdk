@@ -25,6 +25,11 @@ use crate::CdkBdk;
 
 const PAYJOIN_RECEIVE_SESSION_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
 const PAYJOIN_RECEIVER_MAX_EFFECTIVE_FEE_RATE: FeeRate = FeeRate::ZERO;
+/// Minimum fee rate enforced on a sender's original PSBT during the
+/// broadcast-suitability check. On backends without `testmempoolaccept` (Esplora)
+/// this floor is the primary anti-probing protection; on Bitcoin Core it is an
+/// additional constraint on top of the full mempool-acceptance check.
+const PAYJOIN_RECEIVER_MIN_ORIGINAL_FEE_RATE: FeeRate = FeeRate::from_sat_per_vb_u32(1);
 
 #[derive(Debug, Clone)]
 struct RecordingSessionPersister<E> {
@@ -473,8 +478,27 @@ impl CdkBdk {
         persister: &RecordingSessionPersister<::payjoin::receive::v2::SessionEvent>,
     ) -> Result<::payjoin::receive::v2::Receiver<::payjoin::receive::v2::PayjoinProposal>, Error>
     {
+        // The mint is a non-interactive receiver (auto-published URI per quote),
+        // so validate the original is broadcastable before advancing — this is the
+        // probing/poisoning defense (inputs are only recorded as seen afterwards).
+        let chain_source = &self.chain_source;
+        let can_broadcast =
+            move |tx: &Transaction| -> Result<bool, ::payjoin::ImplementationError> {
+                match chain_source
+                    .accepts_broadcast(tx)
+                    .map_err(::payjoin::ImplementationError::new)?
+                {
+                    // Bitcoin Core: trust the testmempoolaccept verdict.
+                    Some(allowed) => Ok(allowed),
+                    // Esplora (no dry-run): rely on the enforced minimum fee rate.
+                    None => Ok(true),
+                }
+            };
         let receiver = unchecked
-            .assume_interactive_receiver()
+            .check_broadcast_suitability(
+                Some(PAYJOIN_RECEIVER_MIN_ORIGINAL_FEE_RATE),
+                can_broadcast,
+            )
             .save(persister)
             .map_err(|err| Error::Payjoin(err.to_string()))?;
 

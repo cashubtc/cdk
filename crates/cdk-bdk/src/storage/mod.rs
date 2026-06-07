@@ -250,6 +250,13 @@ impl BdkStorage {
     }
 
     /// Return whether a Payjoin receive input outpoint was previously seen.
+    ///
+    /// Intentionally **global** (keyed by outpoint only): probing spans many
+    /// cheap sessions, so only cross-session memory catches input reuse —
+    /// per-quote scoping would reset every probe and defeat anti-probing. The
+    /// tradeoff is a poisoning vector, gated on Bitcoin Core by `test_mempool_accept`
+    /// (see `ChainSource::accepts_broadcast`); on Esplora it stays poisonable but
+    /// only degrades gracefully (fallback, no fund loss).
     pub async fn is_payjoin_input_seen(&self, outpoint: &str) -> Result<bool, Error> {
         let outpoint_key = outpoint_to_key(outpoint);
         self.kv_store

@@ -1,5 +1,5 @@
 //! Specific Subscription for the cdk crate
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, Error as DeError};
 use serde::{Deserialize, Serialize};
 
 use super::PublicKey;
@@ -212,6 +212,76 @@ where
     CustomMeltQuoteResponse(String, MeltQuoteCustomResponse<T>),
 }
 
+fn deserialize_payload<T, E>(value: serde_json::Value) -> Result<NotificationPayload<T>, E>
+where
+    T: Clone + Serialize + DeserializeOwned,
+    E: DeError,
+{
+    fn from_value<V, E>(value: serde_json::Value) -> Result<V, E>
+    where
+        V: DeserializeOwned,
+        E: DeError,
+    {
+        serde_json::from_value(value).map_err(E::custom)
+    }
+
+    match &value {
+        serde_json::Value::Object(fields) => {
+            if fields.contains_key("Y") {
+                return from_value(value).map(NotificationPayload::ProofState);
+            }
+
+            if fields.contains_key("fee_options") {
+                return from_value(value).map(NotificationPayload::MeltQuoteOnchainResponse);
+            }
+
+            if fields.contains_key("fee_reserve") {
+                return from_value(value).map(NotificationPayload::MeltQuoteBolt11Response);
+            }
+
+            if fields.contains_key("state") {
+                return from_value(value).map(NotificationPayload::MintQuoteBolt11Response);
+            }
+
+            if fields.contains_key("amount") {
+                return from_value(value).map(NotificationPayload::MintQuoteBolt12Response);
+            }
+
+            from_value(value).map(NotificationPayload::MintQuoteOnchainResponse)
+        }
+        serde_json::Value::Array(items) if items.len() == 2 => {
+            let response = items
+                .get(1)
+                .ok_or_else(|| E::custom("custom notification payload is missing response"))?;
+            match response.as_object() {
+                Some(fields) if fields.contains_key("state") => {
+                    from_value(value).map(|(method, response)| {
+                        NotificationPayload::CustomMeltQuoteResponse(method, response)
+                    })
+                }
+                Some(_) => from_value(value).map(|(method, response)| {
+                    NotificationPayload::CustomMintQuoteResponse(method, response)
+                }),
+                None => Err(E::custom("custom notification response must be an object")),
+            }
+        }
+        _ => Err(E::custom("invalid notification payload")),
+    }
+}
+
+impl<'de, T> Deserialize<'de> for NotificationPayload<T>
+where
+    T: Clone + Serialize + DeserializeOwned,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        deserialize_payload(value)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Hash, Serialize)]
 #[serde(bound = "T: Serialize + DeserializeOwned")]
 /// A parsed notification
@@ -314,4 +384,76 @@ pub enum Error {
     #[error("PublicKey Error: {0}")]
     /// PublicKey Error
     PublicKey(#[from] crate::nuts::nut01::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn notification_payload_deserializes_melt_quote() {
+        let payload = json!({
+            "quote": "melt-quote",
+            "amount": 21,
+            "fee_reserve": 1,
+            "state": "PAID",
+            "expiry": 1234,
+            "payment_preimage": null,
+            "change": null,
+            "request": "lnbc1...",
+            "unit": "sat"
+        });
+
+        let decoded: NotificationPayload<String> = serde_json::from_value(payload).unwrap();
+
+        assert!(matches!(
+            decoded,
+            NotificationPayload::MeltQuoteBolt11Response(_)
+        ));
+    }
+
+    #[test]
+    fn notification_payload_keeps_stateful_mint_quote_as_bolt11() {
+        let payload = json!({
+            "quote": "mint-quote",
+            "request": "lnbc1...",
+            "amount": 21,
+            "unit": "sat",
+            "state": "PAID",
+            "expiry": 1234,
+            "pubkey": "02194603ffa062682c4f10e2dfe8f53e17d5d0329db51c8d3935cc74a4c0e0d4cb"
+        });
+
+        let decoded: NotificationPayload<String> = serde_json::from_value(payload).unwrap();
+
+        assert!(matches!(
+            decoded,
+            NotificationPayload::MintQuoteBolt11Response(_)
+        ));
+    }
+
+    #[test]
+    fn notification_payload_deserializes_onchain_mint_quote_with_unknown_fields() {
+        let payload = json!({
+            "quote": "onchain-quote",
+            "request": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            "unit": "sat",
+            "expiry": 1234,
+            "pubkey": "02194603ffa062682c4f10e2dfe8f53e17d5d0329db51c8d3935cc74a4c0e0d4cb",
+            "amount_paid": 0,
+            "amount_issued": 0,
+            "future_onchain_extension": {
+                "enabled": true
+            }
+        });
+
+        let decoded: NotificationPayload<String> = serde_json::from_value(payload).unwrap();
+
+        assert!(matches!(
+            decoded,
+            NotificationPayload::MintQuoteOnchainResponse(_)
+        ));
+    }
 }
