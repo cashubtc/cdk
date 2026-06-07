@@ -13,6 +13,18 @@ pub enum SendIntentState {
         /// When the intent was created (unix timestamp seconds)
         created_at: u64,
     },
+    /// Intent is negotiating a Payjoin transaction before a final transaction
+    /// has been selected and durably staged as a batch.
+    PayjoinNegotiating {
+        /// Consensus-serialized signed original transaction, used as fallback.
+        original_tx_bytes: Vec<u8>,
+        /// Fee of the signed original transaction in satoshis.
+        original_fee_sat: u64,
+        /// Append-only Payjoin sender event log.
+        events: Vec<payjoin::send::v2::SessionEvent>,
+        /// When the intent was created (unix timestamp seconds)
+        created_at: u64,
+    },
     /// Intent has been assigned to a batch
     Batched {
         /// The batch this intent belongs to

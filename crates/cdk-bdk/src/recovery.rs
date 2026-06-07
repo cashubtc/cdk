@@ -88,6 +88,14 @@ impl CdkBdk {
                         "Recovery found batch member stored as Pending"
                     );
                 }
+                SendIntentState::PayjoinNegotiating { .. } => {
+                    saw_pending = true;
+                    tracing::warn!(
+                        batch_id = %batch_id,
+                        intent_id = %record.intent_id,
+                        "Recovery found batch member still negotiating Payjoin"
+                    );
+                }
                 SendIntentState::Batched {
                     batch_id: intent_batch_id,
                     ..
@@ -161,6 +169,9 @@ impl CdkBdk {
                     BatchIntentRelation::IntentAlreadyAdvanced
                 }
                 SendIntentState::Pending { .. } | SendIntentState::Failed { .. } => {
+                    BatchIntentRelation::IntentReferencesDifferentBatch
+                }
+                SendIntentState::PayjoinNegotiating { .. } => {
                     BatchIntentRelation::IntentReferencesDifferentBatch
                 }
             },
@@ -294,6 +305,29 @@ impl CdkBdk {
                                                 intent_id = %id,
                                                 error = %err,
                                                 "Signed batch recovery aborted because Pending member could not be assigned"
+                                            );
+                                            abort_recovery = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                SendIntentAny::PayjoinNegotiating(intent) => {
+                                    tracing::warn!(
+                                        batch_id = %batch_record.batch_id,
+                                        intent_id = %id,
+                                        "Repairing Signed batch member still stored as PayjoinNegotiating"
+                                    );
+                                    match intent
+                                        .assign_to_batch(&self.storage, batch_record.batch_id)
+                                        .await
+                                    {
+                                        Ok(intent) => batched_intents.push(intent),
+                                        Err(err) => {
+                                            tracing::error!(
+                                                batch_id = %batch_record.batch_id,
+                                                intent_id = %id,
+                                                error = %err,
+                                                "Signed batch recovery aborted because Payjoin member could not be assigned"
                                             );
                                             abort_recovery = true;
                                             break;
@@ -499,6 +533,7 @@ impl CdkBdk {
         for persisted in persisted_intents {
             match payment_intent::from_record(&persisted) {
                 SendIntentAny::Pending(_) => {}
+                SendIntentAny::PayjoinNegotiating(_) => {}
                 SendIntentAny::Failed => {}
                 SendIntentAny::Batched(intent) => {
                     let intent_id = intent.intent_id;

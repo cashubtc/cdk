@@ -6,6 +6,17 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct Pending;
 
+/// Marker for an intent negotiating a Payjoin transaction before broadcast
+#[derive(Debug, Clone)]
+pub struct PayjoinNegotiating {
+    /// Consensus-serialized signed original transaction.
+    pub original_tx_bytes: Vec<u8>,
+    /// Fee of the signed original transaction in satoshis.
+    pub original_fee_sat: u64,
+    /// Persisted Payjoin sender event log.
+    pub events: Vec<payjoin::send::v2::SessionEvent>,
+}
+
 /// Marker for an intent assigned to a batch
 #[derive(Debug, Clone)]
 pub struct Batched {

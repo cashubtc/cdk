@@ -25,5 +25,6 @@
 //! intent is finalized into a tombstone so historical status queries can still
 //! return the payment after the active record is removed.
 
+pub(crate) mod payjoin_session;
 pub(crate) mod receive_intent;
 pub(crate) mod service;

@@ -16,9 +16,11 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::error::Error;
+use crate::receive::payjoin_session::{self, PayjoinReceiveSession, PayjoinReceiveSessionAny};
 use crate::send::batch_transaction::record::{
     BatchOutputAssignment, SendBatchRecord, SendBatchState,
 };
+use crate::send::payment_intent::{state as intent_state, SendIntent};
 use crate::types::{PayjoinConfig, PaymentMetadata, PaymentTier};
 use crate::util::parse_checked_address;
 use crate::CdkBdk;
@@ -171,16 +173,15 @@ impl CdkBdk {
         let payjoin = payjoin_v2_from_bip77_endpoint(&endpoint)
             .map_err(|err| Error::Payjoin(err.to_string()))?;
 
-        self.storage
-            .put_payjoin_receive_session(&crate::storage::PayjoinReceiveSessionRecord {
-                quote_id: quote_id.to_string(),
-                fallback_address: address.to_string(),
-                amount_sat,
-                expires_at: payjoin.expires_at,
-                events: persister.events()?,
-                closed: persister.closed(),
-            })
-            .await?;
+        let session = PayjoinReceiveSession::new(crate::storage::PayjoinReceiveSessionRecord {
+            quote_id: quote_id.to_string(),
+            fallback_address: address.to_string(),
+            amount_sat,
+            expires_at: payjoin.expires_at,
+            events: persister.events()?,
+            closed: persister.closed(),
+        });
+        session.persist(&self.storage).await?;
 
         tracing::debug!(
             quote_id = %quote_id,
@@ -216,51 +217,7 @@ impl CdkBdk {
                         "Polling Payjoin receive sessions"
                     );
                     for record in sessions {
-                        if should_prune_payjoin_receive_session(&record, now) {
-                            tracing::debug!(
-                                quote_id = %record.quote_id,
-                                expires_at = record.expires_at,
-                                now,
-                                "Pruning closed Payjoin receive session"
-                            );
-                            if let Err(err) = self.storage.delete_payjoin_receive_session(&record.quote_id).await {
-                                tracing::warn!(
-                                    quote_id = %record.quote_id,
-                                    "Payjoin receive session pruning failed: {}",
-                                    err
-                                );
-                            }
-                            continue;
-                        }
-                        if record.closed {
-                            tracing::trace!(
-                                quote_id = %record.quote_id,
-                                "Skipping closed Payjoin receive session"
-                            );
-                            continue;
-                        }
-                        if payjoin_receive_session_expired(&record, now) {
-                            tracing::debug!(
-                                quote_id = %record.quote_id,
-                                expires_at = record.expires_at,
-                                now,
-                                "Closing expired Payjoin receive session"
-                            );
-                            if let Err(err) = self.close_payjoin_receive_session(record).await {
-                                tracing::warn!(
-                                    "Payjoin receive session close-on-expiry failed: {}",
-                                    err
-                                );
-                            }
-                            continue;
-                        }
-                        tracing::debug!(
-                            quote_id = %record.quote_id,
-                            fallback_address = %record.fallback_address,
-                            event_count = record.events.len(),
-                            "Processing Payjoin receive session"
-                        );
-                        if let Err(err) = self.process_payjoin_receive_session(record).await {
+                        if let Err(err) = self.handle_payjoin_receive_session_once(record, now).await {
                             tracing::warn!("Payjoin receive session processing failed: {}", err);
                         }
                     }
@@ -270,12 +227,75 @@ impl CdkBdk {
         Ok(())
     }
 
-    async fn close_payjoin_receive_session(
+    async fn recover_payjoin_receive_sessions_once(&self) -> Result<(), Error> {
+        let now = crate::util::unix_now();
+        let sessions = self.storage.get_all_payjoin_receive_sessions().await?;
+
+        for record in sessions {
+            if let Err(err) = self.handle_payjoin_receive_session_once(record, now).await {
+                tracing::warn!("Payjoin receive session recovery failed: {}", err);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_payjoin_receive_session_once(
         &self,
-        mut record: crate::storage::PayjoinReceiveSessionRecord,
+        record: crate::storage::PayjoinReceiveSessionRecord,
+        now: u64,
     ) -> Result<(), Error> {
-        record.closed = true;
-        self.storage.put_payjoin_receive_session(&record).await
+        match payjoin_session::from_record(record) {
+            PayjoinReceiveSessionAny::Closed(session) => {
+                if session.should_prune(now, PAYJOIN_RECEIVE_SESSION_RETENTION_SECS) {
+                    tracing::debug!(
+                        quote_id = %session.record().quote_id,
+                        expires_at = session.record().expires_at,
+                        now,
+                        "Pruning closed Payjoin receive session"
+                    );
+                    self.storage
+                        .delete_payjoin_receive_session(&session.record().quote_id)
+                        .await?;
+                } else {
+                    tracing::trace!(
+                        quote_id = %session.record().quote_id,
+                        "Skipping closed Payjoin receive session"
+                    );
+                }
+            }
+            PayjoinReceiveSessionAny::Open(session) => {
+                if session.is_expired(now) {
+                    tracing::debug!(
+                        quote_id = %session.record().quote_id,
+                        expires_at = session.record().expires_at,
+                        now,
+                        "Closing expired Payjoin receive session"
+                    );
+                    session.close(&self.storage).await?;
+                    return Ok(());
+                }
+
+                if self.payjoin_config().is_none() {
+                    tracing::trace!(
+                        quote_id = %session.record().quote_id,
+                        "Payjoin receive config unavailable; leaving open session for fallback address detection"
+                    );
+                    return Ok(());
+                }
+
+                tracing::debug!(
+                    quote_id = %session.record().quote_id,
+                    fallback_address = %session.record().fallback_address,
+                    event_count = session.record().events.len(),
+                    "Processing Payjoin receive session"
+                );
+                self.process_payjoin_receive_session(session.into_record())
+                    .await?;
+            }
+        }
+
+        Ok(())
     }
 
     async fn process_payjoin_receive_session(
@@ -723,6 +743,7 @@ impl CdkBdk {
         amount_sat: u64,
         max_fee_sat: u64,
         tier: PaymentTier,
+        metadata: PaymentMetadata,
         payjoin: &PayjoinV2,
     ) -> Result<MakePaymentResponse, Error> {
         let prepared = self
@@ -734,6 +755,21 @@ impl CdkBdk {
             original_fee_sat,
             persister,
         } = prepared;
+
+        let mut intent = SendIntent::<intent_state::PayjoinNegotiating>::new_payjoin(
+            &self.storage,
+            quote_id.to_string(),
+            address.to_string(),
+            amount_sat,
+            max_fee_sat,
+            tier,
+            metadata,
+            consensus::serialize(&original_tx),
+            original_fee_sat,
+            persister.events()?,
+        )
+        .await
+        .map_err(|err| Error::PayjoinSendNotStarted(Box::new(err)))?;
 
         // Reserve the original's inputs immediately so a concurrent melt/batch
         // cannot select the same coins while the (potentially long-lived)
@@ -757,37 +793,25 @@ impl CdkBdk {
                     ),
                 ))));
             }
-            return Err(Error::PayjoinSendNotStarted(Box::new(err)));
-        }
-
-        // Persist the full send session so the background poller can drive and
-        // resume it across restarts.
-        let record = crate::storage::PayjoinSendSessionRecord {
-            quote_id: quote_id.to_string(),
-            fallback_address: address.to_string(),
-            amount_sat,
-            max_fee_sat,
-            tier,
-            original_tx_bytes: consensus::serialize(&original_tx),
-            original_fee_sat,
-            events: persister.events()?,
-            closed: false,
-        };
-        if let Err(err) = self.storage.put_payjoin_send_session(&record).await {
-            // Could not persist the session. Nothing was shared with the
-            // receiver, so undo the local reservation and report a recoverable
-            // error: the caller falls back to a direct onchain send.
-            if let Err(evict_err) = self.evict_unstaged_payjoin_tx(original_txid).await {
-                return Err(Error::PayjoinSendNotStarted(Box::new(Error::Payjoin(
-                    format!(
-                        "Could not persist Payjoin send session: {}; additionally could not \
-                         persist eviction of reserved original tx {}: {}",
-                        err, original_txid, evict_err
-                    ),
-                ))));
+            if let Err(fail_err) = intent
+                .fail(
+                    &self.storage,
+                    format!("Could not persist Payjoin original tx reservation: {}", err),
+                )
+                .await
+            {
+                tracing::warn!(
+                    quote_id = %quote_id,
+                    error = %fail_err,
+                    "Could not mark Payjoin send intent failed after reservation failure"
+                );
             }
             return Err(Error::PayjoinSendNotStarted(Box::new(err)));
         }
+
+        intent
+            .update_payjoin_events(&self.storage, persister.events()?)
+            .await?;
 
         tracing::debug!(
             quote_id = %quote_id,
@@ -795,9 +819,9 @@ impl CdkBdk {
             "Started Payjoin send session; negotiation runs in the background poller"
         );
 
-        // Return Pending immediately. Until the poller stages a send intent,
-        // `check_outgoing_payment` reports `Unknown` ("keep polling"), matching
-        // the queued direct-send convention; `total_spent` is the 0 sentinel.
+        // Return Pending immediately. `check_outgoing_payment` can see the
+        // PayjoinNegotiating intent and drive recovery if the poller is not
+        // running yet.
         Ok(MakePaymentResponse {
             payment_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
             payment_proof: None,
@@ -922,10 +946,12 @@ impl CdkBdk {
                 _ = cancel_token.cancelled() => break,
                 _ = tick.tick() => {
                     let sessions = self.storage.get_all_payjoin_send_sessions().await?;
+                    let intents = self.payjoin_send_intents().await?;
                     let active_count = sessions.iter().filter(|record| !record.closed).count();
                     tracing::debug!(
                         session_count = sessions.len(),
-                        active_count,
+                        intent_count = intents.len(),
+                        active_count = active_count + intents.len(),
                         "Polling Payjoin send sessions"
                     );
                     for record in sessions {
@@ -936,30 +962,122 @@ impl CdkBdk {
                             tracing::warn!("Payjoin send session processing failed: {}", err);
                         }
                     }
+                    for intent in intents {
+                        if let Err(err) = self.process_payjoin_send_intent(intent).await {
+                            tracing::warn!("Payjoin send intent processing failed: {}", err);
+                        }
+                    }
                 }
             }
         }
         Ok(())
     }
 
+    pub(crate) async fn recover_payjoin_sessions_once(&self) -> Result<(), Error> {
+        self.recover_payjoin_receive_sessions_once().await?;
+        self.recover_payjoin_send_sessions_once().await
+    }
+
+    async fn recover_payjoin_send_sessions_once(&self) -> Result<(), Error> {
+        let sessions = self.storage.get_all_payjoin_send_sessions().await?;
+        for record in sessions {
+            if record.closed {
+                continue;
+            }
+            if let Err(err) = self.process_payjoin_send_session(record).await {
+                tracing::warn!("Payjoin send session recovery failed: {}", err);
+            }
+        }
+
+        for intent in self.payjoin_send_intents().await? {
+            if let Err(err) = self.process_payjoin_send_intent(intent).await {
+                tracing::warn!("Payjoin send intent recovery failed: {}", err);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn payjoin_send_intents(
+        &self,
+    ) -> Result<Vec<SendIntent<intent_state::PayjoinNegotiating>>, Error> {
+        let records = self.storage.get_all_send_intents().await?;
+        Ok(records
+            .iter()
+            .filter_map(
+                |record| match crate::send::payment_intent::from_record(record) {
+                    crate::send::payment_intent::SendIntentAny::PayjoinNegotiating(intent) => {
+                        Some(intent)
+                    }
+                    _ => None,
+                },
+            )
+            .collect())
+    }
+
     pub(crate) async fn process_payjoin_send_session(
         &self,
         mut record: crate::storage::PayjoinSendSessionRecord,
     ) -> Result<(), Error> {
-        use ::payjoin::persist::OptionalTransitionOutcome;
-        use ::payjoin::send::v2::{SendSession, SessionOutcome};
-
-        let Some(config) = self.payjoin_config() else {
-            return Ok(());
-        };
-
-        // Idempotency: if this quote already has a staged or finalized send, the
-        // session is done. Close it so we stop polling.
-        if self
+        if let Some(active) = self
             .storage
             .get_send_intent_by_quote_id(&record.quote_id)
             .await?
-            .is_some()
+        {
+            match crate::send::payment_intent::from_record(&active) {
+                crate::send::payment_intent::SendIntentAny::PayjoinNegotiating(_) => {
+                    record.closed = true;
+                    self.storage.put_payjoin_send_session(&record).await?;
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
+        self.process_payjoin_send_record(&mut record, None).await
+    }
+
+    pub(crate) async fn process_payjoin_send_intent(
+        &self,
+        intent: SendIntent<intent_state::PayjoinNegotiating>,
+    ) -> Result<(), Error> {
+        let mut record = crate::storage::PayjoinSendSessionRecord {
+            quote_id: intent.quote_id.clone(),
+            fallback_address: intent.address.clone(),
+            amount_sat: intent.amount,
+            max_fee_sat: intent.max_fee_amount,
+            tier: intent.tier,
+            original_tx_bytes: intent.state.original_tx_bytes.clone(),
+            original_fee_sat: intent.state.original_fee_sat,
+            events: intent.state.events.clone(),
+            closed: false,
+        };
+
+        self.process_payjoin_send_record(&mut record, Some(intent))
+            .await
+    }
+
+    async fn process_payjoin_send_record(
+        &self,
+        record: &mut crate::storage::PayjoinSendSessionRecord,
+        mut intent: Option<SendIntent<intent_state::PayjoinNegotiating>>,
+    ) -> Result<(), Error> {
+        use ::payjoin::persist::OptionalTransitionOutcome;
+        use ::payjoin::send::v2::{SendSession, SessionOutcome};
+
+        // Idempotency: if this quote already has a staged or finalized send, the
+        // session is done. Close it so we stop polling.
+        let active_done = self
+            .storage
+            .get_send_intent_by_quote_id(&record.quote_id)
+            .await?
+            .is_some_and(|active| {
+                !matches!(
+                    active.state,
+                    crate::send::payment_intent::record::SendIntentState::PayjoinNegotiating { .. }
+                )
+            });
+        if active_done
             || self
                 .storage
                 .get_finalized_intent_by_quote_id(&record.quote_id)
@@ -968,10 +1086,21 @@ impl CdkBdk {
         {
             if !record.closed {
                 record.closed = true;
-                self.storage.put_payjoin_send_session(&record).await?;
+                self.persist_payjoin_send_terminal(record, intent.as_mut())
+                    .await?;
             }
             return Ok(());
         }
+
+        let Some(config) = self.payjoin_config() else {
+            tracing::debug!(
+                quote_id = %record.quote_id,
+                "Payjoin send config unavailable; broadcasting original fallback"
+            );
+            return self
+                .broadcast_payjoin_send_fallback(record, intent.take())
+                .await;
+        };
 
         let persister = RecordingSessionPersister::new(record.events.clone(), record.closed);
         let session = match ::payjoin::send::v2::replay_event_log(&persister) {
@@ -985,7 +1114,9 @@ impl CdkBdk {
                     error = %err,
                     "Payjoin send session not replayable (expired?); broadcasting original fallback"
                 );
-                return self.broadcast_payjoin_send_fallback(&mut record).await;
+                return self
+                    .broadcast_payjoin_send_fallback(record, intent.take())
+                    .await;
             }
         };
 
@@ -1003,7 +1134,7 @@ impl CdkBdk {
                     .process_response(&response, context)
                     .save(&persister)
                     .map_err(|err| Error::Payjoin(err.to_string()))?;
-                self.persist_payjoin_send_progress(&mut record, &persister)
+                self.persist_payjoin_send_progress(record, &persister, intent.as_mut())
                     .await?;
             }
             SendSession::PollingForProposal(sender) => {
@@ -1021,9 +1152,9 @@ impl CdkBdk {
                             quote_id = %record.quote_id,
                             "Received Payjoin proposal PSBT"
                         );
-                        self.persist_payjoin_send_progress(&mut record, &persister)
+                        self.persist_payjoin_send_progress(record, &persister, intent.as_mut())
                             .await?;
-                        self.finalize_and_stage_payjoin_send(&mut record, proposal_psbt)
+                        self.finalize_and_stage_payjoin_send(record, proposal_psbt, intent.take())
                             .await?;
                     }
                     OptionalTransitionOutcome::Stasis(_) => {
@@ -1031,7 +1162,7 @@ impl CdkBdk {
                             quote_id = %record.quote_id,
                             "No Payjoin proposal available yet"
                         );
-                        self.persist_payjoin_send_progress(&mut record, &persister)
+                        self.persist_payjoin_send_progress(record, &persister, intent.as_mut())
                             .await?;
                     }
                 }
@@ -1039,7 +1170,7 @@ impl CdkBdk {
             SendSession::Closed(outcome) => match outcome {
                 SessionOutcome::Success(proposal_psbt) => {
                     // Crash/resume: the proposal was received before staging.
-                    self.finalize_and_stage_payjoin_send(&mut record, proposal_psbt)
+                    self.finalize_and_stage_payjoin_send(record, proposal_psbt, intent.take())
                         .await?;
                 }
                 SessionOutcome::Failure | SessionOutcome::Cancel => {
@@ -1047,7 +1178,8 @@ impl CdkBdk {
                         quote_id = %record.quote_id,
                         "Payjoin send session closed without success; broadcasting original fallback"
                     );
-                    self.broadcast_payjoin_send_fallback(&mut record).await?;
+                    self.broadcast_payjoin_send_fallback(record, intent.take())
+                        .await?;
                 }
             },
         }
@@ -1063,6 +1195,7 @@ impl CdkBdk {
         &self,
         record: &mut crate::storage::PayjoinSendSessionRecord,
         proposal_psbt: bdk_wallet::bitcoin::Psbt,
+        mut intent: Option<SendIntent<intent_state::PayjoinNegotiating>>,
     ) -> Result<(), Error> {
         let fallback_address =
             parse_checked_address(&record.fallback_address, self.network, Error::Payjoin)?;
@@ -1100,7 +1233,9 @@ impl CdkBdk {
                     "Payjoin proposal exceeds local spend limits or altered the payment output; \
                      broadcasting original fallback instead"
                 );
-                return self.broadcast_payjoin_send_fallback(record).await;
+                return self
+                    .broadcast_payjoin_send_fallback(record, intent.take())
+                    .await;
             }
         };
 
@@ -1114,6 +1249,7 @@ impl CdkBdk {
             }
         }
 
+        let intent_backed = intent.is_some();
         self.stage_and_broadcast_payjoin_send(
             &record.quote_id,
             &record.fallback_address,
@@ -1122,11 +1258,14 @@ impl CdkBdk {
             record.tier,
             tx,
             validation,
+            intent,
         )
         .await?;
 
         record.closed = true;
-        self.storage.put_payjoin_send_session(record).await?;
+        if !intent_backed {
+            self.persist_payjoin_send_terminal(record, None).await?;
+        }
         Ok(())
     }
 
@@ -1135,6 +1274,7 @@ impl CdkBdk {
     async fn broadcast_payjoin_send_fallback(
         &self,
         record: &mut crate::storage::PayjoinSendSessionRecord,
+        intent: Option<SendIntent<intent_state::PayjoinNegotiating>>,
     ) -> Result<(), Error> {
         let original_tx = consensus::deserialize::<Transaction>(&record.original_tx_bytes)
             .map_err(|err| {
@@ -1154,6 +1294,7 @@ impl CdkBdk {
             fee_contribution_sat: record.original_fee_sat,
         };
 
+        let intent_backed = intent.is_some();
         self.stage_and_broadcast_payjoin_send(
             &record.quote_id,
             &record.fallback_address,
@@ -1162,11 +1303,14 @@ impl CdkBdk {
             record.tier,
             original_tx,
             validation,
+            intent,
         )
         .await?;
 
         record.closed = true;
-        self.storage.put_payjoin_send_session(record).await?;
+        if !intent_backed {
+            self.persist_payjoin_send_terminal(record, None).await?;
+        }
         Ok(())
     }
 
@@ -1183,6 +1327,7 @@ impl CdkBdk {
         tier: PaymentTier,
         tx: Transaction,
         validation: PayjoinSendValidation,
+        payjoin_intent: Option<SendIntent<intent_state::PayjoinNegotiating>>,
     ) -> Result<(), Error> {
         let txid = tx.compute_txid();
         let outpoint = validation.payment_outpoint;
@@ -1195,47 +1340,30 @@ impl CdkBdk {
             wallet_with_db.persist().map_err(Error::Database)?;
         }
 
-        let pending = crate::send::payment_intent::SendIntent::new(
-            &self.storage,
-            quote_id.to_string(),
-            address.to_string(),
-            amount_sat,
-            max_fee_sat,
-            tier,
-            PaymentMetadata::default(),
-        )
-        .await?;
-        let batch_id = Uuid::new_v4();
-        let pending_for_failure = pending.clone();
-        let batched = match pending.assign_to_batch(&self.storage, batch_id).await {
-            Ok(batched) => batched,
-            Err(err) => {
-                if let Err(evict_err) = self.evict_unstaged_payjoin_tx(txid).await {
-                    return Err(Error::Payjoin(format!(
-                        "Payjoin staging failed before batch assignment: {}; additionally could \
-                         not persist eviction of unstaged tx {}: {}",
-                        err, txid, evict_err
-                    )));
-                }
-                if let Err(fail_err) = pending_for_failure
-                    .fail(
-                        &self.storage,
-                        format!("Payjoin staging failed before batch assignment: {}", err),
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        quote_id,
-                        error = %fail_err,
-                        "Could not mark Payjoin send intent failed after assignment failure"
-                    );
-                }
-                return Err(err);
-            }
+        let pending = match payjoin_intent {
+            Some(_) => None,
+            None => Some(
+                crate::send::payment_intent::SendIntent::new(
+                    &self.storage,
+                    quote_id.to_string(),
+                    address.to_string(),
+                    amount_sat,
+                    max_fee_sat,
+                    tier,
+                    PaymentMetadata::default(),
+                )
+                .await?,
+            ),
         };
+        let batch_id = Uuid::new_v4();
+        let intent_id = payjoin_intent
+            .as_ref()
+            .map(|intent| intent.intent_id)
+            .or_else(|| pending.as_ref().map(|intent| intent.intent_id))
+            .ok_or_else(|| Error::Payjoin("Payjoin staging missing send intent".to_string()))?;
         let tx_bytes = consensus::serialize(&tx);
         let assignment = BatchOutputAssignment {
-            intent_id: batched.intent_id,
+            intent_id,
             vout: outpoint.vout,
             fee_contribution_sat,
         };
@@ -1258,26 +1386,28 @@ impl CdkBdk {
                     reason, txid, evict_err
                 )));
             }
-            match batched.revert_to_pending(&self.storage).await {
-                Ok(pending) => {
-                    if let Err(fail_err) = pending.fail(&self.storage, reason.clone()).await {
-                        tracing::warn!(
-                            quote_id,
-                            error = %fail_err,
-                            "Could not mark Payjoin send intent failed after staging failure"
-                        );
-                    }
-                }
-                Err(revert_err) => {
+            if let Some(pending) = pending {
+                if let Err(fail_err) = pending.fail(&self.storage, reason.clone()).await {
                     tracing::warn!(
                         quote_id,
-                        error = %revert_err,
-                        "Could not revert Payjoin send intent after staging failure"
+                        error = %fail_err,
+                        "Could not mark Payjoin send intent failed after staging failure"
                     );
                 }
             }
             return Err(err);
         }
+
+        let batched = match (payjoin_intent, pending) {
+            (Some(intent), None) => intent.assign_to_batch(&self.storage, batch_id).await?,
+            (None, Some(intent)) => intent.assign_to_batch(&self.storage, batch_id).await?,
+            _ => {
+                return Err(Error::Payjoin(
+                    "Payjoin staging intent mismatch".to_string(),
+                ))
+            }
+        };
+
         if let Err(err) = self
             .storage
             .update_send_batch(
@@ -1341,9 +1471,30 @@ impl CdkBdk {
         &self,
         record: &mut crate::storage::PayjoinSendSessionRecord,
         persister: &RecordingSessionPersister<::payjoin::send::v2::SessionEvent>,
+        intent: Option<&mut SendIntent<intent_state::PayjoinNegotiating>>,
     ) -> Result<(), Error> {
         record.events = persister.events()?;
-        self.storage.put_payjoin_send_session(record).await
+        if let Some(intent) = intent {
+            intent
+                .update_payjoin_events(&self.storage, record.events.clone())
+                .await
+        } else {
+            self.storage.put_payjoin_send_session(record).await
+        }
+    }
+
+    async fn persist_payjoin_send_terminal(
+        &self,
+        record: &crate::storage::PayjoinSendSessionRecord,
+        intent: Option<&mut SendIntent<intent_state::PayjoinNegotiating>>,
+    ) -> Result<(), Error> {
+        if let Some(intent) = intent {
+            intent
+                .update_payjoin_events(&self.storage, record.events.clone())
+                .await
+        } else {
+            self.storage.put_payjoin_send_session(record).await
+        }
     }
 
     async fn evict_unstaged_payjoin_tx(
@@ -1421,24 +1572,6 @@ fn payjoin_receive_session_state_name(
     }
 }
 
-fn payjoin_receive_session_expired(
-    record: &crate::storage::PayjoinReceiveSessionRecord,
-    now: u64,
-) -> bool {
-    record.expires_at < now
-}
-
-fn should_prune_payjoin_receive_session(
-    record: &crate::storage::PayjoinReceiveSessionRecord,
-    now: u64,
-) -> bool {
-    record.closed
-        && record
-            .expires_at
-            .saturating_add(PAYJOIN_RECEIVE_SESSION_RETENTION_SECS)
-            < now
-}
-
 fn build_payjoin_uri(address: &str, amount_sat: u64, payjoin: &PayjoinV2) -> Result<String, Error> {
     let mut serializer = url::form_urlencoded::Serializer::new(String::new());
     serializer.append_pair("amount", &format_bip21_amount_from_sats(amount_sat));
@@ -1455,7 +1588,7 @@ fn build_payjoin_endpoint(payjoin: &PayjoinV2) -> Result<String, Error> {
 
 fn update_payjoin_receive_credit_cap(record: &mut crate::storage::PayjoinReceiveSessionRecord) {
     if let Some(amount_sat) = payjoin_original_receiver_output_amount_from_events(&record.events) {
-        if record.amount_sat != amount_sat {
+        if record.amount_sat == 0 {
             tracing::debug!(
                 quote_id = %record.quote_id,
                 fallback_address = %record.fallback_address,
@@ -1463,8 +1596,16 @@ fn update_payjoin_receive_credit_cap(record: &mut crate::storage::PayjoinReceive
                 credit_cap_amount_sat = amount_sat,
                 "Updated Payjoin receive credit cap from original PSBT receiver outputs"
             );
+            record.amount_sat = amount_sat;
+        } else if record.amount_sat != amount_sat {
+            tracing::debug!(
+                quote_id = %record.quote_id,
+                fallback_address = %record.fallback_address,
+                quoted_amount_sat = record.amount_sat,
+                original_receiver_output_sat = amount_sat,
+                "Keeping existing Payjoin receive credit cap"
+            );
         }
-        record.amount_sat = amount_sat;
     }
 }
 
@@ -2064,8 +2205,12 @@ mod tests {
             closed: false,
         };
 
-        assert!(!payjoin_receive_session_expired(&record, 100));
-        assert!(payjoin_receive_session_expired(&record, 101));
+        let PayjoinReceiveSessionAny::Open(session) = payjoin_session::from_record(record) else {
+            panic!("expected open session");
+        };
+
+        assert!(!session.is_expired(100));
+        assert!(session.is_expired(101));
     }
 
     #[test]
@@ -2080,20 +2225,18 @@ mod tests {
         };
         let retention_edge = 100 + PAYJOIN_RECEIVE_SESSION_RETENTION_SECS;
 
-        assert!(!should_prune_payjoin_receive_session(
-            &record,
-            retention_edge
-        ));
-        assert!(should_prune_payjoin_receive_session(
-            &record,
-            retention_edge + 1
-        ));
+        let PayjoinReceiveSessionAny::Closed(session) = payjoin_session::from_record(record) else {
+            panic!("expected closed session");
+        };
 
-        let mut open_record = record;
+        assert!(!session.should_prune(retention_edge, PAYJOIN_RECEIVE_SESSION_RETENTION_SECS));
+        assert!(session.should_prune(retention_edge + 1, PAYJOIN_RECEIVE_SESSION_RETENTION_SECS));
+
+        let mut open_record = session.record().clone();
         open_record.closed = false;
-        assert!(!should_prune_payjoin_receive_session(
-            &open_record,
-            retention_edge + 1
+        assert!(matches!(
+            payjoin_session::from_record(open_record),
+            PayjoinReceiveSessionAny::Open(_)
         ));
     }
 

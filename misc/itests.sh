@@ -319,7 +319,7 @@ fi
 
 if [[ "$SUITE" == "all" ]]; then
     echo "Running onchain_regtest test with CLN mint"
-    run_test onchain_regtest
+    run_test onchain_regtest -- --nocapture --test-threads 1
     if [ $? -ne 0 ]; then
         echo "onchain_regtest with cln mint test failed, exiting"
         exit 1
@@ -352,7 +352,7 @@ fi
 
 if [[ "$SUITE" == "all" || "$SUITE" == "onchain" ]]; then
     echo "Running onchain_regtest test with LND mint"
-    run_test onchain_regtest
+    run_test onchain_regtest -- --nocapture --test-threads 1
     if [ $? -ne 0 ]; then
         echo "onchain_regtest test with LND mint failed, exiting"
         exit 1
@@ -423,7 +423,7 @@ fi
 
 if [[ "$SUITE" == "all" ]]; then
     echo "Running onchain_regtest test with LDK mint"
-    run_test onchain_regtest
+    run_test onchain_regtest -- --nocapture --test-threads 1
     if [ $? -ne 0 ]; then
         echo "onchain_regtest test with LDK mint failed, exiting"
         exit 1
