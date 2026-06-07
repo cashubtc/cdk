@@ -28,13 +28,7 @@ pub trait Spec: Send + Sync {
         + Serialize;
 
     /// Event
-    type Event: Event<Topic = Self::Topic>
-        + Send
-        + Sync
-        + Eq
-        + PartialEq
-        + DeserializeOwned
-        + Serialize;
+    type Event: Event<Topic = Self::Topic> + Send + Sync + Eq + PartialEq + Serialize;
 
     /// Subscription Id
     type SubscriptionId: Clone
@@ -68,7 +62,7 @@ pub trait Spec: Send + Sync {
 }
 
 /// Event trait
-pub trait Event: Clone + Send + Sync + Eq + PartialEq + DeserializeOwned + Serialize {
+pub trait Event: Clone + Send + Sync + Eq + PartialEq + Serialize {
     /// Generic Topic
     ///
     /// It should be serializable/deserializable to be stored in the database layer and it should
