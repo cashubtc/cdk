@@ -239,7 +239,7 @@ impl Serialize for MeltMethodSettings {
     where
         S: Serializer,
     {
-        let mut num_fields = 3; // method and unit are always present
+        let mut num_fields = 2; // method and unit are always present
         if self.min_amount.is_some() {
             num_fields += 1;
         }
@@ -598,6 +598,50 @@ mod tests {
             "unknown".parse::<QuoteState>(),
             Err(Error::UnknownState)
         ));
+    }
+
+    #[test]
+    fn test_melt_method_settings_cbor_roundtrip() {
+        let settings = [
+            MeltMethodSettings {
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                unit: CurrencyUnit::Sat,
+                min_amount: None,
+                max_amount: None,
+                options: None,
+            },
+            MeltMethodSettings {
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                unit: CurrencyUnit::Sat,
+                min_amount: Some(Amount::from(1)),
+                max_amount: None,
+                options: None,
+            },
+            MeltMethodSettings {
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                unit: CurrencyUnit::Sat,
+                min_amount: None,
+                max_amount: Some(Amount::from(1000)),
+                options: None,
+            },
+            MeltMethodSettings {
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                unit: CurrencyUnit::Sat,
+                min_amount: None,
+                max_amount: None,
+                options: Some(MeltMethodOptions::Bolt11 { amountless: true }),
+            },
+        ];
+
+        for settings in settings {
+            let mut encoded = Vec::new();
+            ciborium::into_writer(&settings, &mut encoded).expect("serialize settings as CBOR");
+
+            let decoded: MeltMethodSettings =
+                ciborium::from_reader(&encoded[..]).expect("deserialize settings from CBOR");
+
+            assert_eq!(decoded, settings);
+        }
     }
 
     #[test]
