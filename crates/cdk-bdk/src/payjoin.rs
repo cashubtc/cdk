@@ -3,6 +3,8 @@
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
@@ -30,12 +32,53 @@ use crate::util::parse_checked_address;
 use crate::CdkBdk;
 
 const PAYJOIN_RECEIVE_SESSION_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
+const PAYJOIN_OHTTP_KEYS_CACHE_TTL_SECS: u64 = 10 * 60;
+const PAYJOIN_OHTTP_KEYS_FETCH_TIMEOUT: Duration = Duration::from_secs(3);
+const PAYJOIN_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(35);
 const PAYJOIN_RECEIVER_MAX_EFFECTIVE_FEE_RATE: FeeRate = FeeRate::ZERO;
 /// Minimum fee rate enforced on a sender's original PSBT during the
 /// broadcast-suitability check. On backends without `testmempoolaccept` (Esplora)
 /// this floor is the primary anti-probing protection; on Bitcoin Core it is an
 /// additional constraint on top of the full mempool-acceptance check.
 const PAYJOIN_RECEIVER_MIN_ORIGINAL_FEE_RATE: FeeRate = FeeRate::from_sat_per_vb_u32(1);
+#[cfg(test)]
+const TEST_OHTTP_KEYS: &str = "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ";
+#[cfg(test)]
+static TEST_OHTTP_FETCH_ENABLED: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static TEST_OHTTP_FETCH_FAIL: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static TEST_OHTTP_FETCH_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static TEST_OHTTP_FETCH_CALLS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static TEST_OHTTP_FETCH_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[cfg(test)]
+pub(crate) async fn lock_test_ohttp_fetch() -> tokio::sync::MutexGuard<'static, ()> {
+    TEST_OHTTP_FETCH_TEST_LOCK.lock().await
+}
+
+#[cfg(test)]
+pub(crate) fn configure_test_ohttp_fetch(delay: Duration, fail: bool) {
+    TEST_OHTTP_FETCH_ENABLED.store(true, Ordering::SeqCst);
+    TEST_OHTTP_FETCH_FAIL.store(fail, Ordering::SeqCst);
+    TEST_OHTTP_FETCH_DELAY_MS.store(delay.as_millis() as u64, Ordering::SeqCst);
+    TEST_OHTTP_FETCH_CALLS.store(0, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn disable_test_ohttp_fetch() {
+    TEST_OHTTP_FETCH_ENABLED.store(false, Ordering::SeqCst);
+    TEST_OHTTP_FETCH_FAIL.store(false, Ordering::SeqCst);
+    TEST_OHTTP_FETCH_DELAY_MS.store(0, Ordering::SeqCst);
+    TEST_OHTTP_FETCH_CALLS.store(0, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn test_ohttp_fetch_calls() -> usize {
+    TEST_OHTTP_FETCH_CALLS.load(Ordering::SeqCst)
+}
 
 #[derive(Debug, Clone)]
 struct RecordingSessionPersister<E> {
@@ -170,7 +213,7 @@ impl CdkBdk {
             return Ok(None);
         };
 
-        let ohttp_keys = fetch_ohttp_keys(config).await?;
+        let ohttp_keys = self.cached_ohttp_keys(config).await?;
         let persister = RecordingSessionPersister::new(Vec::new(), false);
         let mut receiver_builder = ::payjoin::receive::v2::ReceiverBuilder::new(
             address.clone(),
@@ -197,6 +240,7 @@ impl CdkBdk {
             quote_id: quote_id.to_string(),
             fallback_address: address.to_string(),
             amount_sat,
+            proposal_receiver_outpoints: Vec::new(),
             expires_at: payjoin.expires_at,
             events: persister.events()?,
             closed: persister.closed(),
@@ -500,6 +544,11 @@ impl CdkBdk {
                         closed = true;
                         return Err(err);
                     }
+                    update_payjoin_receive_proposal_receiver_outpoints(
+                        &mut record,
+                        proposal.psbt(),
+                        &fallback_script,
+                    );
                 }
                 tracing::debug!(
                     quote_id = %record.quote_id,
@@ -1298,23 +1347,12 @@ impl CdkBdk {
             tokio::select! {
                 _ = cancel_token.cancelled() => break,
                 _ = tick.tick() => {
-                    let sessions = self.storage.get_all_payjoin_send_sessions().await?;
                     let intents = self.payjoin_send_intents().await?;
-                    let active_count = sessions.iter().filter(|record| !record.closed).count();
                     tracing::debug!(
-                        session_count = sessions.len(),
                         intent_count = intents.len(),
-                        active_count = active_count + intents.len(),
-                        "Polling Payjoin send sessions"
+                        active_count = intents.len(),
+                        "Polling Payjoin send intents"
                     );
-                    for record in sessions {
-                        if record.closed {
-                            continue;
-                        }
-                        if let Err(err) = self.process_payjoin_send_session(record).await {
-                            tracing::warn!("Payjoin send session processing failed: {}", err);
-                        }
-                    }
                     for intent in intents {
                         if let Err(err) = self.process_payjoin_send_intent(intent).await {
                             tracing::warn!("Payjoin send intent processing failed: {}", err);
@@ -1329,7 +1367,7 @@ impl CdkBdk {
     pub(crate) async fn recover_payjoin_sessions_once(&self) -> Result<(), Error> {
         self.recover_payjoin_receive_sessions_once().await?;
         self.recover_cut_through_settlements_once().await?;
-        self.recover_payjoin_send_sessions_once().await
+        self.recover_payjoin_send_intents_once().await
     }
 
     async fn recover_cut_through_settlements_once(&self) -> Result<(), Error> {
@@ -1531,17 +1569,7 @@ impl CdkBdk {
         Ok(())
     }
 
-    async fn recover_payjoin_send_sessions_once(&self) -> Result<(), Error> {
-        let sessions = self.storage.get_all_payjoin_send_sessions().await?;
-        for record in sessions {
-            if record.closed {
-                continue;
-            }
-            if let Err(err) = self.process_payjoin_send_session(record).await {
-                tracing::warn!("Payjoin send session recovery failed: {}", err);
-            }
-        }
-
+    async fn recover_payjoin_send_intents_once(&self) -> Result<(), Error> {
         for intent in self.payjoin_send_intents().await? {
             if let Err(err) = self.process_payjoin_send_intent(intent).await {
                 tracing::warn!("Payjoin send intent recovery failed: {}", err);
@@ -1568,60 +1596,18 @@ impl CdkBdk {
             .collect())
     }
 
-    pub(crate) async fn process_payjoin_send_session(
-        &self,
-        mut record: crate::storage::PayjoinSendSessionRecord,
-    ) -> Result<(), Error> {
-        if let Some(active) = self
-            .storage
-            .get_send_intent_by_quote_id(&record.quote_id)
-            .await?
-        {
-            if let crate::send::payment_intent::SendIntentAny::PayjoinNegotiating(_) =
-                crate::send::payment_intent::from_record(&active)
-            {
-                record.closed = true;
-                self.storage.put_payjoin_send_session(&record).await?;
-                return Ok(());
-            }
-        }
-
-        self.process_payjoin_send_record(&mut record, None).await
-    }
-
     pub(crate) async fn process_payjoin_send_intent(
         &self,
-        intent: SendIntent<intent_state::PayjoinNegotiating>,
-    ) -> Result<(), Error> {
-        let mut record = crate::storage::PayjoinSendSessionRecord {
-            quote_id: intent.quote_id.clone(),
-            fallback_address: intent.address.clone(),
-            amount_sat: intent.amount,
-            max_fee_sat: intent.max_fee_amount,
-            tier: intent.tier,
-            original_tx_bytes: intent.state.original_tx_bytes.clone(),
-            original_fee_sat: intent.state.original_fee_sat,
-            events: intent.state.events.clone(),
-            closed: false,
-        };
-
-        self.process_payjoin_send_record(&mut record, Some(intent))
-            .await
-    }
-
-    async fn process_payjoin_send_record(
-        &self,
-        record: &mut crate::storage::PayjoinSendSessionRecord,
-        mut intent: Option<SendIntent<intent_state::PayjoinNegotiating>>,
+        mut intent: SendIntent<intent_state::PayjoinNegotiating>,
     ) -> Result<(), Error> {
         use ::payjoin::persist::OptionalTransitionOutcome;
         use ::payjoin::send::v2::{SendSession, SessionOutcome};
 
-        // Idempotency: if this quote already has a staged or finalized send, the
-        // session is done. Close it so we stop polling.
+        // Idempotency: if this quote already has a staged or finalized send,
+        // the negotiation has completed on another path.
         let active_done = self
             .storage
-            .get_send_intent_by_quote_id(&record.quote_id)
+            .get_send_intent_by_quote_id(&intent.quote_id)
             .await?
             .is_some_and(|active| {
                 !matches!(
@@ -1632,29 +1618,22 @@ impl CdkBdk {
         if active_done
             || self
                 .storage
-                .get_finalized_intent_by_quote_id(&record.quote_id)
+                .get_finalized_intent_by_quote_id(&intent.quote_id)
                 .await?
                 .is_some()
         {
-            if !record.closed {
-                record.closed = true;
-                self.persist_payjoin_send_terminal(record, intent.as_mut())
-                    .await?;
-            }
             return Ok(());
         }
 
         let Some(config) = self.payjoin_config() else {
             tracing::debug!(
-                quote_id = %record.quote_id,
+                quote_id = %intent.quote_id,
                 "Payjoin send config unavailable; broadcasting original fallback"
             );
-            return self
-                .broadcast_payjoin_send_fallback(record, intent.take())
-                .await;
+            return self.broadcast_payjoin_send_fallback(intent).await;
         };
 
-        let persister = RecordingSessionPersister::new(record.events.clone(), record.closed);
+        let persister = RecordingSessionPersister::new(intent.state.events.clone(), false);
         let session = match ::payjoin::send::v2::replay_event_log(&persister) {
             Ok((session, _history)) => session,
             Err(err) => {
@@ -1662,20 +1641,18 @@ impl CdkBdk {
                 // the Payjoin parameters have expired). Broadcast the signed
                 // original fallback so the melt still settles.
                 tracing::debug!(
-                    quote_id = %record.quote_id,
+                    quote_id = %intent.quote_id,
                     error = %err,
                     "Payjoin send session not replayable (expired?); broadcasting original fallback"
                 );
-                return self
-                    .broadcast_payjoin_send_fallback(record, intent.take())
-                    .await;
+                return self.broadcast_payjoin_send_fallback(intent).await;
             }
         };
 
         match session {
             SendSession::WithReplyKey(sender) => {
                 tracing::debug!(
-                    quote_id = %record.quote_id,
+                    quote_id = %intent.quote_id,
                     "Posting original PSBT to Payjoin directory"
                 );
                 let (request, context) = sender
@@ -1686,7 +1663,7 @@ impl CdkBdk {
                     .process_response(&response, context)
                     .save(&persister)
                     .map_err(|err| Error::Payjoin(err.to_string()))?;
-                self.persist_payjoin_send_progress(record, &persister, intent.as_mut())
+                self.persist_payjoin_send_progress(&mut intent, &persister)
                     .await?;
             }
             SendSession::PollingForProposal(sender) => {
@@ -1701,20 +1678,20 @@ impl CdkBdk {
                 {
                     OptionalTransitionOutcome::Progress(proposal_psbt) => {
                         tracing::debug!(
-                            quote_id = %record.quote_id,
+                            quote_id = %intent.quote_id,
                             "Received Payjoin proposal PSBT"
                         );
-                        self.persist_payjoin_send_progress(record, &persister, intent.as_mut())
+                        self.persist_payjoin_send_progress(&mut intent, &persister)
                             .await?;
-                        self.finalize_and_stage_payjoin_send(record, proposal_psbt, intent.take())
+                        self.finalize_and_stage_payjoin_send(intent, proposal_psbt)
                             .await?;
                     }
                     OptionalTransitionOutcome::Stasis(_) => {
                         tracing::debug!(
-                            quote_id = %record.quote_id,
+                            quote_id = %intent.quote_id,
                             "No Payjoin proposal available yet"
                         );
-                        self.persist_payjoin_send_progress(record, &persister, intent.as_mut())
+                        self.persist_payjoin_send_progress(&mut intent, &persister)
                             .await?;
                     }
                 }
@@ -1722,16 +1699,15 @@ impl CdkBdk {
             SendSession::Closed(outcome) => match outcome {
                 SessionOutcome::Success(proposal_psbt) => {
                     // Crash/resume: the proposal was received before staging.
-                    self.finalize_and_stage_payjoin_send(record, proposal_psbt, intent.take())
+                    self.finalize_and_stage_payjoin_send(intent, proposal_psbt)
                         .await?;
                 }
                 SessionOutcome::Failure | SessionOutcome::Cancel => {
                     tracing::debug!(
-                        quote_id = %record.quote_id,
+                        quote_id = %intent.quote_id,
                         "Payjoin send session closed without success; broadcasting original fallback"
                     );
-                    self.broadcast_payjoin_send_fallback(record, intent.take())
-                        .await?;
+                    self.broadcast_payjoin_send_fallback(intent).await?;
                 }
             },
         }
@@ -1745,12 +1721,11 @@ impl CdkBdk {
     /// original fallback instead (it is already within budget).
     async fn finalize_and_stage_payjoin_send(
         &self,
-        record: &mut crate::storage::PayjoinSendSessionRecord,
+        intent: SendIntent<intent_state::PayjoinNegotiating>,
         proposal_psbt: bdk_wallet::bitcoin::Psbt,
-        mut intent: Option<SendIntent<intent_state::PayjoinNegotiating>>,
     ) -> Result<(), Error> {
         let fallback_address =
-            parse_checked_address(&record.fallback_address, self.network, Error::Payjoin)?;
+            parse_checked_address(&intent.address, self.network, Error::Payjoin)?;
 
         let mut final_psbt = proposal_psbt;
         let (tx, validation) = {
@@ -1769,8 +1744,8 @@ impl CdkBdk {
             let validation = validate_payjoin_send_transaction(
                 &tx,
                 fallback_address.script_pubkey().as_script(),
-                record.amount_sat,
-                record.max_fee_sat,
+                intent.amount,
+                intent.max_fee_amount,
                 sent.to_sat(),
                 received.to_sat(),
             );
@@ -1780,44 +1755,29 @@ impl CdkBdk {
             Ok(validation) => validation,
             Err(err) => {
                 tracing::warn!(
-                    quote_id = %record.quote_id,
+                    quote_id = %intent.quote_id,
                     error = %err,
                     "Payjoin proposal exceeds local spend limits or altered the payment output; \
                      broadcasting original fallback instead"
                 );
-                return self
-                    .broadcast_payjoin_send_fallback(record, intent.take())
-                    .await;
+                return self.broadcast_payjoin_send_fallback(intent).await;
             }
         };
 
         // The Payjoin tx spends the original's inputs plus the receiver's, so
         // evict the locally-reserved original before applying the Payjoin tx to
         // avoid a conflicting double-application in the wallet graph.
-        if let Ok(original_tx) = consensus::deserialize::<Transaction>(&record.original_tx_bytes) {
+        if let Ok(original_tx) =
+            consensus::deserialize::<Transaction>(&intent.state.original_tx_bytes)
+        {
             let original_txid = original_tx.compute_txid();
             if original_txid != tx.compute_txid() {
                 self.evict_unstaged_payjoin_tx(original_txid).await?;
             }
         }
 
-        let intent_backed = intent.is_some();
-        self.stage_and_broadcast_payjoin_send(
-            &record.quote_id,
-            &record.fallback_address,
-            record.amount_sat,
-            record.max_fee_sat,
-            record.tier,
-            tx,
-            validation,
-            intent,
-        )
-        .await?;
-
-        record.closed = true;
-        if !intent_backed {
-            self.persist_payjoin_send_terminal(record, None).await?;
-        }
+        self.stage_and_broadcast_payjoin_send(tx, validation, intent)
+            .await?;
         Ok(())
     }
 
@@ -1825,10 +1785,9 @@ impl CdkBdk {
     /// fallback, then close the session.
     async fn broadcast_payjoin_send_fallback(
         &self,
-        record: &mut crate::storage::PayjoinSendSessionRecord,
-        intent: Option<SendIntent<intent_state::PayjoinNegotiating>>,
+        intent: SendIntent<intent_state::PayjoinNegotiating>,
     ) -> Result<(), Error> {
-        let original_tx = consensus::deserialize::<Transaction>(&record.original_tx_bytes)
+        let original_tx = consensus::deserialize::<Transaction>(&intent.state.original_tx_bytes)
             .map_err(|err| {
                 Error::Payjoin(format!(
                     "Could not deserialize original Payjoin tx: {}",
@@ -1836,33 +1795,18 @@ impl CdkBdk {
                 ))
             })?;
         let fallback_address =
-            parse_checked_address(&record.fallback_address, self.network, Error::Payjoin)?;
+            parse_checked_address(&intent.address, self.network, Error::Payjoin)?;
         let validation = PayjoinSendValidation {
             payment_outpoint: require_payjoin_send_payment_output(
                 &original_tx,
                 fallback_address.script_pubkey().as_script(),
-                record.amount_sat,
+                intent.amount,
             )?,
-            fee_contribution_sat: record.original_fee_sat,
+            fee_contribution_sat: intent.state.original_fee_sat,
         };
 
-        let intent_backed = intent.is_some();
-        self.stage_and_broadcast_payjoin_send(
-            &record.quote_id,
-            &record.fallback_address,
-            record.amount_sat,
-            record.max_fee_sat,
-            record.tier,
-            original_tx,
-            validation,
-            intent,
-        )
-        .await?;
-
-        record.closed = true;
-        if !intent_backed {
-            self.persist_payjoin_send_terminal(record, None).await?;
-        }
+        self.stage_and_broadcast_payjoin_send(original_tx, validation, intent)
+            .await?;
         Ok(())
     }
 
@@ -1872,15 +1816,11 @@ impl CdkBdk {
     #[allow(clippy::too_many_arguments)]
     async fn stage_and_broadcast_payjoin_send(
         &self,
-        quote_id: &str,
-        address: &str,
-        amount_sat: u64,
-        max_fee_sat: u64,
-        tier: PaymentTier,
         tx: Transaction,
         validation: PayjoinSendValidation,
-        payjoin_intent: Option<SendIntent<intent_state::PayjoinNegotiating>>,
+        payjoin_intent: SendIntent<intent_state::PayjoinNegotiating>,
     ) -> Result<(), Error> {
+        let quote_id = payjoin_intent.quote_id.clone();
         let txid = tx.compute_txid();
         let outpoint = validation.payment_outpoint;
         let fee_contribution_sat = validation.fee_contribution_sat;
@@ -1892,27 +1832,8 @@ impl CdkBdk {
             wallet_with_db.persist().map_err(Error::Database)?;
         }
 
-        let pending = match payjoin_intent {
-            Some(_) => None,
-            None => Some(
-                crate::send::payment_intent::SendIntent::new(
-                    &self.storage,
-                    quote_id.to_string(),
-                    address.to_string(),
-                    amount_sat,
-                    max_fee_sat,
-                    tier,
-                    PaymentMetadata::default(),
-                )
-                .await?,
-            ),
-        };
         let batch_id = Uuid::new_v4();
-        let intent_id = payjoin_intent
-            .as_ref()
-            .map(|intent| intent.intent_id)
-            .or_else(|| pending.as_ref().map(|intent| intent.intent_id))
-            .ok_or_else(|| Error::Payjoin("Payjoin staging missing send intent".to_string()))?;
+        let intent_id = payjoin_intent.intent_id;
         let tx_bytes = consensus::serialize(&tx);
         let assignment = BatchOutputAssignment {
             intent_id,
@@ -1938,27 +1859,19 @@ impl CdkBdk {
                     reason, txid, evict_err
                 )));
             }
-            if let Some(pending) = pending {
-                if let Err(fail_err) = pending.fail(&self.storage, reason.clone()).await {
-                    tracing::warn!(
-                        quote_id,
-                        error = %fail_err,
-                        "Could not mark Payjoin send intent failed after staging failure"
-                    );
-                }
+            if let Err(fail_err) = payjoin_intent.fail(&self.storage, reason.clone()).await {
+                tracing::warn!(
+                    quote_id,
+                    error = %fail_err,
+                    "Could not mark Payjoin send intent failed after staging failure"
+                );
             }
             return Err(err);
         }
 
-        let batched = match (payjoin_intent, pending) {
-            (Some(intent), None) => intent.assign_to_batch(&self.storage, batch_id).await?,
-            (None, Some(intent)) => intent.assign_to_batch(&self.storage, batch_id).await?,
-            _ => {
-                return Err(Error::Payjoin(
-                    "Payjoin staging intent mismatch".to_string(),
-                ))
-            }
-        };
+        let batched = payjoin_intent
+            .assign_to_batch(&self.storage, batch_id)
+            .await?;
 
         if let Err(err) = self
             .storage
@@ -2021,32 +1934,12 @@ impl CdkBdk {
     /// transaction is staged).
     async fn persist_payjoin_send_progress(
         &self,
-        record: &mut crate::storage::PayjoinSendSessionRecord,
+        intent: &mut SendIntent<intent_state::PayjoinNegotiating>,
         persister: &RecordingSessionPersister<::payjoin::send::v2::SessionEvent>,
-        intent: Option<&mut SendIntent<intent_state::PayjoinNegotiating>>,
     ) -> Result<(), Error> {
-        record.events = persister.events()?;
-        if let Some(intent) = intent {
-            intent
-                .update_payjoin_events(&self.storage, record.events.clone())
-                .await
-        } else {
-            self.storage.put_payjoin_send_session(record).await
-        }
-    }
-
-    async fn persist_payjoin_send_terminal(
-        &self,
-        record: &crate::storage::PayjoinSendSessionRecord,
-        intent: Option<&mut SendIntent<intent_state::PayjoinNegotiating>>,
-    ) -> Result<(), Error> {
-        if let Some(intent) = intent {
-            intent
-                .update_payjoin_events(&self.storage, record.events.clone())
-                .await
-        } else {
-            self.storage.put_payjoin_send_session(record).await
-        }
+        intent
+            .update_payjoin_events(&self.storage, persister.events()?)
+            .await
     }
 
     async fn evict_unstaged_payjoin_tx(
@@ -2065,9 +1958,124 @@ impl CdkBdk {
     pub(crate) fn payjoin_config(&self) -> Option<&PayjoinConfig> {
         self.payjoin_config.as_ref()
     }
+
+    async fn cached_ohttp_keys(
+        &self,
+        config: &PayjoinConfig,
+    ) -> Result<::payjoin::OhttpKeys, Error> {
+        let now = crate::util::unix_now();
+        let cached_keys = {
+            let cache = self.payjoin_ohttp_keys_cache.lock().await;
+            cache.as_ref().and_then(|cached| {
+                let config_matches = cached.directory_url == config.directory_url
+                    && cached.ohttp_relay_url == config.ohttp_relay_url;
+                if !config_matches {
+                    return None;
+                }
+
+                if now.saturating_sub(cached.fetched_at) <= PAYJOIN_OHTTP_KEYS_CACHE_TTL_SECS {
+                    return Some(Ok(cached.keys.clone()));
+                }
+
+                Some(Err(cached.keys.clone()))
+            })
+        };
+
+        match cached_keys {
+            Some(Ok(keys)) => Ok(keys),
+            Some(Err(stale_keys)) => {
+                let _fetch_guard = self.payjoin_ohttp_keys_fetch_lock.lock().await;
+                if let Some(keys) = self.fresh_cached_ohttp_keys(config).await {
+                    return Ok(keys);
+                }
+
+                match fetch_ohttp_keys_with_timeout(config).await {
+                    Ok(refreshed_keys) => {
+                        self.store_ohttp_keys(
+                            config,
+                            refreshed_keys.clone(),
+                            crate::util::unix_now(),
+                        )
+                        .await;
+                        Ok(refreshed_keys)
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            "Could not refresh Payjoin OHTTP keys; using stale cached keys"
+                        );
+                        Ok(stale_keys)
+                    }
+                }
+            }
+            None => {
+                let _fetch_guard = self.payjoin_ohttp_keys_fetch_lock.lock().await;
+                if let Some(keys) = self.fresh_cached_ohttp_keys(config).await {
+                    return Ok(keys);
+                }
+
+                let keys = fetch_ohttp_keys_with_timeout(config).await?;
+                self.store_ohttp_keys(config, keys.clone(), crate::util::unix_now())
+                    .await;
+                Ok(keys)
+            }
+        }
+    }
+
+    async fn fresh_cached_ohttp_keys(
+        &self,
+        config: &PayjoinConfig,
+    ) -> Option<::payjoin::OhttpKeys> {
+        let now = crate::util::unix_now();
+        let cache = self.payjoin_ohttp_keys_cache.lock().await;
+        cache.as_ref().and_then(|cached| {
+            let config_matches = cached.directory_url == config.directory_url
+                && cached.ohttp_relay_url == config.ohttp_relay_url;
+            if config_matches
+                && now.saturating_sub(cached.fetched_at) <= PAYJOIN_OHTTP_KEYS_CACHE_TTL_SECS
+            {
+                Some(cached.keys.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    async fn store_ohttp_keys(
+        &self,
+        config: &PayjoinConfig,
+        keys: ::payjoin::OhttpKeys,
+        fetched_at: u64,
+    ) {
+        let mut cache = self.payjoin_ohttp_keys_cache.lock().await;
+        *cache = Some(crate::PayjoinOhttpKeysCache {
+            keys,
+            fetched_at,
+            directory_url: config.directory_url.clone(),
+            ohttp_relay_url: config.ohttp_relay_url.clone(),
+        });
+    }
+}
+
+async fn fetch_ohttp_keys_with_timeout(
+    config: &PayjoinConfig,
+) -> Result<::payjoin::OhttpKeys, Error> {
+    tokio::time::timeout(PAYJOIN_OHTTP_KEYS_FETCH_TIMEOUT, fetch_ohttp_keys(config))
+        .await
+        .map_err(|_| {
+            Error::Payjoin(format!(
+                "Payjoin OHTTP key fetch timed out after {} seconds",
+                PAYJOIN_OHTTP_KEYS_FETCH_TIMEOUT.as_secs()
+            ))
+        })?
 }
 
 async fn fetch_ohttp_keys(config: &PayjoinConfig) -> Result<::payjoin::OhttpKeys, Error> {
+    #[cfg(test)]
+    if let Some(result) = test_fetch_ohttp_keys(config).await {
+        return result;
+    }
+
     #[cfg(feature = "payjoin-local-https")]
     {
         if let Some(cert_der) = config.local_tls_cert_der.clone() {
@@ -2084,6 +2092,36 @@ async fn fetch_ohttp_keys(config: &PayjoinConfig) -> Result<::payjoin::OhttpKeys
     ::payjoin::io::fetch_ohttp_keys(&config.ohttp_relay_url, &config.directory_url)
         .await
         .map_err(|err| Error::Payjoin(err.to_string()))
+}
+
+#[cfg(test)]
+async fn test_fetch_ohttp_keys(
+    _config: &PayjoinConfig,
+) -> Option<Result<::payjoin::OhttpKeys, Error>> {
+    if !TEST_OHTTP_FETCH_ENABLED.load(Ordering::SeqCst) {
+        return None;
+    }
+
+    TEST_OHTTP_FETCH_CALLS.fetch_add(1, Ordering::SeqCst);
+    let delay_ms = TEST_OHTTP_FETCH_DELAY_MS.load(Ordering::SeqCst);
+    if delay_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+    }
+
+    if TEST_OHTTP_FETCH_FAIL.load(Ordering::SeqCst) {
+        return Some(Err(Error::Payjoin(
+            "test OHTTP key fetch failure".to_string(),
+        )));
+    }
+
+    let keys = TEST_OHTTP_KEYS
+        .parse::<cdk_common::nuts::nut31::PayjoinOhttpKeys>()
+        .map_err(|err| Error::Payjoin(err.to_string()))
+        .and_then(|keys| {
+            ::payjoin::OhttpKeys::try_from(keys.as_bytes().as_slice())
+                .map_err(|err| Error::Payjoin(err.to_string()))
+        });
+    Some(keys)
 }
 
 fn extract_bip21_payjoin_endpoint(uri: &str) -> Result<String, Error> {
@@ -2167,6 +2205,41 @@ fn update_payjoin_receive_credit_cap(record: &mut crate::storage::PayjoinReceive
                 "Keeping existing Payjoin receive credit cap"
             );
         }
+    }
+}
+
+fn update_payjoin_receive_proposal_receiver_outpoints(
+    record: &mut crate::storage::PayjoinReceiveSessionRecord,
+    psbt: &bdk_wallet::bitcoin::Psbt,
+    fallback_script: &Script,
+) {
+    let txid = psbt.unsigned_tx.compute_txid();
+    let outpoints = psbt
+        .unsigned_tx
+        .output
+        .iter()
+        .enumerate()
+        .filter(|(_, output)| output.script_pubkey.as_script() == fallback_script)
+        .map(|(vout, _)| OutPoint::new(txid, vout as u32).to_string())
+        .collect::<Vec<_>>();
+
+    if outpoints.is_empty() {
+        tracing::warn!(
+            quote_id = %record.quote_id,
+            fallback_address = %record.fallback_address,
+            "Payjoin proposal has no receiver-script outpoints to record"
+        );
+        return;
+    }
+
+    if record.proposal_receiver_outpoints != outpoints {
+        tracing::debug!(
+            quote_id = %record.quote_id,
+            fallback_address = %record.fallback_address,
+            proposal_receiver_outpoint_count = outpoints.len(),
+            "Updated Payjoin receive proposal receiver outpoints"
+        );
+        record.proposal_receiver_outpoints = outpoints;
     }
 }
 
@@ -2313,22 +2386,36 @@ fn payjoin_original_receiver_output_amount_from_events(
 }
 
 async fn payjoin_http_request(request: ::payjoin::Request) -> Result<Vec<u8>, Error> {
-    let response = reqwest::Client::new()
-        .post(request.url)
-        .header(reqwest::header::CONTENT_TYPE, request.content_type)
-        .body(request.body)
-        .send()
-        .await
-        .map_err(|err| Error::Payjoin(err.to_string()))?;
+    let response = tokio::time::timeout(PAYJOIN_HTTP_REQUEST_TIMEOUT, async {
+        reqwest::Client::new()
+            .post(request.url)
+            .header(reqwest::header::CONTENT_TYPE, request.content_type)
+            .body(request.body)
+            .send()
+            .await
+            .map_err(|err| Error::Payjoin(err.to_string()))
+    })
+    .await
+    .map_err(|_| {
+        Error::Payjoin(format!(
+            "Payjoin HTTP request timed out after {} seconds",
+            PAYJOIN_HTTP_REQUEST_TIMEOUT.as_secs()
+        ))
+    })??;
     if !response.status().is_success() {
         return Err(Error::Payjoin(format!(
             "Payjoin HTTP request failed with status {}",
             response.status()
         )));
     }
-    response
-        .bytes()
+    tokio::time::timeout(PAYJOIN_HTTP_REQUEST_TIMEOUT, response.bytes())
         .await
+        .map_err(|_| {
+            Error::Payjoin(format!(
+                "Payjoin HTTP response body timed out after {} seconds",
+                PAYJOIN_HTTP_REQUEST_TIMEOUT.as_secs()
+            ))
+        })?
         .map(|bytes| bytes.to_vec())
         .map_err(|err| Error::Payjoin(err.to_string()))
 }
@@ -2465,6 +2552,7 @@ mod tests {
             quote_id: "quote-1".to_string(),
             fallback_address: "bcrt1qfallback".to_string(),
             amount_sat: 0,
+            proposal_receiver_outpoints: Vec::new(),
             expires_at: 1_700_000_000,
             events,
             closed: false,
@@ -2473,6 +2561,36 @@ mod tests {
         update_payjoin_receive_credit_cap(&mut record);
 
         assert_eq!(record.amount_sat, 3_000);
+    }
+
+    #[test]
+    fn payjoin_receive_session_records_proposal_receiver_outpoints() {
+        let fallback_script = ScriptBuf::from_bytes(vec![0x51]);
+        let other_script = ScriptBuf::from_bytes(vec![0x6a]);
+        let psbt = test_psbt_with_outputs(vec![
+            TxOut {
+                value: BitcoinAmount::from_sat(8_000),
+                script_pubkey: other_script,
+            },
+            TxOut {
+                value: BitcoinAmount::from_sat(3_000),
+                script_pubkey: fallback_script.clone(),
+            },
+        ]);
+        let expected_outpoint = OutPoint::new(psbt.unsigned_tx.compute_txid(), 1).to_string();
+        let mut record = crate::storage::PayjoinReceiveSessionRecord {
+            quote_id: "quote-1".to_string(),
+            fallback_address: "bcrt1qfallback".to_string(),
+            amount_sat: 3_000,
+            proposal_receiver_outpoints: Vec::new(),
+            expires_at: 1_700_000_000,
+            events: Vec::new(),
+            closed: false,
+        };
+
+        update_payjoin_receive_proposal_receiver_outpoints(&mut record, &psbt, &fallback_script);
+
+        assert_eq!(record.proposal_receiver_outpoints, vec![expected_outpoint]);
     }
 
     #[test]
@@ -2796,6 +2914,7 @@ mod tests {
             quote_id: "quote-1".to_string(),
             fallback_address: "bcrt1qfallback".to_string(),
             amount_sat: 1_000,
+            proposal_receiver_outpoints: Vec::new(),
             expires_at: 100,
             events: Vec::new(),
             closed: false,
@@ -2815,6 +2934,7 @@ mod tests {
             quote_id: "quote-1".to_string(),
             fallback_address: "bcrt1qfallback".to_string(),
             amount_sat: 1_000,
+            proposal_receiver_outpoints: Vec::new(),
             expires_at: 100,
             events: Vec::new(),
             closed: true,

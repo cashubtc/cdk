@@ -62,19 +62,20 @@ impl Mint {
             Error::Internal
         })?;
 
-        // Check payment status with LN backend
-        let pay_invoice_response =
-            ln_backend
-                .check_outgoing_payment(lookup_id)
-                .await
-                .map_err(|err| {
-                    tracing::error!(
-                        "Failed to check payment status for quote {}: {}",
-                        quote.id,
-                        err
-                    );
-                    Error::Internal
-                })?;
+        // Check payment status with the backend's status-only path. Startup
+        // recovery must not advance Payjoin negotiations or perform fallback
+        // broadcasts inline.
+        let pay_invoice_response = ln_backend
+            .check_outgoing_payment_status_only(lookup_id)
+            .await
+            .map_err(|err| {
+                tracing::error!(
+                    "Failed to check payment status for quote {}: {}",
+                    quote.id,
+                    err
+                );
+                Error::Internal
+            })?;
 
         tracing::info!(
             "Payment status for melt quote {}: {}",

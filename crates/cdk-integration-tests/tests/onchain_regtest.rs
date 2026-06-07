@@ -61,6 +61,27 @@ async fn fetch_onchain_mint_quote(
 }
 
 #[cfg(feature = "payjoin-regtest")]
+async fn wait_for_onchain_mint_quote_amount_paid(
+    mint_url: &str,
+    quote_id: &str,
+    amount_sat: u64,
+) -> MintQuoteOnchainResponse<String> {
+    timeout(Duration::from_secs(60), async {
+        loop {
+            let quote = fetch_onchain_mint_quote(mint_url, quote_id)
+                .await
+                .expect("fetch onchain mint quote");
+            if quote.amount_paid >= amount_sat.into() {
+                return quote;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .expect("timeout waiting for onchain mint quote amount paid")
+}
+
+#[cfg(feature = "payjoin-regtest")]
 async fn request_payjoin_melt_quote(
     mint_url: &str,
     destination_quote: &MintQuoteOnchainResponse<String>,
@@ -392,6 +413,64 @@ async fn test_onchain_payjoin_mint() {
 
     assert_eq!(paid_quote.quote, quote.quote);
     assert!(paid_quote.amount_paid >= mint_amount.into());
+}
+
+#[cfg(feature = "payjoin-regtest")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_onchain_payjoin_mint_address_reuse_normal_then_payjoin_credits_cap() {
+    let bitcoin_client = init_bitcoin_client().expect("Failed to init bitcoin client");
+    let mint_url = get_mint_url_from_env();
+    let primer_wallet = Wallet::new(
+        &mint_url,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    fund_wallet_with_onchain(&primer_wallet, &bitcoin_client, 10_000)
+        .await
+        .expect("failed to prime receiver mint with an onchain UTXO");
+
+    let normal_amount = 5_000_u64;
+    let payjoin_amount = 10_000_u64;
+    let quote = request_payjoin_mint_quote(&mint_url)
+        .await
+        .expect("mint should create a Payjoin-enabled quote");
+    assert!(
+        quote.payjoin.is_some(),
+        "Payjoin-enabled quote should include Payjoin params"
+    );
+
+    bitcoin_client
+        .send_to_address(&quote.request, normal_amount)
+        .expect("Failed to send normal bitcoin payment");
+    let mine_addr = bitcoin_client
+        .get_new_address()
+        .expect("Failed to get address");
+    bitcoin_client
+        .generate_blocks(&mine_addr, 1)
+        .expect("Failed to mine normal payment");
+
+    let normal_paid =
+        wait_for_onchain_mint_quote_amount_paid(&mint_url, &quote.quote, normal_amount).await;
+    assert_eq!(normal_paid.amount_paid, normal_amount.into());
+
+    send_payjoin_with_bitcoin_core(&bitcoin_client, &quote, payjoin_amount)
+        .await
+        .expect("Payjoin sender flow should complete");
+    bitcoin_client
+        .generate_blocks(&mine_addr, 1)
+        .expect("Failed to mine Payjoin payment");
+
+    let expected_amount_paid = normal_amount + payjoin_amount;
+    let paid_quote =
+        wait_for_onchain_mint_quote_amount_paid(&mint_url, &quote.quote, expected_amount_paid)
+            .await;
+
+    assert_eq!(paid_quote.quote, quote.quote);
+    assert_eq!(paid_quote.amount_paid, expected_amount_paid.into());
 }
 
 #[cfg(feature = "payjoin-regtest")]

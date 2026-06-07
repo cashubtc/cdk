@@ -490,6 +490,18 @@ pub trait MintPayment {
         &self,
         payment_identifier: &PaymentIdentifier,
     ) -> Result<MakePaymentResponse, Self::Err>;
+
+    /// Check the status of an outgoing payment without advancing backend state.
+    ///
+    /// Startup recovery uses this conservative path so backends can answer from
+    /// local durable state only. Backends that do not have side effects in
+    /// [`Self::check_outgoing_payment`] can use the default implementation.
+    async fn check_outgoing_payment_status_only(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        self.check_outgoing_payment(payment_identifier).await
+    }
 }
 
 /// An event emitted which should be handled by the mint
@@ -838,6 +850,24 @@ where
         let metrics = MintMetricGuard::new("check_outgoing_payment");
 
         let result = self.inner.check_outgoing_payment(payment_identifier).await;
+
+        let success = result.is_ok();
+
+        metrics.record(success);
+
+        result
+    }
+
+    async fn check_outgoing_payment_status_only(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        let metrics = MintMetricGuard::new("check_outgoing_payment_status_only");
+
+        let result = self
+            .inner
+            .check_outgoing_payment_status_only(payment_identifier)
+            .await;
 
         let success = result.is_ok();
 

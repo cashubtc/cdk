@@ -127,6 +127,9 @@ pub struct PayjoinReceiveSessionRecord {
     pub fallback_address: String,
     /// Expected receive amount in satoshis.
     pub amount_sat: u64,
+    /// Receiver outpoints from the finalized Payjoin proposal transaction.
+    #[serde(default)]
+    pub proposal_receiver_outpoints: Vec<String>,
     /// Session expiry timestamp in unix seconds.
     pub expires_at: u64,
     /// Append-only Payjoin event history.
@@ -146,6 +149,8 @@ impl<'de> serde::Deserialize<'de> for PayjoinReceiveSessionRecord {
             fallback_address: String,
             #[serde(default)]
             amount_sat: u64,
+            #[serde(default)]
+            proposal_receiver_outpoints: Vec<String>,
             expires_at: u64,
             #[serde(default)]
             events: Vec<serde_json::Value>,
@@ -168,48 +173,12 @@ impl<'de> serde::Deserialize<'de> for PayjoinReceiveSessionRecord {
             quote_id: raw.quote_id,
             fallback_address: raw.fallback_address,
             amount_sat: raw.amount_sat,
+            proposal_receiver_outpoints: raw.proposal_receiver_outpoints,
             expires_at: raw.expires_at,
             events,
             closed: raw.closed || malformed_events,
         })
     }
-}
-
-/// Persisted Payjoin v2 send session.
-///
-/// The background send poller drives this to completion: it posts the original
-/// PSBT, polls for the Payjoin proposal, and broadcasts either the Payjoin
-/// transaction (on a proposal) or the signed original (on expiry/failure). The
-/// record is therefore self-contained enough to resume across a restart without
-/// the in-memory sender: `tier` is needed to stage the resulting send intent,
-/// and `original_tx_bytes`/`original_fee_sat` let the poller broadcast the
-/// fallback once the Payjoin session has expired (at which point the event log
-/// can no longer be replayed).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PayjoinSendSessionRecord {
-    /// Quote ID linking this session to an onchain melt quote.
-    pub quote_id: String,
-    /// Fallback address used if optional Payjoin negotiation fails.
-    pub fallback_address: String,
-    /// Payment amount in satoshis.
-    pub amount_sat: u64,
-    /// Maximum fee accepted by the melt quote.
-    pub max_fee_sat: u64,
-    /// Fee tier used to stage the resulting send intent.
-    #[serde(default)]
-    pub tier: crate::types::PaymentTier,
-    /// Consensus-serialized, signed original transaction, broadcast as the
-    /// Payjoin fallback if negotiation expires or fails.
-    #[serde(default)]
-    pub original_tx_bytes: Vec<u8>,
-    /// Fee of the original transaction in satoshis (used when staging the
-    /// fallback, since fee cannot be recomputed from the transaction alone).
-    #[serde(default)]
-    pub original_fee_sat: u64,
-    /// Append-only Payjoin event history.
-    pub events: Vec<payjoin::send::v2::SessionEvent>,
-    /// Whether the session reached a terminal state.
-    pub closed: bool,
 }
 
 #[cfg(test)]
@@ -231,6 +200,7 @@ mod tests {
             serde_json::from_value(value).expect("record should deserialize");
 
         assert!(record.events.is_empty());
+        assert!(record.proposal_receiver_outpoints.is_empty());
         assert!(!record.closed);
     }
 }

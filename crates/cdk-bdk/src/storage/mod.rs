@@ -18,7 +18,6 @@ mod types;
 pub use types::{
     CutThroughSettlementRecord, CutThroughSettlementState, FailedSendAttemptRecord,
     FinalizedReceiveIntentRecord, FinalizedSendIntentRecord, PayjoinReceiveSessionRecord,
-    PayjoinSendSessionRecord,
 };
 
 /// Primary namespace for BDK KV store operations
@@ -81,9 +80,6 @@ pub const PAYJOIN_RECEIVE_SESSION_NAMESPACE: &str = "payjoin_receive_session";
 
 /// Secondary namespace for Payjoin v2 receive input outpoints.
 pub const PAYJOIN_RECEIVE_INPUT_OUTPOINT_NAMESPACE: &str = "payjoin_receive_input_outpoint";
-
-/// Secondary namespace for Payjoin v2 send sessions keyed by quote id.
-pub const PAYJOIN_SEND_SESSION_NAMESPACE: &str = "payjoin_send_session";
 
 /// Secondary namespace for Payjoin cut-through settlements.
 pub const CUT_THROUGH_SETTLEMENT_NAMESPACE: &str = "cut_through_settlement";
@@ -327,29 +323,6 @@ impl BdkStorage {
         tx.commit().await.map_err(Error::from)?;
         Ok(())
     }
-
-    /// Store or replace a Payjoin send session.
-    pub async fn put_payjoin_send_session(
-        &self,
-        record: &PayjoinSendSessionRecord,
-    ) -> Result<(), Error> {
-        self.put_record(record).await
-    }
-
-    /// Load a Payjoin send session by quote id.
-    pub async fn get_payjoin_send_session(
-        &self,
-        quote_id: &str,
-    ) -> Result<Option<PayjoinSendSessionRecord>, Error> {
-        self.get_record(quote_id).await
-    }
-
-    /// List all Payjoin send sessions.
-    pub async fn get_all_payjoin_send_sessions(
-        &self,
-    ) -> Result<Vec<PayjoinSendSessionRecord>, Error> {
-        self.list_records().await
-    }
 }
 
 impl KvRecord for SendIntentRecord {
@@ -422,14 +395,6 @@ impl KvRecord for FinalizedReceiveIntentRecord {
 
 impl KvRecord for PayjoinReceiveSessionRecord {
     const NAMESPACE: &'static str = PAYJOIN_RECEIVE_SESSION_NAMESPACE;
-
-    fn key(&self) -> String {
-        self.quote_id.clone()
-    }
-}
-
-impl KvRecord for PayjoinSendSessionRecord {
-    const NAMESPACE: &'static str = PAYJOIN_SEND_SESSION_NAMESPACE;
 
     fn key(&self) -> String {
         self.quote_id.clone()
@@ -621,6 +586,7 @@ mod tests {
             quote_id: quote_id.clone(),
             fallback_address: "bcrt1qaddr".to_string(),
             amount_sat: 1_000,
+            proposal_receiver_outpoints: Vec::new(),
             expires_at: 1_700_000_000,
             events: Vec::new(),
             closed: true,
@@ -2003,6 +1969,20 @@ mod tests {
             .await
             .expect("create first");
         assert!(created1);
+        assert!(
+            storage
+                .has_receive_intent_for_outpoint("txid_abc:0")
+                .await
+                .expect("check active outpoint"),
+            "Active outpoint should be detected"
+        );
+        assert!(
+            !storage
+                .has_receive_intent_for_outpoint("txid_abc:1")
+                .await
+                .expect("check missing outpoint"),
+            "Unknown outpoint should not be detected"
+        );
 
         let created2 = storage
             .create_receive_intent_if_absent(&intent2)
@@ -2073,6 +2053,13 @@ mod tests {
             .expect("tombstone should exist");
         assert_eq!(fetched_tombstone.intent_id, intent_id);
         assert_eq!(fetched_tombstone.amount_sat, 50_000);
+        assert!(
+            storage
+                .has_receive_intent_for_outpoint("txid_abc:0")
+                .await
+                .expect("check finalized outpoint"),
+            "Finalized outpoint should be detected"
+        );
 
         // Outpoint should NOT be freed (cannot create a new intent with same outpoint)
         let intent2 = ReceiveIntentRecord {

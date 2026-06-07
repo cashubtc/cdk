@@ -126,6 +126,7 @@ impl SendIntent<Pending> {
     }
 
     /// Mark a pending intent as failed before a signed transaction was committed.
+    #[cfg(test)]
     pub async fn fail(
         self,
         storage: &BdkStorage,
