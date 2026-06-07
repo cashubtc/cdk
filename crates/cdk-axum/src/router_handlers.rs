@@ -39,6 +39,28 @@ pub(crate) async fn get_audit_latest() -> Response {
             .unwrap(),
     }
 }
+
+/// Serve the mint icon (PNG). Path from env `CDK_MINT_ICON_PATH`, default `~/mint/icon.png`.
+pub(crate) async fn get_mint_icon() -> Response {
+    let path = std::env::var("CDK_MINT_ICON_PATH").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        format!("{home}/mint/icon.png")
+    });
+    match std::fs::read(&path) {
+        Ok(bytes) => Response::builder()
+            .status(StatusCode::OK)
+            .header(axum::http::header::CONTENT_TYPE, "image/png")
+            .header(axum::http::header::CACHE_CONTROL, "public, max-age=86400")
+            .header(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .body(axum::body::Body::from(bytes))
+            .unwrap(),
+        Err(_) => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .body(axum::body::Body::from("no icon"))
+            .unwrap(),
+    }
+}
 use crate::MintState;
 
 /// Macro to add cache to endpoint
