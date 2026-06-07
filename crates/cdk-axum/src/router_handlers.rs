@@ -1111,7 +1111,7 @@ pub(crate) async fn get_index(
                                     span style="color:var(--text-muted);font-size:15px" { " sat" }
                                 }
                                 div style="color:var(--text-secondary);font-size:12px;margin-top:3px" {
-                                    "lower bound across " (n) " live Ark VTXO(s) — as of block " (block)
+                                    "Lower bound across " (n) " live Bark VTXO(s) as of block " (block)
                                 }
                                 div style="margin-top:10px" {
                                     a href="/audit/latest.json" style="color:var(--green);font-size:12px;text-decoration:none" { "↓ attestation bundle (JSON)" }
