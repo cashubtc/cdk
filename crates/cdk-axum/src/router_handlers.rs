@@ -854,19 +854,19 @@ pub(crate) async fn get_index(
     if has_onchain_mint {
         experimental_features.push((
             "Payjoin Board",
-            "On-chain deposit into ecash via BIP77 payjoin — no Lightning invoice. Co-funded boards obscure the amount.",
+            "On-chain deposit into ecash via BIP77 payjoin.",
         ));
     }
     if has_onchain_melt {
         experimental_features.push((
             "On-chain Send",
-            "Withdraw ecash directly to an on-chain Bitcoin address (Ark offboard).",
+            "Withdraw ecash directly to an on-chain Bitcoin address.",
         ));
     }
     if has_onchain_mint {
         experimental_features.push((
             "Proof of Reserves",
-            "Reserve attestations via Ark self-spend, independently verifiable against the Ark server's key.",
+            "Reserve attestations via Bark, independently verifiable against the Ark server's key.",
         ));
     }
 
@@ -1041,20 +1041,18 @@ pub(crate) async fn get_index(
                             }
                         }
 
-                        // Experimental features section (genuinely-added, non-NUT capabilities)
+                        // Experimental features section (genuinely-added, non-NUT capabilities) — full width
                         @if !experimental_features.is_empty() {
                             div class="card-section-header has-rule" { "Experimental features" }
                             div style="padding-top:12px" {
-                                div class="features-grid" {
-                                    @for (feat_name, feat_desc) in &experimental_features {
-                                        div class="feature" {
-                                            div class="feature-dot" style="background:var(--yellow-soft)" {
-                                                (maud::PreEscaped(r#"<svg viewBox="0 0 24 24" fill="none" stroke="var(--yellow)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M10 3v7l-4.5 8a2 2 0 0 0 1.8 3h9.4a2 2 0 0 0 1.8-3L14 10V3"/></svg>"#))
-                                            }
-                                            div {
-                                                span class="feature-name" { (feat_name) }
-                                                div style="font-size:11px;color:var(--text-muted);margin-top:3px;line-height:1.45" { (feat_desc) }
-                                            }
+                                @for (feat_name, feat_desc) in &experimental_features {
+                                    div class="feature" style="border-right:none" {
+                                        div class="feature-dot" style="background:var(--yellow-soft)" {
+                                            (maud::PreEscaped(r#"<svg viewBox="0 0 24 24" fill="none" stroke="var(--yellow)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M10 3v7l-4.5 8a2 2 0 0 0 1.8 3h9.4a2 2 0 0 0 1.8-3L14 10V3"/></svg>"#))
+                                        }
+                                        div {
+                                            span class="feature-name" { (feat_name) }
+                                            div style="font-size:11px;color:var(--text-muted);margin-top:3px;line-height:1.45" { (feat_desc) }
                                         }
                                     }
                                 }
