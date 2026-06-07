@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use bdk_bitcoind_rpc::bitcoincore_rpc::{Auth, Client, Error as BitcoinRpcError, RawTx, RpcApi};
 use bdk_bitcoind_rpc::{BlockEvent, Emitter, NO_EXPECTED_MEMPOOL_TXS};
-use bdk_wallet::bitcoin::{Block, Transaction};
+use bdk_wallet::bitcoin::{Block, OutPoint, Transaction};
 use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
@@ -355,6 +355,36 @@ pub(crate) async fn fetch_fee_rate_bitcoin_rpc(
     })
     .await
     .map_err(|e| Error::FeeEstimationFailed(e.to_string()))?
+}
+
+pub(crate) async fn any_confirmed_spend_bitcoin_rpc(
+    config: &BitcoinRpcConfig,
+    outpoints: &[OutPoint],
+) -> Result<bool, Error> {
+    let config = config.clone();
+    let outpoints = outpoints.to_vec();
+
+    tokio::task::spawn_blocking(move || {
+        let rpc_client = Client::new(
+            &format!("http://{}:{}", config.host, config.port),
+            Auth::UserPass(config.user, config.password),
+        )?;
+
+        for outpoint in outpoints {
+            // include_mempool=false means an unconfirmed spend still reports
+            // the output as unspent. Only confirmed spends return None.
+            if rpc_client
+                .get_tx_out(&outpoint.txid, outpoint.vout, Some(false))?
+                .is_none()
+            {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    })
+    .await
+    .map_err(|e| Error::Wallet(e.to_string()))?
 }
 
 #[cfg(test)]

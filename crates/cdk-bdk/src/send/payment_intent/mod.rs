@@ -12,7 +12,10 @@ pub(crate) mod state;
 use uuid::Uuid;
 
 use self::record::{SendIntentRecord, SendIntentState};
-use self::state::{AwaitingConfirmation, Batched, Failed, PayjoinNegotiating, Pending};
+use self::state::{
+    AwaitingConfirmation, BatchClaimed, Batched, CutThroughReserved, Failed, PayjoinNegotiating,
+    Pending,
+};
 use crate::error::Error;
 use crate::storage::{BdkStorage, FailedSendAttemptRecord, FinalizedSendIntentRecord};
 use crate::types::{PaymentMetadata, PaymentTier};
@@ -163,8 +166,65 @@ impl SendIntent<Pending> {
     }
 }
 
+impl SendIntent<BatchClaimed> {
+    /// Transition a claimed intent to Batched state.
+    pub async fn assign_to_batch(self, storage: &BdkStorage) -> Result<SendIntent<Batched>, Error> {
+        storage
+            .update_send_intent(
+                &self.intent_id,
+                &SendIntentState::Batched {
+                    batch_id: self.state.batch_id,
+                    created_at: self.created_at,
+                },
+            )
+            .await?;
+
+        Ok(SendIntent {
+            intent_id: self.intent_id,
+            quote_id: self.quote_id,
+            address: self.address,
+            amount: self.amount,
+            max_fee_amount: self.max_fee_amount,
+            tier: self.tier,
+            metadata: self.metadata,
+            created_at: self.created_at,
+            state: Batched {
+                batch_id: self.state.batch_id,
+            },
+        })
+    }
+
+    /// Revert to Pending state (compensation).
+    pub async fn revert_to_pending(
+        self,
+        storage: &BdkStorage,
+    ) -> Result<SendIntent<Pending>, Error> {
+        storage
+            .update_send_intent(
+                &self.intent_id,
+                &SendIntentState::Pending {
+                    created_at: self.created_at,
+                },
+            )
+            .await?;
+
+        Ok(SendIntent {
+            intent_id: self.intent_id,
+            quote_id: self.quote_id,
+            address: self.address,
+            amount: self.amount,
+            max_fee_amount: self.max_fee_amount,
+            tier: self.tier,
+            metadata: self.metadata,
+            created_at: self.created_at,
+            state: Pending,
+        })
+    }
+}
+
 impl SendIntent<PayjoinNegotiating> {
     /// Create a new Payjoin-negotiating send intent and persist it immediately.
+    #[allow(clippy::too_many_arguments)]
     pub async fn new_payjoin(
         storage: &BdkStorage,
         quote_id: String,
@@ -412,6 +472,38 @@ pub(crate) fn from_record(record: &SendIntentRecord) -> SendIntentAny {
             created_at: *created_at,
             state: Pending,
         }),
+        SendIntentState::BatchClaimed {
+            batch_id,
+            created_at,
+        } => SendIntentAny::BatchClaimed(SendIntent {
+            intent_id: record.intent_id,
+            quote_id: record.quote_id.clone(),
+            address: record.address.clone(),
+            amount: record.amount_sat,
+            max_fee_amount: record.max_fee_amount_sat,
+            tier: record.tier,
+            metadata: record.metadata.clone(),
+            created_at: *created_at,
+            state: BatchClaimed {
+                batch_id: *batch_id,
+            },
+        }),
+        SendIntentState::CutThroughReserved {
+            settlement_id,
+            created_at,
+        } => SendIntentAny::CutThroughReserved(SendIntent {
+            intent_id: record.intent_id,
+            quote_id: record.quote_id.clone(),
+            address: record.address.clone(),
+            amount: record.amount_sat,
+            max_fee_amount: record.max_fee_amount_sat,
+            tier: record.tier,
+            metadata: record.metadata.clone(),
+            created_at: *created_at,
+            state: CutThroughReserved {
+                settlement_id: *settlement_id,
+            },
+        }),
         SendIntentState::Batched {
             batch_id,
             created_at,
@@ -485,6 +577,10 @@ pub(crate) fn from_record(record: &SendIntentRecord) -> SendIntentAny {
 pub(crate) enum SendIntentAny {
     /// Intent in Pending state
     Pending(SendIntent<Pending>),
+    /// Intent claimed by the normal batch builder
+    BatchClaimed(SendIntent<BatchClaimed>),
+    /// Intent reserved by a Payjoin cut-through settlement
+    CutThroughReserved(SendIntent<CutThroughReserved>),
     /// Intent in Payjoin negotiation state
     PayjoinNegotiating(SendIntent<PayjoinNegotiating>),
     /// Intent in Batched state

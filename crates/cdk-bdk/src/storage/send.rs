@@ -3,8 +3,11 @@ use std::str::FromStr;
 use uuid::Uuid;
 
 use super::{
-    BdkStorage, FailedSendAttemptRecord, FinalizedSendIntentRecord, BDK_NAMESPACE,
-    FINALIZED_INTENT_NAMESPACE, FINALIZED_SEND_INTENT_QUOTE_ID_NAMESPACE, SEND_INTENT_NAMESPACE,
+    BdkStorage, CutThroughSettlementRecord, FailedSendAttemptRecord, FinalizedReceiveIntentRecord,
+    FinalizedSendIntentRecord, BDK_NAMESPACE, CUT_THROUGH_SETTLEMENT_NAMESPACE,
+    FINALIZED_INTENT_NAMESPACE, FINALIZED_RECEIVE_INTENT_BY_QUOTE_NAMESPACE_PREFIX,
+    FINALIZED_RECEIVE_INTENT_NAMESPACE, FINALIZED_RECEIVE_INTENT_OUTPOINT_NAMESPACE,
+    FINALIZED_SEND_INTENT_QUOTE_ID_NAMESPACE, SEND_INTENT_NAMESPACE,
     SEND_INTENT_QUOTE_ID_NAMESPACE,
 };
 use crate::error::Error;
@@ -224,6 +227,142 @@ impl BdkStorage {
             .collect())
     }
 
+    /// Atomically claim still-pending send intents for a normal batch.
+    ///
+    /// Intents that are no longer pending are skipped. The returned records are
+    /// the claimed records with `BatchClaimed` state.
+    pub async fn claim_pending_send_intents_for_batch(
+        &self,
+        intent_ids: &[Uuid],
+        batch_id: Uuid,
+    ) -> Result<Vec<SendIntentRecord>, Error> {
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(Error::from)?;
+        let mut claimed = Vec::new();
+
+        for intent_id in intent_ids {
+            let key = intent_id.to_string();
+            let Some(bytes) = tx
+                .kv_read(BDK_NAMESPACE, SEND_INTENT_NAMESPACE, &key)
+                .await
+                .map_err(Error::from)?
+            else {
+                continue;
+            };
+            let mut record: SendIntentRecord = serde_json::from_slice(&bytes)?;
+            let SendIntentState::Pending { created_at } = record.state else {
+                continue;
+            };
+
+            record.state = SendIntentState::BatchClaimed {
+                batch_id,
+                created_at,
+            };
+            let serialized = serde_json::to_vec(&record)?;
+            tx.kv_write(BDK_NAMESPACE, SEND_INTENT_NAMESPACE, &key, &serialized)
+                .await
+                .map_err(Error::from)?;
+            claimed.push(record);
+        }
+
+        tx.commit().await.map_err(Error::from)?;
+        Ok(claimed)
+    }
+
+    /// Conditionally reserve a pending send intent for a cut-through settlement.
+    pub async fn reserve_pending_send_intent_for_cut_through(
+        &self,
+        intent_id: &Uuid,
+        settlement: &CutThroughSettlementRecord,
+    ) -> Result<Option<SendIntentRecord>, Error> {
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(Error::from)?;
+
+        let key = intent_id.to_string();
+        let Some(bytes) = tx
+            .kv_read(BDK_NAMESPACE, SEND_INTENT_NAMESPACE, &key)
+            .await
+            .map_err(Error::from)?
+        else {
+            tx.rollback().await.map_err(Error::from)?;
+            return Ok(None);
+        };
+        let mut record: SendIntentRecord = serde_json::from_slice(&bytes)?;
+        let SendIntentState::Pending { created_at } = record.state else {
+            tx.rollback().await.map_err(Error::from)?;
+            return Ok(None);
+        };
+
+        record.state = SendIntentState::CutThroughReserved {
+            settlement_id: settlement.settlement_id,
+            created_at,
+        };
+        let intent_bytes = serde_json::to_vec(&record)?;
+        let settlement_bytes = serde_json::to_vec(settlement)?;
+        tx.kv_write(BDK_NAMESPACE, SEND_INTENT_NAMESPACE, &key, &intent_bytes)
+            .await
+            .map_err(Error::from)?;
+        tx.kv_write(
+            BDK_NAMESPACE,
+            CUT_THROUGH_SETTLEMENT_NAMESPACE,
+            &settlement.settlement_id.to_string(),
+            &settlement_bytes,
+        )
+        .await
+        .map_err(Error::from)?;
+        tx.commit().await.map_err(Error::from)?;
+        Ok(Some(record))
+    }
+
+    /// Release a cut-through-reserved intent back to pending.
+    pub async fn release_cut_through_reserved_intent(
+        &self,
+        intent_id: &Uuid,
+        settlement_id: Uuid,
+    ) -> Result<(), Error> {
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(Error::from)?;
+        let key = intent_id.to_string();
+        let Some(bytes) = tx
+            .kv_read(BDK_NAMESPACE, SEND_INTENT_NAMESPACE, &key)
+            .await
+            .map_err(Error::from)?
+        else {
+            tx.rollback().await.map_err(Error::from)?;
+            return Ok(());
+        };
+        let mut record: SendIntentRecord = serde_json::from_slice(&bytes)?;
+        let SendIntentState::CutThroughReserved {
+            settlement_id: current,
+            created_at,
+        } = record.state
+        else {
+            tx.rollback().await.map_err(Error::from)?;
+            return Ok(());
+        };
+        if current != settlement_id {
+            tx.rollback().await.map_err(Error::from)?;
+            return Ok(());
+        }
+
+        record.state = SendIntentState::Pending { created_at };
+        let serialized = serde_json::to_vec(&record)?;
+        tx.kv_write(BDK_NAMESPACE, SEND_INTENT_NAMESPACE, &key, &serialized)
+            .await
+            .map_err(Error::from)?;
+        tx.commit().await.map_err(Error::from)?;
+        Ok(())
+    }
+
     /// Store a failed pre-sign send attempt tombstone.
     pub async fn add_failed_send_attempt(
         &self,
@@ -384,6 +523,128 @@ impl BdkStorage {
             BDK_NAMESPACE,
             SEND_INTENT_QUOTE_ID_NAMESPACE,
             &intent.quote_id,
+        )
+        .await
+        .map_err(Error::from)?;
+        tx.commit().await.map_err(Error::from)?;
+        Ok(())
+    }
+
+    /// Store or replace a cut-through settlement.
+    pub async fn put_cut_through_settlement(
+        &self,
+        record: &CutThroughSettlementRecord,
+    ) -> Result<(), Error> {
+        self.put_record(record).await
+    }
+
+    /// Load a cut-through settlement by id.
+    pub async fn get_cut_through_settlement(
+        &self,
+        settlement_id: &Uuid,
+    ) -> Result<Option<CutThroughSettlementRecord>, Error> {
+        self.get_record::<CutThroughSettlementRecord>(&settlement_id.to_string())
+            .await
+    }
+
+    /// List all cut-through settlements.
+    pub async fn get_all_cut_through_settlements(
+        &self,
+    ) -> Result<Vec<CutThroughSettlementRecord>, Error> {
+        self.list_records::<CutThroughSettlementRecord>().await
+    }
+
+    /// Delete a cut-through settlement.
+    pub async fn delete_cut_through_settlement(&self, settlement_id: &Uuid) -> Result<(), Error> {
+        self.delete_record::<CutThroughSettlementRecord>(&settlement_id.to_string())
+            .await
+    }
+
+    /// Atomically finalize the receive tombstone and send tombstone for a
+    /// confirmed cut-through proposal, then update the settlement record.
+    pub async fn finalize_cut_through_pair(
+        &self,
+        receive_record: &FinalizedReceiveIntentRecord,
+        send_record: &FinalizedSendIntentRecord,
+        settlement: &CutThroughSettlementRecord,
+    ) -> Result<(), Error> {
+        let Some(intent) = self.get_send_intent(&send_record.intent_id).await? else {
+            return Err(Error::SendIntentNotFound(send_record.intent_id));
+        };
+
+        let serialized_receive = serde_json::to_vec(receive_record)?;
+        let serialized_send = serde_json::to_vec(send_record)?;
+        let serialized_settlement = serde_json::to_vec(settlement)?;
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(Error::from)?;
+
+        tx.kv_write(
+            BDK_NAMESPACE,
+            FINALIZED_RECEIVE_INTENT_NAMESPACE,
+            &receive_record.intent_id.to_string(),
+            &serialized_receive,
+        )
+        .await
+        .map_err(Error::from)?;
+        tx.kv_write(
+            BDK_NAMESPACE,
+            FINALIZED_RECEIVE_INTENT_OUTPOINT_NAMESPACE,
+            &super::outpoint_to_key(&receive_record.outpoint),
+            receive_record.intent_id.to_string().as_bytes(),
+        )
+        .await
+        .map_err(Error::from)?;
+        let quote_ns = format!(
+            "{FINALIZED_RECEIVE_INTENT_BY_QUOTE_NAMESPACE_PREFIX}__{}",
+            receive_record.quote_id
+        );
+        tx.kv_write(
+            BDK_NAMESPACE,
+            &quote_ns,
+            &receive_record.intent_id.to_string(),
+            receive_record.intent_id.to_string().as_bytes(),
+        )
+        .await
+        .map_err(Error::from)?;
+
+        tx.kv_write(
+            BDK_NAMESPACE,
+            FINALIZED_INTENT_NAMESPACE,
+            &send_record.intent_id.to_string(),
+            &serialized_send,
+        )
+        .await
+        .map_err(Error::from)?;
+        tx.kv_write(
+            BDK_NAMESPACE,
+            FINALIZED_SEND_INTENT_QUOTE_ID_NAMESPACE,
+            &intent.quote_id,
+            send_record.intent_id.to_string().as_bytes(),
+        )
+        .await
+        .map_err(Error::from)?;
+        tx.kv_remove(
+            BDK_NAMESPACE,
+            SEND_INTENT_NAMESPACE,
+            &send_record.intent_id.to_string(),
+        )
+        .await
+        .map_err(Error::from)?;
+        tx.kv_remove(
+            BDK_NAMESPACE,
+            SEND_INTENT_QUOTE_ID_NAMESPACE,
+            &intent.quote_id,
+        )
+        .await
+        .map_err(Error::from)?;
+        tx.kv_write(
+            BDK_NAMESPACE,
+            CUT_THROUGH_SETTLEMENT_NAMESPACE,
+            &settlement.settlement_id.to_string(),
+            &serialized_settlement,
         )
         .await
         .map_err(Error::from)?;

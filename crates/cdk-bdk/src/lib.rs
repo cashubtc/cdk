@@ -804,7 +804,7 @@ impl MintPayment for CdkBdk {
             results.push(WaitPaymentResponse {
                 payment_identifier: payment_identifier.clone(),
                 payment_amount: Amount::new(record.amount_sat, CurrencyUnit::Sat),
-                payment_id: record.outpoint,
+                payment_id: record.payment_id.unwrap_or(record.outpoint),
             });
         }
 
@@ -871,6 +871,10 @@ impl MintPayment for CdkBdk {
             // convention used by other backends for non-terminal states.
             let total_spent = match &record.state {
                 crate::send::payment_intent::record::SendIntentState::Pending { .. }
+                | crate::send::payment_intent::record::SendIntentState::BatchClaimed { .. }
+                | crate::send::payment_intent::record::SendIntentState::CutThroughReserved {
+                    ..
+                }
                 | crate::send::payment_intent::record::SendIntentState::PayjoinNegotiating {
                     ..
                 }
@@ -887,6 +891,10 @@ impl MintPayment for CdkBdk {
             };
             let status = match record.state {
                 crate::send::payment_intent::record::SendIntentState::Pending { .. }
+                | crate::send::payment_intent::record::SendIntentState::BatchClaimed { .. }
+                | crate::send::payment_intent::record::SendIntentState::CutThroughReserved {
+                    ..
+                }
                 | crate::send::payment_intent::record::SendIntentState::PayjoinNegotiating {
                     ..
                 }
@@ -916,6 +924,12 @@ impl MintPayment for CdkBdk {
                 if let Some(updated) = self.storage.get_send_intent_by_quote_id(&quote_id).await? {
                     let total_spent = match &updated.state {
                         crate::send::payment_intent::record::SendIntentState::Pending { .. }
+                        | crate::send::payment_intent::record::SendIntentState::BatchClaimed {
+                            ..
+                        }
+                        | crate::send::payment_intent::record::SendIntentState::CutThroughReserved {
+                            ..
+                        }
                         | crate::send::payment_intent::record::SendIntentState::PayjoinNegotiating {
                             ..
                         }
@@ -935,6 +949,12 @@ impl MintPayment for CdkBdk {
                     };
                     let status = match updated.state {
                         crate::send::payment_intent::record::SendIntentState::Pending { .. }
+                        | crate::send::payment_intent::record::SendIntentState::BatchClaimed {
+                            ..
+                        }
+                        | crate::send::payment_intent::record::SendIntentState::CutThroughReserved {
+                            ..
+                        }
                         | crate::send::payment_intent::record::SendIntentState::PayjoinNegotiating {
                             ..
                         }

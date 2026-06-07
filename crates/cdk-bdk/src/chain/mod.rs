@@ -1,4 +1,4 @@
-use bdk_wallet::bitcoin::Transaction;
+use bdk_wallet::bitcoin::{OutPoint, Transaction};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
@@ -140,6 +140,25 @@ impl ChainSource {
             #[cfg(feature = "bitcoin-rpc")]
             ChainSource::BitcoinRpc(config) => {
                 bitcoin_rpc::fetch_fee_rate_bitcoin_rpc(config, target_blocks).await
+            }
+            #[allow(unreachable_patterns)]
+            _ => unreachable!("ChainSource must have at least one feature enabled"),
+        }
+    }
+
+    /// Return true when any provided outpoint is confirmed spent on chain.
+    ///
+    /// Mempool spends are intentionally ignored so cut-through recovery never
+    /// releases a reserved melt on an unconfirmed conflict.
+    pub(crate) async fn any_confirmed_spend(&self, outpoints: &[OutPoint]) -> Result<bool, Error> {
+        match self {
+            #[cfg(feature = "esplora")]
+            ChainSource::Esplora(config) => {
+                esplora::any_confirmed_spend_esplora(config, outpoints).await
+            }
+            #[cfg(feature = "bitcoin-rpc")]
+            ChainSource::BitcoinRpc(config) => {
+                bitcoin_rpc::any_confirmed_spend_bitcoin_rpc(config, outpoints).await
             }
             #[allow(unreachable_patterns)]
             _ => unreachable!("ChainSource must have at least one feature enabled"),

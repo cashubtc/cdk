@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use bdk_esplora::esplora_client::{AsyncClient, Builder};
 use bdk_esplora::EsploraAsyncExt;
-use bdk_wallet::bitcoin::Transaction;
+use bdk_wallet::bitcoin::{OutPoint, Transaction};
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
@@ -281,6 +281,31 @@ pub(crate) async fn fetch_fee_rate_esplora(
     }
 
     Err(Error::FeeEstimationUnavailable)
+}
+
+pub(crate) async fn any_confirmed_spend_esplora(
+    config: &EsploraConfig,
+    outpoints: &[OutPoint],
+) -> Result<bool, Error> {
+    let client = Builder::new(&config.url)
+        .build_async()
+        .map_err(|e| Error::Esplora(e.to_string()))?;
+
+    for outpoint in outpoints {
+        let Some(status) = client
+            .get_output_status(&outpoint.txid, outpoint.vout.into())
+            .await
+            .map_err(|e| Error::Esplora(e.to_string()))?
+        else {
+            continue;
+        };
+
+        if status.spent && status.status.is_some_and(|tx_status| tx_status.confirmed) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 #[cfg(test)]

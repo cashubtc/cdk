@@ -108,6 +108,7 @@ impl ReceiveIntent<Detected> {
             address: self.state.address.clone(),
             txid: self.state.txid.clone(),
             outpoint: self.state.outpoint.clone(),
+            payment_id: Some(self.state.outpoint.clone()),
             amount_sat: self.state.amount_sat,
             finalized_at: crate::util::unix_now(),
         };

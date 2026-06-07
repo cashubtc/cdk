@@ -16,8 +16,9 @@ pub mod send;
 mod types;
 
 pub use types::{
-    FailedSendAttemptRecord, FinalizedReceiveIntentRecord, FinalizedSendIntentRecord,
-    PayjoinReceiveSessionRecord, PayjoinSendSessionRecord,
+    CutThroughSettlementRecord, CutThroughSettlementState, FailedSendAttemptRecord,
+    FinalizedReceiveIntentRecord, FinalizedSendIntentRecord, PayjoinReceiveSessionRecord,
+    PayjoinSendSessionRecord,
 };
 
 /// Primary namespace for BDK KV store operations
@@ -83,6 +84,9 @@ pub const PAYJOIN_RECEIVE_INPUT_OUTPOINT_NAMESPACE: &str = "payjoin_receive_inpu
 
 /// Secondary namespace for Payjoin v2 send sessions keyed by quote id.
 pub const PAYJOIN_SEND_SESSION_NAMESPACE: &str = "payjoin_send_session";
+
+/// Secondary namespace for Payjoin cut-through settlements.
+pub const CUT_THROUGH_SETTLEMENT_NAMESPACE: &str = "cut_through_settlement";
 
 /// Encode an outpoint string for use as a KV store key.
 ///
@@ -364,6 +368,14 @@ impl KvRecord for FailedSendAttemptRecord {
     }
 }
 
+impl KvRecord for CutThroughSettlementRecord {
+    const NAMESPACE: &'static str = CUT_THROUGH_SETTLEMENT_NAMESPACE;
+
+    fn key(&self) -> String {
+        self.settlement_id.to_string()
+    }
+}
+
 impl ReplaceState<crate::send::payment_intent::record::SendIntentState> for SendIntentRecord {
     fn replace_state(&mut self, state: crate::send::payment_intent::record::SendIntentState) {
         self.state = state;
@@ -459,6 +471,146 @@ mod tests {
                 created_at: 1_700_000_000,
             },
         }
+    }
+
+    #[test]
+    fn finalized_receive_intent_deserializes_legacy_without_payment_id() {
+        let value = serde_json::json!({
+            "intent_id": Uuid::new_v4(),
+            "quote_id": Uuid::new_v4().to_string(),
+            "address": "bcrt1qaddr",
+            "txid": "abc123",
+            "outpoint": "abc123:0",
+            "amount_sat": 50_000,
+            "finalized_at": 1_700_000_001_u64
+        });
+
+        let record: FinalizedReceiveIntentRecord =
+            serde_json::from_value(value).expect("legacy tombstone should deserialize");
+
+        assert_eq!(record.payment_id, None);
+        assert_eq!(record.outpoint, "abc123:0");
+    }
+
+    #[tokio::test]
+    async fn test_claim_pending_send_intents_for_batch_is_conditional() {
+        let storage = test_storage().await;
+        let batch_id = Uuid::new_v4();
+        let first_id = Uuid::new_v4();
+        let second_id = Uuid::new_v4();
+        let mut first = make_pending_intent(first_id);
+        first.quote_id = "claim-quote-1".to_string();
+        let mut second = make_pending_intent(second_id);
+        second.quote_id = "claim-quote-2".to_string();
+
+        storage
+            .create_send_intent_if_absent(&first)
+            .await
+            .expect("store first");
+        storage
+            .create_send_intent_if_absent(&second)
+            .await
+            .expect("store second");
+        storage
+            .update_send_intent(
+                &second_id,
+                &SendIntentState::Batched {
+                    batch_id: Uuid::new_v4(),
+                    created_at: 1_700_000_000,
+                },
+            )
+            .await
+            .expect("advance second");
+
+        let claimed = storage
+            .claim_pending_send_intents_for_batch(&[first_id, second_id], batch_id)
+            .await
+            .expect("claim");
+
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].intent_id, first_id);
+        assert!(matches!(
+            claimed[0].state,
+            SendIntentState::BatchClaimed {
+                batch_id: claimed_batch_id,
+                ..
+            } if claimed_batch_id == batch_id
+        ));
+        assert!(storage
+            .get_pending_send_intents()
+            .await
+            .expect("pending")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cut_through_reservation_and_release_are_conditional() {
+        let storage = test_storage().await;
+        let intent_id = Uuid::new_v4();
+        let mut intent = make_pending_intent(intent_id);
+        intent.quote_id = "cut-through-send".to_string();
+        storage
+            .create_send_intent_if_absent(&intent)
+            .await
+            .expect("store intent");
+
+        let settlement = CutThroughSettlementRecord {
+            settlement_id: Uuid::new_v4(),
+            receive_quote_id: "receive-quote".to_string(),
+            send_intent_id: intent_id,
+            send_quote_id: intent.quote_id.clone(),
+            original_receive_amount_sat: 50_000,
+            melt_amount_sat: 40_000,
+            max_fee_sat: 1_000,
+            created_at: 1_700_000_000,
+            state: CutThroughSettlementState::Reserved,
+        };
+
+        let reserved = storage
+            .reserve_pending_send_intent_for_cut_through(&intent_id, &settlement)
+            .await
+            .expect("reserve")
+            .expect("should reserve");
+        assert!(matches!(
+            reserved.state,
+            SendIntentState::CutThroughReserved {
+                settlement_id,
+                ..
+            } if settlement_id == settlement.settlement_id
+        ));
+        assert!(storage
+            .reserve_pending_send_intent_for_cut_through(&intent_id, &settlement)
+            .await
+            .expect("reserve again")
+            .is_none());
+
+        storage
+            .release_cut_through_reserved_intent(&intent_id, Uuid::new_v4())
+            .await
+            .expect("wrong release");
+        assert!(matches!(
+            storage
+                .get_send_intent(&intent_id)
+                .await
+                .expect("get")
+                .expect("intent")
+                .state,
+            SendIntentState::CutThroughReserved { .. }
+        ));
+
+        storage
+            .release_cut_through_reserved_intent(&intent_id, settlement.settlement_id)
+            .await
+            .expect("release");
+        assert!(matches!(
+            storage
+                .get_send_intent(&intent_id)
+                .await
+                .expect("get")
+                .expect("intent")
+                .state,
+            SendIntentState::Pending { .. }
+        ));
     }
 
     #[tokio::test]
@@ -1708,6 +1860,7 @@ mod tests {
             address: "bcrt1qaddr".to_string(),
             txid: "abc123".to_string(),
             outpoint: "abc123:0".to_string(),
+            payment_id: Some("abc123:0".to_string()),
             amount_sat: 50_000,
             finalized_at: 1_700_000_001,
         };
@@ -1895,6 +2048,7 @@ mod tests {
             address: "bcrt1qaddr".to_string(),
             txid: "txid_abc".to_string(),
             outpoint: "txid_abc:0".to_string(),
+            payment_id: Some("txid_abc:0".to_string()),
             amount_sat: 50_000,
             finalized_at: 1_700_000_001,
         };
@@ -1998,6 +2152,7 @@ mod tests {
                 address: "bcrt1qshared".to_string(),
                 txid: format!("txid_{}", i),
                 outpoint: outpoint.to_string(),
+                payment_id: Some(outpoint.to_string()),
                 amount_sat: 10_000 * (i as u64 + 1),
                 finalized_at: 1_700_000_010 + i as u64,
             };
@@ -2035,6 +2190,7 @@ mod tests {
                     address: "bcrt1qother".to_string(),
                     txid: "txid_c".to_string(),
                     outpoint: "txid_c:0".to_string(),
+                    payment_id: Some("txid_c:0".to_string()),
                     amount_sat: 99_000,
                     finalized_at: 1_700_000_200,
                 },
@@ -2111,7 +2267,8 @@ mod tests {
                 quote_id: quote_a,
                 address: "bcrt1qshared".to_string(),
                 txid: format!("txid_{}", i_a),
-                outpoint: outpoint_a,
+                outpoint: outpoint_a.clone(),
+                payment_id: Some(outpoint_a),
                 amount_sat: 10_000 * (i_a as u64 + 1),
                 finalized_at: 1_700_000_010 + i_a as u64,
             };
@@ -2127,7 +2284,8 @@ mod tests {
                 quote_id: quote_b,
                 address: "bcrt1qshared".to_string(),
                 txid: format!("txid_{}", i_b),
-                outpoint: outpoint_b,
+                outpoint: outpoint_b.clone(),
+                payment_id: Some(outpoint_b),
                 amount_sat: 10_000 * (i_b as u64 + 1),
                 finalized_at: 1_700_000_010 + i_b as u64,
             };

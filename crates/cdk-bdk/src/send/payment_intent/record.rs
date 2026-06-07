@@ -13,6 +13,21 @@ pub enum SendIntentState {
         /// When the intent was created (unix timestamp seconds)
         created_at: u64,
     },
+    /// Intent has been claimed by the normal batch builder before transaction
+    /// construction.
+    BatchClaimed {
+        /// The batch this intent is claimed for
+        batch_id: Uuid,
+        /// When the intent was created (unix timestamp seconds)
+        created_at: u64,
+    },
+    /// Intent has been reserved by an incoming Payjoin cut-through settlement.
+    CutThroughReserved {
+        /// Settlement this intent is reserved for
+        settlement_id: Uuid,
+        /// When the intent was created (unix timestamp seconds)
+        created_at: u64,
+    },
     /// Intent is negotiating a Payjoin transaction before a final transaction
     /// has been selected and durably staged as a batch.
     PayjoinNegotiating {

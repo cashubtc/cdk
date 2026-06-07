@@ -50,10 +50,72 @@ pub struct FinalizedReceiveIntentRecord {
     pub txid: String,
     /// Output point string (txid:vout)
     pub outpoint: String,
+    /// Stable payment identifier returned to the mint.
+    #[serde(default)]
+    pub payment_id: Option<String>,
     /// Payment amount in satoshis
     pub amount_sat: u64,
     /// When finalization occurred (unix timestamp seconds)
     pub finalized_at: u64,
+}
+
+/// Durable state for a Payjoin cut-through settlement.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum CutThroughSettlementState {
+    /// A compatible melt was reserved, but no proposal is known to be exposed.
+    Reserved,
+    /// A cut-through proposal may have reached the sender.
+    ProposalExposed {
+        /// Consensus-serialized proposal transaction.
+        proposal_tx_bytes: Vec<u8>,
+        /// Proposal transaction id.
+        proposal_txid: String,
+        /// Consensus-serialized original sender transaction.
+        original_tx_bytes: Vec<u8>,
+        /// Original transaction id.
+        original_txid: String,
+        /// Outpoint used as the receive payment id.
+        receive_payment_id: String,
+        /// Legacy receive outpoint field.
+        receive_outpoint: String,
+        /// Paid melt output point.
+        melt_outpoint: String,
+        /// Mint incremental spend beyond melt principal.
+        fee_contribution_sat: u64,
+    },
+    /// Proposal confirmed and both receive and melt were finalized.
+    Confirmed {
+        /// When finalization occurred (unix timestamp seconds)
+        finalized_at: u64,
+    },
+    /// Settlement was abandoned and the melt was released or finalized by another path.
+    Abandoned {
+        /// When abandonment occurred (unix timestamp seconds)
+        abandoned_at: u64,
+    },
+}
+
+/// Persisted Payjoin cut-through settlement record.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CutThroughSettlementRecord {
+    /// Unique settlement identifier.
+    pub settlement_id: Uuid,
+    /// Incoming mint quote id.
+    pub receive_quote_id: String,
+    /// Reserved outgoing send intent id.
+    pub send_intent_id: Uuid,
+    /// Outgoing melt quote id.
+    pub send_quote_id: String,
+    /// Original Payjoin receiver amount.
+    pub original_receive_amount_sat: u64,
+    /// Melt principal amount.
+    pub melt_amount_sat: u64,
+    /// Maximum fee accepted by the melt quote.
+    pub max_fee_sat: u64,
+    /// When the settlement was created (unix timestamp seconds).
+    pub created_at: u64,
+    /// Current settlement state.
+    pub state: CutThroughSettlementState,
 }
 
 /// Persisted Payjoin v2 receive session.

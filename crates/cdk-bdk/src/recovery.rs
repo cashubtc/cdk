@@ -80,12 +80,19 @@ impl CdkBdk {
             found_ids.insert(record.intent_id);
 
             match &record.state {
-                SendIntentState::Pending { .. } => {
+                SendIntentState::Pending { .. } | SendIntentState::BatchClaimed { .. } => {
                     saw_pending = true;
                     tracing::warn!(
                         batch_id = %batch_id,
                         intent_id = %record.intent_id,
-                        "Recovery found batch member stored as Pending"
+                        "Recovery found batch member stored before Batched"
+                    );
+                }
+                SendIntentState::CutThroughReserved { .. } => {
+                    tracing::warn!(
+                        batch_id = %batch_id,
+                        intent_id = %record.intent_id,
+                        "Recovery found batch member reserved by cut-through"
                     );
                 }
                 SendIntentState::PayjoinNegotiating { .. } => {
@@ -168,7 +175,19 @@ impl CdkBdk {
                 SendIntentState::AwaitingConfirmation { .. } => {
                     BatchIntentRelation::IntentAlreadyAdvanced
                 }
-                SendIntentState::Pending { .. } | SendIntentState::Failed { .. } => {
+                SendIntentState::BatchClaimed {
+                    batch_id: intent_batch_id,
+                    ..
+                } => {
+                    if *intent_batch_id == batch_id {
+                        BatchIntentRelation::Valid
+                    } else {
+                        BatchIntentRelation::IntentReferencesDifferentBatch
+                    }
+                }
+                SendIntentState::Pending { .. }
+                | SendIntentState::CutThroughReserved { .. }
+                | SendIntentState::Failed { .. } => {
                     BatchIntentRelation::IntentReferencesDifferentBatch
                 }
                 SendIntentState::PayjoinNegotiating { .. } => {
@@ -311,6 +330,28 @@ impl CdkBdk {
                                         }
                                     }
                                 }
+                                SendIntentAny::BatchClaimed(intent)
+                                    if intent.state.batch_id == batch_record.batch_id =>
+                                {
+                                    tracing::warn!(
+                                        batch_id = %batch_record.batch_id,
+                                        intent_id = %id,
+                                        "Repairing Signed batch member still stored as BatchClaimed"
+                                    );
+                                    match intent.assign_to_batch(&self.storage).await {
+                                        Ok(intent) => batched_intents.push(intent),
+                                        Err(err) => {
+                                            tracing::error!(
+                                                batch_id = %batch_record.batch_id,
+                                                intent_id = %id,
+                                                error = %err,
+                                                "Signed batch recovery aborted because claimed member could not be assigned"
+                                            );
+                                            abort_recovery = true;
+                                            break;
+                                        }
+                                    }
+                                }
                                 SendIntentAny::PayjoinNegotiating(intent) => {
                                     tracing::warn!(
                                         batch_id = %batch_record.batch_id,
@@ -340,6 +381,26 @@ impl CdkBdk {
                                         intent_id = %id,
                                         intent_batch_id = %intent.state.batch_id,
                                         "Signed batch recovery aborted because a member references a different batch"
+                                    );
+                                    abort_recovery = true;
+                                    break;
+                                }
+                                SendIntentAny::BatchClaimed(intent) => {
+                                    tracing::error!(
+                                        batch_id = %batch_record.batch_id,
+                                        intent_id = %id,
+                                        intent_batch_id = %intent.state.batch_id,
+                                        "Signed batch recovery aborted because a claimed member references a different batch"
+                                    );
+                                    abort_recovery = true;
+                                    break;
+                                }
+                                SendIntentAny::CutThroughReserved(intent) => {
+                                    tracing::error!(
+                                        batch_id = %batch_record.batch_id,
+                                        intent_id = %id,
+                                        settlement_id = %intent.state.settlement_id,
+                                        "Signed batch recovery aborted because a member is reserved by cut-through"
                                     );
                                     abort_recovery = true;
                                     break;
@@ -533,6 +594,34 @@ impl CdkBdk {
         for persisted in persisted_intents {
             match payment_intent::from_record(&persisted) {
                 SendIntentAny::Pending(_) => {}
+                SendIntentAny::BatchClaimed(intent) => {
+                    let intent_id = intent.intent_id;
+                    let batch = batches.iter().find(|b| b.batch_id == intent.state.batch_id);
+                    if batch.is_none()
+                        || batch.is_some_and(|batch| {
+                            !batch_intent_ids(&batch.state).contains(&intent_id)
+                        })
+                    {
+                        tracing::info!(
+                            "Orphaned batch-claimed intent {}, reverting to Pending",
+                            intent_id
+                        );
+                        if let Err(e) = intent.revert_to_pending(&self.storage).await {
+                            tracing::error!(
+                                "Failed to revert orphaned claimed intent {} during recovery: {}",
+                                intent_id,
+                                e
+                            );
+                        }
+                    }
+                }
+                SendIntentAny::CutThroughReserved(intent) => {
+                    tracing::trace!(
+                        intent_id = %intent.intent_id,
+                        settlement_id = %intent.state.settlement_id,
+                        "Leaving cut-through-reserved intent for cut-through recovery"
+                    );
+                }
                 SendIntentAny::PayjoinNegotiating(_) => {}
                 SendIntentAny::Failed => {}
                 SendIntentAny::Batched(intent) => {

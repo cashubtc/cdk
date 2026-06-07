@@ -19,11 +19,27 @@ use crate::util::parse_checked_address;
 use crate::CdkBdk;
 
 impl CdkBdk {
-    async fn fail_send_intents(&self, intents: &[SendIntent<intent_state::Pending>], reason: &str) {
+    async fn fail_claimed_send_intents(
+        &self,
+        intents: &[SendIntent<intent_state::BatchClaimed>],
+        reason: &str,
+    ) {
         for intent in intents {
-            if let Err(err) = intent.clone().fail(&self.storage, reason.to_string()).await {
+            let failed_at = crate::util::unix_now();
+            if let Err(err) = self
+                .storage
+                .update_send_intent(
+                    &intent.intent_id,
+                    &crate::send::payment_intent::record::SendIntentState::Failed {
+                        reason: reason.to_string(),
+                        created_at: intent.created_at,
+                        failed_at,
+                    },
+                )
+                .await
+            {
                 tracing::error!(
-                    "Failed to mark send intent {} failed after terminal batch failure: {}",
+                    "Failed to mark claimed send intent {} failed after terminal batch failure: {}",
                     intent.intent_id,
                     err
                 );
@@ -153,10 +169,10 @@ impl CdkBdk {
     /// `fee_allocations` must be positionally aligned with `intents` (i.e.
     /// `fee_allocations[i]` is the fee for `intents[i]`). This is the natural
     /// output of [`allocate_batch_fee`].
-    pub(crate) fn derive_pending_vout_assignments(
+    pub(crate) fn derive_claimed_vout_assignments(
         &self,
         tx: &Transaction,
-        intents: &[SendIntent<intent_state::Pending>],
+        intents: &[SendIntent<intent_state::BatchClaimed>],
         fee_allocations: &[u64],
     ) -> Result<Vec<BatchOutputAssignment>, Error> {
         let intent_outputs: Vec<_> = intents
@@ -346,24 +362,36 @@ impl CdkBdk {
 
         tracing::info!("Processing batch of {} intents", batch_intents.len());
 
-        // Reconstruct typed SendIntent<Pending> from persisted state
-        let mut pending_intents: Vec<SendIntent<intent_state::Pending>> = Vec::new();
-        for pi in &batch_intents {
-            match payment_intent::from_record(pi) {
-                SendIntentAny::Pending(intent) => pending_intents.push(intent),
+        let batch_id = Uuid::new_v4();
+        let intent_ids = batch_intents
+            .iter()
+            .map(|intent| intent.intent_id)
+            .collect::<Vec<_>>();
+        let claimed_records = self
+            .storage
+            .claim_pending_send_intents_for_batch(&intent_ids, batch_id)
+            .await?;
+        if claimed_records.is_empty() {
+            return Ok(());
+        }
+
+        let mut claimed_intents: Vec<SendIntent<intent_state::BatchClaimed>> = Vec::new();
+        for record in &claimed_records {
+            match payment_intent::from_record(record) {
+                SendIntentAny::BatchClaimed(intent) => claimed_intents.push(intent),
                 _ => continue,
             }
         }
 
-        self.build_sign_broadcast_batch(pending_intents).await
+        self.build_sign_broadcast_batch(batch_id, claimed_intents)
+            .await
     }
 
     pub(crate) async fn build_sign_broadcast_batch(
         &self,
-        intents: Vec<SendIntent<intent_state::Pending>>,
+        batch_id: Uuid,
+        intents: Vec<SendIntent<intent_state::BatchClaimed>>,
     ) -> Result<(), Error> {
-        let batch_id = Uuid::new_v4();
-
         let mut highest_tier = PaymentTier::Economy;
         let mut recipients = Vec::with_capacity(intents.len());
         for intent in &intents {
@@ -379,7 +407,7 @@ impl CdkBdk {
                 Ok(address) => address,
                 Err(e) => {
                     let reason = e.to_string();
-                    self.fail_send_intents(&intents, &reason).await;
+                    self.fail_claimed_send_intents(&intents, &reason).await;
                     return Err(e);
                 }
             };
@@ -402,7 +430,7 @@ impl CdkBdk {
             Ok(fee_rate) => fee_rate,
             Err(e) => {
                 let reason = e.to_string();
-                self.fail_send_intents(&intents, &reason).await;
+                self.fail_claimed_send_intents(&intents, &reason).await;
                 return Err(e);
             }
         };
@@ -422,7 +450,7 @@ impl CdkBdk {
 
                 let error_text = e.to_string();
                 drop(wallet_with_db);
-                self.fail_send_intents(&intents, &error_text).await;
+                self.fail_claimed_send_intents(&intents, &error_text).await;
 
                 return Err(Error::Wallet(e.to_string()));
             }
@@ -435,7 +463,7 @@ impl CdkBdk {
                 let err = Error::Wallet(e.to_string());
                 let reason = err.to_string();
                 drop(wallet_with_db);
-                self.fail_send_intents(&intents, &reason).await;
+                self.fail_claimed_send_intents(&intents, &reason).await;
                 return Err(err);
             }
         };
@@ -449,7 +477,7 @@ impl CdkBdk {
                 tracing::warn!("Fee allocation failed, cancelling batch: {}", e);
                 let reason = e.to_string();
                 drop(wallet_with_db);
-                self.fail_send_intents(&intents, &reason).await;
+                self.fail_claimed_send_intents(&intents, &reason).await;
                 return Err(e);
             }
         };
@@ -459,7 +487,7 @@ impl CdkBdk {
             let err = Error::Database(e);
             let reason = err.to_string();
             drop(wallet_with_db);
-            self.fail_send_intents(&intents, &reason).await;
+            self.fail_claimed_send_intents(&intents, &reason).await;
             return Err(err);
         }
 
@@ -470,14 +498,14 @@ impl CdkBdk {
                 let err = Error::Wallet(e.to_string());
                 let reason = err.to_string();
                 drop(wallet_with_db);
-                self.fail_send_intents(&intents, &reason).await;
+                self.fail_claimed_send_intents(&intents, &reason).await;
                 return Err(err);
             }
         };
         if !signed {
             let reason = Error::CouldNotSign.to_string();
             drop(wallet_with_db);
-            self.fail_send_intents(&intents, &reason).await;
+            self.fail_claimed_send_intents(&intents, &reason).await;
             return Err(Error::CouldNotSign);
         }
 
@@ -521,7 +549,7 @@ impl CdkBdk {
         // of Pending; this makes every post-sign crash/failure recoverable
         // from the signed transaction bytes instead of reverting into a new
         // batch.
-        let assignments = self.derive_pending_vout_assignments(&tx, &intents, &fee_allocations)?;
+        let assignments = self.derive_claimed_vout_assignments(&tx, &intents, &fee_allocations)?;
         let intent_count = assignments.len();
 
         if let Err(e) = self
@@ -559,7 +587,7 @@ impl CdkBdk {
         // 4. Transition intents to Batched after the signed transaction is durable.
         let mut batched_intents = Vec::new();
         for intent in intents {
-            let batched = intent.assign_to_batch(&self.storage, batch_id).await?;
+            let batched = intent.assign_to_batch(&self.storage).await?;
             batched_intents.push(batched);
         }
         let signed_batch =
