@@ -491,7 +491,7 @@ impl Wallet {
                 &address,
                 amount.into(),
                 max_fee_amount.map(Into::into),
-                Some(payjoin.into()),
+                Some(payjoin.try_into()?),
             )
             .await?;
 

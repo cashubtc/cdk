@@ -88,7 +88,7 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
             amount_issued: quote.amount_issued.into(),
             amount_paid: quote.amount_paid.into(),
             estimated_blocks: quote.estimated_blocks,
-            payjoin: quote.payjoin.map(Into::into),
+            payjoin: quote.payjoin.map(TryInto::try_into).transpose()?,
             payment_method: quote.payment_method.into(),
             secret_key,
             used_by_operation: quote.used_by_operation,
@@ -372,21 +372,23 @@ impl From<cdk::nuts::PayjoinV2> for PayjoinV2 {
     fn from(payjoin: cdk::nuts::PayjoinV2) -> Self {
         Self {
             endpoint: payjoin.endpoint,
-            ohttp_keys: payjoin.ohttp_keys,
-            receiver_key: payjoin.receiver_key,
+            ohttp_keys: payjoin.ohttp_keys.to_string(),
+            receiver_key: payjoin.receiver_key.to_string(),
             expires_at: payjoin.expires_at,
         }
     }
 }
 
-impl From<PayjoinV2> for cdk::nuts::PayjoinV2 {
-    fn from(payjoin: PayjoinV2) -> Self {
-        Self {
-            endpoint: payjoin.endpoint,
-            ohttp_keys: payjoin.ohttp_keys,
-            receiver_key: payjoin.receiver_key,
-            expires_at: payjoin.expires_at,
-        }
+impl TryFrom<PayjoinV2> for cdk::nuts::PayjoinV2 {
+    type Error = cdk::nuts::nut31::PayjoinV2KeyError;
+
+    fn try_from(payjoin: PayjoinV2) -> Result<Self, Self::Error> {
+        Self::new(
+            payjoin.endpoint,
+            payjoin.ohttp_keys,
+            payjoin.receiver_key,
+            payjoin.expires_at,
+        )
     }
 }
 
@@ -571,7 +573,7 @@ impl TryFrom<MeltQuote> for cdk::wallet::MeltQuote {
             payment_proof: quote.payment_proof,
             estimated_blocks: quote.estimated_blocks,
             fee_index: quote.fee_index,
-            payjoin: quote.payjoin.map(Into::into),
+            payjoin: quote.payjoin.map(TryInto::try_into).transpose()?,
             payment_method: quote.payment_method.into(),
             used_by_operation: quote.used_by_operation,
             version: quote.version,

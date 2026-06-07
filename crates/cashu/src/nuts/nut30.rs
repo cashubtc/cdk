@@ -433,12 +433,13 @@ mod tests {
 
     #[test]
     fn test_onchain_payjoin_response_serialization() {
-        let payjoin = PayjoinV2 {
-            endpoint: "https://payjoin.example/pj".to_string(),
-            ohttp_keys: "encoded-ohttp-keys".to_string(),
-            receiver_key: "encoded-receiver-key".to_string(),
-            expires_at: 1701704757,
-        };
+        let payjoin = PayjoinV2::new(
+            "https://payjoin.example/pj".to_string(),
+            "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
+            "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG",
+            1701704757,
+        )
+        .expect("valid Payjoin keys");
 
         let response: MintQuoteOnchainResponse<String> = MintQuoteOnchainResponse {
             quote: "DSGLX9kevM...".to_string(),

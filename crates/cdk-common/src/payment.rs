@@ -922,8 +922,8 @@ mod tests {
     fn onchain_melt_payment_metadata_uses_persisted_payjoin_destination() {
         let destination = serde_json::json!({
             "endpoint": "https://payjoin.example/pj",
-            "ohttp_keys": "12",
-            "receiver_key": "12",
+            "ohttp_keys": "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
+            "receiver_key": "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG",
             "expires_at": 1741276520,
         });
         let extra_json = serde_json::json!({

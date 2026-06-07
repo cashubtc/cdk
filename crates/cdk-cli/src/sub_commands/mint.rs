@@ -371,12 +371,13 @@ mod tests {
 
     #[test]
     fn payjoin_payment_uri_includes_bip77_pj_endpoint() {
-        let payjoin = PayjoinV2 {
-            endpoint: "https://payjo.in/ZGSLFXFUN7K72".to_string(),
-            ohttp_keys: "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ".to_string(),
-            receiver_key: "Q2JJNCP7QRUVGUM64VHNMWFHLHH9NNF0NC29HUJKCDH3WNLNZCSEZ".to_string(),
-            expires_at: 1_720_547_781,
-        };
+        let payjoin = PayjoinV2::new(
+            "https://payjo.in/ZGSLFXFUN7K72".to_string(),
+            "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
+            "Q2JJNCP7QRUVGUM64VHNMWFHLHH9NNF0NC29HUJKCDH3WNLNZCSEZ",
+            1_720_547_781,
+        )
+        .expect("valid Payjoin keys");
         let endpoint = payjoin_v2_to_bip77_endpoint(&payjoin).expect("valid Payjoin v2 endpoint");
         let parsed = payjoin_v2_from_bip77_endpoint(&endpoint).expect("valid BIP77 endpoint");
         assert_eq!(parsed, payjoin);

@@ -203,11 +203,10 @@ fn parse_bitcoin_payjoin_uri(value: &str) -> Result<OnchainPaymentInput> {
         match key.as_ref() {
             "amount" => amount_sat = Some(parse_bip21_amount_sat(&value)?),
             "pj" => endpoint = Some(value.into_owned()),
-            "pjos" => {
-                if !matches!(value.as_ref(), "0" | "1") {
-                    bail!("Invalid pjos value '{}', expected 0 or 1", value);
-                }
+            "pjos" if !matches!(value.as_ref(), "0" | "1") => {
+                bail!("Invalid pjos value '{}', expected 0 or 1", value);
             }
+            "pjos" => {}
             _ => {}
         }
     }
@@ -570,7 +569,7 @@ pub async fn pay(
             let mut onchain_input = sub_command_args
                 .address
                 .as_deref()
-                .map(|address| parse_onchain_input_arg(address))
+                .map(parse_onchain_input_arg)
                 .transpose()?
                 .unwrap_or_default();
             if let Some(payjoin) = sub_command_args.payjoin.as_deref() {
@@ -863,11 +862,11 @@ mod tests {
         assert_eq!(input.amount_sat, Some(4_000));
         assert_eq!(payjoin.endpoint, "https://payjo.in/E73HSW759WNES");
         assert_eq!(
-            payjoin.ohttp_keys,
+            payjoin.ohttp_keys.to_string(),
             "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ"
         );
         assert_eq!(
-            payjoin.receiver_key,
+            payjoin.receiver_key.to_string(),
             "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG"
         );
         assert_eq!(payjoin.expires_at, 1_780_854_353);

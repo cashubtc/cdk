@@ -10,7 +10,7 @@ use bitcoin::bech32::primitives::decode::{
 use bitcoin::bech32::{self, Hrp, NoChecksum};
 use thiserror::Error;
 
-use crate::nuts::nut31::PayjoinV2;
+use crate::nuts::nut31::{PayjoinV2, PayjoinV2KeyError};
 
 /// Number of satoshis in one bitcoin.
 pub const SATS_PER_BTC: u64 = 100_000_000;
@@ -89,6 +89,9 @@ pub enum PayjoinV2Error {
     /// Expiry timestamp cannot fit in the BIP77 u32 timestamp encoding.
     #[error("Payjoin expiry exceeds BIP77 u32 range: {0}")]
     ExpiryOutOfRange(u64),
+    /// Payjoin key material is invalid.
+    #[error("{0}")]
+    InvalidKey(#[from] PayjoinV2KeyError),
 }
 
 /// Read Cashu Payjoin v2 parameters from an `extra_json` object.
@@ -166,12 +169,13 @@ pub fn payjoin_v2_from_bip77_endpoint(endpoint: &str) -> Result<PayjoinV2, Payjo
     let expires_at = decode_bip77_expiry(&expires_at)?;
     endpoint_url.set_fragment(None);
 
-    Ok(PayjoinV2 {
-        endpoint: endpoint_url.to_string(),
-        ohttp_keys: strip_fragment_prefix(&ohttp_keys, "OH1")?.to_string(),
-        receiver_key: strip_fragment_prefix(&receiver_key, "RK1")?.to_string(),
+    PayjoinV2::new(
+        endpoint_url.to_string(),
+        strip_fragment_prefix(&ohttp_keys, "OH1")?,
+        strip_fragment_prefix(&receiver_key, "RK1")?,
         expires_at,
-    })
+    )
+    .map_err(Into::into)
 }
 
 /// Build a BIP77 mailbox endpoint with `EX1`, `OH1`, and `RK1` fragment parameters.
@@ -275,6 +279,9 @@ mod tests {
     };
     use crate::nuts::nut31::PayjoinV2;
 
+    const OHTTP_KEYS: &str = "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ";
+    const RECEIVER_KEY: &str = "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG";
+
     #[test]
     fn bip77_expiry_roundtrips() {
         assert_eq!(encode_bip77_expiry(1_720_547_781).unwrap(), "EX1C4UC6ES");
@@ -304,39 +311,41 @@ mod tests {
     #[test]
     fn parses_bip77_endpoint_into_cashu_fields() {
         let payjoin = payjoin_v2_from_bip77_endpoint(
-            "HTTPS://PAYJO.IN/E73HSW759WNES#EX12XHZ26S-OH1QYP-RK1QRK",
+            "HTTPS://PAYJO.IN/E73HSW759WNES#EX12XHZ26S-OH1QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ-RK1QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG",
         )
         .unwrap();
 
         assert_eq!(payjoin.endpoint, "https://payjo.in/E73HSW759WNES");
-        assert_eq!(payjoin.ohttp_keys, "QYP");
-        assert_eq!(payjoin.receiver_key, "QRK");
+        assert_eq!(payjoin.ohttp_keys.to_string(), OHTTP_KEYS);
+        assert_eq!(payjoin.receiver_key.to_string(), RECEIVER_KEY);
         assert_eq!(payjoin.expires_at, 1_780_854_353);
     }
 
     #[test]
     fn builds_bip77_endpoint_from_cashu_fields() {
-        let payjoin = PayjoinV2 {
-            endpoint: "https://payjoin.example/pj".to_string(),
-            ohttp_keys: "QYP".to_string(),
-            receiver_key: "QRK".to_string(),
-            expires_at: 1_720_547_781,
-        };
+        let payjoin = PayjoinV2::new(
+            "https://payjoin.example/pj".to_string(),
+            OHTTP_KEYS,
+            RECEIVER_KEY,
+            1_720_547_781,
+        )
+        .expect("valid Payjoin keys");
 
         assert_eq!(
             payjoin_v2_to_bip77_endpoint(&payjoin).unwrap(),
-            "https://payjoin.example/pj#EX1C4UC6ES-OH1QYP-RK1QRK"
+            "https://payjoin.example/pj#EX1C4UC6ES-OH1QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ-RK1QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG"
         );
     }
 
     #[test]
     fn reads_payjoin_from_extra_json() {
-        let payjoin = PayjoinV2 {
-            endpoint: "https://payjoin.example/pj".to_string(),
-            ohttp_keys: "QYP".to_string(),
-            receiver_key: "QRK".to_string(),
-            expires_at: 1_720_547_781,
-        };
+        let payjoin = PayjoinV2::new(
+            "https://payjoin.example/pj".to_string(),
+            OHTTP_KEYS,
+            RECEIVER_KEY,
+            1_720_547_781,
+        )
+        .expect("valid Payjoin keys");
         let extra = serde_json::json!({ ONCHAIN_PAYJOIN_EXTRA_KEY: payjoin.clone() });
 
         assert_eq!(payjoin_v2_from_extra_json(Some(&extra)).unwrap(), payjoin);
@@ -368,12 +377,13 @@ mod tests {
 
     #[test]
     fn detects_expired_payjoin() {
-        let payjoin = PayjoinV2 {
-            endpoint: "https://payjoin.example/pj".to_string(),
-            ohttp_keys: "QYP".to_string(),
-            receiver_key: "QRK".to_string(),
-            expires_at: 10,
-        };
+        let payjoin = PayjoinV2::new(
+            "https://payjoin.example/pj".to_string(),
+            OHTTP_KEYS,
+            RECEIVER_KEY,
+            10,
+        )
+        .expect("valid Payjoin keys");
 
         assert!(!payjoin_v2_is_expired_at(&payjoin, 9));
         assert!(payjoin_v2_is_expired_at(&payjoin, 10));

@@ -2099,16 +2099,17 @@ mod tests {
 
     #[test]
     fn builds_payjoin_endpoint_from_normalized_fields() {
-        let payjoin = PayjoinV2 {
-            endpoint: "https://payjoin.example/pj".to_string(),
-            ohttp_keys: "QYP".to_string(),
-            receiver_key: "QRK".to_string(),
-            expires_at: 1_720_547_781,
-        };
+        let payjoin = PayjoinV2::new(
+            "https://payjoin.example/pj".to_string(),
+            "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
+            "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG",
+            1_720_547_781,
+        )
+        .expect("valid Payjoin keys");
 
         assert_eq!(
             build_payjoin_endpoint(&payjoin).expect("endpoint builds"),
-            "https://payjoin.example/pj#EX1C4UC6ES-OH1QYP-RK1QRK"
+            "https://payjoin.example/pj#EX1C4UC6ES-OH1QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ-RK1QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG"
         );
     }
 }

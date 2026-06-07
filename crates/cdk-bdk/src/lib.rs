@@ -1450,12 +1450,13 @@ mod tests {
         let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
         fund_backend_wallet(&backend, 100_000).await;
         let quote_id = QuoteId::UUID(Uuid::new_v4());
-        let payjoin = cdk_common::nuts::nut31::PayjoinV2 {
-            endpoint: "https://payjoin.example/pj".to_string(),
-            ohttp_keys: "QYP".to_string(),
-            receiver_key: "QRK".to_string(),
-            expires_at: crate::util::unix_now() + 3600,
-        };
+        let payjoin = cdk_common::nuts::nut31::PayjoinV2::new(
+            "https://payjoin.example/pj".to_string(),
+            "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
+            "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG",
+            crate::util::unix_now() + 3600,
+        )
+        .expect("valid Payjoin keys");
 
         let err = backend
             .start_payjoin_send(

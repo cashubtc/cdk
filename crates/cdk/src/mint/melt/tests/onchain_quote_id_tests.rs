@@ -23,6 +23,9 @@ use crate::mint::{Mint, MintBuilder, MintMeltLimits};
 use crate::types::QuoteTTL;
 use crate::Error;
 
+const PAYJOIN_OHTTP_KEYS: &str = "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ";
+const PAYJOIN_RECEIVER_KEY: &str = "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG";
+
 /// What to put in [`PaymentQuoteResponse::request_lookup_id`] when the test
 /// backend is asked for an onchain quote.
 #[derive(Debug, Clone)]
@@ -248,12 +251,13 @@ fn onchain_melt_request() -> MeltQuoteRequest {
 }
 
 fn optional_payjoin_melt_request() -> (MeltQuoteRequest, PayjoinV2) {
-    let payjoin = PayjoinV2 {
-        endpoint: "https://payjoin.example/pj".to_string(),
-        ohttp_keys: "12".to_string(),
-        receiver_key: "12".to_string(),
-        expires_at: 4_000_000_000,
-    };
+    let payjoin = PayjoinV2::new(
+        "https://payjoin.example/pj".to_string(),
+        PAYJOIN_OHTTP_KEYS,
+        PAYJOIN_RECEIVER_KEY,
+        4_000_000_000,
+    )
+    .expect("valid Payjoin keys");
 
     (
         MeltQuoteRequest::Onchain(MeltQuoteOnchainRequest {
@@ -267,12 +271,13 @@ fn optional_payjoin_melt_request() -> (MeltQuoteRequest, PayjoinV2) {
 }
 
 fn invalid_payjoin_melt_request() -> MeltQuoteRequest {
-    let payjoin = PayjoinV2 {
-        endpoint: "not a url".to_string(),
-        ohttp_keys: "12".to_string(),
-        receiver_key: "12".to_string(),
-        expires_at: 4_000_000_000,
-    };
+    let payjoin = PayjoinV2::new(
+        "not a url".to_string(),
+        PAYJOIN_OHTTP_KEYS,
+        PAYJOIN_RECEIVER_KEY,
+        4_000_000_000,
+    )
+    .expect("valid Payjoin keys");
 
     MeltQuoteRequest::Onchain(MeltQuoteOnchainRequest {
         request: "bcrt1qexampleaddr0000000000000000000000000000".to_string(),
@@ -283,12 +288,13 @@ fn invalid_payjoin_melt_request() -> MeltQuoteRequest {
 }
 
 fn expired_payjoin_melt_request() -> MeltQuoteRequest {
-    let payjoin = PayjoinV2 {
-        endpoint: "https://payjoin.example/pj".to_string(),
-        ohttp_keys: "12".to_string(),
-        receiver_key: "12".to_string(),
-        expires_at: 1,
-    };
+    let payjoin = PayjoinV2::new(
+        "https://payjoin.example/pj".to_string(),
+        PAYJOIN_OHTTP_KEYS,
+        PAYJOIN_RECEIVER_KEY,
+        1,
+    )
+    .expect("valid Payjoin keys");
 
     MeltQuoteRequest::Onchain(MeltQuoteOnchainRequest {
         request: "bcrt1qexampleaddr0000000000000000000000000000".to_string(),

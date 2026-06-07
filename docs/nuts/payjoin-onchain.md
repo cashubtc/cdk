@@ -18,18 +18,19 @@ This draft specifies BIP77 Payjoin v2 only.
 ```json
 {
   "endpoint": "https://payjoin.example/pj",
-  "ohttp_keys": "encoded-ohttp-keys",
-  "receiver_key": "encoded-receiver-session-key",
+  "ohttp_keys": "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
+  "receiver_key": "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG",
   "expires_at": 1701704757
 }
 ```
 
 - `endpoint`: string, BIP77 mailbox endpoint URL without the receiver fragment
   parameters.
-- `ohttp_keys`: string, encoded OHTTP key material needed by the sender,
-  without the `OH1` prefix.
-- `receiver_key`: string, encoded receiver session key, without the `RK1`
-  prefix.
+- `ohttp_keys`: string, BIP77-encoded OHTTP key material needed by the sender,
+  without the `OH1` prefix. It decodes to one key identifier byte followed by a
+  33-byte compressed secp256k1 public key.
+- `receiver_key`: string, BIP77-encoded receiver session key, without the
+  `RK1` prefix. It decodes to a 33-byte compressed secp256k1 public key.
 - `expires_at`: Unix timestamp after which the Payjoin parameters should not
   be used.
 
@@ -70,8 +71,8 @@ negotiate Payjoin support in mint quote requests.
   "amount_issued": 0,
   "payjoin": {
     "endpoint": "https://payjoin.example/pj",
-    "ohttp_keys": "encoded-ohttp-keys",
-    "receiver_key": "encoded-receiver-session-key",
+    "ohttp_keys": "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
+    "receiver_key": "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG",
     "expires_at": 1701704757
   }
 }
@@ -91,8 +92,8 @@ MAY also pay `request` directly.
   "amount": 100000,
   "payjoin": {
     "endpoint": "https://payjoin.example/pj",
-    "ohttp_keys": "encoded-ohttp-keys",
-    "receiver_key": "encoded-receiver-session-key",
+    "ohttp_keys": "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
+    "receiver_key": "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG",
     "expires_at": 1701704757
   }
 }
@@ -124,8 +125,8 @@ to send.
   "outpoint": null,
   "payjoin": {
     "endpoint": "https://payjoin.example/pj",
-    "ohttp_keys": "encoded-ohttp-keys",
-    "receiver_key": "encoded-receiver-session-key",
+    "ohttp_keys": "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
+    "receiver_key": "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG",
     "expires_at": 1701704757
   }
 }

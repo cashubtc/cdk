@@ -25,6 +25,9 @@ use crate::wallet::{
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+const PAYJOIN_OHTTP_KEYS: &str = "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ";
+const PAYJOIN_RECEIVER_KEY: &str = "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG";
+
 /// Generate a unique test ID
 fn unique_id() -> String {
     let now = SystemTime::now()
@@ -417,12 +420,13 @@ where
     DB: Database<crate::database::Error>,
 {
     let mint_url = test_mint_url();
-    let payjoin = PayjoinV2 {
-        endpoint: "https://payjoin.example.com".to_string(),
-        ohttp_keys: "abc123".to_string(),
-        receiver_key: "def456".to_string(),
-        expires_at: 4_102_444_800,
-    };
+    let payjoin = PayjoinV2::new(
+        "https://payjoin.example.com".to_string(),
+        PAYJOIN_OHTTP_KEYS,
+        PAYJOIN_RECEIVER_KEY,
+        4_102_444_800,
+    )
+    .unwrap();
     let mut quote = test_mint_quote(mint_url);
     quote.payment_method = cashu::PaymentMethod::Known(KnownMethod::Onchain);
     quote.request = "bc1qexamplepayjoinrequest".to_string();
@@ -512,12 +516,13 @@ pub async fn add_and_get_melt_quote_payjoin<DB>(db: DB)
 where
     DB: Database<crate::database::Error>,
 {
-    let payjoin = PayjoinV2 {
-        endpoint: "https://payjoin.example.com".to_string(),
-        ohttp_keys: "abc123".to_string(),
-        receiver_key: "def456".to_string(),
-        expires_at: 4_102_444_800,
-    };
+    let payjoin = PayjoinV2::new(
+        "https://payjoin.example.com".to_string(),
+        PAYJOIN_OHTTP_KEYS,
+        PAYJOIN_RECEIVER_KEY,
+        4_102_444_800,
+    )
+    .unwrap();
     let mut quote = test_melt_quote();
     quote.payment_method = cashu::PaymentMethod::Known(KnownMethod::Onchain);
     quote.payjoin = Some(payjoin.clone());
