@@ -894,6 +894,25 @@ pub(crate) async fn get_index(
         ));
     }
 
+    // Live Proof-of-Reserves attestation, read from the bundle the payment processor writes.
+    // (total_reserve_sat, as_of_block.height, reserve VTXO count)
+    let por_attestation: Option<(u64, u64, usize)> = {
+        let path = std::env::var("CDK_AUDIT_BUNDLE_PATH").unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            format!("{home}/mint/audit/latest.json")
+        });
+        std::fs::read(path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .map(|v| {
+                (
+                    v["total_reserve_sat"].as_u64().unwrap_or(0),
+                    v["as_of_block"]["height"].as_u64().unwrap_or(0),
+                    v["reserve"].as_array().map(|a| a.len()).unwrap_or(0),
+                )
+            })
+    };
+
     // Avatar fallback letter
     let avatar_letter = name
         .chars()
@@ -1079,6 +1098,26 @@ pub(crate) async fn get_index(
                                             div style="font-size:11px;color:var(--text-muted);margin-top:3px;line-height:1.45" { (feat_desc) }
                                         }
                                     }
+                                }
+                            }
+                        }
+
+                        // Live Proof-of-Reserves attestation (rendered from the latest bundle)
+                        @if let Some((reserve, block, n)) = por_attestation {
+                            div class="card-section-header has-rule" { "Proof of Reserves" }
+                            div style="padding:14px 20px 18px" {
+                                div {
+                                    span style="font-size:28px;font-weight:700;color:var(--green)" { (reserve) }
+                                    span style="color:var(--text-muted);font-size:15px" { " sat" }
+                                }
+                                div style="color:var(--text-secondary);font-size:12px;margin-top:3px" {
+                                    "lower bound across " (n) " live Ark VTXO(s) — as of block " (block)
+                                }
+                                div style="margin-top:10px" {
+                                    a href="/audit/latest.json" style="color:var(--green);font-size:12px;text-decoration:none" { "↓ attestation bundle (JSON)" }
+                                }
+                                div style="color:var(--text-faint);font-size:11px;margin-top:8px;line-height:1.45" {
+                                    "Independently verifiable against the Ark server's cosign key. Proof of reserves — a lower bound on assets, not solvency."
                                 }
                             }
                         }
