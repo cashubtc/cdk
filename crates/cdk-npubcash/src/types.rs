@@ -146,7 +146,9 @@ impl From<Quote> for MintQuote {
             _ => MintQuoteState::Unpaid,
         };
 
-        let expiry = quote.expires_at.unwrap_or(quote.created_at + 86400);
+        let expiry = quote
+            .expires_at
+            .unwrap_or_else(|| quote.created_at.saturating_add(86_400));
 
         Self {
             id: quote.id,
@@ -168,5 +170,30 @@ impl From<Quote> for MintQuote {
             used_by_operation: None,
             version: 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_quote_saturates_default_expiry() {
+        let quote = Quote {
+            id: "poison-overflow".to_string(),
+            amount: 1_000,
+            unit: "sat".to_string(),
+            created_at: u64::MAX - 100,
+            paid_at: None,
+            expires_at: None,
+            mint_url: None,
+            request: None,
+            state: None,
+            locked: None,
+        };
+
+        let mint_quote = MintQuote::from(quote);
+
+        assert_eq!(mint_quote.expiry, u64::MAX);
     }
 }
