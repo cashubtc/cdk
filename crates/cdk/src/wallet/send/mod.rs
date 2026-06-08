@@ -212,7 +212,7 @@ impl Wallet {
             swap_fee,
             send_fee,
             db_saga,
-        );
+        )?;
         let (token, _saga) = saga.confirm(memo).await?;
         Ok(token)
     }
@@ -244,7 +244,7 @@ impl Wallet {
             Amount::ZERO, // Dummy
             Amount::ZERO, // Dummy
             db_saga,
-        );
+        )?;
         saga.cancel().await
     }
 

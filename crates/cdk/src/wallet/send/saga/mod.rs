@@ -688,8 +688,21 @@ impl<'a> SendSaga<'a, Prepared> {
         swap_fee: Amount,
         send_fee: Amount,
         saga: WalletSaga,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, Error> {
+        if saga.id != operation_id {
+            return Err(Error::Custom(format!(
+                "Saga id {} does not match operation id {}",
+                saga.id, operation_id
+            )));
+        }
+
+        if saga.state != WalletSagaState::Send(SendSagaState::ProofsReserved) {
+            return Err(Error::Custom(
+                "Operation is not a prepared send".to_string(),
+            ));
+        }
+
+        Ok(Self {
             wallet,
             compensations: new_compensations(),
             state_data: Prepared {
@@ -702,7 +715,7 @@ impl<'a> SendSaga<'a, Prepared> {
                 send_fee,
                 saga,
             },
-        }
+        })
     }
 
     /// Get the operation ID
@@ -1127,7 +1140,10 @@ mod tests {
 
     use cdk_common::amount::KeysetFeeAndAmounts;
     use cdk_common::nuts::State;
-    use cdk_common::wallet::{ProofInfo, SendKind};
+    use cdk_common::wallet::{
+        OperationData, ProofInfo, SendKind, SendOperationData, SendSagaState, WalletSaga,
+        WalletSagaState,
+    };
     use cdk_common::{CurrencyUnit, ProofsMethods};
 
     use super::{ensure_selected_proofs_cover_input_fees, InputFeeCoverageContext, SendSaga};
@@ -1293,6 +1309,56 @@ mod tests {
                 amount => panic!("unexpected proof amount: {amount}"),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_cancel_send_rejects_token_created_saga() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
+        let proof_y = proof_info.y;
+        let proof = proof_info.proof.clone();
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+        db.update_proofs_state(vec![proof_y], State::PendingSpent)
+            .await
+            .unwrap();
+
+        let saga_record = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Send(SendSagaState::TokenCreated),
+            Amount::from(100),
+            mint_url,
+            CurrencyUnit::Sat,
+            OperationData::Send(SendOperationData {
+                amount: Amount::from(100),
+                memo: None,
+                counter_start: None,
+                counter_end: None,
+                token: Some("cashuA...".to_string()),
+                proofs: Some(vec![proof.clone()]),
+            }),
+        );
+        db.add_saga(saga_record).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let err = wallet
+            .cancel_send(saga_id, vec![], vec![proof])
+            .await
+            .expect_err("cancel_send must reject a token-created send saga");
+
+        assert!(matches!(err, crate::Error::Custom(_)));
+
+        let after = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].state, State::PendingSpent);
+        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
     }
 
     #[tokio::test]
