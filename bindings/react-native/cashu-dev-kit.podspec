@@ -20,15 +20,14 @@ Pod::Spec.new do |s|
 
   s.dependency 'NitroModules'
 
-  # Link against pre-built cdk_ffi static library
-  # Place libcdk_ffi.a in ios/Frameworks/ for each architecture
-  s.vendored_libraries = 'ios/Frameworks/libcdk_ffi.a'
+  # Link against pre-built CdkNitro XCFramework
+  s.vendored_frameworks = 'ios/Frameworks/CdkNitro.xcframework'
   s.pod_target_xcconfig = {
     'HEADER_SEARCH_PATHS' => [
       '"$(PODS_TARGET_SRCROOT)/cpp"',
       '"$(PODS_TARGET_SRCROOT)/nitrogen/generated/ios"',
       '"$(PODS_TARGET_SRCROOT)/nitrogen/generated/shared"',
     ].join(' '),
-    'OTHER_LDFLAGS' => '-lcdk_ffi',
+    'OTHER_LDFLAGS' => '-lcdk_nitro',
   }
 end
