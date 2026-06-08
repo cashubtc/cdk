@@ -6,7 +6,6 @@ use std::sync::Arc;
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
 use cashu::amount::SplitTarget;
-use cashu::nut00::KnownMethod;
 use cashu::nut23::Amountless;
 use cashu::{
     Amount, CurrencyUnit, MintRequest, MintUrl, PaymentMethod, PreMintSecrets, ProofsMethods,
@@ -409,10 +408,7 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
     let http_client = HttpClient::new(get_mint_url_from_env().parse().unwrap(), None);
 
     let response = http_client
-        .post_mint(
-            &PaymentMethod::Known(KnownMethod::Bolt11),
-            mint_request.clone(),
-        )
+        .post_mint(&PaymentMethod::BOLT12, mint_request.clone())
         .await;
 
     match response {
