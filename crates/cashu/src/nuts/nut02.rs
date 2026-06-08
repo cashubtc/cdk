@@ -666,10 +666,9 @@ impl MintKeySet {
                     secret_key: secret_key.into(),
                     public_key: public_key.into(),
                 },
-                KeySetVersion::Version02 => {
-                    let digest = Sha256::hash(&secret_key.secret_bytes()).to_byte_array();
-                    MintKeyPair::from_secret_key(SecretKey::bls_from_reduced_bytes(&digest))
-                }
+                KeySetVersion::Version02 => MintKeyPair::from_secret_key(
+                    SecretKey::bls_from_reduced_bytes(&secret_key.secret_bytes()),
+                ),
             };
             map.insert(amount.into(), mint_key_pair);
         }
@@ -954,6 +953,46 @@ mod test {
         let keys: Keys = serde_json::from_str(&vector_2).unwrap();
         let id = Id::v3_from_data(&keys, &unit, 100, Some(2_000_000_000));
         assert_eq!(id, Id::from_str(BLS_V3_KEYSET_VECTOR_2_ID).unwrap());
+    }
+
+    #[cfg(feature = "mint")]
+    #[test]
+    fn test_v3_mint_key_derivation_uses_bip32_child_bytes() {
+        use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
+        use bitcoin::hashes::sha256::Hash as Sha256;
+        use bitcoin::hashes::Hash;
+
+        use crate::nuts::nut01::SecretKey;
+        use crate::SECP256K1;
+
+        let seed = [1u8; 64];
+        let derivation_path = DerivationPath::from_str("m/0'/0'/0'").unwrap();
+        let keyset = super::MintKeySet::generate_from_seed(
+            &SECP256K1,
+            &seed,
+            &[1],
+            CurrencyUnit::Sat,
+            derivation_path.clone(),
+            0,
+            None,
+            KeySetVersion::Version02,
+        );
+
+        let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, &seed)
+            .unwrap()
+            .derive_priv(&SECP256K1, &derivation_path)
+            .unwrap();
+        let child = xpriv
+            .derive_priv(&SECP256K1, &[ChildNumber::from_hardened_idx(0).unwrap()])
+            .unwrap()
+            .private_key;
+        let expected_secret_key = SecretKey::bls_from_reduced_bytes(&child.secret_bytes());
+        let old_hashed_secret_key =
+            SecretKey::bls_from_reduced_bytes(&Sha256::hash(&child.secret_bytes()).to_byte_array());
+
+        let key_pair = keyset.keys.get(&1.into()).unwrap();
+        assert_eq!(key_pair.secret_key, expected_secret_key);
+        assert_ne!(key_pair.secret_key, old_hashed_secret_key);
     }
 
     #[test]
