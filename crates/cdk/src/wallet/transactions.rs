@@ -4,6 +4,14 @@ use cdk_common::Proofs;
 use crate::{Error, Wallet};
 
 impl Wallet {
+    fn transaction_matches_wallet(&self, transaction: &Transaction) -> bool {
+        transaction.matches_conditions(
+            &Some(self.mint_url.clone()),
+            &None,
+            &Some(self.unit.clone()),
+        )
+    }
+
     /// List transactions
     pub async fn list_transactions(
         &self,
@@ -27,7 +35,7 @@ impl Wallet {
     pub async fn get_transaction(&self, id: TransactionId) -> Result<Option<Transaction>, Error> {
         let transaction = self.localstore.get_transaction(id).await?;
 
-        Ok(transaction)
+        Ok(transaction.filter(|transaction| self.transaction_matches_wallet(transaction)))
     }
 
     /// Get proofs for a transaction by transaction ID
@@ -36,16 +44,19 @@ impl Wallet {
     /// the transaction's Y values and fetching the corresponding proofs.
     pub async fn get_proofs_for_transaction(&self, id: TransactionId) -> Result<Proofs, Error> {
         let transaction = self
-            .localstore
             .get_transaction(id)
             .await?
             .ok_or(Error::TransactionNotFound)?;
+
+        let mint_url = Some(self.mint_url.clone());
+        let unit = Some(self.unit.clone());
 
         let proofs = self
             .localstore
             .get_proofs_by_ys(transaction.ys)
             .await?
             .into_iter()
+            .filter(|proof_info| proof_info.matches_conditions(&mint_url, &unit, &None, &None))
             .map(|p| p.proof)
             .collect();
 
@@ -71,7 +82,6 @@ impl Wallet {
     /// - The token has already been claimed by the recipient
     pub async fn revert_transaction(&self, id: TransactionId) -> Result<(), Error> {
         let tx = self
-            .localstore
             .get_transaction(id)
             .await?
             .ok_or(Error::TransactionNotFound)?;
@@ -108,5 +118,66 @@ impl Wallet {
             self.check_proofs_spent(pending_spent_proofs).await?;
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::str::FromStr;
+
+    use cdk_common::mint_url::MintUrl;
+    use cdk_common::nuts::{CurrencyUnit, State};
+    use cdk_common::wallet::{ProofInfo, Transaction, TransactionDirection};
+    use cdk_common::Amount;
+
+    use crate::wallet::test_utils::{
+        create_test_db, create_test_wallet, test_keyset_id, test_proof,
+    };
+
+    #[tokio::test]
+    async fn get_proofs_for_transaction_does_not_leak_other_mints_proofs() {
+        let db = create_test_db().await;
+        let wallet = create_test_wallet(db.clone()).await;
+
+        let mint_b =
+            MintUrl::from_str("https://other-mint.example.com").expect("mint URL should be valid");
+        let proof_b = test_proof(test_keyset_id(), 100);
+        let proof_b_y = proof_b.y().expect("test proof should derive a Y value");
+        let proof_info_b =
+            ProofInfo::new(proof_b, mint_b.clone(), State::Unspent, CurrencyUnit::Sat)
+                .expect("proof info should be valid");
+        db.update_proofs(vec![proof_info_b], vec![])
+            .await
+            .expect("proof should be stored");
+
+        let tx_b = Transaction {
+            mint_url: mint_b,
+            direction: TransactionDirection::Outgoing,
+            amount: Amount::from(100_u64),
+            fee: Amount::from(0_u64),
+            unit: CurrencyUnit::Sat,
+            ys: vec![proof_b_y],
+            timestamp: 0,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: None,
+        };
+        let tx_b_id = tx_b.id();
+        db.add_transaction(tx_b)
+            .await
+            .expect("transaction should be stored");
+
+        let returned = wallet.get_proofs_for_transaction(tx_b_id).await;
+
+        assert!(
+            matches!(returned, Err(crate::Error::TransactionNotFound)),
+            "wallet returned proofs for another mint's transaction: {:?}",
+            returned.map(|proofs| proofs.len())
+        );
     }
 }
