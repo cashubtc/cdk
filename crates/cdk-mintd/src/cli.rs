@@ -22,8 +22,6 @@ pub struct CLIArgs {
         required = false
     )]
     pub config: Option<PathBuf>,
-    #[arg(short, long, help = "Recover Greenlight from seed", required = false)]
-    pub recover: Option<String>,
     #[arg(
         long,
         help = "Enable logging output",
