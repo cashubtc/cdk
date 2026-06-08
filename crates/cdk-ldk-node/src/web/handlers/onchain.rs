@@ -5,11 +5,12 @@ use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, Response};
-use axum::Form;
+use axum::Extension;
 use ldk_node::bitcoin::Address;
 use maud::html;
 use serde::{Deserialize, Serialize};
 
+use crate::web::csrf::{csrf_input, CsrfForm, CsrfToken};
 use crate::web::handlers::utils::deserialize_optional_u64;
 use crate::web::handlers::AppState;
 use crate::web::templates::{
@@ -25,6 +26,10 @@ pub struct SendOnchainActionForm {
     send_action: String,
 }
 
+/// Empty form for generating a new on-chain address.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub struct NewAddressForm {}
+
 #[derive(Deserialize)]
 pub struct ConfirmOnchainForm {
     address: String,
@@ -33,7 +38,11 @@ pub struct ConfirmOnchainForm {
     confirmed: Option<String>,
 }
 
-pub async fn get_new_address(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
+pub async fn get_new_address(
+    State(state): State<AppState>,
+    Extension(csrf_token): Extension<CsrfToken>,
+    CsrfForm(_form): CsrfForm<NewAddressForm>,
+) -> Result<Html<String>, StatusCode> {
     let address_result = state.node.inner.onchain_payment().new_address();
 
     let content = match address_result {
@@ -51,6 +60,7 @@ pub async fn get_new_address(State(state): State<AppState>) -> Result<Html<Strin
                     div style="display: flex; justify-content: space-between; gap: 1rem;" {
                         a href="/onchain" { button class="button-secondary" { "Back" } }
                         form method="post" action="/onchain/new-address" style="display: inline;" {
+                            (csrf_input(&csrf_token))
                             button class="button-primary" type="submit" { "Generate Another Address" }
                         }
                     }
@@ -75,6 +85,7 @@ pub async fn get_new_address(State(state): State<AppState>) -> Result<Html<Strin
 
 pub async fn onchain_page(
     State(state): State<AppState>,
+    Extension(csrf_token): Extension<CsrfToken>,
     query: Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
     let balances = state.node.inner.list_balances();
@@ -122,6 +133,7 @@ pub async fn onchain_page(
                     "Send On-chain Payment",
                     html! {
                         form method="post" action="/onchain/send" {
+                            (csrf_input(&csrf_token))
                             div class="form-group" {
                                 label for="address" { "Recipient Address" }
                                 input type="text" id="address" name="address" required placeholder="bc1..." {}
@@ -177,6 +189,7 @@ pub async fn onchain_page(
                     "Generate New Address",
                     html! {
                         form method="post" action="/onchain/new-address" {
+                            (csrf_input(&csrf_token))
                             p style="margin-bottom: 2rem;" { "Click the button below to generate a new Bitcoin address for receiving on-chain payments." }
                             div style="display: flex; justify-content: space-between; gap: 1rem;" {
                                 a href="/onchain" { button type="button" class="button-secondary" { "Cancel" } }
@@ -225,7 +238,7 @@ pub async fn onchain_page(
 
 pub async fn post_send_onchain(
     State(_state): State<AppState>,
-    Form(form): Form<SendOnchainActionForm>,
+    CsrfForm(form): CsrfForm<SendOnchainActionForm>,
 ) -> Result<Response, StatusCode> {
     let encoded_form =
         serde_urlencoded::to_string(&form).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
@@ -239,14 +252,10 @@ pub async fn post_send_onchain(
 
 pub async fn onchain_confirm_page(
     State(state): State<AppState>,
+    Extension(csrf_token): Extension<CsrfToken>,
     query: Query<ConfirmOnchainForm>,
 ) -> Result<Response, StatusCode> {
     let form = query.0;
-
-    // If user confirmed, execute the transaction
-    if form.confirmed.as_deref() == Some("true") {
-        return execute_onchain_transaction(State(state), form).await;
-    }
 
     // Validate address
     let _address = match Address::from_str(&form.address) {
@@ -295,21 +304,6 @@ pub async fn onchain_confirm_page(
         (amount, false)
     };
 
-    let confirmation_url = if form.send_action == "send_all" {
-        format!(
-            "/onchain/confirm?address={}&send_action={}&confirmed=true",
-            urlencoding::encode(&form.address),
-            form.send_action
-        )
-    } else {
-        format!(
-            "/onchain/confirm?address={}&amount_sat={}&send_action={}&confirmed=true",
-            urlencoding::encode(&form.address),
-            form.amount_sat.unwrap_or(0),
-            form.send_action
-        )
-    };
-
     let content = html! {
         h2 style="text-align: center; margin-bottom: 3rem;" { "Confirm On-chain Transaction" }
 
@@ -350,10 +344,15 @@ pub async fn onchain_confirm_page(
                 a href="/onchain?action=send" {
                     button type="button" class="button-secondary" { "Cancel" }
                 }
-                a href=(confirmation_url) {
-                    button class="button-primary" {
-                        "Confirm"
+                form method="post" action="/onchain/confirm" style="display: inline;" {
+                    (csrf_input(&csrf_token))
+                    input type="hidden" name="address" value=(form.address.clone()) {}
+                    input type="hidden" name="send_action" value=(form.send_action.clone()) {}
+                    input type="hidden" name="confirmed" value="true" {}
+                    @if let Some(amount_sat) = form.amount_sat {
+                        input type="hidden" name="amount_sat" value=(amount_sat) {}
                     }
+                    button type="submit" class="button-primary" { "Confirm" }
                 }
             }
         }
@@ -365,6 +364,17 @@ pub async fn onchain_confirm_page(
             layout_with_status("Confirm Transaction", content, true).into_string(),
         ))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+pub async fn post_confirm_onchain(
+    State(state): State<AppState>,
+    CsrfForm(form): CsrfForm<ConfirmOnchainForm>,
+) -> Result<Response, StatusCode> {
+    if form.confirmed.as_deref() != Some("true") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    execute_onchain_transaction(State(state), form).await
 }
 
 async fn execute_onchain_transaction(

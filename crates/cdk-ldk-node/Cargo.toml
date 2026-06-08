@@ -23,12 +23,12 @@ ldk-node.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }
 serde.workspace = true
 serde_json.workspace = true
+rand.workspace = true
 maud = "0.27.0"
-tower.workspace = true
+tower = { workspace = true, features = ["util"] }
 tower-http.workspace = true
 rust-embed = "8.5.0"
 serde_urlencoded = "0.7"
-urlencoding = "2.1"
 bip39.workspace = true
 web-time.workspace = true
 

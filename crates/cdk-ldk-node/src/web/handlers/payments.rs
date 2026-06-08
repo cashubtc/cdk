@@ -4,7 +4,7 @@ use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, Response};
-use axum::Form;
+use axum::Extension;
 use cdk_common::util::hex;
 use ldk_node::lightning::offers::offer::Offer;
 use ldk_node::lightning_invoice::Bolt11Invoice;
@@ -12,6 +12,7 @@ use ldk_node::payment::{PaymentDirection, PaymentKind, PaymentStatus};
 use maud::html;
 use serde::Deserialize;
 
+use crate::web::csrf::{csrf_input, CsrfForm, CsrfToken};
 use crate::web::handlers::utils::{deserialize_optional_u64, get_paginated_payments_streaming};
 use crate::web::handlers::AppState;
 use crate::web::templates::{
@@ -261,7 +262,10 @@ pub async fn payments_page(
     ))
 }
 
-pub async fn send_payments_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
+pub async fn send_payments_page(
+    State(state): State<AppState>,
+    Extension(csrf_token): Extension<CsrfToken>,
+) -> Result<Html<String>, StatusCode> {
     let content = html! {
         h2 style="text-align: center; margin-bottom: 3rem;" { "Send Payment" }
 
@@ -279,6 +283,7 @@ pub async fn send_payments_page(State(state): State<AppState>) -> Result<Html<St
             // BOLT11 tab content
             div id="bolt11-content" class="tab-content active" {
                 form method="post" action="/payments/bolt11" {
+                    (csrf_input(&csrf_token))
                     div class="form-group" {
                         label for="invoice" { "BOLT11 Invoice" }
                         textarea id="invoice" name="invoice" required placeholder="lnbc..." rows="4" {}
@@ -300,6 +305,7 @@ pub async fn send_payments_page(State(state): State<AppState>) -> Result<Html<St
             // BOLT12 tab content
             div id="bolt12-content" class="tab-content" {
                 form method="post" action="/payments/bolt12" {
+                    (csrf_input(&csrf_token))
                     div class="form-group" {
                         label for="offer" { "BOLT12 Offer" }
                         textarea id="offer" name="offer" required placeholder="lno..." rows="4" {}
@@ -359,7 +365,7 @@ pub async fn send_payments_page(State(state): State<AppState>) -> Result<Html<St
 
 pub async fn post_pay_bolt11(
     State(state): State<AppState>,
-    Form(form): Form<PayBolt11Form>,
+    CsrfForm(form): CsrfForm<PayBolt11Form>,
 ) -> Result<Response, StatusCode> {
     let invoice = match Bolt11Invoice::from_str(form.invoice.trim()) {
         Ok(inv) => inv,
@@ -513,7 +519,7 @@ pub async fn post_pay_bolt11(
 
 pub async fn post_pay_bolt12(
     State(state): State<AppState>,
-    Form(form): Form<PayBolt12Form>,
+    CsrfForm(form): CsrfForm<PayBolt12Form>,
 ) -> Result<Response, StatusCode> {
     let offer = match Offer::from_str(form.offer.trim()) {
         Ok(offer) => offer,

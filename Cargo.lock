@@ -1562,6 +1562,7 @@ dependencies = [
  "futures",
  "ldk-node",
  "maud",
+ "rand 0.9.4",
  "rust-embed",
  "serde",
  "serde_json",
@@ -1573,7 +1574,6 @@ dependencies = [
  "tower 0.5.3",
  "tower-http",
  "tracing",
- "urlencoding",
  "web-time",
 ]
 

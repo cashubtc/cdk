@@ -37,7 +37,7 @@ After starting:
 
 The CDK LDK Node includes a built-in web management interface accessible at `http://127.0.0.1:8091` by default.
 
-⚠️ **SECURITY WARNING**: The web management interface has **NO AUTHENTICATION** and allows sending funds and managing channels. **NEVER expose it publicly** without proper authentication/authorization in front of it. Only bind to localhost (`127.0.0.1`) for security.
+⚠️ **SECURITY WARNING**: The web management interface has **NO AUTHENTICATION** and allows sending funds and managing channels. **NEVER expose it publicly** without proper authentication/authorization in front of it. Only bind to localhost (`127.0.0.1`) for security, or put it behind VPN, SSH tunneling, or authenticated reverse-proxy access. The dashboard includes CSRF protection and does not enable permissive browser CORS, but those browser hardening measures are not a substitute for access control.
 
 ### Key Features
 - **Dashboard**: Node status, balance, and recent activity
