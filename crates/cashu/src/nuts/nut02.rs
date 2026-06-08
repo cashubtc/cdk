@@ -653,22 +653,51 @@ impl MintKeySet {
     ) -> Self {
         let mut map = BTreeMap::new();
         for (i, amount) in amounts.iter().enumerate() {
-            let secret_key = xpriv
-                .derive_priv(
-                    secp,
-                    &[ChildNumber::from_hardened_idx(i as u32).expect("order is valid index")],
-                )
-                .expect("RNG busted")
-                .private_key;
-            let public_key = secret_key.public_key(secp);
             let mint_key_pair = match version {
-                KeySetVersion::Version00 | KeySetVersion::Version01 => MintKeyPair {
-                    secret_key: secret_key.into(),
-                    public_key: public_key.into(),
-                },
-                KeySetVersion::Version02 => MintKeyPair::from_secret_key(
-                    SecretKey::bls_from_reduced_bytes(&secret_key.secret_bytes()),
-                ),
+                KeySetVersion::Version00 | KeySetVersion::Version01 => {
+                    let secret_key = xpriv
+                        .derive_priv(
+                            secp,
+                            &[ChildNumber::from_hardened_idx(i as u32)
+                                .expect("order is valid index")],
+                        )
+                        .expect("RNG busted")
+                        .private_key;
+                    let public_key = secret_key.public_key(secp);
+                    MintKeyPair {
+                        secret_key: secret_key.into(),
+                        public_key: public_key.into(),
+                    }
+                }
+                KeySetVersion::Version02 => {
+                    let mut attempt = 0;
+                    loop {
+                        let secret_bytes = xpriv
+                            .derive_priv(
+                                secp,
+                                &[
+                                    ChildNumber::from_hardened_idx(i as u32)
+                                        .expect("order is valid index"),
+                                    ChildNumber::from_hardened_idx(attempt)
+                                        .expect("attempt is valid index"),
+                                ],
+                            )
+                            .expect("RNG busted")
+                            .private_key
+                            .secret_bytes();
+
+                        if secret_bytes.iter().all(|byte| *byte == 0) {
+                            attempt = attempt.checked_add(1).expect("attempt space exhausted");
+                            continue;
+                        }
+
+                        if let Ok(secret_key) = SecretKey::bls_from_slice(&secret_bytes) {
+                            break MintKeyPair::from_secret_key(secret_key);
+                        }
+
+                        attempt = attempt.checked_add(1).expect("attempt space exhausted");
+                    }
+                }
             };
             map.insert(amount.into(), mint_key_pair);
         }
@@ -957,10 +986,8 @@ mod test {
 
     #[cfg(feature = "mint")]
     #[test]
-    fn test_v3_mint_key_derivation_uses_bip32_child_bytes() {
+    fn test_v3_mint_key_derivation_uses_rejection_sampled_bip32_child_bytes() {
         use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
-        use bitcoin::hashes::sha256::Hash as Sha256;
-        use bitcoin::hashes::Hash;
 
         use crate::nuts::nut01::SecretKey;
         use crate::SECP256K1;
@@ -982,17 +1009,41 @@ mod test {
             .unwrap()
             .derive_priv(&SECP256K1, &derivation_path)
             .unwrap();
-        let child = xpriv
+        let old_one_level_child = xpriv
             .derive_priv(&SECP256K1, &[ChildNumber::from_hardened_idx(0).unwrap()])
             .unwrap()
             .private_key;
-        let expected_secret_key = SecretKey::bls_from_reduced_bytes(&child.secret_bytes());
-        let old_hashed_secret_key =
-            SecretKey::bls_from_reduced_bytes(&Sha256::hash(&child.secret_bytes()).to_byte_array());
+        let old_reduced_secret_key =
+            SecretKey::bls_from_reduced_bytes(&old_one_level_child.secret_bytes());
+
+        let mut attempt = 0;
+        let expected_secret_key = loop {
+            let child = xpriv
+                .derive_priv(
+                    &SECP256K1,
+                    &[
+                        ChildNumber::from_hardened_idx(0).unwrap(),
+                        ChildNumber::from_hardened_idx(attempt).unwrap(),
+                    ],
+                )
+                .unwrap()
+                .private_key;
+            let secret_bytes = child.secret_bytes();
+
+            if secret_bytes.iter().all(|byte| *byte == 0) {
+                attempt += 1;
+                continue;
+            }
+
+            match SecretKey::bls_from_slice(&secret_bytes) {
+                Ok(secret_key) => break secret_key,
+                Err(_) => attempt += 1,
+            }
+        };
 
         let key_pair = keyset.keys.get(&1.into()).unwrap();
         assert_eq!(key_pair.secret_key, expected_secret_key);
-        assert_ne!(key_pair.secret_key, old_hashed_secret_key);
+        assert_ne!(key_pair.secret_key, old_reduced_secret_key);
     }
 
     #[test]

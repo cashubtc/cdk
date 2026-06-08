@@ -41,6 +41,9 @@ pub enum Error {
     /// SecretKey Error
     #[error(transparent)]
     SecpError(#[from] bitcoin::secp256k1::Error),
+    /// BLS blinding factor derivation failed
+    #[error("BLS blinding factor derivation exhausted the attempt space")]
+    BlsDerivationExhausted,
 }
 
 impl Secret {
@@ -120,18 +123,39 @@ impl SecretKey {
     }
 
     fn derive_bls(seed: &[u8], keyset_id: Id, counter: u32) -> Result<Self, Error> {
+        Self::derive_bls_with_attempt(seed, keyset_id, counter).map(|(secret_key, _)| secret_key)
+    }
+
+    fn derive_bls_with_attempt(
+        seed: &[u8],
+        keyset_id: Id,
+        counter: u32,
+    ) -> Result<(Self, u32), Error> {
         let mut message = Vec::new();
         message.extend_from_slice(b"Cashu_KDF_HMAC_SHA256");
         message.extend_from_slice(&keyset_id.to_bytes());
         message.extend_from_slice(&(counter as u64).to_be_bytes());
         message.extend_from_slice(b"\x01");
 
-        let mut engine = HmacEngine::<sha256::Hash>::new(seed);
-        engine.input(&message);
-        let hmac_result = hmac::Hmac::<sha256::Hash>::from_engine(engine);
-        let result_bytes = hmac_result.to_byte_array();
+        for attempt in 0..=u32::MAX {
+            let mut attempt_message = message.clone();
+            attempt_message.extend_from_slice(&attempt.to_be_bytes());
 
-        Ok(Self::bls_from_reduced_bytes(&result_bytes))
+            let mut engine = HmacEngine::<sha256::Hash>::new(seed);
+            engine.input(&attempt_message);
+            let hmac_result = hmac::Hmac::<sha256::Hash>::from_engine(engine);
+            let result_bytes = hmac_result.to_byte_array();
+
+            if result_bytes.iter().all(|byte| *byte == 0) {
+                continue;
+            }
+
+            if let Ok(secret_key) = Self::bls_from_slice(&result_bytes) {
+                return Ok((secret_key, attempt));
+            }
+        }
+
+        Err(Error::BlsDerivationExhausted)
     }
 }
 
@@ -503,23 +527,25 @@ mod tests {
 
     #[test]
     fn test_v3_secret_derivation_vector() {
-        let seed = b"test seed v3 reduction";
+        let seed = b"nut13 v3 test seed";
         let keyset_id =
-            Id::from_str("02ce4c47836fd0e64f37a08254777b7fd0dedb95fc1ddd0acadf5600674c743c5d")
+            Id::from_str("02abd02ebc1ff44652153375162407deaf0b30e590844cca0b6e4894a08a8828dd")
                 .unwrap();
-        let counter = 2;
+        let counter = 3;
 
         let secret = Secret::derive(seed, keyset_id, counter).unwrap();
-        let blinding_factor = SecretKey::derive_bls(seed, keyset_id, counter).unwrap();
+        let (blinding_factor, accepted_attempt) =
+            SecretKey::derive_bls_with_attempt(seed, keyset_id, counter).unwrap();
 
         assert_eq!(
             secret.to_string(),
-            "4729fe85ab3886ce03259ac658735ff534c9cd41b2b364d202ff497e4ee48809"
+            "7a45e04943504b25273e9569ab7019ab62f814dade23998c12f5f4cb1bb7978a"
         );
         assert_eq!(
             blinding_factor.to_secret_hex(),
-            "08bb237d625b73022cd50f6fedfb660c6125b676a4819474241c264903259d2f"
+            "236dbcb12fc064ceeae6c5e2de7f79258374dccbf23ac0afdf72cf9eb53540c9"
         );
+        assert_eq!(accepted_attempt, 1);
     }
 
     #[test]
