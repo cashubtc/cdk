@@ -30,7 +30,7 @@ where
     total_subscribers: usize,
 }
 
-type UniqueSubscriptions<S> = RwLock<HashMap<<S as Spec>::Topic, UniqueSubscription<S>>>;
+type UniqueSubscriptions<S> = Arc<RwLock<HashMap<<S as Spec>::Topic, UniqueSubscription<S>>>>;
 
 type ActiveSubscriptions<S> =
     RwLock<HashMap<Arc<<S as Spec>::SubscriptionId>, Vec<<S as Spec>::Topic>>>;
@@ -114,6 +114,7 @@ where
     S: Spec + 'static,
 {
     inner: Arc<Pubsub<S>>,
+    remote_subscriptions: UniqueSubscriptions<S>,
     cached_events: Arc<RwLock<CacheEvent<S>>>,
 }
 
@@ -127,10 +128,16 @@ where
         X: Into<S::Event>,
     {
         let event = event.into();
-        let mut cached_events = self.cached_events.write();
 
-        for topic in event.get_topics() {
-            cached_events.insert(topic, event.clone());
+        {
+            let active_topics = self.remote_subscriptions.read();
+            let mut cached_events = self.cached_events.write();
+
+            for topic in event.get_topics() {
+                if active_topics.contains_key(&topic) {
+                    cached_events.insert(topic, event.clone());
+                }
+            }
         }
 
         self.inner.publish(event);
@@ -212,6 +219,7 @@ where
                         current_subscriptions,
                         InternalRelay {
                             inner: instance.inner_pubsub.clone(),
+                            remote_subscriptions: instance.remote_subscriptions.clone(),
                             cached_events: instance.cached_events.clone(),
                         },
                     )
@@ -249,6 +257,7 @@ where
                         current_subscriptions,
                         InternalRelay {
                             inner: instance.inner_pubsub.clone(),
+                            remote_subscriptions: instance.remote_subscriptions.clone(),
                             cached_events: instance.cached_events.clone(),
                         },
                     )
@@ -302,6 +311,7 @@ where
         }
 
         if remote_subscriptions.is_empty() {
+            self.cached_events.write().clear();
             self.message_to_stream(StreamCtrl::Stop)?;
         }
 
@@ -797,6 +807,38 @@ mod tests {
 
         // Drop the Consumer -> Stop is sent so the transport loop exits cleanly
         let _ = expect_ctrl(&mut ctrl_rx, 2000, |m| matches!(m, StreamCtrl::Stop)).await;
+    }
+
+    #[tokio::test]
+    async fn cache_ignores_orphan_event_topics() {
+        let (transport, events_tx, mut ctrl_rx) = TestTransport::new(true, true);
+        let consumer = Consumer::new(transport, false, ());
+
+        let mut sub = consumer
+            .subscribe(SubscriptionReq::Foo("t".to_owned(), 7))
+            .expect("subscribe ok");
+        let _ = expect_ctrl(&mut ctrl_rx, 1000, |m| {
+            matches!(m, StreamCtrl::Subscribe(_))
+        })
+        .await;
+
+        events_tx.send(Message { foo: 7, bar: 99 }).await.unwrap();
+        let _ = recv_next::<TestTransport>(&mut sub, 1000)
+            .await
+            .expect("got event");
+
+        drop(sub);
+        let _ = expect_ctrl(&mut ctrl_rx, 1000, |m| {
+            matches!(m, StreamCtrl::Unsubscribe(_))
+        })
+        .await;
+
+        let cache = consumer.cached_events.read();
+        assert!(
+            cache.is_empty(),
+            "cache leaked entries for orphan topics: {:?}",
+            cache.keys().collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test]
