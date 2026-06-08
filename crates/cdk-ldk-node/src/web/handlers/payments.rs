@@ -20,6 +20,8 @@ use crate::web::templates::{
     layout_with_status, payment_list_item, success_message,
 };
 
+const MSATS_PER_SAT: u64 = 1_000;
+
 #[derive(Deserialize)]
 pub struct PaymentsQuery {
     filter: Option<String>,
@@ -394,8 +396,24 @@ pub async fn post_pay_bolt11(
     );
 
     let payment_id = if let Some(amount_btc) = form.amount_btc {
-        // Convert Bitcoin to millisatoshis
-        let amount_msats = amount_btc * 1000;
+        let amount_msats = match amount_btc.checked_mul(MSATS_PER_SAT) {
+            Some(amount_msats) => amount_msats,
+            None => {
+                let content = html! {
+                    (error_message("Amount is too large"))
+                    div class="card" {
+                        a href="/payments" { button { "← Try Again" } }
+                    }
+                };
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header("content-type", "text/html")
+                    .body(Body::from(
+                        layout_with_status("Payment Error", content, true).into_string(),
+                    ))
+                    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        };
         state
             .node
             .inner
@@ -578,7 +596,24 @@ pub async fn post_pay_bolt12(
                         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
                 }
             };
-            let amount_msats = amount_btc * 1_000;
+            let amount_msats = match amount_btc.checked_mul(MSATS_PER_SAT) {
+                Some(amount_msats) => amount_msats,
+                None => {
+                    let content = html! {
+                        (error_message("Amount is too large"))
+                        div class="card" {
+                            a href="/payments" { button { "← Try Again" } }
+                        }
+                    };
+                    return Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .header("content-type", "text/html")
+                        .body(Body::from(
+                            layout_with_status("Payment Error", content, true).into_string(),
+                        ))
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+                }
+            };
             state.node.inner.bolt12_payment().send_using_amount(
                 &offer,
                 amount_msats,

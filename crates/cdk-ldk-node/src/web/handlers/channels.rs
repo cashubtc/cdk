@@ -20,6 +20,8 @@ use crate::web::templates::{
     success_message,
 };
 
+const MSATS_PER_SAT: u64 = 1_000;
+
 #[derive(Deserialize)]
 pub struct OpenChannelForm {
     node_id: String,
@@ -164,18 +166,41 @@ pub async fn post_open_channel(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
     }
 
+    let push_msats = match form
+        .push_btc
+        .map(|amount| amount.checked_mul(MSATS_PER_SAT))
+    {
+        Some(Some(push_msats)) => Some(push_msats),
+        Some(None) => {
+            let content = html! {
+                (error_message("Push amount is too large"))
+                div class="card" {
+                    a href="/channels/open" { button { "← Try Again" } }
+                }
+            };
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header("content-type", "text/html")
+                .body(Body::from(
+                    layout_with_status("Open Channel Error", content, true).into_string(),
+                ))
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        None => None,
+    };
+
     // Then open the channel
     tracing::info!(
         "Web interface: Opening announced channel to {} with amount {} sats and push amount {:?} msats",
         pubkey,
         form.amount_sats,
-        form.push_btc.map(|a| a * 1000)
+        push_msats
     );
     let channel_result = state.node.inner.open_announced_channel(
         pubkey,
         socket_addr,
         form.amount_sats,
-        form.push_btc.map(|a| a * 1000),
+        push_msats,
         None,
     );
 

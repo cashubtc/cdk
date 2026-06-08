@@ -15,6 +15,8 @@ use crate::web::templates::{
     success_message,
 };
 
+const MSATS_PER_SAT: u64 = 1_000;
+
 #[derive(Deserialize)]
 pub struct CreateBolt11Form {
     amount_btc: u64,
@@ -187,8 +189,24 @@ pub async fn post_create_bolt11(
         }
     };
 
-    // Convert Bitcoin to millisatoshis
-    let amount_msats = form.amount_btc * 1_000;
+    let amount_msats = match form.amount_btc.checked_mul(MSATS_PER_SAT) {
+        Some(amount_msats) => amount_msats,
+        None => {
+            let content = html! {
+                (error_message("Amount is too large"))
+                div class="card" {
+                    a href="/invoices" { button { "← Try Again" } }
+                }
+            };
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header("content-type", "text/html")
+                .body(Body::from(
+                    layout_with_status("Invoice Error", content, true).into_string(),
+                ))
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
 
     let expiry_seconds = form.expiry_seconds.unwrap_or(3600);
     let invoice_result =
