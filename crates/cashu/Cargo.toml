@@ -15,7 +15,7 @@ default = ["mint", "wallet"]
 swagger = ["dep:utoipa"]
 mint = []
 wallet = []
-conditional-tokens = ["dep:dlc-messages"]
+conditional-tokens = ["dep:dlc", "dep:dlc-messages"]
 test-utils = ["conditional-tokens"]
 nostr = ["dep:nostr-sdk"]
 bench = []
@@ -39,6 +39,7 @@ strum.workspace = true
 strum_macros.workspace = true
 nostr-sdk = { workspace = true, optional = true }
 dlc-messages = { workspace = true, optional = true }
+dlc = { workspace = true, optional = true }
 zeroize = "1"
 web-time.workspace = true
 unicode-normalization = "0.1.25"

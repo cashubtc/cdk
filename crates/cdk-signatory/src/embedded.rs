@@ -8,9 +8,9 @@ use cdk_common::{BlindSignature, BlindedMessage, Error, Proof};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-use crate::signatory::{
-    PreparedConditionalKeySet, RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets,
-};
+#[cfg(feature = "conditional-tokens")]
+use crate::signatory::PreparedConditionalKeySet;
+use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
 
 enum Request {
     BlindSign(

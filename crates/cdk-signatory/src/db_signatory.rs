@@ -16,9 +16,9 @@ use tracing::instrument;
 use crate::common::{
     check_unit_string_collision, create_new_keyset, derivation_path_from_unit, init_keysets,
 };
-use crate::signatory::{
-    PreparedConditionalKeySet, RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets,
-};
+#[cfg(feature = "conditional-tokens")]
+use crate::signatory::PreparedConditionalKeySet;
+use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
 
 /// In-memory Signatory
 ///

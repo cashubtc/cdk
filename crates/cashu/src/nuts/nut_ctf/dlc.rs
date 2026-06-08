@@ -3,9 +3,9 @@
 //! Uses the `dlc-messages` crate for announcement TLV parsing
 //! and verification of oracle attestation signatures.
 
-use bitcoin::secp256k1::{schnorr::Signature, Message, Secp256k1, XOnlyPublicKey};
+use bitcoin::secp256k1::{schnorr::Signature, Secp256k1, XOnlyPublicKey};
 use dlc_messages::oracle_msgs::{
-    EnumEventDescriptor, EventDescriptor, OracleAnnouncement, OracleEvent,
+    tagged_attestation_msg, EnumEventDescriptor, EventDescriptor, OracleAnnouncement, OracleEvent,
 };
 use dlc_messages::ser_impls::read_as_tlv;
 
@@ -163,13 +163,10 @@ pub fn extract_nonce_points(event: &OracleEvent) -> Vec<XOnlyPublicKey> {
 
 /// Verify a DLC oracle attestation signature.
 ///
-/// The oracle signs the outcome using tagged hash `"DLC/oracle/attestation/v0"`:
-/// ```text
-/// s = k + e * x
-/// where e = tagged_hash("DLC/oracle/attestation/v0", R || P || msg)
-/// ```
-///
-/// This verifies `oracle_sig` as `R + e*P` where R is the nonce point.
+/// Per `dlcspecs/Oracle.md`, the oracle signs the UTF-8 outcome using the
+/// DLC attestation tagged hash `"DLC/oracle/attestation/v0"`. The announcement
+/// nonce remains binding: the signature's embedded R value must equal the
+/// event's committed nonce point.
 pub fn verify_oracle_attestation(
     oracle_pubkey: &[u8],
     oracle_sig: &[u8],
@@ -184,26 +181,20 @@ pub fn verify_oracle_attestation(
 
     // Parse the 64-byte signature
     let sig = Signature::from_slice(oracle_sig).map_err(|_| Error::InvalidOracleSignature)?;
+    if sig.as_ref()[..32] != nonce_point.serialize() {
+        return Err(Error::InvalidOracleSignature);
+    }
 
-    // Compute the tagged hash message for DLC attestation verification
-    // e = tagged_hash("DLC/oracle/attestation/v0", R || P || msg)
-    let mut msg_bytes = Vec::new();
-    msg_bytes.extend_from_slice(&nonce_point.serialize());
-    msg_bytes.extend_from_slice(&pk.serialize());
-    msg_bytes.extend_from_slice(outcome.as_bytes());
-    let msg_hash = super::tagged_hash("DLC/oracle/attestation/v0", &msg_bytes);
-    let message = Message::from_digest(msg_hash);
+    let message = tagged_attestation_msg(outcome);
 
-    // Verify using standard Schnorr verification on the oracle pubkey
-    // The DLC attestation sig is s = k + e*x, verified as s*G = R + e*P
     secp.verify_schnorr(&sig, &message, &pk)
         .map_err(|_| Error::InvalidOracleSignature)
 }
 
 /// Verify that an oracle announcement's signature is valid.
 ///
-/// Delegates to `dlc-messages`' own `OracleAnnouncement::validate()`, which
-/// signs/verifies over raw `Writeable::write()` bytes (no TLV wrapper).
+/// Delegates to DDK's `ddk-messages` `OracleAnnouncement::validate()`, which
+/// follows the current DLC spec announcement tagged hash.
 pub fn verify_announcement_signature(announcement: &OracleAnnouncement) -> Result<(), Error> {
     let secp = Secp256k1::verification_only();
     announcement
@@ -346,6 +337,30 @@ mod tests {
             result.is_ok(),
             "valid announcement signature should verify: {:?}",
             result
+        );
+    }
+
+    #[test]
+    fn test_verify_browser_wasm_announcement_signature_valid() {
+        let hex_tlv = "fdd824b0d6e582137fef6dd61d2047b4700104c0e97be005af979e100d8a007cf45d28f562f01d6817fc8f7d6b343d2cb5a6f0c2da87090da93508e26f671e30d50a6d577e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4efdd8224c0001ab5cbc99b45a936368081a43a7f14c9be0a821ba5beba722c27d61cef31a78d96a27e00dfdd80609000203594553024e4f18646961672d6576656e742d31373830393131373537303935";
+        let ann = parse_oracle_announcement(hex_tlv).expect("browser wasm announcement parses");
+
+        let result = verify_announcement_signature(&ann);
+        assert!(
+            result.is_ok(),
+            "browser wasm announcement should verify: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_verify_kormir_cli_announcement_signature_valid() {
+        let hex_tlv = "fdd824b2257ec5d354c438e7bc7e29693b9ab755e5dcba65bb4c618664876a1b1b670f1d03201c9f5f215f75a524461f58545e382ccf529c1c6e99072321831253c46cff4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aafdd8224e0001466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f276b49d200fdd80609000203594553024e4f1a6269746361737465722d72656772657373696f6e2d6576656e74";
+        let ann = parse_oracle_announcement(hex_tlv).expect("kormir CLI announcement parses");
+
+        let result = verify_announcement_signature(&ann);
+        assert!(
+            result.is_ok(),
+            "kormir CLI announcement should verify: {result:?}"
         );
     }
 

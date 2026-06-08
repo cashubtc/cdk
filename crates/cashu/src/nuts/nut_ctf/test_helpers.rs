@@ -4,34 +4,15 @@
 //! and produce attestation signatures for unit and integration tests.
 #![allow(missing_docs)]
 
-use bitcoin::hashes::sha256::Hash as Sha256Hash;
-use bitcoin::hashes::Hash;
-use bitcoin::secp256k1::{Keypair, Message, Scalar, Secp256k1, SecretKey, XOnlyPublicKey};
+use dlc::secp256k1_zkp::{Keypair, Secp256k1, SecretKey, XOnlyPublicKey};
+use dlc::secp_utils::schnorrsig_sign_with_nonce;
 use dlc_messages::oracle_msgs::{
-    EnumEventDescriptor, EventDescriptor, OracleAnnouncement, OracleEvent,
+    tagged_announcement_msg, tagged_attestation_msg, EnumEventDescriptor, EventDescriptor,
+    OracleAnnouncement, OracleEvent,
 };
 use dlc_messages::ser_impls::write_as_tlv;
 
-use super::{tagged_hash, to_hex, OracleSig, OracleWitness};
-
-/// Extract the raw event payload from a TLV-serialized oracle event.
-///
-/// `write_as_tlv()` produces BigSize(type_id) + BigSize(payload_len) + payload.
-/// We strip the two BigSize prefixes to get the raw bytes, matching what
-/// `dlc-messages`' `OracleAnnouncement::validate()` uses for signature verification.
-fn strip_tlv_prefix(tlv_bytes: &[u8]) -> &[u8] {
-    fn big_size_len(first_byte: u8) -> usize {
-        match first_byte {
-            0..=252 => 1,
-            253 => 3,
-            254 => 5,
-            255 => 9,
-        }
-    }
-    let type_prefix_len = big_size_len(tlv_bytes[0]);
-    let len_prefix_len = big_size_len(tlv_bytes[type_prefix_len]);
-    &tlv_bytes[type_prefix_len + len_prefix_len..]
-}
+use super::{to_hex, OracleSig, OracleWitness};
 
 /// Test oracle with keypair and nonce
 #[derive(Debug)]
@@ -98,16 +79,8 @@ pub fn create_test_announcement(
         event_id: event_id.to_string(),
     };
 
-    // Serialize the oracle event for signing. The DLC spec signs over raw event
-    // bytes (Writeable::write), NOT TLV-wrapped bytes. We get raw bytes by writing
-    // as TLV and stripping the type+length prefix.
-    let mut event_tlv = Vec::new();
-    write_as_tlv(&oracle_event, &mut event_tlv).expect("serialize oracle event");
-    let event_bytes = strip_tlv_prefix(&event_tlv);
-
-    // Sign the event hash (announcement signature)
-    let event_hash = Sha256Hash::hash(event_bytes).to_byte_array();
-    let message = Message::from_digest(event_hash);
+    // Sign the current DLC spec announcement message.
+    let message = tagged_announcement_msg(&oracle_event);
     let keypair = Keypair::from_secret_key(&secp, &oracle.secret_key);
     let announcement_sig = secp.sign_schnorr_no_aux_rand(&message, &keypair);
 
@@ -126,53 +99,22 @@ pub fn create_test_announcement(
 
 /// Sign a DLC oracle attestation for a given outcome.
 ///
-/// Uses manual BIP-340 Schnorr signing with the pre-committed nonce,
-/// producing a 64-byte signature `(R.x || s)` where `s = k + e*x mod n`.
+/// Uses the DLC crate's Schnorr nonce-signing helper with the pre-committed
+/// oracle nonce, producing a 64-byte BIP-340 signature `(R.x || s)`.
 pub fn sign_ctf_attestation(oracle: &TestOracle, outcome: &str) -> [u8; 64] {
     let secp = Secp256k1::new();
 
-    // Get x-only keys and handle parity
-    let (oracle_xonly, oracle_parity) = oracle.secret_key.x_only_public_key(&secp);
-    let (nonce_xonly, nonce_parity) = oracle.nonce_secret.x_only_public_key(&secp);
+    let message = tagged_attestation_msg(outcome);
+    let keypair = Keypair::from_secret_key(&secp, &oracle.secret_key);
+    let dlc_sig = schnorrsig_sign_with_nonce(
+        &secp,
+        &message,
+        &keypair,
+        &oracle.nonce_secret.secret_bytes(),
+    );
 
-    // Handle BIP-340 y-parity negation
-    let mut k = oracle.nonce_secret;
-    if nonce_parity == bitcoin::secp256k1::Parity::Odd {
-        k = k.negate();
-    }
-
-    let mut x = oracle.secret_key;
-    if oracle_parity == bitcoin::secp256k1::Parity::Odd {
-        x = x.negate();
-    }
-
-    // Compute DLC attestation message:
-    // msg = tagged_hash("DLC/oracle/attestation/v0", R || P || outcome)
-    let mut msg_bytes = Vec::new();
-    msg_bytes.extend_from_slice(&nonce_xonly.serialize());
-    msg_bytes.extend_from_slice(&oracle_xonly.serialize());
-    msg_bytes.extend_from_slice(outcome.as_bytes());
-    let msg_hash = tagged_hash("DLC/oracle/attestation/v0", &msg_bytes);
-
-    // Compute BIP-340 challenge:
-    // e = tagged_hash("BIP0340/challenge", R || P || msg_hash)
-    let mut challenge_input = Vec::new();
-    challenge_input.extend_from_slice(&nonce_xonly.serialize());
-    challenge_input.extend_from_slice(&oracle_xonly.serialize());
-    challenge_input.extend_from_slice(&msg_hash);
-    let e_bytes = tagged_hash("BIP0340/challenge", &challenge_input);
-
-    // s = k + e * x mod n (secp256k1 curve order)
-    let e_scalar = Scalar::from_be_bytes(e_bytes).expect("challenge hash fits in scalar");
-    let ex = x.mul_tweak(&e_scalar).expect("mul_tweak");
-    let ex_scalar = Scalar::from_be_bytes(ex.secret_bytes()).expect("product fits in scalar");
-    let s = k.add_tweak(&ex_scalar).expect("add_tweak");
-
-    // Build 64-byte signature: R.x || s
     let mut sig = [0u8; 64];
-    sig[..32].copy_from_slice(&nonce_xonly.serialize());
-    sig[32..].copy_from_slice(&s.secret_bytes());
-
+    sig.copy_from_slice(dlc_sig.as_ref());
     sig
 }
 
@@ -228,11 +170,9 @@ pub fn create_digit_decomposition_announcement(
     precision: i32,
     event_id: &str,
 ) -> (dlc_messages::oracle_msgs::OracleAnnouncement, String) {
-    use bitcoin::hashes::sha256::Hash as Sha256Hash;
-    use bitcoin::hashes::Hash;
-    use bitcoin::secp256k1::{Keypair, Message, Secp256k1};
+    use bitcoin::secp256k1::{Keypair, Secp256k1};
     use dlc_messages::oracle_msgs::{
-        DigitDecompositionEventDescriptor, OracleAnnouncement, OracleEvent,
+        tagged_announcement_msg, DigitDecompositionEventDescriptor, OracleAnnouncement, OracleEvent,
     };
     use dlc_messages::ser_impls::write_as_tlv;
 
@@ -267,13 +207,7 @@ pub fn create_digit_decomposition_announcement(
         event_id: event_id.to_string(),
     };
 
-    // Sign over raw event bytes, matching dlc-messages' own validate()
-    let mut event_tlv = Vec::new();
-    write_as_tlv(&oracle_event, &mut event_tlv).expect("serialize oracle event");
-    let event_bytes = strip_tlv_prefix(&event_tlv);
-
-    let event_hash = Sha256Hash::hash(event_bytes).to_byte_array();
-    let message = Message::from_digest(event_hash);
+    let message = tagged_announcement_msg(&oracle_event);
     let keypair = Keypair::from_secret_key(&secp, &oracle.secret_key);
     let announcement_sig = secp.sign_schnorr_no_aux_rand(&message, &keypair);
 
