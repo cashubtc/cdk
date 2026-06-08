@@ -400,13 +400,14 @@ impl Wallet {
         // If mint provides time make sure it is accurate
         if let Some(mint_unix_time) = mint_info.time {
             let current_unix_time = crate::util::unix_time();
-            if current_unix_time.abs_diff(mint_unix_time) > 30 {
+            let mint_time_delta = current_unix_time.abs_diff(mint_unix_time);
+            if mint_time_delta > 30 {
                 tracing::warn!(
-                    "Mint time does match wallet time. Mint: {}, Wallet: {}",
+                    "Mint time does not match wallet time. Mint: {}, Wallet: {}, Delta: {} seconds",
                     mint_unix_time,
-                    current_unix_time
+                    current_unix_time,
+                    mint_time_delta
                 );
-                return Err(Error::MintTimeExceedsTolerance);
             }
         }
 
