@@ -40,6 +40,7 @@ use crate::Amount;
 
 mod auth;
 pub mod bip321;
+mod blind_signature;
 #[cfg(feature = "nostr")]
 mod nostr_backup;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]

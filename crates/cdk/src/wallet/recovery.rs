@@ -14,6 +14,8 @@
 //!   - If successful: The wallet completes the local state update (e.g. marking proofs spent).
 //!   - If failed/unknown: The wallet may rollback or retry depending on the specific state.
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use cdk_common::wallet::{ProofInfo, WalletSagaState};
 use cdk_common::BlindedMessage;
@@ -21,6 +23,9 @@ use tracing::instrument;
 
 use crate::dhke::construct_proofs;
 use crate::nuts::{CheckStateRequest, PreMintSecrets, Proofs, RestoreRequest, State, SwapRequest};
+use crate::wallet::blind_signature::{
+    validate_mint_response_signatures, SignatureAmountValidation,
+};
 use crate::{Error, Wallet};
 
 /// Parameters for recovering outputs using stored blinded messages.
@@ -262,6 +267,14 @@ impl RecoveryHelpers for Wallet {
         // Load keyset keys
         let keys = self.load_keyset_keys(keyset_id).await?;
 
+        validate_mint_response_signatures(
+            self,
+            &swap_response.signatures,
+            blinded_messages.iter(),
+            SignatureAmountValidation::Exact,
+        )
+        .await?;
+
         // Construct proofs
         let proofs = construct_proofs(
             swap_response.signatures,
@@ -441,19 +454,36 @@ impl Wallet {
             params.counter_end,
         )?;
 
-        // Match the returned outputs to our premint secrets by B_ value
-        let matched_secrets: Vec<_> = premint_secrets
+        let premints_by_blinded_secret = premint_secrets
             .secrets
             .iter()
-            .filter(|p| restore_response.outputs.contains(&p.blinded_message))
+            .map(|premint| (premint.blinded_message.blinded_secret, premint))
+            .collect::<HashMap<_, _>>();
+        let requested_outputs_by_blinded_secret = params
+            .blinded_messages
+            .iter()
+            .map(|output| (output.blinded_secret, output))
+            .collect::<HashMap<_, _>>();
+
+        // Match the returned outputs to our premint secrets by B_ value, preserving
+        // the mint response order used by the returned signatures.
+        let matched: Vec<_> = restore_response
+            .outputs
+            .iter()
+            .filter_map(|output| {
+                let premint = premints_by_blinded_secret.get(&output.blinded_secret)?;
+                let requested_output =
+                    requested_outputs_by_blinded_secret.get(&output.blinded_secret)?;
+                Some((*premint, *requested_output))
+            })
             .collect();
 
-        if matched_secrets.len() != restore_response.signatures.len() {
+        if matched.len() != restore_response.signatures.len() {
             tracing::warn!(
                 "{} saga {} - signature count mismatch: {} secrets, {} signatures",
                 saga_type,
                 saga_id,
-                matched_secrets.len(),
+                matched.len(),
                 restore_response.signatures.len()
             );
         }
@@ -461,11 +491,21 @@ impl Wallet {
         // Load keyset keys for proof construction
         let keys = self.load_keyset_keys(keyset_id).await?;
 
+        validate_mint_response_signatures(
+            self,
+            &restore_response.signatures,
+            matched
+                .iter()
+                .map(|(_, requested_output)| *requested_output),
+            SignatureAmountValidation::AllowZeroAmountPlaceholder,
+        )
+        .await?;
+
         // Construct proofs from signatures
         let proofs = construct_proofs(
             restore_response.signatures,
-            matched_secrets.iter().map(|p| p.r.clone()).collect(),
-            matched_secrets.iter().map(|p| p.secret.clone()).collect(),
+            matched.iter().map(|(p, _)| p.r.clone()).collect(),
+            matched.iter().map(|(p, _)| p.secret.clone()).collect(),
             &keys,
         )?;
 
