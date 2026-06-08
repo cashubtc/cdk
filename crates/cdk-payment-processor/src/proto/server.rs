@@ -306,7 +306,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         bolt11,
                         max_fee_amount: None,
                         timeout_secs: None,
-                        melt_options: request.options.map(Into::into),
+                        melt_options: request.options.map(TryInto::try_into).transpose()?,
                         quote_id,
                     },
                 ))
@@ -321,7 +321,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                             .expect("Already validated offer above"),
                         max_fee_amount: None,
                         timeout_secs: None,
-                        melt_options: request.options.map(Into::into),
+                        melt_options: request.options.map(TryInto::try_into).transpose()?,
                         quote_id,
                     },
                 ))
@@ -334,7 +334,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         request: request.request.clone(),
                         max_fee_amount: None,
                         timeout_secs: None,
-                        melt_options: request.options.map(Into::into),
+                        melt_options: request.options.map(TryInto::try_into).transpose()?,
                         extra_json: request.extra_json.clone(),
                         quote_id,
                     },
@@ -420,7 +420,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         bolt11,
                         max_fee_amount,
                         timeout_secs: opts.timeout_secs,
-                        melt_options: opts.melt_options.map(Into::into),
+                        melt_options: opts.melt_options.map(TryInto::try_into).transpose()?,
                         quote_id,
                     },
                 ))
@@ -439,7 +439,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         offer,
                         max_fee_amount,
                         timeout_secs: opts.timeout_secs,
-                        melt_options: opts.melt_options.map(Into::into),
+                        melt_options: opts.melt_options.map(TryInto::try_into).transpose()?,
                         quote_id,
                     },
                 ))
@@ -457,7 +457,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         request: opts.offer,   // Reusing offer field for custom request string
                         max_fee_amount,
                         timeout_secs: opts.timeout_secs,
-                        melt_options: opts.melt_options.map(Into::into),
+                        melt_options: opts.melt_options.map(TryInto::try_into).transpose()?,
                         extra_json: opts.extra_json,
                         quote_id,
                     },

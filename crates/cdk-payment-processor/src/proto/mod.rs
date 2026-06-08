@@ -282,19 +282,24 @@ impl TryFrom<PaymentQuoteResponse> for CdkPaymentQuoteResponse {
     }
 }
 
-impl From<MeltOptions> for CdkMeltOptions {
-    fn from(value: MeltOptions) -> Self {
-        match value.options.expect("option defined") {
-            melt_options::Options::Mpp(mpp) => Self::Mpp {
+impl TryFrom<MeltOptions> for CdkMeltOptions {
+    type Error = crate::error::Error;
+
+    fn try_from(value: MeltOptions) -> Result<Self, Self::Error> {
+        match value
+            .options
+            .ok_or(crate::error::Error::InvalidMeltOptions)?
+        {
+            melt_options::Options::Mpp(mpp) => Ok(Self::Mpp {
                 mpp: cashu::nuts::nut15::Mpp {
                     amount: mpp.amount.into(),
                 },
-            },
-            melt_options::Options::Amountless(amountless) => Self::Amountless {
+            }),
+            melt_options::Options::Amountless(amountless) => Ok(Self::Amountless {
                 amountless: cashu::nuts::nut23::Amountless {
                     amount_msat: amountless.amount_msat.into(),
                 },
-            },
+            }),
         }
     }
 }
@@ -449,7 +454,9 @@ mod tests {
         Event, MakePaymentResponse, OnchainSettings, PaymentIdentifier,
         PaymentQuoteResponse as CdkPaymentQuoteResponse, WaitPaymentResponse,
     };
-    use cdk_common::{Amount, CurrencyUnit, MeltQuoteState, QuoteId};
+    use cdk_common::{
+        Amount, CurrencyUnit, MeltOptions as CdkMeltOptions, MeltQuoteState, QuoteId,
+    };
 
     use super::{PaymentEventResponse, PaymentQuoteResponse};
 
@@ -598,6 +605,15 @@ mod tests {
     fn payment_event_response_missing_oneof_errors() {
         let proto = PaymentEventResponse { event: None };
         assert!(Event::try_from(proto).is_err());
+    }
+
+    #[test]
+    fn melt_options_missing_oneof_errors() {
+        let proto = super::MeltOptions { options: None };
+
+        let err = CdkMeltOptions::try_from(proto).expect_err("missing melt options should error");
+
+        assert!(matches!(err, crate::error::Error::InvalidMeltOptions));
     }
 
     #[test]

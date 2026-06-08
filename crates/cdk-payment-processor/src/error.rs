@@ -12,6 +12,9 @@ pub enum Error {
     /// Invalid payment identifier
     #[error("Invalid payment identifier")]
     InvalidPaymentIdentifier,
+    /// Invalid melt options
+    #[error("Invalid melt options")]
+    InvalidMeltOptions,
     /// Invalid hash
     #[error("Invalid hash")]
     InvalidHash,
@@ -48,6 +51,7 @@ impl From<Error> for Status {
             Error::InvalidPaymentIdentifier => {
                 Status::invalid_argument("Invalid payment identifier")
             }
+            Error::InvalidMeltOptions => Status::invalid_argument("Invalid melt options"),
             Error::InvalidHash => Status::invalid_argument("Invalid hash"),
             Error::InvalidCurrencyUnit(unit) => {
                 Status::invalid_argument(format!("Invalid currency unit: {unit}"))
@@ -70,6 +74,7 @@ impl From<Error> for cdk_common::payment::Error {
             Error::InvalidPaymentIdentifier => {
                 Self::Custom("Invalid payment identifier".to_string())
             }
+            Error::InvalidMeltOptions => Self::Custom("Invalid melt options".to_string()),
             Error::InvalidHash => Self::Custom("Invalid hash".to_string()),
             Error::InvalidCurrencyUnit(unit) => {
                 Self::Custom(format!("Invalid currency unit: {unit}"))
