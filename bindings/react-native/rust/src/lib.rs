@@ -98,8 +98,14 @@ pub unsafe extern "C" fn cdk_create_p2pk_blinded_message(
         Err(_) => return ptr::null_mut(),
     };
 
-    let add_pks = parse_pubkey_array(additional_pubkeys, additional_pubkeys_len);
-    let refund_pks = parse_pubkey_array(refund_pubkeys, refund_pubkeys_len);
+    let add_pks = match parse_pubkey_array(additional_pubkeys, additional_pubkeys_len) {
+        Ok(pks) => pks,
+        Err(()) => return ptr::null_mut(),
+    };
+    let refund_pks = match parse_pubkey_array(refund_pubkeys, refund_pubkeys_len) {
+        Ok(pks) => pks,
+        Err(()) => return ptr::null_mut(),
+    };
 
     let sig_flag = if sig_flag_ptr.is_null() {
         SigFlag::default()
@@ -188,23 +194,18 @@ pub unsafe extern "C" fn cdk_create_deterministic_blinded_message(
     make_result(blinded_secret, r, &secret)
 }
 
-fn parse_pubkey_array(ptrs: *const *const c_char, len: u32) -> Option<Vec<PublicKey>> {
+fn parse_pubkey_array(ptrs: *const *const c_char, len: u32) -> Result<Option<Vec<PublicKey>>, ()> {
     if ptrs.is_null() || len == 0 {
-        return None;
+        return Ok(None);
     }
     let slice = unsafe { slice::from_raw_parts(ptrs, len as usize) };
     let mut pks = Vec::with_capacity(len as usize);
     for &p in slice {
-        let s = match unsafe { CStr::from_ptr(p) }.to_str() {
-            Ok(s) => s,
-            Err(_) => return None,
-        };
-        match PublicKey::from_hex(s) {
-            Ok(pk) => pks.push(pk),
-            Err(_) => return None,
-        }
+        let s = unsafe { CStr::from_ptr(p) }.to_str().map_err(|_| ())?;
+        let pk = PublicKey::from_hex(s).map_err(|_| ())?;
+        pks.push(pk);
     }
-    Some(pks)
+    Ok(Some(pks))
 }
 
 // ---------------------------------------------------------------------------
