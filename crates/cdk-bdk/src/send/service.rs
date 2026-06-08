@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::chain::{BroadcastErrorKind, BroadcastFailure, BroadcastOutcome};
 use crate::error::Error;
+use crate::fee::fee_rate_from_sat_per_vb;
 use crate::send::batch_transaction::record::{
     BatchOutputAssignment, SendBatchRecord, SendBatchState,
 };
@@ -401,7 +402,14 @@ impl CdkBdk {
                 self.batch_config.fee_estimation.fallback_sat_per_vb
             });
 
-        let fee_rate = bdk_wallet::bitcoin::FeeRate::from_sat_per_vb_u32(sat_per_vb.ceil() as u32);
+        let fee_rate = match fee_rate_from_sat_per_vb(sat_per_vb) {
+            Ok(fee_rate) => fee_rate,
+            Err(e) => {
+                let reason = e.to_string();
+                self.fail_send_intents(&intents, &reason).await;
+                return Err(e);
+            }
+        };
 
         // 1. Build the PSBT
         let mut wallet_with_db = self.wallet_with_db.lock().await;

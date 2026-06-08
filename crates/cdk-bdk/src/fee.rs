@@ -30,6 +30,23 @@ use crate::CdkBdk;
 
 const P2WPKH_CHANGE_OUTPUT_VBYTES: u64 = 31;
 
+pub(crate) fn fee_rate_from_sat_per_vb(sat_per_vb: f64) -> Result<FeeRate, Error> {
+    if !sat_per_vb.is_finite() || sat_per_vb <= 0.0 {
+        return Err(Error::FeeEstimationFailed(format!(
+            "invalid fee rate {sat_per_vb} sat/vB"
+        )));
+    }
+
+    let rounded_sat_per_vb = sat_per_vb.ceil();
+    if rounded_sat_per_vb > f64::from(u32::MAX) {
+        return Err(Error::FeeEstimationFailed(format!(
+            "fee rate {sat_per_vb} sat/vB exceeds supported range"
+        )));
+    }
+
+    Ok(FeeRate::from_sat_per_vb_u32(rounded_sat_per_vb as u32))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QuoteSelectionPath {
     Bnb,
@@ -209,7 +226,7 @@ impl CdkBdk {
                 self.batch_config.fee_estimation.fallback_sat_per_vb
             });
 
-        let fee_rate = FeeRate::from_sat_per_vb_u32(sat_per_vb.ceil() as u32);
+        let fee_rate = fee_rate_from_sat_per_vb(sat_per_vb)?;
         let recipient_script = bdk_wallet::bitcoin::Address::from_str(address)
             .map_err(|e| Error::Wallet(e.to_string()))?
             .require_network(self.network)
@@ -334,11 +351,40 @@ impl CdkBdk {
             }
         };
 
+        fee_rate_from_sat_per_vb(rate)?;
+
         {
             let mut cache = self.fee_rate_cache.lock().await;
             cache.insert(tier, (rate, now));
         }
 
         Ok(rate)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fee_rate_from_sat_per_vb_rejects_invalid_values() {
+        for sat_per_vb in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(
+                fee_rate_from_sat_per_vb(sat_per_vb).is_err(),
+                "fee rate {sat_per_vb} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn fee_rate_from_sat_per_vb_rejects_overlarge_values() {
+        assert!(fee_rate_from_sat_per_vb(f64::from(u32::MAX) + 1.0).is_err());
+    }
+
+    #[test]
+    fn fee_rate_from_sat_per_vb_rounds_up_valid_values() {
+        let fee_rate = fee_rate_from_sat_per_vb(1.25).expect("valid fee rate");
+
+        assert_eq!(fee_rate, FeeRate::from_sat_per_vb_u32(2));
     }
 }

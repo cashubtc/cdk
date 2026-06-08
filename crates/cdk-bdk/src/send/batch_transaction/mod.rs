@@ -62,7 +62,9 @@ pub(crate) fn allocate_batch_fee(
         };
     }
 
-    let total_max: u64 = max_fees.iter().sum();
+    let total_max = max_fees
+        .iter()
+        .fold(0u64, |total, max_fee| total.saturating_add(*max_fee));
     if actual_fee > total_max {
         return Err(crate::error::Error::BatchFeeTooHigh {
             actual_fee,
@@ -385,5 +387,23 @@ mod tests {
         let encoded = serde_json::to_vec(&assignment).expect("encode");
         let decoded: BatchOutputAssignment = serde_json::from_slice(&encoded).expect("decode");
         assert_eq!(decoded, assignment);
+    }
+
+    #[test]
+    fn test_allocate_batch_fee_handles_max_fee_sum_overflow() {
+        let max_fees = vec![u64::MAX, 500];
+        let intent_ids = vec![Uuid::new_v4(), Uuid::new_v4()];
+        let actual_fee = 500u64;
+
+        let allocations = allocate_batch_fee(actual_fee, &max_fees, &intent_ids)
+            .expect("allocation should succeed when intents have enough fee headroom");
+
+        assert_eq!(allocations.len(), 2);
+        let allocated_total = allocations
+            .iter()
+            .fold(0u64, |total, fee| total.saturating_add(*fee));
+        assert_eq!(allocated_total, actual_fee);
+        assert!(allocations[0] <= max_fees[0]);
+        assert!(allocations[1] <= max_fees[1]);
     }
 }

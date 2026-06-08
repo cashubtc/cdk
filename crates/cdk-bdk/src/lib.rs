@@ -909,6 +909,25 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_new_rejects_invalid_fallback_fee_rate() {
+        let batch_config = BatchConfig {
+            fee_estimation: FeeEstimationConfig {
+                fallback_sat_per_vb: 0.0,
+                ..FeeEstimationConfig::default()
+            },
+            ..BatchConfig::default()
+        };
+
+        match build_test_instance_with_config(5, Some(batch_config), 60).await {
+            Err(Error::InvalidConfig(message)) => {
+                assert!(message.contains("fallback_sat_per_vb"));
+            }
+            Ok(_) => panic!("invalid fallback fee rate should be rejected"),
+            Err(err) => panic!("expected invalid config error, got {err}"),
+        }
+    }
+
     #[test]
     fn test_default_batch_deadlines_match_advertised_blocks() {
         let batch_config = BatchConfig::default();

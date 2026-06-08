@@ -99,6 +99,16 @@ impl BatchConfig {
             return Err("BDK batch_config.target_block_time must be greater than zero".to_string());
         }
 
+        if !self.fee_estimation.fallback_sat_per_vb.is_finite()
+            || self.fee_estimation.fallback_sat_per_vb <= 0.0
+            || self.fee_estimation.fallback_sat_per_vb.ceil() > f64::from(u32::MAX)
+        {
+            return Err(
+                "BDK batch_config.fee_estimation.fallback_sat_per_vb must be finite, greater than zero, and fit in u32 after rounding"
+                    .to_string(),
+            );
+        }
+
         validate_fee_options(&self.fee_options)
     }
 
