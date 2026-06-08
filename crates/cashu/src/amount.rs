@@ -233,6 +233,12 @@ impl Amount<()> {
         let mut parts = match target {
             SplitTarget::None => self.split(fee_and_amounts)?,
             SplitTarget::Value(amount) => {
+                if amount.eq(&Amount::ZERO) {
+                    return Err(Error::InvalidAmount(
+                        "SplitTarget::Value amount must be greater than zero".to_owned(),
+                    ));
+                }
+
                 if self.le(amount) {
                     return self.split(fee_and_amounts);
                 }
@@ -2447,6 +2453,18 @@ mod tests {
             result,
             vec![Amount::from(5), Amount::from(5), Amount::from(5)]
         );
+    }
+
+    /// Tests split_targeted() with SplitTarget::Value(0).
+    /// A zero target value is invalid and must not enter the targeted split loop.
+    #[test]
+    fn test_split_targeted_value_zero_errors() {
+        let fee_and_amounts: FeeAndAmounts = (0, vec![1, 2, 4, 8, 16, 32]).into();
+
+        let result =
+            Amount::from(10).split_targeted(&SplitTarget::Value(Amount::ZERO), &fee_and_amounts);
+
+        assert!(matches!(result, Err(Error::InvalidAmount(_))));
     }
 
     // =========================================================================
