@@ -11,7 +11,7 @@ use cashu::dhke::blind_message;
 use cashu::nuts::nut01::SecretKey;
 use cashu::nuts::nut02::Id;
 use cashu::nuts::nut10::SpendingConditions;
-use cashu::nuts::{Conditions, PublicKey};
+use cashu::nuts::{Conditions, PublicKey, SigFlag};
 use cashu::secret::Secret;
 
 /// Result of a blinding operation, returned to C++.
@@ -86,7 +86,7 @@ pub unsafe extern "C" fn cdk_create_p2pk_blinded_message(
     locktime: u64,
     refund_pubkeys: *const *const c_char,
     refund_pubkeys_len: u32,
-    _sig_flag: *const c_char,
+    sig_flag_ptr: *const c_char,
 ) -> *mut CdkBlindResult {
     let pubkey_str = match unsafe { CStr::from_ptr(pubkey_hex) }.to_str() {
         Ok(s) => s,
@@ -101,12 +101,23 @@ pub unsafe extern "C" fn cdk_create_p2pk_blinded_message(
     let add_pks = parse_pubkey_array(additional_pubkeys, additional_pubkeys_len);
     let refund_pks = parse_pubkey_array(refund_pubkeys, refund_pubkeys_len);
 
+    let sig_flag = if sig_flag_ptr.is_null() {
+        SigFlag::default()
+    } else {
+        match unsafe { CStr::from_ptr(sig_flag_ptr) }.to_str() {
+            Ok("SigAll") => SigFlag::SigAll,
+            Ok("SigInputs") => SigFlag::SigInputs,
+            Ok(_) => return ptr::null_mut(),
+            Err(_) => return ptr::null_mut(),
+        }
+    };
+
     let conditions = Conditions {
         locktime: if locktime > 0 { Some(locktime) } else { None },
         pubkeys: add_pks,
         refund_keys: refund_pks,
         num_sigs: if num_sigs > 1 { Some(num_sigs) } else { None },
-        sig_flag: Default::default(),
+        sig_flag,
         num_sigs_refund: None,
     };
 
