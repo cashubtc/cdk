@@ -333,6 +333,7 @@ fn create_ldk_settings(
         ldk_node: Some(ldk_config),
         fake_wallet: None,
         onchain: None,
+        ohttp_gateway: None,
         ..Default::default()
     }
 }

@@ -10,6 +10,7 @@ mod info;
 mod limits;
 mod ln;
 mod mint_info;
+mod ohttp_gateway;
 mod onchain;
 
 mod auth;
@@ -58,6 +59,7 @@ pub use lnd::*;
 #[cfg(feature = "management-rpc")]
 pub use management_rpc::*;
 pub use mint_info::*;
+pub use ohttp_gateway::*;
 pub use onchain::*;
 #[cfg(feature = "prometheus")]
 pub use prometheus::*;
@@ -144,6 +146,9 @@ impl Settings {
         {
             self.prometheus = Some(self.prometheus.clone().unwrap_or_default().from_env());
         }
+
+        // Process OHTTP gateway configuration from environment variables
+        self.ohttp_gateway = Some(self.ohttp_gateway.clone().unwrap_or_default().from_env());
 
         #[cfg(feature = "cln")]
         {

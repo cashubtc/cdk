@@ -1029,6 +1029,7 @@ pub struct Settings {
     #[cfg(feature = "prometheus")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prometheus: Option<Prometheus>,
+    pub ohttp_gateway: Option<OhttpGateway>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1065,6 +1066,15 @@ fn default_max_inputs() -> usize {
 
 fn default_max_outputs() -> usize {
     1000
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OhttpGateway {
+    /// Whether OHTTP Gateway is enabled
+    #[serde(default)]
+    pub enabled: bool,
+    /// OHTTP gateway URL (if different from mint URL)
+    pub gateway_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
