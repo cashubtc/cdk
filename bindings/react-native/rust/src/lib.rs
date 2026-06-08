@@ -418,6 +418,150 @@ mod tests {
         }
     }
 
+    #[test]
+    fn p2pk_sigall_flag_appears_in_secret() {
+        let kid = keyset_id_cstr();
+        let pk = pubkey_cstr();
+        let sig_flag = CString::new("SigAll").unwrap();
+
+        let res = unsafe {
+            cdk_create_p2pk_blinded_message(
+                1,
+                kid.as_ptr(),
+                pk.as_ptr(),
+                ptr::null(),
+                0,
+                1,
+                0,
+                ptr::null(),
+                0,
+                sig_flag.as_ptr(),
+            )
+        };
+        assert!(!res.is_null());
+
+        unsafe {
+            let secret = read_cstr((*res).secret);
+            assert!(
+                secret.contains("SIG_ALL"),
+                "SigAll flag must be serialized as SIG_ALL in the NUT-10 secret, got: {}",
+                secret
+            );
+            cdk_blind_result_free(res);
+        }
+    }
+
+    #[test]
+    fn p2pk_null_sig_flag_defaults_to_sig_inputs() {
+        let kid = keyset_id_cstr();
+        let pk = pubkey_cstr();
+
+        let res = unsafe {
+            cdk_create_p2pk_blinded_message(
+                1,
+                kid.as_ptr(),
+                pk.as_ptr(),
+                ptr::null(),
+                0,
+                1,
+                0,
+                ptr::null(),
+                0,
+                ptr::null(),
+            )
+        };
+        assert!(!res.is_null());
+
+        unsafe {
+            let secret = read_cstr((*res).secret);
+            assert!(
+                secret.contains("SIG_INPUTS"),
+                "null sig_flag must default to SIG_INPUTS, got: {}",
+                secret
+            );
+            cdk_blind_result_free(res);
+        }
+    }
+
+    #[test]
+    fn p2pk_unknown_sig_flag_returns_null() {
+        let kid = keyset_id_cstr();
+        let pk = pubkey_cstr();
+        let bad_flag = CString::new("SigNone").unwrap();
+
+        let res = unsafe {
+            cdk_create_p2pk_blinded_message(
+                1,
+                kid.as_ptr(),
+                pk.as_ptr(),
+                ptr::null(),
+                0,
+                1,
+                0,
+                ptr::null(),
+                0,
+                bad_flag.as_ptr(),
+            )
+        };
+        assert!(res.is_null(), "unknown sig_flag should return null");
+    }
+
+    #[test]
+    fn p2pk_malformed_additional_pubkey_returns_null() {
+        let kid = keyset_id_cstr();
+        let pk = pubkey_cstr();
+        let sig_flag = CString::new("SigInputs").unwrap();
+        let bad_pk = CString::new("not_a_pubkey").unwrap();
+        let add_pks_ptrs = [bad_pk.as_ptr()];
+
+        let res = unsafe {
+            cdk_create_p2pk_blinded_message(
+                1,
+                kid.as_ptr(),
+                pk.as_ptr(),
+                add_pks_ptrs.as_ptr(),
+                1,
+                2,
+                0,
+                ptr::null(),
+                0,
+                sig_flag.as_ptr(),
+            )
+        };
+        assert!(
+            res.is_null(),
+            "malformed additional pubkey must fail, not be silently dropped"
+        );
+    }
+
+    #[test]
+    fn p2pk_malformed_refund_pubkey_returns_null() {
+        let kid = keyset_id_cstr();
+        let pk = pubkey_cstr();
+        let sig_flag = CString::new("SigInputs").unwrap();
+        let bad_pk = CString::new("not_a_pubkey").unwrap();
+        let refund_pks_ptrs = [bad_pk.as_ptr()];
+
+        let res = unsafe {
+            cdk_create_p2pk_blinded_message(
+                1,
+                kid.as_ptr(),
+                pk.as_ptr(),
+                ptr::null(),
+                0,
+                1,
+                0,
+                refund_pks_ptrs.as_ptr(),
+                1,
+                sig_flag.as_ptr(),
+            )
+        };
+        assert!(
+            res.is_null(),
+            "malformed refund pubkey must fail, not be silently dropped"
+        );
+    }
+
     // --------------------------------------------------
     // Deterministic blinded messages (NUT-13)
     // --------------------------------------------------
