@@ -690,7 +690,9 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                 .map(|x| x.value())
                 .unwrap_or_default();
 
-            let new_counter = current_counter + count;
+            let new_counter = current_counter
+                .checked_add(count)
+                .ok_or(database::Error::AmountOverflow)?;
 
             table
                 .insert(keyset_id.to_string().as_str(), new_counter)
@@ -1576,8 +1578,10 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 #[cfg(test)]
 mod test {
     use std::path::PathBuf;
+    use std::str::FromStr;
 
-    use cdk_common::wallet_db_test;
+    use cdk_common::database::{self, WalletDatabase};
+    use cdk_common::{wallet_db_test, Id};
 
     use super::WalletRedbDatabase;
 
@@ -1587,4 +1591,22 @@ mod test {
     }
 
     wallet_db_test!(provide_db);
+
+    #[tokio::test]
+    async fn increment_keyset_counter_returns_error_on_overflow() {
+        let db = provide_db("counter-overflow".to_string()).await;
+        let keyset_id = Id::from_str("00916bbf7ef91a36").expect("valid keyset id");
+
+        let first = db
+            .increment_keyset_counter(&keyset_id, u32::MAX)
+            .await
+            .expect("first increment should fit");
+        assert_eq!(first, u32::MAX);
+
+        match db.increment_keyset_counter(&keyset_id, 1).await {
+            Err(database::Error::AmountOverflow) => {}
+            Ok(counter) => panic!("counter should not wrap, got {counter}"),
+            Err(err) => panic!("expected amount overflow, got {err}"),
+        }
+    }
 }
