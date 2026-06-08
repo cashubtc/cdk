@@ -20,8 +20,8 @@ use crate::amount::Amount;
 use crate::cdk_database;
 use crate::mint::Mint;
 use crate::nuts::{
-    ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
-    MppMethodSettings, PaymentMethod, ProtectedEndpoint,
+    AuthRequired, ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings,
+    MintVersion, MppMethodSettings, PaymentMethod, ProtectedEndpoint,
 };
 use crate::types::PaymentProcessorKey;
 
@@ -64,6 +64,9 @@ pub struct MintBuilder {
     mint_info: MintInfo,
     localstore: DynMintDatabase,
     auth_localstore: Option<DynMintAuthDatabase>,
+    clear_auth_endpoints: Vec<ProtectedEndpoint>,
+    blind_auth_endpoints: Vec<ProtectedEndpoint>,
+    blind_auth_configured: bool,
     payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
     supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
@@ -104,6 +107,9 @@ impl MintBuilder {
             mint_info,
             localstore,
             auth_localstore: None,
+            clear_auth_endpoints: Vec::new(),
+            blind_auth_endpoints: Vec::new(),
+            blind_auth_configured: false,
             payment_processors: HashMap::new(),
             supported_units: HashMap::new(),
             custom_paths: HashMap::new(),
@@ -137,6 +143,7 @@ impl MintBuilder {
         protected_endpoints: Vec<ProtectedEndpoint>,
     ) -> Self {
         self.auth_localstore = Some(auth_localstore);
+        self.clear_auth_endpoints = protected_endpoints.clone();
         self.mint_info.nuts.nut21 = Some(nut21::Settings::new(
             openid_discovery,
             client_id,
@@ -177,6 +184,9 @@ impl MintBuilder {
         protected_endpoints: Vec<ProtectedEndpoint>,
     ) -> Self {
         let mut nuts = self.mint_info.nuts;
+
+        self.blind_auth_endpoints = protected_endpoints.clone();
+        self.blind_auth_configured = true;
 
         nuts.nut22 = Some(nut22::Settings::new(bat_max_mint, protected_endpoints));
 
@@ -660,7 +670,30 @@ impl MintBuilder {
                 .await?;
         }
 
+        if self.blind_auth_configured
+            && self.mint_info.nuts.nut22.is_some()
+            && self.auth_localstore.is_none()
+        {
+            return Err(Error::Custom(
+                "Blind auth requires an auth localstore; call MintBuilder::with_auth before MintBuilder::with_blind_auth".to_string(),
+            ));
+        }
+
         if let Some(auth_localstore) = self.auth_localstore {
+            let mut protected_endpoints = HashMap::new();
+            for endpoint in self.clear_auth_endpoints {
+                protected_endpoints.insert(endpoint, AuthRequired::Clear);
+            }
+            for endpoint in self.blind_auth_endpoints {
+                protected_endpoints.insert(endpoint, AuthRequired::Blind);
+            }
+
+            if !protected_endpoints.is_empty() {
+                let mut tx = auth_localstore.begin_transaction().await?;
+                tx.add_protected_endpoints(protected_endpoints).await?;
+                tx.commit().await?;
+            }
+
             return Mint::new_with_auth(
                 self.mint_info,
                 signatory,
@@ -737,12 +770,14 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
+    use bip39::Mnemonic;
+    use cdk_common::nut21::{Method, RoutePath};
     use cdk_common::payment::{
         Bolt11Settings, Bolt12Settings, CreateIncomingPaymentResponse, Event,
         IncomingPaymentOptions, MakePaymentResponse, OnchainSettings, OutgoingPaymentOptions,
         PaymentIdentifier, PaymentQuoteResponse, SettingsResponse,
     };
-    use cdk_sqlite::mint::memory;
+    use cdk_sqlite::mint::{memory, MintSqliteAuthDatabase, MintSqliteDatabase};
     use futures::Stream;
     use KnownMethod;
 
@@ -811,6 +846,42 @@ mod tests {
         }
     }
 
+    async fn builder_with_bolt11_processor() -> (MintBuilder, Arc<MintSqliteDatabase>) {
+        let localstore = Arc::new(memory::empty().await.expect("mint db"));
+        let mut builder = MintBuilder::new(localstore.clone());
+
+        let settings = SettingsResponse {
+            unit: "sat".to_string(),
+            bolt11: Some(Bolt11Settings {
+                mpp: false,
+                amountless: false,
+                invoice_description: false,
+            }),
+            bolt12: None,
+            onchain: None,
+            custom: HashMap::new(),
+        };
+
+        builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintMeltLimits::new(1, 10_000),
+                Arc::new(MockPaymentProcessor { settings }),
+            )
+            .await
+            .expect("payment processor");
+
+        (builder, localstore)
+    }
+
+    fn seed() -> Vec<u8> {
+        Mnemonic::generate(12)
+            .expect("mnemonic")
+            .to_seed_normalized("")
+            .to_vec()
+    }
+
     #[tokio::test]
     async fn test_mint_builder_default_nuts_support() {
         let localstore = Arc::new(memory::empty().await.unwrap());
@@ -874,6 +945,101 @@ mod tests {
             Some(vec!["bolt11".to_string(), "bolt12".to_string()]),
             "NUT-29 methods should be set"
         );
+    }
+
+    #[tokio::test]
+    async fn test_with_auth_protected_endpoints_are_enforced_and_advertised() {
+        let (builder, localstore) = builder_with_bolt11_processor().await;
+        let auth_db = Arc::new(
+            MintSqliteAuthDatabase::new(":memory:")
+                .await
+                .expect("auth db"),
+        );
+        let swap_endpoint = ProtectedEndpoint::new(Method::Post, RoutePath::Swap);
+        let seed = seed();
+
+        let mint = builder
+            .with_auth(
+                auth_db,
+                "https://example.com/.well-known/openid-configuration".to_string(),
+                "test-client".to_string(),
+                vec![swap_endpoint.clone()],
+            )
+            .build_with_seed(localstore, &seed)
+            .await
+            .expect("mint");
+
+        assert_eq!(
+            mint.is_protected(&swap_endpoint)
+                .await
+                .expect("is protected"),
+            Some(AuthRequired::Clear)
+        );
+        assert_eq!(
+            mint.mint_info()
+                .await
+                .expect("mint info")
+                .protected_endpoints()
+                .get(&swap_endpoint),
+            Some(&AuthRequired::Clear)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_with_blind_auth_protected_endpoints_are_enforced_and_advertised() {
+        let (builder, localstore) = builder_with_bolt11_processor().await;
+        let auth_db = Arc::new(
+            MintSqliteAuthDatabase::new(":memory:")
+                .await
+                .expect("auth db"),
+        );
+        let swap_endpoint = ProtectedEndpoint::new(Method::Post, RoutePath::Swap);
+        let seed = seed();
+
+        let mint = builder
+            .with_auth(
+                auth_db,
+                "https://example.com/.well-known/openid-configuration".to_string(),
+                "test-client".to_string(),
+                vec![],
+            )
+            .with_blind_auth(50, vec![swap_endpoint.clone()])
+            .build_with_seed(localstore, &seed)
+            .await
+            .expect("mint");
+
+        assert_eq!(
+            mint.is_protected(&swap_endpoint)
+                .await
+                .expect("is protected"),
+            Some(AuthRequired::Blind)
+        );
+        assert_eq!(
+            mint.mint_info()
+                .await
+                .expect("mint info")
+                .protected_endpoints()
+                .get(&swap_endpoint),
+            Some(&AuthRequired::Blind)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_with_blind_auth_without_auth_localstore_errors() {
+        let (builder, localstore) = builder_with_bolt11_processor().await;
+        let swap_endpoint = ProtectedEndpoint::new(Method::Post, RoutePath::Swap);
+        let seed = seed();
+
+        let err = builder
+            .with_blind_auth(50, vec![swap_endpoint])
+            .build_with_seed(localstore, &seed)
+            .await
+            .expect_err("blind auth requires auth localstore");
+
+        assert!(matches!(
+            err,
+            Error::Custom(message) if message.contains("Blind auth requires an auth localstore")
+        ));
     }
 
     #[tokio::test]
