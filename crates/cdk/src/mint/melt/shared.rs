@@ -6,6 +6,7 @@
 //!
 //! The functions here ensure consistency between these two code paths.
 
+use cdk_common::amount::MSAT_IN_SAT;
 use cdk_common::database::mint::Acquired;
 use cdk_common::database::{self, DynMintDatabase};
 use cdk_common::mint::{self as mint_types};
@@ -72,6 +73,20 @@ fn record_confirmed_payment_metrics(quote: &MeltQuote, total_spent: &Amount<Curr
                 METRICS.record_payment_fee(payment_method, payment_fee_sats);
             }
         }
+    }
+}
+
+pub(crate) fn total_spent_for_quote_unit(
+    total_spent: &Amount<CurrencyUnit>,
+    quote_unit: &CurrencyUnit,
+) -> Result<Amount<CurrencyUnit>, Error> {
+    match (total_spent.unit(), quote_unit) {
+        (spent_unit, quote_unit) if spent_unit == quote_unit => Ok(total_spent.clone()),
+        (CurrencyUnit::Msat, CurrencyUnit::Sat) => {
+            let rounded_sats = total_spent.value().div_ceil(MSAT_IN_SAT);
+            Ok(Amount::new(rounded_sats, CurrencyUnit::Sat))
+        }
+        _ => total_spent.convert_to(quote_unit).map_err(Error::from),
     }
 }
 
@@ -619,6 +634,8 @@ pub async fn finalize_melt_quote(
     operation_id: Option<uuid::Uuid>,
 ) -> Result<Option<Vec<BlindSignature>>, Error> {
     tracing::info!("Finalizing melt quote {}", quote.id);
+
+    let total_spent = total_spent_for_quote_unit(&total_spent, &quote.unit)?;
 
     let settlement_matches = |stored_quote: &MeltQuote| {
         stored_quote.request_lookup_id.as_ref() == Some(payment_lookup_id)

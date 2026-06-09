@@ -48,19 +48,20 @@ pub(crate) async fn process_melt_saga_outcome(
                 saga.operation_id
             );
 
-            // Persist the exact payment result before finalizing so recovery uses
+            // Persist the quote-unit payment result before finalizing so recovery uses
             // the same durable Finalizing handoff as the in-process finalize path.
-            let total_spent = payment_response
-                .total_spent
-                .convert_to(&quote.unit)
-                .map_err(|e| {
-                    tracing::error!(
-                        "Failed to convert recovered total_spent for quote {}: {:?}",
-                        quote.id,
-                        e
-                    );
-                    Error::UnitMismatch
-                })?;
+            let total_spent = super::melt::shared::total_spent_for_quote_unit(
+                &payment_response.total_spent,
+                &quote.unit,
+            )
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to convert recovered total_spent for quote {}: {:?}",
+                    quote.id,
+                    e
+                );
+                Error::UnitMismatch
+            })?;
 
             let mut tx = db.begin_transaction().await?;
             let finalization_data = MeltFinalizationData {

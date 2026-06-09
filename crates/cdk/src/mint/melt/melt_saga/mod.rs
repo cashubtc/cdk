@@ -896,15 +896,14 @@ impl MeltSaga<PaymentConfirmed> {
     pub async fn finalize(mut self) -> Result<MeltQuoteResponse<QuoteId>, Error> {
         tracing::info!("TX2: Finalizing melt (mark spent + change)");
 
-        let total_spent: Amount<CurrencyUnit> = self
-            .state_data
-            .payment_result
-            .total_spent
-            .convert_to(&self.state_data.quote.unit)
-            .map_err(|e| {
-                tracing::error!("Failed to convert total_spent to quote unit: {:?}", e);
-                Error::UnitMismatch
-            })?;
+        let total_spent: Amount<CurrencyUnit> = self.state_data.payment_result.total_spent;
+        let total_spent =
+            shared::total_spent_for_quote_unit(&total_spent, &self.state_data.quote.unit).map_err(
+                |e| {
+                    tracing::error!("Failed to convert total_spent to quote unit: {:?}", e);
+                    Error::UnitMismatch
+                },
+            )?;
 
         let payment_proof = self.state_data.payment_result.payment_proof.clone();
         let payment_lookup_id = &self.state_data.payment_result.payment_lookup_id;

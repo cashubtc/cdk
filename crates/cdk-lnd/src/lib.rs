@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use cdk_common::amount::Amount;
+use cdk_common::amount::{Amount, MSAT_IN_SAT};
 use cdk_common::bitcoin::hashes::Hash;
 use cdk_common::common::FeeReserve;
 use cdk_common::database::DynKVStore;
@@ -185,6 +185,32 @@ impl Lnd {
             settle_index
         );
         Ok((add_index, settle_index))
+    }
+}
+
+fn lnrpc_payment_total_spent(payment: &lnrpc::Payment) -> Result<Amount<CurrencyUnit>, Error> {
+    let total_msat = payment
+        .value_msat
+        .checked_add(payment.fee_msat)
+        .ok_or(Error::AmountOverflow)?;
+    let total_msat = u64::try_from(total_msat).map_err(|_| Error::AmountOverflow)?;
+
+    Ok(Amount::new(total_msat, CurrencyUnit::Msat))
+}
+
+fn msat_total_spent_for_unit(
+    total_msat: u64,
+    unit: &CurrencyUnit,
+) -> Result<Amount<CurrencyUnit>, Error> {
+    match unit {
+        CurrencyUnit::Msat => Ok(Amount::new(total_msat, CurrencyUnit::Msat)),
+        CurrencyUnit::Sat => Ok(Amount::new(
+            total_msat.div_ceil(MSAT_IN_SAT),
+            CurrencyUnit::Sat,
+        )),
+        _ => Amount::new(total_msat, CurrencyUnit::Msat)
+            .convert_to(unit)
+            .map_err(Error::from),
     }
 }
 
@@ -541,8 +567,7 @@ impl MintPayment for Lnd {
                                     ),
                                     payment_proof: payment_preimage,
                                     status,
-                                    total_spent: Amount::new(total_amt_msat, CurrencyUnit::Msat)
-                                        .convert_to(unit)?,
+                                    total_spent: msat_total_spent_for_unit(total_amt_msat, unit)?,
                                 });
                             }
 
@@ -629,8 +654,7 @@ impl MintPayment for Lnd {
                                 payment_lookup_id: payment_identifier,
                                 payment_proof: payment_preimage,
                                 status: response_status,
-                                total_spent: Amount::new(total_msat as u64, CurrencyUnit::Msat)
-                                    .convert_to(unit)?,
+                                total_spent: msat_total_spent_for_unit(total_msat as u64, unit)?,
                             });
                         }
 
@@ -785,19 +809,16 @@ impl MintPayment for Lnd {
                             // Continue waiting for the next update
                             continue;
                         }
-                        PaymentStatus::Succeeded => MakePaymentResponse {
-                            payment_lookup_id: payment_identifier.clone(),
-                            payment_proof: Some(update.payment_preimage),
-                            status: MeltQuoteState::Paid,
-                            total_spent: Amount::new(
-                                (update
-                                    .value_sat
-                                    .checked_add(update.fee_sat)
-                                    .ok_or(Error::AmountOverflow)?)
-                                    as u64,
-                                CurrencyUnit::Sat,
-                            ),
-                        },
+                        PaymentStatus::Succeeded => {
+                            let total_spent = lnrpc_payment_total_spent(&update)?;
+
+                            MakePaymentResponse {
+                                payment_lookup_id: payment_identifier.clone(),
+                                payment_proof: Some(update.payment_preimage),
+                                status: MeltQuoteState::Paid,
+                                total_spent,
+                            }
+                        }
                         PaymentStatus::Failed => MakePaymentResponse {
                             payment_lookup_id: payment_identifier.clone(),
                             payment_proof: Some(update.payment_preimage),
@@ -817,5 +838,54 @@ impl MintPayment for Lnd {
 
         // If the stream is exhausted without a final status
         Err(Error::UnknownPaymentStatus.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lnrpc_payment_total_spent_uses_msat_fields() {
+        let payment = lnrpc::Payment {
+            value_msat: 1500,
+            fee_msat: 500,
+            value_sat: 1,
+            fee_sat: 0,
+            ..Default::default()
+        };
+
+        let total_spent = lnrpc_payment_total_spent(&payment)
+            .expect("sub-sat payment total should be calculated");
+
+        assert_eq!(
+            total_spent
+                .convert_to(&CurrencyUnit::Msat)
+                .expect("msat amount should convert to msat")
+                .value(),
+            2000
+        );
+    }
+
+    #[test]
+    fn lnrpc_payment_total_spent_rejects_overflow() {
+        let payment = lnrpc::Payment {
+            value_msat: i64::MAX,
+            fee_msat: 1,
+            ..Default::default()
+        };
+
+        let err = lnrpc_payment_total_spent(&payment)
+            .expect_err("overflowing payment total should be rejected");
+
+        assert!(matches!(err, Error::AmountOverflow));
+    }
+
+    #[test]
+    fn msat_total_spent_for_unit_rounds_up_sats() {
+        let total_spent = msat_total_spent_for_unit(1501, &CurrencyUnit::Sat)
+            .expect("msat total should convert to sat");
+
+        assert_eq!(total_spent, Amount::new(2, CurrencyUnit::Sat));
     }
 }
