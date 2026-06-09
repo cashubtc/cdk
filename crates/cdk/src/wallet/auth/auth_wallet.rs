@@ -118,7 +118,7 @@ impl AuthWallet {
     }
 
     /// Set a new refresh token
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     pub async fn set_refresh_token(&self, token: Option<String>) {
         *self.refresh_token.write().await = token;
     }
