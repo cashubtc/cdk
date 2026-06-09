@@ -66,7 +66,26 @@ fn parse_nutshell_timestamp(v: &str) -> u64 {
 async fn read_keysets_postgres(
     client: &tokio_postgres::Client,
 ) -> Result<Vec<MintKeySetInfo>, Error> {
-    let rows = client.query("SELECT id, derivation_path, valid_from::text, valid_to::text, active, version, unit, input_fee_ppk, amounts FROM keysets;", &[])
+    let has_final_expiry: bool = client
+        .query_one(
+            "SELECT EXISTS (
+                SELECT 1 
+                FROM information_schema.columns 
+                WHERE table_name='keysets' AND column_name='final_expiry'
+            );",
+            &[],
+        )
+        .await
+        .map(|row| row.get(0))
+        .unwrap_or(false);
+
+    let query = if has_final_expiry {
+        "SELECT id, derivation_path, valid_from::text, valid_to::text, active, version, unit, input_fee_ppk, amounts, final_expiry FROM keysets;"
+    } else {
+        "SELECT id, derivation_path, valid_from::text, valid_to::text, active, version, unit, input_fee_ppk, amounts, NULL::integer FROM keysets;"
+    };
+
+    let rows = client.query(query, &[])
         .await
         .map_err(|e| Error::Database(Box::new(e)))?;
     let mut keysets = Vec::new();
@@ -82,6 +101,7 @@ async fn read_keysets_postgres(
         let amounts_str: String = r
             .get::<_, Option<String>>(8)
             .unwrap_or_else(|| "[]".to_string());
+        let final_expiry_val: Option<i32> = r.get(9);
 
         let amounts_vec: Vec<u64> = if amounts_str.is_empty() || amounts_str == "[]" {
             (0..32).map(|i| 2_u64.pow(i)).collect()
@@ -91,7 +111,9 @@ async fn read_keysets_postgres(
         };
 
         let valid_from = parse_nutshell_timestamp(&valid_from_str);
-        let final_expiry = if active {
+        let final_expiry = if let Some(fe) = final_expiry_val.filter(|&v| v > 0) {
+            Some(fe as u64)
+        } else if active {
             None
         } else {
             valid_to_str
