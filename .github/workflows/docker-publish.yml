@@ -42,7 +42,7 @@ jobs:
             nix_target: cdk-mintd-static
             dockerfile: Dockerfile.hardened
             tag_suffix: "-hardened"
-    runs-on: ${{ matrix.arch.runner }}
+    runs-on: ${{ (matrix.arch.runner == 'self-hosted' && github.repository != 'cashubtc/cdk') && 'ubuntu-latest' || matrix.arch.runner }}
     timeout-minutes: 120
     permissions:
       contents: read
@@ -58,11 +58,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          repository: cashubtc/cdk
+          repository: ${{ github.event.inputs.tag && 'cashubtc/cdk' || github.repository }}
           ref: ${{ github.event.inputs.tag || github.ref }}
 
+      - name: Checkout fork repository (for Dockerfiles)
+        uses: actions/checkout@v4
+        with:
+          path: fork-files
+
       - name: Install Nix
-        if: ${{ matrix.arch.install_nix }}
+        if: ${{ matrix.arch.install_nix || (matrix.arch.runner == 'self-hosted' && github.repository != 'cashubtc/cdk') }}
         uses: DeterminateSystems/nix-installer-action@v14
 
       - name: Set up Cachix
@@ -71,11 +76,14 @@ jobs:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           useDaemon: false
-          installCommand: ${{ matrix.arch.install_nix && '' || 'nix profile install nixpkgs#cachix' }}
+          installCommand: ${{ (matrix.arch.install_nix || github.repository != 'cashubtc/cdk') && '' || 'nix profile install nixpkgs#cachix' }}
         continue-on-error: true
 
       - name: Build static binary
         run: |
+          if [ -d fork-files ]; then
+            cp -f fork-files/Dockerfile* ./
+          fi
           nix build .#${{ matrix.variant.nix_target }} -L
           mkdir -p ./docker-build
           cp -f ./result/bin/* ./docker-build/cdk-mintd
