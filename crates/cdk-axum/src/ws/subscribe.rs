@@ -1,7 +1,7 @@
 use cdk::subscription::Params;
 use cdk::ws::{WsResponseResult, WsSubscribeResponse};
 
-use super::{WsContext, WsError, MAX_SUBSCRIPTIONS_PER_CONNECTION};
+use super::{WsContext, WsError, MAX_FILTERS_PER_SUBSCRIPTION, MAX_SUBSCRIPTIONS_PER_CONNECTION};
 
 /// The `handle` method is called when a client sends a subscription request
 pub(crate) async fn handle(
@@ -24,7 +24,7 @@ pub(crate) async fn handle(
         return Err(WsError::InvalidParams);
     }
 
-    let max_filters = context.state.mint.max_inputs();
+    let max_filters = MAX_FILTERS_PER_SUBSCRIPTION;
     if params.filters.len() > max_filters {
         tracing::warn!(
             "WebSocket subscription request exceeds max filters limit: {} > {}",
