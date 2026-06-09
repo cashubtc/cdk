@@ -252,7 +252,7 @@ impl PostgresConnection {
                         Err(err) => {
                             *error_clone.lock().await =
                                 Some(cdk_common::database::Error::Database(Box::new(err)));
-                            stale.store(false, std::sync::atomic::Ordering::Release);
+                            stale.store(true, std::sync::atomic::Ordering::Release);
                             notify_clone.notify_waiters();
                             return;
                         }
@@ -267,7 +267,7 @@ impl PostgresConnection {
                     if let Some(schema) = config.schema.as_ref() {
                         if let Err(err) = select_schema(&client, schema).await {
                             *error_clone.lock().await = Some(err);
-                            stale.store(false, std::sync::atomic::Ordering::Release);
+                            stale.store(true, std::sync::atomic::Ordering::Release);
                             notify_clone.notify_waiters();
                             return;
                         }
@@ -282,7 +282,7 @@ impl PostgresConnection {
                         Err(err) => {
                             *error_clone.lock().await =
                                 Some(cdk_common::database::Error::Database(Box::new(err)));
-                            stale.store(false, std::sync::atomic::Ordering::Release);
+                            stale.store(true, std::sync::atomic::Ordering::Release);
                             notify_clone.notify_waiters();
                             return;
                         }
@@ -431,4 +431,22 @@ mod test {
     }
 
     wallet_db_test!(provide_wallet_db);
+
+    #[tokio::test]
+    async fn failed_initial_connect_marks_connection_stale() {
+        let stale = Arc::new(AtomicBool::new(false));
+        let config = PgConfig::from("host=127.0.0.1 port=1 user=cdk dbname=cdk connect_timeout=1");
+        let conn = PostgresConnection::new(config, Duration::from_secs(5), stale.clone());
+
+        assert!(
+            conn.inner().await.is_err(),
+            "connect to refused port should fail"
+        );
+        tokio::task::yield_now().await;
+
+        assert!(
+            stale.load(std::sync::atomic::Ordering::SeqCst),
+            "failed initial connect should mark the pooled connection stale"
+        );
+    }
 }
