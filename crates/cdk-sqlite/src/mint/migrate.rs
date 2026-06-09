@@ -75,7 +75,25 @@ fn val_to_string(val: rusqlite::types::Value) -> String {
 }
 
 fn read_keysets_sqlite(conn: &rusqlite::Connection) -> Result<Vec<MintKeySetInfo>, Error> {
-    let mut stmt = conn.prepare("SELECT id, derivation_path, valid_from, valid_to, active, version, unit, input_fee_ppk, amounts FROM keysets;")
+    let mut has_final_expiry = false;
+    if let Ok(mut stmt) = conn.prepare("PRAGMA table_info(keysets);") {
+        let mut rows = stmt.query([]).map_err(|e| Error::Database(Box::new(e)))?;
+        while let Some(row) = rows.next().map_err(|e| Error::Database(Box::new(e)))? {
+            let name: String = row.get(1).map_err(|e| Error::Database(Box::new(e)))?;
+            if name == "final_expiry" {
+                has_final_expiry = true;
+                break;
+            }
+        }
+    }
+
+    let query = if has_final_expiry {
+        "SELECT id, derivation_path, valid_from, valid_to, active, version, unit, input_fee_ppk, amounts, final_expiry FROM keysets;"
+    } else {
+        "SELECT id, derivation_path, valid_from, valid_to, active, version, unit, input_fee_ppk, amounts, NULL FROM keysets;"
+    };
+
+    let mut stmt = conn.prepare(query)
         .map_err(|e| Error::Database(Box::new(e)))?;
     let keysets_iter = stmt
         .query_map([], |row| {
@@ -88,6 +106,7 @@ fn read_keysets_sqlite(conn: &rusqlite::Connection) -> Result<Vec<MintKeySetInfo
             let unit_str: String = row.get(6)?;
             let input_fee_ppk: i64 = row.get(7)?;
             let amounts_str: String = row.get(8)?;
+            let final_expiry_val: Option<i64> = row.get(9)?;
 
             let valid_from_str = val_to_string(valid_from_val);
             let valid_to_str = valid_to_val.map(val_to_string);
@@ -100,7 +119,9 @@ fn read_keysets_sqlite(conn: &rusqlite::Connection) -> Result<Vec<MintKeySetInfo
             };
 
             let valid_from = parse_nutshell_timestamp(&valid_from_str);
-            let final_expiry = if active {
+            let final_expiry = if let Some(fe) = final_expiry_val.filter(|&v| v > 0) {
+                Some(fe as u64)
+            } else if active {
                 None
             } else {
                 valid_to_str
