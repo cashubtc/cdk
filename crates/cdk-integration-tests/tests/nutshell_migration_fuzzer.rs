@@ -475,6 +475,13 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
     )?;
     println!("Retrieved nutshell seed from database: {}", seed_str);
 
+    let mut stmt = conn.prepare("SELECT id FROM keysets;")?;
+    let nutshell_keyset_ids: std::collections::HashSet<String> = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .filter_map(Result::ok)
+        .collect();
+    println!("Retrieved nutshell keyset IDs: {:?}", nutshell_keyset_ids);
+
     // 4. Run database migration to CDK!
     println!("Migrating nutshell database to CDK...");
     cdk_sqlite::mint::migrate::migrate_from_nutshell(
@@ -500,6 +507,22 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
         .unwrap();
 
     let target_keysets = db.get_keyset_infos().await?;
+    let cdk_keyset_ids: std::collections::HashSet<String> = target_keysets.iter().map(|k| k.id.to_string()).collect();
+    println!("CDK keyset IDs: {:?}", cdk_keyset_ids);
+
+    for id in &nutshell_keyset_ids {
+        assert!(
+            cdk_keyset_ids.contains(id),
+            "CDK keysets must contain migrated keyset ID {}",
+            id
+        );
+    }
+    assert_eq!(
+        nutshell_keyset_ids.len(),
+        cdk_keyset_ids.len(),
+        "Number of keysets must match exactly after migration!"
+    );
+
     for k in &target_keysets {
         println!(
             "CDK keyset: id={}, active={}, valid_from={}, final_expiry={:?}, derivation_path={:?}, unit={:?}, input_fee_ppk={}",
