@@ -864,19 +864,18 @@ impl Wallet {
     /// Verify all proofs in token have a valid DLEQ proof
     #[instrument(skip(self, token))]
     pub async fn verify_token_dleq(&self, token: &Token) -> Result<(), Error> {
-        let mut keys_cache: HashMap<Id, Keys> = HashMap::new();
-
-        // TODO: Get mint url
-        // if mint_url != &self.mint_url {
-        //     return Err(Error::IncorrectWallet(format!(
-        //         "Should be {} not {}",
-        //         self.mint_url, mint_url
-        //     )));
-        // }
+        let token_mint_url = token.mint_url()?;
+        if token_mint_url != self.mint_url {
+            return Err(Error::IncorrectWallet(format!(
+                "Should be {} not {}",
+                self.mint_url, token_mint_url
+            )));
+        }
 
         // We need the keysets information to properly convert from token proof to proof
         let keysets_info = self.load_mint_keysets().await?;
         let proofs = token.proofs(&keysets_info)?;
+        let mut keys_cache: HashMap<Id, Keys> = HashMap::new();
         for proof in proofs {
             let mint_pubkey = match keys_cache.get(&proof.keyset_id) {
                 Some(keys) => keys.amount_key(proof.amount),
@@ -1279,5 +1278,29 @@ mod tests {
 
         assert_eq!(matched_secrets[1].0, 2); // Third premint (amount 4), index 1 skipped
         assert_eq!(matched_secrets[1].2.amount, Amount::from(4));
+    }
+
+    #[tokio::test]
+    async fn test_verify_token_dleq_rejects_wrong_mint_url() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_keyset_id, test_proof,
+            MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        let other_mint_url = MintUrl::from_str("https://other-mint.example.com").unwrap();
+        let proof = test_proof(test_keyset_id(), 1);
+        let token = Token::new(other_mint_url, vec![proof], None, CurrencyUnit::Sat);
+
+        let result = wallet.verify_token_dleq(&token).await;
+
+        assert!(
+            matches!(result, Err(Error::IncorrectWallet(_))),
+            "expected Error::IncorrectWallet for token with a different mint URL; got: {:?}",
+            result
+        );
     }
 }
