@@ -93,7 +93,7 @@ async fn read_keysets_postgres(
         let id_str: String = r.get(0);
         let derivation_path_str: String = r.get(1);
         let valid_from_str: String = r.get(2);
-        let valid_to_str: Option<String> = r.get(3);
+        let _valid_to_str: Option<String> = r.get(3);
         let active: bool = r.get(4);
         let version: String = r.get(5);
         let unit_str: String = r.get(6);
@@ -111,16 +111,7 @@ async fn read_keysets_postgres(
         };
 
         let valid_from = parse_nutshell_timestamp(&valid_from_str);
-        let final_expiry = if let Some(fe) = final_expiry_val.filter(|&v| v > 0) {
-            Some(fe as u64)
-        } else if active {
-            None
-        } else {
-            valid_to_str
-                .as_ref()
-                .map(|v| parse_nutshell_timestamp(v))
-                .filter(|&ts| ts > 0)
-        };
+        let final_expiry = final_expiry_val.filter(|&v| v > 0).map(|v| v as u64);
 
         let id = match Id::from_str(&id_str) {
             Ok(id) => id,
