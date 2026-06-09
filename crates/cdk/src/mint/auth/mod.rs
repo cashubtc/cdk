@@ -361,4 +361,37 @@ mod tests {
 
         assert!(matches!(err, Error::BlindAuthFailed));
     }
+
+    #[tokio::test]
+    async fn auth_pubkeys_returns_active_keyset_after_rotations() {
+        let mint = create_auth_enabled_mint().await;
+
+        for rotation in 1..=10 {
+            mint.rotate_keyset(CurrencyUnit::Auth, vec![1], 0, true, None)
+                .await
+                .expect("rotate auth keyset");
+
+            let active_auth_id = mint
+                .get_active_keysets()
+                .get(&CurrencyUnit::Auth)
+                .copied()
+                .expect("active auth keyset");
+
+            let response = mint.auth_pubkeys().expect("auth pubkeys");
+            let returned = response
+                .keysets
+                .first()
+                .expect("auth pubkeys should include one keyset");
+
+            assert_eq!(
+                returned.id, active_auth_id,
+                "rotation {rotation}: auth_pubkeys must return the active auth keyset id"
+            );
+            assert_eq!(
+                returned.active,
+                Some(true),
+                "rotation {rotation}: auth_pubkeys must return an active keyset"
+            );
+        }
+    }
 }
