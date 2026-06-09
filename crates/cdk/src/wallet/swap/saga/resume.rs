@@ -211,6 +211,19 @@ impl Wallet {
                                     "Swap saga {} - new proofs found in DB, cleaning up",
                                     saga_id
                                 );
+                                let mut reserved_proofs =
+                                    self.localstore.get_reserved_proofs(saga_id).await?;
+                                for proof in reserved_proofs.iter_mut() {
+                                    proof.state = State::Spent;
+                                    proof.used_by_operation = None;
+                                }
+
+                                if !reserved_proofs.is_empty() {
+                                    self.localstore
+                                        .update_proofs(reserved_proofs, vec![])
+                                        .await?;
+                                }
+
                                 self.localstore.delete_saga(saga_id).await?;
                                 return Ok(true);
                             }
@@ -281,12 +294,14 @@ impl Wallet {
 mod tests {
     use std::sync::Arc;
 
-    use cdk_common::nuts::{CheckStateResponse, CurrencyUnit, ProofState, State};
+    use bip39::Mnemonic;
+    use cdk_common::nuts::{CheckStateResponse, CurrencyUnit, Proof, ProofState, State};
     use cdk_common::wallet::{
-        OperationData, SwapOperationData, SwapSagaState, WalletSaga, WalletSagaState,
+        OperationData, ProofInfo, SwapOperationData, SwapSagaState, WalletSaga, WalletSagaState,
     };
     use cdk_common::Amount;
 
+    use crate::nuts::{PreMintSecrets, SecretKey as NutSecretKey};
     use crate::wallet::test_utils::*;
 
     #[tokio::test]
@@ -496,5 +511,85 @@ mod tests {
 
         // Saga should still exist
         assert!(db.get_saga(&saga_id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_recover_swap_requested_fast_path_spends_reserved_inputs() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+
+        let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
+
+        let input_proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
+        let input_y = input_proof_info.y;
+        db.update_proofs(vec![input_proof_info], vec![])
+            .await
+            .unwrap();
+        db.reserve_proofs(vec![input_y], &saga_id).await.unwrap();
+
+        let counter_start = 0;
+        let counter_end = 1;
+        let premint_secrets =
+            PreMintSecrets::restore_batch(keyset_id, &seed, counter_start, counter_end).unwrap();
+
+        let output_proofs = premint_secrets
+            .secrets
+            .iter()
+            .map(|p| {
+                let proof = Proof {
+                    amount: Amount::from(50),
+                    keyset_id,
+                    secret: p.secret.clone(),
+                    c: NutSecretKey::generate().public_key(),
+                    witness: None,
+                    dleq: None,
+                    p2pk_e: None,
+                };
+                ProofInfo::new(proof, mint_url.clone(), State::Unspent, CurrencyUnit::Sat).unwrap()
+            })
+            .collect();
+        db.update_proofs(output_proofs, vec![]).await.unwrap();
+
+        let blinded_messages = premint_secrets
+            .secrets
+            .iter()
+            .map(|p| p.blinded_message.clone())
+            .collect();
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Swap(SwapSagaState::SwapRequested),
+            Amount::from(100),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Swap(SwapOperationData {
+                input_amount: Amount::from(100),
+                output_amount: Amount::from(50),
+                counter_start: Some(counter_start),
+                counter_end: Some(counter_end),
+                blinded_messages: Some(blinded_messages),
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        let wallet = crate::wallet::WalletBuilder::new()
+            .mint_url(mint_url)
+            .unit(CurrencyUnit::Sat)
+            .localstore(db.clone())
+            .seed(seed)
+            .build()
+            .unwrap();
+
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+
+        assert_eq!(report.recovered, 1);
+        assert_eq!(report.failed, 0);
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+
+        let stored = db.get_proofs_by_ys(vec![input_y]).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].state, State::Spent);
+        assert_eq!(stored[0].used_by_operation, None);
     }
 }
