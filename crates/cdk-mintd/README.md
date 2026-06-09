@@ -184,6 +184,79 @@ mint-cli rotate-next-keyset --use-keyset-v2       # Rotate to V2
 mint-cli rotate-next-keyset --use-keyset-v2=false # Rotate to V1
 ```
 
+## Migrating from a Nutshell Mint
+
+`cdk-mintd` provides a built-in migration tool to seamlessly migrate your active Nutshell database to CDK. This transfers all keysets, active quotes, blinded signatures (promises), and proofs (unspent/spent).
+
+### 1. Run the Migration Command
+
+#### Using SQLite
+
+To migrate from a Nutshell SQLite database into a new CDK SQLite database:
+
+```bash
+# Point to your existing nutshell database file using --nutshell-db
+cargo run --package cdk-mintd -- migrate-nutshell --nutshell-db /path/to/nutshell/mint.db
+```
+
+By default, the migrated CDK database file `cdk-mintd.sqlite` will be created inside your default CDK work directory (`~/.cdk-mintd/`). If you want to specify a custom target directory for your CDK database, use the `--work-dir` option:
+
+```bash
+cargo run --package cdk-mintd -- --work-dir /custom/cdk/dir migrate-nutshell --nutshell-db /path/to/nutshell/mint.db
+```
+
+#### Using PostgreSQL
+
+To migrate from a Nutshell PostgreSQL database to a CDK PostgreSQL database:
+
+1. Configure your target CDK Postgres database in your `config.toml` (or via environment variables like `CDK_MINTD_DATABASE=postgres` and `CDK_MINTD_DATABASE_URL`):
+   ```toml
+   [database]
+   engine = "postgres"
+
+   [database.postgres]
+   url = "postgresql://cdk_user:password@localhost:5432/cdk_mint"
+   ```
+
+2. Run the migration command, passing the source Nutshell PostgreSQL connection string:
+   ```bash
+   cargo run --package cdk-mintd -- migrate-nutshell --nutshell-db "postgresql://nutshell_user:password@localhost:5432/nutshell_mint"
+   ```
+
+*(Note: If you have already compiled `cdk-mintd` or are using a pre-built binary, replace `cargo run --package cdk-mintd --` with `cdk-mintd`.)*
+
+### 2. Configure Nutshell's Private Key as CDK's Master Seed
+
+In order to keep all outstanding e-cash notes valid, the migrated CDK mint must use the exact same private key/seed as the original Nutshell mint. 
+
+You can pass Nutshell's original `MINT_PRIVATE_KEY` directly to `cdk-mintd` as an environment variable or via your config file.
+
+#### Option A: Via Environment Variable (Recommended)
+
+```bash
+CDK_MINTD_SEED="your_nutshell_mint_private_key" cargo run --package cdk-mintd -- --work-dir ~/.cdk-mintd
+```
+
+Or when running the binary directly:
+
+```bash
+CDK_MINTD_SEED="your_nutshell_mint_private_key" cdk-mintd --work-dir ~/.cdk-mintd
+```
+
+#### Option B: Via `config.toml`
+
+Add the `seed` key to the `[info]` block of your `config.toml`:
+
+```toml
+[info]
+url = "http://127.0.0.1:8085"
+listen_host = "127.0.0.1"
+listen_port = 8085
+seed = "your_nutshell_mint_private_key"
+```
+
+Once configured, simply start `cdk-mintd` normally.
+
 ## Production Examples
 
 ### With LDK Node (Recommended for Testing)
