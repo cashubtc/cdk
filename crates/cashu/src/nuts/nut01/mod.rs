@@ -79,7 +79,11 @@ impl<'de> Deserialize<'de> for Keys {
 
                 while let Some((key, value)) = map.next_entry::<String, _>()? {
                     let parsed_key = key.parse::<Amount>().map_err(de::Error::custom)?;
-                    btree_map.insert(parsed_key, value);
+                    if btree_map.insert(parsed_key, value).is_some() {
+                        return Err(de::Error::custom(format!(
+                            "duplicate key for amount {parsed_key}"
+                        )));
+                    }
                 }
 
                 Ok(Keys(btree_map))
@@ -261,6 +265,17 @@ mod tests {
         assert_eq!(keys.keys().len(), 1);
         assert_eq!(keys.amount_key(Amount::ONE), Some(pubkey));
         assert!(keys.amount_key(Amount::from(2_u64)).is_none());
+    }
+
+    #[test]
+    fn test_keys_rejects_collapsed_duplicate_amount() {
+        let pk_a = "03a40f20667ed53513075dc51e715ff2046cad64eb68960632269ba7f0210e38bc";
+        let pk_b = "03fd4ce5a16b65576145949e6f99f445f8249fee17c606b688b504a849cdc452de";
+        let json = format!(r#"{{"1":"{pk_a}","01":"{pk_b}"}}"#);
+
+        let result: Result<Keys, serde_json::Error> = serde_json::from_str(&json);
+
+        assert!(result.is_err());
     }
 
     #[test]
