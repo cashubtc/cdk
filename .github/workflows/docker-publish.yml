@@ -1,6 +1,7 @@
 name: Publish Docker Images
 
 on:
+  push:
   release:
     types: [published]
   workflow_dispatch:
@@ -52,6 +53,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          repository: cashubtc/cdk
           ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Install Nix
@@ -94,8 +96,10 @@ jobs:
         run: |
           if [[ "$EVENT_NAME" == "release" ]]; then
             RAW_VERSION="$RELEASE_TAG"
-          else
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             RAW_VERSION="$INPUT_TAG"
+          else
+            RAW_VERSION="test-${GITHUB_SHA::8}"
           fi
           echo "raw_version=${RAW_VERSION}" >> "$GITHUB_OUTPUT"
           echo "version=${RAW_VERSION#v}" >> "$GITHUB_OUTPUT"
@@ -145,8 +149,11 @@ jobs:
           if [[ "$EVENT_NAME" == "release" ]]; then
             RAW_VERSION="$RELEASE_TAG"
             echo "is_stable=$IS_STABLE" >> "$GITHUB_OUTPUT"
-          else
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             RAW_VERSION="$INPUT_TAG"
+            echo "is_stable=false" >> "$GITHUB_OUTPUT"
+          else
+            RAW_VERSION="test-${GITHUB_SHA::8}"
             echo "is_stable=false" >> "$GITHUB_OUTPUT"
           fi
           echo "raw_version=${RAW_VERSION}" >> "$GITHUB_OUTPUT"
