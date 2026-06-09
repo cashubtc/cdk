@@ -291,6 +291,9 @@ impl PaymentRequest {
                 }
                 0x08 => {
                     // nut10: sub-TLV
+                    if nut10.is_some() {
+                        return Err(Error::InvalidStructure);
+                    }
                     nut10 = Some(Self::decode_nut10(&value)?);
                 }
                 _ => {
@@ -2261,6 +2264,29 @@ mod tests {
         assert!(matches!(
             payment_request.to_bech32_string(),
             Err(Error::InvalidLength)
+        ));
+    }
+
+    #[test]
+    fn test_decode_rejects_duplicate_nut10_tlv() {
+        let nut10_a: [u8; 8] = [0x01, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, b'A'];
+        let nut10_b: [u8; 8] = [0x01, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, b'B'];
+
+        let mut writer = TlvWriter::new();
+        writer
+            .write_tlv(0x08, &nut10_a)
+            .expect("nut10_a should fit in TLV length");
+        writer
+            .write_tlv(0x08, &nut10_b)
+            .expect("nut10_b should fit in TLV length");
+
+        let hrp = Hrp::parse(CREQ_B_HRP).expect("valid HRP");
+        let encoded = bech32::encode_upper::<Bech32m>(hrp, &writer.into_bytes())
+            .expect("valid bech32m encoding");
+
+        assert!(matches!(
+            PaymentRequest::from_bech32_string(&encoded),
+            Err(Error::InvalidStructure)
         ));
     }
 
