@@ -100,7 +100,7 @@ fn read_keysets_sqlite(conn: &rusqlite::Connection) -> Result<Vec<MintKeySetInfo
             let id_str: String = row.get(0)?;
             let derivation_path_str: String = row.get(1)?;
             let valid_from_val = row.get::<_, rusqlite::types::Value>(2)?;
-            let valid_to_val = row.get::<_, Option<rusqlite::types::Value>>(3)?;
+            let _valid_to_val = row.get::<_, Option<rusqlite::types::Value>>(3)?;
             let active: bool = row.get(4)?;
             let version: String = row.get(5)?;
             let unit_str: String = row.get(6)?;
@@ -109,7 +109,6 @@ fn read_keysets_sqlite(conn: &rusqlite::Connection) -> Result<Vec<MintKeySetInfo
             let final_expiry_val: Option<i64> = row.get(9)?;
 
             let valid_from_str = val_to_string(valid_from_val);
-            let valid_to_str = valid_to_val.map(val_to_string);
 
             let amounts_vec: Vec<u64> = if amounts_str.is_empty() || amounts_str == "[]" {
                 (0..32).map(|i| 2_u64.pow(i)).collect()
@@ -119,16 +118,7 @@ fn read_keysets_sqlite(conn: &rusqlite::Connection) -> Result<Vec<MintKeySetInfo
             };
 
             let valid_from = parse_nutshell_timestamp(&valid_from_str);
-            let final_expiry = if let Some(fe) = final_expiry_val.filter(|&v| v > 0) {
-                Some(fe as u64)
-            } else if active {
-                None
-            } else {
-                valid_to_str
-                    .as_ref()
-                    .map(|v| parse_nutshell_timestamp(v))
-                    .filter(|&ts| ts > 0)
-            };
+            let final_expiry = final_expiry_val.filter(|&v| v > 0).map(|v| v as u64);
 
             let id = match Id::from_str(&id_str) {
                 Ok(id) => id,
