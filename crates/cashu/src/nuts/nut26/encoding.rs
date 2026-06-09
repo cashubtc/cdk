@@ -94,11 +94,12 @@ impl TlvWriter {
         Self { data: Vec::new() }
     }
 
-    fn write_tlv(&mut self, tag: u8, value: &[u8]) {
+    fn write_tlv(&mut self, tag: u8, value: &[u8]) -> Result<(), Error> {
+        let len = u16::try_from(value.len()).map_err(|_| Error::InvalidLength)?;
         self.data.push(tag);
-        let len = value.len() as u16;
         self.data.extend_from_slice(&len.to_be_bytes());
         self.data.extend_from_slice(value);
+        Ok(())
     }
 
     fn into_bytes(self) -> Vec<u8> {
@@ -316,50 +317,50 @@ impl PaymentRequest {
 
         // 0x01 id: string
         if let Some(ref id) = self.payment_id {
-            writer.write_tlv(0x01, id.as_bytes());
+            writer.write_tlv(0x01, id.as_bytes())?;
         }
 
         // 0x02 amount: u64
         if let Some(amount) = self.amount {
             let amount_bytes = (amount.to_u64()).to_be_bytes();
-            writer.write_tlv(0x02, &amount_bytes);
+            writer.write_tlv(0x02, &amount_bytes)?;
         }
 
         // 0x03 unit: u8 or string
         if let Some(ref unit) = self.unit {
             let tlv_unit = TlvUnit::from(unit.clone());
             match tlv_unit {
-                TlvUnit::Sat => writer.write_tlv(0x03, &[0]),
-                TlvUnit::Custom(s) => writer.write_tlv(0x03, s.as_bytes()),
+                TlvUnit::Sat => writer.write_tlv(0x03, &[0])?,
+                TlvUnit::Custom(s) => writer.write_tlv(0x03, s.as_bytes())?,
             }
         }
 
         // 0x04 single_use: u8 (0 or 1)
         if let Some(single_use) = self.single_use {
-            writer.write_tlv(0x04, &[if single_use { 1 } else { 0 }]);
+            writer.write_tlv(0x04, &[if single_use { 1 } else { 0 }])?;
         }
 
         // 0x05 mint: string (repeatable)
         for mint in &self.mints {
-            writer.write_tlv(0x05, mint.to_string().as_bytes());
+            writer.write_tlv(0x05, mint.to_string().as_bytes())?;
         }
 
         // 0x06 description: string
         if let Some(ref description) = self.description {
-            writer.write_tlv(0x06, description.as_bytes());
+            writer.write_tlv(0x06, description.as_bytes())?;
         }
 
         // 0x07 transport: sub-TLV (repeatable, order = priority)
         // Note: In-band transport is represented by absence of transport tag per NUT-26
         for transport in &self.transports {
             let transport_bytes = Self::encode_transport(transport)?;
-            writer.write_tlv(0x07, &transport_bytes);
+            writer.write_tlv(0x07, &transport_bytes)?;
         }
 
         // 0x08 nut10: sub-TLV
         if let Some(ref nut10) = self.nut10 {
             let nut10_bytes = Self::encode_nut10(nut10)?;
-            writer.write_tlv(0x08, &nut10_bytes);
+            writer.write_tlv(0x08, &nut10_bytes)?;
         }
 
         Ok(writer.into_bytes())
@@ -473,7 +474,7 @@ impl PaymentRequest {
             TransportType::Nostr => 0x00u8,
             TransportType::HttpPost => 0x01u8,
         };
-        writer.write_tlv(0x01, &[kind]);
+        writer.write_tlv(0x01, &[kind])?;
 
         // 0x02 target: bytes
         match transport._type {
@@ -482,7 +483,7 @@ impl PaymentRequest {
                 let (pubkey, relays) = Self::decode_nprofile(&transport.target)?;
 
                 // Write the 32-byte pubkey
-                writer.write_tlv(0x02, &pubkey);
+                writer.write_tlv(0x02, &pubkey)?;
 
                 // Collect all relays (from nprofile and from "relay" tags)
                 let mut all_relays = relays;
@@ -495,14 +496,14 @@ impl PaymentRequest {
                     if tag[0] == "n" && tag.len() >= 2 {
                         // Encode NIPs as tag tuples with key "n"
                         let tag_bytes = Self::encode_tag_tuple(tag)?;
-                        writer.write_tlv(0x03, &tag_bytes);
+                        writer.write_tlv(0x03, &tag_bytes)?;
                     } else if tag[0] == "relay" && tag.len() >= 2 {
                         // Collect relays from tags to encode as "r" tag tuples
                         all_relays.push(tag[1].clone());
                     } else {
                         // Other tags as generic tag tuples
                         let tag_bytes = Self::encode_tag_tuple(tag)?;
-                        writer.write_tlv(0x03, &tag_bytes);
+                        writer.write_tlv(0x03, &tag_bytes)?;
                     }
                 }
 
@@ -510,17 +511,17 @@ impl PaymentRequest {
                 for relay in all_relays {
                     let relay_tag = vec!["r".to_string(), relay];
                     let tag_bytes = Self::encode_tag_tuple(&relay_tag)?;
-                    writer.write_tlv(0x03, &tag_bytes);
+                    writer.write_tlv(0x03, &tag_bytes)?;
                 }
             }
             TransportType::HttpPost => {
-                writer.write_tlv(0x02, transport.target.as_bytes());
+                writer.write_tlv(0x02, transport.target.as_bytes())?;
 
                 // 0x03 tag_tuple: generic tuple (repeatable)
                 for tag in &transport.tags {
                     if !tag.is_empty() {
                         let tag_bytes = Self::encode_tag_tuple(tag)?;
-                        writer.write_tlv(0x03, &tag_bytes);
+                        writer.write_tlv(0x03, &tag_bytes)?;
                     }
                 }
             }
@@ -608,16 +609,16 @@ impl PaymentRequest {
             Kind::P2PK => 0u8,
             Kind::HTLC => 1u8,
         };
-        writer.write_tlv(0x01, &[kind_val]);
+        writer.write_tlv(0x01, &[kind_val])?;
 
         // 0x02 data: bytes
-        writer.write_tlv(0x02, nut10.data.as_bytes());
+        writer.write_tlv(0x02, nut10.data.as_bytes())?;
 
         // 0x03 tag_tuple: generic tuple (repeatable)
         if let Some(ref tags) = nut10.tags {
             for tag in tags {
                 let tag_bytes = Self::encode_tag_tuple(tag)?;
-                writer.write_tlv(0x03, &tag_bytes);
+                writer.write_tlv(0x03, &tag_bytes)?;
             }
         }
 
@@ -668,12 +669,14 @@ impl PaymentRequest {
 
         // Key length + key
         let key = &tag[0];
-        bytes.push(key.len() as u8);
+        let key_len = u8::try_from(key.len()).map_err(|_| Error::TagTooLong)?;
+        bytes.push(key_len);
         bytes.extend_from_slice(key.as_bytes());
 
         // Values
         for value in &tag[1..] {
-            bytes.push(value.len() as u8);
+            let value_len = u8::try_from(value.len()).map_err(|_| Error::TagTooLong)?;
+            bytes.push(value_len);
             bytes.extend_from_slice(value.as_bytes());
         }
 
@@ -2240,5 +2243,44 @@ mod tests {
 
         assert_eq!(decoded.unit, Some(CurrencyUnit::Custom("btc".to_string())));
         assert_eq!(decoded.payment_id, Some("custom_unit".to_string()));
+    }
+
+    #[test]
+    fn test_rejects_tlv_value_exceeding_u16_length() {
+        let payment_request = PaymentRequest {
+            payment_id: None,
+            amount: None,
+            unit: None,
+            single_use: None,
+            mints: vec![],
+            description: Some("x".repeat(usize::from(u16::MAX) + 1)),
+            transports: vec![],
+            nut10: None,
+        };
+
+        assert!(matches!(
+            payment_request.to_bech32_string(),
+            Err(Error::InvalidLength)
+        ));
+    }
+
+    #[test]
+    fn test_rejects_tag_tuple_key_exceeding_u8_length() {
+        let tag = vec!["x".repeat(usize::from(u8::MAX) + 1)];
+
+        assert!(matches!(
+            PaymentRequest::encode_tag_tuple(&tag),
+            Err(Error::TagTooLong)
+        ));
+    }
+
+    #[test]
+    fn test_rejects_tag_tuple_value_exceeding_u8_length() {
+        let tag = vec!["k".to_string(), "x".repeat(usize::from(u8::MAX) + 1)];
+
+        assert!(matches!(
+            PaymentRequest::encode_tag_tuple(&tag),
+            Err(Error::TagTooLong)
+        ));
     }
 }
