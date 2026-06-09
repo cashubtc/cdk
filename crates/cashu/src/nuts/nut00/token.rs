@@ -326,14 +326,16 @@ impl TokenV3 {
     /// Value - errors if duplicate proofs are found
     #[inline]
     pub fn value(&self) -> Result<Amount, Error> {
-        let proofs: Vec<ProofV3> = self.token.iter().flat_map(|t| t.proofs.clone()).collect();
-        let unique_count = proofs
+        let proof_count = self.token.iter().map(|t| t.proofs.len()).sum::<usize>();
+        let unique_count = self
+            .token
             .iter()
+            .flat_map(|t| t.proofs.iter().map(|p| &p.secret))
             .collect::<std::collections::HashSet<_>>()
             .len();
 
         // Check if there are any duplicate proofs
-        if unique_count != proofs.len() {
+        if unique_count != proof_count {
             return Err(Error::DuplicateProofs);
         }
 
@@ -459,14 +461,16 @@ impl TokenV4 {
     /// Value - errors if duplicate proofs are found
     #[inline]
     pub fn value(&self) -> Result<Amount, Error> {
-        let proofs: Vec<ProofV4> = self.token.iter().flat_map(|t| t.proofs.clone()).collect();
-        let unique_count = proofs
+        let proof_count = self.token.iter().map(|t| t.proofs.len()).sum::<usize>();
+        let unique_count = self
+            .token
             .iter()
+            .flat_map(|t| t.proofs.iter().map(|p| &p.secret))
             .collect::<std::collections::HashSet<_>>()
             .len();
 
         // Check if there are any duplicate proofs
-        if unique_count != proofs.len() {
+        if unique_count != proof_count {
             return Err(Error::DuplicateProofs);
         }
 
@@ -797,6 +801,25 @@ mod tests {
         let token = Token::new(mint_url.clone(), proofs, None, CurrencyUnit::Sat);
 
         // Verify that value() returns an error
+        let result = token.value();
+        assert!(result.is_err());
+
+        // Proofs with the same secret are duplicates even if another field differs.
+        let proof2 = Proof {
+            amount: Amount::from(10_000),
+            ..proof1.clone()
+        };
+
+        let proofs = vec![proof1.clone(), proof2.clone()].into_iter().collect();
+        let token = Token::new(mint_url.clone(), proofs, None, CurrencyUnit::Sat);
+
+        let result = token.value();
+        assert!(result.is_err());
+
+        let proofs = vec![proof1.clone(), proof2].into_iter().collect();
+        let token = TokenV3::new(mint_url.clone(), proofs, None, Some(CurrencyUnit::Sat))
+            .expect("token should be created");
+
         let result = token.value();
         assert!(result.is_err());
 
