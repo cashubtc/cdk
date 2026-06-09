@@ -203,7 +203,7 @@ impl WalletTrait for super::Wallet {
         self.receive(encoded_token, options).await
     }
 
-    #[instrument(skip(self, proofs, options))]
+    #[instrument(skip(self, proofs, options, memo, token))]
     async fn receive_proofs(
         &self,
         proofs: Proofs,
