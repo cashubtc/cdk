@@ -111,15 +111,19 @@ impl CompensatingAction for RevertProofReservation {
                 .map_err(Error::Database)?
         };
 
-        let ys_to_revert: Vec<_> = current_proofs
+        let mut proofs_to_revert: Vec<_> = current_proofs
             .into_iter()
             .filter(|p| p.state == State::Reserved || p.state == State::Pending)
-            .map(|p| p.y)
             .collect();
 
-        if !ys_to_revert.is_empty() {
+        for proof in proofs_to_revert.iter_mut() {
+            proof.state = State::Unspent;
+            proof.used_by_operation = None;
+        }
+
+        if !proofs_to_revert.is_empty() {
             self.localstore
-                .update_proofs_state(ys_to_revert, State::Unspent)
+                .update_proofs(proofs_to_revert, vec![])
                 .await
                 .map_err(Error::Database)?;
         }
