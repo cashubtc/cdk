@@ -250,19 +250,19 @@ async fn subscribe(
 
 async fn set_mint(
     wallet_repository: &WalletRepository,
-    mint_url: &str,
+    _mint_url: &str,
     base_url: &str,
     url: &str,
 ) -> Result<()> {
     println!("Setting NpubCash mint URL to: {}", url);
 
     // Update active mint in KV store
-    let mint_url_struct = MintUrl::from_str(mint_url)?;
+    let mint_url_struct = MintUrl::from_str(url)?;
     wallet_repository
         .set_active_npubcash_mint(mint_url_struct)
         .await?;
 
-    let wallet = get_wallet_for_mint(wallet_repository, mint_url).await?;
+    let wallet = get_wallet_for_mint(wallet_repository, url).await?;
 
     // Enable NpubCash if not already enabled
     wallet.enable_npubcash(base_url.to_string()).await?;
@@ -296,6 +296,57 @@ async fn set_mint(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use cdk::mint_url::MintUrl;
+    use cdk::wallet::WalletRepositoryBuilder;
+
+    use super::set_mint;
+
+    #[tokio::test]
+    async fn set_mint_persists_requested_url_not_global_mint() {
+        let localstore = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("memory db"),
+        );
+        let wallet_repository = WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed([0u8; 64])
+            .build()
+            .await
+            .expect("wallet repository builds");
+
+        let global_mint = "https://global-mint.invalid";
+        let requested_mint = "https://requested-mint.invalid";
+
+        let _ = tokio::time::timeout(
+            Duration::from_secs(10),
+            set_mint(
+                &wallet_repository,
+                global_mint,
+                "https://npubcash.invalid",
+                requested_mint,
+            ),
+        )
+        .await;
+
+        let active = wallet_repository
+            .get_active_npubcash_mint()
+            .await
+            .expect("active npubcash mint is readable");
+
+        assert_eq!(
+            active,
+            Some(MintUrl::from_str(requested_mint).expect("valid mint URL"))
+        );
+    }
 }
 
 async fn show_keys(wallet_repository: &WalletRepository, mint_url: &str) -> Result<()> {
