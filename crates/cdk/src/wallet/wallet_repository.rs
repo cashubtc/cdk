@@ -131,6 +131,7 @@ pub struct WalletRepositoryBuilder {
     localstore: Option<Arc<dyn WalletDatabase<database::Error> + Send + Sync>>,
     seed: Option<[u8; 64]>,
     proxy_config: Option<url::Url>,
+    danger_accept_invalid_certs: bool,
     #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
     use_tor: bool,
 }
@@ -141,6 +142,10 @@ impl std::fmt::Debug for WalletRepositoryBuilder {
             .field("localstore", &self.localstore.as_ref().map(|_| "..."))
             .field("seed", &"[REDACTED]")
             .field("proxy_config", &self.proxy_config)
+            .field(
+                "danger_accept_invalid_certs",
+                &self.danger_accept_invalid_certs,
+            )
             .finish()
     }
 }
@@ -158,6 +163,7 @@ impl WalletRepositoryBuilder {
             localstore: None,
             seed: None,
             proxy_config: None,
+            danger_accept_invalid_certs: false,
             #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
             use_tor: false,
         }
@@ -184,6 +190,15 @@ impl WalletRepositoryBuilder {
         self
     }
 
+    /// Disable TLS certificate verification for proxied HTTPS clients.
+    ///
+    /// This permits man-in-the-middle attacks and should only be used for
+    /// local debugging or trusted test environments.
+    pub fn danger_accept_invalid_certs(mut self, accept_invalid_certs: bool) -> Self {
+        self.danger_accept_invalid_certs = accept_invalid_certs;
+        self
+    }
+
     /// Enable Tor transport
     #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
     pub fn tor(mut self) -> Self {
@@ -203,6 +218,7 @@ impl WalletRepositoryBuilder {
             seed,
             wallets: Arc::new(RwLock::new(BTreeMap::new())),
             proxy_config: self.proxy_config,
+            danger_accept_invalid_certs: self.danger_accept_invalid_certs,
             #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
             shared_tor_transport: if self.use_tor {
                 Some(TorAsync::new())
@@ -219,6 +235,7 @@ impl WalletRepositoryBuilder {
 fn proxy_http_client(
     mint_url: MintUrl,
     proxy_url: &url::Url,
+    accept_invalid_certs: bool,
 ) -> Result<crate::wallet::HttpClient, Error> {
     match proxy_url.scheme() {
         "http" | "https" | "socks4" | "socks4a" | "socks5" | "socks5h" => {}
@@ -230,7 +247,7 @@ fn proxy_http_client(
         }
     }
 
-    crate::wallet::HttpClient::with_proxy(mint_url, proxy_url.clone(), None, true)
+    crate::wallet::HttpClient::with_proxy(mint_url, proxy_url.clone(), None, accept_invalid_certs)
 }
 
 /// Repository for managing Wallet instances by mint URL and currency unit
@@ -247,6 +264,8 @@ pub struct WalletRepository {
     wallets: Arc<RwLock<BTreeMap<WalletKey, Wallet>>>,
     /// Proxy configuration for HTTP clients (optional)
     proxy_config: Option<url::Url>,
+    /// Whether proxied HTTPS clients should accept invalid TLS certificates
+    danger_accept_invalid_certs: bool,
     /// Shared Tor transport to be cloned into each TorHttpClient (if enabled)
     #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
     shared_tor_transport: Option<TorAsync>,
@@ -461,7 +480,11 @@ impl WalletRepository {
         // Create an HTTP client based on the repository configuration
         let client: Arc<dyn MintConnector + Send + Sync> =
             if let Some(proxy_url) = &self.proxy_config {
-                Arc::new(proxy_http_client(mint_url.clone(), proxy_url)?)
+                Arc::new(proxy_http_client(
+                    mint_url.clone(),
+                    proxy_url,
+                    self.danger_accept_invalid_certs,
+                )?)
             } else {
                 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
                 if let Some(tor) = &self.shared_tor_transport {
@@ -522,7 +545,11 @@ impl WalletRepository {
 
         let wallet = if let Some(proxy_url) = &self.proxy_config {
             // Create wallet with proxy-configured client
-            let client = proxy_http_client(mint_url.clone(), proxy_url)?;
+            let client = proxy_http_client(
+                mint_url.clone(),
+                proxy_url,
+                self.danger_accept_invalid_certs,
+            )?;
             let mut builder = WalletBuilder::new()
                 .mint_url(mint_url.clone())
                 .unit(unit.clone())
@@ -907,6 +934,20 @@ mod tests {
         "gopher://127.0.0.1:1080"
             .parse()
             .expect("Failed to parse proxy URL")
+    }
+
+    #[test]
+    fn builder_verifies_proxy_tls_certificates_by_default() {
+        let builder = WalletRepositoryBuilder::new();
+
+        assert!(!builder.danger_accept_invalid_certs);
+    }
+
+    #[test]
+    fn builder_can_explicitly_accept_invalid_proxy_tls_certificates() {
+        let builder = WalletRepositoryBuilder::new().danger_accept_invalid_certs(true);
+
+        assert!(builder.danger_accept_invalid_certs);
     }
 
     #[tokio::test]
