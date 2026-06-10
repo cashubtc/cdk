@@ -150,6 +150,8 @@ pub struct HttpClientBuilder {
     #[cfg(not(target_arch = "wasm32"))]
     accept_invalid_certs: bool,
     #[cfg(not(target_arch = "wasm32"))]
+    no_redirects: bool,
+    #[cfg(not(target_arch = "wasm32"))]
     proxy: Option<ProxyConfig>,
 }
 
@@ -187,12 +189,23 @@ impl HttpClientBuilder {
         Ok(self)
     }
 
+    /// Disable automatic HTTP redirect following (non-WASM only)
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn no_redirects(mut self) -> Self {
+        self.no_redirects = true;
+        self
+    }
+
     /// Build the HTTP client
     pub fn build(self) -> Response<HttpClient> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let mut builder =
                 reqwest::Client::builder().danger_accept_invalid_certs(self.accept_invalid_certs);
+
+            if self.no_redirects {
+                builder = builder.redirect(reqwest::redirect::Policy::none());
+            }
 
             if let Some(proxy_config) = self.proxy {
                 let proxy_url = proxy_config.url.to_string();
@@ -280,6 +293,12 @@ mod tests {
             let result = HttpClientBuilder::default()
                 .danger_accept_invalid_certs(false)
                 .build();
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_builder_no_redirects() {
+            let result = HttpClientBuilder::default().no_redirects().build();
             assert!(result.is_ok());
         }
 

@@ -30,6 +30,9 @@ pub enum Error {
     /// Invalid URL
     #[error("Invalid URL: {0}")]
     InvalidUrl(#[from] url::ParseError),
+    /// Invalid LNURL callback URL
+    #[error("Invalid LNURL callback URL: {0}")]
+    InvalidCallbackUrl(String),
     /// Failed to fetch pay request data
     #[error("Failed to fetch pay request data: {0}")]
     FetchPayRequest(#[from] crate::Error),
@@ -127,7 +130,7 @@ impl LightningAddress {
         }
 
         // Build callback URL with amount parameter
-        let mut callback_url = Url::parse(&pay_data.callback)?;
+        let mut callback_url = validate_lnurl_callback_url(&pay_data.callback, &self.domain)?;
 
         callback_url
             .query_pairs_mut()
@@ -253,6 +256,41 @@ fn validate_lud16_domain(domain: &str) -> Result<(), Error> {
         ),
         None => Err(Error::InvalidFormat(
             "domain must be a bare host".to_string(),
+        )),
+    }
+}
+
+fn validate_lnurl_callback_url(callback: &str, expected_domain: &str) -> Result<Url, Error> {
+    let url = Url::parse(callback)?;
+
+    if url.scheme() != "https" {
+        return Err(Error::InvalidCallbackUrl(
+            "callback must use HTTPS".to_string(),
+        ));
+    }
+
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(Error::InvalidCallbackUrl(
+            "callback must not include credentials".to_string(),
+        ));
+    }
+
+    if url.fragment().is_some() {
+        return Err(Error::InvalidCallbackUrl(
+            "callback must not include a fragment".to_string(),
+        ));
+    }
+
+    match url.host() {
+        Some(url::Host::Domain(host)) if host == expected_domain => Ok(url),
+        Some(url::Host::Domain(_)) => Err(Error::InvalidCallbackUrl(
+            "callback host must match lightning address domain".to_string(),
+        )),
+        Some(_) => Err(Error::InvalidCallbackUrl(
+            "callback host must be a DNS name".to_string(),
+        )),
+        None => Err(Error::InvalidCallbackUrl(
+            "callback must include a host".to_string(),
         )),
     }
 }
@@ -480,5 +518,28 @@ mod tests {
             result,
             Err(Error::IncorrectInvoiceDescriptionHash)
         ));
+    }
+
+    #[tokio::test]
+    async fn test_request_invoice_rejects_callback_host_mismatch() {
+        let connector = Arc::new(MockMintConnector::new());
+        connector.set_lnurl_pay_request_response(Ok(LnurlPayResponse {
+            callback: "https://127.0.0.1:8332/callback".to_string(),
+            min_sendable: 1,
+            max_sendable: 1_000_000,
+            metadata: "[]".to_string(),
+            tag: Some("payRequest".to_string()),
+            reason: None,
+        }));
+
+        let address = LightningAddress::from_str("alice@example.com").expect("valid address");
+        let result = address
+            .request_invoice(
+                &(connector as Arc<dyn crate::wallet::MintConnector + Send + Sync>),
+                Amount::from(100_000_u64),
+            )
+            .await;
+
+        assert!(matches!(result, Err(Error::InvalidCallbackUrl(_))));
     }
 }

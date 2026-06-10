@@ -180,6 +180,38 @@ where
     }
 }
 
+fn parse_lnurl_callback_url(url: &str) -> Result<Url, Error> {
+    let parsed_url = Url::parse(url).map_err(|e| Error::Custom(format!("Invalid URL: {}", e)))?;
+
+    if parsed_url.scheme() != "https" {
+        return Err(Error::Custom(
+            "LNURL callback URL must use HTTPS".to_string(),
+        ));
+    }
+
+    if !parsed_url.username().is_empty() || parsed_url.password().is_some() {
+        return Err(Error::Custom(
+            "LNURL callback URL must not include credentials".to_string(),
+        ));
+    }
+
+    if parsed_url.fragment().is_some() {
+        return Err(Error::Custom(
+            "LNURL callback URL must not include a fragment".to_string(),
+        ));
+    }
+
+    match parsed_url.host() {
+        Some(url::Host::Domain(host)) if host != "localhost" => Ok(parsed_url),
+        Some(_) => Err(Error::Custom(
+            "LNURL callback URL must use a public DNS host".to_string(),
+        )),
+        None => Err(Error::Custom(
+            "LNURL callback URL must include a host".to_string(),
+        )),
+    }
+}
+
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl<T> MintConnector for HttpClient<T>
@@ -209,8 +241,7 @@ where
         &self,
         url: &str,
     ) -> Result<crate::lightning_address::LnurlPayInvoiceResponse, Error> {
-        let parsed_url =
-            url::Url::parse(url).map_err(|e| Error::Custom(format!("Invalid URL: {}", e)))?;
+        let parsed_url = parse_lnurl_callback_url(url)?;
         self.transport.http_get(parsed_url, None).await
     }
 
@@ -837,6 +868,8 @@ mod tests {
         post_response: Arc<Mutex<Option<String>>>,
         /// Canned JSON string returned by `http_get`.
         get_response: Arc<Mutex<Option<String>>>,
+        /// URLs passed to `http_get`.
+        get_urls: Arc<Mutex<Vec<String>>>,
     }
 
     impl fmt::Debug for MockTransport {
@@ -866,6 +899,7 @@ mod tests {
         where
             R: DeserializeOwned,
         {
+            self.get_urls.lock().expect("lock").push(_url.to_string());
             let json = self
                 .get_response
                 .lock()
@@ -924,6 +958,7 @@ mod tests {
             captured_payload: Arc::new(Mutex::new(None)),
             post_response: Arc::new(Mutex::new(Some(canned_json))),
             get_response: Arc::new(Mutex::new(None)),
+            get_urls: Arc::new(Mutex::new(Vec::new())),
         };
         let captured = transport.captured_payload.clone();
 
@@ -1041,5 +1076,26 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].state(), Some(MintQuoteState::Issued));
         assert!(matches!(responses[0], MintQuoteResponse::Custom { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_lnurl_invoice_rejects_loopback_url_before_transport() {
+        let transport = MockTransport::default();
+        let get_urls = transport.get_urls.clone();
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+
+        let result = client
+            .fetch_lnurl_invoice("http://127.0.0.1:8332/?amount=1000")
+            .await;
+
+        assert!(
+            result.is_err(),
+            "fetch_lnurl_invoice must reject loopback URLs to prevent SSRF"
+        );
+        assert!(
+            get_urls.lock().expect("lock").is_empty(),
+            "invalid LNURL callback must be rejected before transport"
+        );
     }
 }
