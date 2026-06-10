@@ -1066,11 +1066,7 @@ impl MintPayment for CdkLdkNode {
                 )
                 .first()
                 .cloned(),
-            PaymentIdentifier::PaymentId(id) => self.inner.payment(&PaymentId(
-                hex::decode(id)?
-                    .try_into()
-                    .map_err(|_| payment::Error::Custom("Invalid hex".to_string()))?,
-            )),
+            PaymentIdentifier::PaymentId(id) => self.inner.payment(&PaymentId(*id)),
             _ => {
                 return Ok(MakePaymentResponse {
                     payment_lookup_id: request_lookup_id.clone(),
@@ -1094,11 +1090,8 @@ impl MintPayment for CdkLdkNode {
         };
 
         let payment_proof = match payment_details.kind {
-            PaymentKind::Bolt11 {
-                hash: _,
-                preimage,
-                secret: _,
-            } => preimage.map(|p| p.to_string()),
+            PaymentKind::Bolt11 { preimage, .. } => preimage.map(|p| p.to_string()),
+            PaymentKind::Bolt12Offer { preimage, .. } => preimage.map(|p| p.to_string()),
             _ => return Err(Error::UnexpectedPaymentKind.into()),
         };
 
