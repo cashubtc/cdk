@@ -74,10 +74,23 @@ impl SecretKey {
     }
 
     /// Generate random BLS scalar.
+    ///
+    /// Uses rejection sampling so the scalar is uniform over `Fr*`: a canonical
+    /// non-zero value strictly below the field order. Modular reduction of raw
+    /// bytes would bias the distribution and could yield the forbidden zero
+    /// blinding factor.
     pub fn generate_bls() -> Self {
-        let mut bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut bytes);
-        Self::bls_from_reduced_bytes(&bytes)
+        loop {
+            let mut bytes = [0u8; 32];
+            OsRng.fill_bytes(&mut bytes);
+            // `bls_from_slice` only succeeds when the value is canonical (< order);
+            // reject the all-zero scalar so `r` is always in `Fr*`.
+            if bytes != [0u8; 32] {
+                if let Ok(secret_key) = Self::bls_from_slice(&bytes) {
+                    return secret_key;
+                }
+            }
+        }
     }
 
     /// Get secret key as `hex` string.
@@ -245,5 +258,23 @@ impl Drop for SecretKey {
             inner.non_secure_erase();
         }
         tracing::trace!("Secret Key dropped.");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_bls_is_canonical_and_non_zero() {
+        for _ in 0..256 {
+            let key = SecretKey::generate_bls();
+            let bytes = key.to_secret_bytes();
+            // Non-zero.
+            assert_ne!(bytes, [0u8; 32]);
+            // Canonical: re-parsing as a canonical BLS scalar must succeed and round-trip.
+            let reparsed = SecretKey::bls_from_slice(&bytes).expect("canonical scalar");
+            assert_eq!(reparsed.to_secret_bytes(), bytes);
+        }
     }
 }
