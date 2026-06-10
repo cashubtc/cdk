@@ -29,6 +29,16 @@ use crate::wallet::auth::{AuthMintConnector, AuthWallet};
 
 type Cache = (u64, HashSet<(nut19::Method, nut19::Path)>);
 
+fn payment_method_path_segment(method: &PaymentMethod) -> Result<&str, Error> {
+    match method {
+        PaymentMethod::Known(known) => Ok(known.as_str()),
+        PaymentMethod::Custom(method) if PaymentMethod::is_valid_custom_method_name(method) => {
+            Ok(method)
+        }
+        PaymentMethod::Custom(_) => Err(Error::InvalidPaymentMethod),
+    }
+}
+
 /// Http Client
 #[derive(Debug, Clone)]
 pub struct HttpClient<T>
@@ -285,18 +295,15 @@ where
         &self,
         request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<String>, Error> {
-        let method = request.method().to_string();
-        let path = format!("v1/mint/quote/{}", method);
+        let method = request.method();
+        let method_name = payment_method_path_segment(&method)?;
 
         let url = self
             .mint_url
-            .join_paths(&path.split('/').collect::<Vec<_>>())?;
+            .join_paths(&["v1", "mint", "quote", method_name])?;
 
         let auth_token = self
-            .get_auth_token(
-                Method::Post,
-                RoutePath::MintQuote(request.method().to_string()),
-            )
+            .get_auth_token(Method::Post, RoutePath::MintQuote(method.to_string()))
             .await?;
 
         match &request {
@@ -318,10 +325,7 @@ where
             MintQuoteRequest::Custom { request: req, .. } => {
                 let response: cdk_common::nut04::MintQuoteCustomResponse<String> =
                     self.transport.http_post(url, auth_token, req).await?;
-                Ok(MintQuoteResponse::Custom {
-                    method: request.method(),
-                    response,
-                })
+                Ok(MintQuoteResponse::Custom { method, response })
             }
         }
     }
@@ -387,13 +391,14 @@ where
 
                 Ok(MintQuoteResponse::Onchain(response))
             }
-            PaymentMethod::Custom(method_name) => {
+            PaymentMethod::Custom(_) => {
+                let method_name = payment_method_path_segment(&method)?;
                 let url =
                     self.mint_url
                         .join_paths(&["v1", "mint", "quote", method_name, quote_id])?;
 
                 let auth_token = self
-                    .get_auth_token(Method::Get, RoutePath::MintQuote(method_name.clone()))
+                    .get_auth_token(Method::Get, RoutePath::MintQuote(method_name.to_string()))
                     .await?;
 
                 let response: MintQuoteCustomResponse<String> =
@@ -411,6 +416,7 @@ where
         method: &PaymentMethod,
         request: MintRequest<String>,
     ) -> Result<MintResponse, Error> {
+        let method_name = payment_method_path_segment(method)?;
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::Mint(method.to_string()))
             .await?;
@@ -422,7 +428,7 @@ where
             PaymentMethod::Known(KnownMethod::Bolt12) => {
                 nut19::Path::Custom("/v1/mint/bolt12".to_string())
             }
-            PaymentMethod::Custom(m) => nut19::Path::custom_mint(m),
+            PaymentMethod::Custom(_) => nut19::Path::custom_mint(method_name),
             PaymentMethod::Known(KnownMethod::Onchain) => {
                 nut19::Path::Custom("/v1/mint/onchain".to_string())
             }
@@ -439,12 +445,13 @@ where
         method: &PaymentMethod,
         request: BatchCheckMintQuoteRequest<String>,
     ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
-        let url =
-            self.mint_url
-                .join_paths(&["v1", "mint", "quote", &method.to_string(), "check"])?;
+        let method_name = payment_method_path_segment(method)?;
+        let url = self
+            .mint_url
+            .join_paths(&["v1", "mint", "quote", method_name, "check"])?;
 
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MintQuote(method.to_string()))
+            .get_auth_token(Method::Post, RoutePath::MintQuote(method_name.to_string()))
             .await?;
 
         match method {
@@ -493,11 +500,12 @@ where
         method: &PaymentMethod,
         request: BatchMintRequest<String>,
     ) -> Result<MintResponse, Error> {
+        let method_name = payment_method_path_segment(method)?;
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::Mint(method.to_string()))
             .await?;
 
-        let path = nut19::Path::Custom(format!("/v1/mint/{}/batch", method));
+        let path = nut19::Path::Custom(format!("/v1/mint/{method_name}/batch"));
 
         self.retriable_http_request(nut19::Method::Post, path, auth_token, &request)
             .await
@@ -509,14 +517,14 @@ where
         &self,
         request: MeltQuoteRequest,
     ) -> Result<MeltQuoteCreateResponse<String>, Error> {
-        let method = request.method().to_string();
-        let path = format!("v1/melt/quote/{}", method);
+        let method = request.method();
+        let method_name = payment_method_path_segment(&method)?;
 
         let url = self
             .mint_url
-            .join_paths(&path.split('/').collect::<Vec<_>>())?;
+            .join_paths(&["v1", "melt", "quote", method_name])?;
         let auth_token = self
-            .get_auth_token(Method::Post, RoutePath::MeltQuote(method))
+            .get_auth_token(Method::Post, RoutePath::MeltQuote(method.to_string()))
             .await?;
 
         match &request {
@@ -538,10 +546,7 @@ where
             MeltQuoteRequest::Custom(req) => {
                 let response: cdk_common::nut05::MeltQuoteCustomResponse<String> =
                     self.transport.http_post(url, auth_token, req).await?;
-                Ok(MeltQuoteCreateResponse::Custom((
-                    request.method(),
-                    response,
-                )))
+                Ok(MeltQuoteCreateResponse::Custom((method, response)))
             }
         }
     }
@@ -607,13 +612,14 @@ where
 
                 Ok(MeltQuoteResponse::Onchain(response))
             }
-            PaymentMethod::Custom(method_name) => {
+            PaymentMethod::Custom(_) => {
+                let method_name = payment_method_path_segment(&method)?;
                 let url =
                     self.mint_url
                         .join_paths(&["v1", "melt", "quote", method_name, quote_id])?;
 
                 let auth_token = self
-                    .get_auth_token(Method::Get, RoutePath::MeltQuote(method_name.clone()))
+                    .get_auth_token(Method::Get, RoutePath::MeltQuote(method_name.to_string()))
                     .await?;
 
                 let response: cdk_common::nut05::MeltQuoteCustomResponse<String> =
@@ -632,6 +638,7 @@ where
         method: &PaymentMethod,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteResponse<String>, Error> {
+        let method_name = payment_method_path_segment(method)?;
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::Melt(method.to_string()))
             .await?;
@@ -643,7 +650,7 @@ where
             PaymentMethod::Known(KnownMethod::Bolt12) => {
                 nut19::Path::Custom("/v1/melt/bolt12".to_string())
             }
-            PaymentMethod::Custom(m) => nut19::Path::custom_melt(m),
+            PaymentMethod::Custom(_) => nut19::Path::custom_melt(method_name),
             PaymentMethod::Known(KnownMethod::Onchain) => {
                 nut19::Path::Custom("/v1/melt/onchain".to_string())
             }
@@ -856,6 +863,7 @@ mod tests {
 
     use super::*;
     use crate::nuts::nut04::MintQuoteCustomRequest;
+    use crate::nuts::nut05::MeltQuoteCustomRequest;
 
     /// A mock transport that captures the serialized POST payload and returns
     /// a canned JSON response. Follows the same canned-response pattern as
@@ -870,6 +878,8 @@ mod tests {
         get_response: Arc<Mutex<Option<String>>>,
         /// URLs passed to `http_get`.
         get_urls: Arc<Mutex<Vec<String>>>,
+        /// URLs passed to `http_post`.
+        post_urls: Arc<Mutex<Vec<String>>>,
     }
 
     impl fmt::Debug for MockTransport {
@@ -919,6 +929,7 @@ mod tests {
             P: serde::Serialize + ?Sized + Send + Sync,
             R: DeserializeOwned,
         {
+            self.post_urls.lock().expect("lock").push(_url.to_string());
             // Capture the serialized payload for test assertions
             let value = serde_json::to_value(payload).map_err(|e| Error::Custom(e.to_string()))?;
             *self.captured_payload.lock().expect("lock") = Some(value);
@@ -959,6 +970,7 @@ mod tests {
             post_response: Arc::new(Mutex::new(Some(canned_json))),
             get_response: Arc::new(Mutex::new(None)),
             get_urls: Arc::new(Mutex::new(Vec::new())),
+            post_urls: Arc::new(Mutex::new(Vec::new())),
         };
         let captured = transport.captured_payload.clone();
 
@@ -1006,6 +1018,102 @@ mod tests {
         let parsed = parsed.expect("already checked");
         assert_eq!(parsed.amount, cdk_common::Amount::from(1000));
         assert_eq!(parsed.unit, cdk_common::CurrencyUnit::Sat);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_custom_method_is_rejected_before_transport() {
+        let transport = MockTransport::default();
+        let get_urls = transport.get_urls.clone();
+        let post_urls = transport.post_urls.clone();
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+        let invalid_method = PaymentMethod::Custom("../../v1/swap".to_string());
+
+        let result = client
+            .post_mint_quote(MintQuoteRequest::Custom {
+                method: invalid_method.clone(),
+                request: MintQuoteCustomRequest {
+                    amount: cdk_common::Amount::from(1000),
+                    unit: cdk_common::CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                    extra: serde_json::Value::Null,
+                },
+            })
+            .await;
+        assert!(matches!(result, Err(Error::InvalidPaymentMethod)));
+
+        let result = client
+            .get_mint_quote_status(invalid_method.clone(), "test-quote-id")
+            .await;
+        assert!(matches!(result, Err(Error::InvalidPaymentMethod)));
+
+        let result = client
+            .post_mint(
+                &invalid_method,
+                MintRequest {
+                    quote: "test-quote-id".to_string(),
+                    outputs: Vec::new(),
+                    signature: None,
+                },
+            )
+            .await;
+        assert!(matches!(result, Err(Error::InvalidPaymentMethod)));
+
+        let result = client
+            .post_batch_check_mint_quote_status(
+                &invalid_method,
+                BatchCheckMintQuoteRequest {
+                    quotes: vec!["test-quote-id".to_string()],
+                },
+            )
+            .await;
+        assert!(matches!(result, Err(Error::InvalidPaymentMethod)));
+
+        let result = client
+            .post_batch_mint(
+                &invalid_method,
+                BatchMintRequest {
+                    quotes: vec!["test-quote-id".to_string()],
+                    quote_amounts: None,
+                    outputs: Vec::new(),
+                    signatures: None,
+                },
+            )
+            .await;
+        assert!(matches!(result, Err(Error::InvalidPaymentMethod)));
+
+        let result = client
+            .post_melt_quote(MeltQuoteRequest::Custom(MeltQuoteCustomRequest {
+                method: "../../v1/swap".to_string(),
+                request: "custom-payment-request".to_string(),
+                unit: cdk_common::CurrencyUnit::Sat,
+                extra: serde_json::Value::Null,
+            }))
+            .await;
+        assert!(matches!(result, Err(Error::InvalidPaymentMethod)));
+
+        let result = client
+            .get_melt_quote_status(invalid_method.clone(), "test-quote-id")
+            .await;
+        assert!(matches!(result, Err(Error::InvalidPaymentMethod)));
+
+        let result = client
+            .post_melt(
+                &invalid_method,
+                MeltRequest::new("test-quote-id".to_string(), Vec::new(), None),
+            )
+            .await;
+        assert!(matches!(result, Err(Error::InvalidPaymentMethod)));
+
+        assert!(
+            get_urls.lock().expect("lock").is_empty(),
+            "invalid custom method must be rejected before GET transport"
+        );
+        assert!(
+            post_urls.lock().expect("lock").is_empty(),
+            "invalid custom method must be rejected before POST transport"
+        );
     }
 
     #[tokio::test]
