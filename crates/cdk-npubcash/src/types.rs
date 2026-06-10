@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 
 /// Default mint URL used when quote doesn't specify one
 const DEFAULT_MINT_URL: &str = "http://localhost:3338";
+/// Default expiry offset for quotes that do not provide an explicit expiry
+const DEFAULT_QUOTE_EXPIRY_SECS: u64 = 86_400;
 
 /// A quote from the NpubCash service
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,7 +150,7 @@ impl From<Quote> for MintQuote {
 
         let expiry = quote
             .expires_at
-            .unwrap_or_else(|| quote.created_at.saturating_add(86_400));
+            .unwrap_or_else(|| quote.created_at.saturating_add(DEFAULT_QUOTE_EXPIRY_SECS));
 
         Self {
             id: quote.id,
