@@ -527,7 +527,7 @@ impl SupabaseWalletDatabase {
             serde_json::from_str(params_json).map_err(Error::Serde)?
         };
 
-        let path = format!("rest/v1/rpc/{}", function_name);
+        let path = format!("rest/v1/rpc/{}", url_encode(function_name));
         let url = self.join_url(&path)?;
         let auth_bearer = self.get_auth_bearer().await;
 
@@ -3171,6 +3171,45 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&response)
                 .expect("RPC response should be JSON"),
             json!({ "updated": 1 })
+        );
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn call_rpc_encodes_function_name_path_segments() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock(
+                "POST",
+                "/rest/v1/rpc/..%2F..%2F..%2Fauth%2Fv1%2Fadmin%2Fusers",
+            )
+            .match_header("apikey", "anon-key")
+            .match_header("authorization", "Bearer jwt-token")
+            .match_header("content-type", "application/json")
+            .match_body(Matcher::Json(json!({})))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"ok":true}"#)
+            .create_async()
+            .await;
+
+        let db = SupabaseWalletDatabase::new(
+            Url::parse(&server.url()).expect("mock server URL should parse"),
+            "anon-key".to_string(),
+        )
+        .await
+        .expect("database should initialize");
+        db.set_jwt_token(Some("jwt-token".to_string())).await;
+
+        let response = db
+            .call_rpc("../../../auth/v1/admin/users", "{}")
+            .await
+            .expect("RPC request should succeed");
+
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&response)
+                .expect("RPC response should be JSON"),
+            json!({ "ok": true })
         );
         mock.assert_async().await;
     }
