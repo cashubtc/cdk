@@ -189,16 +189,24 @@ fn derive_batch_weights(
     let challenge = Sha256Hash::hash(&transcript).to_byte_array();
     (0..mint_pubkeys.len())
         .map(|i| {
-            let mut counter = 0u8;
+            // Per NUT-00, derive each weight by rejection sampling in `Fr*`:
+            //   h = SHA256(challenge || u32_BE(i) || u32_BE(ctr))
+            //   x = OS2IP(h); reject if x == 0 or x >= BLS_FR_ORDER.
+            // `BlsSecretKey::from_bytes` interprets `h` big-endian and only succeeds
+            // when x < BLS_FR_ORDER (canonical), so it rejects the out-of-range case;
+            // we additionally reject the zero scalar. Plain modular reduction would
+            // bias the distribution and diverge from the spec's deterministic weights.
+            let mut counter = 0u32;
             loop {
-                let mut weight_material = Vec::with_capacity(37);
+                let mut weight_material = Vec::with_capacity(40);
                 weight_material.extend_from_slice(&challenge);
                 weight_material.extend_from_slice(&(i as u32).to_be_bytes());
-                weight_material.push(counter);
+                weight_material.extend_from_slice(&counter.to_be_bytes());
                 let weight = Sha256Hash::hash(&weight_material).to_byte_array();
-                let scalar = BlsSecretKey::from_reduced_bytes(&weight);
-                if scalar.scalar() != Scalar::zero() {
-                    return scalar;
+                if let Ok(scalar) = BlsSecretKey::from_bytes(&weight) {
+                    if scalar.scalar() != Scalar::zero() {
+                        return scalar;
+                    }
                 }
                 counter = counter
                     .checked_add(1)
@@ -254,6 +262,45 @@ pub(crate) fn batch_verify_pairing(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hex_to_g1(hex: &str) -> BlsG1PublicKey {
+        BlsG1PublicKey::from_bytes(&crate::util::hex::decode(hex).expect("hex")).expect("g1")
+    }
+
+    fn hex_to_g2(hex: &str) -> BlsG2PublicKey {
+        BlsG2PublicKey::from_bytes(&crate::util::hex::decode(hex).expect("hex")).expect("g2")
+    }
+
+    /// NUT-00 batch verification test vector: two proofs under the same mint key
+    /// `K = 2·G2`. Exercises both rejection-sampling code paths: `weight_1` is
+    /// accepted at `ctr = 4` and `weight_2` at `ctr = 0`.
+    #[test]
+    fn test_batch_weight_derivation_nut00_vector() {
+        let k = hex_to_g2(
+            "aa4edef9c1ed7f729f520e47730a124fd70662a904ba1074728114d1031e1572c6c886f6b57ec72a6178288c47c335771638533957d540a9d2370f17cc7ed5863bc0b995b8825e0ee1ea1e1e4d00dbae81f14b0bf3611b78c952aacab827a053",
+        );
+        let c1 = hex_to_g1(
+            "acebf797506a7031cef3189904715cb22792528f1ea0e6ab25341401d245539438ed97122f00e38ee6185cc20b09ba11",
+        );
+        let c2 = hex_to_g1(
+            "9776497ad47a00f8a56233fb88f939b0572cf174a4c6d2446c0b1060434e305fae6845fd1f68b70376ba53ffe67f0414",
+        );
+        let mint_pubkeys = [k, k];
+        let signatures = [c1, c2];
+        let messages: [&[u8]; 2] = [b"batch_proof_1", b"batch_proof_2"];
+
+        let weights = derive_batch_weights(&mint_pubkeys, &signatures, &messages);
+
+        assert_eq!(
+            crate::util::hex::encode(weights[0].to_bytes()),
+            "0e7ff8be2ccb756d4ef390991bdd77eb65e8db624a2729fa1657c3cf8d7d4b55"
+        );
+        assert_eq!(
+            crate::util::hex::encode(weights[1].to_bytes()),
+            "6d026a181a6215b233e73b121d01908a1a1eb6911955bea5130bbf2f2966554d"
+        );
+        assert!(batch_verify_pairing(&mint_pubkeys, &signatures, &messages));
+    }
 
     #[test]
     fn test_reject_g1_identity_point() {
