@@ -51,6 +51,10 @@ uuid = { workspace = true, features = ["js"], optional = true }
 bip39.workspace = true
 nostr-sdk.workspace = true
 
+[[example]]
+name = "nut-ctf"
+required-features = ["conditional-tokens"]
+
 [lints.rust]
 unsafe_code = "forbid"
 unreachable_pub = "warn"

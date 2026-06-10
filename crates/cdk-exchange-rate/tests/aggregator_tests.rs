@@ -1,7 +1,7 @@
 //! Aggregating oracle behavior tests with canned, no-network sources.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
@@ -224,14 +224,21 @@ async fn test_clock_offset_rejection() {
 
 #[tokio::test]
 async fn test_concurrent_fetch_timeout_isolation() {
-    let (slow, slow_calls) =
-        CannedSource::boxed("slow", Behavior::DelayThenRate(Duration::from_secs(2), 5000.0));
+    let (slow, slow_calls) = CannedSource::boxed(
+        "slow",
+        Behavior::DelayThenRate(Duration::from_secs(2), 5000.0),
+    );
     let config = AggregatorConfig {
         fetch_timeout_secs: 1,
         ..AggregatorConfig::default()
     };
     let oracle = AggregatingRateOracle::with_config(
-        vec![slow, source("a", 100.0), source("b", 100.0), source("c", 100.0)],
+        vec![
+            slow,
+            source("a", 100.0),
+            source("b", 100.0),
+            source("c", 100.0),
+        ],
         config,
     );
     let started_at = std::time::Instant::now();
@@ -263,5 +270,8 @@ async fn test_backoff_state_per_source_independent() {
             .consecutive_failures(),
         1
     );
-    assert!(oracle.backoff_state("b", &CurrencyUnit::Usd).await.is_none());
+    assert!(oracle
+        .backoff_state("b", &CurrencyUnit::Usd)
+        .await
+        .is_none());
 }

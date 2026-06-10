@@ -19,6 +19,7 @@ wallet = ["cdk-common/wallet", "cdk-sql-common/wallet"]
 async-trait.workspace = true
 cdk-common = { workspace = true, features = ["test"] }
 bitcoin.workspace = true
+cdk-exchange-rate = { workspace = true }
 cdk-sql-common = { workspace = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }

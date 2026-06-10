@@ -265,6 +265,11 @@ impl Id {
     /// Create [`Id`] v2 from keys, unit, and conditional token parameters.
     /// Builds same base preimage as `v2_from_data`, then appends
     /// `|condition_id:{hex}|outcome_collection_id:{hex}`
+    ///
+    /// # Panics
+    ///
+    /// Panics if the SHA-256 hash prefix cannot be decoded as hex or does not
+    /// fit the fixed short-id byte length.
     #[cfg(feature = "mint")]
     pub fn v2_from_data_conditional(
         map: &Keys,

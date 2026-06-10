@@ -5,7 +5,7 @@ use std::time::SystemTime;
 use cdk_common::nuts::CurrencyUnit;
 
 /// A successful exchange-rate snapshot for one fiat currency unit.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct RateSnapshot {
     /// Fiat unit requested for the snapshot.
     pub fiat: CurrencyUnit,
@@ -20,7 +20,7 @@ pub struct RateSnapshot {
 }
 
 /// One successful source reading and its aggregation decision.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SourceReading {
     /// Human-readable source name.
     pub source_name: String,
@@ -35,7 +35,7 @@ pub struct SourceReading {
 }
 
 /// Metadata for the trimmed-median aggregation process.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AggregationMeta {
     /// Number of successful, non-stale readings available before trimming.
     pub sources_fetched: usize,

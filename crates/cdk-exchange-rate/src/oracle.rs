@@ -307,11 +307,9 @@ impl AggregatingRateOracle {
             return true;
         }
 
-        reading
-            .source_reported_timestamp
-            .is_some_and(|timestamp| {
-                system_time_abs_diff_secs(timestamp, local_now) > self.config.max_clock_offset_secs
-            })
+        reading.source_reported_timestamp.is_some_and(|timestamp| {
+            system_time_abs_diff_secs(timestamp, local_now) > self.config.max_clock_offset_secs
+        })
     }
 
     async fn record_failure(&self, source_name: &str, fiat: &CurrencyUnit) {
