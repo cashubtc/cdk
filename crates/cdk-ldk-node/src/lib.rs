@@ -1097,7 +1097,8 @@ impl MintPayment for CdkLdkNode {
 
         let total_spent = payment_details
             .amount_msat
-            .ok_or(Error::CouldNotGetAmountSpent)?;
+            .ok_or(Error::CouldNotGetAmountSpent)?
+            + payment_details.fee_paid_msat.unwrap_or_default();
 
         Ok(MakePaymentResponse {
             payment_lookup_id: request_lookup_id.clone(),
