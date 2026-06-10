@@ -191,11 +191,11 @@ impl From<cdk_npubcash::UserResponse> for NpubCashUserResponse {
 /// Derive Nostr keys from a wallet seed
 ///
 /// This function derives the same Nostr keys that a wallet would use for NpubCash
-/// authentication. It takes the first 32 bytes of the seed as the secret key.
+/// authentication, using the NIP-06 path `m/44'/1237'/0'/0/0`.
 ///
 /// # Arguments
 ///
-/// * `seed` - The wallet seed bytes (must be at least 32 bytes)
+/// * `seed` - The wallet seed bytes (must be at least 64 bytes)
 ///
 /// # Returns
 ///
@@ -206,14 +206,16 @@ impl From<cdk_npubcash::UserResponse> for NpubCashUserResponse {
 /// Returns an error if the seed is too short or key derivation fails
 #[uniffi::export]
 pub fn npubcash_derive_secret_key_from_seed(seed: Vec<u8>) -> Result<String, FfiError> {
-    if seed.len() < 32 {
+    if seed.len() < 64 {
         return Err(FfiError::internal(
-            "Seed must be at least 32 bytes".to_string(),
+            "Seed must be at least 64 bytes".to_string(),
         ));
     }
 
-    // Use the first 32 bytes of the seed as the secret key
-    let secret_key = nostr_sdk::SecretKey::from_slice(&seed[..32])
+    let seed: [u8; 64] = seed[..64]
+        .try_into()
+        .map_err(|_| FfiError::internal("Failed to read wallet seed bytes".to_string()))?;
+    let secret_key = cdk::wallet::derive_npubcash_secret_key_from_seed(&seed)
         .map_err(|e| FfiError::internal(format!("Failed to derive secret key: {}", e)))?;
 
     Ok(secret_key.to_secret_hex())
@@ -251,5 +253,22 @@ fn parse_nostr_secret_key(key: &str) -> Result<nostr_sdk::Keys, FfiError> {
         let secret_key = nostr_sdk::SecretKey::parse(key)
             .map_err(|e| FfiError::internal(format!("Invalid hex secret key: {}", e)))?;
         Ok(nostr_sdk::Keys::new(secret_key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn npubcash_seed_derivation_uses_wallet_nip06_key() {
+        let seed = [0x42u8; 64];
+        let secret_hex = npubcash_derive_secret_key_from_seed(seed.to_vec())
+            .expect("npubcash key derives from wallet seed");
+        let wallet_secret = cdk::wallet::derive_npubcash_secret_key_from_seed(&seed)
+            .expect("wallet npubcash key derives");
+
+        assert_eq!(secret_hex, wallet_secret.to_secret_hex());
+        assert_ne!(&wallet_secret.to_secret_bytes()[..], &seed[..32]);
     }
 }

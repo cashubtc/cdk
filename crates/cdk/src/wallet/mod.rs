@@ -91,6 +91,8 @@ pub use mint_connector::{
 };
 #[cfg(feature = "nostr")]
 pub use nostr_backup::{BackupOptions, BackupResult, RestoreOptions, RestoreResult};
+#[cfg(feature = "npubcash")]
+pub use npubcash::derive_npubcash_secret_key_from_seed;
 pub use payment_request::CreateRequestParams;
 #[cfg(feature = "nostr")]
 pub use payment_request::NostrWaitInfo;

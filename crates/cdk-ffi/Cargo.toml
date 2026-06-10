@@ -49,7 +49,7 @@ postgres = ["cdk-postgres"]
 # Enable Supabase-backed wallet database support in FFI
 supabase = ["cdk-supabase"]
 # Enable NpubCash client bindings
-npubcash = ["cdk-npubcash", "nostr-sdk"]
+npubcash = ["cdk/npubcash", "cdk-npubcash", "nostr-sdk"]
 
 [dev-dependencies]
 

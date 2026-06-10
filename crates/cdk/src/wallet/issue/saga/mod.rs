@@ -234,8 +234,8 @@ impl<'a> MintSaga<'a, Initial> {
             signature: None,
         };
 
-        if let Some(secret_key) = &quote_info.secret_key {
-            request.sign(secret_key.clone())?;
+        if let Some(secret_key) = self.wallet.mint_quote_signing_key(quote_info).await? {
+            request.sign(secret_key)?;
         } else if quote_info.payment_method.is_bolt12() {
             // Bolt12 requires signature
             tracing::error!("Signature is required for bolt12.");
@@ -523,17 +523,17 @@ impl<'a> MintSaga<'a, Initial> {
         let mut signatures: Vec<Option<String>> = Vec::new();
 
         for quote in &quote_infos {
-            let requires_signature = quote.secret_key.is_some() || quote.payment_method.is_bolt12();
+            let secret_key = match self.wallet.mint_quote_signing_key(quote).await? {
+                Some(secret_key) => Some(secret_key),
+                None => external_keys.and_then(|keys| keys.get(&quote.id)).cloned(),
+            };
+
+            let requires_signature = secret_key.is_some() || quote.payment_method.is_bolt12();
 
             if requires_signature {
-                let secret_key = quote
-                    .secret_key
-                    .as_ref()
-                    .or_else(|| external_keys.and_then(|keys| keys.get(&quote.id)));
-
                 let sk = secret_key.ok_or(Error::SignatureMissingOrInvalid)?;
                 let sig = batch_request
-                    .sign_quote(&quote.id, sk)
+                    .sign_quote(&quote.id, &sk)
                     .map_err(|e| Error::Custom(format!("NUT-20 signing failed: {}", e)))?;
                 signatures.push(Some(sig));
             } else {
@@ -543,9 +543,7 @@ impl<'a> MintSaga<'a, Initial> {
         }
 
         // Check if any quote requires a signature.
-        let has_locked = quote_infos
-            .iter()
-            .any(|q| q.secret_key.is_some() || q.payment_method.is_bolt12());
+        let has_locked = signatures.iter().any(Option::is_some);
         let signatures_to_send = if has_locked { Some(signatures) } else { None };
         batch_request.signatures = signatures_to_send;
 
