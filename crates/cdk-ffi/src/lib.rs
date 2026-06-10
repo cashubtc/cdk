@@ -466,6 +466,32 @@ mod tests {
     }
 
     #[test]
+    fn test_mint_quote_pending_state_does_not_inflate_mintable() {
+        let ffi_quote = MintQuote {
+            id: "test-quote".to_string(),
+            amount: Some(Amount::new(100)),
+            unit: CurrencyUnit::Sat,
+            request: "lnbc1...".to_string(),
+            state: QuoteState::Pending,
+            expiry: u64::MAX,
+            mint_url: MintUrl::new("https://mint.example.com".to_string())
+                .expect("valid mint URL should convert successfully"),
+            amount_issued: Amount::zero(),
+            amount_paid: Amount::zero(),
+            estimated_blocks: None,
+            payment_method: PaymentMethod::Bolt11,
+            secret_key: None,
+            used_by_operation: None,
+            version: 0,
+        };
+
+        let mintable =
+            mint_quote_amount_mintable(&ffi_quote).expect("valid mint quote should convert");
+
+        assert_eq!(mintable.value, 0);
+    }
+
+    #[test]
     fn test_wallet_config() {
         let config = WalletConfig {
             target_proof_count: None,

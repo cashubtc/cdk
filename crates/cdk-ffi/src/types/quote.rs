@@ -596,7 +596,7 @@ impl From<QuoteState> for cdk::nuts::MintQuoteState {
             QuoteState::Unpaid => cdk::nuts::MintQuoteState::Unpaid,
             QuoteState::Paid => cdk::nuts::MintQuoteState::Paid,
             QuoteState::Issued => cdk::nuts::MintQuoteState::Issued,
-            QuoteState::Pending => cdk::nuts::MintQuoteState::Paid, // Map pending to paid
+            QuoteState::Pending => cdk::nuts::MintQuoteState::Unpaid,
         }
     }
 }
