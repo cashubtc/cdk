@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use cdk_mintd::cli::CLIArgs;
-use cdk_mintd::{get_work_directory, load_settings};
+use cdk_mintd::{get_work_directory, load_settings_from_args};
 use clap::Parser;
 use tokio::runtime::Runtime;
 
@@ -16,7 +16,7 @@ fn main() -> Result<()> {
     rt.block_on(async {
         let args = CLIArgs::parse();
         let work_dir = get_work_directory(&args).await?;
-        let settings = load_settings(&work_dir, args.config)?;
+        let settings = load_settings_from_args(&work_dir, &args)?;
 
         #[cfg(feature = "sqlcipher")]
         let password = Some(CLIArgs::parse().password);

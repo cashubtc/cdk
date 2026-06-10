@@ -364,6 +364,9 @@ cdk-mintd --config /path/to/config.toml
 # Start with custom working directory
 cdk-mintd --work-dir /path/to/work/dir
 
+# Start with the mint and active payment backend seed phrase read from a file
+cdk-mintd --seed-file /path/to/seed
+
 # Disable logging
 cdk-mintd --enable-logging false
 
@@ -379,6 +382,10 @@ cdk-mintd --help
 - `CDK_MINTD_FAKE_WALLET_CUSTOM_PAYMENT_METHODS`: Comma-separated fake wallet custom methods, optionally scoped as `method:unit`
 - `CDK_MINTD_LISTEN_HOST`: Host to bind to (default: `127.0.0.1`)
 - `CDK_MINTD_LISTEN_PORT`: Port to bind to (default: `8085`)
+- `CDK_MINTD_MNEMONIC`: Mint seed phrase
+
+
+`--seed-file` reads a BIP-39 seed phrase from a file and applies it to the mint and to active mnemonic-backed payment backends such as BDK. It overrides configured raw mint seeds and mint mnemonics.
 
 For complete configuration options, see the [example configuration file](./example.config.toml).
 

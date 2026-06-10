@@ -256,10 +256,61 @@ pub fn load_settings(work_dir: &Path, config_path: Option<PathBuf>) -> Result<co
         tracing::info!("Config file does not exist. Attempting to read env vars");
         config::Settings::default()
     };
-
     // This check for any settings defined in ENV VARs
     // ENV VARS will take **priority** over those in the config
     settings.from_env()
+}
+
+/// Loads settings from command line arguments, environment variables, and optional seed file.
+pub fn load_settings_from_args(work_dir: &Path, args: &CLIArgs) -> Result<config::Settings> {
+    let mut settings = load_settings(work_dir, args.config.clone())?;
+
+    if let Some(seed_file) = args.seed_file.as_deref() {
+        apply_seed_file(&mut settings, seed_file)?;
+    }
+
+    Ok(settings)
+}
+
+/// Overrides the configured mint and active payment backend mnemonic with a seed file.
+pub fn apply_seed_file(settings: &mut config::Settings, seed_file: &Path) -> Result<()> {
+    let mnemonic = std::fs::read_to_string(seed_file)
+        .with_context(|| format!("Failed to read seed file {}", seed_file.display()))?;
+    let mnemonic = mnemonic.trim();
+
+    if mnemonic.is_empty() {
+        bail!("Seed file {} is empty", seed_file.display());
+    }
+
+    Mnemonic::parse(mnemonic)
+        .with_context(|| format!("Invalid seed phrase in seed file {}", seed_file.display()))?;
+
+    settings.info.seed = None;
+    settings.info.mnemonic = Some(mnemonic.to_owned());
+
+    #[cfg(feature = "bdk")]
+    if settings
+        .onchain
+        .as_ref()
+        .is_some_and(|onchain| onchain.onchain_backend == config::OnchainBackend::Bdk)
+    {
+        let mut bdk = settings.bdk.clone().unwrap_or_default();
+        bdk.mnemonic = Some(mnemonic.to_owned());
+        settings.bdk = Some(bdk);
+    }
+
+    #[cfg(feature = "ldk-node")]
+    if settings
+        .ln
+        .iter()
+        .any(|ln| ln.ln_backend == LnBackend::LdkNode)
+    {
+        let mut ldk_node = settings.ldk_node.clone().unwrap_or_default();
+        ldk_node.ldk_node_mnemonic = Some(mnemonic.to_owned());
+        settings.ldk_node = Some(ldk_node);
+    }
+
+    Ok(())
 }
 
 async fn setup_database(
@@ -1709,9 +1760,143 @@ pub async fn run_mintd_with_shutdown(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use cdk::nuts::{CurrencyUnit, MintMethodSettings, PaymentMethod};
 
     use super::*;
+
+    const TEST_MNEMONIC: &str =
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    fn temp_seed_file(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("cdk_mintd_{name}_{}", std::process::id()))
+    }
+
+    #[test]
+    fn apply_seed_file_sets_mint_mnemonic_from_trimmed_file_contents() {
+        let seed_file = temp_seed_file("seed_file_sets_seed");
+        fs::write(&seed_file, format!("  {TEST_MNEMONIC}\n")).expect("seed file should be written");
+        let mut settings = config::Settings {
+            info: config::Info {
+                seed: Some("raw seed from config".to_string()),
+                mnemonic: Some("mnemonic from config".to_string()),
+                signatory_url: Some("http://127.0.0.1:50051".to_string()),
+                signatory_certs: Some("/tmp/certs".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        apply_seed_file(&mut settings, &seed_file).expect("seed file should be applied");
+
+        assert_eq!(settings.info.seed, None);
+        assert_eq!(settings.info.mnemonic, Some(TEST_MNEMONIC.to_string()));
+        assert_eq!(
+            settings.info.signatory_url,
+            Some("http://127.0.0.1:50051".to_string())
+        );
+        assert_eq!(
+            settings.info.signatory_certs,
+            Some("/tmp/certs".to_string())
+        );
+
+        let _ = fs::remove_file(&seed_file);
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn apply_seed_file_sets_active_bdk_mnemonic() {
+        use crate::config::{Bdk, Onchain, OnchainBackend};
+
+        let seed_file = temp_seed_file("seed_file_sets_bdk_seed");
+        fs::write(&seed_file, TEST_MNEMONIC).expect("seed file should be written");
+        let mut settings = config::Settings {
+            onchain: Some(Onchain {
+                onchain_backend: OnchainBackend::Bdk,
+                ..Default::default()
+            }),
+            bdk: Some(Bdk {
+                mnemonic: Some("old bdk mnemonic".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        apply_seed_file(&mut settings, &seed_file).expect("seed file should be applied");
+
+        assert_eq!(
+            settings
+                .bdk
+                .expect("bdk settings should be present")
+                .mnemonic,
+            Some(TEST_MNEMONIC.to_string())
+        );
+
+        let _ = fs::remove_file(&seed_file);
+    }
+
+    #[cfg(feature = "ldk-node")]
+    #[test]
+    fn apply_seed_file_sets_active_ldk_node_mnemonic() {
+        use crate::config::{LdkNode, Ln, LnBackend};
+
+        let seed_file = temp_seed_file("seed_file_sets_ldk_seed");
+        fs::write(&seed_file, TEST_MNEMONIC).expect("seed file should be written");
+        let mut settings = config::Settings {
+            ln: vec![Ln {
+                ln_backend: LnBackend::LdkNode,
+                ..Default::default()
+            }],
+            ldk_node: Some(LdkNode {
+                ldk_node_mnemonic: Some("old ldk mnemonic".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        apply_seed_file(&mut settings, &seed_file).expect("seed file should be applied");
+
+        assert_eq!(
+            settings
+                .ldk_node
+                .expect("ldk node settings should be present")
+                .ldk_node_mnemonic,
+            Some(TEST_MNEMONIC.to_string())
+        );
+
+        let _ = fs::remove_file(&seed_file);
+    }
+
+    #[test]
+    fn apply_seed_file_rejects_empty_seed_file() {
+        let seed_file = temp_seed_file("empty_seed_file");
+        fs::write(&seed_file, "\n\t ").expect("seed file should be written");
+        let mut settings = config::Settings::default();
+
+        let err = apply_seed_file(&mut settings, &seed_file)
+            .expect_err("empty seed file should be rejected");
+
+        assert!(err.to_string().contains("is empty"));
+        assert_eq!(settings.info.seed, None);
+
+        let _ = fs::remove_file(&seed_file);
+    }
+
+    #[test]
+    fn apply_seed_file_rejects_invalid_seed_phrase() {
+        let seed_file = temp_seed_file("invalid_seed_file");
+        fs::write(&seed_file, "not a valid seed phrase").expect("seed file should be written");
+        let mut settings = config::Settings::default();
+
+        let err = apply_seed_file(&mut settings, &seed_file)
+            .expect_err("invalid seed phrase should be rejected");
+
+        assert!(err.to_string().contains("Invalid seed phrase"));
+        assert_eq!(settings.info.mnemonic, None);
+
+        let _ = fs::remove_file(&seed_file);
+    }
 
     #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
     #[tokio::test]

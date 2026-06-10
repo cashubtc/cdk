@@ -24,6 +24,12 @@ pub struct CLIArgs {
     pub config: Option<PathBuf>,
     #[arg(
         long,
+        help = "Read the mint and active payment backend seed phrase from the specified file",
+        required = false
+    )]
+    pub seed_file: Option<PathBuf>,
+    #[arg(
+        long,
         help = "Enable logging output",
         required = false,
         action = clap::ArgAction::SetTrue,
