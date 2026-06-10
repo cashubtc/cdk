@@ -1,7 +1,6 @@
 name: Publish Docker Images
 
 on:
-  push:
   release:
     types: [published]
   workflow_dispatch:
@@ -11,7 +10,8 @@ on:
         required: true
 
 env:
-  REGISTRY: ghcr.io
+  REGISTRY: docker.io
+  IMAGE_NAME: cashubtc/mintd
 
 jobs:
   build:
@@ -42,32 +42,20 @@ jobs:
             nix_target: cdk-mintd-static
             dockerfile: Dockerfile.hardened
             tag_suffix: "-hardened"
-    runs-on: ${{ (matrix.arch.runner == 'self-hosted' && github.repository != 'cashubtc/cdk') && 'ubuntu-latest' || matrix.arch.runner }}
+    runs-on: ${{ matrix.arch.runner }}
     timeout-minutes: 120
     permissions:
       contents: read
       packages: write
 
     steps:
-      - name: Lowercase image name
-        run: |
-          echo "IMAGE_NAME=${IMAGE_NAME,,}" >> $GITHUB_ENV
-        env:
-          IMAGE_NAME: ${{ github.repository_owner }}/mintd
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.inputs.tag && 'cashubtc/cdk' || github.repository }}
           ref: ${{ github.event.inputs.tag || github.ref }}
 
-      - name: Checkout fork repository (for Dockerfiles)
-        uses: actions/checkout@v4
-        with:
-          path: fork-files
-
       - name: Install Nix
-        if: ${{ matrix.arch.install_nix || (matrix.arch.runner == 'self-hosted' && github.repository != 'cashubtc/cdk') }}
+        if: ${{ matrix.arch.install_nix }}
         uses: DeterminateSystems/nix-installer-action@v14
 
       - name: Set up Cachix
@@ -76,14 +64,11 @@ jobs:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           useDaemon: false
-          installCommand: ${{ (matrix.arch.install_nix || github.repository != 'cashubtc/cdk') && '' || 'nix profile install nixpkgs#cachix' }}
+          installCommand: ${{ matrix.arch.install_nix && '' || 'nix profile install nixpkgs#cachix' }}
         continue-on-error: true
 
       - name: Build static binary
         run: |
-          if [ -d fork-files ]; then
-            cp -f fork-files/Dockerfile* ./
-          fi
           nix build .#${{ matrix.variant.nix_target }} -L
           mkdir -p ./docker-build
           cp -f ./result/bin/* ./docker-build/cdk-mintd
@@ -94,12 +79,11 @@ jobs:
         with:
           driver-opts: network=host
 
-      - name: Login to GitHub Container Registry
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Determine tag
         id: tag
@@ -110,10 +94,8 @@ jobs:
         run: |
           if [[ "$EVENT_NAME" == "release" ]]; then
             RAW_VERSION="$RELEASE_TAG"
-          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            RAW_VERSION="$INPUT_TAG"
           else
-            RAW_VERSION="test-${GITHUB_SHA::8}"
+            RAW_VERSION="$INPUT_TAG"
           fi
           echo "raw_version=${RAW_VERSION}" >> "$GITHUB_OUTPUT"
           echo "version=${RAW_VERSION#v}" >> "$GITHUB_OUTPUT"
@@ -146,18 +128,11 @@ jobs:
             tag_suffix: "-hardened"
 
     steps:
-      - name: Lowercase image name
-        run: |
-          echo "IMAGE_NAME=${IMAGE_NAME,,}" >> $GITHUB_ENV
-        env:
-          IMAGE_NAME: ${{ github.repository_owner }}/mintd
-
-      - name: Login to GitHub Container Registry
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Determine tag
         id: tag
@@ -170,11 +145,8 @@ jobs:
           if [[ "$EVENT_NAME" == "release" ]]; then
             RAW_VERSION="$RELEASE_TAG"
             echo "is_stable=$IS_STABLE" >> "$GITHUB_OUTPUT"
-          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            RAW_VERSION="$INPUT_TAG"
-            echo "is_stable=false" >> "$GITHUB_OUTPUT"
           else
-            RAW_VERSION="test-${GITHUB_SHA::8}"
+            RAW_VERSION="$INPUT_TAG"
             echo "is_stable=false" >> "$GITHUB_OUTPUT"
           fi
           echo "raw_version=${RAW_VERSION}" >> "$GITHUB_OUTPUT"
