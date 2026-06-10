@@ -1,7 +1,9 @@
 //! Rate-converting [`MintPayment`](cdk_common::payment::MintPayment) decorator.
 
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use cdk_common::nuts::CurrencyUnit;
@@ -13,6 +15,7 @@ use cdk_common::payment::{
 use cdk_common::Amount;
 use futures::{Stream, StreamExt};
 use serde::Serialize;
+use tokio::sync::Mutex;
 
 use crate::oracle::RateOracle;
 use crate::store::{DynRateQuoteStore, ParkedPaymentRecord, RateQuoteRecord, RateQuoteStoreError};
@@ -80,6 +83,24 @@ pub enum RateConvertingPaymentError {
     /// Amount overflow.
     #[error("amount overflow")]
     AmountOverflow,
+    /// Quote issuance is paused for this unit and side.
+    #[error("{side} quotes are paused for unit {unit}")]
+    UnitPaused {
+        /// Paused unit.
+        unit: CurrencyUnit,
+        /// Paused quote side.
+        side: &'static str,
+    },
+    /// Unit issuance cap would be exceeded.
+    #[error("issuance cap exceeded for unit {unit}: requested {requested}, available {available}")]
+    IssuanceCapExceeded {
+        /// Capped unit.
+        unit: CurrencyUnit,
+        /// Amount requested.
+        requested: u64,
+        /// Amount still available under the cap.
+        available: u64,
+    },
 }
 
 impl From<RateConvertingPaymentError> for cdk_common::payment::Error {
@@ -88,7 +109,165 @@ impl From<RateConvertingPaymentError> for cdk_common::payment::Error {
             RateConvertingPaymentError::Inner(inner) => inner,
             RateConvertingPaymentError::UnsupportedPaymentOption => Self::UnsupportedPaymentOption,
             RateConvertingPaymentError::UnsupportedUnit(_) => Self::UnsupportedUnit,
+            RateConvertingPaymentError::UnitPaused { .. }
+            | RateConvertingPaymentError::IssuanceCapExceeded { .. } => {
+                Self::Custom(error.to_string())
+            }
             other => Self::Custom(other.to_string()),
+        }
+    }
+}
+
+/// Runtime pause/cap settings for one exposed quote unit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnitQuoteState {
+    /// Refuse new mint quotes for this unit.
+    pub mint_paused: bool,
+    /// Refuse new melt quotes for this unit.
+    pub melt_paused: bool,
+}
+
+#[derive(Debug, Default)]
+struct UnitReservationState {
+    quote_state: UnitQuoteState,
+    cap: u64,
+    reserved: u64,
+    reservations: HashSet<String>,
+}
+
+/// Shared control handle used by the decorator and management RPC.
+#[derive(Debug, Clone, Default)]
+pub struct RateQuoteControlHandle {
+    units: Arc<Mutex<HashMap<CurrencyUnit, UnitReservationState>>>,
+}
+
+impl RateQuoteControlHandle {
+    /// Create an empty rate-quote control handle.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set pause state for one exposed unit.
+    pub async fn set_unit_quote_state(
+        &self,
+        unit: CurrencyUnit,
+        mint_paused: bool,
+        melt_paused: bool,
+    ) {
+        let mut units = self.units.lock().await;
+        let state = units.entry(unit).or_default();
+        state.quote_state = UnitQuoteState {
+            mint_paused,
+            melt_paused,
+        };
+    }
+
+    /// Set the issuance cap for one exposed unit. A cap of `0` means unlimited.
+    pub async fn set_unit_issuance_cap(&self, unit: CurrencyUnit, cap: u64) {
+        let mut units = self.units.lock().await;
+        let state = units.entry(unit).or_default();
+        state.cap = cap;
+    }
+
+    async fn ensure_not_paused(
+        &self,
+        unit: &CurrencyUnit,
+        side: QuoteSide,
+    ) -> Result<(), RateConvertingPaymentError> {
+        let units = self.units.lock().await;
+        let paused = units
+            .get(unit)
+            .map(|state| match side {
+                QuoteSide::Mint => state.quote_state.mint_paused,
+                QuoteSide::Melt => state.quote_state.melt_paused,
+            })
+            .unwrap_or_default();
+        if paused {
+            return Err(RateConvertingPaymentError::UnitPaused {
+                unit: unit.clone(),
+                side: side.as_str(),
+            });
+        }
+        Ok(())
+    }
+
+    async fn reserve(
+        &self,
+        unit: &CurrencyUnit,
+        payment_lookup_id: &PaymentIdentifier,
+        fiat_subunits: u64,
+        expiry_unix: u64,
+    ) -> Result<(), RateConvertingPaymentError> {
+        let mut units = self.units.lock().await;
+        let state = units.entry(unit.clone()).or_default();
+        if state.cap > 0 {
+            let available = state.cap.saturating_sub(state.reserved);
+            if fiat_subunits > available {
+                return Err(RateConvertingPaymentError::IssuanceCapExceeded {
+                    unit: unit.clone(),
+                    requested: fiat_subunits,
+                    available,
+                });
+            }
+        }
+        let key = payment_lookup_id.to_string();
+        if state.reservations.insert(key.clone()) {
+            state.reserved = state.reserved.saturating_add(fiat_subunits);
+        }
+        drop(units);
+
+        self.release_after_expiry(unit.clone(), key, fiat_subunits, expiry_unix);
+        Ok(())
+    }
+
+    async fn release(
+        &self,
+        unit: &CurrencyUnit,
+        payment_lookup_id: &PaymentIdentifier,
+        fiat_subunits: u64,
+    ) {
+        let mut units = self.units.lock().await;
+        let Some(state) = units.get_mut(unit) else {
+            return;
+        };
+        if state.reservations.remove(&payment_lookup_id.to_string()) {
+            state.reserved = state.reserved.saturating_sub(fiat_subunits);
+        }
+    }
+
+    fn release_after_expiry(
+        &self,
+        unit: CurrencyUnit,
+        payment_lookup_id: String,
+        fiat_subunits: u64,
+        expiry_unix: u64,
+    ) {
+        let handle = self.clone();
+        tokio::spawn(async move {
+            let now = unix_time();
+            tokio::time::sleep(Duration::from_secs(expiry_unix.saturating_sub(now))).await;
+            let mut units = handle.units.lock().await;
+            let Some(state) = units.get_mut(&unit) else {
+                return;
+            };
+            if state.reservations.remove(&payment_lookup_id) {
+                state.reserved = state.reserved.saturating_sub(fiat_subunits);
+            }
+        });
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum QuoteSide {
+    Mint,
+    Melt,
+}
+
+impl QuoteSide {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Mint => "mint",
+            Self::Melt => "melt",
         }
     }
 }
@@ -100,6 +279,7 @@ pub struct RateConvertingPayment<T> {
     oracle: Arc<dyn RateOracle>,
     store: DynRateQuoteStore,
     config: RateConvertingPaymentConfig,
+    control: RateQuoteControlHandle,
 }
 
 impl<T> std::fmt::Debug for RateConvertingPayment<T>
@@ -127,7 +307,30 @@ impl<T> RateConvertingPayment<T> {
             oracle,
             store,
             config,
+            control: RateQuoteControlHandle::new(),
         }
+    }
+
+    /// Create a new rate-converting decorator with shared management control.
+    pub fn with_control(
+        inner: T,
+        oracle: Arc<dyn RateOracle>,
+        store: DynRateQuoteStore,
+        config: RateConvertingPaymentConfig,
+        control: RateQuoteControlHandle,
+    ) -> Self {
+        Self {
+            inner,
+            oracle,
+            store,
+            config,
+            control,
+        }
+    }
+
+    /// Return the shared pause/cap control handle.
+    pub fn control_handle(&self) -> RateQuoteControlHandle {
+        self.control.clone()
     }
 
     /// Access the configured fiat unit.
@@ -186,6 +389,9 @@ where
         if options.amount.unit() != &self.config.fiat_unit {
             return Err(SelfError::UnsupportedUnit(options.amount.unit().clone()));
         }
+        self.control
+            .ensure_not_paused(&self.config.fiat_unit, QuoteSide::Mint)
+            .await?;
 
         let fiat_subunits = options.amount.value();
         let (snapshot, sats_invoiced) = self.quote_terms(fiat_subunits).await?;
@@ -216,6 +422,14 @@ where
             expiry_unix,
         };
         self.store.insert(record).await?;
+        self.control
+            .reserve(
+                &self.config.fiat_unit,
+                &response.request_lookup_id,
+                fiat_subunits,
+                expiry_unix,
+            )
+            .await?;
         response.expiry = Some(expiry_unix);
         response.extra_json = merge_extra(response.extra_json, snapshot_json);
         Ok(response)
@@ -229,6 +443,9 @@ where
         if unit != &self.config.fiat_unit {
             return Err(SelfError::UnsupportedUnit(unit.clone()));
         }
+        self.control
+            .ensure_not_paused(&self.config.fiat_unit, QuoteSide::Melt)
+            .await?;
 
         let inner_quote = self
             .inner
@@ -249,13 +466,21 @@ where
         if let Some(payment_lookup_id) = inner_quote.request_lookup_id.clone() {
             self.store
                 .insert(RateQuoteRecord {
-                    payment_lookup_id,
+                    payment_lookup_id: payment_lookup_id.clone(),
                     fiat_unit: self.config.fiat_unit.clone(),
                     fiat_subunits,
                     snapshot_json: snapshot_json.clone(),
                     sats_invoiced: sats_reserved,
                     expiry_unix,
                 })
+                .await?;
+            self.control
+                .reserve(
+                    &self.config.fiat_unit,
+                    &payment_lookup_id,
+                    fiat_subunits,
+                    expiry_unix,
+                )
                 .await?;
         }
 
@@ -285,6 +510,13 @@ where
         else {
             return Ok(response);
         };
+        self.control
+            .release(
+                &record.fiat_unit,
+                &response.payment_lookup_id,
+                record.fiat_subunits,
+            )
+            .await;
 
         Ok(MakePaymentResponse {
             payment_lookup_id: response.payment_lookup_id,
@@ -299,15 +531,17 @@ where
     ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
         let stream = self.inner.wait_payment_event().await?;
         let store = Arc::clone(&self.store);
+        let control = self.control.clone();
         let fiat_unit = self.config.fiat_unit.clone();
 
         Ok(Box::pin(stream.filter_map(move |event| {
             let store = Arc::clone(&store);
+            let control = control.clone();
             let fiat_unit = fiat_unit.clone();
             async move {
                 match event {
                     Event::PaymentReceived(payment) => {
-                        convert_payment_event(store, fiat_unit, payment).await
+                        convert_payment_event(store, control, fiat_unit, payment).await
                     }
                     other => Some(other),
                 }
@@ -335,6 +569,7 @@ where
         for payment in payments {
             if let Some(Event::PaymentReceived(payment)) = convert_payment_event(
                 Arc::clone(&self.store),
+                self.control.clone(),
                 self.config.fiat_unit.clone(),
                 payment,
             )
@@ -361,6 +596,13 @@ where
         else {
             return Ok(response);
         };
+        self.control
+            .release(
+                &record.fiat_unit,
+                &response.payment_lookup_id,
+                record.fiat_subunits,
+            )
+            .await;
 
         Ok(MakePaymentResponse {
             payment_lookup_id: response.payment_lookup_id,
@@ -373,6 +615,7 @@ where
 
 async fn convert_payment_event(
     store: DynRateQuoteStore,
+    control: RateQuoteControlHandle,
     fiat_unit: CurrencyUnit,
     payment: WaitPaymentResponse,
 ) -> Option<Event> {
@@ -387,6 +630,13 @@ async fn convert_payment_event(
                 );
                 return None;
             }
+            control
+                .release(
+                    &record.fiat_unit,
+                    &payment.payment_identifier,
+                    record.fiat_subunits,
+                )
+                .await;
 
             Some(Event::PaymentReceived(WaitPaymentResponse {
                 payment_identifier: payment.payment_identifier,
@@ -566,5 +816,103 @@ mod tests {
         let expiry = effective_expiry(77);
         assert!(expiry >= before.saturating_add(77));
         assert!(expiry <= unix_time().saturating_add(77));
+    }
+
+    #[tokio::test]
+    async fn quote_control_rejects_paused_mint_unit() {
+        let control = RateQuoteControlHandle::new();
+        control
+            .set_unit_quote_state(CurrencyUnit::Usd, true, false)
+            .await;
+
+        let error = control
+            .ensure_not_paused(&CurrencyUnit::Usd, QuoteSide::Mint)
+            .await
+            .expect_err("mint side should be paused");
+        assert!(matches!(
+            error,
+            RateConvertingPaymentError::UnitPaused { side: "mint", .. }
+        ));
+        control
+            .ensure_not_paused(&CurrencyUnit::Usd, QuoteSide::Melt)
+            .await
+            .expect("melt side should stay open");
+    }
+
+    #[tokio::test]
+    async fn quote_control_reserves_against_cap() {
+        let control = RateQuoteControlHandle::new();
+        control.set_unit_issuance_cap(CurrencyUnit::Usd, 100).await;
+        let first = PaymentIdentifier::CustomId("first".to_string());
+        let second = PaymentIdentifier::CustomId("second".to_string());
+
+        control
+            .reserve(
+                &CurrencyUnit::Usd,
+                &first,
+                80,
+                unix_time().saturating_add(60),
+            )
+            .await
+            .expect("first reservation");
+        let error = control
+            .reserve(
+                &CurrencyUnit::Usd,
+                &second,
+                21,
+                unix_time().saturating_add(60),
+            )
+            .await
+            .expect_err("cap should reject over-reservation");
+
+        assert!(matches!(
+            error,
+            RateConvertingPaymentError::IssuanceCapExceeded {
+                requested: 21,
+                available: 20,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn quote_control_releases_reservation_after_expiry() {
+        let control = RateQuoteControlHandle::new();
+        control.set_unit_issuance_cap(CurrencyUnit::Usd, 100).await;
+        let first = PaymentIdentifier::CustomId("first".to_string());
+        let second = PaymentIdentifier::CustomId("second".to_string());
+
+        control
+            .reserve(
+                &CurrencyUnit::Usd,
+                &first,
+                100,
+                unix_time().saturating_add(2),
+            )
+            .await
+            .expect("first reservation");
+        control
+            .reserve(
+                &CurrencyUnit::Usd,
+                &second,
+                1,
+                unix_time().saturating_add(2),
+            )
+            .await
+            .expect_err("cap should initially reject");
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(3)).await;
+        tokio::task::yield_now().await;
+
+        control
+            .reserve(
+                &CurrencyUnit::Usd,
+                &second,
+                1,
+                unix_time().saturating_add(60),
+            )
+            .await
+            .expect("expired reservation should be released");
     }
 }

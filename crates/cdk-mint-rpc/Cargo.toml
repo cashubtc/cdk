@@ -24,6 +24,7 @@ cdk = { workspace = true, features = [
     "mint",
 ] }
 cdk-common = { workspace = true, features = ["grpc"] }
+cdk-exchange-rate.workspace = true
 clap.workspace = true
 tonic = { workspace = true, features = ["transport", "tls-ring", "codegen", "router"] }
 tracing.workspace = true

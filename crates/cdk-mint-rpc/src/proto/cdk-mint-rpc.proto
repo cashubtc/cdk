@@ -19,6 +19,8 @@ service CdkMint {
     rpc GetQuoteTtl(GetQuoteTtlRequest) returns (GetQuoteTtlResponse) {}
     rpc UpdateNut04Quote(UpdateNut04QuoteRequest) returns (UpdateNut04QuoteRequest) {}
     rpc RotateNextKeyset(RotateNextKeysetRequest) returns (RotateNextKeysetResponse) {}
+    rpc SetUnitQuoteState(SetUnitQuoteStateRequest) returns (SetUnitQuoteStateResponse) {}
+    rpc SetUnitIssuanceCap(SetUnitIssuanceCapRequest) returns (SetUnitIssuanceCapResponse) {}
 }
 
 message GetInfoRequest {
@@ -134,4 +136,21 @@ message RotateNextKeysetResponse {
     string unit = 2;
     repeated uint64 amounts = 3;
     uint64 input_fee_ppk = 4;
+}
+
+message SetUnitQuoteStateRequest {
+    string unit = 1;
+    bool mint_paused = 2;
+    bool melt_paused = 3;
+}
+
+message SetUnitQuoteStateResponse {
+}
+
+message SetUnitIssuanceCapRequest {
+    string unit = 1;
+    uint64 cap = 2;
+}
+
+message SetUnitIssuanceCapResponse {
 }
