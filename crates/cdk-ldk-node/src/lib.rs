@@ -981,6 +981,40 @@ impl MintPayment for CdkLdkNode {
         &self,
         payment_identifier: &PaymentIdentifier,
     ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+        // Bolt12 offers are identified by offer id and can be paid more than
+        // once, so collect every settled inbound payment for the offer.
+        if let PaymentIdentifier::OfferId(offer_id) = payment_identifier {
+            let payments = self.inner.list_payments_with_filter(|p| {
+                p.direction == PaymentDirection::Inbound
+                    && p.status == PaymentStatus::Succeeded
+                    && matches!(
+                        &p.kind,
+                        PaymentKind::Bolt12Offer { offer_id: oid, .. } if oid.to_string() == *offer_id
+                    )
+            });
+
+            return Ok(payments
+                .into_iter()
+                .filter_map(|p| {
+                    let payment_id = match &p.kind {
+                        PaymentKind::Bolt12Offer {
+                            hash: Some(hash), ..
+                        } => hash.to_string(),
+                        _ => {
+                            tracing::warn!("Bolt12 payment for offer {} missing hash", offer_id);
+                            return None;
+                        }
+                    };
+
+                    Some(WaitPaymentResponse {
+                        payment_identifier: payment_identifier.clone(),
+                        payment_amount: Amount::new(p.amount_msat?, CurrencyUnit::Msat),
+                        payment_id,
+                    })
+                })
+                .collect());
+        }
+
         let payment_id_str = match payment_identifier {
             PaymentIdentifier::PaymentHash(hash) => hex::encode(hash),
             PaymentIdentifier::CustomId(id) => id.clone(),
