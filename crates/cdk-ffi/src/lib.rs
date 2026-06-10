@@ -437,6 +437,35 @@ mod tests {
     }
 
     #[test]
+    fn test_transaction_invalid_saga_id_returns_error() {
+        let transaction = Transaction {
+            id: TransactionId {
+                hex: "a".repeat(64),
+            },
+            mint_url: MintUrl {
+                url: "https://mint.example.com".to_string(),
+            },
+            direction: TransactionDirection::Outgoing,
+            amount: Amount::new(100),
+            fee: Amount::new(0),
+            unit: CurrencyUnit::Sat,
+            ys: vec![],
+            timestamp: 0,
+            memo: None,
+            metadata: Default::default(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: Some("not-a-valid-uuid".to_string()),
+        };
+
+        let result: Result<cdk::wallet::types::Transaction, _> = transaction.try_into();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_wallet_config() {
         let config = WalletConfig {
             target_proof_count: None,

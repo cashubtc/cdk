@@ -93,7 +93,11 @@ impl TryFrom<Transaction> for cdk::wallet::types::Transaction {
             payment_request: tx.payment_request,
             payment_proof: tx.payment_proof,
             payment_method: tx.payment_method.map(Into::into),
-            saga_id: tx.saga_id.and_then(|id| Uuid::from_str(&id).ok()),
+            saga_id: tx
+                .saga_id
+                .map(|id| Uuid::from_str(&id))
+                .transpose()
+                .map_err(|e| FfiError::internal(format!("Invalid saga_id: {}", e)))?,
         })
     }
 }
