@@ -338,6 +338,15 @@ if [[ "$SUITE" == "all" || "$SUITE" == "ln" ]]; then
         echo "regtest test LDK mint failed, exiting"
         exit 1
     fi
+
+    echo "Running bolt12 test with LDK mint (CLN client)"
+    # Serialized: concurrent fetchinvoice onion messages to ldk-node get dropped
+    # under burst, timing out CLN's invoice fetch (see onchain_regtest precedent)
+    run_test bolt12 -- --test-threads 1
+    if [ $? -ne 0 ]; then
+        echo "bolt12 test with LDK mint failed, exiting"
+        exit 1
+    fi
 fi
 
 if [[ "$SUITE" == "all" || "$SUITE" == "onchain" ]]; then
