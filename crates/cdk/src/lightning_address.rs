@@ -10,6 +10,8 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
 use lightning_invoice::Bolt11Invoice;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -54,6 +56,9 @@ pub enum Error {
         "Returned invoice amount {actual} msat does not match requested amount {expected} msat"
     )]
     IncorrectInvoiceAmount { actual: u64, expected: u64 },
+    /// Returned invoice description hash does not match LNURL metadata
+    #[error("Returned invoice description hash does not match LNURL metadata")]
+    IncorrectInvoiceDescriptionHash,
 }
 
 /// Lightning address - represents a user@domain.com address
@@ -152,6 +157,13 @@ impl LightningAddress {
                 actual: invoice_amount_msat,
                 expected: amount_msat_u64,
             });
+        }
+
+        let expected_description_hash = Sha256Hash::hash(pay_data.metadata.as_bytes());
+        match invoice.description() {
+            lightning_invoice::Bolt11InvoiceDescriptionRef::Hash(hash)
+                if hash.0.as_byte_array() == expected_description_hash.as_byte_array() => {}
+            _ => return Err(Error::IncorrectInvoiceDescriptionHash),
         }
 
         Ok(invoice)
@@ -313,10 +325,33 @@ pub struct LnurlPayInvoiceResponse {
 mod tests {
     use std::sync::Arc;
 
+    use bitcoin::secp256k1::{Secp256k1, SecretKey};
+    use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
+
     use super::*;
     use crate::wallet::test_utils::MockMintConnector;
 
     const INVOICE_100_SATS: &str = "lnbc1u1p53kkd9pp5ve8pd9zr60yjyvs6tn77mndavzrl5lwd2gx5hk934f6q8jwguzgsdqqcqzzsxqyz5vqrzjqvueefmrckfdwyyu39m0lf24sqzcr9vcrmxrvgfn6empxz7phrjxvrttncqq0lcqqyqqqqlgqqqqqqgq2qsp5482y73fxmlvg4t66nupdaph93h7dcmfsg2ud72wajf0cpk3a96rq9qxpqysgqujexd0l89u5dutn8hxnsec0c7jrt8wz0z67rut0eah0g7p6zhycn2vff0ts5vwn2h93kx8zzqy3tzu4gfhkya2zpdmqelg0ceqnjztcqma65pr";
+
+    fn invoice_with_metadata_hash(amount_msat: u64, metadata: &str) -> String {
+        let private_key =
+            SecretKey::from_slice(&[42; 32]).expect("valid fixed private key for test invoice");
+        let payment_hash = Sha256Hash::hash(b"test payment hash");
+        let description_hash = Sha256Hash::hash(metadata.as_bytes());
+        let payment_secret = PaymentSecret([21; 32]);
+
+        InvoiceBuilder::new(Currency::Bitcoin)
+            .description_hash(description_hash)
+            .payment_hash(payment_hash)
+            .payment_secret(payment_secret)
+            .amount_milli_satoshis(amount_msat)
+            .current_timestamp()
+            .min_final_cltv_expiry_delta(144)
+            .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key))
+            .expect("test invoice should build")
+            .to_string()
+    }
+
     #[test]
     fn test_lightning_address_parsing() {
         let addr = LightningAddress::from_str("satoshi@bitcoin.org").unwrap();
@@ -384,18 +419,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_request_invoice_accepts_matching_invoice_amount() {
+    async fn test_request_invoice_accepts_matching_invoice_amount_and_metadata_hash() {
+        let metadata = "[]";
+        let invoice = invoice_with_metadata_hash(100_000, metadata);
         let connector = Arc::new(MockMintConnector::new());
         connector.set_lnurl_pay_request_response(Ok(LnurlPayResponse {
             callback: "https://example.com/callback".to_string(),
             min_sendable: 1,
             max_sendable: 1_000_000,
-            metadata: "[]".to_string(),
+            metadata: metadata.to_string(),
             tag: Some("payRequest".to_string()),
             reason: None,
         }));
         connector.set_lnurl_invoice_response(Ok(LnurlPayInvoiceResponse {
-            pr: Some(INVOICE_100_SATS.to_string()),
+            pr: Some(invoice),
             success_action: None,
             routes: None,
             reason: None,
@@ -411,5 +448,37 @@ mod tests {
             .expect("matching amount should succeed");
 
         assert_eq!(invoice.amount_milli_satoshis(), Some(100_000));
+    }
+
+    #[tokio::test]
+    async fn test_request_invoice_rejects_invoice_when_metadata_does_not_hash() {
+        let connector = Arc::new(MockMintConnector::new());
+        connector.set_lnurl_pay_request_response(Ok(LnurlPayResponse {
+            callback: "https://example.com/callback".to_string(),
+            min_sendable: 1,
+            max_sendable: 1_000_000,
+            metadata: "[[\"text/plain\",\"Coffee for Alice\"]]".to_string(),
+            tag: Some("payRequest".to_string()),
+            reason: None,
+        }));
+        connector.set_lnurl_invoice_response(Ok(LnurlPayInvoiceResponse {
+            pr: Some(INVOICE_100_SATS.to_string()),
+            success_action: None,
+            routes: None,
+            reason: None,
+        }));
+
+        let address = LightningAddress::from_str("alice@example.com").expect("valid address");
+        let result = address
+            .request_invoice(
+                &(connector as Arc<dyn crate::wallet::MintConnector + Send + Sync>),
+                Amount::from(100_000_u64),
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(Error::IncorrectInvoiceDescriptionHash)
+        ));
     }
 }
