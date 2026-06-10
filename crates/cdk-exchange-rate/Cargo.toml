@@ -26,5 +26,8 @@ tracing.workspace = true
 default = []
 sources-http = ["dep:reqwest"]
 
+[dev-dependencies]
+cdk-fake-wallet.workspace = true
+
 [lints]
 workspace = true

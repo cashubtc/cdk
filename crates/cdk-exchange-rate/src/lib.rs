@@ -8,9 +8,9 @@ pub mod types;
 
 pub use oracle::{AggregatingRateOracle, AggregatorConfig, BackoffState, RateOracle, RateSource};
 pub use payment::{
-    PaymentErrorAdapter, RateConvertingPayment, RateConvertingPaymentConfig,
-    RateConvertingPaymentError, RateQuoteControlHandle, SharedMintPayment, UnitQuoteState,
-    DEFAULT_RATE_QUOTE_TTL_SECS,
+    parked_payment_event_count, PaymentErrorAdapter, RateConvertingPayment,
+    RateConvertingPaymentConfig, RateConvertingPaymentError, RateQuoteControlHandle,
+    SharedMintPayment, UnitQuoteState, DEFAULT_RATE_QUOTE_TTL_SECS,
 };
 pub use store::{
     DynRateQuoteStore, InMemoryRateQuoteStore, ParkedPaymentRecord, RateQuoteRecord,

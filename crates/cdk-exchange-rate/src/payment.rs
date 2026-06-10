@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,6 +27,13 @@ const BPS_DENOMINATOR: u64 = 10_000;
 
 /// Default rate-quoted invoice TTL in seconds.
 pub const DEFAULT_RATE_QUOTE_TTL_SECS: u64 = 120;
+
+static PARKED_PAYMENT_EVENTS: AtomicU64 = AtomicU64::new(0);
+
+/// Return the number of orphaned payment events parked by rate-converting processors.
+pub fn parked_payment_event_count() -> u64 {
+    PARKED_PAYMENT_EVENTS.load(Ordering::Relaxed)
+}
 
 /// Rate-converting payment decorator configuration.
 #[derive(Debug, Clone)]
@@ -849,6 +857,7 @@ async fn convert_payment_event(
                     "failed to park orphaned rate-converted payment"
                 );
             } else {
+                PARKED_PAYMENT_EVENTS.fetch_add(1, Ordering::Relaxed);
                 tracing::warn!(
                     payment_lookup_id = %payment.payment_identifier,
                     bolt11_payment_hash = payment.payment_id,
