@@ -33,6 +33,16 @@ enabled = false
 # address = "127.0.0.1"
 # port = 8086
 
+# Optional fiat quote processor that wraps the configured sat backend.
+#[rate_quoter]
+# units = ["usd"]
+# buffer_bps = 100
+# ttl_secs = 120
+# sources = ["coinbase", "kraken", "bitstamp"]
+# staleness_secs = 30
+# quorum = 3
+# per_unit_caps = { usd = 0 }
+
 #[prometheus]
 #enabled = true
 #address = "127.0.0.1"

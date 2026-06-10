@@ -1629,6 +1629,7 @@ dependencies = [
  "cdk-axum",
  "cdk-cln",
  "cdk-common",
+ "cdk-exchange-rate",
  "cdk-fake-wallet",
  "cdk-ldk-node",
  "cdk-lnbits",

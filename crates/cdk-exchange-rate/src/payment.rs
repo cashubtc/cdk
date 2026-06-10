@@ -8,9 +8,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use cdk_common::nuts::CurrencyUnit;
 use cdk_common::payment::{
-    CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse, MintPayment,
-    OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse, SettingsResponse,
-    WaitPaymentResponse,
+    CreateIncomingPaymentResponse, DynMintPayment, Event, IncomingPaymentOptions,
+    MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
+    PaymentQuoteResponse, SettingsResponse, WaitPaymentResponse,
 };
 use cdk_common::Amount;
 use futures::{Stream, StreamExt};
@@ -269,6 +269,195 @@ impl QuoteSide {
             Self::Mint => "mint",
             Self::Melt => "melt",
         }
+    }
+}
+
+/// Adapter that exposes any payment processor error as `cdk_common::payment::Error`.
+#[derive(Debug, Clone)]
+pub struct PaymentErrorAdapter<T> {
+    inner: T,
+}
+
+impl<T> PaymentErrorAdapter<T> {
+    /// Create a new payment error adapter.
+    pub fn new(inner: T) -> Self {
+        Self { inner }
+    }
+}
+
+/// Shared payment processor adapter for trait-object backends.
+#[derive(Clone)]
+pub struct SharedMintPayment {
+    inner: DynMintPayment,
+}
+
+impl std::fmt::Debug for SharedMintPayment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedMintPayment").finish_non_exhaustive()
+    }
+}
+
+impl SharedMintPayment {
+    /// Wrap a shared payment processor.
+    pub fn new(inner: DynMintPayment) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl MintPayment for SharedMintPayment {
+    type Err = cdk_common::payment::Error;
+
+    async fn start(&self) -> Result<(), Self::Err> {
+        self.inner.start().await
+    }
+
+    async fn stop(&self) -> Result<(), Self::Err> {
+        self.inner.stop().await
+    }
+
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+        self.inner.get_settings().await
+    }
+
+    async fn create_incoming_payment_request(
+        &self,
+        options: IncomingPaymentOptions,
+    ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+        self.inner.create_incoming_payment_request(options).await
+    }
+
+    async fn get_payment_quote(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<PaymentQuoteResponse, Self::Err> {
+        self.inner.get_payment_quote(unit, options).await
+    }
+
+    async fn make_payment(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        self.inner.make_payment(unit, options).await
+    }
+
+    async fn wait_payment_event(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
+        self.inner.wait_payment_event().await
+    }
+
+    fn is_payment_event_stream_active(&self) -> bool {
+        self.inner.is_payment_event_stream_active()
+    }
+
+    fn cancel_payment_event_stream(&self) {
+        self.inner.cancel_payment_event_stream();
+    }
+
+    async fn check_incoming_payment_status(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+        self.inner
+            .check_incoming_payment_status(payment_identifier)
+            .await
+    }
+
+    async fn check_outgoing_payment(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        self.inner.check_outgoing_payment(payment_identifier).await
+    }
+}
+
+#[async_trait]
+impl<T> MintPayment for PaymentErrorAdapter<T>
+where
+    T: MintPayment + Send + Sync,
+    T::Err: Into<cdk_common::payment::Error>,
+{
+    type Err = cdk_common::payment::Error;
+
+    async fn start(&self) -> Result<(), Self::Err> {
+        self.inner.start().await.map_err(Into::into)
+    }
+
+    async fn stop(&self) -> Result<(), Self::Err> {
+        self.inner.stop().await.map_err(Into::into)
+    }
+
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+        self.inner.get_settings().await.map_err(Into::into)
+    }
+
+    async fn create_incoming_payment_request(
+        &self,
+        options: IncomingPaymentOptions,
+    ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+        self.inner
+            .create_incoming_payment_request(options)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn get_payment_quote(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<PaymentQuoteResponse, Self::Err> {
+        self.inner
+            .get_payment_quote(unit, options)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn make_payment(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        self.inner
+            .make_payment(unit, options)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn wait_payment_event(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
+        self.inner.wait_payment_event().await.map_err(Into::into)
+    }
+
+    fn is_payment_event_stream_active(&self) -> bool {
+        self.inner.is_payment_event_stream_active()
+    }
+
+    fn cancel_payment_event_stream(&self) {
+        self.inner.cancel_payment_event_stream();
+    }
+
+    async fn check_incoming_payment_status(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+        self.inner
+            .check_incoming_payment_status(payment_identifier)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn check_outgoing_payment(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        self.inner
+            .check_outgoing_payment(payment_identifier)
+            .await
+            .map_err(Into::into)
     }
 }
 

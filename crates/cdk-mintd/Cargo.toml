@@ -46,6 +46,7 @@ cdk-sqlite = { workspace = true, features = [
     "mint"
 ], optional = true  }
 cdk-common = {workspace = true, features = ["prometheus"]}
+cdk-exchange-rate = { workspace = true, features = ["sources-http"] }
 cdk-postgres = { workspace = true, features = ["mint"], optional = true}
 cdk-cln = { workspace = true, optional = true }
 cdk-lnbits = { workspace = true, optional = true }

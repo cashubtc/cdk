@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use bitcoin::hashes::{sha256, Hash};
@@ -667,6 +668,59 @@ fn default_blind() -> AuthType {
     AuthType::Blind
 }
 
+/// Optional fiat rate-quote processor configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RateQuoter {
+    /// Fiat units exposed through the rate-converting decorator.
+    #[serde(default)]
+    pub units: Vec<CurrencyUnit>,
+    /// Mint-favoring buffer in basis points.
+    #[serde(default)]
+    pub buffer_bps: u64,
+    /// Per-unit quote TTL, independent of the global mint TTL.
+    #[serde(default = "default_rate_quoter_ttl_secs")]
+    pub ttl_secs: u64,
+    /// Oracle source identifiers or URLs. Supported values include coinbase,
+    /// kraken, and bitstamp URLs.
+    #[serde(default)]
+    pub sources: Vec<String>,
+    /// Maximum acceptable source staleness in seconds.
+    #[serde(default = "default_rate_quoter_staleness_secs")]
+    pub staleness_secs: u64,
+    /// Minimum oracle source quorum.
+    #[serde(default = "default_rate_quoter_quorum")]
+    pub quorum: usize,
+    /// Per-unit pending quote caps. A cap of 0 means unlimited.
+    #[serde(default)]
+    pub per_unit_caps: HashMap<CurrencyUnit, u64>,
+}
+
+impl Default for RateQuoter {
+    fn default() -> Self {
+        Self {
+            units: Vec::new(),
+            buffer_bps: 0,
+            ttl_secs: default_rate_quoter_ttl_secs(),
+            sources: Vec::new(),
+            staleness_secs: default_rate_quoter_staleness_secs(),
+            quorum: default_rate_quoter_quorum(),
+            per_unit_caps: HashMap::new(),
+        }
+    }
+}
+
+fn default_rate_quoter_ttl_secs() -> u64 {
+    cdk_exchange_rate::DEFAULT_RATE_QUOTE_TTL_SECS
+}
+
+fn default_rate_quoter_staleness_secs() -> u64 {
+    30
+}
+
+fn default_rate_quoter_quorum() -> usize {
+    3
+}
+
 /// CDK settings, derived from `config.toml`
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
@@ -692,6 +746,7 @@ pub struct Settings {
     #[cfg(feature = "management-rpc")]
     pub mint_management_rpc: Option<MintManagementRpc>,
     pub auth: Option<Auth>,
+    pub rate_quoter: Option<RateQuoter>,
     #[cfg(feature = "prometheus")]
     pub prometheus: Option<Prometheus>,
 }
@@ -835,6 +890,42 @@ impl Settings {
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn test_rate_quoter_config_parse() {
+        use std::{env, fs};
+
+        let temp_dir = env::temp_dir().join("cdk_test_rate_quoter_config");
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let config_path = temp_dir.join("config.toml");
+        let config_content = r#"
+[rate_quoter]
+units = ["usd"]
+buffer_bps = 75
+ttl_secs = 90
+sources = ["coinbase", "https://api.kraken.com", "https://www.bitstamp.net"]
+staleness_secs = 45
+quorum = 2
+per_unit_caps = { usd = 1000 }
+"#;
+        fs::write(&config_path, config_content).expect("write config");
+
+        let settings = Settings::new(Some(&config_path));
+        let rate_quoter = settings.rate_quoter.expect("rate quoter config");
+
+        assert_eq!(rate_quoter.units, vec![CurrencyUnit::Usd]);
+        assert_eq!(rate_quoter.buffer_bps, 75);
+        assert_eq!(rate_quoter.ttl_secs, 90);
+        assert_eq!(rate_quoter.sources.len(), 3);
+        assert_eq!(rate_quoter.staleness_secs, 45);
+        assert_eq!(rate_quoter.quorum, 2);
+        assert_eq!(
+            rate_quoter.per_unit_caps.get(&CurrencyUnit::Usd),
+            Some(&1000)
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
 
     #[test]
     fn test_info_debug_impl() {
