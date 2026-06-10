@@ -1,0 +1,28 @@
+[package]
+name = "cdk-exchange-rate"
+version.workspace = true
+edition.workspace = true
+authors = ["CDK Developers"]
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "CDK exchange-rate oracle primitives"
+readme.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+cdk-common = { workspace = true }
+futures.workspace = true
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "rt"] }
+
+[features]
+default = []
+sources-http = ["dep:reqwest", "dep:serde_json", "dep:serde"]
+
+[lints]
+workspace = true
