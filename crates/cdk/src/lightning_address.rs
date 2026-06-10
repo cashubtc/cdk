@@ -69,8 +69,11 @@ impl LightningAddress {
     /// Convert the Lightning address to an HTTPS URL for the LNURL-pay endpoint
     fn to_url(&self) -> Result<Url, Error> {
         // Lightning address spec: https://domain.com/.well-known/lnurlp/user
-        let url_str = format!("https://{}/.well-known/lnurlp/{}", self.domain, self.user);
-        Ok(Url::parse(&url_str)?)
+        let mut url = Url::parse(&format!("https://{}/", self.domain))?;
+        url.path_segments_mut()
+            .map_err(|_| Error::InvalidFormat("domain must be a bare host".to_string()))?
+            .extend([".well-known", "lnurlp", &self.user]);
+        Ok(url)
     }
 
     /// Fetch the LNURL-pay metadata from the service
@@ -161,18 +164,16 @@ impl FromStr for LightningAddress {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let trimmed = s.trim();
 
-        // Parse Lightning address (user@domain)
-        if !trimmed.contains('@') {
-            return Err(Error::InvalidFormat("must contain '@'".to_string()));
-        }
+        let (user, domain) = trimmed
+            .split_once('@')
+            .ok_or_else(|| Error::InvalidFormat("must contain '@'".to_string()))?;
 
-        let parts: Vec<&str> = trimmed.split('@').collect();
-        if parts.len() != 2 {
+        if domain.contains('@') {
             return Err(Error::InvalidFormat("must be user@domain".to_string()));
         }
 
-        let user = parts[0].trim();
-        let domain = parts[1].trim();
+        let user = user.trim();
+        let domain = domain.trim();
 
         if user.is_empty() || domain.is_empty() {
             return Err(Error::InvalidFormat(
@@ -180,10 +181,92 @@ impl FromStr for LightningAddress {
             ));
         }
 
+        validate_lud16_user(user)?;
+        validate_lud16_domain(domain)?;
+
         Ok(LightningAddress {
             user: user.to_string(),
-            domain: domain.to_string(),
+            domain: domain.to_ascii_lowercase(),
         })
+    }
+}
+
+fn validate_lud16_user(user: &str) -> Result<(), Error> {
+    if user == "." || user == ".." {
+        return Err(Error::InvalidFormat(
+            "user must not be a dot segment".to_string(),
+        ));
+    }
+
+    if !user.bytes().all(|b| {
+        b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_' | b'.' | b'+')
+    }) {
+        return Err(Error::InvalidFormat(
+            "user must match LUD-16 character set".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_lud16_domain(domain: &str) -> Result<(), Error> {
+    if domain.contains(['/', '?', '#', '@', ':'])
+        || domain.chars().any(char::is_whitespace)
+        || domain.starts_with('.')
+        || domain.ends_with('.')
+    {
+        return Err(Error::InvalidFormat(
+            "domain must be a bare host".to_string(),
+        ));
+    }
+
+    let url = Url::parse(&format!("https://{domain}/"))?;
+
+    if url.username() != ""
+        || url.password().is_some()
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        return Err(Error::InvalidFormat(
+            "domain must be a bare host".to_string(),
+        ));
+    }
+
+    match url.host() {
+        Some(url::Host::Domain(host)) if host != "localhost" => validate_domain_labels(host),
+        Some(url::Host::Domain(_)) | Some(url::Host::Ipv4(_)) | Some(url::Host::Ipv6(_)) => Err(
+            Error::InvalidFormat("domain must be a public DNS host".to_string()),
+        ),
+        None => Err(Error::InvalidFormat(
+            "domain must be a bare host".to_string(),
+        )),
+    }
+}
+
+fn validate_domain_labels(domain: &str) -> Result<(), Error> {
+    let labels: Vec<&str> = domain.split('.').collect();
+    if labels.len() < 2 {
+        return Err(Error::InvalidFormat(
+            "domain must include at least two labels".to_string(),
+        ));
+    }
+
+    if labels.iter().all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+    }) {
+        Ok(())
+    } else {
+        Err(Error::InvalidFormat(
+            "domain must be a valid DNS name".to_string(),
+        ))
     }
 }
 
@@ -240,6 +323,10 @@ mod tests {
         assert_eq!(addr.user, "satoshi");
         assert_eq!(addr.domain, "bitcoin.org");
         assert_eq!(addr.to_string(), "satoshi@bitcoin.org");
+
+        let tagged_addr = LightningAddress::from_str("satoshi+tips@bitcoin.org").unwrap();
+        assert_eq!(tagged_addr.user, "satoshi+tips");
+        assert_eq!(tagged_addr.domain, "bitcoin.org");
     }
 
     #[test]
@@ -254,11 +341,46 @@ mod tests {
     }
 
     #[test]
+    fn test_lightning_address_to_url_preserves_lnurlp_path() {
+        let addr = LightningAddress::from_str("alice+tips@example.com").unwrap();
+
+        let url = addr.to_url().unwrap();
+
+        assert_eq!(
+            url.as_str(),
+            "https://example.com/.well-known/lnurlp/alice+tips"
+        );
+        assert_eq!(url.path(), "/.well-known/lnurlp/alice+tips");
+    }
+
+    #[test]
     fn test_invalid_lightning_address() {
         assert!(LightningAddress::from_str("invalid").is_err());
         assert!(LightningAddress::from_str("@example.com").is_err());
         assert!(LightningAddress::from_str("user@").is_err());
         assert!(LightningAddress::from_str("user").is_err());
+    }
+
+    #[test]
+    fn test_invalid_lightning_address_user_part() {
+        assert!(LightningAddress::from_str("../admin@example.com").is_err());
+        assert!(LightningAddress::from_str("./admin@example.com").is_err());
+        assert!(LightningAddress::from_str(".@example.com").is_err());
+        assert!(LightningAddress::from_str("..@example.com").is_err());
+        assert!(LightningAddress::from_str("Alice@example.com").is_err());
+        assert!(LightningAddress::from_str("alice%2fadmin@example.com").is_err());
+    }
+
+    #[test]
+    fn test_invalid_lightning_address_domain_part() {
+        assert!(LightningAddress::from_str("alice@example.com/path").is_err());
+        assert!(LightningAddress::from_str("alice@example.com?x=y").is_err());
+        assert!(LightningAddress::from_str("alice@example.com#fragment").is_err());
+        assert!(LightningAddress::from_str("alice@user:pass@example.com").is_err());
+        assert!(LightningAddress::from_str("alice@example.com:443").is_err());
+        assert!(LightningAddress::from_str("alice@127.0.0.1").is_err());
+        assert!(LightningAddress::from_str("alice@[::1]").is_err());
+        assert!(LightningAddress::from_str("alice@localhost").is_err());
     }
 
     #[tokio::test]
