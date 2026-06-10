@@ -5,6 +5,9 @@
 
 use std::sync::Arc;
 
+use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
+use bitcoin::Network;
+use cdk_common::SECP256K1;
 use cdk_npubcash::{JwtAuthProvider, NpubCashClient, Quote};
 use tracing::instrument;
 
@@ -15,6 +18,8 @@ use crate::wallet::Wallet;
 
 /// KV store namespace for npubcash-related data
 pub const NPUBCASH_KV_NAMESPACE: &str = "npubcash";
+/// KV store secondary namespace marking quotes that came from NpubCash
+const QUOTES_KV_SECONDARY_NAMESPACE: &str = "quotes";
 /// KV store key for the last fetch timestamp (stored as u64 Unix timestamp)
 const LAST_FETCH_TIMESTAMP_KEY: &str = "last_fetch_timestamp";
 /// KV store key for the active mint URL
@@ -63,20 +68,44 @@ impl Wallet {
         Ok(())
     }
 
+    /// Derive the NpubCash secret key from the wallet seed
+    ///
+    /// Uses NIP-06 BIP-32 derivation (`m/44'/1237'/0'/0/0`) so the key never
+    /// equals raw seed material and cannot be used to recover the seed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key derivation fails
+    pub(crate) fn derive_npubcash_secret_key(&self) -> Result<SecretKey, Error> {
+        let path = DerivationPath::from(vec![
+            ChildNumber::from_hardened_idx(44)?,
+            ChildNumber::from_hardened_idx(1237)?,
+            ChildNumber::from_hardened_idx(0)?,
+            ChildNumber::from_normal_idx(0)?,
+            ChildNumber::from_normal_idx(0)?,
+        ]);
+
+        let xpriv = Xpriv::new_master(Network::Bitcoin, &self.seed)?;
+
+        Ok(SecretKey::from(
+            xpriv.derive_priv(&SECP256K1, &path)?.private_key,
+        ))
+    }
+
     /// Derive Nostr keys from wallet seed for NpubCash authentication
     ///
-    /// This uses the first 32 bytes of the wallet seed to derive a Nostr keypair.
+    /// Uses NIP-06 derivation (`m/44'/1237'/0'/0/0`) from the wallet seed.
     ///
     /// # Errors
     ///
     /// Returns an error if the key derivation fails
     fn derive_npubcash_keys(&self) -> Result<nostr_sdk::Keys, Error> {
-        use nostr_sdk::SecretKey;
+        let secret_key = self.derive_npubcash_secret_key()?;
 
-        let secret_key = SecretKey::from_slice(&self.seed[..32])
+        let nostr_secret = nostr_sdk::SecretKey::from_slice(&secret_key.to_secret_bytes())
             .map_err(|e| Error::Custom(format!("Failed to derive Nostr keys: {}", e)))?;
 
-        Ok(nostr_sdk::Keys::new(secret_key))
+        Ok(nostr_sdk::Keys::new(nostr_secret))
     }
 
     /// Get the Nostr keys used for NpubCash authentication
@@ -211,8 +240,10 @@ impl Wallet {
 
     /// Add an NpubCash quote to the wallet's mint quote database
     ///
-    /// Converts an NpubCash quote to a wallet MintQuote and stores it using the
-    /// NpubCash-derived secret key for signing.
+    /// Converts an NpubCash quote to a wallet MintQuote and stores it. The
+    /// NUT-20 signing key is not persisted; the quote is marked in the KV
+    /// store so the NpubCash key can be re-derived from the seed at claim
+    /// time.
     ///
     /// # Arguments
     ///
@@ -226,12 +257,7 @@ impl Wallet {
         &self,
         npubcash_quote: cdk_npubcash::Quote,
     ) -> Result<Option<MintQuote>, Error> {
-        let npubcash_keys = self.derive_npubcash_keys()?;
-        let secret_key = SecretKey::from_slice(&npubcash_keys.secret_key().to_secret_bytes())
-            .map_err(|e| Error::Custom(format!("Failed to convert secret key: {}", e)))?;
-
-        let mut mint_quote: MintQuote = npubcash_quote.into();
-        mint_quote.secret_key = Some(secret_key);
+        let mint_quote: MintQuote = npubcash_quote.into();
 
         let exists = self
             .list_transactions(Some(TransactionDirection::Incoming))
@@ -243,10 +269,35 @@ impl Wallet {
             return Ok(None);
         }
 
+        self.localstore
+            .kv_write(
+                NPUBCASH_KV_NAMESPACE,
+                QUOTES_KV_SECONDARY_NAMESPACE,
+                &mint_quote.id,
+                &[],
+            )
+            .await?;
+
         self.localstore.add_mint_quote(mint_quote.clone()).await?;
 
         tracing::info!("Added NpubCash quote {} to wallet database", mint_quote.id);
         Ok(Some(mint_quote))
+    }
+
+    /// Check whether a mint quote was added from NpubCash
+    ///
+    /// NpubCash quotes do not persist their NUT-20 signing key; callers use
+    /// this marker to re-derive it from the seed instead.
+    pub(crate) async fn is_npubcash_quote(&self, quote_id: &str) -> Result<bool, Error> {
+        Ok(self
+            .localstore
+            .kv_read(
+                NPUBCASH_KV_NAMESPACE,
+                QUOTES_KV_SECONDARY_NAMESPACE,
+                quote_id,
+            )
+            .await?
+            .is_some())
     }
 
     /// Get reference to the NpubCash client if enabled
@@ -296,5 +347,120 @@ impl Wallet {
             )
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+    use std::sync::Arc;
+
+    use cdk_common::database::{self, WalletDatabase};
+
+    use super::*;
+    use crate::mint_url::MintUrl;
+    use crate::nuts::CurrencyUnit;
+    use crate::wallet::WalletBuilder;
+
+    async fn build_test_wallet(seed: [u8; 64]) -> Wallet {
+        let localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync> = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("memory db"),
+        );
+
+        WalletBuilder::new()
+            .mint_url(MintUrl::from_str("https://mint.example.com").expect("valid mint url"))
+            .unit(CurrencyUnit::Sat)
+            .localstore(localstore)
+            .seed(seed)
+            .build()
+            .expect("wallet builds")
+    }
+
+    fn test_quote() -> Quote {
+        Quote {
+            id: "npubcash-quote-1".to_string(),
+            amount: 1000,
+            unit: "sat".to_string(),
+            created_at: 0,
+            paid_at: None,
+            expires_at: None,
+            mint_url: Some("https://mint.example.com".to_string()),
+            request: Some("lnbc100n1pjz".to_string()),
+            state: Some("PAID".to_string()),
+            locked: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn npubcash_key_is_nip06_derived_not_raw_seed() {
+        let seed = [0x42u8; 64];
+        let wallet = build_test_wallet(seed).await;
+
+        let secret_key = wallet.derive_npubcash_secret_key().expect("key derives");
+
+        assert_ne!(
+            &secret_key.to_secret_bytes()[..],
+            &seed[..32],
+            "npubcash key must not equal raw wallet seed bytes"
+        );
+
+        let xpriv = Xpriv::new_master(Network::Bitcoin, &seed).expect("master key");
+        let path = DerivationPath::from_str("m/44'/1237'/0'/0/0").expect("valid path");
+        let expected = xpriv
+            .derive_priv(&SECP256K1, &path)
+            .expect("derivation")
+            .private_key;
+
+        assert_eq!(secret_key.to_secret_bytes(), expected.secret_bytes());
+    }
+
+    #[tokio::test]
+    async fn add_npubcash_mint_quote_does_not_persist_secret_key() {
+        let seed = [0x42u8; 64];
+        let wallet = build_test_wallet(seed).await;
+
+        let stored = wallet
+            .add_npubcash_mint_quote(test_quote())
+            .await
+            .expect("add_npubcash_mint_quote succeeds")
+            .expect("quote was inserted");
+
+        assert!(
+            stored.secret_key.is_none(),
+            "npubcash quotes must not carry a persisted secret key"
+        );
+
+        let persisted = wallet
+            .localstore
+            .get_mint_quote(&stored.id)
+            .await
+            .expect("quote lookup")
+            .expect("quote in store");
+        assert!(
+            persisted.secret_key.is_none(),
+            "no secret key may be written to the localstore"
+        );
+
+        assert!(wallet
+            .is_npubcash_quote(&stored.id)
+            .await
+            .expect("kv lookup"));
+
+        let signing_key = wallet
+            .mint_quote_signing_key(&persisted)
+            .await
+            .expect("signing key lookup")
+            .expect("npubcash quote signing key is re-derivable");
+
+        assert_eq!(
+            signing_key.to_secret_bytes(),
+            wallet
+                .derive_npubcash_secret_key()
+                .expect("key derives")
+                .to_secret_bytes()
+        );
+        assert_ne!(&signing_key.to_secret_bytes()[..], &seed[..32]);
     }
 }
