@@ -12,8 +12,8 @@ readme.workspace = true
 
 [dependencies]
 async-trait.workspace = true
-cdk-common = { workspace = true }
-futures.workspace = true
+cdk-common = { workspace = true, features = ["mint"] }
+futures = { workspace = true, features = ["alloc"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 reqwest = { workspace = true, optional = true }

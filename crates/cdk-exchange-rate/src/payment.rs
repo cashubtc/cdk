@@ -21,6 +21,9 @@ use crate::types::{RateOracleError, RateSnapshot};
 /// Number of basis points in 100%.
 const BPS_DENOMINATOR: u64 = 10_000;
 
+/// Default rate-quoted invoice TTL in seconds.
+pub const DEFAULT_RATE_QUOTE_TTL_SECS: u64 = 120;
+
 /// Rate-converting payment decorator configuration.
 #[derive(Debug, Clone)]
 pub struct RateConvertingPaymentConfig {
@@ -39,6 +42,16 @@ impl RateConvertingPaymentConfig {
             fiat_unit,
             buffer_bps,
             ttl_secs,
+        }
+    }
+}
+
+impl Default for RateConvertingPaymentConfig {
+    fn default() -> Self {
+        Self {
+            fiat_unit: CurrencyUnit::Usd,
+            buffer_bps: 0,
+            ttl_secs: DEFAULT_RATE_QUOTE_TTL_SECS,
         }
     }
 }
@@ -176,7 +189,7 @@ where
 
         let fiat_subunits = options.amount.value();
         let (snapshot, sats_invoiced) = self.quote_terms(fiat_subunits).await?;
-        let expiry_unix = effective_expiry(options.unix_expiry, self.config.ttl_secs);
+        let expiry_unix = effective_expiry(self.config.ttl_secs);
         options.amount = Amount::new(sats_invoiced, CurrencyUnit::Sat);
         options.unix_expiry = Some(expiry_unix);
 
@@ -438,11 +451,8 @@ fn sats_for_fiat(
     Ok(buffered.ceil() as u64)
 }
 
-fn effective_expiry(requested_expiry: Option<u64>, ttl_secs: u64) -> u64 {
-    let decorator_expiry = unix_time().saturating_add(ttl_secs);
-    requested_expiry
-        .map(|requested| requested.min(decorator_expiry))
-        .unwrap_or(decorator_expiry)
+fn effective_expiry(ttl_secs: u64) -> u64 {
+    unix_time().saturating_add(ttl_secs)
 }
 
 fn unix_time() -> u64 {
@@ -542,5 +552,19 @@ mod tests {
         assert_eq!(json["fiat_subunits"], 100);
         assert_eq!(json["sats_invoiced"], 1717);
         assert_eq!(json["buffer_bps"], 100);
+    }
+
+    #[test]
+    fn config_defaults_to_120_second_ttl() {
+        let config = RateConvertingPaymentConfig::default();
+        assert_eq!(config.ttl_secs, DEFAULT_RATE_QUOTE_TTL_SECS);
+    }
+
+    #[test]
+    fn effective_expiry_uses_decorator_ttl() {
+        let before = unix_time();
+        let expiry = effective_expiry(77);
+        assert!(expiry >= before.saturating_add(77));
+        assert!(expiry <= unix_time().saturating_add(77));
     }
 }
