@@ -1879,6 +1879,7 @@ dependencies = [
  "once_cell",
  "paste",
  "reqwest",
+ "scrypt",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

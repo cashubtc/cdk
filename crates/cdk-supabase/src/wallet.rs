@@ -8,8 +8,8 @@ use aes_gcm::aead::{Aead, AeadCore, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
-use bitcoin::hashes::{sha256, Hash};
 use bitcoin::secp256k1::rand::rngs::OsRng;
+use bitcoin::secp256k1::rand::RngCore;
 use cdk_common::auth::oidc::OidcClient;
 use cdk_common::common::ProofInfo;
 use cdk_common::database::wallet::Database;
@@ -24,6 +24,7 @@ use cdk_common::wallet::{
     self, MintQuote, Transaction, TransactionDirection, TransactionId, WalletSaga,
 };
 use reqwest::{Client, StatusCode};
+use scrypt::Params as ScryptParams;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use url::Url;
@@ -51,6 +52,14 @@ pub(crate) fn get_schema_sql_inner() -> String {
 fn url_encode(value: &str) -> String {
     urlencoding::encode(value).into_owned()
 }
+
+const ENCRYPTION_METADATA_VERSION: i64 = 1;
+const ENCRYPTION_KDF: &str = "scrypt";
+const ENCRYPTION_SALT_BYTES: usize = 16;
+const ENCRYPTION_KEY_BYTES: usize = 32;
+const SCRYPT_LOG_N: u8 = 15;
+const SCRYPT_R: u32 = 8;
+const SCRYPT_P: u32 = 1;
 
 /// Decode JWT expiration from token string (without verification)
 fn decode_jwt_expiry(token: &str) -> Option<u64> {
@@ -204,7 +213,7 @@ impl SupabaseWalletDatabase {
     /// This must match the latest `schema_version` value set in the migration files.
     /// When adding new migrations, update this constant and set the same value
     /// in the new migration's `INSERT INTO schema_info` statement.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 6;
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 7;
 
     /// Get the full database schema SQL
     ///
@@ -313,12 +322,81 @@ impl SupabaseWalletDatabase {
         *refresh = token;
     }
 
-    /// Derives an AES-256-GCM encryption key from `password` via SHA-256.
-    pub async fn set_encryption_password(&self, password: &str) {
-        let key = sha256::Hash::hash(password.as_bytes());
+    /// Derives an AES-256-GCM encryption key from `password` via scrypt.
+    pub async fn set_encryption_password(&self, password: &str) -> Result<(), Error> {
+        let metadata = self.get_or_create_encryption_metadata().await?;
+        let key = Self::derive_encryption_key(password, &metadata)?;
 
         let mut encryption_key = self.encryption_key.write().await;
-        *encryption_key = Some(*Key::<Aes256Gcm>::from_slice(key.as_byte_array()));
+        *encryption_key = Some(key);
+        Ok(())
+    }
+
+    async fn get_or_create_encryption_metadata(&self) -> Result<EncryptionMetadataTable, Error> {
+        if let Some(metadata) = self.get_encryption_metadata().await? {
+            return Ok(metadata);
+        }
+
+        let metadata = EncryptionMetadataTable::new();
+        let (status, text) = self
+            .insert_request("rest/v1/wallet_encryption_metadata", &metadata)
+            .await?;
+
+        match status {
+            s if s.is_success() => Ok(metadata),
+            StatusCode::CONFLICT => self.get_encryption_metadata().await?.ok_or_else(|| {
+                Error::Supabase(
+                    "wallet encryption metadata conflicted but could not be loaded".to_string(),
+                )
+            }),
+            _ => Err(Error::Supabase(format!(
+                "wallet encryption metadata insert failed: HTTP {} - {}",
+                status, text
+            ))),
+        }
+    }
+
+    async fn get_encryption_metadata(&self) -> Result<Option<EncryptionMetadataTable>, Error> {
+        let path = "rest/v1/wallet_encryption_metadata?select=version,kdf,salt,scrypt_log_n,scrypt_r,scrypt_p&limit=1";
+        let (status, text) = self.get_request(path).await?;
+
+        if !status.is_success() && status != StatusCode::NO_CONTENT {
+            return Err(Error::Supabase(format!(
+                "wallet encryption metadata lookup failed: HTTP {} - {}",
+                status, text
+            )));
+        }
+
+        Ok(Self::parse_response::<EncryptionMetadataTable>(&text)?
+            .and_then(|rows| rows.into_iter().next()))
+    }
+
+    fn derive_encryption_key(
+        password: &str,
+        metadata: &EncryptionMetadataTable,
+    ) -> Result<Key<Aes256Gcm>, Error> {
+        if metadata.version != ENCRYPTION_METADATA_VERSION || metadata.kdf != ENCRYPTION_KDF {
+            return Err(Error::Supabase(format!(
+                "unsupported wallet encryption metadata: version={}, kdf={}",
+                metadata.version, metadata.kdf
+            )));
+        }
+
+        let salt = hex::decode(&metadata.salt)
+            .map_err(|_| Error::Supabase("invalid wallet encryption salt".to_string()))?;
+        let log_n = u8::try_from(metadata.scrypt_log_n)
+            .map_err(|_| Error::Supabase("invalid wallet encryption scrypt log_n".to_string()))?;
+        let r = u32::try_from(metadata.scrypt_r)
+            .map_err(|_| Error::Supabase("invalid wallet encryption scrypt r".to_string()))?;
+        let p = u32::try_from(metadata.scrypt_p)
+            .map_err(|_| Error::Supabase("invalid wallet encryption scrypt p".to_string()))?;
+        let params = ScryptParams::new(log_n, r, p, ENCRYPTION_KEY_BYTES)
+            .map_err(|_| Error::Supabase("invalid wallet encryption scrypt params".to_string()))?;
+        let mut key = [0u8; ENCRYPTION_KEY_BYTES];
+        scrypt::scrypt(password.as_bytes(), &salt, &params, &mut key)
+            .map_err(|_| Error::Supabase("wallet encryption key derivation failed".to_string()))?;
+
+        Ok(*Key::<Aes256Gcm>::from_slice(&key))
     }
 
     async fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>, DatabaseError> {
@@ -2241,6 +2319,36 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 // extra columns added by other applications (e.g., user_id, opt_version) without breaking.
 
 #[derive(Debug, Serialize, Deserialize)]
+struct EncryptionMetadataTable {
+    version: i64,
+    kdf: String,
+    salt: String,
+    scrypt_log_n: i64,
+    scrypt_r: i64,
+    scrypt_p: i64,
+    /// Extra fields from other applications (captured during deserialization, ignored during serialization)
+    #[serde(default, skip_serializing, flatten)]
+    _extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl EncryptionMetadataTable {
+    fn new() -> Self {
+        let mut salt = [0u8; ENCRYPTION_SALT_BYTES];
+        OsRng.fill_bytes(&mut salt);
+
+        Self {
+            version: ENCRYPTION_METADATA_VERSION,
+            kdf: ENCRYPTION_KDF.to_string(),
+            salt: hex::encode(salt),
+            scrypt_log_n: SCRYPT_LOG_N as i64,
+            scrypt_r: SCRYPT_R as i64,
+            scrypt_p: SCRYPT_P as i64,
+            _extra: Default::default(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct KVStoreTable {
     primary_namespace: String,
     secondary_namespace: String,
@@ -2996,6 +3104,16 @@ mod tests {
         ])
     }
 
+    fn encryption_metadata_query() -> Matcher {
+        Matcher::AllOf(vec![
+            Matcher::UrlEncoded(
+                "select".to_string(),
+                "version,kdf,salt,scrypt_log_n,scrypt_r,scrypt_p".to_string(),
+            ),
+            Matcher::UrlEncoded("limit".to_string(), "1".to_string()),
+        ])
+    }
+
     fn jwt_with_expiry(exp: u64) -> String {
         let header = general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"none","typ":"JWT"}"#);
         let payload =
@@ -3029,6 +3147,7 @@ mod tests {
         );
         assert!(schema_sql.contains("CREATE TABLE IF NOT EXISTS schema_info"));
         assert!(schema_sql.contains("CREATE TABLE IF NOT EXISTS p2pk_signing_key"));
+        assert!(schema_sql.contains("CREATE TABLE IF NOT EXISTS wallet_encryption_metadata"));
         assert_eq!(
             versions.last().copied(),
             Some(SupabaseWalletDatabase::REQUIRED_SCHEMA_VERSION)
@@ -3270,13 +3389,114 @@ mod tests {
     }
 
     #[test]
-    fn test_set_encryption_password_key_derivation() {
-        // SHA-256("password") == 5e884898...
-        let key = sha256::Hash::hash(b"password");
-        assert_eq!(
-            hex::encode(key.as_byte_array()),
-            "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"
-        );
+    fn encryption_key_derivation_uses_scrypt_metadata() {
+        use bitcoin::hashes::{sha256, Hash};
+
+        let metadata = EncryptionMetadataTable {
+            version: ENCRYPTION_METADATA_VERSION,
+            kdf: ENCRYPTION_KDF.to_string(),
+            salt: "000102030405060708090a0b0c0d0e0f".to_string(),
+            scrypt_log_n: SCRYPT_LOG_N as i64,
+            scrypt_r: SCRYPT_R as i64,
+            scrypt_p: SCRYPT_P as i64,
+            _extra: Default::default(),
+        };
+        let key = SupabaseWalletDatabase::derive_encryption_key("password", &metadata)
+            .expect("scrypt key derivation should succeed");
+        let raw_sha = sha256::Hash::hash(b"password");
+
+        assert_ne!(key.as_slice(), &raw_sha.as_byte_array()[..]);
+    }
+
+    #[tokio::test]
+    async fn set_encryption_password_creates_metadata_and_sets_key() {
+        use bitcoin::hashes::{sha256, Hash};
+
+        let mut server = mockito::Server::new_async().await;
+        let get_mock = server
+            .mock("GET", "/rest/v1/wallet_encryption_metadata")
+            .match_query(encryption_metadata_query())
+            .match_header("apikey", "anon-key")
+            .match_header("authorization", "Bearer anon-key")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("[]")
+            .create_async()
+            .await;
+        let insert_mock = server
+            .mock("POST", "/rest/v1/wallet_encryption_metadata")
+            .match_header("apikey", "anon-key")
+            .match_header("authorization", "Bearer anon-key")
+            .match_header("prefer", "missing=default")
+            .with_status(201)
+            .create_async()
+            .await;
+
+        let db = SupabaseWalletDatabase::new(
+            Url::parse(&server.url()).expect("mock server URL should parse"),
+            "anon-key".to_string(),
+        )
+        .await
+        .expect("database should initialize");
+
+        db.set_encryption_password("password")
+            .await
+            .expect("encryption password should be set");
+
+        let guard = db.encryption_key.read().await;
+        let key = guard.as_ref().expect("encryption key should be set");
+        let raw_sha = sha256::Hash::hash(b"password");
+        assert_ne!(key.as_slice(), &raw_sha.as_byte_array()[..]);
+
+        get_mock.assert_async().await;
+        insert_mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn set_encryption_password_reuses_existing_metadata() {
+        let mut server = mockito::Server::new_async().await;
+        let salt = "000102030405060708090a0b0c0d0e0f";
+        let get_mock = server
+            .mock("GET", "/rest/v1/wallet_encryption_metadata")
+            .match_query(encryption_metadata_query())
+            .match_header("apikey", "anon-key")
+            .match_header("authorization", "Bearer anon-key")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"[{{"version":1,"kdf":"scrypt","salt":"{salt}","scrypt_log_n":15,"scrypt_r":8,"scrypt_p":1}}]"#
+            ))
+            .create_async()
+            .await;
+
+        let db = SupabaseWalletDatabase::new(
+            Url::parse(&server.url()).expect("mock server URL should parse"),
+            "anon-key".to_string(),
+        )
+        .await
+        .expect("database should initialize");
+
+        db.set_encryption_password("password")
+            .await
+            .expect("encryption password should be set");
+
+        let metadata = EncryptionMetadataTable {
+            version: ENCRYPTION_METADATA_VERSION,
+            kdf: ENCRYPTION_KDF.to_string(),
+            salt: salt.to_string(),
+            scrypt_log_n: SCRYPT_LOG_N as i64,
+            scrypt_r: SCRYPT_R as i64,
+            scrypt_p: SCRYPT_P as i64,
+            _extra: Default::default(),
+        };
+        let expected = SupabaseWalletDatabase::derive_encryption_key("password", &metadata)
+            .expect("scrypt key derivation should succeed");
+
+        let guard = db.encryption_key.read().await;
+        let key = guard.as_ref().expect("encryption key should be set");
+        assert_eq!(key.as_slice(), expected.as_slice());
+
+        get_mock.assert_async().await;
     }
 
     // -------------------------------------------------------------------------
@@ -3354,7 +3574,9 @@ mod tests {
         }
 
         // Each test encrypts its proof secrets with a unique key.
-        db.set_encryption_password(&test_id).await;
+        db.set_encryption_password(&test_id)
+            .await
+            .expect("failed to set Supabase wallet encryption password");
 
         db
     }

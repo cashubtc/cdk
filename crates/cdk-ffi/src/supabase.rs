@@ -110,9 +110,15 @@ impl WalletSupabaseDatabase {
 
     /// Derives an AES-256-GCM encryption key from `password`.
     ///
-    /// The current API does not take a separate salt parameter.
-    pub async fn set_encryption_password(&self, password: String) {
-        self.inner.inner().set_encryption_password(&password).await;
+    /// The salt and KDF parameters are stored in Supabase wallet metadata.
+    pub async fn set_encryption_password(&self, password: String) -> Result<(), FfiError> {
+        self.inner
+            .inner()
+            .set_encryption_password(&password)
+            .await
+            .map_err(|e| FfiError::Internal {
+                error_message: e.to_string(),
+            })
     }
 
     /// Check that the database schema is compatible with this SDK version
