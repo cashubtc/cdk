@@ -611,7 +611,7 @@ impl MintPayment for CdkLdkNode {
                 Ok(CreateIncomingPaymentResponse {
                     request_lookup_id: payment_identifier,
                     request: offer.to_string(),
-                    expiry: time.map(|a| a as u64),
+                    expiry: unix_expiry,
                     extra_json: None,
                 })
             }
