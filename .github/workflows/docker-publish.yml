@@ -116,10 +116,6 @@ jobs:
           pull: true
           platforms: ${{ matrix.arch.docker_platform }}
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }}-${{ matrix.arch.docker_arch }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ steps.tag.outputs.version }}
           cache-from: type=gha,scope=mintd-${{ matrix.variant.name }}-${{ matrix.arch.docker_arch }}
           cache-to: type=gha,mode=max,scope=mintd-${{ matrix.variant.name }}-${{ matrix.arch.docker_arch }}
 
