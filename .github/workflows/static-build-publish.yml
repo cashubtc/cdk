@@ -141,4 +141,7 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           TAG="${INPUT_TAG:-$RELEASE_TAG}"
-          gh workflow run docker-publish.yml --ref "$TAG" --field tag="$TAG"
+          gh workflow run docker-publish.yml \
+            --ref "$TAG" \
+            --field tag="$TAG" \
+            --field static_artifact_run_id="$GITHUB_RUN_ID"
