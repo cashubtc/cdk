@@ -1,13 +1,12 @@
 //! Rate-converting [`MintPayment`](cdk_common::payment::MintPayment) decorator.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
-use cdk_common::nuts::CurrencyUnit;
+use cdk_common::nuts::{CurrencyUnit, MeltQuoteState};
 use cdk_common::payment::{
     CreateIncomingPaymentResponse, DynMintPayment, Event, IncomingPaymentOptions,
     MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
@@ -33,6 +32,17 @@ static PARKED_PAYMENT_EVENTS: AtomicU64 = AtomicU64::new(0);
 /// Return the number of orphaned payment events parked by rate-converting processors.
 pub fn parked_payment_event_count() -> u64 {
     PARKED_PAYMENT_EVENTS.load(Ordering::Relaxed)
+}
+
+static RESERVATION_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Process-unique key for a cap reservation taken before the inner backend
+/// has assigned a payment lookup id.
+fn provisional_reservation_key() -> String {
+    format!(
+        "provisional-{}",
+        RESERVATION_SEQ.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// Rate-converting payment decorator configuration.
@@ -139,46 +149,152 @@ pub struct UnitQuoteState {
     pub melt_paused: bool,
 }
 
+/// One pending (unpaid, unexpired) cap reservation.
+#[derive(Debug, Clone)]
+struct Reservation {
+    fiat_subunits: u64,
+    expiry_unix: u64,
+}
+
 #[derive(Debug, Default)]
-struct UnitReservationState {
+struct UnitControlState {
     quote_state: UnitQuoteState,
     cap: u64,
-    reserved: u64,
-    reservations: HashSet<String>,
+    outstanding: u64,
+    buffer_surplus_sats: u64,
+    reservations: HashMap<String, Reservation>,
+}
+
+impl UnitControlState {
+    /// Drop expired reservations; expiry is enforced lazily on access so no
+    /// background task is needed and reservations survive key rekeying.
+    fn sweep_expired(&mut self, now: u64) {
+        self.reservations
+            .retain(|_, reservation| reservation.expiry_unix > now);
+    }
+
+    fn pending(&self) -> u64 {
+        self.reservations
+            .values()
+            .map(|reservation| reservation.fiat_subunits)
+            .fold(0_u64, u64::saturating_add)
+    }
 }
 
 /// Shared control handle used by the decorator and management RPC.
-#[derive(Debug, Clone, Default)]
+///
+/// Pause flags, the issuance cap, the outstanding issued counter, and the
+/// buffer-surplus reserve are mirrored in memory for cheap cap checks and
+/// written through to the store (when present) so they survive restarts.
+#[derive(Clone, Default)]
 pub struct RateQuoteControlHandle {
-    units: Arc<Mutex<HashMap<CurrencyUnit, UnitReservationState>>>,
+    units: Arc<Mutex<HashMap<CurrencyUnit, UnitControlState>>>,
+    store: Option<DynRateQuoteStore>,
+}
+
+impl std::fmt::Debug for RateQuoteControlHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RateQuoteControlHandle")
+            .field("persisted", &self.store.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl RateQuoteControlHandle {
-    /// Create an empty rate-quote control handle.
+    /// Create an in-memory-only rate-quote control handle.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Set pause state for one exposed unit.
+    /// Create a control handle that writes pause/cap/outstanding state
+    /// through to a durable store.
+    pub fn with_store(store: DynRateQuoteStore) -> Self {
+        Self {
+            units: Arc::default(),
+            store: Some(store),
+        }
+    }
+
+    /// Load persisted unit-control state into memory. Returns the units that
+    /// had a persisted record so callers can seed config defaults for the
+    /// rest without overwriting operator-set values.
+    pub async fn load_persisted(&self) -> Result<Vec<CurrencyUnit>, RateQuoteStoreError> {
+        let Some(store) = &self.store else {
+            return Ok(Vec::new());
+        };
+        let records = store.load_unit_controls().await?;
+        let mut units = self.units.lock().await;
+        let mut loaded = Vec::with_capacity(records.len());
+        for record in records {
+            let state = units.entry(record.unit.clone()).or_default();
+            state.quote_state = UnitQuoteState {
+                mint_paused: record.mint_paused,
+                melt_paused: record.melt_paused,
+            };
+            state.cap = record.cap;
+            state.outstanding = record.outstanding;
+            state.buffer_surplus_sats = record.buffer_surplus_sats;
+            loaded.push(record.unit);
+        }
+        Ok(loaded)
+    }
+
+    /// Set pause state for one exposed unit, persisting it when a store is
+    /// attached.
     pub async fn set_unit_quote_state(
         &self,
         unit: CurrencyUnit,
         mint_paused: bool,
         melt_paused: bool,
-    ) {
+    ) -> Result<(), RateQuoteStoreError> {
+        if let Some(store) = &self.store {
+            store
+                .set_unit_quote_state(&unit, mint_paused, melt_paused)
+                .await?;
+        }
         let mut units = self.units.lock().await;
-        let state = units.entry(unit).or_default();
-        state.quote_state = UnitQuoteState {
+        units.entry(unit).or_default().quote_state = UnitQuoteState {
             mint_paused,
             melt_paused,
         };
+        Ok(())
     }
 
-    /// Set the issuance cap for one exposed unit. A cap of `0` means unlimited.
-    pub async fn set_unit_issuance_cap(&self, unit: CurrencyUnit, cap: u64) {
+    /// Set the issuance cap for one exposed unit, persisting it when a store
+    /// is attached. A cap of `0` refuses all new mint quotes (fail-closed) —
+    /// it never means unlimited.
+    pub async fn set_unit_issuance_cap(
+        &self,
+        unit: CurrencyUnit,
+        cap: u64,
+    ) -> Result<(), RateQuoteStoreError> {
+        if let Some(store) = &self.store {
+            store.set_unit_issuance_cap(&unit, cap).await?;
+        }
         let mut units = self.units.lock().await;
-        let state = units.entry(unit).or_default();
-        state.cap = cap;
+        units.entry(unit).or_default().cap = cap;
+        Ok(())
+    }
+
+    /// Outstanding issued fiat subunits (issued minus melted) for one unit.
+    pub async fn outstanding(&self, unit: &CurrencyUnit) -> u64 {
+        self.units
+            .lock()
+            .await
+            .get(unit)
+            .map(|state| state.outstanding)
+            .unwrap_or_default()
+    }
+
+    /// Accumulated buffer-surplus reserve in sats for one unit. Reserve, not
+    /// revenue: observable separately so no code path books it as income.
+    pub async fn buffer_surplus_sats(&self, unit: &CurrencyUnit) -> u64 {
+        self.units
+            .lock()
+            .await
+            .get(unit)
+            .map(|state| state.buffer_surplus_sats)
+            .unwrap_or_default()
     }
 
     async fn ensure_not_paused(
@@ -203,69 +319,99 @@ impl RateQuoteControlHandle {
         Ok(())
     }
 
+    /// Reserve cap headroom for a new mint quote.
+    ///
+    /// The cap covers persisted outstanding issuance plus pending (unpaid,
+    /// unexpired) reservations plus the new request. A cap of `0` refuses
+    /// every request (fail-closed) — it never means unlimited.
     async fn reserve(
         &self,
         unit: &CurrencyUnit,
-        payment_lookup_id: &PaymentIdentifier,
+        key: &str,
         fiat_subunits: u64,
         expiry_unix: u64,
     ) -> Result<(), RateConvertingPaymentError> {
         let mut units = self.units.lock().await;
         let state = units.entry(unit.clone()).or_default();
-        if state.cap > 0 {
-            let available = state.cap.saturating_sub(state.reserved);
-            if fiat_subunits > available {
-                return Err(RateConvertingPaymentError::IssuanceCapExceeded {
-                    unit: unit.clone(),
-                    requested: fiat_subunits,
-                    available,
-                });
-            }
+        state.sweep_expired(unix_time());
+        let used = state.outstanding.saturating_add(state.pending());
+        let available = state.cap.saturating_sub(used);
+        if state.cap == 0 || fiat_subunits > available {
+            return Err(RateConvertingPaymentError::IssuanceCapExceeded {
+                unit: unit.clone(),
+                requested: fiat_subunits,
+                available,
+            });
         }
-        let key = payment_lookup_id.to_string();
-        if state.reservations.insert(key.clone()) {
-            state.reserved = state.reserved.saturating_add(fiat_subunits);
-        }
-        drop(units);
-
-        self.release_after_expiry(unit.clone(), key, fiat_subunits, expiry_unix);
+        state.reservations.insert(
+            key.to_string(),
+            Reservation {
+                fiat_subunits,
+                expiry_unix,
+            },
+        );
         Ok(())
     }
 
-    async fn release(
-        &self,
-        unit: &CurrencyUnit,
-        payment_lookup_id: &PaymentIdentifier,
-        fiat_subunits: u64,
-    ) {
+    async fn release(&self, unit: &CurrencyUnit, key: &str) {
         let mut units = self.units.lock().await;
-        let Some(state) = units.get_mut(unit) else {
-            return;
-        };
-        if state.reservations.remove(&payment_lookup_id.to_string()) {
-            state.reserved = state.reserved.saturating_sub(fiat_subunits);
+        if let Some(state) = units.get_mut(unit) {
+            state.reservations.remove(key);
         }
     }
 
-    fn release_after_expiry(
-        &self,
-        unit: CurrencyUnit,
-        payment_lookup_id: String,
-        fiat_subunits: u64,
-        expiry_unix: u64,
-    ) {
-        let handle = self.clone();
-        tokio::spawn(async move {
-            let now = unix_time();
-            tokio::time::sleep(Duration::from_secs(expiry_unix.saturating_sub(now))).await;
-            let mut units = handle.units.lock().await;
-            let Some(state) = units.get_mut(&unit) else {
-                return;
-            };
-            if state.reservations.remove(&payment_lookup_id) {
-                state.reserved = state.reserved.saturating_sub(fiat_subunits);
+    async fn rekey_reservation(&self, unit: &CurrencyUnit, old_key: &str, new_key: &str) {
+        let mut units = self.units.lock().await;
+        if let Some(state) = units.get_mut(unit) {
+            if let Some(reservation) = state.reservations.remove(old_key) {
+                state.reservations.insert(new_key.to_string(), reservation);
             }
-        });
+        }
+    }
+
+    /// Book a settled mint credit: vacate the pending reservation, add the
+    /// issued subunits to outstanding, and book the buffer surplus to the
+    /// reserve counter. Callers gate this on the store's one-shot
+    /// `mark_settled` so the counters are never double-applied.
+    async fn commit_issued(
+        &self,
+        unit: &CurrencyUnit,
+        key: &str,
+        fiat_subunits: u64,
+        surplus_sats: u64,
+    ) -> Result<(), RateQuoteStoreError> {
+        {
+            let mut units = self.units.lock().await;
+            let state = units.entry(unit.clone()).or_default();
+            state.reservations.remove(key);
+            state.outstanding = state.outstanding.saturating_add(fiat_subunits);
+            state.buffer_surplus_sats = state.buffer_surplus_sats.saturating_add(surplus_sats);
+        }
+        if let Some(store) = &self.store {
+            store.add_unit_outstanding(unit, fiat_subunits).await?;
+            if surplus_sats > 0 {
+                store.add_unit_buffer_surplus(unit, surplus_sats).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Book a settled melt: subtract the melted subunits from outstanding.
+    /// Callers gate this on the store's one-shot `mark_settled`.
+    async fn commit_melted(
+        &self,
+        unit: &CurrencyUnit,
+        fiat_subunits: u64,
+    ) -> Result<(), RateQuoteStoreError> {
+        {
+            let mut units = self.units.lock().await;
+            let state = units.entry(unit.clone()).or_default();
+            state.outstanding = state.outstanding.saturating_sub(fiat_subunits);
+        }
+        if let Some(store) = &self.store {
+            store.subtract_unit_outstanding(unit, fiat_subunits).await?;
+        }
+        Ok(())
     }
 }
 
@@ -549,6 +695,38 @@ impl<T> RateConvertingPayment<T> {
         )?;
         Ok((snapshot, sats))
     }
+
+    /// Book a completed melt against the outstanding issued counter exactly
+    /// once. Counter persistence failures are logged, never turned into a
+    /// payment failure: the LN payment already settled.
+    async fn settle_melt(&self, record: &RateQuoteRecord, response: &MakePaymentResponse) {
+        if response.status != MeltQuoteState::Paid {
+            return;
+        }
+        match self.store.mark_settled(&response.payment_lookup_id).await {
+            Ok(true) => {
+                if let Err(error) = self
+                    .control
+                    .commit_melted(&record.fiat_unit, record_total_fiat_subunits(record))
+                    .await
+                {
+                    tracing::error!(
+                        payment_lookup_id = %response.payment_lookup_id,
+                        error = %error,
+                        "failed to persist outstanding counter for settled melt"
+                    );
+                }
+            }
+            Ok(false) => {}
+            Err(error) => {
+                tracing::error!(
+                    payment_lookup_id = %response.payment_lookup_id,
+                    error = %error,
+                    "failed to mark melt settled; skipping outstanding adjustment"
+                );
+            }
+        }
+    }
 }
 
 type SelfError = RateConvertingPaymentError;
@@ -607,11 +785,6 @@ where
         options.amount = Amount::new(sats_invoiced, CurrencyUnit::Sat);
         options.unix_expiry = Some(expiry_unix);
 
-        let mut response = self
-            .inner
-            .create_incoming_payment_request(IncomingPaymentOptions::Bolt11(options))
-            .await?;
-
         let snapshot_json = snapshot_json(
             &self.config.fiat_unit,
             fiat_subunits,
@@ -620,6 +793,34 @@ where
             sats_invoiced,
             expiry_unix,
         )?;
+
+        // Reserve cap headroom BEFORE the inner invoice exists, under a
+        // provisional key: an invoice must never be handed out for exposure
+        // the cap cannot absorb. The reservation is rekeyed to the inner
+        // lookup id on success and released on every failure path.
+        let provisional_key = provisional_reservation_key();
+        self.control
+            .reserve(
+                &self.config.fiat_unit,
+                &provisional_key,
+                fiat_subunits,
+                expiry_unix,
+            )
+            .await?;
+
+        let mut response = match self
+            .inner
+            .create_incoming_payment_request(IncomingPaymentOptions::Bolt11(options))
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                self.control
+                    .release(&self.config.fiat_unit, &provisional_key)
+                    .await;
+                return Err(error.into());
+            }
+        };
 
         let record = RateQuoteRecord {
             payment_lookup_id: response.request_lookup_id.clone(),
@@ -631,15 +832,22 @@ where
             sats_unbuffered,
             expiry_unix,
         };
-        self.store.insert(record).await?;
+        // Quoted terms persist before the quote is returned upstream; a
+        // payment for an unpersisted invoice parks fail-closed.
+        if let Err(error) = self.store.insert(record).await {
+            self.control
+                .release(&self.config.fiat_unit, &provisional_key)
+                .await;
+            return Err(error.into());
+        }
         self.control
-            .reserve(
+            .rekey_reservation(
                 &self.config.fiat_unit,
-                &response.request_lookup_id,
-                fiat_subunits,
-                expiry_unix,
+                &provisional_key,
+                &response.request_lookup_id.to_string(),
             )
-            .await?;
+            .await;
+
         response.expiry = Some(expiry_unix);
         response.extra_json = merge_extra(response.extra_json, snapshot_json);
         Ok(response)
@@ -725,13 +933,7 @@ where
         else {
             return Ok(response);
         };
-        self.control
-            .release(
-                &record.fiat_unit,
-                &response.payment_lookup_id,
-                record.fiat_subunits,
-            )
-            .await;
+        self.settle_melt(&record, &response).await;
 
         Ok(MakePaymentResponse {
             payment_lookup_id: response.payment_lookup_id,
@@ -811,13 +1013,7 @@ where
         else {
             return Ok(response);
         };
-        self.control
-            .release(
-                &record.fiat_unit,
-                &response.payment_lookup_id,
-                record.fiat_subunits,
-            )
-            .await;
+        self.settle_melt(&record, &response).await;
 
         Ok(MakePaymentResponse {
             payment_lookup_id: response.payment_lookup_id,
@@ -834,7 +1030,17 @@ async fn convert_payment_event(
     fiat_unit: CurrencyUnit,
     payment: WaitPaymentResponse,
 ) -> Option<Event> {
-    match store.get_by_lookup_id(&payment.payment_identifier).await {
+    let parked = ParkedPaymentRecord {
+        payment_lookup_id: payment.payment_identifier.clone(),
+        bolt11_payment_hash: payment.payment_id.clone(),
+        received_sats: payment.payment_amount.value(),
+        observed_at: unix_time(),
+        resolution_status: "parked".to_string(),
+    };
+    // The missing-record detection and the parked write are one atomic store
+    // operation, so an orphaned payment can never be silently lost between
+    // the lookup and the park.
+    match store.park_or_credit(parked).await {
         Ok(Some(record)) => {
             if payment.payment_amount.value() < record.sats_invoiced {
                 tracing::warn!(
@@ -845,13 +1051,7 @@ async fn convert_payment_event(
                 );
                 return None;
             }
-            control
-                .release(
-                    &record.fiat_unit,
-                    &payment.payment_identifier,
-                    record.fiat_subunits,
-                )
-                .await;
+            settle_mint_credit(&store, &control, &record, &payment).await;
 
             Some(Event::PaymentReceived(WaitPaymentResponse {
                 payment_identifier: payment.payment_identifier,
@@ -860,38 +1060,70 @@ async fn convert_payment_event(
             }))
         }
         Ok(None) => {
-            let parked = ParkedPaymentRecord {
-                payment_lookup_id: payment.payment_identifier.clone(),
-                bolt11_payment_hash: payment.payment_id.clone(),
-                received_sats: payment.payment_amount.value(),
-                observed_at: unix_time(),
-                resolution_status: "parked".to_string(),
-            };
-            if let Err(error) = store.insert_parked(parked).await {
-                tracing::error!(
-                    payment_lookup_id = %payment.payment_identifier,
-                    bolt11_payment_hash = payment.payment_id,
-                    error = %error,
-                    "failed to park orphaned rate-converted payment"
-                );
-            } else {
-                PARKED_PAYMENT_EVENTS.fetch_add(1, Ordering::Relaxed);
-                tracing::warn!(
-                    payment_lookup_id = %payment.payment_identifier,
-                    bolt11_payment_hash = payment.payment_id,
-                    fiat_unit = %fiat_unit,
-                    "parked orphaned rate-converted payment"
-                );
-            }
+            PARKED_PAYMENT_EVENTS.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                payment_lookup_id = %payment.payment_identifier,
+                bolt11_payment_hash = payment.payment_id,
+                fiat_unit = %fiat_unit,
+                "parked orphaned rate-converted payment"
+            );
             None
         }
         Err(error) => {
             tracing::warn!(
                 payment_lookup_id = %payment.payment_identifier,
                 error = %error,
-                "suppressing rate-converted payment after quote-store lookup failure"
+                "suppressing rate-converted payment after quote-store failure"
             );
             None
+        }
+    }
+}
+
+/// Apply the one-shot counter effects of a credited mint payment: vacate the
+/// pending cap reservation, grow the outstanding issued counter, and book the
+/// buffer portion of the received sats to the per-unit surplus reserve.
+///
+/// The event itself is re-emitted regardless — the mint deduplicates payment
+/// credits — so counter persistence failures are logged, never turned into a
+/// suppressed credit.
+async fn settle_mint_credit(
+    store: &DynRateQuoteStore,
+    control: &RateQuoteControlHandle,
+    record: &RateQuoteRecord,
+    payment: &WaitPaymentResponse,
+) {
+    let key = payment.payment_identifier.to_string();
+    match store.mark_settled(&payment.payment_identifier).await {
+        Ok(true) => {
+            let unbuffered = if record.sats_unbuffered > 0 {
+                record.sats_unbuffered
+            } else {
+                record.sats_invoiced
+            };
+            let surplus_sats = payment.payment_amount.value().saturating_sub(unbuffered);
+            if let Err(error) = control
+                .commit_issued(&record.fiat_unit, &key, record.fiat_subunits, surplus_sats)
+                .await
+            {
+                tracing::error!(
+                    payment_lookup_id = %payment.payment_identifier,
+                    error = %error,
+                    "failed to persist outstanding/buffer-surplus counters for settled mint credit"
+                );
+            }
+        }
+        Ok(false) => {
+            // Already settled (event stream and status check can both fire):
+            // make sure the reservation is vacated, but never re-count.
+            control.release(&record.fiat_unit, &key).await;
+        }
+        Err(error) => {
+            tracing::error!(
+                payment_lookup_id = %payment.payment_identifier,
+                error = %error,
+                "failed to mark mint credit settled; skipping counter adjustments"
+            );
         }
     }
 }
@@ -1090,7 +1322,8 @@ mod tests {
         let control = RateQuoteControlHandle::new();
         control
             .set_unit_quote_state(CurrencyUnit::Usd, true, false)
-            .await;
+            .await
+            .expect("set pause state");
 
         let error = control
             .ensure_not_paused(&CurrencyUnit::Usd, QuoteSide::Mint)
@@ -1109,26 +1342,17 @@ mod tests {
     #[tokio::test]
     async fn quote_control_reserves_against_cap() {
         let control = RateQuoteControlHandle::new();
-        control.set_unit_issuance_cap(CurrencyUnit::Usd, 100).await;
-        let first = PaymentIdentifier::CustomId("first".to_string());
-        let second = PaymentIdentifier::CustomId("second".to_string());
+        control
+            .set_unit_issuance_cap(CurrencyUnit::Usd, 100)
+            .await
+            .expect("set cap");
 
         control
-            .reserve(
-                &CurrencyUnit::Usd,
-                &first,
-                80,
-                unix_time().saturating_add(60),
-            )
+            .reserve(&CurrencyUnit::Usd, "first", 80, unix_time() + 60)
             .await
             .expect("first reservation");
         let error = control
-            .reserve(
-                &CurrencyUnit::Usd,
-                &second,
-                21,
-                unix_time().saturating_add(60),
-            )
+            .reserve(&CurrencyUnit::Usd, "second", 21, unix_time() + 60)
             .await
             .expect_err("cap should reject over-reservation");
 
@@ -1142,44 +1366,85 @@ mod tests {
         ));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
+    async fn quote_control_zero_cap_fails_closed() {
+        // A cap of 0 (including the never-configured default) refuses every
+        // request — it never means unlimited.
+        let control = RateQuoteControlHandle::new();
+
+        let error = control
+            .reserve(&CurrencyUnit::Usd, "any", 1, unix_time() + 60)
+            .await
+            .expect_err("unset cap must refuse");
+        assert!(matches!(
+            error,
+            RateConvertingPaymentError::IssuanceCapExceeded { available: 0, .. }
+        ));
+
+        control
+            .set_unit_issuance_cap(CurrencyUnit::Usd, 0)
+            .await
+            .expect("set cap");
+        control
+            .reserve(&CurrencyUnit::Usd, "any", 0, unix_time() + 60)
+            .await
+            .expect_err("explicit zero cap must refuse even zero-amount requests");
+    }
+
+    #[tokio::test]
     async fn quote_control_releases_reservation_after_expiry() {
         let control = RateQuoteControlHandle::new();
-        control.set_unit_issuance_cap(CurrencyUnit::Usd, 100).await;
-        let first = PaymentIdentifier::CustomId("first".to_string());
-        let second = PaymentIdentifier::CustomId("second".to_string());
-
         control
-            .reserve(
-                &CurrencyUnit::Usd,
-                &first,
-                100,
-                unix_time().saturating_add(2),
-            )
+            .set_unit_issuance_cap(CurrencyUnit::Usd, 100)
+            .await
+            .expect("set cap");
+
+        // An already-expired reservation occupies the full cap until the
+        // lazy sweep on the next reserve call vacates it.
+        control
+            .reserve(&CurrencyUnit::Usd, "first", 100, unix_time())
             .await
             .expect("first reservation");
-        control
-            .reserve(
-                &CurrencyUnit::Usd,
-                &second,
-                1,
-                unix_time().saturating_add(2),
-            )
-            .await
-            .expect_err("cap should initially reject");
-
-        tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_secs(3)).await;
-        tokio::task::yield_now().await;
 
         control
-            .reserve(
-                &CurrencyUnit::Usd,
-                &second,
-                1,
-                unix_time().saturating_add(60),
-            )
+            .reserve(&CurrencyUnit::Usd, "second", 100, unix_time() + 60)
             .await
-            .expect("expired reservation should be released");
+            .expect("expired reservation should be swept and released");
+    }
+
+    #[tokio::test]
+    async fn quote_control_counts_outstanding_against_cap() {
+        let control = RateQuoteControlHandle::new();
+        control
+            .set_unit_issuance_cap(CurrencyUnit::Usd, 150)
+            .await
+            .expect("set cap");
+
+        control
+            .reserve(&CurrencyUnit::Usd, "first", 100, unix_time() + 60)
+            .await
+            .expect("reservation under cap");
+        control
+            .commit_issued(&CurrencyUnit::Usd, "first", 100, 7)
+            .await
+            .expect("commit issued");
+
+        assert_eq!(control.outstanding(&CurrencyUnit::Usd).await, 100);
+        assert_eq!(control.buffer_surplus_sats(&CurrencyUnit::Usd).await, 7);
+
+        control
+            .reserve(&CurrencyUnit::Usd, "second", 60, unix_time() + 60)
+            .await
+            .expect_err("outstanding issuance must count against the cap");
+        control
+            .reserve(&CurrencyUnit::Usd, "second", 50, unix_time() + 60)
+            .await
+            .expect("headroom after outstanding remains usable");
+
+        control
+            .commit_melted(&CurrencyUnit::Usd, 30)
+            .await
+            .expect("commit melted");
+        assert_eq!(control.outstanding(&CurrencyUnit::Usd).await, 70);
     }
 }

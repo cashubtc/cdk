@@ -767,9 +767,7 @@ async fn configure_rate_quoter_for_sat_backend(
     let control = RateQuoteControlHandle::new();
 
     for (unit, cap) in &rate_quoter.per_unit_caps {
-        if *cap > 0 {
-            control.set_unit_issuance_cap(unit.clone(), *cap).await;
-        }
+        control.set_unit_issuance_cap(unit.clone(), *cap).await?;
     }
 
     for fiat_unit in units {

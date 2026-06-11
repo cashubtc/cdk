@@ -118,7 +118,10 @@ fn insert_parked_statement(
             "received_sats",
             checked_i64(record.received_sats, "received_sats")?,
         )
-        .bind("observed_at", checked_i64(record.observed_at, "observed_at")?)
+        .bind(
+            "observed_at",
+            checked_i64(record.observed_at, "observed_at")?,
+        )
         .bind("resolution_status", record.resolution_status))
 }
 
@@ -210,10 +213,7 @@ impl RateQuoteStore for PostgresRateQuoteStore {
         let result = async {
             let row = query(SELECT_QUOTE_SQL)
                 .map_err(storage_error)?
-                .bind(
-                    "payment_lookup_id",
-                    parked.payment_lookup_id.to_string(),
-                )
+                .bind("payment_lookup_id", parked.payment_lookup_id.to_string())
                 .fetch_one(&*conn)
                 .await
                 .map_err(storage_error)?;

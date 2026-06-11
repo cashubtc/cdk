@@ -813,7 +813,10 @@ impl CdkMint for MintRPCServer {
         })?;
         control
             .set_unit_quote_state(unit, request.mint_paused, request.melt_paused)
-            .await;
+            .await
+            .map_err(|error| {
+                Status::internal(format!("could not persist unit quote state: {error}"))
+            })?;
         Ok(Response::new(SetUnitQuoteStateResponse {}))
     }
 
@@ -828,7 +831,12 @@ impl CdkMint for MintRPCServer {
         let control = self.rate_quote_control.as_ref().ok_or_else(|| {
             Status::failed_precondition("rate quote control is not configured".to_string())
         })?;
-        control.set_unit_issuance_cap(unit, request.cap).await;
+        control
+            .set_unit_issuance_cap(unit, request.cap)
+            .await
+            .map_err(|error| {
+                Status::internal(format!("could not persist unit issuance cap: {error}"))
+            })?;
         Ok(Response::new(SetUnitIssuanceCapResponse {}))
     }
 }
