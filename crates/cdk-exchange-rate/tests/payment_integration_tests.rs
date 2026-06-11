@@ -5,6 +5,13 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
+use bip39::Mnemonic;
+use cdk::amount::SplitTarget;
+use cdk::mint::{MintBuilder, MintMeltLimits};
+use cdk::nuts::nut00::KnownMethod;
+use cdk::nuts::{PaymentMethod, State};
+use cdk::types::QuoteTTL;
+use cdk::wallet::Wallet;
 use cdk_common::common::FeeReserve;
 use cdk_common::nuts::{CurrencyUnit, MeltQuoteState};
 use cdk_common::payment::{
@@ -13,11 +20,11 @@ use cdk_common::payment::{
 };
 use cdk_common::{Amount, Bolt11Invoice};
 use cdk_exchange_rate::{
-    parked_payment_event_count, DynRateQuoteStore, InMemoryRateQuoteStore, RateConvertingPayment,
-    RateConvertingPaymentConfig, RateConvertingPaymentError, RateOracle, RateOracleError,
-    RateQuoteControlHandle, RateQuoteStore, RateSnapshot,
+    parked_payment_event_count, DynRateQuoteStore, InMemoryRateQuoteStore, PaymentErrorAdapter,
+    RateConvertingPayment, RateConvertingPaymentConfig, RateConvertingPaymentError, RateOracle,
+    RateOracleError, RateQuoteControlHandle, RateQuoteStore, RateSnapshot,
 };
-use cdk_fake_wallet::{FakeInvoiceDescription, FakeWallet};
+use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription, FakeWallet};
 use futures::StreamExt;
 
 #[derive(Debug)]
@@ -72,6 +79,70 @@ fn processor(
         RateConvertingPaymentConfig::new(CurrencyUnit::Usd, 100, ttl_secs),
         control,
     )
+}
+
+async fn spawn_usd_mint() -> (
+    String,
+    RateQuoteControlHandle,
+    tokio::task::JoinHandle<Result<(), std::io::Error>>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mint listener");
+    let mint_url = format!(
+        "http://{}",
+        listener.local_addr().expect("mint listener addr")
+    );
+
+    let mint_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let store = InMemoryRateQuoteStore::new();
+    let dyn_store: DynRateQuoteStore = Arc::new(store);
+    let control = RateQuoteControlHandle::with_store(dyn_store.clone());
+    control
+        .set_unit_issuance_cap(CurrencyUnit::Usd, 10_000)
+        .await
+        .expect("open usd cap");
+
+    let decorator = RateConvertingPayment::with_control(
+        fake_wallet(0),
+        Arc::new(FixedOracle {
+            sats_per_fiat_unit: 1_000,
+        }),
+        dyn_store,
+        RateConvertingPaymentConfig::new(CurrencyUnit::Usd, 100, 120),
+        control.clone(),
+    );
+
+    let mut mint_builder = MintBuilder::new(mint_db.clone())
+        .with_name("rate quote test mint".to_string())
+        .with_description("rate quote test mint".to_string())
+        .with_urls(vec![mint_url.clone()]);
+    mint_builder
+        .add_payment_processor(
+            CurrencyUnit::Usd,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintMeltLimits::new(1, 10_000),
+            Arc::new(PaymentErrorAdapter::new(decorator)),
+        )
+        .await
+        .expect("add usd processor");
+
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mint = mint_builder
+        .build_with_seed(mint_db, &mnemonic.to_seed_normalized(""))
+        .await
+        .expect("build mint");
+    mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000))
+        .await
+        .expect("quote ttl");
+    mint.start().await.expect("start mint");
+
+    let router = cdk_axum::create_mint_router(Arc::new(mint), vec!["bolt11".to_string()])
+        .await
+        .expect("mint router");
+    let server = tokio::spawn(async move { axum::serve(listener, router).await });
+
+    (mint_url, control, server)
 }
 
 fn mint_quote(amount: u64) -> IncomingPaymentOptions {
@@ -629,9 +700,115 @@ async fn forced_melt_failure_keeps_outstanding_and_returns_failed_status() {
     assert_eq!(control.outstanding(&CurrencyUnit::Usd).await, 100);
 }
 
-#[test]
-#[ignore = "ADR-023 WS6 verification duty: asserting PENDING→UNPAID proof release after a \
-forced USD melt LN failure needs a full mintd + regtest harness; the decorator-level \
-liability accounting for the same failure is covered by \
-forced_melt_failure_keeps_outstanding_and_returns_failed_status"]
-fn forced_melt_failure_releases_proof_reservation() {}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn forced_melt_failure_releases_proof_reservation() {
+    let (mint_url, control, server) = spawn_usd_mint().await;
+    let wallet = Wallet::new(
+        mint_url.as_str(),
+        CurrencyUnit::Usd,
+        Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("wallet db"),
+        ),
+        Mnemonic::generate(12)
+            .expect("wallet mnemonic")
+            .to_seed_normalized(""),
+        None,
+    )
+    .expect("wallet");
+
+    let mint_quote = wallet
+        .mint_quote(PaymentMethod::BOLT11, Some(200.into()), None, None)
+        .await
+        .expect("mint quote");
+    let mut proof_stream = wallet.proof_stream(mint_quote, SplitTarget::default(), None);
+    let minted_proofs = tokio::time::timeout(Duration::from_secs(2), proof_stream.next())
+        .await
+        .expect("mint proofs in time")
+        .expect("mint proof stream")
+        .expect("mint proofs");
+    assert_eq!(
+        wallet.total_balance().await.expect("balance"),
+        Amount::new(200, CurrencyUnit::Usd).into()
+    );
+    assert_eq!(control.outstanding(&CurrencyUnit::Usd).await, 200);
+
+    let failed_description = serde_json::to_string(&FakeInvoiceDescription {
+        pay_invoice_state: MeltQuoteState::Failed,
+        check_payment_state: MeltQuoteState::Failed,
+        pay_err: false,
+        check_err: false,
+    })
+    .expect("description json");
+    let failing_invoice = create_fake_invoice(990_000, failed_description);
+    let melt_quote = wallet
+        .melt_quote(
+            PaymentMethod::BOLT11,
+            failing_invoice.to_string(),
+            None,
+            None,
+        )
+        .await
+        .expect("melt quote");
+
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, std::collections::HashMap::new())
+        .await
+        .expect("prepare melt");
+    let mut submitted_proofs = prepared.proofs().clone();
+    submitted_proofs.extend(prepared.proofs_to_swap().clone());
+    assert!(
+        !submitted_proofs.is_empty(),
+        "melt should submit proofs to reserve"
+    );
+
+    let melt = prepared.confirm().await;
+    assert!(melt.is_err(), "forced failed melt must fail");
+
+    let pending = wallet
+        .get_proofs_with(Some(vec![State::Pending]), None)
+        .await
+        .expect("pending proofs");
+    assert!(
+        pending.is_empty(),
+        "failed melt must release pending proofs"
+    );
+
+    let nut07_states = wallet
+        .check_proofs_spent(submitted_proofs)
+        .await
+        .expect("nut-07 state check");
+    assert!(
+        nut07_states
+            .iter()
+            .all(|proof_state| proof_state.state == State::Unspent),
+        "submitted proofs should be spendable after forced melt failure"
+    );
+    assert_eq!(
+        wallet
+            .total_balance()
+            .await
+            .expect("balance after failed melt"),
+        Amount::new(200, CurrencyUnit::Usd).into()
+    );
+    assert_eq!(
+        control.outstanding(&CurrencyUnit::Usd).await,
+        200,
+        "failed melt must not reduce decorator outstanding"
+    );
+
+    let minted_states = wallet
+        .check_proofs_spent(minted_proofs)
+        .await
+        .expect("minted proof nut-07 state check");
+    assert!(
+        minted_states
+            .iter()
+            .all(|proof_state| proof_state.state == State::Unspent),
+        "original minted proofs should remain spendable after failed melt"
+    );
+
+    server.abort();
+    let _ = server.await;
+}

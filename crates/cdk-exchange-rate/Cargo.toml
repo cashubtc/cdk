@@ -18,7 +18,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 reqwest = { workspace = true, optional = true }
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "time", "rt", "macros", "test-util"] }
+tokio = { workspace = true, features = ["sync", "time", "rt", "macros", "test-util", "net"] }
 tokio-stream.workspace = true
 tracing.workspace = true
 
@@ -27,7 +27,12 @@ default = []
 sources-http = ["dep:reqwest"]
 
 [dev-dependencies]
+axum.workspace = true
+bip39 = { workspace = true, features = ["rand"] }
+cdk = { workspace = true, features = ["mint", "wallet"] }
+cdk-axum.workspace = true
 cdk-fake-wallet.workspace = true
+cdk-sqlite.workspace = true
 
 [lints]
 workspace = true

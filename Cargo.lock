@@ -1368,8 +1368,13 @@ name = "cdk-exchange-rate"
 version = "0.16.0"
 dependencies = [
  "async-trait",
+ "axum 0.8.8",
+ "bip39",
+ "cdk",
+ "cdk-axum",
  "cdk-common",
  "cdk-fake-wallet",
+ "cdk-sqlite",
  "futures",
  "reqwest",
  "serde",
