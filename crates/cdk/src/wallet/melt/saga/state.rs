@@ -17,7 +17,7 @@
 //! Note: `PaymentPending` is a persistence state in `WalletSaga`, not a typestate.
 //! When payment is pending, the saga returns an error and recovery handles it later.
 
-use cdk_common::wallet::WalletSaga;
+use cdk_common::wallet::{KeysetLoadPolicy, WalletSaga};
 use cdk_common::MeltQuoteState;
 use uuid::Uuid;
 
@@ -30,6 +30,8 @@ use crate::Amount;
 pub struct Initial {
     /// Unique operation identifier for tracking and crash recovery
     pub operation_id: Uuid,
+    /// Policy controlling how keysets are loaded during this saga
+    pub keyset_policy: KeysetLoadPolicy,
 }
 
 /// Prepared state - proofs have been selected and reserved.
@@ -48,6 +50,8 @@ pub struct Prepared {
     pub input_fee: Amount,
     /// Input fee if swap is skipped (on all proofs directly)
     pub input_fee_without_swap: Amount,
+    /// Policy controlling how keysets are loaded
+    pub keyset_policy: KeysetLoadPolicy,
     /// The persisted saga for optimistic locking
     pub saga: WalletSaga,
 }

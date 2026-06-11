@@ -10,7 +10,7 @@ use bitcoin::hashes::{sha256, Hash, HashEngine};
 use cashu::amount::{FeeAndAmounts, KeysetFeeAndAmounts, SplitTarget};
 use cashu::nuts::nut07::ProofState;
 use cashu::nuts::nut18::PaymentRequest;
-use cashu::nuts::{AuthProof, Keys};
+use cashu::nuts::AuthProof;
 use cashu::util::hex;
 use cashu::{nut00, PaymentMethod, Proof, Proofs, PublicKey};
 use serde::{Deserialize, Serialize};
@@ -773,6 +773,28 @@ pub enum KeysetFilter {
     All,
 }
 
+/// Policy controlling how keysets are loaded.
+///
+/// Determines the data-fetching strategy for keyset queries:
+/// memory cache, local database, and/or network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum KeysetLoadPolicy {
+    /// Use in-memory cache and local database only. Never contacts the network.
+    /// Returns an error if neither cache nor database has data.
+    CacheOnly,
+    /// Return cached data when fresh (TTL not expired). When the cache is
+    /// empty, tries the database first, then the network. When the cache is
+    /// populated but stale (TTL expired), fetches directly from the network,
+    /// falling back to the stale cache if the network call fails.
+    /// This is the default.
+    #[default]
+    CacheThenNetwork,
+    /// Fetch data from the mint over the network and update the cache.
+    /// Falls back to stale cached data if the network call fails;
+    /// only returns an error when no cached data exists at all.
+    Refresh,
+}
+
 /// Unified wallet trait providing a common interface for wallet operations.
 ///
 /// This trait abstracts over different wallet implementations (CDK wallet, FFI
@@ -842,28 +864,24 @@ pub trait Wallet: Send + Sync {
     /// Load mint info (from cache if fresh, otherwise fetches)
     async fn load_mint_info(&self) -> Result<Self::MintInfo, Self::Error>;
 
-    /// Refresh keysets from the mint (always fetches fresh data)
-    async fn refresh_keysets(&self) -> Result<Vec<Self::KeySetInfo>, Self::Error>;
+    /// Get all keysets for this wallet's unit.
+    ///
+    /// The `policy` parameter controls the fetching strategy:
+    /// - [`CacheOnly`](KeysetLoadPolicy::CacheOnly) — in-memory cache + local DB, no network
+    /// - [`CacheThenNetwork`](KeysetLoadPolicy::CacheThenNetwork) — cache if fresh, network if
+    ///   stale/absent, stale fallback on failure (default)
+    /// - [`Refresh`](KeysetLoadPolicy::Refresh) — network first, stale-cache fallback on failure
+    async fn keysets(&self, policy: KeysetLoadPolicy)
+        -> Result<Vec<Self::KeySetInfo>, Self::Error>;
 
-    /// Get the active keyset with lowest fees
-    async fn get_active_keyset(&self) -> Result<Self::KeySetInfo, Self::Error>;
+    /// Get the active keyset with the lowest fees.
+    ///
+    /// Filters the output of [`keysets()`](Self::keysets) for active keysets
+    /// and returns the one with the minimum `input_fee_ppk`.
+    async fn active_keyset(&self) -> Result<Self::KeySetInfo, Self::Error>;
 
-    /// Load keys for a specific keyset from cache or mint
-    async fn load_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Self::Error>;
-
-    /// Get keysets for this wallet's unit, filtered by active/all
-    async fn get_mint_keysets(
-        &self,
-        filter: KeysetFilter,
-    ) -> Result<Vec<Self::KeySetInfo>, Self::Error>;
-
-    /// Load active keysets (alias for get_mint_keysets with Active filter)
-    async fn load_mint_keysets(&self) -> Result<Vec<Self::KeySetInfo>, Self::Error> {
-        self.get_mint_keysets(KeysetFilter::Active).await
-    }
-
-    /// Fetch the active keyset with lowest fees
-    async fn fetch_active_keyset(&self) -> Result<Self::KeySetInfo, Self::Error>;
+    /// Get a single keyset by ID.
+    async fn keyset(&self, keyset_id: Id) -> Result<Self::KeySetInfo, Self::Error>;
 
     /// Get fees and available amounts for all keysets
     async fn get_keyset_fees_and_amounts(&self) -> Result<KeysetFeeAndAmounts, Self::Error>;

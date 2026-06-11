@@ -90,7 +90,7 @@ pub struct MintMetadata {
     pub active_keysets: Vec<Arc<KeySetInfo>>,
 
     /// Freshness tracking for regular (non-auth) mint data
-    status: FreshnessStatus,
+    pub(crate) status: FreshnessStatus,
 
     /// Freshness tracking for blind auth keysets
     auth_status: FreshnessStatus,
@@ -119,6 +119,11 @@ pub struct MintMetadataCache {
     /// Atomically-updated metadata snapshot (lock-free reads)
     metadata: Arc<ArcSwap<MintMetadata>>,
 
+    /// How long cached metadata is considered fresh before re-fetching.
+    /// `None` means cached data never expires (unless manually refreshed).
+    /// Default: 1 hour (3600 seconds).
+    ttl: Arc<RwLock<Option<Duration>>>,
+
     /// Tracks which database instances have been synced to which cache version.
     /// Key: pointer identity of storage Arc, Value: last synced cache version
     db_sync_versions: Arc<RwLock<HashMap<usize, usize>>>,
@@ -139,17 +144,14 @@ impl std::fmt::Debug for MintMetadataCache {
 }
 
 impl Wallet {
-    /// Sets the metadata cache TTL
+    /// Sets the metadata cache TTL.
     ///
-    /// The TTL determines how often the wallet checks the mint for new keysets and information.
+    /// The TTL determines how often the wallet re-fetches keysets and mint info.
+    /// Because the cache is shared, this affects all wallets using the same mint.
     ///
-    /// If `None`, the cache will never expire and the wallet will use cached data indefinitely
-    /// (unless manually refreshed).
-    ///
-    /// The default value is 1 hour (3600 seconds).
+    /// `None` means cached data never expires. Default: 1 hour.
     pub fn set_metadata_cache_ttl(&self, ttl: Option<Duration>) {
-        let mut guarded_ttl = self.metadata_cache_ttl.write();
-        *guarded_ttl = ttl;
+        self.metadata_cache.set_ttl(ttl);
     }
 
     /// Get information about metadata cache info
@@ -186,16 +188,59 @@ impl MintMetadataCache {
     /// # Example
     ///
     /// ```ignore
-    /// let cache = MintMetadataCache::new(mint_url, None);
+    /// let cache = MintMetadataCache::new(mint_url);
     /// // No data loaded yet - call load() to fetch
     /// ```
     pub fn new(mint_url: MintUrl) -> Self {
         Self {
             mint_url,
             metadata: Arc::new(ArcSwap::default()),
+            ttl: Arc::new(RwLock::new(Some(Duration::from_secs(3600)))),
             db_sync_versions: Arc::new(Default::default()),
             fetch_lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    /// Set the TTL for cached metadata.
+    ///
+    /// `None` means cached data never expires.
+    pub fn set_ttl(&self, ttl: Option<Duration>) {
+        *self.ttl.write() = ttl;
+    }
+
+    /// Get the current TTL.
+    pub fn ttl(&self) -> Option<Duration> {
+        *self.ttl.read()
+    }
+
+    /// Return cached metadata if populated, without fetching or TTL checks.
+    pub fn get_cached(&self) -> Option<Arc<MintMetadata>> {
+        let m = self.metadata.load().clone();
+        if m.status.is_populated {
+            Some(m)
+        } else {
+            None
+        }
+    }
+
+    /// Load metadata from in-memory cache or database, without network access.
+    ///
+    /// Checks the in-memory cache first. If not populated, loads from the
+    /// database. Returns an error if neither source has data.
+    pub async fn load_cached(
+        &self,
+        storage: &Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
+    ) -> Result<Arc<MintMetadata>, Error> {
+        if let Some(cached) = self.get_cached() {
+            return Ok(cached);
+        }
+
+        let from_db = self.load_from_db(storage).await?;
+        if from_db.status.is_populated {
+            return Ok(from_db);
+        }
+
+        Err(Error::UnknownKeySet)
     }
 
     /// Load metadata from mint server and update cache
@@ -314,9 +359,10 @@ impl MintMetadataCache {
             }
         }
 
-        // Only mark as populated if we actually loaded keysets
+        // Only mark as populated if we actually loaded keysets.
+        // Don't update `updated_at` — the TTL should reflect when we last
+        // fetched from the mint, not when we read from the local DB.
         new_metadata.status.is_populated = !new_metadata.keysets.is_empty();
-        new_metadata.status.updated_at = Instant::now();
         new_metadata.status.version += 1;
 
         tracing::info!(
@@ -367,10 +413,10 @@ impl MintMetadataCache {
         &self,
         storage: &Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         client: &Arc<dyn MintConnector + Send + Sync>,
-        ttl: Option<Duration>,
     ) -> Result<Arc<MintMetadata>, Error> {
         let cached_metadata = self.metadata.load().clone();
         let storage_id = Self::arc_pointer_id(storage);
+        let ttl = *self.ttl.read();
 
         // Check what version of cache this database has seen
         let db_synced_version = self
@@ -394,15 +440,29 @@ impl MintMetadataCache {
             return Ok(cached_metadata);
         }
 
-        // Try loading from database first (avoids HTTP if data is persisted)
-        if let Ok(metadata) = self.load_from_db(storage).await {
-            if metadata.status.is_populated {
-                return Ok(metadata);
+        // In-memory cache was empty (not just stale) — try database before network
+        if !cached_metadata.status.is_populated {
+            if let Ok(metadata) = self.load_from_db(storage).await {
+                if metadata.status.is_populated {
+                    return Ok(metadata);
+                }
             }
         }
 
-        // Database had no data - fetch from mint
-        self.load_from_mint(storage, client).await
+        // Cache was stale (TTL expired) or neither cache nor DB had data — fetch from mint
+        match self.load_from_mint(storage, client).await {
+            Ok(metadata) => Ok(metadata),
+            Err(e) if cached_metadata.status.is_populated => {
+                // Network failed but we have usable stale data — return it
+                tracing::warn!(
+                    "Failed to refresh metadata from mint {}, using stale cache: {}",
+                    self.mint_url,
+                    e
+                );
+                Ok(cached_metadata)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Load auth keysets and keys (auth feature only)
@@ -425,10 +485,10 @@ impl MintMetadataCache {
         &self,
         storage: &Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         auth_client: &Arc<dyn AuthMintConnector + Send + Sync>,
-        ttl: Option<Duration>,
     ) -> Result<Arc<MintMetadata>, Error> {
         let cached_metadata = self.metadata.load().clone();
         let storage_id = Self::arc_pointer_id(storage);
+        let ttl = *self.ttl.read();
 
         let db_synced_version = self
             .db_sync_versions

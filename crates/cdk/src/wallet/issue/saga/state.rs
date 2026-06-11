@@ -4,7 +4,7 @@
 //! of the mint operation. The type state pattern ensures that only valid
 //! operations are available at each stage.
 
-use cdk_common::wallet::WalletSaga;
+use cdk_common::wallet::{KeysetLoadPolicy, WalletSaga};
 use uuid::Uuid;
 
 use crate::nuts::{BatchMintRequest, Id, PaymentMethod, PreMintSecrets, Proofs};
@@ -18,6 +18,8 @@ pub type MintRequestString = crate::nuts::MintRequest<String>;
 pub struct Initial {
     /// Unique operation identifier for tracking and crash recovery
     pub operation_id: Uuid,
+    /// Policy controlling how keysets are loaded during this saga
+    pub keyset_policy: KeysetLoadPolicy,
 }
 
 /// The mint request type - either single quote or batch.
@@ -58,6 +60,8 @@ pub struct Prepared {
     pub mint_request: PreparedMintRequest,
     /// Payment method (Bolt11 or Bolt12)
     pub payment_method: PaymentMethod,
+    /// Policy controlling how keysets are loaded
+    pub keyset_policy: KeysetLoadPolicy,
     /// Persisted saga for optimistic locking and recovery
     pub saga: WalletSaga,
 }

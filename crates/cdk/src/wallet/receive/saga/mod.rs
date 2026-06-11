@@ -83,7 +83,10 @@ impl<'a> ReceiveSaga<'a, Initial> {
         Self {
             wallet,
             compensations: new_compensations(),
-            state_data: Initial { operation_id },
+            state_data: Initial {
+                operation_id,
+                keyset_policy: Default::default(),
+            },
         }
     }
 
@@ -107,7 +110,12 @@ impl<'a> ReceiveSaga<'a, Initial> {
 
         let _mint_info = self.wallet.load_mint_info().await?;
 
-        let active_keyset_id = self.wallet.fetch_active_keyset().await?.id;
+        let keyset_policy = self.state_data.keyset_policy;
+        let active_keyset_id = self
+            .wallet
+            .active_keyset_with_policy(keyset_policy)
+            .await?
+            .id;
 
         let mut proofs = proofs;
         let proofs_amount = proofs.total_amount()?;
@@ -134,7 +142,11 @@ impl<'a> ReceiveSaga<'a, Initial> {
         for proof in &mut proofs {
             // Verify that proof DLEQ is valid
             if proof.dleq.is_some() {
-                let keys = self.wallet.load_keyset_keys(proof.keyset_id).await?;
+                let keys = self
+                    .wallet
+                    .keyset_with_policy(proof.keyset_id, keyset_policy)
+                    .await?
+                    .keys;
                 let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
                 proof.verify_dleq(key)?;
             }
@@ -262,8 +274,9 @@ impl<'a> ReceiveSaga<'a, Prepared> {
 
         let keys = self
             .wallet
-            .load_keyset_keys(self.state_data.active_keyset_id)
-            .await?;
+            .keyset(self.state_data.active_keyset_id)
+            .await?
+            .keys;
 
         let proofs = self.state_data.proofs.clone();
         let proofs_ys = proofs.ys()?;

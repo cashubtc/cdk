@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 
 use bitcoin::XOnlyPublicKey;
+use cdk_common::wallet::KeysetLoadPolicy;
 use uuid::Uuid;
 
 use crate::nuts::{Id, Proofs, SecretKey};
@@ -27,6 +28,8 @@ use crate::Amount;
 pub struct Initial {
     /// Unique operation identifier for tracking and crash recovery
     pub operation_id: Uuid,
+    /// Policy controlling how keysets are loaded during this saga
+    pub keyset_policy: KeysetLoadPolicy,
 }
 
 /// Prepared state - token has been parsed and proofs extracted.

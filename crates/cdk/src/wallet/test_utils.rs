@@ -11,7 +11,7 @@ use cdk_common::database::WalletDatabase;
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::{
-    CurrencyUnit, Id, KeySet, KeySetInfo, KeysetResponse, MeltMethodSettings, MintInfo,
+    CurrencyUnit, Id, KeySet, KeySetInfo, Keys, KeysetResponse, MeltMethodSettings, MintInfo,
     MintMethodSettings, MintVersion, MppMethodSettings, Proof,
 };
 use cdk_common::wallet::{MeltQuote, MintQuote};
@@ -336,6 +336,21 @@ pub fn test_proof_info(
     cdk_common::wallet::ProofInfo::new(proof, mint_url, State::Unspent, CurrencyUnit::Sat).unwrap()
 }
 
+/// Create an inactive keyset with different keys and a properly computed ID.
+pub fn make_inactive_keyset() -> KeySet {
+    let mut ks = test_keyset();
+    ks.active = Some(false);
+    // Shift each key amount to produce different keys → different ID
+    let shifted_keys: std::collections::BTreeMap<_, _> = ks
+        .keys
+        .iter()
+        .map(|(amount, pk)| (Amount::from(amount.to_u64() * 2), *pk))
+        .collect();
+    ks.keys = Keys::new(shifted_keys);
+    ks.id = Id::v2_from_data(&ks.keys, &ks.unit, ks.input_fee_ppk, ks.final_expiry);
+    ks
+}
+
 /// Create a test melt quote
 pub fn test_melt_quote() -> MeltQuote {
     MeltQuote {
@@ -424,7 +439,7 @@ pub async fn create_test_wallet_with_mock_http_subscription(
 #[derive(Debug)]
 pub struct MockMintConnector {
     /// Mock mint keyset state
-    pub keyset: Mutex<KeySet>,
+    pub keysets: Mutex<Vec<KeySet>>,
     /// Mock mint info state
     pub mint_info: Mutex<MintInfo>,
     /// Response for post_check_state calls
@@ -445,6 +460,13 @@ pub struct MockMintConnector {
     pub post_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
     /// Response for post_swap calls
     pub post_swap_response: Mutex<Option<Result<SwapResponse, Error>>>,
+    /// Queue of responses for successive post_swap calls.
+    ///
+    /// When non-empty, each `post_swap` call pops the front entry.
+    /// Takes precedence over `post_swap_response`.
+    pub post_swap_responses: Mutex<std::collections::VecDeque<Result<SwapResponse, Error>>>,
+    /// Captured post_swap requests for test verification.
+    pub captured_swap_requests: Mutex<Vec<SwapRequest>>,
     /// Response for post_melt calls
     pub post_melt_response: Mutex<Option<Result<MeltQuoteResponse<String>, Error>>>,
     /// Last post_melt method/request captured by the mock
@@ -472,7 +494,7 @@ impl MockMintConnector {
         let mint_info = test_mint_info();
 
         Self {
-            keyset: Mutex::new(keyset),
+            keysets: Mutex::new(vec![keyset]),
             mint_info: Mutex::new(mint_info),
             check_state_response: Mutex::new(None),
             restore_response: Mutex::new(None),
@@ -480,6 +502,8 @@ impl MockMintConnector {
             melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
             post_mint_response: Mutex::new(None),
             post_swap_response: Mutex::new(None),
+            post_swap_responses: Mutex::new(std::collections::VecDeque::new()),
+            captured_swap_requests: Mutex::new(Vec::new()),
             post_melt_response: Mutex::new(None),
             last_post_melt_request: Mutex::new(None),
             lnurl_pay_request_response: Mutex::new(None),
@@ -495,11 +519,8 @@ impl MockMintConnector {
 
     pub fn set_mint_keys_response(&self, response: Result<Vec<KeySet>, Error>) {
         match response {
-            Ok(mut keysets) => {
-                let keyset = keysets
-                    .pop()
-                    .expect("MockMintConnector: empty keyset response");
-                *self.keyset.lock().unwrap() = keyset;
+            Ok(keysets) => {
+                *self.keysets.lock().unwrap() = keysets;
             }
             Err(_) => unimplemented!("error responses for key state are not supported"),
         }
@@ -507,25 +528,30 @@ impl MockMintConnector {
 
     pub fn set_mint_keyset_response(&self, response: Result<KeySet, Error>) {
         match response {
-            Ok(keyset) => *self.keyset.lock().unwrap() = keyset,
+            Ok(keyset) => {
+                let mut keysets = self.keysets.lock().unwrap();
+                if let Some(existing) = keysets.iter_mut().find(|k| k.id == keyset.id) {
+                    *existing = keyset;
+                } else {
+                    keysets.push(keyset);
+                }
+            }
             Err(_) => unimplemented!("error responses for key state are not supported"),
         }
     }
 
     pub fn set_mint_keysets_response(&self, response: Result<KeysetResponse, Error>) {
         match response {
-            Ok(keysets) => {
-                let keyset_info = keysets
-                    .keysets
-                    .into_iter()
-                    .next()
-                    .expect("MockMintConnector: empty keysets response");
-                let mut keyset = self.keyset.lock().unwrap();
-                keyset.id = keyset_info.id;
-                keyset.unit = keyset_info.unit;
-                keyset.active = Some(keyset_info.active);
-                keyset.input_fee_ppk = keyset_info.input_fee_ppk;
-                keyset.final_expiry = keyset_info.final_expiry;
+            Ok(resp) => {
+                let mut keysets = self.keysets.lock().unwrap();
+                for info in resp.keysets {
+                    if let Some(ks) = keysets.iter_mut().find(|k| k.id == info.id) {
+                        ks.unit = info.unit;
+                        ks.active = Some(info.active);
+                        ks.input_fee_ppk = info.input_fee_ppk;
+                        ks.final_expiry = info.final_expiry;
+                    }
+                }
             }
             Err(_) => unimplemented!("error responses for key state are not supported"),
         }
@@ -539,17 +565,7 @@ impl MockMintConnector {
     }
 
     pub fn set_active_keyset(&self, keyset: KeySet) {
-        self.set_mint_keys_response(Ok(vec![keyset.clone()]));
-        self.set_mint_keyset_response(Ok(keyset.clone()));
-        self.set_mint_keysets_response(Ok(KeysetResponse {
-            keysets: vec![KeySetInfo {
-                id: keyset.id,
-                unit: keyset.unit,
-                active: keyset.active.unwrap_or(true),
-                input_fee_ppk: keyset.input_fee_ppk,
-                final_expiry: keyset.final_expiry,
-            }],
-        }));
+        *self.keysets.lock().unwrap() = vec![keyset];
     }
 
     pub fn reset_default_mint_state(&self) {
@@ -588,6 +604,16 @@ impl MockMintConnector {
 
     pub fn set_post_swap_response(&self, response: Result<SwapResponse, Error>) {
         *self.post_swap_response.lock().unwrap() = Some(response);
+    }
+
+    /// Enqueue a response for the next `post_swap` call.
+    pub fn push_post_swap_response(&self, response: Result<SwapResponse, Error>) {
+        self.post_swap_responses.lock().unwrap().push_back(response);
+    }
+
+    /// Get all captured swap requests.
+    pub fn captured_swap_requests(&self) -> Vec<SwapRequest> {
+        self.captured_swap_requests.lock().unwrap().clone()
     }
 
     pub fn set_post_melt_response(&self, response: Result<MeltQuoteResponse<String>, Error>) {
@@ -653,29 +679,33 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn get_mint_keys(&self) -> Result<Vec<crate::nuts::KeySet>, Error> {
-        Ok(vec![self.keyset.lock().unwrap().clone()])
+        Ok(self.keysets.lock().unwrap().clone())
     }
 
     async fn get_mint_keyset(&self, keyset_id: Id) -> Result<crate::nuts::KeySet, Error> {
-        let keyset = self.keyset.lock().unwrap().clone();
-
-        match keyset.id == keyset_id {
-            true => Ok(keyset),
-            false => Err(Error::UnknownKeySet),
-        }
+        self.keysets
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|ks| ks.id == keyset_id)
+            .cloned()
+            .ok_or(Error::UnknownKeySet)
     }
 
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
-        let keyset = self.keyset.lock().unwrap().clone();
+        let keysets = self.keysets.lock().unwrap();
 
         Ok(KeysetResponse {
-            keysets: vec![KeySetInfo {
-                id: keyset.id,
-                unit: keyset.unit,
-                active: keyset.active.unwrap_or(true),
-                input_fee_ppk: keyset.input_fee_ppk,
-                final_expiry: keyset.final_expiry,
-            }],
+            keysets: keysets
+                .iter()
+                .map(|ks| KeySetInfo {
+                    id: ks.id,
+                    unit: ks.unit.clone(),
+                    active: ks.active.unwrap_or(true),
+                    input_fee_ppk: ks.input_fee_ppk,
+                    final_expiry: ks.final_expiry,
+                })
+                .collect(),
         })
     }
 
@@ -733,12 +763,18 @@ impl MintConnector for MockMintConnector {
         Ok(MeltQuoteResponse::Bolt11(response))
     }
 
-    async fn post_swap(&self, _request: SwapRequest) -> Result<SwapResponse, Error> {
-        self.post_swap_response
-            .lock()
-            .unwrap()
-            .take()
-            .expect("MockMintConnector: post_swap called without configured response")
+    async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error> {
+        self.captured_swap_requests.lock().unwrap().push(request);
+        let queued = self.post_swap_responses.lock().unwrap().pop_front();
+        match queued {
+            Some(response) => response,
+            None => self
+                .post_swap_response
+                .lock()
+                .unwrap()
+                .take()
+                .expect("MockMintConnector: post_swap called without configured response"),
+        }
     }
 
     async fn get_mint_info(&self) -> Result<crate::nuts::MintInfo, Error> {

@@ -161,7 +161,11 @@ impl Wallet {
         amount: Amount,
         opts: SendOptions,
     ) -> Result<PreparedSend<'_>, Error> {
-        let saga = SendSaga::new(self);
+        let saga = if opts.send_kind.is_offline() {
+            SendSaga::new(self).with_keyset_policy(cdk_common::wallet::KeysetLoadPolicy::CacheOnly)
+        } else {
+            SendSaga::new(self)
+        };
         let prepared_saga = saga.prepare(amount, opts).await?;
 
         // Extract data from the saga into PreparedSend

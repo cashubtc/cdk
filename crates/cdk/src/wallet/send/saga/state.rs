@@ -6,7 +6,7 @@
 
 use core::fmt;
 
-use cdk_common::wallet::WalletSaga;
+use cdk_common::wallet::{KeysetLoadPolicy, WalletSaga};
 use uuid::Uuid;
 
 use crate::nuts::Proofs;
@@ -18,6 +18,8 @@ use crate::Amount;
 pub struct Initial {
     /// Unique operation identifier for tracking and crash recovery
     pub operation_id: Uuid,
+    /// Policy controlling how keysets are loaded during this saga
+    pub keyset_policy: KeysetLoadPolicy,
 }
 
 /// Prepared state with proofs selected and reserved.

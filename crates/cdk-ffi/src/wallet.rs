@@ -653,15 +653,26 @@ impl Wallet {
         )))
     }
 
-    /// Refresh keysets from the mint
-    pub async fn refresh_keysets(&self) -> Result<Vec<KeySetInfo>, FfiError> {
-        let keysets = self.inner.refresh_keysets().await?;
+    /// Get all keysets for this wallet's unit
+    pub async fn keysets(
+        &self,
+        policy: Option<crate::types::wallet::KeysetLoadPolicy>,
+    ) -> Result<Vec<KeySet>, FfiError> {
+        let cdk_policy: cdk_common::wallet::KeysetLoadPolicy = policy.unwrap_or_default().into();
+        let keysets = self.inner.keysets(cdk_policy).await?;
         Ok(keysets.into_iter().map(Into::into).collect())
     }
 
-    /// Get the active keyset for the wallet's unit
-    pub async fn get_active_keyset(&self) -> Result<KeySetInfo, FfiError> {
-        let keyset = self.inner.get_active_keyset().await?;
+    /// Get the active keyset with the lowest fees
+    pub async fn active_keyset(&self) -> Result<KeySet, FfiError> {
+        let keyset = self.inner.active_keyset().await?;
+        Ok(keyset.into())
+    }
+
+    /// Get a single keyset by ID
+    pub async fn keyset(&self, keyset_id: String) -> Result<KeySet, FfiError> {
+        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
+        let keyset = self.inner.keyset(id).await?;
         Ok(keyset.into())
     }
 
@@ -669,34 +680,6 @@ impl Wallet {
     pub async fn get_keyset_fees_by_id(&self, keyset_id: String) -> Result<u64, FfiError> {
         let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
         Ok(self.inner.get_keyset_fees_by_id(id).await?)
-    }
-
-    /// Load keys for a specific keyset
-    pub async fn load_keyset_keys(&self, keyset_id: String) -> Result<Keys, FfiError> {
-        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
-        let keys = self.inner.load_keyset_keys(id).await?;
-        Ok(keys.into())
-    }
-
-    /// Get keysets for this wallet's unit with filter
-    pub async fn get_mint_keysets(
-        &self,
-        filter: KeysetFilter,
-    ) -> Result<Vec<KeySetInfo>, FfiError> {
-        let keysets = self.inner.get_mint_keysets(filter.into()).await?;
-        Ok(keysets.into_iter().map(Into::into).collect())
-    }
-
-    /// Load active keysets
-    pub async fn load_mint_keysets(&self) -> Result<Vec<KeySetInfo>, FfiError> {
-        let keysets = self.inner.load_mint_keysets().await?;
-        Ok(keysets.into_iter().map(Into::into).collect())
-    }
-
-    /// Fetch active keyset with lowest fees
-    pub async fn fetch_active_keyset(&self) -> Result<KeySetInfo, FfiError> {
-        let keyset = self.inner.fetch_active_keyset().await?;
-        Ok(keyset.into())
     }
 
     /// Get fees and amounts for all keysets

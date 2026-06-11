@@ -84,7 +84,10 @@ impl<'a> MintSaga<'a, Initial> {
         Self {
             wallet,
             compensations: new_compensations(),
-            state_data: Initial { operation_id },
+            state_data: Initial {
+                operation_id,
+                keyset_policy: Default::default(),
+            },
         }
     }
 
@@ -291,6 +294,7 @@ impl<'a> MintSaga<'a, Initial> {
                 request,
             },
             payment_method: quote_info.payment_method.clone(),
+            keyset_policy: self.state_data.keyset_policy,
             saga,
         })
     }
@@ -339,10 +343,15 @@ impl<'a> MintSaga<'a, Initial> {
             amount = quote_info.amount_mintable();
         }
 
-        let active_keyset_id = self.wallet.fetch_active_keyset().await?.id;
+        let keyset_policy = self.state_data.keyset_policy;
+        let active_keyset_id = self
+            .wallet
+            .active_keyset_with_policy(keyset_policy)
+            .await?
+            .id;
         let fee_and_amounts = self
             .wallet
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .get_keyset_fees_and_amounts_by_id_with_policy(active_keyset_id, keyset_policy)
             .await?;
 
         self.prepare_common(
@@ -456,10 +465,15 @@ impl<'a> MintSaga<'a, Initial> {
         .await;
 
         // Get active keyset
-        let active_keyset_id = self.wallet.fetch_active_keyset().await?.id;
+        let keyset_policy = self.state_data.keyset_policy;
+        let active_keyset_id = self
+            .wallet
+            .active_keyset_with_policy(keyset_policy)
+            .await?
+            .id;
         let fee_and_amounts = self
             .wallet
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .get_keyset_fees_and_amounts_by_id_with_policy(active_keyset_id, keyset_policy)
             .await?;
 
         // Create premint secrets for total amount
@@ -597,6 +611,7 @@ impl<'a> MintSaga<'a, Initial> {
                     request: batch_request,
                 },
                 payment_method,
+                keyset_policy,
                 saga,
             },
         })
@@ -623,6 +638,7 @@ impl<'a> MintSaga<'a, Prepared> {
             premint_secrets,
             mint_request,
             payment_method,
+            keyset_policy,
             saga,
         } = state_data;
 
@@ -692,7 +708,10 @@ impl<'a> MintSaga<'a, Prepared> {
                 }
             };
 
-            let keys = wallet.load_keyset_keys(active_keyset_id).await?;
+            let keys = wallet
+                .keyset_with_policy(active_keyset_id, keyset_policy)
+                .await?
+                .keys;
 
             validate_mint_response_signatures(
                 wallet,

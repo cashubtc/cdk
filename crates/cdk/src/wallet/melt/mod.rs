@@ -1197,10 +1197,7 @@ impl Wallet {
         // Get mint info from cache to check bolt12 support (no network call)
         let mint_info = &self
             .metadata_cache
-            .load(&self.localstore, &self.client, {
-                let ttl = self.metadata_cache_ttl.read();
-                *ttl
-            })
+            .load(&self.localstore, &self.client)
             .await?
             .mint_info;
 

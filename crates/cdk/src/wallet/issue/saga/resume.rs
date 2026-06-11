@@ -378,7 +378,7 @@ impl Wallet {
                 counter_end,
             )?;
 
-            let keys = self.load_keyset_keys(keyset_id).await?;
+            let keys = self.keyset(keyset_id).await?.keys;
 
             validate_mint_response_signatures(
                 self,
@@ -500,7 +500,7 @@ impl Wallet {
             counter_end,
         )?;
 
-        let keys = self.load_keyset_keys(keyset_id).await?;
+        let keys = self.keyset(keyset_id).await?.keys;
 
         validate_mint_response_signatures(
             self,

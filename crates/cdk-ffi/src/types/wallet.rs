@@ -143,6 +143,44 @@ impl From<cdk::wallet::SendKind> for SendKind {
     }
 }
 
+/// Policy controlling how keysets are loaded
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, uniffi::Enum, Default,
+)]
+pub enum KeysetLoadPolicy {
+    /// Use in-memory cache and local database only. Never contacts the network.
+    CacheOnly,
+    /// Check cache first (respects TTL). Falls back to database, then network.
+    #[default]
+    CacheThenNetwork,
+    /// Always fetch fresh data from the mint over the network.
+    Refresh,
+}
+
+impl From<KeysetLoadPolicy> for cdk_common::wallet::KeysetLoadPolicy {
+    fn from(policy: KeysetLoadPolicy) -> Self {
+        match policy {
+            KeysetLoadPolicy::CacheOnly => cdk_common::wallet::KeysetLoadPolicy::CacheOnly,
+            KeysetLoadPolicy::CacheThenNetwork => {
+                cdk_common::wallet::KeysetLoadPolicy::CacheThenNetwork
+            }
+            KeysetLoadPolicy::Refresh => cdk_common::wallet::KeysetLoadPolicy::Refresh,
+        }
+    }
+}
+
+impl From<cdk_common::wallet::KeysetLoadPolicy> for KeysetLoadPolicy {
+    fn from(policy: cdk_common::wallet::KeysetLoadPolicy) -> Self {
+        match policy {
+            cdk_common::wallet::KeysetLoadPolicy::CacheOnly => KeysetLoadPolicy::CacheOnly,
+            cdk_common::wallet::KeysetLoadPolicy::CacheThenNetwork => {
+                KeysetLoadPolicy::CacheThenNetwork
+            }
+            cdk_common::wallet::KeysetLoadPolicy::Refresh => KeysetLoadPolicy::Refresh,
+        }
+    }
+}
+
 /// FFI-compatible P2PK locked proof send mode
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, uniffi::Enum, Default,

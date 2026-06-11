@@ -23,7 +23,7 @@ impl WalletTraitDef for Wallet {
     type MintUrl = MintUrl;
     type CurrencyUnit = CurrencyUnit;
     type MintInfo = MintInfo;
-    type KeySetInfo = KeySetInfo;
+    type KeySetInfo = KeySet;
     type MintQuote = MintQuote;
     type MeltQuote = MeltQuote;
     type PaymentMethod = PaymentMethod;
@@ -68,34 +68,24 @@ impl WalletTraitDef for Wallet {
         Ok(info.into())
     }
 
-    async fn refresh_keysets(&self) -> Result<Vec<Self::KeySetInfo>, Self::Error> {
-        let keysets = WalletTraitDef::refresh_keysets(self.inner().as_ref()).await?;
+    async fn keysets(
+        &self,
+        policy: cdk_common::wallet::KeysetLoadPolicy,
+    ) -> Result<Vec<Self::KeySetInfo>, Self::Error> {
+        let keysets = WalletTraitDef::keysets(self.inner().as_ref(), policy).await?;
         Ok(keysets.into_iter().map(Into::into).collect())
     }
 
-    async fn get_active_keyset(&self) -> Result<Self::KeySetInfo, Self::Error> {
-        let keyset = WalletTraitDef::get_active_keyset(self.inner().as_ref()).await?;
+    async fn active_keyset(&self) -> Result<Self::KeySetInfo, Self::Error> {
+        let keyset = WalletTraitDef::active_keyset(self.inner().as_ref()).await?;
         Ok(keyset.into())
     }
 
-    async fn load_keyset_keys(
+    async fn keyset(
         &self,
         keyset_id: cdk_common::nuts::Id,
-    ) -> Result<cdk_common::nuts::Keys, Self::Error> {
-        let keys = WalletTraitDef::load_keyset_keys(self.inner().as_ref(), keyset_id).await?;
-        Ok(keys)
-    }
-
-    async fn get_mint_keysets(
-        &self,
-        filter: cdk_common::wallet::KeysetFilter,
-    ) -> Result<Vec<Self::KeySetInfo>, Self::Error> {
-        let keysets = WalletTraitDef::get_mint_keysets(self.inner().as_ref(), filter).await?;
-        Ok(keysets.into_iter().map(Into::into).collect())
-    }
-
-    async fn fetch_active_keyset(&self) -> Result<Self::KeySetInfo, Self::Error> {
-        let keyset = WalletTraitDef::fetch_active_keyset(self.inner().as_ref()).await?;
+    ) -> Result<Self::KeySetInfo, Self::Error> {
+        let keyset = WalletTraitDef::keyset(self.inner().as_ref(), keyset_id).await?;
         Ok(keyset.into())
     }
 

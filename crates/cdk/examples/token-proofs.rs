@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::Token;
-use cdk::wallet::{KeysetFilter, WalletRepositoryBuilder};
+use cdk::wallet::WalletRepositoryBuilder;
 use cdk_sqlite::wallet::memory;
 use rand::random;
 
@@ -79,19 +79,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into_iter()
         .next()
         .ok_or("No wallet found for mint")?;
-    let keysets: Vec<cdk::nuts::KeySetInfo> =
-        mint_wallet.get_mint_keysets(KeysetFilter::Active).await?;
-    println!("Found {} keysets for mint", keysets.len());
+    let keysets: Vec<cdk::nuts::KeySet> = mint_wallet.keysets(Default::default()).await?;
 
     for keyset in &keysets {
         println!(
             "  - Keyset ID: {}, Unit: {}, Active: {}",
-            keyset.id, keyset.unit, keyset.active
+            keyset.id,
+            keyset.unit,
+            keyset.active.unwrap_or(false)
         );
     }
 
+    let keysets_info: Vec<cdk::nuts::KeySetInfo> = keysets
+        .iter()
+        .map(|ks| cdk::nuts::KeySetInfo {
+            id: ks.id,
+            unit: ks.unit.clone(),
+            active: ks.active.unwrap_or(true),
+            input_fee_ppk: ks.input_fee_ppk,
+            final_expiry: ks.final_expiry,
+        })
+        .collect();
+
     // Extract proofs from the token using the keysets
-    let proofs = token.proofs(&keysets)?;
+    let proofs = token.proofs(&keysets_info)?;
     println!("\nToken contains {} proofs:", proofs.len());
 
     // Calculate total amount from proofs

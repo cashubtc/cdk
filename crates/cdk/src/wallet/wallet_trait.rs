@@ -9,13 +9,12 @@ use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut07::ProofState;
 use cdk_common::nuts::nut18::PaymentRequest;
 use cdk_common::nuts::{
-    AuthProof, CurrencyUnit, Id, KeySetInfo, Keys, MeltOptions, MintInfo, PaymentMethod, Proofs,
-    SpendingConditions,
+    AuthProof, CurrencyUnit, Id, MeltOptions, MintInfo, PaymentMethod, Proofs, SpendingConditions,
 };
 use cdk_common::subscription::WalletParams;
 use cdk_common::wallet::{
-    KeysetFilter, MeltQuote, MintQuote, ReceiveOptions, Restored, SendOptions, Transaction,
-    TransactionDirection, TransactionId, Wallet as WalletTrait,
+    MeltQuote, MintQuote, ReceiveOptions, Restored, SendOptions, Transaction, TransactionDirection,
+    TransactionId, Wallet as WalletTrait,
 };
 use cdk_common::{Amount, PublicKey, SecretKey};
 use tracing::instrument;
@@ -32,7 +31,7 @@ impl WalletTrait for super::Wallet {
     type MintUrl = MintUrl;
     type CurrencyUnit = CurrencyUnit;
     type MintInfo = MintInfo;
-    type KeySetInfo = KeySetInfo;
+    type KeySetInfo = cdk_common::KeySet;
     type MintQuote = MintQuote;
     type MeltQuote = MeltQuote;
     type PaymentMethod = PaymentMethod;
@@ -78,28 +77,21 @@ impl WalletTrait for super::Wallet {
     }
 
     #[instrument(skip(self))]
-    async fn refresh_keysets(&self) -> Result<Vec<KeySetInfo>, Self::Error> {
-        self.refresh_keysets().await
+    async fn keysets(
+        &self,
+        policy: cdk_common::wallet::KeysetLoadPolicy,
+    ) -> Result<Vec<cdk_common::KeySet>, Self::Error> {
+        self.keysets(policy).await
     }
 
     #[instrument(skip(self))]
-    async fn get_active_keyset(&self) -> Result<KeySetInfo, Self::Error> {
-        self.get_active_keyset().await
+    async fn active_keyset(&self) -> Result<cdk_common::KeySet, Self::Error> {
+        self.active_keyset().await
     }
 
     #[instrument(skip(self))]
-    async fn load_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Self::Error> {
-        self.load_keyset_keys(keyset_id).await
-    }
-
-    #[instrument(skip(self))]
-    async fn get_mint_keysets(&self, filter: KeysetFilter) -> Result<Vec<KeySetInfo>, Self::Error> {
-        self.get_mint_keysets(filter).await
-    }
-
-    #[instrument(skip(self))]
-    async fn fetch_active_keyset(&self) -> Result<KeySetInfo, Self::Error> {
-        self.fetch_active_keyset().await
+    async fn keyset(&self, keyset_id: Id) -> Result<cdk_common::KeySet, Self::Error> {
+        self.keyset(keyset_id).await
     }
 
     #[instrument(skip(self))]

@@ -536,7 +536,7 @@ async fn test_restore_with_counter_gap() {
     assert_eq!(wallet.total_balance().await.unwrap(), 100.into());
 
     // Get the active keyset ID to increment counter
-    let active_keyset = wallet.fetch_active_keyset().await.unwrap();
+    let active_keyset = wallet.active_keyset().await.unwrap();
     let keyset_id = active_keyset.id;
 
     // Create a gap in the counter sequence
@@ -894,7 +894,7 @@ async fn test_fake_melt_change_in_quote() {
         .await
         .unwrap();
 
-    let keyset = wallet.fetch_active_keyset().await.unwrap();
+    let keyset = wallet.active_keyset().await.unwrap();
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let premint_secrets = PreMintSecrets::random(

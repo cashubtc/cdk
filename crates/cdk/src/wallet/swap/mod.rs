@@ -99,21 +99,23 @@ impl Wallet {
     ) -> Result<Option<Proofs>, Error> {
         tracing::info!("Swapping");
 
-        let saga = SwapSaga::new(self);
-        let saga = saga
-            .prepare(
-                amount,
-                amount_split_target,
-                input_proofs,
-                spending_conditions,
-                use_p2bk,
-                include_fees,
-                proof_reservation,
-            )
-            .await?;
-        let saga = saga.execute().await?;
-
-        Ok(saga.into_send_proofs())
+        self.retry_on_inactive_keyset(|| async {
+            let saga = SwapSaga::new(self);
+            let saga = saga
+                .prepare(
+                    amount,
+                    amount_split_target.clone(),
+                    input_proofs.clone(),
+                    spending_conditions.clone(),
+                    use_p2bk,
+                    include_fees,
+                    proof_reservation,
+                )
+                .await?;
+            let saga = saga.execute().await?;
+            Ok(saga.into_send_proofs())
+        })
+        .await
     }
 
     /// Create Swap Payload
@@ -326,5 +328,160 @@ impl Wallet {
             fee: proofs_fee_breakdown.total,
             p2bk_secret_keys: p2bk_ephemeral_key,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use cdk_common::wallet::{KeysetLoadPolicy, ProofInfo};
+    use cdk_common::CurrencyUnit;
+
+    use crate::amount::SplitTarget;
+    use crate::nuts::State;
+    use crate::wallet::test_utils::{
+        create_test_db, create_test_wallet_with_mock, make_inactive_keyset, test_keyset,
+        test_keyset_id, test_mint_url, test_proof, MockMintConnector,
+    };
+    use crate::Error;
+
+    /// When the mint returns InactiveKeyset on a swap and the active keyset
+    /// has rotated, the wallet should retry the swap with the new keyset.
+    #[tokio::test]
+    async fn swap_retries_on_inactive_keyset_after_rotation() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        db.add_mint(mint_url.clone(), None).await.unwrap();
+
+        let mock = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock.clone()).await;
+
+        // Prime cache with keyset A as active
+        wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+
+        let keyset_a_id = test_keyset_id();
+
+        // Store proofs in the DB so reserve_proofs can find them.
+        // Use amounts 1+2=3 so that after fee (1 sat for 2 inputs), the output
+        // amount of 2 is expressible in keyset B's shifted denominations (min 2).
+        let proof1 = test_proof(keyset_a_id, 1);
+        let proof2 = test_proof(keyset_a_id, 2);
+        let pi1 = ProofInfo::new(
+            proof1.clone(),
+            mint_url.clone(),
+            State::Unspent,
+            CurrencyUnit::Sat,
+        )
+        .unwrap();
+        let pi2 =
+            ProofInfo::new(proof2.clone(), mint_url, State::Unspent, CurrencyUnit::Sat).unwrap();
+        db.update_proofs(vec![pi1, pi2], vec![]).await.unwrap();
+
+        // Rotate keysets on the mock: A becomes inactive, B becomes active
+        let mut old = test_keyset();
+        old.active = Some(false);
+        let mut rotated = make_inactive_keyset();
+        rotated.active = Some(true);
+        let keyset_b_id = rotated.id;
+        mock.set_mint_keys_response(Ok(vec![old, rotated]));
+
+        // First post_swap → InactiveKeyset, second → TokenAlreadySpent
+        // (we can't construct valid blind signatures, so use a different error
+        // to prove the retry happened)
+        mock.push_post_swap_response(Err(Error::InactiveKeyset));
+        mock.push_post_swap_response(Err(Error::TokenAlreadySpent));
+
+        let result = wallet
+            .swap(
+                None,
+                SplitTarget::default(),
+                vec![proof1, proof2],
+                None,
+                false,
+                false,
+            )
+            .await;
+
+        // The second attempt's error should surface, not InactiveKeyset
+        assert!(
+            matches!(result, Err(Error::TokenAlreadySpent)),
+            "expected TokenAlreadySpent from retry, got: {result:?}"
+        );
+
+        let requests = mock.captured_swap_requests();
+        assert_eq!(requests.len(), 2, "post_swap should be called twice");
+
+        // First attempt targeted keyset A
+        assert!(
+            requests[0]
+                .outputs()
+                .iter()
+                .all(|o| o.keyset_id == keyset_a_id),
+            "first swap attempt should target keyset A"
+        );
+        // Second attempt targeted keyset B
+        assert!(
+            requests[1]
+                .outputs()
+                .iter()
+                .all(|o| o.keyset_id == keyset_b_id),
+            "second swap attempt should target keyset B"
+        );
+    }
+
+    /// When the mint returns InactiveKeyset but the active keyset hasn't
+    /// changed, the wallet should NOT retry and return the error immediately.
+    #[tokio::test]
+    async fn swap_does_not_retry_when_keyset_unchanged() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        db.add_mint(mint_url.clone(), None).await.unwrap();
+
+        let mock = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock.clone()).await;
+
+        // Prime cache with keyset A as active
+        wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+
+        // Store proofs in the DB
+        let proof1 = test_proof(test_keyset_id(), 1);
+        let proof2 = test_proof(test_keyset_id(), 2);
+        let pi1 = ProofInfo::new(
+            proof1.clone(),
+            mint_url.clone(),
+            State::Unspent,
+            CurrencyUnit::Sat,
+        )
+        .unwrap();
+        let pi2 =
+            ProofInfo::new(proof2.clone(), mint_url, State::Unspent, CurrencyUnit::Sat).unwrap();
+        db.update_proofs(vec![pi1, pi2], vec![]).await.unwrap();
+
+        // Don't rotate keysets — mock still returns keyset A as active
+        mock.push_post_swap_response(Err(Error::InactiveKeyset));
+
+        let result = wallet
+            .swap(
+                None,
+                SplitTarget::default(),
+                vec![proof1, proof2],
+                None,
+                false,
+                false,
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(Error::InactiveKeyset)),
+            "expected InactiveKeyset without rotation, got: {result:?}"
+        );
+
+        let requests = mock.captured_swap_requests();
+        assert_eq!(
+            requests.len(),
+            1,
+            "post_swap should be called only once (no retry)"
+        );
     }
 }

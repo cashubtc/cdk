@@ -265,7 +265,7 @@ impl RecoveryHelpers for Wallet {
             PreMintSecrets::restore_batch(keyset_id, &self.seed, counter_start, counter_end)?;
 
         // Load keyset keys
-        let keys = self.load_keyset_keys(keyset_id).await?;
+        let keys = self.keyset(keyset_id).await?.keys;
 
         validate_mint_response_signatures(
             self,
@@ -489,7 +489,7 @@ impl Wallet {
         }
 
         // Load keyset keys for proof construction
-        let keys = self.load_keyset_keys(keyset_id).await?;
+        let keys = self.keyset(keyset_id).await?.keys;
 
         validate_mint_response_signatures(
             self,

@@ -62,7 +62,7 @@ pub(crate) async fn validate_mint_response_signatures<'a>(
             )));
         }
 
-        let keys = wallet.load_keyset_keys(sig.keyset_id).await?;
+        let keys = wallet.keyset(sig.keyset_id).await?.keys;
         let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
         match sig.verify_dleq(key, blinded_message.blinded_secret) {
             Ok(_) | Err(nut12::Error::MissingDleqProof) => (),
