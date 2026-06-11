@@ -12,13 +12,14 @@ rust-version.workspace = true
 [features]
 default = ["wallet"]
 wallet = ["cdk-common/wallet"]
+integration-tests = []
 
 [dependencies]
 async-trait.workspace = true
 cdk-common = { workspace = true, features = ["test"] }
 bitcoin.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -29,6 +30,10 @@ url.workspace = true
 once_cell.workspace = true
 urlencoding = "2.1"
 aes-gcm = "0.10"
+paste.workspace = true
+
+[dev-dependencies]
+mockito = { version = "1", default-features = false }
 
 [lints]
 workspace = true

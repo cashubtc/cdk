@@ -958,18 +958,13 @@ binding-go:
   #!/usr/bin/env bash
   set -euo pipefail
   cd "{{justfile_directory()}}"
-  cargo build --release --package cdk-ffi-go
-  cargo install uniffi-bindgen-go \
-    --git https://github.com/NordSecurity/uniffi-bindgen-go \
-    --tag v0.6.0+v0.30.0 \
-    --locked
-  export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
   LIB_EXT=$(just _ffi-lib-ext)
-  uniffi-bindgen-go \
-    "target/release/libcdk_ffi_go.${LIB_EXT}" \
-    --library \
-    --config bindings/go/uniffi.toml \
-    --out-dir target/bindings/go
+  result=$(nix build .#go-bindings --print-out-paths --no-link)
+  rm -rf target/bindings/go
+  mkdir -p target/bindings/go target/release
+  cp -r "$result"/bindings/* target/bindings/go/
+  cp "$result/lib/libcdk_ffi_go.${LIB_EXT}" target/release/
+  chmod -R u+w target/bindings/go target/release/libcdk_ffi_go.${LIB_EXT}
 
 # Run Go binding tests
 test-go:

@@ -5,19 +5,22 @@ use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, Response};
-use axum::Form;
+use axum::Extension;
 use ldk_node::bitcoin::secp256k1::PublicKey;
 use ldk_node::lightning::ln::msgs::SocketAddress;
 use ldk_node::UserChannelId;
 use maud::html;
 use serde::Deserialize;
 
+use crate::web::csrf::{csrf_input, CsrfForm, CsrfToken};
 use crate::web::handlers::utils::deserialize_optional_u64;
 use crate::web::handlers::AppState;
 use crate::web::templates::{
     error_message, form_card, format_sats_as_btc, info_card, is_node_running, layout_with_status,
     success_message,
 };
+
+const MSATS_PER_SAT: u64 = 1_000;
 
 #[derive(Deserialize)]
 pub struct OpenChannelForm {
@@ -44,11 +47,15 @@ pub async fn channels_page(State(_state): State<AppState>) -> Result<Response, S
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-pub async fn open_channel_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
+pub async fn open_channel_page(
+    State(state): State<AppState>,
+    Extension(csrf_token): Extension<CsrfToken>,
+) -> Result<Html<String>, StatusCode> {
     let content = form_card(
         "Open New Channel",
         html! {
             form method="post" action="/channels/open" {
+                (csrf_input(&csrf_token))
                 div class="form-group" {
                     label for="node_id" { "Node Public Key" }
                     input type="text" id="node_id" name="node_id" required placeholder="02..." {}
@@ -85,7 +92,7 @@ pub async fn open_channel_page(State(state): State<AppState>) -> Result<Html<Str
 
 pub async fn post_open_channel(
     State(state): State<AppState>,
-    Form(form): Form<OpenChannelForm>,
+    CsrfForm(form): CsrfForm<OpenChannelForm>,
 ) -> Result<Response, StatusCode> {
     tracing::info!(
         "Web interface: Attempting to open channel to node_id={}, address={}:{}, amount_sats={}, push_btc={:?}",
@@ -159,18 +166,41 @@ pub async fn post_open_channel(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
     }
 
+    let push_msats = match form
+        .push_btc
+        .map(|amount| amount.checked_mul(MSATS_PER_SAT))
+    {
+        Some(Some(push_msats)) => Some(push_msats),
+        Some(None) => {
+            let content = html! {
+                (error_message("Push amount is too large"))
+                div class="card" {
+                    a href="/channels/open" { button { "← Try Again" } }
+                }
+            };
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header("content-type", "text/html")
+                .body(Body::from(
+                    layout_with_status("Open Channel Error", content, true).into_string(),
+                ))
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        None => None,
+    };
+
     // Then open the channel
     tracing::info!(
         "Web interface: Opening announced channel to {} with amount {} sats and push amount {:?} msats",
         pubkey,
         form.amount_sats,
-        form.push_btc.map(|a| a * 1000)
+        push_msats
     );
     let channel_result = state.node.inner.open_announced_channel(
         pubkey,
         socket_addr,
         form.amount_sats,
-        form.push_btc.map(|a| a * 1000),
+        push_msats,
         None,
     );
 
@@ -219,6 +249,7 @@ pub async fn post_open_channel(
 
 pub async fn close_channel_page(
     State(state): State<AppState>,
+    Extension(csrf_token): Extension<CsrfToken>,
     query: Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
     let channel_id = query.get("channel_id").unwrap_or(&"".to_string()).clone();
@@ -266,6 +297,7 @@ pub async fn close_channel_page(
             }
 
             form method="post" action="/channels/close" style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center;" {
+                (csrf_input(&csrf_token))
                 input type="hidden" name="channel_id" value=(channel_id) {}
                 input type="hidden" name="node_id" value=(node_id) {}
                 a href="/balance" { button type="button" class="button-secondary" { "Cancel" } }
@@ -282,6 +314,7 @@ pub async fn close_channel_page(
 
 pub async fn force_close_channel_page(
     State(state): State<AppState>,
+    Extension(csrf_token): Extension<CsrfToken>,
     query: Query<HashMap<String, String>>,
 ) -> Result<Html<String>, StatusCode> {
     let channel_id = query.get("channel_id").unwrap_or(&"".to_string()).clone();
@@ -337,6 +370,7 @@ pub async fn force_close_channel_page(
             }
 
             form method="post" action="/channels/force-close" style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center;" {
+                (csrf_input(&csrf_token))
                 input type="hidden" name="channel_id" value=(channel_id) {}
                 input type="hidden" name="node_id" value=(node_id) {}
                 a href="/balance" { button type="button" class="button-secondary" { "Cancel" } }
@@ -353,7 +387,7 @@ pub async fn force_close_channel_page(
 
 pub async fn post_close_channel(
     State(state): State<AppState>,
-    Form(form): Form<CloseChannelForm>,
+    CsrfForm(form): CsrfForm<CloseChannelForm>,
 ) -> Result<Response, StatusCode> {
     tracing::info!(
         "Web interface: Attempting to close channel_id={} with node_id={}",
@@ -456,7 +490,7 @@ pub async fn post_close_channel(
 
 pub async fn post_force_close_channel(
     State(state): State<AppState>,
-    Form(form): Form<CloseChannelForm>,
+    CsrfForm(form): CsrfForm<CloseChannelForm>,
 ) -> Result<Response, StatusCode> {
     tracing::info!(
         "Web interface: Attempting to FORCE CLOSE channel_id={} with node_id={}",

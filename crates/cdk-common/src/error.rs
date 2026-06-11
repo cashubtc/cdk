@@ -611,6 +611,15 @@ mod tests {
         // Test HTTP network errors (no status)
         assert!(!Error::HttpError(None, "Connection refused".to_string()).is_definitive_failure());
     }
+
+    #[test]
+    fn test_pending_states_are_ambiguous_failures() {
+        // In-flight pending states are indeterminate: the mint may still
+        // settle the operation, so reverting reserved proofs to Unspent and
+        // reusing them risks a double-spend or loss of funds.
+        assert!(!Error::TokenPending.is_definitive_failure());
+        assert!(!Error::PendingQuote.is_definitive_failure());
+    }
 }
 
 impl Error {
@@ -647,7 +656,6 @@ impl Error {
             | Self::ExpiredQuote(_, _)
             | Self::AmountOutofLimitRange(_, _, _)
             | Self::UnpaidQuote
-            | Self::PendingQuote
             | Self::IssuedQuote
             | Self::PaidQuote
             | Self::MeltingDisabled
@@ -664,7 +672,6 @@ impl Error {
             | Self::UnitMismatch
             | Self::SigAllUsedInMelt
             | Self::TokenAlreadySpent
-            | Self::TokenPending
             | Self::P2PKConditionsNotMet(_)
             | Self::DuplicateSignatureError
             | Self::LocktimeNotProvided
@@ -710,6 +717,8 @@ impl Error {
             Self::Timeout
             | Self::Internal
             | Self::UnknownPaymentState
+            | Self::PendingQuote
+            | Self::TokenPending
             | Self::CouldNotGetMintInfo
             | Self::UnknownErrorResponse(_)
             | Self::InvalidMintResponse(_)

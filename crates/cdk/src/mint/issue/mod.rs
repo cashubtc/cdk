@@ -11,7 +11,7 @@ use cdk_common::util::unix_time;
 use cdk_common::{
     database, ensure_cdk, Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Error,
     MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteOnchainResponse, MintQuoteState,
-    MintRequest, MintResponse, NotificationPayload, PublicKey,
+    MintRequest, MintResponse, NotificationPayload, PaymentMethod, PublicKey,
 };
 use tracing::instrument;
 
@@ -219,7 +219,7 @@ impl Mint {
 
             let ln = self.get_payment_processor(unit.clone(), payment_method.clone())?;
 
-            let quote_id = QuoteId::new_uuid();
+            let quote_id = QuoteId::new();
 
             let payment_options = match mint_quote_request {
                 MintQuoteRequest::Bolt11(bolt11_request) => {
@@ -555,6 +555,18 @@ impl Mint {
         }
 
         result
+    }
+
+    /// Get the configured payment method for an existing mint quote.
+    #[instrument(skip(self))]
+    pub async fn get_mint_quote_method(&self, quote_id: &QuoteId) -> Result<PaymentMethod, Error> {
+        let quote = self
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        Ok(quote.payment_method)
     }
 
     /// Checks the status of multiple mint quotes (NUT-29 batch quote check)
@@ -1184,7 +1196,7 @@ mod batch_mint_tests {
     }
 
     async fn add_paid_onchain_mint_quote(mint: &Mint, paid_amount: u64) -> QuoteId {
-        let quote_id = QuoteId::new_uuid();
+        let quote_id = QuoteId::new();
         let quote = MintQuote::new(
             Some(quote_id.clone()),
             "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),

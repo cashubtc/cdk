@@ -43,7 +43,7 @@ serde_json.workspace = true
 serde_with.workspace = true
 web-time.workspace = true
 parking_lot = "0.12.5"
-paste = "1.0.15"
+paste.workspace = true
 jsonwebtoken.workspace = true
 tonic = { workspace = true, optional = true }
 

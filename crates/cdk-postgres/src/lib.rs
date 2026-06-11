@@ -1,6 +1,6 @@
 //! CDK Postgres
 
-use std::fmt::Debug;
+use std::fmt;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -45,8 +45,8 @@ impl Default for SslMode {
     }
 }
 
-impl Debug for SslMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for SslMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let debug_text = match self {
             Self::NoTls(_) => "NoTls",
             Self::NativeTls(_) => "NativeTls",
@@ -57,13 +57,25 @@ impl Debug for SslMode {
 }
 
 /// Postgres configuration
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PgConfig {
     url: String,
     schema: Option<String>,
     tls: SslMode,
     max_connections: usize,
     connection_timeout: Duration,
+}
+
+impl fmt::Debug for PgConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PgConfig")
+            .field("url", &"[redacted]")
+            .field("schema", &self.schema)
+            .field("tls", &self.tls)
+            .field("max_connections", &self.max_connections)
+            .field("connection_timeout", &self.connection_timeout)
+            .finish()
+    }
 }
 
 impl DatabaseConfig for PgConfig {
@@ -252,7 +264,7 @@ impl PostgresConnection {
                         Err(err) => {
                             *error_clone.lock().await =
                                 Some(cdk_common::database::Error::Database(Box::new(err)));
-                            stale.store(false, std::sync::atomic::Ordering::Release);
+                            stale.store(true, std::sync::atomic::Ordering::Release);
                             notify_clone.notify_waiters();
                             return;
                         }
@@ -267,7 +279,7 @@ impl PostgresConnection {
                     if let Some(schema) = config.schema.as_ref() {
                         if let Err(err) = select_schema(&client, schema).await {
                             *error_clone.lock().await = Some(err);
-                            stale.store(false, std::sync::atomic::Ordering::Release);
+                            stale.store(true, std::sync::atomic::Ordering::Release);
                             notify_clone.notify_waiters();
                             return;
                         }
@@ -282,7 +294,7 @@ impl PostgresConnection {
                         Err(err) => {
                             *error_clone.lock().await =
                                 Some(cdk_common::database::Error::Database(Box::new(err)));
-                            stale.store(false, std::sync::atomic::Ordering::Release);
+                            stale.store(true, std::sync::atomic::Ordering::Release);
                             notify_clone.notify_waiters();
                             return;
                         }
@@ -431,4 +443,33 @@ mod test {
     }
 
     wallet_db_test!(provide_wallet_db);
+
+    #[tokio::test]
+    async fn failed_initial_connect_marks_connection_stale() {
+        let stale = Arc::new(AtomicBool::new(false));
+        let config = PgConfig::from("host=127.0.0.1 port=1 user=cdk dbname=cdk connect_timeout=1");
+        let conn = PostgresConnection::new(config, Duration::from_secs(5), stale.clone());
+
+        assert!(
+            conn.inner().await.is_err(),
+            "connect to refused port should fail"
+        );
+        tokio::task::yield_now().await;
+
+        assert!(
+            stale.load(std::sync::atomic::Ordering::SeqCst),
+            "failed initial connect should mark the pooled connection stale"
+        );
+    }
+
+    #[test]
+    fn pgconfig_debug_does_not_leak_password() {
+        let config = PgConfig::from("host=localhost user=u password=hunter2secret dbname=d");
+        let rendered = format!("{config:?}");
+
+        assert!(
+            !rendered.contains("hunter2secret"),
+            "PgConfig Debug leaked the DB password: {rendered}"
+        );
+    }
 }

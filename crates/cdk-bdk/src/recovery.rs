@@ -522,7 +522,7 @@ impl CdkBdk {
                         }
 
                         if let SendBatchState::Broadcast {
-                            txid,
+                            txid: recorded_txid,
                             tx_bytes,
                             assignments,
                             ..
@@ -560,13 +560,23 @@ impl CdkBdk {
                                     continue;
                                 }
                             };
+                            let computed_txid_str = computed_txid.to_string();
+                            if recorded_txid != &computed_txid_str {
+                                tracing::warn!(
+                                    batch_id = %batch.batch_id,
+                                    intent_id = %intent_id,
+                                    recorded_txid = %recorded_txid,
+                                    computed_txid = %computed_txid_str,
+                                    "Broadcast batch txid differs from persisted tx bytes during orphan repair"
+                                );
+                            }
                             let outpoint =
                                 OutPoint::new(computed_txid, assignment.vout).to_string();
 
                             if let Err(e) = intent
                                 .mark_broadcast(
                                     &self.storage,
-                                    txid.clone(),
+                                    computed_txid_str,
                                     outpoint,
                                     assignment.fee_contribution_sat,
                                 )
@@ -1049,5 +1059,69 @@ mod tests {
 
         assert_still_awaiting(&backend, intent_id).await;
         assert_wallet_knows_tx(&backend, &txid).await;
+    }
+
+    /// If a crash leaves an intent in `Batched` while its batch is already
+    /// `Broadcast`, recovery must bind the repaired intent to the txid derived
+    /// from the persisted transaction bytes, not the batch record's txid field.
+    #[tokio::test]
+    async fn test_recover_send_saga_batched_repair_uses_computed_txid() {
+        let backend = build_test_instance().await;
+        let intent_id = Uuid::new_v4();
+        let batch_id = Uuid::new_v4();
+        let tx_bytes = wallet_relevant_send_tx_bytes(&backend).await;
+        let tx: Transaction = consensus::deserialize(&tx_bytes).expect("valid tx");
+        let computed_txid = tx.compute_txid().to_string();
+
+        assert_ne!(computed_txid, TEST_TXID);
+
+        let mut batched = pending_intent(intent_id, "quote-batched-repair");
+        batched.state = SendIntentState::Batched {
+            batch_id,
+            created_at: 1_700_000_000,
+        };
+        backend
+            .storage
+            .create_send_intent_if_absent(&batched)
+            .await
+            .expect("store batched intent");
+
+        backend
+            .storage
+            .store_send_batch(&SendBatchRecord {
+                batch_id,
+                state: SendBatchState::Broadcast {
+                    txid: TEST_TXID.to_string(),
+                    tx_bytes,
+                    assignments: vec![BatchOutputAssignment {
+                        intent_id,
+                        vout: 0,
+                        fee_contribution_sat: 500,
+                    }],
+                    fee_sat: 500,
+                },
+            })
+            .await
+            .expect("store broadcast batch");
+
+        tokio::time::timeout(Duration::from_secs(5), backend.recover_send_saga())
+            .await
+            .expect("recovery timed out")
+            .expect("recovery should not error");
+
+        let intent = backend
+            .storage
+            .get_send_intent(&intent_id)
+            .await
+            .expect("get intent")
+            .expect("intent still present");
+
+        match intent.state {
+            SendIntentState::AwaitingConfirmation { txid, outpoint, .. } => {
+                assert_eq!(txid, computed_txid);
+                assert_eq!(outpoint, format!("{computed_txid}:0"));
+            }
+            other => panic!("expected AwaitingConfirmation, got {:?}", other),
+        }
     }
 }

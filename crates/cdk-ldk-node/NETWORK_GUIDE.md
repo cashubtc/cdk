@@ -100,6 +100,7 @@ webserver_port = 8091
    - **NEVER** bind to `0.0.0.0` or expose publicly
    - Only use `127.0.0.1` (localhost) 
    - Use VPN, SSH tunneling, or reverse proxy with authentication for remote access
+   - CSRF protection and non-permissive browser CORS reduce browser-based attack paths, but they do not authenticate users or replace access control
 
 ## Regtest (Development)
 

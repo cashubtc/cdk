@@ -407,13 +407,16 @@ impl MintMetadataCache {
 
     /// Load auth keysets and keys (auth feature only)
     ///
-    /// Fetches blind authentication keysets from the mint. Always performs
-    /// an HTTP fetch to get current auth keysets.
+    /// Returns cached blind authentication keysets if they are populated and
+    /// still fresh according to `ttl`; otherwise fetches them from the mint over
+    /// HTTP and updates the cache.
     ///
     /// # Arguments
     ///
     /// * `storage` - Database to persist metadata to
     /// * `auth_client` - Auth-capable HTTP client for fetching blind auth keysets
+    /// * `ttl` - Optional TTL; if not provided, any populated cached data is
+    ///   considered fresh and no HTTP fetch is performed
     ///
     /// # Returns
     ///
@@ -422,6 +425,7 @@ impl MintMetadataCache {
         &self,
         storage: &Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         auth_client: &Arc<dyn AuthMintConnector + Send + Sync>,
+        ttl: Option<Duration>,
     ) -> Result<Arc<MintMetadata>, Error> {
         let cached_metadata = self.metadata.load().clone();
         let storage_id = Self::arc_pointer_id(storage);
@@ -433,9 +437,11 @@ impl MintMetadataCache {
             .cloned()
             .unwrap_or_default();
 
-        // Check if auth data is populated in cache
+        // Check if auth data is populated in cache and still fresh
         if cached_metadata.auth_status.is_populated
-            && cached_metadata.auth_status.updated_at > Instant::now()
+            && ttl
+                .map(|ttl| cached_metadata.auth_status.updated_at + ttl > Instant::now())
+                .unwrap_or(true)
         {
             if db_synced_version != cached_metadata.status.version {
                 // Database needs updating - sync before returning
@@ -451,7 +457,9 @@ impl MintMetadataCache {
         // Re-check if auth data was updated while waiting for lock
         let current_metadata = self.metadata.load().clone();
         if current_metadata.auth_status.is_populated
-            && current_metadata.auth_status.updated_at > Instant::now()
+            && ttl
+                .map(|ttl| current_metadata.auth_status.updated_at + ttl > Instant::now())
+                .unwrap_or(true)
         {
             tracing::debug!(
                 "Auth cache was updated while waiting for fetch lock, returning cached data"

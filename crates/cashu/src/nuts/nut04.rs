@@ -973,6 +973,39 @@ mod tests {
     }
 
     #[test]
+    fn test_supported_methods_and_units_preserve_configured_values() {
+        let settings = Settings::new(
+            vec![
+                MintMethodSettings {
+                    method: PaymentMethod::Known(KnownMethod::Bolt11),
+                    unit: CurrencyUnit::Msat,
+                    min_amount: Some(Amount::from(1)),
+                    max_amount: None,
+                    options: None,
+                },
+                MintMethodSettings {
+                    method: PaymentMethod::Known(KnownMethod::Onchain),
+                    unit: CurrencyUnit::Eur,
+                    min_amount: None,
+                    max_amount: Some(Amount::from(100)),
+                    options: Some(MintMethodOptions::Onchain { confirmations: 3 }),
+                },
+            ],
+            false,
+        );
+
+        let methods = settings.supported_methods();
+        assert_eq!(methods.len(), 2);
+        assert_eq!(methods[0], &PaymentMethod::Known(KnownMethod::Bolt11));
+        assert_eq!(methods[1], &PaymentMethod::Known(KnownMethod::Onchain));
+
+        let units = settings.supported_units();
+        assert_eq!(units.len(), 2);
+        assert_eq!(units[0], &CurrencyUnit::Msat);
+        assert_eq!(units[1], &CurrencyUnit::Eur);
+    }
+
+    #[test]
     fn test_remove_settings_requires_exact_method_and_unit_match() {
         let bolt11_msat = MintMethodSettings {
             method: PaymentMethod::Known(KnownMethod::Bolt11),

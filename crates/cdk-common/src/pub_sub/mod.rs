@@ -123,6 +123,23 @@ mod test {
         }
     }
 
+    #[derive(Debug, Clone)]
+    pub struct FailingSubscriptionReq;
+
+    impl SubscriptionRequest for FailingSubscriptionReq {
+        type Topic = IndexTest;
+
+        type SubscriptionId = String;
+
+        fn try_get_topics(&self) -> Result<Vec<Self::Topic>, Error> {
+            Err(Error::ParsingError("intentional failure".to_string()))
+        }
+
+        fn subscription_name(&self) -> Arc<Self::SubscriptionId> {
+            Arc::new("failing-sub".to_owned())
+        }
+    }
+
     #[tokio::test]
     async fn delivery_twice_realtime() {
         let pubsub = Pubsub::new(CustomPubSub::new_instance(()));
@@ -142,6 +159,18 @@ mod test {
 
         drop(subscriber);
 
+        assert_eq!(pubsub.active_subscribers(), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_subscribe_does_not_leak_active_subscribers() {
+        let pubsub = Pubsub::new(CustomPubSub::new_instance(()));
+
+        assert_eq!(pubsub.active_subscribers(), 0);
+
+        let result = pubsub.subscribe(FailingSubscriptionReq);
+
+        assert!(result.is_err());
         assert_eq!(pubsub.active_subscribers(), 0);
     }
 

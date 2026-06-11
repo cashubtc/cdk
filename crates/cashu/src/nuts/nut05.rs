@@ -239,7 +239,7 @@ impl Serialize for MeltMethodSettings {
     where
         S: Serializer,
     {
-        let mut num_fields = 3; // method and unit are always present
+        let mut num_fields = 2; // method and unit are always present
         if self.min_amount.is_some() {
             num_fields += 1;
         }
@@ -567,6 +567,82 @@ mod tests {
 
     use super::*;
     use crate::nut00::KnownMethod;
+
+    #[test]
+    fn test_quote_state_display_outputs_wire_values() {
+        assert_eq!(QuoteState::Unpaid.to_string(), "UNPAID");
+        assert_eq!(QuoteState::Paid.to_string(), "PAID");
+        assert_eq!(QuoteState::Pending.to_string(), "PENDING");
+        assert_eq!(QuoteState::Unknown.to_string(), "UNKNOWN");
+        assert_eq!(QuoteState::Failed.to_string(), "FAILED");
+    }
+
+    #[test]
+    fn test_quote_state_from_str_accepts_wire_values() {
+        assert_eq!("UNPAID".parse::<QuoteState>().unwrap(), QuoteState::Unpaid);
+        assert_eq!("PAID".parse::<QuoteState>().unwrap(), QuoteState::Paid);
+        assert_eq!(
+            "PENDING".parse::<QuoteState>().unwrap(),
+            QuoteState::Pending
+        );
+        assert_eq!(
+            "UNKNOWN".parse::<QuoteState>().unwrap(),
+            QuoteState::Unknown
+        );
+        assert_eq!("FAILED".parse::<QuoteState>().unwrap(), QuoteState::Failed);
+    }
+
+    #[test]
+    fn test_quote_state_from_str_rejects_unknown_value() {
+        assert!(matches!(
+            "unknown".parse::<QuoteState>(),
+            Err(Error::UnknownState)
+        ));
+    }
+
+    #[test]
+    fn test_melt_method_settings_cbor_roundtrip() {
+        let settings = [
+            MeltMethodSettings {
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                unit: CurrencyUnit::Sat,
+                min_amount: None,
+                max_amount: None,
+                options: None,
+            },
+            MeltMethodSettings {
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                unit: CurrencyUnit::Sat,
+                min_amount: Some(Amount::from(1)),
+                max_amount: None,
+                options: None,
+            },
+            MeltMethodSettings {
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                unit: CurrencyUnit::Sat,
+                min_amount: None,
+                max_amount: Some(Amount::from(1000)),
+                options: None,
+            },
+            MeltMethodSettings {
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                unit: CurrencyUnit::Sat,
+                min_amount: None,
+                max_amount: None,
+                options: Some(MeltMethodOptions::Bolt11 { amountless: true }),
+            },
+        ];
+
+        for settings in settings {
+            let mut encoded = Vec::new();
+            ciborium::into_writer(&settings, &mut encoded).expect("serialize settings as CBOR");
+
+            let decoded: MeltMethodSettings =
+                ciborium::from_reader(&encoded[..]).expect("deserialize settings from CBOR");
+
+            assert_eq!(decoded, settings);
+        }
+    }
 
     #[test]
     fn test_melt_method_settings_top_level_amountless() {

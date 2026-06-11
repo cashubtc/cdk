@@ -59,7 +59,7 @@ jobs:
           fi
 
       - name: Verify release tag exists
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: refs/tags/${{ env.TAG }}
           fetch-depth: 1
@@ -77,7 +77,7 @@ jobs:
           echo "RELEASE_VER=${TAG#v}" >> "$GITHUB_ENV"
 
       - name: Checkout monorepo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: refs/tags/${{ env.TAG }}
           persist-credentials: false
@@ -283,7 +283,7 @@ jobs:
 
       - name: Upload generated bindings
         if: matrix.target == 'aarch64-apple-darwin'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dart-bindings-generated
           path: cdk-dart/generated-bindings/
@@ -296,7 +296,7 @@ jobs:
              "dist/${{ matrix.target }}-${{ matrix.artifact }}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dart-native-${{ matrix.target }}
           path: dist/
@@ -320,7 +320,7 @@ jobs:
             https://github.com/${{ vars.CDK_DART_REPO }}.git cdk-dart
 
       - name: Download all native artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: ./artifacts
           pattern: dart-native-*
@@ -343,7 +343,7 @@ jobs:
           done
 
       - name: Download generated bindings
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dart-bindings-generated
           path: cdk-dart/lib/src/generated

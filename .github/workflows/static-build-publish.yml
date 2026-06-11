@@ -19,12 +19,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Set up Cachix
-        uses: cachix/cachix-action@v16
+        uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -49,7 +49,7 @@ jobs:
           cp -f ./result/bin/* ./static-bin/
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: binaries-x86_64
           path: ./static-bin/
@@ -63,15 +63,15 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v14
+        uses: DeterminateSystems/nix-installer-action@v22
 
       - name: Set up Cachix
-        uses: cachix/cachix-action@v16
+        uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -95,7 +95,7 @@ jobs:
           cp -f ./result/bin/* ./static-bin/
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: binaries-aarch64
           path: ./static-bin/
@@ -111,7 +111,7 @@ jobs:
 
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: ./static-bin/
           merge-multiple: true

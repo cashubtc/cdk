@@ -184,6 +184,26 @@ impl Wallet {
         let reserved_proofs = self.localstore.get_reserved_proofs(saga_id).await?;
         let proof_ys = reserved_proofs.iter().map(|p| p.y).collect();
 
+        let mut pending_spent_proofs: Vec<_> = reserved_proofs
+            .into_iter()
+            .filter(|p| p.state == State::PendingSpent)
+            .collect();
+
+        for proof in pending_spent_proofs.iter_mut() {
+            proof.state = State::Reserved;
+        }
+
+        if !pending_spent_proofs.is_empty() {
+            tracing::warn!(
+                "Send saga {} in ProofsReserved state has {} PendingSpent proofs; reverting them",
+                saga_id,
+                pending_spent_proofs.len()
+            );
+            self.localstore
+                .update_proofs(pending_spent_proofs, vec![])
+                .await?;
+        }
+
         RevertProofReservation {
             localstore: self.localstore.clone(),
             proof_ys,
@@ -251,7 +271,52 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(proofs.len(), 1);
+        assert_eq!(proofs[0].used_by_operation, None);
 
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_recover_send_proofs_reserved_with_pending_spent_proofs_reverts_them() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+
+        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+        db.update_proofs_state(vec![proof_y], State::PendingSpent)
+            .await
+            .unwrap();
+
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Send(SendSagaState::ProofsReserved),
+            Amount::from(100),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Send(SendOperationData {
+                amount: Amount::from(100),
+                memo: None,
+                counter_start: None,
+                counter_end: None,
+                token: None,
+                proofs: None,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        let wallet = create_test_wallet(db.clone()).await;
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+
+        assert_eq!(report.compensated, 1);
+
+        let proofs = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(proofs.len(), 1);
+        assert_eq!(proofs[0].state, State::Unspent);
+        assert_eq!(proofs[0].used_by_operation, None);
         assert!(db.get_saga(&saga_id).await.unwrap().is_none());
     }
 

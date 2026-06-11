@@ -108,24 +108,16 @@ impl TryFrom<PublicKey> for cdk::nuts::PublicKey {
     }
 }
 
-/// FFI-compatible Keys (simplified - contains only essential info)
+/// FFI-compatible Keys
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct Keys {
-    /// Keyset ID
-    pub id: String,
-    /// Currency unit
-    pub unit: CurrencyUnit,
-    /// Map of amount to public key hex (simplified from BTreeMap)
+    /// Map of amount to public key hex
     pub keys: HashMap<u64, String>,
 }
 
 impl From<cdk::nuts::Keys> for Keys {
     fn from(keys: cdk::nuts::Keys) -> Self {
-        // Keys doesn't have id and unit - we'll need to get these from context
-        // For now, use placeholder values
         Self {
-            id: "unknown".to_string(), // This should come from KeySet
-            unit: CurrencyUnit::Sat,   // This should come from KeySet
             keys: keys
                 .keys()
                 .iter()

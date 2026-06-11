@@ -18,7 +18,7 @@ use cdk::nuts::{
     MeltQuoteBolt12Request, MeltQuoteCustomRequest, MeltQuoteOnchainRequest,
     MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteBolt12Request,
     MintQuoteBolt12Response, MintQuoteCustomRequest, MintQuoteOnchainRequest,
-    MintQuoteOnchainResponse, MintRequest, MintResponse,
+    MintQuoteOnchainResponse, MintRequest, MintResponse, PaymentMethod,
 };
 use cdk::{MeltQuoteCreateResponse, MeltQuoteResponse};
 use serde_json::Value;
@@ -109,6 +109,65 @@ async fn validate_melt_quote_method(
     }
 
     Ok(())
+}
+
+async fn validate_mint_quote_methods(
+    state: &MintState,
+    method: &str,
+    quote_ids: &[QuoteId],
+) -> Result<(), cdk::Error> {
+    let expected_method = PaymentMethod::from(method);
+
+    for quote_id in quote_ids {
+        let quote_method = state.mint.get_mint_quote_method(quote_id).await?;
+
+        if quote_method != expected_method {
+            return Err(cdk::Error::InvalidPaymentMethod);
+        }
+    }
+
+    Ok(())
+}
+
+async fn validate_mint_request_route(
+    auth: AuthHeader,
+    state: &MintState,
+    method: &str,
+    quote_ids: &[QuoteId],
+) -> Result<(), cdk::Error> {
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Mint(method.to_owned())),
+        )
+        .await?;
+
+    validate_mint_quote_methods(state, method, quote_ids).await
+}
+
+async fn process_mint_input(
+    state: &MintState,
+    input: cdk::mint::MintInput,
+) -> Result<MintResponse, cdk::Error> {
+    state.mint.process_mint_request(input).await
+}
+
+async fn validate_melt_request_route(
+    auth: AuthHeader,
+    state: &MintState,
+    method: &str,
+    quote_id: &QuoteId,
+) -> Result<(), cdk::Error> {
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Melt(method.to_owned())),
+        )
+        .await?;
+
+    validate_melt_quote_method(state, method, quote_id).await
 }
 
 /// Generic handler for custom payment method mint quotes
@@ -342,58 +401,6 @@ pub async fn post_batch_check_mint_quote(
     }
 }
 
-/// Mint tokens with custom payment method
-#[instrument(skip_all, fields(method = ?method, quote_id = ?payload.quote))]
-pub async fn post_mint_custom(
-    auth: AuthHeader,
-    State(state): State<MintState>,
-    Path(method): Path<String>,
-    Json(payload): Json<MintRequest<QuoteId>>,
-) -> Result<Json<MintResponse>, Response> {
-    state
-        .mint
-        .verify_auth(
-            auth.into(),
-            &ProtectedEndpoint::new(Method::Post, RoutePath::Mint(method.clone())),
-        )
-        .await
-        .map_err(into_response)?;
-
-    let res = state
-        .mint
-        .process_mint_request(cdk::mint::MintInput::Single(payload))
-        .await
-        .map_err(into_response)?;
-
-    Ok(Json(res))
-}
-
-/// Batch mint tokens (NUT-29)
-#[instrument(skip_all, fields(method = ?method))]
-pub async fn post_batch_mint(
-    auth: AuthHeader,
-    State(state): State<MintState>,
-    Path(method): Path<String>,
-    Json(payload): Json<BatchMintRequest<QuoteId>>,
-) -> Result<Json<MintResponse>, Response> {
-    state
-        .mint
-        .verify_auth(
-            auth.into(),
-            &ProtectedEndpoint::new(Method::Post, RoutePath::Mint(method.clone())),
-        )
-        .await
-        .map_err(into_response)?;
-
-    let res = state
-        .mint
-        .process_mint_request(cdk::mint::MintInput::Batch(payload))
-        .await
-        .map_err(into_response)?;
-
-    Ok(Json(res))
-}
-
 /// Request a melt quote for custom payment method
 #[instrument(skip_all, fields(method = ?method))]
 pub async fn post_melt_custom_quote(
@@ -503,28 +510,17 @@ pub async fn get_check_melt_custom_quote(
     Ok(melt_quote_response_to_json(quote))
 }
 
-async fn post_melt_custom_internal(
-    auth: AuthHeader,
+async fn process_melt_request(
     prefer: PreferHeader,
-    state: MintState,
-    method: String,
-    payload: cdk::nuts::MeltRequest<QuoteId>,
+    state: &MintState,
+    method: &str,
+    payload: &cdk::nuts::MeltRequest<QuoteId>,
 ) -> Result<MeltQuoteResponse<QuoteId>, cdk::Error> {
-    state
-        .mint
-        .verify_auth(
-            auth.into(),
-            &ProtectedEndpoint::new(Method::Post, RoutePath::Melt(method.clone())),
-        )
-        .await?;
-
-    validate_melt_quote_method(&state, &method, payload.quote()).await?;
-
     // Check for async preference in either the Prefer header or the request body
     // For onchain we always want to do the async flow
     let respond_async = prefer.respond_async || payload.is_prefer_async() || method == "onchain";
 
-    let pending = state.mint.melt(&payload).await?;
+    let pending = state.mint.melt(payload).await?;
 
     let res = if respond_async {
         // Asynchronous processing - return immediately after setup
@@ -551,14 +547,30 @@ pub async fn cache_post_mint_custom(
 ) -> Result<Json<MintResponse>, Response> {
     use std::ops::Deref;
 
-    let State(mint_state) = state.clone();
-    let json_extracted_payload = payload.deref();
+    let State(mint_state) = state;
+    let method = method.0;
+    let payload = payload.0;
 
-    let cache_key = match mint_state.cache.calculate_key(json_extracted_payload) {
+    validate_mint_request_route(
+        auth,
+        &mint_state,
+        &method,
+        std::slice::from_ref(&payload.quote),
+    )
+    .await
+    .map_err(into_response)?;
+
+    let cache_key = match mint_state
+        .cache
+        .calculate_key(&("mint", method.as_str(), &payload))
+    {
         Some(key) => key,
         None => {
-            // Could not calculate key, just return the handler result
-            return post_mint_custom(auth, state, method, payload).await;
+            let result = process_mint_input(&mint_state, cdk::mint::MintInput::Single(payload))
+                .await
+                .map_err(into_response)?;
+
+            return Ok(Json(result));
         }
     };
 
@@ -566,7 +578,11 @@ pub async fn cache_post_mint_custom(
         return Ok(Json(cached_response));
     }
 
-    let result = post_mint_custom(auth, state, method, payload).await?;
+    let result = Json(
+        process_mint_input(&mint_state, cdk::mint::MintInput::Single(payload))
+            .await
+            .map_err(into_response)?,
+    );
 
     // Cache the response
     mint_state.cache.set(cache_key, result.deref()).await;
@@ -590,18 +606,24 @@ pub async fn cache_post_melt_custom(
     tracing::debug!(method = %method, "melt request received");
     let parsed_payload = parse_melt_payload(&method, payload.deref().clone())?;
 
-    let cache_key = match mint_state.cache.calculate_key(&parsed_payload) {
-        Some(key) => key,
-        None => {
-            // Could not calculate key, just return the handler result
-            let result =
-                post_melt_custom_internal(auth, prefer, mint_state.clone(), method, parsed_payload)
+    validate_melt_request_route(auth, &mint_state, &method, parsed_payload.quote())
+        .await
+        .map_err(into_response)?;
+
+    let cache_key =
+        match mint_state
+            .cache
+            .calculate_key(&("melt", method.as_str(), &parsed_payload))
+        {
+            Some(key) => key,
+            None => {
+                let result = process_melt_request(prefer, &mint_state, &method, &parsed_payload)
                     .await
                     .map_err(into_response)?;
 
-            return Ok(melt_quote_response_to_json(result));
-        }
-    };
+                return Ok(melt_quote_response_to_json(result));
+            }
+        };
 
     if let Some(cached_response) = mint_state
         .cache
@@ -611,15 +633,9 @@ pub async fn cache_post_melt_custom(
         return Ok(melt_quote_response_to_json(cached_response));
     }
 
-    let result = post_melt_custom_internal(
-        auth,
-        prefer,
-        mint_state.clone(),
-        method.clone(),
-        parsed_payload,
-    )
-    .await
-    .map_err(into_response)?;
+    let result = process_melt_request(prefer, &mint_state, &method, &parsed_payload)
+        .await
+        .map_err(into_response)?;
 
     mint_state.cache.set(cache_key, &result).await;
 
@@ -666,13 +682,25 @@ pub async fn cache_post_batch_mint(
 ) -> Result<Json<MintResponse>, Response> {
     use std::ops::Deref;
 
-    let State(mint_state) = state.clone();
-    let json_extracted_payload = payload.deref();
+    let State(mint_state) = state;
+    let method = method.0;
+    let payload = payload.0;
 
-    let cache_key = match mint_state.cache.calculate_key(json_extracted_payload) {
+    validate_mint_request_route(auth, &mint_state, &method, &payload.quotes)
+        .await
+        .map_err(into_response)?;
+
+    let cache_key = match mint_state
+        .cache
+        .calculate_key(&("mint_batch", method.as_str(), &payload))
+    {
         Some(key) => key,
         None => {
-            return post_batch_mint(auth, state, method, payload).await;
+            let result = process_mint_input(&mint_state, cdk::mint::MintInput::Batch(payload))
+                .await
+                .map_err(into_response)?;
+
+            return Ok(Json(result));
         }
     };
 
@@ -680,7 +708,11 @@ pub async fn cache_post_batch_mint(
         return Ok(Json(cached_response));
     }
 
-    let result = post_batch_mint(auth, state, method, payload).await?;
+    let result = Json(
+        process_mint_input(&mint_state, cdk::mint::MintInput::Batch(payload))
+            .await
+            .map_err(into_response)?,
+    );
 
     mint_state.cache.set(cache_key, result.deref()).await;
 
@@ -689,9 +721,21 @@ pub async fn cache_post_batch_mint(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+    use std::time::Duration;
+
     use axum::http::{HeaderValue, Request, StatusCode};
+    use bip39::Mnemonic;
+    use cdk::mint::{MintBuilder, MintMeltLimits, MintQuoteResponse};
+    use cdk::nuts::nut00::KnownMethod;
+    use cdk::nuts::{BlindedMessage, CurrencyUnit, MintQuoteState, PaymentMethod, SecretKey};
+    use cdk::types::{FeeReserve, QuoteTTL};
+    use cdk::Amount;
+    use cdk_fake_wallet::FakeWallet;
 
     use super::*;
+    use crate::cache::HttpCache;
 
     fn create_test_request(prefer_header: Option<&str>) -> Request<()> {
         let mut req = Request::builder()
@@ -721,6 +765,94 @@ mod tests {
             .insert(PREFER_HEADER_KEY, HeaderValue::from_bytes(bytes).unwrap());
 
         req
+    }
+
+    async fn create_test_state() -> MintState {
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let mut builder = MintBuilder::new(db.clone())
+            .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]));
+        let fake = FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 0.0,
+            },
+            HashMap::default(),
+            HashSet::default(),
+            0,
+            CurrencyUnit::Sat,
+        );
+        builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintMeltLimits::new(1, 10_000),
+                Arc::new(fake),
+            )
+            .await
+            .unwrap();
+
+        let mnemonic = Mnemonic::generate(12).unwrap();
+        let mint = builder
+            .build_with_seed(db, &mnemonic.to_seed_normalized(""))
+            .await
+            .unwrap();
+        mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000))
+            .await
+            .unwrap();
+        mint.start().await.unwrap();
+
+        MintState {
+            mint: Arc::new(mint),
+            cache: Arc::new(HttpCache::default()),
+        }
+    }
+
+    async fn create_paid_bolt11_quote(state: &MintState) -> QuoteId {
+        let quote: MintQuoteBolt11Response<QuoteId> = state
+            .mint
+            .get_mint_quote(
+                MintQuoteBolt11Request {
+                    amount: Amount::from(2u64),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                }
+                .into(),
+            )
+            .await
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        for _ in 0..100 {
+            let check = state
+                .mint
+                .check_mint_quotes(std::slice::from_ref(&quote.quote))
+                .await
+                .unwrap();
+            if let MintQuoteResponse::Bolt11(q) = &check[0] {
+                if q.state == MintQuoteState::Paid {
+                    return quote.quote;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        panic!("bolt11 quote was not paid by the fake wallet");
+    }
+
+    fn outputs_for_amount(state: &MintState, amount: u64) -> Vec<BlindedMessage> {
+        let keyset_id = *state
+            .mint
+            .get_active_keysets()
+            .get(&CurrencyUnit::Sat)
+            .unwrap();
+
+        vec![BlindedMessage::new(
+            Amount::from(amount),
+            keyset_id,
+            SecretKey::generate().public_key(),
+        )]
     }
 
     #[tokio::test]
@@ -793,5 +925,75 @@ mod tests {
         let result = PreferHeader::from_request_parts(&mut parts, &()).await;
         assert!(result.is_ok());
         assert!(!result.unwrap().respond_async);
+    }
+
+    #[tokio::test]
+    async fn cache_post_mint_custom_rejects_cached_url_method_quote_method_mismatch() {
+        let state = create_test_state().await;
+        let quote_id = create_paid_bolt11_quote(&state).await;
+        let mint_request = MintRequest {
+            quote: quote_id,
+            outputs: outputs_for_amount(&state, 2),
+            signature: None,
+        };
+
+        let result = cache_post_mint_custom(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(mint_request.clone()),
+        )
+        .await;
+        assert!(result.is_ok(), "bolt11 mint should populate the cache");
+
+        let result = cache_post_mint_custom(
+            AuthHeader::None,
+            State(state),
+            Path("bolt12".to_string()),
+            Json(mint_request),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "cache_post_mint_custom must reject cross-method cached mint"
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_post_batch_mint_rejects_cached_url_method_quote_method_mismatch() {
+        let state = create_test_state().await;
+        let quote_id = create_paid_bolt11_quote(&state).await;
+        let batch_request = BatchMintRequest {
+            quotes: vec![quote_id],
+            quote_amounts: None,
+            outputs: outputs_for_amount(&state, 2),
+            signatures: None,
+        };
+
+        let result = cache_post_batch_mint(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(batch_request.clone()),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "bolt11 batch mint should populate the cache"
+        );
+
+        let result = cache_post_batch_mint(
+            AuthHeader::None,
+            State(state),
+            Path("bolt12".to_string()),
+            Json(batch_request),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "cache_post_batch_mint must reject cross-method cached mint"
+        );
     }
 }

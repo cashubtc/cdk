@@ -227,19 +227,22 @@ impl<'a> PaymentStream<'a> {
                                 return Poll::Ready(Some(Ok((info.quote, None))));
                             }
                             NotificationPayload::MintQuoteBolt12Response(info) => {
-                                let to_be_issued = info.amount_paid - info.amount_issued;
+                                let to_be_issued =
+                                    info.amount_paid.saturating_sub(info.amount_issued);
                                 if to_be_issued > Amount::ZERO {
                                     return Poll::Ready(Some(Ok((info.quote, Some(to_be_issued)))));
                                 }
                             }
                             NotificationPayload::MintQuoteOnchainResponse(info) => {
-                                let to_be_issued = info.amount_paid - info.amount_issued;
+                                let to_be_issued =
+                                    info.amount_paid.saturating_sub(info.amount_issued);
                                 if to_be_issued > Amount::ZERO {
                                     return Poll::Ready(Some(Ok((info.quote, Some(to_be_issued)))));
                                 }
                             }
                             NotificationPayload::CustomMintQuoteResponse(_, info) => {
-                                let to_be_issued = info.amount_paid - info.amount_issued;
+                                let to_be_issued =
+                                    info.amount_paid.saturating_sub(info.amount_issued);
                                 if to_be_issued > Amount::ZERO {
                                     return Poll::Ready(Some(Ok((info.quote, Some(to_be_issued)))));
                                 }
@@ -293,5 +296,90 @@ impl Stream for PaymentStream<'_> {
         }
 
         this.poll_event(cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::pin::Pin;
+    use std::task::{Context, Poll, Waker};
+
+    use cdk_common::{
+        Amount, CurrencyUnit, MintQuoteBolt12Response, MintQuoteCustomResponse,
+        MintQuoteOnchainResponse, NotificationPayload,
+    };
+    use futures::Stream;
+
+    use super::PaymentStream;
+    use crate::event::MintEvent;
+    use crate::nuts::SecretKey;
+    use crate::wallet::subscription::ActiveSubscription;
+    use crate::wallet::test_utils::{create_test_db, create_test_wallet};
+
+    #[tokio::test]
+    async fn mint_quote_notification_underflow_does_not_panic() {
+        let db = create_test_db().await;
+        let wallet = create_test_wallet(db).await;
+        let pubkey = SecretKey::generate().public_key();
+
+        let events = vec![
+            MintEvent::new(NotificationPayload::MintQuoteBolt12Response(
+                MintQuoteBolt12Response::<String> {
+                    quote: "bolt12_quote".to_string(),
+                    request: "test_request".to_string(),
+                    amount: None,
+                    unit: CurrencyUnit::Sat,
+                    expiry: None,
+                    pubkey,
+                    amount_paid: Amount::from(50u64),
+                    amount_issued: Amount::from(100u64),
+                },
+            )),
+            MintEvent::new(NotificationPayload::MintQuoteOnchainResponse(
+                MintQuoteOnchainResponse::<String> {
+                    quote: "onchain_quote".to_string(),
+                    request: "test_request".to_string(),
+                    unit: CurrencyUnit::Sat,
+                    expiry: None,
+                    pubkey,
+                    amount_paid: Amount::from(50u64),
+                    amount_issued: Amount::from(100u64),
+                },
+            )),
+            MintEvent::new(NotificationPayload::CustomMintQuoteResponse(
+                "custom".to_string(),
+                MintQuoteCustomResponse::<String> {
+                    quote: "custom_quote".to_string(),
+                    request: "test_request".to_string(),
+                    amount: None,
+                    amount_paid: Amount::from(50u64),
+                    amount_issued: Amount::from(100u64),
+                    unit: Some(CurrencyUnit::Sat),
+                    expiry: None,
+                    pubkey: Some(pubkey),
+                    extra: serde_json::Value::Null,
+                },
+            )),
+        ];
+
+        for event in events {
+            let mut stream = PaymentStream::new(&wallet, Vec::new());
+            stream.filters = None;
+            stream.subscription_receiver_future = Some(Box::pin(async move {
+                let subscriptions: Vec<ActiveSubscription> = Vec::new();
+                (Some(event), subscriptions)
+            }));
+
+            let mut cx = Context::from_waker(Waker::noop());
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                Pin::new(&mut stream).poll_next(&mut cx)
+            }));
+
+            assert!(result.is_ok());
+            assert!(matches!(
+                result.expect("poll should not panic"),
+                Poll::Ready(None)
+            ));
+        }
     }
 }

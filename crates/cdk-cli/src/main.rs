@@ -56,6 +56,9 @@ struct Cli {
     /// NWS Proxy
     #[arg(short, long)]
     proxy: Option<Url>,
+    /// Disable TLS certificate verification for proxied HTTPS requests. This permits MITM.
+    #[arg(long)]
+    danger_accept_invalid_certs: bool,
     /// Currency unit to use for the wallet
     #[arg(short, long, global = true)]
     unit: Option<String>,
@@ -237,6 +240,12 @@ async fn main() -> Result<()> {
 
         if let Some(proxy_url) = &args.proxy {
             builder = builder.proxy_url(proxy_url.clone());
+            if args.danger_accept_invalid_certs {
+                tracing::warn!(
+                    "--danger-accept-invalid-certs disables TLS certificate verification"
+                );
+                builder = builder.danger_accept_invalid_certs(true);
+            }
         }
 
         #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
@@ -293,7 +302,12 @@ async fn main() -> Result<()> {
             sub_commands::check_requests::check_requests(&wallet_repository).await
         }
         Commands::MintInfo(sub_command_args) => {
-            sub_commands::mint_info::mint_info(args.proxy, sub_command_args).await
+            sub_commands::mint_info::mint_info(
+                args.proxy,
+                args.danger_accept_invalid_certs,
+                sub_command_args,
+            )
+            .await
         }
         Commands::Mint(sub_command_args) => {
             sub_commands::mint::mint(&wallet_repository, sub_command_args, &default_unit).await
@@ -392,5 +406,35 @@ async fn main() -> Result<()> {
             )
             .await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn danger_accept_invalid_certs_defaults_to_false() {
+        let cli = Cli::parse_from(["cdk-cli", "mint-info", "https://mint.example.com"]);
+
+        assert!(!cli.danger_accept_invalid_certs);
+    }
+
+    #[test]
+    fn parses_danger_accept_invalid_certs_flag() {
+        let cli = Cli::parse_from([
+            "cdk-cli",
+            "--proxy",
+            "http://127.0.0.1:8080",
+            "--danger-accept-invalid-certs",
+            "mint-info",
+            "https://mint.example.com",
+        ]);
+
+        assert!(cli.danger_accept_invalid_certs);
+        assert_eq!(
+            cli.proxy.as_ref().map(url::Url::as_str),
+            Some("http://127.0.0.1:8080/")
+        );
     }
 }

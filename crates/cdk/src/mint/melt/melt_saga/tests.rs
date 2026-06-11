@@ -17,10 +17,12 @@ use cdk_common::mint::{
 };
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
-use cdk_common::nuts::{MeltQuoteBolt11Request, MeltQuoteState, MintQuoteState};
+use cdk_common::nuts::{MeltQuoteBolt11Request, MeltQuoteState, MeltRequest, MintQuoteState};
 use cdk_common::payment::PaymentIdentifier;
 use cdk_common::util::unix_time;
-use cdk_common::{Amount, MintQuoteBolt11Request, PaymentMethod, ProofsMethods, State};
+use cdk_common::{
+    Amount, CurrencyUnit, MintQuoteBolt11Request, PaymentMethod, ProofsMethods, State,
+};
 
 use crate::mint::melt::melt_saga::{MeltSaga, PaymentOutcome};
 use crate::mint::melt::shared::{finalize_melt_quote, rollback_melt_quote};
@@ -494,6 +496,55 @@ async fn test_completed_operation_recorded_on_finalize() {
     assert_eq!(completed_operation.total_redeemed(), Amount::from(10_000));
     assert_eq!(completed_operation.total_issued(), Amount::ZERO);
     assert_eq!(response.state(), MeltQuoteState::Paid);
+}
+
+#[tokio::test]
+async fn test_msat_total_spent_rounds_up_when_recording_sat_melt() {
+    use crate::test_helpers::mint::create_test_blinded_messages;
+
+    let mint = create_test_mint().await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let (change_outputs, _premint) = create_test_blinded_messages(&mint, Amount::from(1_023))
+        .await
+        .unwrap();
+    let melt_request = MeltRequest::new(quote.id.clone(), proofs.clone(), Some(change_outputs));
+
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+    let saga = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+
+    let setup_saga = saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+        .unwrap();
+    let operation_id = setup_saga.operation_id;
+    let payment_lookup_id = PaymentIdentifier::CustomId("rounded_msat_lookup".to_string());
+
+    let change = finalize_melt_quote(
+        &mint,
+        &mint.localstore(),
+        &mint.pubsub_manager(),
+        &quote,
+        Amount::new(9_000_001, CurrencyUnit::Msat),
+        Some("rounded_msat_preimage".to_string()),
+        &payment_lookup_id,
+        Some(operation_id),
+    )
+    .await
+    .unwrap()
+    .expect("rounded spent amount should leave change");
+    let change_amount =
+        Amount::try_sum(change.iter().map(|sig| sig.amount)).expect("change cannot overflow");
+
+    assert_eq!(change_amount, Amount::from(999));
 }
 
 #[tokio::test]
@@ -2311,7 +2362,7 @@ async fn test_invalid_quote_id() {
     use cdk_common::nuts::MeltRequest;
     use cdk_common::QuoteId;
 
-    let fake_quote_id = QuoteId::new_uuid();
+    let fake_quote_id = QuoteId::new();
     let melt_request = MeltRequest::new(fake_quote_id.clone(), proofs.clone(), None);
 
     // STEP 3: Try to setup melt saga (should fail due to invalid quote)

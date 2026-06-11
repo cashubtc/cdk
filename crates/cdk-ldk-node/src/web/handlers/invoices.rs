@@ -2,17 +2,20 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{Html, Response};
-use axum::Form;
+use axum::Extension;
 use ldk_node::lightning_invoice::{Bolt11InvoiceDescription, Description};
 use maud::html;
 use serde::Deserialize;
 
+use crate::web::csrf::{csrf_input, CsrfForm, CsrfToken};
 use crate::web::handlers::utils::{deserialize_optional_f64, deserialize_optional_u32};
 use crate::web::handlers::AppState;
 use crate::web::templates::{
     error_message, format_sats_as_btc, invoice_display_card, is_node_running, layout_with_status,
     success_message,
 };
+
+const MSATS_PER_SAT: u64 = 1_000;
 
 #[derive(Deserialize)]
 pub struct CreateBolt11Form {
@@ -31,7 +34,10 @@ pub struct CreateBolt12Form {
     expiry_seconds: Option<u32>,
 }
 
-pub async fn invoices_page(State(state): State<AppState>) -> Result<Html<String>, StatusCode> {
+pub async fn invoices_page(
+    State(state): State<AppState>,
+    Extension(csrf_token): Extension<CsrfToken>,
+) -> Result<Html<String>, StatusCode> {
     let content = html! {
         h2 style="text-align: center; margin-bottom: 3rem;" { "Invoices" }
 
@@ -49,6 +55,7 @@ pub async fn invoices_page(State(state): State<AppState>) -> Result<Html<String>
             // BOLT11 tab content
             div id="bolt11-content" class="tab-content active" {
                 form method="post" action="/invoices/bolt11" {
+                    (csrf_input(&csrf_token))
                     div class="form-group" {
                         label for="amount_btc_bolt11" { "Amount" }
                         input type="number" id="amount_btc_bolt11" name="amount_btc" required placeholder="₿0" step="0.00000001" {}
@@ -71,6 +78,7 @@ pub async fn invoices_page(State(state): State<AppState>) -> Result<Html<String>
             // BOLT12 tab content
             div id="bolt12-content" class="tab-content" {
                 form method="post" action="/invoices/bolt12" {
+                    (csrf_input(&csrf_token))
                     div class="form-group" {
                         label for="amount_btc_bolt12" { "Amount (optional for variable amount)" }
                         input type="number" id="amount_btc_bolt12" name="amount_btc" placeholder="₿0" step="0.00000001" {}
@@ -134,7 +142,7 @@ pub async fn invoices_page(State(state): State<AppState>) -> Result<Html<String>
 
 pub async fn post_create_bolt11(
     State(state): State<AppState>,
-    Form(form): Form<CreateBolt11Form>,
+    CsrfForm(form): CsrfForm<CreateBolt11Form>,
 ) -> Result<Response, StatusCode> {
     tracing::info!(
         "Web interface: Creating BOLT11 invoice for amount={} sats, description={:?}, expiry={}s",
@@ -181,8 +189,24 @@ pub async fn post_create_bolt11(
         }
     };
 
-    // Convert Bitcoin to millisatoshis
-    let amount_msats = form.amount_btc * 1_000;
+    let amount_msats = match form.amount_btc.checked_mul(MSATS_PER_SAT) {
+        Some(amount_msats) => amount_msats,
+        None => {
+            let content = html! {
+                (error_message("Amount is too large"))
+                div class="card" {
+                    a href="/invoices" { button { "← Try Again" } }
+                }
+            };
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header("content-type", "text/html")
+                .body(Body::from(
+                    layout_with_status("Invoice Error", content, true).into_string(),
+                ))
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
 
     let expiry_seconds = form.expiry_seconds.unwrap_or(3600);
     let invoice_result =
@@ -245,7 +269,7 @@ pub async fn post_create_bolt11(
 
 pub async fn post_create_bolt12(
     State(state): State<AppState>,
-    Form(form): Form<CreateBolt12Form>,
+    CsrfForm(form): CsrfForm<CreateBolt12Form>,
 ) -> Result<Response, StatusCode> {
     let expiry_seconds = form.expiry_seconds.unwrap_or(3600);
     let description_text = form.description.unwrap_or_else(|| "".to_string());

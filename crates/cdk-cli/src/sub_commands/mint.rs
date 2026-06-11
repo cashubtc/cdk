@@ -1,7 +1,8 @@
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use cdk::amount::SplitTarget;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::ProofsMethods;
@@ -13,6 +14,7 @@ use cdk_common::NotificationPayload;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
+use tokio::time::timeout;
 
 use crate::utils::get_or_create_wallet;
 
@@ -37,7 +39,8 @@ pub struct MintSubCommand {
     /// Expiry
     #[arg(short, long)]
     single_use: Option<bool>,
-    /// Wait duration in seconds for mint quote polling
+    /// Wait duration in seconds with no mint progress before giving up
+    /// (0 = wait indefinitely; use this for onchain or slow payments)
     #[arg(long, default_value = "30")]
     wait_duration: u64,
 }
@@ -171,23 +174,54 @@ pub async fn mint(
 
     let mut proof_streams = wallet.proof_stream(quote, SplitTarget::default(), None);
 
-    while let Some(proofs) = proof_streams.next().await {
-        let proofs = match proofs {
-            Ok(proofs) => proofs,
-            Err(err) => {
+    // `wait_duration` is an *idle* timeout: it bounds how long we wait without
+    // any new proofs being issued, and resets each time a batch arrives. A
+    // value of 0 disables it entirely (wait indefinitely), which is the right
+    // choice for onchain or otherwise slow payments. We never `bail!` from
+    // inside the loop so that the progress task below is always stopped cleanly.
+    let wait_duration = sub_command_args.wait_duration;
+    let mut timed_out = false;
+
+    loop {
+        let next = proof_streams.next();
+        let event = if wait_duration == 0 {
+            Ok(next.await)
+        } else {
+            timeout(Duration::from_secs(wait_duration), next).await
+        };
+
+        match event {
+            // A batch of proofs was issued.
+            Ok(Some(Ok(proofs))) => {
+                let batch = proofs.total_amount()?;
+                amount_minted += batch;
+                println!("Minted {batch} {unit} (total: {amount_minted} {unit})");
+            }
+            // The stream surfaced an error.
+            Ok(Some(Err(err))) => {
                 tracing::error!("Proof streams ended with {:?}", err);
                 break;
             }
-        };
-        let batch = proofs.total_amount()?;
-        amount_minted += batch;
-        println!("Minted {batch} {unit} (total: {amount_minted} {unit})");
+            // The stream ended normally.
+            Ok(None) => break,
+            // No proofs arrived within `wait_duration`.
+            Err(_elapsed) => {
+                tracing::warn!("Timed out after {wait_duration}s waiting for mint proofs");
+                println!("Timed out after {wait_duration}s waiting for the mint quote to be paid");
+                timed_out = true;
+                break;
+            }
+        }
     }
 
     // Stop and await the progress task so the CLI exits cleanly.
     stop_progress.notify_waiters();
     if let Some(handle) = progress_handle {
         let _ = handle.await;
+    }
+
+    if timed_out && amount_minted == Amount::ZERO {
+        bail!("Timed out after {wait_duration}s waiting for the mint quote to be paid");
     }
 
     println!("Received {amount_minted} from mint {mint_url}");

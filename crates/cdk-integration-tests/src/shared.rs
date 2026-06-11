@@ -101,13 +101,28 @@ pub fn write_env_file(temp_dir: &Path, env_vars: &[(&str, &str)]) -> Result<()> 
     let mut env_content = String::new();
 
     for (key, value) in env_vars {
-        env_content.push_str(&format!("{}=\"{}\"\n", key, value));
+        env_content.push_str(&format!("{}={}\n", key, shell_quote_value(value)));
     }
 
     let env_path = temp_dir.join(".env");
     fs::write(env_path, env_content)?;
 
     Ok(())
+}
+
+fn shell_quote_value(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('\'');
+
+    for ch in value.chars() {
+        match ch {
+            '\'' => quoted.push_str("'\\''"),
+            _ => quoted.push(ch),
+        }
+    }
+
+    quoted.push('\'');
+    quoted
 }
 
 /// Create a shutdown handler that listens for Ctrl+C
@@ -344,4 +359,73 @@ pub fn create_lnd_settings(
 
 pub fn setup_logging(common: &CommonArgs) {
     init_logging(common.enable_logging, common.log_level);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    fn test_temp_dir(name: &str) -> PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "cdk_write_env_{name}_{}_{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).expect("test temp dir should be created");
+        dir
+    }
+
+    #[test]
+    fn write_env_file_shell_quotes_plain_values() {
+        let dir = test_temp_dir("plain");
+
+        write_env_file(&dir, &[("CDK_TEST_MINT_URL", "http://127.0.0.1:8085")])
+            .expect("env file should be written");
+
+        let content = fs::read_to_string(dir.join(".env")).expect("env file should be readable");
+        fs::remove_dir_all(&dir).expect("test temp dir should be removed");
+
+        assert_eq!(content, "CDK_TEST_MINT_URL='http://127.0.0.1:8085'\n");
+    }
+
+    #[test]
+    fn write_env_file_neutralizes_shell_injection() {
+        let dir = test_temp_dir("injection");
+        let marker = dir.join("command_was_executed");
+        let malicious = format!(
+            "127.0.0.1\"\nINJECTED_SECRET=\"pwned\n$(touch {})`date`'\\",
+            marker.display()
+        );
+
+        write_env_file(&dir, &[("CDK_TEST_MINT_URL", &malicious)])
+            .expect("env file should be written");
+
+        let output = Command::new("bash")
+            .arg("-c")
+            .arg("source \"$1\" && test \"${INJECTED_SECRET-unset}\" = unset")
+            .arg("bash")
+            .arg(dir.join(".env"))
+            .output()
+            .expect("bash should run");
+
+        assert!(
+            output.status.success(),
+            "sourcing env file allowed an injected variable: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !marker.exists(),
+            "sourcing env file executed command substitution"
+        );
+
+        fs::remove_dir_all(&dir).expect("test temp dir should be removed");
+    }
 }

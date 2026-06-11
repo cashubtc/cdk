@@ -773,6 +773,22 @@ impl PaymentMethod {
         Self::from_str(&method).unwrap_or_else(|_| Self::Custom(method.to_lowercase()))
     }
 
+    /// Returns true when a custom payment method name is safe to use as a URL path segment.
+    pub fn is_valid_custom_method_name(method: &str) -> bool {
+        !method.is_empty()
+            && method
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    }
+
+    /// Returns true when this payment method is safe to use in wallet HTTP routes.
+    pub fn is_valid_method_name(&self) -> bool {
+        match self {
+            Self::Known(_) => true,
+            Self::Custom(method) => Self::is_valid_custom_method_name(method),
+        }
+    }
+
     /// Get the method name as a string
     pub fn as_str(&self) -> &str {
         match self {

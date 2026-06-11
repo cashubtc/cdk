@@ -15,6 +15,45 @@ use tracing::instrument;
 
 use crate::HttpClient;
 
+fn validate_client_id_claim(
+    claim_name: &str,
+    claim_value: &serde_json::Value,
+    client_id: &str,
+) -> Result<(), Error> {
+    let Some(token_client_id) = claim_value.as_str() else {
+        tracing::warn!("{} claim is not a string", claim_name);
+        return Err(Error::InvalidClientId);
+    };
+
+    if token_client_id != client_id {
+        tracing::warn!(
+            "Client ID ({}) mismatch: expected {}, got {}",
+            claim_name,
+            client_id,
+            token_client_id
+        );
+        return Err(Error::InvalidClientId);
+    }
+
+    Ok(())
+}
+
+fn validate_client_id_claims(
+    claims: &HashMap<String, serde_json::Value>,
+    client_id: &str,
+) -> Result<(), Error> {
+    match claims.get("client_id") {
+        Some(token_client_id) => validate_client_id_claim("client_id", token_client_id, client_id),
+        None => match claims.get("azp") {
+            Some(azp) => validate_client_id_claim("azp", azp, client_id),
+            None => {
+                tracing::warn!("CAT missing client_id or azp claim for configured client ID");
+                Err(Error::InvalidClientId)
+            }
+        },
+    }
+}
+
 /// OIDC Error
 #[derive(Debug, Error)]
 pub enum Error {
@@ -207,29 +246,7 @@ impl OidcClient {
             Ok(claims) => {
                 tracing::debug!("Successfully verified cat");
                 if let Some(client_id) = &self.client_id {
-                    if let Some(token_client_id) = claims.claims.get("client_id") {
-                        if let Some(token_client_id_value) = token_client_id.as_str() {
-                            if token_client_id_value != client_id {
-                                tracing::warn!(
-                                    "Client ID mismatch: expected {}, got {}",
-                                    client_id,
-                                    token_client_id_value
-                                );
-                                return Err(Error::InvalidClientId);
-                            }
-                        }
-                    } else if let Some(azp) = claims.claims.get("azp") {
-                        if let Some(azp_value) = azp.as_str() {
-                            if azp_value != client_id {
-                                tracing::warn!(
-                                    "Client ID (azp) mismatch: expected {}, got {}",
-                                    client_id,
-                                    azp_value
-                                );
-                                return Err(Error::InvalidClientId);
-                            }
-                        }
-                    }
+                    validate_client_id_claims(&claims.claims, client_id)?;
                 }
             }
             Err(err) => {
@@ -259,5 +276,84 @@ impl OidcClient {
         let response: TokenResponse = self.client.post_form(&token_url, &request).await?;
 
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn claims(value: serde_json::Value) -> HashMap<String, serde_json::Value> {
+        serde_json::from_value(value).expect("claims should be an object")
+    }
+
+    #[test]
+    fn validate_client_id_claims_accepts_client_id() {
+        let claims = claims(json!({
+            "client_id": "expected-client",
+            "azp": "other-client",
+        }));
+
+        assert!(validate_client_id_claims(&claims, "expected-client").is_ok());
+    }
+
+    #[test]
+    fn validate_client_id_claims_accepts_azp_fallback() {
+        let claims = claims(json!({
+            "azp": "expected-client",
+        }));
+
+        assert!(validate_client_id_claims(&claims, "expected-client").is_ok());
+    }
+
+    #[test]
+    fn validate_client_id_claims_rejects_missing_claims() {
+        let claims = claims(json!({
+            "sub": "user",
+        }));
+
+        assert!(matches!(
+            validate_client_id_claims(&claims, "expected-client"),
+            Err(Error::InvalidClientId)
+        ));
+    }
+
+    #[test]
+    fn validate_client_id_claims_rejects_non_string_client_id() {
+        let claims = claims(json!({
+            "client_id": null,
+            "azp": "expected-client",
+        }));
+
+        assert!(matches!(
+            validate_client_id_claims(&claims, "expected-client"),
+            Err(Error::InvalidClientId)
+        ));
+    }
+
+    #[test]
+    fn validate_client_id_claims_rejects_non_string_azp() {
+        let claims = claims(json!({
+            "azp": 42,
+        }));
+
+        assert!(matches!(
+            validate_client_id_claims(&claims, "expected-client"),
+            Err(Error::InvalidClientId)
+        ));
+    }
+
+    #[test]
+    fn validate_client_id_claims_rejects_mismatch() {
+        let claims = claims(json!({
+            "client_id": "other-client",
+        }));
+
+        assert!(matches!(
+            validate_client_id_claims(&claims, "expected-client"),
+            Err(Error::InvalidClientId)
+        ));
     }
 }

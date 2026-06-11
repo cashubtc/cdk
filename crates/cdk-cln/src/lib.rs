@@ -1050,7 +1050,7 @@ mod tests {
             max_fee_amount: None,
             timeout_secs: None,
             melt_options: Some(MeltOptions::new_amountless(invoice_amount + 1)),
-            quote_id: cdk_common::QuoteId::new_uuid(),
+            quote_id: cdk_common::QuoteId::new(),
         };
 
         let err = test_cln()
@@ -1075,7 +1075,7 @@ mod tests {
             max_fee_amount: None,
             timeout_secs: None,
             melt_options: Some(MeltOptions::new_amountless(invoice_amount)),
-            quote_id: cdk_common::QuoteId::new_uuid(),
+            quote_id: cdk_common::QuoteId::new(),
         };
 
         let quote = test_cln()

@@ -131,6 +131,7 @@ pub struct WalletRepositoryBuilder {
     localstore: Option<Arc<dyn WalletDatabase<database::Error> + Send + Sync>>,
     seed: Option<[u8; 64]>,
     proxy_config: Option<url::Url>,
+    danger_accept_invalid_certs: bool,
     #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
     use_tor: bool,
 }
@@ -141,6 +142,10 @@ impl std::fmt::Debug for WalletRepositoryBuilder {
             .field("localstore", &self.localstore.as_ref().map(|_| "..."))
             .field("seed", &"[REDACTED]")
             .field("proxy_config", &self.proxy_config)
+            .field(
+                "danger_accept_invalid_certs",
+                &self.danger_accept_invalid_certs,
+            )
             .finish()
     }
 }
@@ -158,6 +163,7 @@ impl WalletRepositoryBuilder {
             localstore: None,
             seed: None,
             proxy_config: None,
+            danger_accept_invalid_certs: false,
             #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
             use_tor: false,
         }
@@ -184,6 +190,15 @@ impl WalletRepositoryBuilder {
         self
     }
 
+    /// Disable TLS certificate verification for proxied HTTPS clients.
+    ///
+    /// This permits man-in-the-middle attacks and should only be used for
+    /// local debugging or trusted test environments.
+    pub fn danger_accept_invalid_certs(mut self, accept_invalid_certs: bool) -> Self {
+        self.danger_accept_invalid_certs = accept_invalid_certs;
+        self
+    }
+
     /// Enable Tor transport
     #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
     pub fn tor(mut self) -> Self {
@@ -203,6 +218,7 @@ impl WalletRepositoryBuilder {
             seed,
             wallets: Arc::new(RwLock::new(BTreeMap::new())),
             proxy_config: self.proxy_config,
+            danger_accept_invalid_certs: self.danger_accept_invalid_certs,
             #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
             shared_tor_transport: if self.use_tor {
                 Some(TorAsync::new())
@@ -214,6 +230,24 @@ impl WalletRepositoryBuilder {
         wallet.load_wallets().await?;
         Ok(wallet)
     }
+}
+
+fn proxy_http_client(
+    mint_url: MintUrl,
+    proxy_url: &url::Url,
+    accept_invalid_certs: bool,
+) -> Result<crate::wallet::HttpClient, Error> {
+    match proxy_url.scheme() {
+        "http" | "https" | "socks4" | "socks4a" | "socks5" | "socks5h" => {}
+        scheme => {
+            return Err(Error::HttpError(
+                None,
+                format!("Unsupported proxy URL scheme: {scheme}"),
+            ));
+        }
+    }
+
+    crate::wallet::HttpClient::with_proxy(mint_url, proxy_url.clone(), None, accept_invalid_certs)
 }
 
 /// Repository for managing Wallet instances by mint URL and currency unit
@@ -230,6 +264,8 @@ pub struct WalletRepository {
     wallets: Arc<RwLock<BTreeMap<WalletKey, Wallet>>>,
     /// Proxy configuration for HTTP clients (optional)
     proxy_config: Option<url::Url>,
+    /// Whether proxied HTTPS clients should accept invalid TLS certificates
+    danger_accept_invalid_certs: bool,
     /// Shared Tor transport to be cloned into each TorHttpClient (if enabled)
     #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
     shared_tor_transport: Option<TorAsync>,
@@ -444,15 +480,11 @@ impl WalletRepository {
         // Create an HTTP client based on the repository configuration
         let client: Arc<dyn MintConnector + Send + Sync> =
             if let Some(proxy_url) = &self.proxy_config {
-                Arc::new(
-                    crate::wallet::HttpClient::with_proxy(
-                        mint_url.clone(),
-                        proxy_url.clone(),
-                        None,
-                        true,
-                    )
-                    .unwrap_or_else(|_| crate::wallet::HttpClient::new(mint_url.clone(), None)),
-                )
+                Arc::new(proxy_http_client(
+                    mint_url.clone(),
+                    proxy_url,
+                    self.danger_accept_invalid_certs,
+                )?)
             } else {
                 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
                 if let Some(tor) = &self.shared_tor_transport {
@@ -513,13 +545,11 @@ impl WalletRepository {
 
         let wallet = if let Some(proxy_url) = &self.proxy_config {
             // Create wallet with proxy-configured client
-            let client = crate::wallet::HttpClient::with_proxy(
+            let client = proxy_http_client(
                 mint_url.clone(),
-                proxy_url.clone(),
-                None,
-                true,
-            )
-            .unwrap_or_else(|_| crate::wallet::HttpClient::new(mint_url.clone(), None));
+                proxy_url,
+                self.danger_accept_invalid_certs,
+            )?;
             let mut builder = WalletBuilder::new()
                 .mint_url(mint_url.clone())
                 .unit(unit.clone())
@@ -836,9 +866,11 @@ impl Drop for WalletRepository {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     use cdk_common::database::WalletDatabase;
+    use tokio::net::TcpListener;
 
     use super::*;
 
@@ -855,6 +887,67 @@ mod tests {
             .build()
             .await
             .expect("Failed to create WalletRepository")
+    }
+
+    async fn create_test_repository_with_proxy(proxy_url: url::Url) -> WalletRepository {
+        let localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync> = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("Failed to create in-memory database"),
+        );
+        let seed = [0u8; 64];
+        WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed(seed)
+            .proxy_url(proxy_url)
+            .build()
+            .await
+            .expect("Failed to create WalletRepository")
+    }
+
+    async fn local_mint_url_with_connection_counter(
+    ) -> (MintUrl, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind test mint listener");
+        let address = listener
+            .local_addr()
+            .expect("Failed to get test mint listener address");
+        let direct_connections = Arc::new(AtomicUsize::new(0));
+        let connection_count = Arc::clone(&direct_connections);
+        let handle = tokio::spawn(async move {
+            while let Ok((_stream, _address)) = listener.accept().await {
+                connection_count.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        (
+            format!("http://{address}")
+                .parse()
+                .expect("Failed to parse test mint URL"),
+            direct_connections,
+            handle,
+        )
+    }
+
+    fn unsupported_proxy_url() -> url::Url {
+        "gopher://127.0.0.1:1080"
+            .parse()
+            .expect("Failed to parse proxy URL")
+    }
+
+    #[test]
+    fn builder_verifies_proxy_tls_certificates_by_default() {
+        let builder = WalletRepositoryBuilder::new();
+
+        assert!(!builder.danger_accept_invalid_certs);
+    }
+
+    #[test]
+    fn builder_can_explicitly_accept_invalid_proxy_tls_certificates() {
+        let builder = WalletRepositoryBuilder::new().danger_accept_invalid_certs(true);
+
+        assert!(builder.danger_accept_invalid_certs);
     }
 
     #[tokio::test]
@@ -889,6 +982,33 @@ mod tests {
         assert!(repo.has_wallet(&mint_url, &CurrencyUnit::Sat).await);
         let retrieved = repo.get_wallet(&mint_url, &CurrencyUnit::Sat).await;
         assert!(retrieved.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_mint_info_returns_error_when_proxy_setup_fails() {
+        let repo = create_test_repository_with_proxy(unsupported_proxy_url()).await;
+        let (mint_url, direct_connections, listener_handle) =
+            local_mint_url_with_connection_counter().await;
+
+        let result = repo.fetch_mint_info(&mint_url).await;
+
+        listener_handle.abort();
+        assert!(result.is_err());
+        assert_eq!(direct_connections.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_create_wallet_returns_error_when_proxy_setup_fails() {
+        let repo = create_test_repository_with_proxy(unsupported_proxy_url()).await;
+        let mint_url: MintUrl = "https://mint.example.com".parse().unwrap();
+
+        let result = repo
+            .create_wallet(mint_url.clone(), CurrencyUnit::Sat, None)
+            .await;
+
+        assert!(result.is_err());
+        assert!(!repo.has_mint(&mint_url).await);
+        assert!(!repo.has_wallet(&mint_url, &CurrencyUnit::Sat).await);
     }
 
     #[tokio::test]

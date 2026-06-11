@@ -10,6 +10,8 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
 use lightning_invoice::Bolt11Invoice;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -28,6 +30,9 @@ pub enum Error {
     /// Invalid URL
     #[error("Invalid URL: {0}")]
     InvalidUrl(#[from] url::ParseError),
+    /// Invalid LNURL callback URL
+    #[error("Invalid LNURL callback URL: {0}")]
+    InvalidCallbackUrl(String),
     /// Failed to fetch pay request data
     #[error("Failed to fetch pay request data: {0}")]
     FetchPayRequest(#[from] crate::Error),
@@ -54,6 +59,9 @@ pub enum Error {
         "Returned invoice amount {actual} msat does not match requested amount {expected} msat"
     )]
     IncorrectInvoiceAmount { actual: u64, expected: u64 },
+    /// Returned invoice description hash does not match LNURL metadata
+    #[error("Returned invoice description hash does not match LNURL metadata")]
+    IncorrectInvoiceDescriptionHash,
 }
 
 /// Lightning address - represents a user@domain.com address
@@ -69,8 +77,11 @@ impl LightningAddress {
     /// Convert the Lightning address to an HTTPS URL for the LNURL-pay endpoint
     fn to_url(&self) -> Result<Url, Error> {
         // Lightning address spec: https://domain.com/.well-known/lnurlp/user
-        let url_str = format!("https://{}/.well-known/lnurlp/{}", self.domain, self.user);
-        Ok(Url::parse(&url_str)?)
+        let mut url = Url::parse(&format!("https://{}/", self.domain))?;
+        url.path_segments_mut()
+            .map_err(|_| Error::InvalidFormat("domain must be a bare host".to_string()))?
+            .extend([".well-known", "lnurlp", &self.user]);
+        Ok(url)
     }
 
     /// Fetch the LNURL-pay metadata from the service
@@ -119,7 +130,7 @@ impl LightningAddress {
         }
 
         // Build callback URL with amount parameter
-        let mut callback_url = Url::parse(&pay_data.callback)?;
+        let mut callback_url = validate_lnurl_callback_url(&pay_data.callback, &self.domain)?;
 
         callback_url
             .query_pairs_mut()
@@ -151,6 +162,13 @@ impl LightningAddress {
             });
         }
 
+        let expected_description_hash = Sha256Hash::hash(pay_data.metadata.as_bytes());
+        match invoice.description() {
+            lightning_invoice::Bolt11InvoiceDescriptionRef::Hash(hash)
+                if hash.0.as_byte_array() == expected_description_hash.as_byte_array() => {}
+            _ => return Err(Error::IncorrectInvoiceDescriptionHash),
+        }
+
         Ok(invoice)
     }
 }
@@ -161,18 +179,16 @@ impl FromStr for LightningAddress {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let trimmed = s.trim();
 
-        // Parse Lightning address (user@domain)
-        if !trimmed.contains('@') {
-            return Err(Error::InvalidFormat("must contain '@'".to_string()));
-        }
+        let (user, domain) = trimmed
+            .split_once('@')
+            .ok_or_else(|| Error::InvalidFormat("must contain '@'".to_string()))?;
 
-        let parts: Vec<&str> = trimmed.split('@').collect();
-        if parts.len() != 2 {
+        if domain.contains('@') {
             return Err(Error::InvalidFormat("must be user@domain".to_string()));
         }
 
-        let user = parts[0].trim();
-        let domain = parts[1].trim();
+        let user = user.trim();
+        let domain = domain.trim();
 
         if user.is_empty() || domain.is_empty() {
             return Err(Error::InvalidFormat(
@@ -180,10 +196,127 @@ impl FromStr for LightningAddress {
             ));
         }
 
+        validate_lud16_user(user)?;
+        validate_lud16_domain(domain)?;
+
         Ok(LightningAddress {
             user: user.to_string(),
-            domain: domain.to_string(),
+            domain: domain.to_ascii_lowercase(),
         })
+    }
+}
+
+fn validate_lud16_user(user: &str) -> Result<(), Error> {
+    if user == "." || user == ".." {
+        return Err(Error::InvalidFormat(
+            "user must not be a dot segment".to_string(),
+        ));
+    }
+
+    if !user.bytes().all(|b| {
+        b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_' | b'.' | b'+')
+    }) {
+        return Err(Error::InvalidFormat(
+            "user must match LUD-16 character set".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_lud16_domain(domain: &str) -> Result<(), Error> {
+    if domain.contains(['/', '?', '#', '@', ':'])
+        || domain.chars().any(char::is_whitespace)
+        || domain.starts_with('.')
+        || domain.ends_with('.')
+    {
+        return Err(Error::InvalidFormat(
+            "domain must be a bare host".to_string(),
+        ));
+    }
+
+    let url = Url::parse(&format!("https://{domain}/"))?;
+
+    if url.username() != ""
+        || url.password().is_some()
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        return Err(Error::InvalidFormat(
+            "domain must be a bare host".to_string(),
+        ));
+    }
+
+    match url.host() {
+        Some(url::Host::Domain(host)) if host != "localhost" => validate_domain_labels(host),
+        Some(url::Host::Domain(_)) | Some(url::Host::Ipv4(_)) | Some(url::Host::Ipv6(_)) => Err(
+            Error::InvalidFormat("domain must be a public DNS host".to_string()),
+        ),
+        None => Err(Error::InvalidFormat(
+            "domain must be a bare host".to_string(),
+        )),
+    }
+}
+
+fn validate_lnurl_callback_url(callback: &str, expected_domain: &str) -> Result<Url, Error> {
+    let url = Url::parse(callback)?;
+
+    if url.scheme() != "https" {
+        return Err(Error::InvalidCallbackUrl(
+            "callback must use HTTPS".to_string(),
+        ));
+    }
+
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(Error::InvalidCallbackUrl(
+            "callback must not include credentials".to_string(),
+        ));
+    }
+
+    if url.fragment().is_some() {
+        return Err(Error::InvalidCallbackUrl(
+            "callback must not include a fragment".to_string(),
+        ));
+    }
+
+    match url.host() {
+        Some(url::Host::Domain(host)) if host == expected_domain => Ok(url),
+        Some(url::Host::Domain(_)) => Err(Error::InvalidCallbackUrl(
+            "callback host must match lightning address domain".to_string(),
+        )),
+        Some(_) => Err(Error::InvalidCallbackUrl(
+            "callback host must be a DNS name".to_string(),
+        )),
+        None => Err(Error::InvalidCallbackUrl(
+            "callback must include a host".to_string(),
+        )),
+    }
+}
+
+fn validate_domain_labels(domain: &str) -> Result<(), Error> {
+    let labels: Vec<&str> = domain.split('.').collect();
+    if labels.len() < 2 {
+        return Err(Error::InvalidFormat(
+            "domain must include at least two labels".to_string(),
+        ));
+    }
+
+    if labels.iter().all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+    }) {
+        Ok(())
+    } else {
+        Err(Error::InvalidFormat(
+            "domain must be a valid DNS name".to_string(),
+        ))
     }
 }
 
@@ -230,16 +363,43 @@ pub struct LnurlPayInvoiceResponse {
 mod tests {
     use std::sync::Arc;
 
+    use bitcoin::secp256k1::{Secp256k1, SecretKey};
+    use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
+
     use super::*;
     use crate::wallet::test_utils::MockMintConnector;
 
     const INVOICE_100_SATS: &str = "lnbc1u1p53kkd9pp5ve8pd9zr60yjyvs6tn77mndavzrl5lwd2gx5hk934f6q8jwguzgsdqqcqzzsxqyz5vqrzjqvueefmrckfdwyyu39m0lf24sqzcr9vcrmxrvgfn6empxz7phrjxvrttncqq0lcqqyqqqqlgqqqqqqgq2qsp5482y73fxmlvg4t66nupdaph93h7dcmfsg2ud72wajf0cpk3a96rq9qxpqysgqujexd0l89u5dutn8hxnsec0c7jrt8wz0z67rut0eah0g7p6zhycn2vff0ts5vwn2h93kx8zzqy3tzu4gfhkya2zpdmqelg0ceqnjztcqma65pr";
+
+    fn invoice_with_metadata_hash(amount_msat: u64, metadata: &str) -> String {
+        let private_key =
+            SecretKey::from_slice(&[42; 32]).expect("valid fixed private key for test invoice");
+        let payment_hash = Sha256Hash::hash(b"test payment hash");
+        let description_hash = Sha256Hash::hash(metadata.as_bytes());
+        let payment_secret = PaymentSecret([21; 32]);
+
+        InvoiceBuilder::new(Currency::Bitcoin)
+            .description_hash(description_hash)
+            .payment_hash(payment_hash)
+            .payment_secret(payment_secret)
+            .amount_milli_satoshis(amount_msat)
+            .current_timestamp()
+            .min_final_cltv_expiry_delta(144)
+            .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key))
+            .expect("test invoice should build")
+            .to_string()
+    }
+
     #[test]
     fn test_lightning_address_parsing() {
         let addr = LightningAddress::from_str("satoshi@bitcoin.org").unwrap();
         assert_eq!(addr.user, "satoshi");
         assert_eq!(addr.domain, "bitcoin.org");
         assert_eq!(addr.to_string(), "satoshi@bitcoin.org");
+
+        let tagged_addr = LightningAddress::from_str("satoshi+tips@bitcoin.org").unwrap();
+        assert_eq!(tagged_addr.user, "satoshi+tips");
+        assert_eq!(tagged_addr.domain, "bitcoin.org");
     }
 
     #[test]
@@ -254,6 +414,19 @@ mod tests {
     }
 
     #[test]
+    fn test_lightning_address_to_url_preserves_lnurlp_path() {
+        let addr = LightningAddress::from_str("alice+tips@example.com").unwrap();
+
+        let url = addr.to_url().unwrap();
+
+        assert_eq!(
+            url.as_str(),
+            "https://example.com/.well-known/lnurlp/alice+tips"
+        );
+        assert_eq!(url.path(), "/.well-known/lnurlp/alice+tips");
+    }
+
+    #[test]
     fn test_invalid_lightning_address() {
         assert!(LightningAddress::from_str("invalid").is_err());
         assert!(LightningAddress::from_str("@example.com").is_err());
@@ -261,19 +434,43 @@ mod tests {
         assert!(LightningAddress::from_str("user").is_err());
     }
 
+    #[test]
+    fn test_invalid_lightning_address_user_part() {
+        assert!(LightningAddress::from_str("../admin@example.com").is_err());
+        assert!(LightningAddress::from_str("./admin@example.com").is_err());
+        assert!(LightningAddress::from_str(".@example.com").is_err());
+        assert!(LightningAddress::from_str("..@example.com").is_err());
+        assert!(LightningAddress::from_str("Alice@example.com").is_err());
+        assert!(LightningAddress::from_str("alice%2fadmin@example.com").is_err());
+    }
+
+    #[test]
+    fn test_invalid_lightning_address_domain_part() {
+        assert!(LightningAddress::from_str("alice@example.com/path").is_err());
+        assert!(LightningAddress::from_str("alice@example.com?x=y").is_err());
+        assert!(LightningAddress::from_str("alice@example.com#fragment").is_err());
+        assert!(LightningAddress::from_str("alice@user:pass@example.com").is_err());
+        assert!(LightningAddress::from_str("alice@example.com:443").is_err());
+        assert!(LightningAddress::from_str("alice@127.0.0.1").is_err());
+        assert!(LightningAddress::from_str("alice@[::1]").is_err());
+        assert!(LightningAddress::from_str("alice@localhost").is_err());
+    }
+
     #[tokio::test]
-    async fn test_request_invoice_accepts_matching_invoice_amount() {
+    async fn test_request_invoice_accepts_matching_invoice_amount_and_metadata_hash() {
+        let metadata = "[]";
+        let invoice = invoice_with_metadata_hash(100_000, metadata);
         let connector = Arc::new(MockMintConnector::new());
         connector.set_lnurl_pay_request_response(Ok(LnurlPayResponse {
             callback: "https://example.com/callback".to_string(),
             min_sendable: 1,
             max_sendable: 1_000_000,
-            metadata: "[]".to_string(),
+            metadata: metadata.to_string(),
             tag: Some("payRequest".to_string()),
             reason: None,
         }));
         connector.set_lnurl_invoice_response(Ok(LnurlPayInvoiceResponse {
-            pr: Some(INVOICE_100_SATS.to_string()),
+            pr: Some(invoice),
             success_action: None,
             routes: None,
             reason: None,
@@ -289,5 +486,60 @@ mod tests {
             .expect("matching amount should succeed");
 
         assert_eq!(invoice.amount_milli_satoshis(), Some(100_000));
+    }
+
+    #[tokio::test]
+    async fn test_request_invoice_rejects_invoice_when_metadata_does_not_hash() {
+        let connector = Arc::new(MockMintConnector::new());
+        connector.set_lnurl_pay_request_response(Ok(LnurlPayResponse {
+            callback: "https://example.com/callback".to_string(),
+            min_sendable: 1,
+            max_sendable: 1_000_000,
+            metadata: "[[\"text/plain\",\"Coffee for Alice\"]]".to_string(),
+            tag: Some("payRequest".to_string()),
+            reason: None,
+        }));
+        connector.set_lnurl_invoice_response(Ok(LnurlPayInvoiceResponse {
+            pr: Some(INVOICE_100_SATS.to_string()),
+            success_action: None,
+            routes: None,
+            reason: None,
+        }));
+
+        let address = LightningAddress::from_str("alice@example.com").expect("valid address");
+        let result = address
+            .request_invoice(
+                &(connector as Arc<dyn crate::wallet::MintConnector + Send + Sync>),
+                Amount::from(100_000_u64),
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(Error::IncorrectInvoiceDescriptionHash)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_request_invoice_rejects_callback_host_mismatch() {
+        let connector = Arc::new(MockMintConnector::new());
+        connector.set_lnurl_pay_request_response(Ok(LnurlPayResponse {
+            callback: "https://127.0.0.1:8332/callback".to_string(),
+            min_sendable: 1,
+            max_sendable: 1_000_000,
+            metadata: "[]".to_string(),
+            tag: Some("payRequest".to_string()),
+            reason: None,
+        }));
+
+        let address = LightningAddress::from_str("alice@example.com").expect("valid address");
+        let result = address
+            .request_invoice(
+                &(connector as Arc<dyn crate::wallet::MintConnector + Send + Sync>),
+                Amount::from(100_000_u64),
+            )
+            .await;
+
+        assert!(matches!(result, Err(Error::InvalidCallbackUrl(_))));
     }
 }

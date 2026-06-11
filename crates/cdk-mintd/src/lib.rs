@@ -79,18 +79,15 @@ fn extract_supported_payment_methods(mint_info: &cdk::nuts::MintInfo) -> Vec<Str
 
 #[cfg(feature = "cln")]
 fn expand_path(path: &str) -> Option<PathBuf> {
-    if path.starts_with('~') {
-        if let Some(home_dir) = home::home_dir().as_mut() {
-            let remainder = &path[2..];
-            home_dir.push(remainder);
-            let expanded_path = home_dir;
-            Some(expanded_path.clone())
-        } else {
-            None
-        }
-    } else {
-        Some(PathBuf::from(path))
+    if path == "~" {
+        return home::home_dir();
     }
+
+    if let Some(remainder) = path.strip_prefix("~/") {
+        return home::home_dir().map(|home_dir| home_dir.join(remainder));
+    }
+
+    Some(PathBuf::from(path))
 }
 
 /// Performs the initial setup for the application, including configuring tracing,
@@ -1781,6 +1778,22 @@ mod tests {
             err.to_string().contains("only matching units"),
             "error should explain the supported conversions: {err}"
         );
+    }
+
+    #[cfg(feature = "cln")]
+    #[test]
+    fn expand_path_expands_bare_tilde_without_panic() {
+        let expanded = expand_path("~");
+
+        assert_eq!(expanded, home::home_dir());
+    }
+
+    #[cfg(feature = "cln")]
+    #[test]
+    fn expand_path_keeps_named_tilde_paths_literal() {
+        let expanded = expand_path("~foo").expect("path should be returned");
+
+        assert_eq!(expanded, PathBuf::from("~foo"));
     }
 
     #[cfg(all(feature = "fakewallet", feature = "sqlite"))]

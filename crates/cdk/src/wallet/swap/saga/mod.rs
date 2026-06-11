@@ -41,6 +41,9 @@ use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{nut10, Proofs, SpendingConditions, State};
+use crate::wallet::blind_signature::{
+    validate_mint_response_signatures, SignatureAmountValidation,
+};
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
     RevertProofReservation as RevertSwapProofReservation,
@@ -64,7 +67,7 @@ pub(crate) struct SwapSaga<'a, S> {
 impl<'a> SwapSaga<'a, Initial> {
     /// Create a new swap saga in the Initial state.
     pub fn new(wallet: &'a Wallet) -> Self {
-        let operation_id = uuid::Uuid::new_v4();
+        let operation_id = uuid::Uuid::now_v7();
 
         Self {
             wallet,
@@ -238,6 +241,14 @@ impl<'a> SwapSaga<'a, Prepared> {
         let active_keyset_id = self.state_data.pre_swap.pre_mint_secrets.keyset_id;
         let active_keys = self.wallet.load_keyset_keys(active_keyset_id).await?;
 
+        validate_mint_response_signatures(
+            self.wallet,
+            &swap_response.signatures,
+            self.state_data.pre_swap.swap_request.outputs().iter(),
+            SignatureAmountValidation::Exact,
+        )
+        .await?;
+
         let post_swap_proofs = construct_proofs(
             swap_response.signatures,
             self.state_data.pre_swap.pre_mint_secrets.rs(),
@@ -377,11 +388,13 @@ mod tests {
 
     use super::SwapSaga;
     use crate::amount::SplitTarget;
+    use crate::nuts::{BlindSignature, SecretKey as Nut01SecretKey, SwapResponse};
     use crate::wallet::swap::ProofReservation;
     use crate::wallet::test_utils::{
         create_test_db, create_test_wallet_with_mock, test_keyset_id, test_mint_url,
         test_proof_info, MockMintConnector,
     };
+    use crate::{Amount, Error};
 
     #[tokio::test]
     async fn test_prepare_swap_reserves_proofs_for_operation() {
@@ -545,5 +558,52 @@ mod tests {
             prepared.compensations.is_empty(),
             "No compensation should be registered when skipping reservation"
         );
+    }
+
+    #[tokio::test]
+    async fn test_execute_rejects_signature_with_mismatched_amount() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+
+        let proof_info = test_proof_info(keyset_id, 3, mint_url);
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db, mock_client.clone()).await;
+
+        let input_proofs = wallet.get_unspent_proofs().await.unwrap();
+        let prepared = SwapSaga::new(&wallet)
+            .prepare(
+                None,
+                SplitTarget::Values(vec![Amount::from(2)]),
+                input_proofs,
+                None,
+                false,
+                false,
+                ProofReservation::Reserve,
+            )
+            .await
+            .expect("prepare swap saga");
+
+        let outputs = prepared.state_data.pre_swap.swap_request.outputs().clone();
+        let bad_signatures = outputs
+            .iter()
+            .map(|blinded_message| BlindSignature {
+                amount: Amount::from(1),
+                keyset_id: blinded_message.keyset_id,
+                c: Nut01SecretKey::generate().public_key(),
+                dleq: None,
+            })
+            .collect();
+
+        mock_client.set_post_swap_response(Ok(SwapResponse {
+            signatures: bad_signatures,
+        }));
+
+        let result = prepared.execute().await;
+
+        assert!(matches!(result, Err(Error::InvalidMintResponse(_))));
     }
 }

@@ -11,7 +11,7 @@
   };
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
     rust-overlay = {
@@ -638,6 +638,74 @@
           }
         );
 
+        uniffiBindgenGoSrc = pkgs.fetchFromGitHub {
+          owner = "NordSecurity";
+          repo = "uniffi-bindgen-go";
+          rev = "v0.6.0+v0.30.0";
+          hash = "sha256-HxcVUJb8DwbOcAP4LeBQPeKYrqR5jvvYJfcY7/gygkk=";
+        };
+
+        uniffiBindgenGoPackageSrc = pkgs.runCommand "uniffi-bindgen-go-src" { } ''
+          mkdir -p $out
+          cp -r ${uniffiBindgenGoSrc}/bindgen/* $out/
+          chmod -R u+w $out
+          cp ${./nix/uniffi-bindgen-go.Cargo.lock} $out/Cargo.lock
+          substituteInPlace $out/Cargo.toml \
+            --replace-fail 'uniffi_bindgen.workspace = true' 'uniffi_bindgen = "0.30.0"' \
+            --replace-fail 'uniffi_meta.workspace = true' 'uniffi_meta = "0.30.0"' \
+            --replace-fail 'uniffi_udl.workspace = true' 'uniffi_udl = "0.30.0"'
+        '';
+
+        uniffiBindgenGo = pkgs.rustPlatform.buildRustPackage {
+          pname = "uniffi-bindgen-go";
+          version = "0.6.0+v0.30.0";
+
+          src = uniffiBindgenGoPackageSrc;
+          cargoLock.lockFile = ./nix/uniffi-bindgen-go.Cargo.lock;
+          doCheck = false;
+        };
+
+        # Go FFI bindings: builds cdk-ffi-go cdylib + generates Go sources
+        goBindings = craneLib.mkCargoDerivation (
+          commonCraneArgs
+          // {
+            pname = "cdk-go-bindings";
+            cargoArtifacts = workspaceDeps;
+            nativeBuildInputs = commonCraneArgs.nativeBuildInputs ++ [
+              pkgs.go
+              uniffiBindgenGo
+            ];
+            buildPhaseCargoCommand = ''
+              cargo build --release -p cdk-ffi-go
+
+              LIB_EXT="${if isDarwin then "dylib" else "so"}"
+              CDK_FFI_LIB="target/release/libcdk_ffi_go.$LIB_EXT"
+              export GOCACHE="$TMPDIR/go-cache"
+              mkdir -p "$GOCACHE"
+
+              if [ ! -f "$CDK_FFI_LIB" ]; then
+                echo "ERROR: Could not find $CDK_FFI_LIB"
+                ls -la target/release/libcdk_ffi_go.* || true
+                exit 1
+              fi
+
+              uniffi-bindgen-go \
+                "$CDK_FFI_LIB" \
+                --library \
+                --config bindings/go/uniffi.toml \
+                --out-dir target/go-bindings
+            '';
+            doCheck = false;
+            installPhaseCommand = ''
+              LIB_EXT="${if isDarwin then "dylib" else "so"}"
+
+              mkdir -p $out/bindings $out/lib
+              cp -r target/go-bindings/* $out/bindings/
+              cp "target/release/libcdk_ffi_go.$LIB_EXT" $out/lib/
+            '';
+          }
+        );
+
         # ========================================
         # Example definitions - single source of truth
         # ========================================
@@ -823,13 +891,15 @@
           # PostgreSQL environment variables
           export CDK_MINTD_DATABASE_URL="postgresql://${postgresConf.pgUser}:${postgresConf.pgPassword}@localhost:${postgresConf.pgPort}/${postgresConf.pgDatabase}"
 
-          echo ""
-          echo "PostgreSQL commands available:"
-          echo "  start-postgres  - Initialize and start PostgreSQL"
-          echo "  stop-postgres   - Stop PostgreSQL (run before exiting)"
-          echo "  pg-status       - Check PostgreSQL status"
-          echo "  pg-connect      - Connect to PostgreSQL with psql"
-          echo ""
+          # Informational banner goes to stderr so it never corrupts the stdout of
+          # commands run via `nix develop --command ... > file` (e.g. CI schema dumps).
+          echo "" >&2
+          echo "PostgreSQL commands available:" >&2
+          echo "  start-postgres  - Initialize and start PostgreSQL" >&2
+          echo "  stop-postgres   - Stop PostgreSQL (run before exiting)" >&2
+          echo "  pg-status       - Check PostgreSQL status" >&2
+          echo "  pg-connect      - Connect to PostgreSQL with psql" >&2
+          echo "" >&2
         '';
 
         # PostgreSQL configuration
@@ -1090,6 +1160,7 @@
           # Language bindings (cached cdylib + uniffi codegen)
           dart-bindings = dartBindings;
           kotlin-bindings = kotlinBindings;
+          go-bindings = goBindings;
         }
         # Static build deps (Linux only)
         // lib.optionalAttrs (muslTarget != null) {

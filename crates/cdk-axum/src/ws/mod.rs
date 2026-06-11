@@ -19,6 +19,7 @@ mod subscribe;
 mod unsubscribe;
 
 pub(crate) const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 100;
+pub(crate) const MAX_FILTERS_PER_SUBSCRIPTION: usize = 1000;
 
 async fn process(
     context: &mut WsContext,
@@ -177,7 +178,7 @@ mod tests {
     use super::*;
     use crate::cache::HttpCache;
 
-    async fn create_test_mint() -> Arc<Mint> {
+    async fn create_test_mint_with_limits(max_inputs: usize, max_outputs: usize) -> Arc<Mint> {
         let localstore = Arc::new(memory::empty().await.expect("in-memory db"));
 
         let seed = [0u8; 32];
@@ -215,12 +216,16 @@ mod tests {
                 signatory,
                 localstore,
                 HashMap::new(),
-                1000,
-                1000,
+                max_inputs,
+                max_outputs,
             )
             .await
             .expect("mint"),
         )
+    }
+
+    async fn create_test_mint() -> Arc<Mint> {
+        create_test_mint_with_limits(1000, 1000).await
     }
 
     fn make_params(sub_id: &str) -> Params {
@@ -230,7 +235,7 @@ mod tests {
         // before the test can observe the active_subscribers count.
         Params {
             kind: cdk::nuts::nut17::Kind::Bolt11MintQuote,
-            filters: vec![QuoteId::new_uuid().to_string()],
+            filters: vec![QuoteId::new().to_string()],
             id: Arc::new(SubId::from(sub_id)),
         }
     }
@@ -369,6 +374,25 @@ mod tests {
             pubsub.active_subscribers(),
             MAX_SUBSCRIPTIONS_PER_CONNECTION,
             "rejected subscription should not allocate a pub/sub subscriber"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_subscription_filter_count_not_tied_to_max_inputs() {
+        let mint = create_test_mint_with_limits(2, 2).await;
+        let mut context = make_context(mint);
+
+        let params = Params {
+            kind: cdk::nuts::nut17::Kind::Bolt11MintQuote,
+            filters: (0..5).map(|_| QuoteId::new().to_string()).collect(),
+            id: Arc::new(SubId::from("sub-many-filters")),
+        };
+
+        let result = subscribe::handle(&mut context, params).await;
+        assert!(
+            result.is_ok(),
+            "subscription filter count must not be capped by mint max_inputs; got {:?}",
+            result.as_ref().err()
         );
     }
 }

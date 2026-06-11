@@ -287,7 +287,7 @@ async fn onchain_quote_rejects_missing_lookup_id() {
 /// `expected` and `got` in the error payload.
 #[tokio::test]
 async fn onchain_quote_rejects_mismatched_lookup_id() {
-    let stray_id = QuoteId::new_uuid();
+    let stray_id = QuoteId::new();
     let mint = create_onchain_test_mint(EchoBehavior::Mismatched(stray_id.clone()))
         .await
         .unwrap();

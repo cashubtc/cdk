@@ -22,6 +22,9 @@ use tracing::instrument;
 use crate::dhke::construct_proofs;
 use crate::nuts::{MintRequest, State};
 use crate::util::unix_time;
+use crate::wallet::blind_signature::{
+    validate_mint_response_signatures, SignatureAmountValidation,
+};
 use crate::wallet::issue::saga::compensation::ReleaseMintQuote;
 use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::CompensatingAction;
@@ -354,6 +357,14 @@ impl Wallet {
 
             let keys = self.load_keyset_keys(keyset_id).await?;
 
+            validate_mint_response_signatures(
+                self,
+                &mint_response.signatures,
+                blinded_messages.iter(),
+                SignatureAmountValidation::Exact,
+            )
+            .await?;
+
             let proofs = construct_proofs(
                 mint_response.signatures,
                 premint_secrets.rs(),
@@ -458,6 +469,14 @@ impl Wallet {
         )?;
 
         let keys = self.load_keyset_keys(keyset_id).await?;
+
+        validate_mint_response_signatures(
+            self,
+            &mint_response.signatures,
+            blinded_messages.iter(),
+            SignatureAmountValidation::Exact,
+        )
+        .await?;
 
         let proofs = construct_proofs(
             mint_response.signatures,

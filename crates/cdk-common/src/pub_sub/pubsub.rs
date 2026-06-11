@@ -127,6 +127,7 @@ where
         >,
     {
         let subscription_name = request.subscription_name();
+        let subscribed_to = request.try_get_topics()?;
         let sender = Subscriber::new(subscription_name.clone(), sender);
         let mut index_storage = self.listeners_topics.write();
         let subscription_internal_id = self
@@ -135,8 +136,6 @@ where
 
         self.active_subscribers
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-        let subscribed_to = request.try_get_topics()?;
 
         for index in subscribed_to.iter() {
             index_storage.insert((index.clone(), subscription_internal_id), sender.clone());

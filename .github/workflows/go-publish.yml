@@ -50,7 +50,7 @@ jobs:
           echo "RELEASE_VER=${TAG#v}" >> "$GITHUB_ENV"
 
       - name: Checkout monorepo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ env.CDK_REF }}
 
@@ -170,7 +170,7 @@ jobs:
 
     steps:
       - name: Checkout monorepo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ env.CDK_REF }}
 
@@ -211,7 +211,7 @@ jobs:
 
       - name: Upload generated bindings
         if: matrix.target == 'x86_64-unknown-linux-gnu'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: go-bindings-generated
           path: generated-bindings/
@@ -234,7 +234,7 @@ jobs:
              "dist/${{ matrix.target }}-${{ matrix.artifact }}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: go-native-${{ matrix.target }}
           path: dist/
@@ -250,14 +250,14 @@ jobs:
             https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_GO_REPO }}.git cdk-go
 
       - name: Download all native artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: ./artifacts
           pattern: go-native-*
           merge-multiple: true
 
       - name: Download generated Go bindings
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: go-bindings-generated
           path: ./generated-bindings

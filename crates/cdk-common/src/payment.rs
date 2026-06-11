@@ -851,7 +851,7 @@ mod tests {
 
     #[test]
     fn test_payment_identifier_quote_id_roundtrip() {
-        let quote_id = QuoteId::new_uuid();
+        let quote_id = QuoteId::new();
         let identifier = PaymentIdentifier::QuoteId(quote_id.clone());
 
         let kind = identifier.kind();

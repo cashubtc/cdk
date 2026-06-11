@@ -24,7 +24,7 @@ use crate::{
     RotateNextKeysetRequest, RotateNextKeysetResponse, UpdateContactRequest,
     UpdateDescriptionRequest, UpdateIconUrlRequest, UpdateMotdRequest, UpdateNameRequest,
     UpdateNut04QuoteRequest, UpdateNut04Request, UpdateNut05Request, UpdateQuoteTtlRequest,
-    UpdateResponse, UpdateUrlRequest,
+    UpdateResponse, UpdateTosUrlRequest, UpdateUrlRequest,
 };
 
 /// Error
@@ -244,6 +244,7 @@ impl CdkMint for MintRPCServer {
             contact,
             motd: info.motd,
             icon_url: info.icon_url,
+            tos_url: info.tos_url,
             urls: info.urls.unwrap_or_default(),
             total_issued: total_issued.into(),
             total_redeemed: total_redeemed.into(),
@@ -350,6 +351,28 @@ impl CdkMint for MintRPCServer {
             .map_err(|err| Status::internal(err.to_string()))?;
 
         info.icon_url = Some(icon_url);
+
+        self.mint
+            .set_mint_info(info)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+        Ok(Response::new(UpdateResponse {}))
+    }
+
+    /// Updates the mint's terms of service URL
+    async fn update_tos_url(
+        &self,
+        request: Request<UpdateTosUrlRequest>,
+    ) -> Result<Response<UpdateResponse>, Status> {
+        let tos_url = request.into_inner().tos_url;
+
+        let mut info = self
+            .mint
+            .mint_info()
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        info.tos_url = Some(tos_url);
 
         self.mint
             .set_mint_info(info)
@@ -788,5 +811,125 @@ impl CdkMint for MintRPCServer {
             amounts: keyset_info.amounts,
             input_fee_ppk: keyset_info.input_fee_ppk,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+
+    use bip39::Mnemonic;
+    use cdk::mint::{MintBuilder, MintMeltLimits};
+    use cdk::nuts::{CurrencyUnit, PaymentMethod};
+    use cdk::types::QuoteTTL;
+    use cdk_common::nut00::KnownMethod;
+    use cdk_fake_wallet::FakeWallet;
+    use tonic::Request;
+
+    use super::*;
+    use crate::cdk_mint_server::CdkMint;
+    use crate::{GetInfoRequest, UpdateTosUrlRequest};
+
+    async fn create_test_rpc_server() -> MintRPCServer {
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+
+        let mut mint_builder = MintBuilder::new(db.clone());
+
+        let fee_reserve = cdk::types::FeeReserve {
+            min_fee_reserve: 1.into(),
+            percent_fee_reserve: 1.0,
+        };
+
+        let ln_fake = FakeWallet::new(
+            fee_reserve,
+            HashMap::default(),
+            HashSet::default(),
+            2,
+            CurrencyUnit::Sat,
+        );
+
+        mint_builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintMeltLimits::new(1, 10_000),
+                Arc::new(ln_fake),
+            )
+            .await
+            .unwrap();
+
+        let mnemonic = Mnemonic::generate(12).unwrap();
+
+        mint_builder = mint_builder
+            .with_name("test mint".to_string())
+            .with_description("test mint".to_string());
+
+        let mint = mint_builder
+            .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
+            .await
+            .unwrap();
+
+        mint.set_quote_ttl(QuoteTTL::new(10000, 10000))
+            .await
+            .unwrap();
+
+        mint.start().await.unwrap();
+
+        MintRPCServer {
+            socket_addr: "127.0.0.1:0".parse().unwrap(),
+            mint: Arc::new(mint),
+            shutdown: Arc::new(Notify::new()),
+            handle: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_info_tos_url_none_when_not_set() {
+        let server = create_test_rpc_server().await;
+
+        let response = server
+            .get_info(Request::new(GetInfoRequest {}))
+            .await
+            .unwrap();
+
+        assert!(response.into_inner().tos_url.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_info_includes_tos_url() {
+        let server = create_test_rpc_server().await;
+        let tos = "https://example.com/tos";
+
+        let mut info = server.mint.mint_info().await.unwrap();
+        info.tos_url = Some(tos.to_string());
+        server.mint.set_mint_info(info).await.unwrap();
+
+        let response = server
+            .get_info(Request::new(GetInfoRequest {}))
+            .await
+            .unwrap();
+
+        assert_eq!(response.into_inner().tos_url.unwrap(), tos);
+    }
+
+    #[tokio::test]
+    async fn test_update_tos_url() {
+        let server = create_test_rpc_server().await;
+        let tos = "https://example.com/terms";
+
+        server
+            .update_tos_url(Request::new(UpdateTosUrlRequest {
+                tos_url: tos.to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let response = server
+            .get_info(Request::new(GetInfoRequest {}))
+            .await
+            .unwrap();
+
+        assert_eq!(response.into_inner().tos_url.unwrap(), tos);
     }
 }

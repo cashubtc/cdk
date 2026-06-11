@@ -1,6 +1,6 @@
 //! Integration tests for cdk-http-client using mockito
 
-use cdk_http_client::{HttpClient, HttpError};
+use cdk_http_client::{HttpClient, HttpClientBuilder, HttpError};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -90,6 +90,46 @@ async fn test_fetch_server_error() {
     }
 
     mock.assert_async().await;
+}
+
+#[tokio::test]
+async fn test_fetch_no_redirects_returns_redirect_status() {
+    let mut server = mockito::Server::new_async().await;
+
+    let location = format!("{}/api/target", server.url());
+    let redirect = server
+        .mock("GET", "/api/redirect")
+        .with_status(302)
+        .with_header("location", &location)
+        .with_body("Found")
+        .create_async()
+        .await;
+    let target = server
+        .mock("GET", "/api/target")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"success": true, "data": "followed"}"#)
+        .expect(0)
+        .create_async()
+        .await;
+
+    let client = HttpClientBuilder::default()
+        .no_redirects()
+        .build()
+        .expect("no-redirect client should build");
+    let url = format!("{}/api/redirect", server.url());
+    let result: Result<TestResponse, _> = client.fetch(&url).await;
+
+    assert!(matches!(
+        result,
+        Err(HttpError::Status {
+            status: 302,
+            message
+        }) if message == "Found"
+    ));
+
+    redirect.assert_async().await;
+    target.assert_async().await;
 }
 
 // === HttpClient::post_json tests ===

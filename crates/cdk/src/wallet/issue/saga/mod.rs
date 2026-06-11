@@ -47,8 +47,11 @@ use self::state::{Finalized, Initial, Prepared, PreparedMintRequest};
 use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
-use crate::nuts::{nut12, MintRequest, PreMintSecrets, Proofs, SpendingConditions, State};
+use crate::nuts::{MintRequest, PreMintSecrets, Proofs, SpendingConditions, State};
 use crate::util::unix_time;
+use crate::wallet::blind_signature::{
+    validate_mint_response_signatures, SignatureAmountValidation,
+};
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
 };
@@ -76,7 +79,7 @@ pub(crate) struct MintSaga<'a, S> {
 impl<'a> MintSaga<'a, Initial> {
     /// Create a new mint saga in the Initial state.
     pub fn new(wallet: &'a Wallet) -> Self {
-        let operation_id = uuid::Uuid::new_v4();
+        let operation_id = uuid::Uuid::now_v7();
 
         Self {
             wallet,
@@ -693,14 +696,13 @@ impl<'a> MintSaga<'a, Prepared> {
 
             let keys = wallet.load_keyset_keys(active_keyset_id).await?;
 
-            for (sig, premint) in mint_res.signatures.iter().zip(&premint_secrets.secrets) {
-                let keys = wallet.load_keyset_keys(sig.keyset_id).await?;
-                let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
-                match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
-                    Ok(_) | Err(nut12::Error::MissingDleqProof) => (),
-                    Err(_) => return Err(Error::CouldNotVerifyDleq),
-                }
-            }
+            validate_mint_response_signatures(
+                wallet,
+                &mint_res.signatures,
+                premint_secrets.secrets.iter().map(|p| &p.blinded_message),
+                SignatureAmountValidation::Exact,
+            )
+            .await?;
 
             let proofs = construct_proofs(
                 mint_res.signatures,
@@ -834,5 +836,64 @@ impl<S: std::fmt::Debug> std::fmt::Debug for MintSaga<'_, S> {
         f.debug_struct("MintSaga")
             .field("state_data", &self.state_data)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use cdk_common::nuts::MintQuoteState;
+
+    use super::*;
+    use crate::nuts::{BlindSignature, MintResponse};
+    use crate::wallet::test_utils::{
+        create_test_db, create_test_wallet_with_mock, test_mint_quote, test_mint_url,
+        MockMintConnector,
+    };
+
+    #[tokio::test]
+    async fn test_execute_rejects_signature_with_mismatched_amount() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
+
+        let mut mint_quote = test_mint_quote(mint_url);
+        mint_quote.state = MintQuoteState::Paid;
+        mint_quote.amount = Some(Amount::from(64));
+        mint_quote.amount_paid = Amount::from(64);
+        let quote_id = mint_quote.id.clone();
+        db.add_mint_quote(mint_quote).await.expect("add mint quote");
+
+        let prepared = MintSaga::new(&wallet)
+            .prepare(&quote_id, SplitTarget::Values(vec![Amount::from(64)]), None)
+            .await
+            .expect("prepare mint saga");
+
+        let outputs = match &prepared.state_data.mint_request {
+            PreparedMintRequest::Single { request, .. } => request.outputs.clone(),
+            PreparedMintRequest::Batch { .. } => panic!("expected single mint request"),
+        };
+
+        let bad_signatures = outputs
+            .iter()
+            .map(|blinded_message| BlindSignature {
+                amount: Amount::from(1),
+                keyset_id: blinded_message.keyset_id,
+                c: blinded_message.blinded_secret,
+                dleq: None,
+            })
+            .collect();
+
+        mock_client.set_post_mint_response(Ok(MintResponse {
+            signatures: bad_signatures,
+        }));
+
+        let result = prepared.execute().await;
+
+        assert!(matches!(result, Err(Error::InvalidMintResponse(_))));
     }
 }

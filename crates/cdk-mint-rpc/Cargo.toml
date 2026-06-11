@@ -38,6 +38,11 @@ home.workspace = true
 rustls.workspace = true
 
 
+[dev-dependencies]
+cdk-sqlite = { workspace = true }
+cdk-fake-wallet = { workspace = true }
+bip39.workspace = true
+
 [build-dependencies]
 tonic-prost-build.workspace = true
 

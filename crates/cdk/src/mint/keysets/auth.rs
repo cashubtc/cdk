@@ -15,7 +15,7 @@ impl Mint {
             .keysets
             .load()
             .iter()
-            .find(|key| key.unit == CurrencyUnit::Auth)
+            .find(|key| key.active && key.unit == CurrencyUnit::Auth)
             .ok_or(Error::NoActiveKeyset)?
             .clone();
 

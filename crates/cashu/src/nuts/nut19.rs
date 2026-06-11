@@ -32,13 +32,28 @@ impl CachedEndpoint {
 impl Path {
     /// Create a custom mint path for a payment method
     pub fn custom_mint(method: &str) -> Self {
-        Path::Custom(format!("/v1/mint/{}", method))
+        Path::Custom(format!("/v1/mint/{}", encode_path_segment(method)))
     }
 
     /// Create a custom melt path for a payment method
     pub fn custom_melt(method: &str) -> Self {
-        Path::Custom(format!("/v1/melt/{}", method))
+        Path::Custom(format!("/v1/melt/{}", encode_path_segment(method)))
     }
+}
+
+fn encode_path_segment(segment: &str) -> String {
+    let mut encoded = String::with_capacity(segment.len());
+    for byte in segment.bytes() {
+        match byte {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                encoded.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    encoded
 }
 
 /// HTTP method
@@ -83,5 +98,52 @@ impl<'de> Deserialize<'de> for Path {
             "/v1/swap" => Path::Swap,
             custom => Path::Custom(custom.to_string()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_mint_method_cannot_inject_path_segments() {
+        for method in ["../../v1/swap", "..", "."] {
+            let s = match Path::custom_mint(method) {
+                Path::Custom(s) => s,
+                other => panic!("expected Path::Custom, got {other:?}"),
+            };
+            let segments: Vec<&str> = s.trim_start_matches('/').split('/').collect();
+
+            assert_eq!(
+                segments.len(),
+                3,
+                "method injected extra path segments: {s}"
+            );
+            assert!(
+                !segments.iter().any(|seg| *seg == ".." || *seg == "."),
+                "method injected a path-traversal segment: {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn custom_melt_method_cannot_inject_path_segments() {
+        for method in ["../../v1/swap", "..", "."] {
+            let s = match Path::custom_melt(method) {
+                Path::Custom(s) => s,
+                other => panic!("expected Path::Custom, got {other:?}"),
+            };
+            let segments: Vec<&str> = s.trim_start_matches('/').split('/').collect();
+
+            assert_eq!(
+                segments.len(),
+                3,
+                "method injected extra path segments: {s}"
+            );
+            assert!(
+                !segments.iter().any(|seg| *seg == ".." || *seg == "."),
+                "method injected a path-traversal segment: {s}"
+            );
+        }
     }
 }

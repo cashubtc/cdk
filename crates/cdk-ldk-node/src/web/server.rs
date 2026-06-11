@@ -2,16 +2,15 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::routing::{get, post};
-use axum::Router;
-use tower::ServiceBuilder;
-use tower_http::cors::CorsLayer;
+use axum::{middleware, Router};
 
+use crate::web::csrf::ensure_csrf_token;
 use crate::web::handlers::{
     balance_page, channels_page, close_channel_page, dashboard, force_close_channel_page,
     get_new_address, invoices_page, onchain_confirm_page, onchain_page, open_channel_page,
-    payments_page, post_close_channel, post_create_bolt11, post_create_bolt12,
-    post_force_close_channel, post_open_channel, post_pay_bolt11, post_pay_bolt12,
-    post_send_onchain, send_payments_page, AppState,
+    payments_page, post_close_channel, post_confirm_onchain, post_create_bolt11,
+    post_create_bolt12, post_force_close_channel, post_open_channel, post_pay_bolt11,
+    post_pay_bolt12, post_send_onchain, send_payments_page, AppState,
 };
 use crate::web::static_files::static_handler;
 use crate::CdkLdkNode;
@@ -39,7 +38,10 @@ impl WebServer {
             .route("/balance", get(balance_page))
             .route("/onchain", get(onchain_page))
             .route("/onchain/send", post(post_send_onchain))
-            .route("/onchain/confirm", get(onchain_confirm_page))
+            .route(
+                "/onchain/confirm",
+                get(onchain_confirm_page).post(post_confirm_onchain),
+            )
             .route("/onchain/new-address", post(get_new_address))
             // Channel management
             .route("/channels", get(channels_page))
@@ -60,7 +62,7 @@ impl WebServer {
             .route("/payments/bolt12", post(post_pay_bolt12))
             // Static files - now embedded
             .route("/static/{*file}", get(static_handler))
-            .layer(ServiceBuilder::new().layer(CorsLayer::permissive()))
+            .layer(middleware::from_fn(ensure_csrf_token))
             .with_state(state)
     }
 
@@ -74,5 +76,15 @@ impl WebServer {
         axum::serve(listener, app).await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn production_router_does_not_use_permissive_cors() {
+        let server_source = include_str!("server.rs");
+
+        assert!(!server_source.contains(concat!("CorsLayer", "::permissive")));
     }
 }

@@ -73,8 +73,16 @@ impl Default for Async {
             let _ = rustls::crypto::ring::default_provider().install_default();
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        let inner = HttpClientBuilder::default()
+            .no_redirects()
+            .build()
+            .expect("default HTTP client configuration should be valid");
+        #[cfg(target_arch = "wasm32")]
+        let inner = HttpClient::new();
+
         Self {
-            inner: HttpClient::new(),
+            inner,
             #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
             resolver: Arc::new(default_resolver()),
         }
@@ -114,8 +122,9 @@ impl Transport for Async {
         host_matcher: Option<&str>,
         accept_invalid_certs: bool,
     ) -> Result<(), Error> {
-        let builder =
-            HttpClientBuilder::default().danger_accept_invalid_certs(accept_invalid_certs);
+        let builder = HttpClientBuilder::default()
+            .danger_accept_invalid_certs(accept_invalid_certs)
+            .no_redirects();
 
         let builder = match host_matcher {
             Some(pattern) => {

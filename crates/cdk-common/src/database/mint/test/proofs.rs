@@ -16,7 +16,7 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let keyset_id = setup_keyset(&db).await;
-    let quote_id = QuoteId::new_uuid();
+    let quote_id = QuoteId::new();
     let proofs = vec![
         Proof {
             amount: Amount::from(100),
@@ -75,7 +75,7 @@ where
 {
     let keyset_id = setup_keyset(&db).await;
 
-    let quote_id = QuoteId::new_uuid();
+    let quote_id = QuoteId::new();
 
     let proofs = vec![
         Proof {
@@ -125,7 +125,7 @@ where
 {
     let keyset_id = setup_keyset(&db).await;
 
-    let quote_id = QuoteId::new_uuid();
+    let quote_id = QuoteId::new();
 
     let proofs = vec![
         Proof {
@@ -182,7 +182,7 @@ where
     use cashu::State;
 
     let keyset_id = setup_keyset(&db).await;
-    let quote_id = QuoteId::new_uuid();
+    let quote_id = QuoteId::new();
 
     let proofs = vec![
         Proof {
@@ -261,7 +261,7 @@ where
     use cashu::State;
 
     let keyset_id = setup_keyset(&db).await;
-    let quote_id = QuoteId::new_uuid();
+    let quote_id = QuoteId::new();
 
     let proofs = vec![Proof {
         amount: Amount::from(100),
@@ -320,7 +320,7 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let keyset_id = setup_keyset(&db).await;
-    let quote_id = QuoteId::new_uuid();
+    let quote_id = QuoteId::new();
 
     let proofs = vec![
         Proof {
@@ -381,7 +381,7 @@ where
     use cashu::State;
 
     let keyset_id = setup_keyset(&db).await;
-    let quote_id = QuoteId::new_uuid();
+    let quote_id = QuoteId::new();
 
     let proofs = vec![
         Proof {
@@ -458,8 +458,8 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let keyset_id = setup_keyset(&db).await;
-    let quote_id1 = QuoteId::new_uuid();
-    let quote_id2 = QuoteId::new_uuid();
+    let quote_id1 = QuoteId::new();
+    let quote_id2 = QuoteId::new();
 
     let proofs1 = vec![
         Proof {
@@ -533,7 +533,7 @@ where
     use cashu::State;
 
     let keyset_id = setup_keyset(&db).await;
-    let quote_id = QuoteId::new_uuid();
+    let quote_id = QuoteId::new();
 
     let proofs = vec![
         Proof {
@@ -624,7 +624,7 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let keyset_id = setup_keyset(&db).await;
-    let quote_id = QuoteId::new_uuid();
+    let quote_id = QuoteId::new();
 
     let proof = Proof {
         amount: Amount::from(100),
@@ -668,7 +668,7 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let keyset_id = setup_keyset(&db).await;
-    let quote_id = QuoteId::new_uuid();
+    let quote_id = QuoteId::new();
 
     let proof = Proof {
         amount: Amount::from(100),
@@ -751,7 +751,7 @@ where
     use cashu::State;
 
     let keyset_id = setup_keyset(&db).await;
-    let quote_id = QuoteId::new_uuid();
+    let quote_id = QuoteId::new();
 
     let proofs = vec![
         Proof {
@@ -875,7 +875,7 @@ where
     use cashu::State;
 
     let keyset_id = setup_keyset(&db).await;
-    let quote_id = QuoteId::new_uuid();
+    let quote_id = QuoteId::new();
 
     // Create three proofs
     let proofs = vec![
@@ -970,7 +970,7 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let keyset_id = setup_keyset(&db).await;
-    let quote_id = QuoteId::new_uuid();
+    let quote_id = QuoteId::new();
 
     // Create two proofs that will be stored
     let stored_proofs = vec![

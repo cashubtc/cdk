@@ -10,10 +10,14 @@ pub struct MintInfoSubcommand {
     mint_url: MintUrl,
 }
 
-pub async fn mint_info(proxy: Option<Url>, sub_command_args: &MintInfoSubcommand) -> Result<()> {
+pub async fn mint_info(
+    proxy: Option<Url>,
+    danger_accept_invalid_certs: bool,
+    sub_command_args: &MintInfoSubcommand,
+) -> Result<()> {
     let mint_url = sub_command_args.mint_url.clone();
     let client = match proxy {
-        Some(proxy) => HttpClient::with_proxy(mint_url, proxy, None, true)?,
+        Some(proxy) => HttpClient::with_proxy(mint_url, proxy, None, danger_accept_invalid_certs)?,
         None => HttpClient::new(mint_url, None),
     };
 

@@ -5,6 +5,7 @@
 
 use axum::routing::{get, post};
 use axum::Router;
+use cdk::nuts::PaymentMethod;
 
 use crate::custom_handlers::{
     cache_post_batch_mint, cache_post_melt_custom, cache_post_mint_custom,
@@ -62,20 +63,17 @@ pub fn create_custom_routers(state: MintState, custom_methods: Vec<String>) -> R
 /// through the custom router if the payment processor supports them.
 pub fn validate_custom_method_names(methods: &[String]) -> Result<(), String> {
     for method in methods {
+        // Validate method name is not empty
+        if method.is_empty() {
+            return Err("Custom payment method name cannot be empty".to_string());
+        }
+
         // Validate method name contains only URL-safe characters
-        if !method
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        {
+        if !PaymentMethod::is_valid_custom_method_name(method) {
             return Err(format!(
                 "Custom payment method name '{}' contains invalid characters. Only alphanumeric, '-', and '_' are allowed.",
                 method
             ));
-        }
-
-        // Validate method name is not empty
-        if method.is_empty() {
-            return Err("Custom payment method name cannot be empty".to_string());
         }
     }
 

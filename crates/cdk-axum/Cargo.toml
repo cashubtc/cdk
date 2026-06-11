@@ -28,7 +28,7 @@ futures.workspace = true
 cdk-prometheus = { workspace = true , optional = true}
 moka = { version = "0.12.10", features = ["future"] }
 serde_json.workspace = true
-paste = "1.0.15"
+paste.workspace = true
 serde.workspace = true
 uuid.workspace = true
 sha2 = "0.10.8"
@@ -43,8 +43,10 @@ redis = { version = "0.31.0", default-features = false, features = [
 uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
+cdk-fake-wallet = { workspace = true }
 cdk-sqlite = { workspace = true, features = ["mint"] }
 cdk-signatory = { workspace = true }
+bip39 = { workspace = true }
 
 [lints]
 workspace = true

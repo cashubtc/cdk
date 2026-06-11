@@ -1006,21 +1006,46 @@ impl Wallet {
                 new_state
             );
             if new_state == MeltQuoteState::Paid {
-                let pending_proofs = self
-                    .get_proofs_with(Some(vec![State::Pending]), None)
-                    .await?;
-                let proofs_total = pending_proofs.total_amount().unwrap_or_default();
+                let Some(operation_id_str) = quote.used_by_operation.as_deref() else {
+                    tracing::warn!(
+                        "Skipping transaction for paid melt quote {} without operation id",
+                        quote.id
+                    );
+                    return Ok(());
+                };
+                let operation_id = match Uuid::parse_str(operation_id_str) {
+                    Ok(operation_id) => operation_id,
+                    Err(err) => {
+                        tracing::warn!(
+                            "Skipping transaction for paid melt quote {} with invalid operation id {}: {}",
+                            quote.id,
+                            operation_id_str,
+                            err
+                        );
+                        return Ok(());
+                    }
+                };
+                let pending_proofs: Proofs = self
+                    .localstore
+                    .get_reserved_proofs(&operation_id)
+                    .await?
+                    .into_iter()
+                    .filter(|proof| proof.state == State::Pending)
+                    .map(|proof| proof.proof)
+                    .collect();
+                let proofs_total = pending_proofs.total_amount()?;
                 let change_total = change_amount.unwrap_or_default();
+                let fee = proofs_total
+                    .checked_sub(amount)
+                    .and_then(|amount| amount.checked_sub(change_total))
+                    .ok_or(Error::AmountOverflow)?;
 
                 self.localstore
                     .add_transaction(Transaction {
                         mint_url: self.mint_url.clone(),
                         direction: TransactionDirection::Outgoing,
                         amount,
-                        fee: proofs_total
-                            .checked_sub(amount)
-                            .and_then(|amt| amt.checked_sub(change_total))
-                            .unwrap_or_default(),
+                        fee,
                         unit: quote.unit.clone(),
                         ys: pending_proofs.ys()?,
                         timestamp: unix_time(),
@@ -1030,10 +1055,7 @@ impl Wallet {
                         payment_request: Some(quote.request.clone()),
                         payment_proof,
                         payment_method: Some(quote.payment_method.clone()),
-                        saga_id: quote
-                            .used_by_operation
-                            .as_ref()
-                            .and_then(|id| Uuid::parse_str(id).ok()),
+                        saga_id: Some(operation_id),
                     })
                     .await?;
             }
@@ -1565,6 +1587,101 @@ mod tests {
         assert_eq!(state_for(reserved_y), Some(State::Unspent));
         assert_eq!(state_for(pending_y), Some(State::Unspent));
         assert_eq!(state_for(spent_y), Some(State::Spent));
+    }
+
+    #[tokio::test]
+    async fn test_add_transaction_for_pending_melt_uses_only_operation_pending_proofs() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let operation_a_id = uuid::Uuid::new_v4();
+        let operation_b_id = uuid::Uuid::new_v4();
+
+        let mut operation_a_pending =
+            test_proof_info(keyset_id, 1200, mint_url.clone(), State::Pending);
+        operation_a_pending.used_by_operation = Some(operation_a_id);
+        let operation_a_pending_y = operation_a_pending.y;
+
+        let mut operation_b_pending =
+            test_proof_info(keyset_id, 700, mint_url.clone(), State::Pending);
+        operation_b_pending.used_by_operation = Some(operation_b_id);
+        let operation_b_pending_y = operation_b_pending.y;
+
+        let mut operation_a_spent = test_proof_info(keyset_id, 300, mint_url.clone(), State::Spent);
+        operation_a_spent.used_by_operation = Some(operation_a_id);
+        let operation_a_spent_y = operation_a_spent.y;
+
+        db.update_proofs(
+            vec![operation_a_pending, operation_b_pending, operation_a_spent],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let mut quote = test_melt_quote();
+        quote.used_by_operation = Some(operation_a_id.to_string());
+
+        wallet
+            .add_transaction_for_pending_melt(
+                &quote,
+                MeltQuoteState::Paid,
+                Amount::from(1000),
+                Some(Amount::from(150)),
+                Some("payment-proof".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions.len(), 1);
+
+        let tx = &transactions[0];
+        assert_eq!(tx.ys, vec![operation_a_pending_y]);
+        assert!(!tx.ys.contains(&operation_b_pending_y));
+        assert!(!tx.ys.contains(&operation_a_spent_y));
+        assert_eq!(tx.fee, Amount::from(50));
+        assert_eq!(tx.saga_id, Some(operation_a_id));
+    }
+
+    #[tokio::test]
+    async fn test_add_transaction_for_pending_melt_skips_missing_or_invalid_operation_id() {
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let quote_without_operation = test_melt_quote();
+        wallet
+            .add_transaction_for_pending_melt(
+                &quote_without_operation,
+                MeltQuoteState::Paid,
+                Amount::from(1000),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert!(transactions.is_empty());
+
+        let mut quote_with_invalid_operation = test_melt_quote();
+        quote_with_invalid_operation.used_by_operation = Some("invalid-operation-id".to_string());
+        wallet
+            .add_transaction_for_pending_melt(
+                &quote_with_invalid_operation,
+                MeltQuoteState::Paid,
+                Amount::from(1000),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert!(transactions.is_empty());
     }
 
     async fn create_test_wallet_with_quote() -> (Wallet, String) {

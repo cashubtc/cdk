@@ -50,6 +50,9 @@ use super::MeltConfirmOptions;
 use crate::nuts::nut00::{KnownMethod, ProofsMethods};
 use crate::nuts::{MeltRequest, PreMintSecrets, Proofs, State};
 use crate::util::unix_time;
+use crate::wallet::blind_signature::{
+    validate_mint_response_signatures, SignatureAmountValidation,
+};
 use crate::wallet::keysets::KeysetFilter;
 use crate::wallet::saga::{add_compensation, new_compensations, Compensations};
 use crate::{ensure_cdk, Amount, Error, Wallet};
@@ -112,6 +115,16 @@ async fn finalize_melt_common<'a>(
                 }
                 _ => num_change_proof,
             };
+
+            validate_mint_response_signatures(
+                wallet,
+                &change,
+                premint_secrets.secrets[..num_change_proof]
+                    .iter()
+                    .map(|p| &p.blinded_message),
+                SignatureAmountValidation::AllowZeroAmountPlaceholder,
+            )
+            .await?;
 
             Some(construct_proofs(
                 change,
@@ -219,7 +232,7 @@ async fn finalize_melt_common<'a>(
 impl<'a> MeltSaga<'a, Initial> {
     /// Create a new melt saga in the Initial state.
     pub fn new(wallet: &'a Wallet) -> Self {
-        let operation_id = uuid::Uuid::new_v4();
+        let operation_id = uuid::Uuid::now_v7();
 
         Self {
             wallet,
@@ -1583,5 +1596,45 @@ mod tests {
         .await;
 
         assert!(matches!(result, Err(Error::AmountOverflow)));
+    }
+
+    #[tokio::test]
+    async fn test_finalize_melt_accepts_change_amount_for_zero_amount_output() {
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        let keyset_id = test_keyset_id();
+        let quote = test_melt_quote();
+        let final_proofs = vec![test_proof_info(keyset_id, 1008, test_mint_url()).proof];
+        let premint_secrets =
+            PreMintSecrets::blank(keyset_id, Amount::from(8)).expect("blank premint secrets");
+        let change = vec![BlindSignature {
+            amount: Amount::from(8),
+            keyset_id,
+            c: premint_secrets.blinded_messages()[0].blinded_secret,
+            dleq: None,
+        }];
+
+        let result = finalize_melt_common(
+            &wallet,
+            new_compensations(),
+            Uuid::new_v4(),
+            &quote,
+            &final_proofs,
+            &premint_secrets,
+            MeltQuoteState::Paid,
+            None,
+            Some(change),
+            HashMap::new(),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap().into_change().expect("change proofs")[0].amount,
+            Amount::from(8)
+        );
     }
 }

@@ -5,6 +5,7 @@ use std::time::Duration;
 use cdk_common::parking_lot::RwLock;
 use cdk_common::{database, AuthToken};
 use tokio::sync::RwLock as TokioRwLock;
+use zeroize::Zeroize;
 
 use crate::cdk_database::WalletDatabase;
 use crate::error::Error;
@@ -24,7 +25,7 @@ pub struct WalletBuilder {
     seed: Option<[u8; 64]>,
     use_http_subscription: bool,
     client: Option<Arc<dyn MintConnector + Send + Sync>>,
-    metadata_cache_ttl: Option<Duration>,
+    metadata_cache_ttl: Arc<RwLock<Option<Duration>>>,
     metadata_cache: Option<Arc<MintMetadataCache>>,
     metadata_caches: HashMap<MintUrl, Arc<MintMetadataCache>>,
 }
@@ -49,11 +50,17 @@ impl Default for WalletBuilder {
             auth_wallet: None,
             seed: None,
             client: None,
-            metadata_cache_ttl: Some(Duration::from_secs(3600)),
+            metadata_cache_ttl: Arc::new(RwLock::new(Some(Duration::from_secs(3600)))),
             use_http_subscription: false,
             metadata_cache: None,
             metadata_caches: HashMap::new(),
         }
+    }
+}
+
+impl Drop for WalletBuilder {
+    fn drop(&mut self) {
+        self.seed.zeroize();
     }
 }
 
@@ -77,8 +84,10 @@ impl WalletBuilder {
     /// (unless manually refreshed).
     ///
     /// The default value is 1 hour (3600 seconds).
-    pub fn set_metadata_cache_ttl(mut self, metadata_cache_ttl: Option<Duration>) -> Self {
-        self.metadata_cache_ttl = metadata_cache_ttl;
+    pub fn set_metadata_cache_ttl(self, metadata_cache_ttl: Option<Duration>) -> Self {
+        // Write into the shared cell rather than replacing it, so any AuthWallet
+        // already created from this builder observes the updated value.
+        *self.metadata_cache_ttl.write() = metadata_cache_ttl;
         self
     }
 
@@ -124,6 +133,7 @@ impl WalletBuilder {
 
     /// Set the seed bytes
     pub fn seed(mut self, seed: [u8; 64]) -> Self {
+        self.seed.zeroize();
         self.seed = Some(seed);
         self
     }
@@ -192,6 +202,7 @@ impl WalletBuilder {
             Some(AuthToken::ClearAuth(cat)),
             localstore,
             metadata_cache,
+            self.metadata_cache_ttl.clone(),
             HashMap::new(),
             None,
         ));
@@ -199,29 +210,33 @@ impl WalletBuilder {
     }
 
     /// Build the wallet
-    pub fn build(self) -> Result<Wallet, Error> {
+    pub fn build(mut self) -> Result<Wallet, Error> {
         let mint_url = self
             .mint_url
+            .take()
             .ok_or(Error::Custom("Mint url required".to_string()))?;
         let unit = self
             .unit
+            .take()
             .ok_or(Error::Custom("Unit required".to_string()))?;
         let localstore = self
             .localstore
+            .take()
             .ok_or(Error::Custom("Localstore required".to_string()))?;
         let seed: [u8; 64] = self
             .seed
             .ok_or(Error::Custom("Seed required".to_string()))?;
 
-        let client = match self.client {
+        let client = match self.client.take() {
             Some(client) => client,
             None => Arc::new(HttpClient::new(mint_url.clone(), self.auth_wallet.clone()))
                 as Arc<dyn MintConnector + Send + Sync>,
         };
+        let auth_wallet = self.auth_wallet.take();
 
-        let metadata_cache_ttl = self.metadata_cache_ttl;
+        let metadata_cache_ttl = self.metadata_cache_ttl.clone();
 
-        let metadata_cache = self.metadata_cache.unwrap_or_else(|| {
+        let metadata_cache = self.metadata_cache.take().unwrap_or_else(|| {
             // Check if we already have a cache for this mint in the HashMap
             if let Some(cache) = self.metadata_caches.get(&mint_url) {
                 cache.clone()
@@ -236,9 +251,9 @@ impl WalletBuilder {
             unit,
             localstore,
             metadata_cache,
-            metadata_cache_ttl: Arc::new(RwLock::new(metadata_cache_ttl)),
+            metadata_cache_ttl,
             target_proof_count: self.target_proof_count.unwrap_or(3),
-            auth_wallet: Arc::new(TokioRwLock::new(self.auth_wallet)),
+            auth_wallet: Arc::new(TokioRwLock::new(auth_wallet)),
             #[cfg(feature = "npubcash")]
             npubcash_client: Arc::new(TokioRwLock::new(None)),
             seed,
@@ -255,6 +270,9 @@ mod tests {
     #[test]
     fn test_default_ttl() {
         let builder = WalletBuilder::default();
-        assert_eq!(builder.metadata_cache_ttl, Some(Duration::from_secs(3600)));
+        assert_eq!(
+            *builder.metadata_cache_ttl.read(),
+            Some(Duration::from_secs(3600))
+        );
     }
 }
