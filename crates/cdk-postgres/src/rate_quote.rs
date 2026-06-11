@@ -7,7 +7,8 @@ use cdk_common::database::Error;
 use cdk_common::nuts::CurrencyUnit;
 use cdk_common::payment::PaymentIdentifier;
 use cdk_exchange_rate::{
-    ParkedPaymentRecord, RateQuoteRecord, RateQuoteStore, RateQuoteStoreError, UnitControlRecord,
+    ParkedPaymentRecord, RateQuoteRecord, RateQuoteSettlement, RateQuoteStore, RateQuoteStoreError,
+    UnitControlRecord,
 };
 use cdk_sql_common::pool::Pool;
 use cdk_sql_common::stmt::query;
@@ -269,6 +270,103 @@ impl RateQuoteStore for PostgresRateQuoteStore {
         .map_err(storage_error)?;
 
         Ok(affected > 0)
+    }
+
+    async fn settle_quote_and_commit_unit_control(
+        &self,
+        payment_lookup_id: &PaymentIdentifier,
+        unit: &CurrencyUnit,
+        settlement: RateQuoteSettlement,
+    ) -> Result<bool, RateQuoteStoreError> {
+        let conn = self.conn()?;
+
+        query("START TRANSACTION")
+            .map_err(storage_error)?
+            .execute(&*conn)
+            .await
+            .map_err(storage_error)?;
+
+        let result = async {
+            let affected = query(
+                r#"
+                UPDATE rate_quote_terms
+                SET settled = 1
+                WHERE payment_lookup_id = :payment_lookup_id AND settled = 0
+                "#,
+            )
+            .map_err(storage_error)?
+            .bind("payment_lookup_id", payment_lookup_id.to_string())
+            .execute(&*conn)
+            .await
+            .map_err(storage_error)?;
+
+            if affected == 0 {
+                return Ok(false);
+            }
+
+            match settlement {
+                RateQuoteSettlement::MintCredit {
+                    fiat_subunits,
+                    buffer_surplus_sats,
+                } => {
+                    query(
+                        r#"
+                        INSERT INTO rate_unit_control (unit, outstanding, buffer_surplus_sats)
+                        VALUES (:unit, :outstanding, :buffer_surplus_sats)
+                        ON CONFLICT (unit) DO UPDATE SET
+                            outstanding = rate_unit_control.outstanding + EXCLUDED.outstanding,
+                            buffer_surplus_sats = rate_unit_control.buffer_surplus_sats + EXCLUDED.buffer_surplus_sats
+                        "#,
+                    )
+                    .map_err(storage_error)?
+                    .bind("unit", unit.to_string())
+                    .bind("outstanding", checked_i64(fiat_subunits, "outstanding")?)
+                    .bind(
+                        "buffer_surplus_sats",
+                        checked_i64(buffer_surplus_sats, "buffer_surplus_sats")?,
+                    )
+                    .execute(&*conn)
+                    .await
+                    .map_err(storage_error)?;
+                }
+                RateQuoteSettlement::Melt { fiat_subunits } => {
+                    query(
+                        r#"
+                        INSERT INTO rate_unit_control (unit, outstanding)
+                        VALUES (:unit, 0)
+                        ON CONFLICT (unit) DO UPDATE SET
+                            outstanding = GREATEST(rate_unit_control.outstanding - :melted, 0)
+                        "#,
+                    )
+                    .map_err(storage_error)?
+                    .bind("unit", unit.to_string())
+                    .bind("melted", checked_i64(fiat_subunits, "melted")?)
+                    .execute(&*conn)
+                    .await
+                    .map_err(storage_error)?;
+                }
+            }
+
+            Ok(true)
+        }
+        .await;
+
+        match result {
+            Ok(settled) => {
+                query("COMMIT")
+                    .map_err(storage_error)?
+                    .execute(&*conn)
+                    .await
+                    .map_err(storage_error)?;
+                Ok(settled)
+            }
+            Err(error) => {
+                if let Ok(rollback) = query("ROLLBACK") {
+                    let _ = rollback.execute(&*conn).await;
+                }
+                Err(error)
+            }
+        }
     }
 
     async fn load_unit_controls(&self) -> Result<Vec<UnitControlRecord>, RateQuoteStoreError> {
@@ -586,6 +684,78 @@ mod tests {
             .mark_settled(&PaymentIdentifier::CustomId("ms-missing".to_string()))
             .await
             .expect("missing settle"));
+    }
+
+    #[tokio::test]
+    async fn settle_quote_and_commit_unit_control_is_one_shot() {
+        let store = store("settle_commit").await;
+        let mint_record = record("sc-mint");
+        let melt_record = record("sc-melt");
+        let usd = CurrencyUnit::Usd;
+        store
+            .insert(mint_record.clone())
+            .await
+            .expect("insert mint");
+        store
+            .insert(melt_record.clone())
+            .await
+            .expect("insert melt");
+
+        assert!(store
+            .settle_quote_and_commit_unit_control(
+                &mint_record.payment_lookup_id,
+                &usd,
+                RateQuoteSettlement::MintCredit {
+                    fiat_subunits: 100,
+                    buffer_surplus_sats: 10,
+                },
+            )
+            .await
+            .expect("settle mint"));
+        assert!(!store
+            .settle_quote_and_commit_unit_control(
+                &mint_record.payment_lookup_id,
+                &usd,
+                RateQuoteSettlement::MintCredit {
+                    fiat_subunits: 100,
+                    buffer_surplus_sats: 10,
+                },
+            )
+            .await
+            .expect("settle mint again"));
+
+        let controls = store.load_unit_controls().await.expect("load controls");
+        let usd_control = controls
+            .iter()
+            .find(|control| control.unit == usd)
+            .expect("usd control after mint");
+        assert_eq!(usd_control.outstanding, 100);
+        assert_eq!(usd_control.buffer_surplus_sats, 10);
+
+        assert!(store
+            .settle_quote_and_commit_unit_control(
+                &melt_record.payment_lookup_id,
+                &usd,
+                RateQuoteSettlement::Melt { fiat_subunits: 40 },
+            )
+            .await
+            .expect("settle melt"));
+        assert!(!store
+            .settle_quote_and_commit_unit_control(
+                &melt_record.payment_lookup_id,
+                &usd,
+                RateQuoteSettlement::Melt { fiat_subunits: 40 },
+            )
+            .await
+            .expect("settle melt again"));
+
+        let controls = store.load_unit_controls().await.expect("load controls");
+        let usd_control = controls
+            .iter()
+            .find(|control| control.unit == usd)
+            .expect("usd control after melt");
+        assert_eq!(usd_control.outstanding, 60);
+        assert_eq!(usd_control.buffer_surplus_sats, 10);
     }
 
     #[tokio::test]

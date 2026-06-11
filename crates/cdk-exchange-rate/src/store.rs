@@ -81,6 +81,23 @@ impl UnitControlRecord {
     }
 }
 
+/// One-shot unit-control effect applied when a quote settles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateQuoteSettlement {
+    /// A mint invoice was paid and fiat liability was issued.
+    MintCredit {
+        /// Fiat subunits issued.
+        fiat_subunits: u64,
+        /// Sats booked into the buffer-surplus reserve.
+        buffer_surplus_sats: u64,
+    },
+    /// A melt invoice was paid and fiat liability was retired.
+    Melt {
+        /// Fiat subunits retired.
+        fiat_subunits: u64,
+    },
+}
+
 /// Storage failure returned by [`RateQuoteStore`] implementations.
 #[derive(Debug, thiserror::Error)]
 pub enum RateQuoteStoreError {
@@ -122,6 +139,16 @@ pub trait RateQuoteStore: Send + Sync {
     async fn mark_settled(
         &self,
         payment_lookup_id: &PaymentIdentifier,
+    ) -> Result<bool, RateQuoteStoreError>;
+
+    /// Atomically mark a quote settled and apply its one-shot unit-control
+    /// effect. Returns `true` exactly once per lookup id; `false` means the
+    /// quote was already settled or did not exist.
+    async fn settle_quote_and_commit_unit_control(
+        &self,
+        payment_lookup_id: &PaymentIdentifier,
+        unit: &CurrencyUnit,
+        settlement: RateQuoteSettlement,
     ) -> Result<bool, RateQuoteStoreError>;
 
     /// Load all persisted per-unit control records.
@@ -171,11 +198,17 @@ pub type DynRateQuoteStore = Arc<dyn RateQuoteStore>;
 /// In-memory [`RateQuoteStore`] for tests and ephemeral development.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryRateQuoteStore {
-    records: Arc<Mutex<HashMap<String, RateQuoteRecord>>>,
-    parked: Arc<Mutex<Vec<ParkedPaymentRecord>>>,
-    settled: Arc<Mutex<HashSet<String>>>,
-    unit_controls: Arc<Mutex<HashMap<CurrencyUnit, UnitControlRecord>>>,
-    fail_next_insert: Arc<Mutex<bool>>,
+    inner: Arc<Mutex<InMemoryRateQuoteStoreState>>,
+}
+
+#[derive(Debug, Default)]
+struct InMemoryRateQuoteStoreState {
+    records: HashMap<String, RateQuoteRecord>,
+    parked: Vec<ParkedPaymentRecord>,
+    settled: HashSet<String>,
+    unit_controls: HashMap<CurrencyUnit, UnitControlRecord>,
+    fail_next_insert: bool,
+    fail_next_settle: bool,
 }
 
 impl InMemoryRateQuoteStore {
@@ -186,30 +219,34 @@ impl InMemoryRateQuoteStore {
 
     /// Cause the next quoted-terms insert to fail.
     pub async fn fail_next_insert(&self) {
-        *self.fail_next_insert.lock().await = true;
+        self.inner.lock().await.fail_next_insert = true;
+    }
+
+    /// Cause the next atomic settle operation to fail before applying any
+    /// settled flag or unit-control effect.
+    pub async fn fail_next_settle(&self) {
+        self.inner.lock().await.fail_next_settle = true;
     }
 
     /// Return all parked payment records.
     pub async fn parked_payments(&self) -> Vec<ParkedPaymentRecord> {
-        self.parked.lock().await.clone()
+        self.inner.lock().await.parked.clone()
     }
 }
 
 #[async_trait]
 impl RateQuoteStore for InMemoryRateQuoteStore {
     async fn insert(&self, record: RateQuoteRecord) -> Result<(), RateQuoteStoreError> {
-        let mut fail_next = self.fail_next_insert.lock().await;
-        if *fail_next {
-            *fail_next = false;
+        let mut inner = self.inner.lock().await;
+        if inner.fail_next_insert {
+            inner.fail_next_insert = false;
             return Err(RateQuoteStoreError::Storage(
                 "forced in-memory insert failure".to_string(),
             ));
         }
-        drop(fail_next);
 
-        self.records
-            .lock()
-            .await
+        inner
+            .records
             .insert(record.payment_lookup_id.to_string(), record);
         Ok(())
     }
@@ -219,15 +256,16 @@ impl RateQuoteStore for InMemoryRateQuoteStore {
         payment_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<RateQuoteRecord>, RateQuoteStoreError> {
         Ok(self
-            .records
+            .inner
             .lock()
             .await
+            .records
             .get(&payment_lookup_id.to_string())
             .cloned())
     }
 
     async fn insert_parked(&self, record: ParkedPaymentRecord) -> Result<(), RateQuoteStoreError> {
-        self.parked.lock().await.push(record);
+        self.inner.lock().await.parked.push(record);
         Ok(())
     }
 
@@ -235,13 +273,11 @@ impl RateQuoteStore for InMemoryRateQuoteStore {
         &self,
         parked: ParkedPaymentRecord,
     ) -> Result<Option<RateQuoteRecord>, RateQuoteStoreError> {
-        // The records lock is held across the park write so the missing-record
-        // detection and the parked-row insert are one atomic store operation.
-        let records = self.records.lock().await;
-        match records.get(&parked.payment_lookup_id.to_string()) {
+        let mut inner = self.inner.lock().await;
+        match inner.records.get(&parked.payment_lookup_id.to_string()) {
             Some(record) => Ok(Some(record.clone())),
             None => {
-                self.parked.lock().await.push(parked);
+                inner.parked.push(parked);
                 Ok(None)
             }
         }
@@ -252,14 +288,62 @@ impl RateQuoteStore for InMemoryRateQuoteStore {
         payment_lookup_id: &PaymentIdentifier,
     ) -> Result<bool, RateQuoteStoreError> {
         Ok(self
-            .settled
+            .inner
             .lock()
             .await
+            .settled
             .insert(payment_lookup_id.to_string()))
     }
 
+    async fn settle_quote_and_commit_unit_control(
+        &self,
+        payment_lookup_id: &PaymentIdentifier,
+        unit: &CurrencyUnit,
+        settlement: RateQuoteSettlement,
+    ) -> Result<bool, RateQuoteStoreError> {
+        let mut inner = self.inner.lock().await;
+        if inner.fail_next_settle {
+            inner.fail_next_settle = false;
+            return Err(RateQuoteStoreError::Storage(
+                "forced in-memory settle failure".to_string(),
+            ));
+        }
+        if !inner.records.contains_key(&payment_lookup_id.to_string())
+            || !inner.settled.insert(payment_lookup_id.to_string())
+        {
+            return Ok(false);
+        }
+
+        let control = inner
+            .unit_controls
+            .entry(unit.clone())
+            .or_insert_with(|| UnitControlRecord::new(unit.clone()));
+        match settlement {
+            RateQuoteSettlement::MintCredit {
+                fiat_subunits,
+                buffer_surplus_sats,
+            } => {
+                control.outstanding = control.outstanding.saturating_add(fiat_subunits);
+                control.buffer_surplus_sats = control
+                    .buffer_surplus_sats
+                    .saturating_add(buffer_surplus_sats);
+            }
+            RateQuoteSettlement::Melt { fiat_subunits } => {
+                control.outstanding = control.outstanding.saturating_sub(fiat_subunits);
+            }
+        }
+        Ok(true)
+    }
+
     async fn load_unit_controls(&self) -> Result<Vec<UnitControlRecord>, RateQuoteStoreError> {
-        Ok(self.unit_controls.lock().await.values().cloned().collect())
+        Ok(self
+            .inner
+            .lock()
+            .await
+            .unit_controls
+            .values()
+            .cloned()
+            .collect())
     }
 
     async fn set_unit_quote_state(
@@ -268,7 +352,8 @@ impl RateQuoteStore for InMemoryRateQuoteStore {
         mint_paused: bool,
         melt_paused: bool,
     ) -> Result<(), RateQuoteStoreError> {
-        let mut controls = self.unit_controls.lock().await;
+        let mut inner = self.inner.lock().await;
+        let controls = &mut inner.unit_controls;
         let control = controls
             .entry(unit.clone())
             .or_insert_with(|| UnitControlRecord::new(unit.clone()));
@@ -282,7 +367,8 @@ impl RateQuoteStore for InMemoryRateQuoteStore {
         unit: &CurrencyUnit,
         cap: u64,
     ) -> Result<(), RateQuoteStoreError> {
-        let mut controls = self.unit_controls.lock().await;
+        let mut inner = self.inner.lock().await;
+        let controls = &mut inner.unit_controls;
         let control = controls
             .entry(unit.clone())
             .or_insert_with(|| UnitControlRecord::new(unit.clone()));
@@ -295,7 +381,8 @@ impl RateQuoteStore for InMemoryRateQuoteStore {
         unit: &CurrencyUnit,
         fiat_subunits: u64,
     ) -> Result<(), RateQuoteStoreError> {
-        let mut controls = self.unit_controls.lock().await;
+        let mut inner = self.inner.lock().await;
+        let controls = &mut inner.unit_controls;
         let control = controls
             .entry(unit.clone())
             .or_insert_with(|| UnitControlRecord::new(unit.clone()));
@@ -308,7 +395,8 @@ impl RateQuoteStore for InMemoryRateQuoteStore {
         unit: &CurrencyUnit,
         fiat_subunits: u64,
     ) -> Result<(), RateQuoteStoreError> {
-        let mut controls = self.unit_controls.lock().await;
+        let mut inner = self.inner.lock().await;
+        let controls = &mut inner.unit_controls;
         let control = controls
             .entry(unit.clone())
             .or_insert_with(|| UnitControlRecord::new(unit.clone()));
@@ -321,7 +409,8 @@ impl RateQuoteStore for InMemoryRateQuoteStore {
         unit: &CurrencyUnit,
         sats: u64,
     ) -> Result<(), RateQuoteStoreError> {
-        let mut controls = self.unit_controls.lock().await;
+        let mut inner = self.inner.lock().await;
+        let controls = &mut inner.unit_controls;
         let control = controls
             .entry(unit.clone())
             .or_insert_with(|| UnitControlRecord::new(unit.clone()));

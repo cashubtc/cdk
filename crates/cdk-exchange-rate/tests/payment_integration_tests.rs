@@ -277,7 +277,7 @@ async fn parked_payment_suppresses_upstream_event_after_quote_store_failure() {
     let parked = store.parked_payments().await;
     assert_eq!(parked.len(), 1);
     assert_eq!(parked[0].received_sats, 505);
-    assert_eq!(parked_payment_event_count(), before + 1);
+    assert!(parked_payment_event_count() >= before + 1);
 }
 
 #[tokio::test]
@@ -377,6 +377,121 @@ async fn outstanding_issuance_counts_against_cap() {
         .create_incoming_payment_request(mint_quote(50))
         .await
         .expect("headroom after outstanding remains usable");
+}
+
+#[tokio::test]
+async fn failed_atomic_mint_settle_parks_and_replay_credits_once() {
+    let store = InMemoryRateQuoteStore::new();
+    let control = open_control(10_000).await;
+    let processor = processor(0, store.clone(), control.clone(), 120);
+    let mut stream = processor
+        .wait_payment_event()
+        .await
+        .expect("payment stream");
+    let before = parked_payment_event_count();
+    store.fail_next_settle().await;
+
+    let quote = processor
+        .create_incoming_payment_request(mint_quote(100))
+        .await
+        .expect("mint quote");
+
+    let suppressed = tokio::time::timeout(Duration::from_millis(100), stream.next()).await;
+    assert!(
+        suppressed.is_err(),
+        "settlement failure must suppress the upstream payment event"
+    );
+    assert_eq!(control.outstanding(&CurrencyUnit::Usd).await, 0);
+    assert_eq!(control.buffer_surplus_sats(&CurrencyUnit::Usd).await, 0);
+    let parked = store.parked_payments().await;
+    assert_eq!(parked.len(), 1);
+    assert_eq!(parked[0].resolution_status, "settlement_failed");
+    assert!(parked_payment_event_count() >= before + 1);
+
+    let replayed = processor
+        .check_incoming_payment_status(&quote.request_lookup_id)
+        .await
+        .expect("replay payment status");
+    assert_eq!(replayed.len(), 1);
+    assert_eq!(
+        replayed[0].payment_amount,
+        Amount::new(100, CurrencyUnit::Usd)
+    );
+    assert_eq!(control.outstanding(&CurrencyUnit::Usd).await, 100);
+    assert_eq!(control.buffer_surplus_sats(&CurrencyUnit::Usd).await, 10);
+
+    let replayed_again = processor
+        .check_incoming_payment_status(&quote.request_lookup_id)
+        .await
+        .expect("replay payment status again");
+    assert_eq!(replayed_again.len(), 1);
+    assert_eq!(
+        control.outstanding(&CurrencyUnit::Usd).await,
+        100,
+        "settlement replay must not double-credit outstanding"
+    );
+    assert_eq!(
+        control.buffer_surplus_sats(&CurrencyUnit::Usd).await,
+        10,
+        "settlement replay must not double-book buffer surplus"
+    );
+}
+
+#[tokio::test]
+async fn failed_atomic_melt_settle_parks_and_replay_debits_once() {
+    let store = InMemoryRateQuoteStore::new();
+    let control = open_control(10_000).await;
+    let processor = processor(0, store.clone(), control.clone(), 120);
+    let mut stream = processor
+        .wait_payment_event()
+        .await
+        .expect("payment stream");
+    processor
+        .create_incoming_payment_request(mint_quote(200))
+        .await
+        .expect("seed outstanding issuance");
+    next_payment_received(&mut stream).await;
+    assert_eq!(control.outstanding(&CurrencyUnit::Usd).await, 200);
+
+    let paying_bolt11 = sat_invoice(990).await;
+    processor
+        .get_payment_quote(&CurrencyUnit::Usd, melt_options(paying_bolt11.clone()))
+        .await
+        .expect("melt quote");
+    store.fail_next_settle().await;
+    let before = parked_payment_event_count();
+
+    let response = processor
+        .make_payment(&CurrencyUnit::Usd, melt_options(paying_bolt11.clone()))
+        .await
+        .expect("payment succeeds even though accounting parks");
+    assert_eq!(response.status, MeltQuoteState::Paid);
+    assert_eq!(
+        control.outstanding(&CurrencyUnit::Usd).await,
+        200,
+        "failed atomic settlement must not mutate in-memory outstanding"
+    );
+    let parked = store.parked_payments().await;
+    assert_eq!(parked.len(), 1);
+    assert_eq!(parked[0].resolution_status, "settlement_failed");
+    assert!(parked_payment_event_count() >= before + 1);
+
+    let checked = processor
+        .check_outgoing_payment(&response.payment_lookup_id)
+        .await
+        .expect("replay outgoing payment status");
+    assert_eq!(checked.status, MeltQuoteState::Paid);
+    assert_eq!(control.outstanding(&CurrencyUnit::Usd).await, 100);
+
+    processor
+        .check_outgoing_payment(&response.payment_lookup_id)
+        .await
+        .expect("replay outgoing payment status again");
+    assert_eq!(
+        control.outstanding(&CurrencyUnit::Usd).await,
+        100,
+        "settlement replay must not double-debit outstanding"
+    );
 }
 
 #[tokio::test]

@@ -18,7 +18,10 @@ use serde::Serialize;
 use tokio::sync::Mutex;
 
 use crate::oracle::RateOracle;
-use crate::store::{DynRateQuoteStore, ParkedPaymentRecord, RateQuoteRecord, RateQuoteStoreError};
+use crate::store::{
+    DynRateQuoteStore, ParkedPaymentRecord, RateQuoteRecord, RateQuoteSettlement,
+    RateQuoteStoreError,
+};
 use crate::types::{fiat_subunit_scale, RateOracleError, RateSnapshot};
 
 /// Number of basis points in 100%.
@@ -369,49 +372,28 @@ impl RateQuoteControlHandle {
         }
     }
 
-    /// Book a settled mint credit: vacate the pending reservation, add the
-    /// issued subunits to outstanding, and book the buffer surplus to the
-    /// reserve counter. Callers gate this on the store's one-shot
-    /// `mark_settled` so the counters are never double-applied.
+    /// Mirror a durably settled mint credit in memory: vacate the pending
+    /// reservation, add the issued subunits to outstanding, and book the
+    /// buffer surplus to the reserve counter.
     async fn commit_issued(
         &self,
         unit: &CurrencyUnit,
         key: &str,
         fiat_subunits: u64,
         surplus_sats: u64,
-    ) -> Result<(), RateQuoteStoreError> {
-        {
-            let mut units = self.units.lock().await;
-            let state = units.entry(unit.clone()).or_default();
-            state.reservations.remove(key);
-            state.outstanding = state.outstanding.saturating_add(fiat_subunits);
-            state.buffer_surplus_sats = state.buffer_surplus_sats.saturating_add(surplus_sats);
-        }
-        if let Some(store) = &self.store {
-            store.add_unit_outstanding(unit, fiat_subunits).await?;
-            if surplus_sats > 0 {
-                store.add_unit_buffer_surplus(unit, surplus_sats).await?;
-            }
-        }
-        Ok(())
+    ) {
+        let mut units = self.units.lock().await;
+        let state = units.entry(unit.clone()).or_default();
+        state.reservations.remove(key);
+        state.outstanding = state.outstanding.saturating_add(fiat_subunits);
+        state.buffer_surplus_sats = state.buffer_surplus_sats.saturating_add(surplus_sats);
     }
 
-    /// Book a settled melt: subtract the melted subunits from outstanding.
-    /// Callers gate this on the store's one-shot `mark_settled`.
-    async fn commit_melted(
-        &self,
-        unit: &CurrencyUnit,
-        fiat_subunits: u64,
-    ) -> Result<(), RateQuoteStoreError> {
-        {
-            let mut units = self.units.lock().await;
-            let state = units.entry(unit.clone()).or_default();
-            state.outstanding = state.outstanding.saturating_sub(fiat_subunits);
-        }
-        if let Some(store) = &self.store {
-            store.subtract_unit_outstanding(unit, fiat_subunits).await?;
-        }
-        Ok(())
+    /// Mirror a durably settled melt in memory.
+    async fn commit_melted(&self, unit: &CurrencyUnit, fiat_subunits: u64) {
+        let mut units = self.units.lock().await;
+        let state = units.entry(unit.clone()).or_default();
+        state.outstanding = state.outstanding.saturating_sub(fiat_subunits);
     }
 }
 
@@ -697,33 +679,45 @@ impl<T> RateConvertingPayment<T> {
     }
 
     /// Book a completed melt against the outstanding issued counter exactly
-    /// once. Counter persistence failures are logged, never turned into a
-    /// payment failure: the LN payment already settled.
+    /// once. Settlement persistence is fail-closed: if the settled flag and
+    /// counter update cannot commit together, the payment is parked for
+    /// operator reconciliation and the in-memory counter is left unchanged.
     async fn settle_melt(&self, record: &RateQuoteRecord, response: &MakePaymentResponse) {
         if response.status != MeltQuoteState::Paid {
             return;
         }
-        match self.store.mark_settled(&response.payment_lookup_id).await {
+        let settlement = RateQuoteSettlement::Melt {
+            fiat_subunits: record_total_fiat_subunits(record),
+        };
+        match self
+            .store
+            .settle_quote_and_commit_unit_control(
+                &response.payment_lookup_id,
+                &record.fiat_unit,
+                settlement,
+            )
+            .await
+        {
             Ok(true) => {
-                if let Err(error) = self
-                    .control
+                self.control
                     .commit_melted(&record.fiat_unit, record_total_fiat_subunits(record))
-                    .await
-                {
-                    tracing::error!(
-                        payment_lookup_id = %response.payment_lookup_id,
-                        error = %error,
-                        "failed to persist outstanding counter for settled melt"
-                    );
-                }
+                    .await;
             }
             Ok(false) => {}
             Err(error) => {
-                tracing::error!(
-                    payment_lookup_id = %response.payment_lookup_id,
-                    error = %error,
-                    "failed to mark melt settled; skipping outstanding adjustment"
-                );
+                park_settlement_failure(
+                    &self.store,
+                    ParkedPaymentRecord {
+                        payment_lookup_id: response.payment_lookup_id.clone(),
+                        bolt11_payment_hash: response.payment_lookup_id.to_string(),
+                        received_sats: record.sats_invoiced,
+                        observed_at: unix_time(),
+                        resolution_status: "settlement_failed".to_string(),
+                    },
+                    error,
+                    "melt",
+                )
+                .await;
             }
         }
     }
@@ -1040,7 +1034,7 @@ async fn convert_payment_event(
     // The missing-record detection and the parked write are one atomic store
     // operation, so an orphaned payment can never be silently lost between
     // the lookup and the park.
-    match store.park_or_credit(parked).await {
+    match store.park_or_credit(parked.clone()).await {
         Ok(Some(record)) => {
             if payment.payment_amount.value() < record.sats_invoiced {
                 tracing::warn!(
@@ -1051,7 +1045,9 @@ async fn convert_payment_event(
                 );
                 return None;
             }
-            settle_mint_credit(&store, &control, &record, &payment).await;
+            if !settle_mint_credit(&store, &control, &record, &payment, parked).await {
+                return None;
+            }
 
             Some(Event::PaymentReceived(WaitPaymentResponse {
                 payment_identifier: payment.payment_identifier,
@@ -1084,45 +1080,84 @@ async fn convert_payment_event(
 /// pending cap reservation, grow the outstanding issued counter, and book the
 /// buffer portion of the received sats to the per-unit surplus reserve.
 ///
-/// The event itself is re-emitted regardless — the mint deduplicates payment
-/// credits — so counter persistence failures are logged, never turned into a
-/// suppressed credit.
+/// The event is re-emitted only after the settled flag and counter updates
+/// commit in one store operation. Store failures park the payment and suppress
+/// the upstream event so the mint cannot credit liabilities without persisted
+/// accounting.
 async fn settle_mint_credit(
     store: &DynRateQuoteStore,
     control: &RateQuoteControlHandle,
     record: &RateQuoteRecord,
     payment: &WaitPaymentResponse,
-) {
+    parked: ParkedPaymentRecord,
+) -> bool {
     let key = payment.payment_identifier.to_string();
-    match store.mark_settled(&payment.payment_identifier).await {
+    let unbuffered = if record.sats_unbuffered > 0 {
+        record.sats_unbuffered
+    } else {
+        record.sats_invoiced
+    };
+    let surplus_sats = payment.payment_amount.value().saturating_sub(unbuffered);
+    let settlement = RateQuoteSettlement::MintCredit {
+        fiat_subunits: record.fiat_subunits,
+        buffer_surplus_sats: surplus_sats,
+    };
+    match store
+        .settle_quote_and_commit_unit_control(
+            &payment.payment_identifier,
+            &record.fiat_unit,
+            settlement,
+        )
+        .await
+    {
         Ok(true) => {
-            let unbuffered = if record.sats_unbuffered > 0 {
-                record.sats_unbuffered
-            } else {
-                record.sats_invoiced
-            };
-            let surplus_sats = payment.payment_amount.value().saturating_sub(unbuffered);
-            if let Err(error) = control
+            control
                 .commit_issued(&record.fiat_unit, &key, record.fiat_subunits, surplus_sats)
-                .await
-            {
-                tracing::error!(
-                    payment_lookup_id = %payment.payment_identifier,
-                    error = %error,
-                    "failed to persist outstanding/buffer-surplus counters for settled mint credit"
-                );
-            }
+                .await;
+            true
         }
         Ok(false) => {
             // Already settled (event stream and status check can both fire):
             // make sure the reservation is vacated, but never re-count.
             control.release(&record.fiat_unit, &key).await;
+            true
         }
         Err(error) => {
-            tracing::error!(
-                payment_lookup_id = %payment.payment_identifier,
+            let mut parked = parked;
+            parked.resolution_status = "settlement_failed".to_string();
+            park_settlement_failure(store, parked, error, "mint").await;
+            false
+        }
+    }
+}
+
+async fn park_settlement_failure(
+    store: &DynRateQuoteStore,
+    parked: ParkedPaymentRecord,
+    error: RateQuoteStoreError,
+    side: &'static str,
+) {
+    let payment_lookup_id = parked.payment_lookup_id.clone();
+    let bolt11_payment_hash = parked.bolt11_payment_hash.clone();
+    match store.insert_parked(parked).await {
+        Ok(()) => {
+            PARKED_PAYMENT_EVENTS.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                payment_lookup_id = %payment_lookup_id,
+                bolt11_payment_hash = %bolt11_payment_hash,
+                side,
                 error = %error,
-                "failed to mark mint credit settled; skipping counter adjustments"
+                "parked rate-converted payment after atomic settlement failure"
+            );
+        }
+        Err(park_error) => {
+            tracing::warn!(
+                payment_lookup_id = %payment_lookup_id,
+                bolt11_payment_hash = %bolt11_payment_hash,
+                side,
+                error = %error,
+                park_error = %park_error,
+                "suppressing rate-converted payment after settlement and parking failure"
             );
         }
     }
@@ -1426,8 +1461,7 @@ mod tests {
             .expect("reservation under cap");
         control
             .commit_issued(&CurrencyUnit::Usd, "first", 100, 7)
-            .await
-            .expect("commit issued");
+            .await;
 
         assert_eq!(control.outstanding(&CurrencyUnit::Usd).await, 100);
         assert_eq!(control.buffer_surplus_sats(&CurrencyUnit::Usd).await, 7);
@@ -1441,10 +1475,7 @@ mod tests {
             .await
             .expect("headroom after outstanding remains usable");
 
-        control
-            .commit_melted(&CurrencyUnit::Usd, 30)
-            .await
-            .expect("commit melted");
+        control.commit_melted(&CurrencyUnit::Usd, 30).await;
         assert_eq!(control.outstanding(&CurrencyUnit::Usd).await, 70);
     }
 }
