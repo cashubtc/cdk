@@ -577,4 +577,51 @@ mod tests {
         let parsed = parse_oracle_announcement(&hex_tlv).expect("parse should succeed");
         assert_eq!(parsed.oracle_public_key, ann.oracle_public_key);
     }
+
+    /// Cross-language parity fixture: pins byte-for-byte compatibility with the engine's
+    /// C# `OracleEventVerifier` fixture (`DlcAttestationParityFixtureTests`).
+    ///
+    /// The fixture was produced by a real DDK/kormir oracle (pubkey P, nonce R, outcome "Yes").
+    /// The C# test verifies the same (P, R, outcome, sig) tuple using
+    /// `tagged_hash("DLC/oracle/attestation/v0", outcome)` + BIP-340 Schnorr verify.
+    /// This test must accept exactly the same attestation bytes as the C# side.
+    #[test]
+    fn test_verify_csharp_fixture_attestation_parity() {
+        // DDK/kormir-produced fixture — identical to DlcAttestationParityFixtureTests
+        // in BitCaster.MatchingEngine.Unit.
+        const DDK_PUBKEY_HEX: &str =
+            "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e";
+        const DDK_SIG_HEX: &str = concat!(
+            "ab5cbc99b45a936368081a43a7f14c9be0a821ba5beba722c27d61cef31a78d9",
+            "ca67037f0b2d79d3a336533e5b28f9ad454273954ab06ab3adee38307d5fbcb0",
+        );
+        const OUTCOME: &str = "Yes";
+
+        let pubkey_bytes =
+            crate::nuts::nut_ctf::from_hex(DDK_PUBKEY_HEX).expect("DDK pubkey hex should be valid");
+        let sig_bytes =
+            crate::nuts::nut_ctf::from_hex(DDK_SIG_HEX).expect("DDK sig hex should be valid");
+
+        // Nonce point R is encoded in the first 32 bytes of the BIP-340 signature.
+        let nonce_point = XOnlyPublicKey::from_slice(&sig_bytes[..32])
+            .expect("nonce bytes should be a valid x-only pubkey");
+
+        // --- positive: valid fixture must verify ---
+        let result = verify_oracle_attestation(&pubkey_bytes, &sig_bytes, OUTCOME, &nonce_point);
+        assert!(
+            result.is_ok(),
+            "DDK/kormir fixture attestation should verify against C# parity fixture: {:?}",
+            result
+        );
+
+        // --- negative: a single flipped byte in the signature must fail ---
+        let mut corrupted_sig = sig_bytes.clone();
+        corrupted_sig[32] ^= 0xff; // flip first byte of the `s` scalar
+        let corrupted_result =
+            verify_oracle_attestation(&pubkey_bytes, &corrupted_sig, OUTCOME, &nonce_point);
+        assert!(
+            corrupted_result.is_err(),
+            "corrupted signature should fail verification"
+        );
+    }
 }
