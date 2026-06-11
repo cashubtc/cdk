@@ -390,7 +390,7 @@ impl SupabaseWalletDatabase {
             .map_err(|_| Error::Supabase("invalid wallet encryption scrypt r".to_string()))?;
         let p = u32::try_from(metadata.scrypt_p)
             .map_err(|_| Error::Supabase("invalid wallet encryption scrypt p".to_string()))?;
-        let params = ScryptParams::new(log_n, r, p, ENCRYPTION_KEY_BYTES)
+        let params = ScryptParams::new(log_n, r, p)
             .map_err(|_| Error::Supabase("invalid wallet encryption scrypt params".to_string()))?;
         let mut key = [0u8; ENCRYPTION_KEY_BYTES];
         scrypt::scrypt(password.as_bytes(), &salt, &params, &mut key)

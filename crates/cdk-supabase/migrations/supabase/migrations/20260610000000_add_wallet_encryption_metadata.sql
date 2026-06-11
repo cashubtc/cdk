@@ -28,4 +28,4 @@ GRANT ALL ON wallet_encryption_metadata TO authenticated;
 GRANT ALL ON wallet_encryption_metadata TO service_role;
 
 INSERT INTO schema_info (key, value) VALUES ('schema_version', '7')
-ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
