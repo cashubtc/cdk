@@ -753,21 +753,43 @@ async fn configure_rate_quoter_for_sat_backend(
         return Ok((mint_builder, None));
     }
 
+    // The rate snapshot is part of the quoted economic terms; quotes priced
+    // off it must expire well before the snapshot can go materially stale.
+    if !(60..=120).contains(&rate_quoter.ttl_secs) {
+        bail!(
+            "rate_quoter.ttl_secs must be between 60 and 120 seconds, got {}",
+            rate_quoter.ttl_secs
+        );
+    }
+    if rate_quoter.min_survived > rate_quoter.min_fetched {
+        bail!(
+            "rate_quoter.min_survived ({}) cannot exceed rate_quoter.min_fetched ({})",
+            rate_quoter.min_survived,
+            rate_quoter.min_fetched
+        );
+    }
+
     let sources = rate_quoter_sources(&rate_quoter.sources)?;
     let oracle = Arc::new(AggregatingRateOracle::with_config(
         sources,
         AggregatorConfig {
-            min_sources: rate_quoter.quorum,
-            min_survived: rate_quoter.quorum,
+            min_sources: rate_quoter.min_fetched,
+            min_survived: rate_quoter.min_survived,
             max_clock_offset_secs: rate_quoter.staleness_secs,
             ..AggregatorConfig::default()
         },
     ));
     let store = rate_quote_store(settings).await?;
-    let control = RateQuoteControlHandle::new();
 
+    // Pause/cap/outstanding state persists in the quote store; operator
+    // values set over the management RPC take precedence over config, so
+    // config caps only seed units with no persisted control record.
+    let control = RateQuoteControlHandle::with_store(store.clone());
+    let persisted_units = control.load_persisted().await?;
     for (unit, cap) in &rate_quoter.per_unit_caps {
-        control.set_unit_issuance_cap(unit.clone(), *cap).await?;
+        if !persisted_units.contains(unit) {
+            control.set_unit_issuance_cap(unit.clone(), *cap).await?;
+        }
     }
 
     for fiat_unit in units {
@@ -1184,6 +1206,21 @@ async fn start_services_with_shutdown(
 
                 let tls_dir = if tls_dir.exists() {
                     Some(tls_dir)
+                } else if extras.rate_quote_control.is_some() {
+                    // Fail closed: the management RPC controls fiat pause and
+                    // issuance-cap state. Running it unencrypted while fiat
+                    // rate-quoted units are enabled would let anyone who can
+                    // reach the port alter live fiat issuance controls. A
+                    // startup failure is preferable to fiat issuance on an
+                    // unsecured management plane.
+                    bail!(
+                        "management RPC TLS directory does not exist: {}. Refusing to start: \
+                         fiat rate-quoted units are enabled and their pause/cap controls must \
+                         not ride an unencrypted management RPC. Provision TLS certificates \
+                         (mint_management_rpc.tls_dir_path), disable the management RPC, or \
+                         disable the rate_quoter",
+                        tls_dir.display()
+                    );
                 } else {
                     tracing::warn!(
                         "TLS directory does not exist: {}. Starting RPC server in INSECURE mode without TLS encryption",

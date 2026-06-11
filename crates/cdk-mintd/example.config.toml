@@ -37,10 +37,14 @@ enabled = false
 #[rate_quoter]
 # units = ["usd"]
 # buffer_bps = 100
-# ttl_secs = 120
+# ttl_secs must stay within 60-120 seconds; the default is 90.
+# ttl_secs = 90
 # sources = ["coinbase", "kraken", "bitstamp"]
 # staleness_secs = 30
-# quorum = 3
+# min_fetched = 3
+# min_survived = 2
+# A cap of 0 (or an unconfigured unit) refuses all new mint quotes
+# (fail-closed); it never means unlimited.
 # per_unit_caps = { usd = 0 }
 
 #[prometheus]

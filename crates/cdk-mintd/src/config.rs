@@ -687,10 +687,16 @@ pub struct RateQuoter {
     /// Maximum acceptable source staleness in seconds.
     #[serde(default = "default_rate_quoter_staleness_secs")]
     pub staleness_secs: u64,
-    /// Minimum oracle source quorum.
-    #[serde(default = "default_rate_quoter_quorum")]
-    pub quorum: usize,
-    /// Per-unit pending quote caps. A cap of 0 means unlimited.
+    /// Minimum number of sources that must be fetched fresh for a snapshot
+    /// (`quorum` is accepted as a legacy alias).
+    #[serde(default = "default_rate_quoter_min_fetched", alias = "quorum")]
+    pub min_fetched: usize,
+    /// Minimum number of sources that must survive deviation trimming.
+    #[serde(default = "default_rate_quoter_min_survived")]
+    pub min_survived: usize,
+    /// Per-unit issuance caps over outstanding plus pending quotes. A cap of
+    /// 0 (or an unconfigured unit) refuses all new mint quotes (fail-closed);
+    /// it never means unlimited.
     #[serde(default)]
     pub per_unit_caps: HashMap<CurrencyUnit, u64>,
 }
@@ -703,7 +709,8 @@ impl Default for RateQuoter {
             ttl_secs: default_rate_quoter_ttl_secs(),
             sources: Vec::new(),
             staleness_secs: default_rate_quoter_staleness_secs(),
-            quorum: default_rate_quoter_quorum(),
+            min_fetched: default_rate_quoter_min_fetched(),
+            min_survived: default_rate_quoter_min_survived(),
             per_unit_caps: HashMap::new(),
         }
     }
@@ -717,8 +724,12 @@ fn default_rate_quoter_staleness_secs() -> u64 {
     30
 }
 
-fn default_rate_quoter_quorum() -> usize {
+fn default_rate_quoter_min_fetched() -> usize {
     3
+}
+
+fn default_rate_quoter_min_survived() -> usize {
+    2
 }
 
 /// CDK settings, derived from `config.toml`
@@ -905,7 +916,8 @@ buffer_bps = 75
 ttl_secs = 90
 sources = ["coinbase", "https://api.kraken.com", "https://www.bitstamp.net"]
 staleness_secs = 45
-quorum = 2
+min_fetched = 4
+min_survived = 3
 per_unit_caps = { usd = 1000 }
 "#;
         fs::write(&config_path, config_content).expect("write config");
@@ -918,13 +930,23 @@ per_unit_caps = { usd = 1000 }
         assert_eq!(rate_quoter.ttl_secs, 90);
         assert_eq!(rate_quoter.sources.len(), 3);
         assert_eq!(rate_quoter.staleness_secs, 45);
-        assert_eq!(rate_quoter.quorum, 2);
+        assert_eq!(rate_quoter.min_fetched, 4);
+        assert_eq!(rate_quoter.min_survived, 3);
         assert_eq!(
             rate_quoter.per_unit_caps.get(&CurrencyUnit::Usd),
             Some(&1000)
         );
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_rate_quoter_split_quorum_defaults() {
+        // Split quorum: at least 3 sources fetched AND at least 2 surviving
+        // trimming are independent knobs with independent defaults.
+        let rate_quoter = RateQuoter::default();
+        assert_eq!(rate_quoter.min_fetched, 3);
+        assert_eq!(rate_quoter.min_survived, 2);
     }
 
     #[test]
