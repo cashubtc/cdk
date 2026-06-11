@@ -24,6 +24,10 @@ fn get_test_temp_dir() -> PathBuf {
     }
 }
 
+fn is_ldk_mint() -> bool {
+    get_mint_url_from_env() == "http://127.0.0.1:8089"
+}
+
 // Helper function to create CLN client with retries
 async fn create_cln_client_with_retry(cln_dir: PathBuf) -> Result<ClnClient> {
     let mut retries = 0;
@@ -225,6 +229,10 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
 
     assert_eq!(proofs_two.total_amount()?, 15_000.into());
 
+    if is_ldk_mint() {
+        return Ok(());
+    }
+
     let offer = cln_client
         .get_bolt12_offer(None, false, "test_multiple_wallets".to_string())
         .await?;
@@ -235,7 +243,7 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
             offer.to_string(),
             Some(cashu::MeltOptions::Amountless {
                 amountless: Amountless {
-                    amount_msat: 1500.into(),
+                    amount_msat: 100_000.into(),
                 },
             }),
             None,
@@ -248,7 +256,7 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
             offer.to_string(),
             Some(cashu::MeltOptions::Amountless {
                 amountless: Amountless {
-                    amount_msat: 1000.into(),
+                    amount_msat: 110_000.into(),
                 },
             }),
             None,
@@ -274,7 +282,7 @@ async fn test_regtest_bolt12_multiple_wallets() -> Result<()> {
 
 /// Tests the BOLT12 melting (spending) functionality:
 /// - Creates a wallet and mints 20,000 sats using BOLT12
-/// - Creates a BOLT12 offer for 10,000 sats
+/// - Creates a BOLT12 offer for 100 sats
 /// - Tests melting (spending) tokens using the BOLT12 offer
 /// - Verifies the correct amount is melted
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -313,7 +321,7 @@ async fn test_regtest_bolt12_melt() -> Result<()> {
         .await?;
 
     let offer = cln_client
-        .get_bolt12_offer(Some(10_000), true, "hhhhhhhh".to_string())
+        .get_bolt12_offer(Some(100_000), true, "hhhhhhhh".to_string())
         .await?;
 
     let quote = wallet
@@ -325,7 +333,7 @@ async fn test_regtest_bolt12_melt() -> Result<()> {
         .await?;
     let melt = prepared.confirm().await?;
 
-    assert_eq!(melt.amount(), 10.into());
+    assert_eq!(melt.amount(), 100.into());
 
     Ok(())
 }

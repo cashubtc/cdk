@@ -447,6 +447,18 @@ impl CdkLdkNode {
                                     amount_msat
                                 ).await;
                             }
+                            Event::PaymentFailed {
+                                payment_id,
+                                payment_hash,
+                                reason,
+                            } => {
+                                tracing::error!(
+                                    payment_id = ?payment_id,
+                                    payment_hash = ?payment_hash,
+                                    reason = ?reason,
+                                    "LDK node payment failed"
+                                );
+                            }
                             event => {
                                 tracing::debug!("Received other ldk node event: {:?}", event);
                             }
@@ -844,16 +856,40 @@ impl MintPayment for CdkLdkNode {
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
                 let offer = bolt12_options.offer;
 
+                let send_params = match bolt12_options
+                    .max_fee_amount
+                    .map(|f| {
+                        f.convert_to(&CurrencyUnit::Msat)
+                            .map(|amount_msat| RouteParametersConfig {
+                                max_total_routing_fee_msat: Some(amount_msat.value()),
+                                ..Default::default()
+                            })
+                    })
+                    .transpose()
+                {
+                    Ok(params) => params,
+                    Err(err) => {
+                        tracing::error!("Failed to convert fee amount: {}", err);
+                        return Err(payment::Error::Custom(format!("Invalid fee amount: {err}")));
+                    }
+                };
+
                 let payment_id = match bolt12_options.melt_options {
                     Some(MeltOptions::Amountless { amountless }) => self
                         .inner
                         .bolt12_payment()
-                        .send_using_amount(&offer, amountless.amount_msat.into(), None, None, None)
+                        .send_using_amount(
+                            &offer,
+                            amountless.amount_msat.into(),
+                            None,
+                            None,
+                            send_params,
+                        )
                         .map_err(Error::LdkNode)?,
                     None => self
                         .inner
                         .bolt12_payment()
-                        .send(&offer, None, None, None)
+                        .send(&offer, None, None, send_params)
                         .map_err(Error::LdkNode)?,
                     _ => return Err(payment::Error::UnsupportedPaymentOption),
                 };
@@ -871,7 +907,13 @@ impl MintPayment for CdkLdkNode {
                     match details.status {
                         PaymentStatus::Succeeded => break (MeltQuoteState::Paid, details),
                         PaymentStatus::Failed => {
-                            tracing::error!("Payment with id {} failed.", payment_id);
+                            tracing::error!(
+                                payment_id = %payment_id,
+                                amount_msat = ?details.amount_msat,
+                                fee_paid_msat = ?details.fee_paid_msat,
+                                payment_kind = ?details.kind,
+                                "Bolt12 payment failed"
+                            );
                             break (MeltQuoteState::Failed, details);
                         }
                         PaymentStatus::Pending => {
