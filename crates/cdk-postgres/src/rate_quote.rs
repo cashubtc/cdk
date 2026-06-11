@@ -493,3 +493,135 @@ fn int_col(value: &cdk_sql_common::stmt::Column) -> Result<u64, RateQuoteStoreEr
         ))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Live-Postgres store with an isolated schema per test.
+    async fn store(test_id: &str) -> PostgresRateQuoteStore {
+        let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL"))
+            .unwrap_or(
+                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                    .to_owned(),
+            );
+        let db_url = format!("{db_url} schema=rate_quote_{test_id}");
+        PostgresRateQuoteStore::new(&db_url).await.expect("store")
+    }
+
+    fn record(lookup_id: &str) -> RateQuoteRecord {
+        RateQuoteRecord {
+            payment_lookup_id: PaymentIdentifier::CustomId(lookup_id.to_string()),
+            fiat_unit: CurrencyUnit::Usd,
+            fiat_subunits: 100,
+            fiat_fee_subunits: 3,
+            snapshot_json: serde_json::json!({ "buffer_bps": 100 }),
+            sats_invoiced: 1010,
+            sats_unbuffered: 1000,
+            expiry_unix: 42,
+        }
+    }
+
+    fn parked(lookup_id: &str) -> ParkedPaymentRecord {
+        ParkedPaymentRecord {
+            payment_lookup_id: PaymentIdentifier::CustomId(lookup_id.to_string()),
+            bolt11_payment_hash: format!("hash-{lookup_id}"),
+            received_sats: 1010,
+            observed_at: 7,
+            resolution_status: "parked".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn quote_terms_round_trip() {
+        let store = store("round_trip").await;
+        let record = record("rt-1");
+
+        store.insert(record.clone()).await.expect("insert");
+        let loaded = store
+            .get_by_lookup_id(&record.payment_lookup_id)
+            .await
+            .expect("lookup")
+            .expect("record");
+
+        assert_eq!(loaded, record);
+    }
+
+    #[tokio::test]
+    async fn park_or_credit_returns_terms_or_parks() {
+        let store = store("park_or_credit").await;
+        let record = record("poc-1");
+        store.insert(record.clone()).await.expect("insert");
+
+        let credited = store
+            .park_or_credit(parked("poc-1"))
+            .await
+            .expect("park_or_credit");
+        assert_eq!(credited, Some(record));
+
+        let parked_result = store
+            .park_or_credit(parked("poc-orphan"))
+            .await
+            .expect("park_or_credit");
+        assert_eq!(parked_result, None);
+    }
+
+    #[tokio::test]
+    async fn mark_settled_returns_true_exactly_once() {
+        let store = store("mark_settled").await;
+        let record = record("ms-1");
+        store.insert(record.clone()).await.expect("insert");
+
+        assert!(store
+            .mark_settled(&record.payment_lookup_id)
+            .await
+            .expect("first settle"));
+        assert!(!store
+            .mark_settled(&record.payment_lookup_id)
+            .await
+            .expect("second settle"));
+        // Unknown lookup ids settle nothing.
+        assert!(!store
+            .mark_settled(&PaymentIdentifier::CustomId("ms-missing".to_string()))
+            .await
+            .expect("missing settle"));
+    }
+
+    #[tokio::test]
+    async fn unit_control_state_round_trips() {
+        let store = store("unit_control").await;
+        let usd = CurrencyUnit::Usd;
+
+        store
+            .set_unit_quote_state(&usd, true, false)
+            .await
+            .expect("pause");
+        store.set_unit_issuance_cap(&usd, 500).await.expect("cap");
+        store.add_unit_outstanding(&usd, 200).await.expect("add");
+        store
+            .subtract_unit_outstanding(&usd, 50)
+            .await
+            .expect("subtract");
+        // Subtraction floors at zero rather than going negative.
+        store
+            .subtract_unit_outstanding(&CurrencyUnit::Eur, 10)
+            .await
+            .expect("subtract missing unit");
+        store
+            .add_unit_buffer_surplus(&usd, 12)
+            .await
+            .expect("surplus");
+
+        let controls = store.load_unit_controls().await.expect("load");
+        let usd_control = controls
+            .iter()
+            .find(|control| control.unit == usd)
+            .expect("usd control");
+        assert!(usd_control.mint_paused);
+        assert!(!usd_control.melt_paused);
+        assert_eq!(usd_control.cap, 500);
+        assert_eq!(usd_control.outstanding, 150);
+        assert_eq!(usd_control.buffer_surplus_sats, 12);
+    }
+}
