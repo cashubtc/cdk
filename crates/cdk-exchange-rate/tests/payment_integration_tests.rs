@@ -7,8 +7,11 @@ use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
 use cdk_common::common::FeeReserve;
 use cdk_common::nuts::CurrencyUnit;
-use cdk_common::payment::{Bolt11IncomingPaymentOptions, IncomingPaymentOptions, MintPayment};
-use cdk_common::Amount;
+use cdk_common::payment::{
+    Bolt11IncomingPaymentOptions, Bolt11OutgoingPaymentOptions, IncomingPaymentOptions,
+    MintPayment, OutgoingPaymentOptions,
+};
+use cdk_common::{Amount, Bolt11Invoice};
 use cdk_exchange_rate::{
     parked_payment_event_count, InMemoryRateQuoteStore, RateConvertingPayment,
     RateConvertingPaymentConfig, RateOracle, RateOracleError, RateQuoteControlHandle,
@@ -19,7 +22,7 @@ use futures::StreamExt;
 
 #[derive(Debug)]
 struct FixedOracle {
-    sats_per_fiat_subunit: f64,
+    sats_per_fiat_unit: u64,
 }
 
 #[async_trait]
@@ -27,14 +30,14 @@ impl RateOracle for FixedOracle {
     async fn snapshot(&self, fiat: &CurrencyUnit) -> Result<RateSnapshot, RateOracleError> {
         Ok(RateSnapshot {
             fiat: fiat.clone(),
-            aggregated_rate: self.sats_per_fiat_subunit,
+            aggregated_rate: self.sats_per_fiat_unit,
             source_readings: Vec::new(),
             aggregation_meta: cdk_exchange_rate::types::AggregationMeta {
                 sources_fetched: 1,
                 sources_trimmed: 0,
                 sources_survived: 1,
-                median_before_trim: self.sats_per_fiat_subunit,
-                deviation_threshold_pct: 0.0,
+                median_before_trim: self.sats_per_fiat_unit,
+                deviation_threshold_bps: 0,
             },
             created_at: SystemTime::now(),
         })
@@ -63,10 +66,10 @@ fn processor(
     RateConvertingPayment::with_control(
         fake_wallet(payment_delay),
         Arc::new(FixedOracle {
-            sats_per_fiat_subunit: 2.0,
+            sats_per_fiat_unit: 1_000,
         }),
         Arc::new(store),
-        RateConvertingPaymentConfig::new(CurrencyUnit::Usd, 0, ttl_secs),
+        RateConvertingPaymentConfig::new(CurrencyUnit::Usd, 100, ttl_secs),
         control,
     )
 }
@@ -77,6 +80,47 @@ fn mint_quote(amount: u64) -> IncomingPaymentOptions {
         amount: Amount::new(amount, CurrencyUnit::Usd),
         unix_expiry: None,
     })
+}
+
+#[tokio::test]
+async fn usd_mint_quote_uses_real_unit_semantics() {
+    // Rate contract (B2): the oracle rate is sats per WHOLE fiat unit. With
+    // BTC at $100,000, one USD is 1,000 sats. A 100-cent ($1.00) mint quote
+    // with a 100 bps buffer must invoice ceil(1,000 × 1.01) = 1,010 sats and
+    // credit exactly the quoted 100 cents when the invoice is paid.
+    let store = InMemoryRateQuoteStore::new();
+    let processor = processor(0, store.clone(), RateQuoteControlHandle::new(), 120);
+    let mut stream = processor
+        .wait_payment_event()
+        .await
+        .expect("payment stream");
+
+    let quote = processor
+        .create_incoming_payment_request(mint_quote(100))
+        .await
+        .expect("mint quote");
+    let record = store
+        .get_by_lookup_id(&quote.request_lookup_id)
+        .await
+        .expect("store lookup")
+        .expect("stored quote terms");
+
+    assert_eq!(record.fiat_subunits, 100);
+    assert_eq!(record.sats_invoiced, 1010);
+    assert_eq!(
+        record.snapshot_json["aggregated_rate_sats_per_fiat_unit"],
+        1_000
+    );
+
+    let event = tokio::time::timeout(Duration::from_secs(1), stream.next())
+        .await
+        .expect("auto-paid event")
+        .expect("event");
+    let cdk_common::payment::Event::PaymentReceived(payment) = event else {
+        panic!("expected payment event");
+    };
+
+    assert_eq!(payment.payment_amount, Amount::new(100, CurrencyUnit::Usd));
 }
 
 #[tokio::test]
@@ -99,7 +143,7 @@ async fn usd_mint_quote_persists_snapshot_and_credits_quoted_usd() {
         .expect("stored quote terms");
 
     assert_eq!(record.fiat_subunits, 123);
-    assert_eq!(record.sats_invoiced, 246);
+    assert_eq!(record.sats_invoiced, 1243);
     assert_eq!(record.snapshot_json["fiat_subunits"], 123);
 
     let event = tokio::time::timeout(Duration::from_secs(1), stream.next())
@@ -111,6 +155,52 @@ async fn usd_mint_quote_persists_snapshot_and_credits_quoted_usd() {
     };
 
     assert_eq!(payment.payment_amount, Amount::new(123, CurrencyUnit::Usd));
+}
+
+async fn sat_invoice(sats: u64) -> Bolt11Invoice {
+    // Large payment delay: this wallet only mints the invoice; its simulated
+    // payment must never interfere with the test.
+    let invoice_wallet = fake_wallet(86_400);
+    let invoice = invoice_wallet
+        .create_incoming_payment_request(IncomingPaymentOptions::Bolt11(
+            Bolt11IncomingPaymentOptions {
+                description: None,
+                amount: Amount::new(sats, CurrencyUnit::Sat),
+                unix_expiry: None,
+            },
+        ))
+        .await
+        .expect("sat invoice");
+    invoice.request.parse().expect("bolt11")
+}
+
+fn melt_options(bolt11: Bolt11Invoice) -> OutgoingPaymentOptions {
+    OutgoingPaymentOptions::Bolt11(Box::new(Bolt11OutgoingPaymentOptions {
+        bolt11,
+        max_fee_amount: None,
+        timeout_secs: None,
+        melt_options: None,
+    }))
+}
+
+#[tokio::test]
+async fn usd_melt_quote_converts_sats_to_fiat_mint_favoring() {
+    // B3: melt converts the bolt11's SAT amount into fiat subunits in the
+    // MINT-FAVORING direction: fiat = ceil(sats × scale × (1 + buffer) / rate).
+    // 990 sats at 1,000 sats/USD with a 100 bps buffer:
+    // ceil(990 × 100 × 1.01 / 1,000) = ceil(99.99) = 100 cents — strictly
+    // more fiat than the unbuffered floor of 99 cents.
+    let bolt11 = sat_invoice(990).await;
+    let store = InMemoryRateQuoteStore::new();
+    let processor = processor(0, store.clone(), RateQuoteControlHandle::new(), 120);
+
+    let quote = processor
+        .get_payment_quote(&CurrencyUnit::Usd, melt_options(bolt11))
+        .await
+        .expect("melt quote");
+
+    assert_eq!(quote.amount, Amount::new(100, CurrencyUnit::Usd));
+    assert_eq!(quote.fee, Amount::new(0, CurrencyUnit::Usd));
 }
 
 #[tokio::test]
@@ -158,7 +248,7 @@ async fn parked_payment_suppresses_upstream_event_after_quote_store_failure() {
     assert!(suppressed.is_err(), "orphaned payment must be suppressed");
     let parked = store.parked_payments().await;
     assert_eq!(parked.len(), 1);
-    assert_eq!(parked[0].received_sats, 100);
+    assert_eq!(parked[0].received_sats, 505);
     assert_eq!(parked_payment_event_count(), before + 1);
 }
 

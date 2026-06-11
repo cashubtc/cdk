@@ -18,6 +18,9 @@ pub struct RateQuoteRecord {
     pub fiat_unit: CurrencyUnit,
     /// Fiat amount in that unit's minor subunits.
     pub fiat_subunits: u64,
+    /// Fiat fee in that unit's minor subunits.
+    #[serde(default)]
+    pub fiat_fee_subunits: u64,
     /// Serialized oracle snapshot and quote metadata.
     pub snapshot_json: serde_json::Value,
     /// Sat amount requested from the inner backend.

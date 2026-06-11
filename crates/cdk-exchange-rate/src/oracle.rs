@@ -24,11 +24,11 @@ pub trait RateSource: Send + Sync {
     /// Human-readable source name.
     fn name(&self) -> &str;
 
-    /// Fetch a rate in sats per fiat unit and an optional source-reported timestamp.
+    /// Fetch a rate in sats per whole fiat unit and an optional source-reported timestamp.
     async fn fetch(
         &self,
         fiat: &CurrencyUnit,
-    ) -> Result<(f64, Option<SystemTime>), RateOracleError>;
+    ) -> Result<(u64, Option<SystemTime>), RateOracleError>;
 }
 
 /// Configuration for [`AggregatingRateOracle`].
@@ -38,8 +38,8 @@ pub struct AggregatorConfig {
     pub min_sources: usize,
     /// Minimum surviving source count after trimming.
     pub min_survived: usize,
-    /// Maximum allowed percentage deviation from the median.
-    pub deviation_threshold_pct: f64,
+    /// Maximum allowed basis-point deviation from the median.
+    pub deviation_threshold_bps: u64,
     /// Per-source fetch timeout in seconds.
     pub fetch_timeout_secs: u64,
     /// Snapshot cache TTL in seconds.
@@ -53,7 +53,7 @@ impl Default for AggregatorConfig {
         Self {
             min_sources: 3,
             min_survived: 2,
-            deviation_threshold_pct: 1.0,
+            deviation_threshold_bps: 100,
             fetch_timeout_secs: 5,
             cache_ttl_secs: 30,
             max_clock_offset_secs: 30,
@@ -92,6 +92,9 @@ pub struct AggregatingRateOracle {
     config: AggregatorConfig,
     cache: tokio::sync::Mutex<HashMap<CurrencyUnit, CachedSnapshot>>,
     backoff_state: tokio::sync::Mutex<HashMap<(String, CurrencyUnit), BackoffState>>,
+    /// Single-flight guard: serializes cache refreshes so concurrent quote
+    /// requests do not fan out duplicate source fetches.
+    refresh: tokio::sync::Mutex<()>,
 }
 
 impl fmt::Debug for AggregatingRateOracle {
@@ -116,6 +119,7 @@ impl AggregatingRateOracle {
             config,
             cache: tokio::sync::Mutex::new(HashMap::new()),
             backoff_state: tokio::sync::Mutex::new(HashMap::new()),
+            refresh: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -141,6 +145,13 @@ impl AggregatingRateOracle {
 #[async_trait]
 impl RateOracle for AggregatingRateOracle {
     async fn snapshot(&self, fiat: &CurrencyUnit) -> Result<RateSnapshot, RateOracleError> {
+        if let Some(snapshot) = self.cached_snapshot(fiat).await {
+            return Ok(snapshot);
+        }
+
+        // Single-flight: concurrent callers queue here; losers re-check the
+        // cache and reuse the winner's snapshot instead of re-fetching.
+        let _refresh = self.refresh.lock().await;
         if let Some(snapshot) = self.cached_snapshot(fiat).await {
             return Ok(snapshot);
         }
@@ -174,18 +185,16 @@ impl AggregatingRateOracle {
             let local_fetch_started_at = SystemTime::now();
             let result = time::timeout(timeout, source.fetch(fiat)).await;
             match result {
-                Ok(Ok((rate, source_reported_timestamp))) if rate.is_finite() && rate > 0.0 => {
-                    Ok(SourceReading {
-                        source_name,
-                        rate,
-                        fetched_at_age_secs: fetch_started_at.elapsed().as_secs(),
-                        source_reported_timestamp,
-                        included_in_aggregation: false,
-                    })
-                }
+                Ok(Ok((rate, source_reported_timestamp))) if rate > 0 => Ok(SourceReading {
+                    source_name,
+                    rate,
+                    fetched_at_age_secs: fetch_started_at.elapsed().as_secs(),
+                    source_reported_timestamp,
+                    included_in_aggregation: false,
+                }),
                 Ok(Ok((rate, _))) => Err(FetchFailure {
                     source_name,
-                    reason: format!("non-positive or non-finite rate: {rate}"),
+                    reason: format!("zero rate: {rate}"),
                     timed_out: false,
                     local_fetch_started_at,
                 }),
@@ -259,15 +268,16 @@ impl AggregatingRateOracle {
             });
         }
 
-        let median = median(fresh_readings.iter().map(|reading| reading.rate).collect());
-        let mut max_deviation_pct = 0.0_f64;
+        let median_before_trim =
+            median(fresh_readings.iter().map(|reading| reading.rate).collect());
+        let mut max_deviation_bps = 0_u64;
         let mut survived = Vec::new();
         let mut trimmed = Vec::new();
 
         for mut reading in fresh_readings {
-            let deviation_pct = percent_deviation(reading.rate, median);
-            max_deviation_pct = max_deviation_pct.max(deviation_pct);
-            if deviation_pct > self.config.deviation_threshold_pct {
+            let deviation_bps = bps_deviation(reading.rate, median_before_trim);
+            max_deviation_bps = max_deviation_bps.max(deviation_bps);
+            if deviation_bps > self.config.deviation_threshold_bps {
                 trimmed.push(reading);
             } else {
                 reading.included_in_aggregation = true;
@@ -276,11 +286,18 @@ impl AggregatingRateOracle {
         }
 
         if survived.len() < self.config.min_survived {
-            return Err(RateOracleError::Divergence { max_deviation_pct });
+            return Err(RateOracleError::Divergence { max_deviation_bps });
         }
 
-        let aggregated_rate =
-            survived.iter().map(|reading| reading.rate).sum::<f64>() / survived.len() as f64;
+        // Trimmed median of the survivors. The even-count rule is the
+        // arithmetic mean of the two middle values rounded DOWN: floor is the
+        // explicit mint-favoring direction on the melt path (a lower
+        // sats-per-fiat rate makes the user surrender more fiat per sat), and
+        // for the 3-fetched/1-trimmed case it equals the
+        // mean-of-the-surviving-2 rule. The mint-quote path's residual
+        // half-step exposure is bounded by `deviation_threshold_bps` and
+        // covered by the quote buffer.
+        let aggregated_rate = median(survived.iter().map(|reading| reading.rate).collect());
         let sources_fetched = survived.len() + trimmed.len();
         let sources_trimmed = trimmed.len();
         let sources_survived = survived.len();
@@ -295,8 +312,8 @@ impl AggregatingRateOracle {
                 sources_fetched,
                 sources_trimmed,
                 sources_survived,
-                median_before_trim: median,
-                deviation_threshold_pct: self.config.deviation_threshold_pct,
+                median_before_trim,
+                deviation_threshold_bps: self.config.deviation_threshold_bps,
             },
             created_at: SystemTime::now(),
         })
@@ -337,18 +354,26 @@ struct FetchFailure {
     local_fetch_started_at: SystemTime,
 }
 
-fn median(mut values: Vec<f64>) -> f64 {
-    values.sort_by(f64::total_cmp);
+/// Integer median. Even-count rule: floor of the mean of the two middle
+/// values (see the aggregation comment for the mint-favoring rationale).
+fn median(mut values: Vec<u64>) -> u64 {
+    values.sort_unstable();
     let mid = values.len() / 2;
     if values.len() % 2 == 0 {
-        (values[mid - 1] + values[mid]) / 2.0
+        let sum = values[mid - 1] as u128 + values[mid] as u128;
+        u64::try_from(sum / 2).unwrap_or(u64::MAX)
     } else {
         values[mid]
     }
 }
 
-fn percent_deviation(value: f64, median: f64) -> f64 {
-    ((value - median).abs() / median) * 100.0
+fn bps_deviation(value: u64, median: u64) -> u64 {
+    if median == 0 {
+        return u64::MAX;
+    }
+    let delta = value.abs_diff(median) as u128;
+    let bps = delta.saturating_mul(10_000) / median as u128;
+    u64::try_from(bps).unwrap_or(u64::MAX)
 }
 
 fn system_time_abs_diff_secs(left: SystemTime, right: SystemTime) -> u64 {

@@ -319,6 +319,7 @@ fn create_ldk_settings(
         database: cdk_mintd::config::Database::default(),
         auth_database: None,
         mint_management_rpc: None,
+        rate_quoter: None,
         prometheus: None,
         auth: None,
     }

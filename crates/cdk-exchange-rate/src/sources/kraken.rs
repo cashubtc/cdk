@@ -42,7 +42,7 @@ impl RateSource for KrakenRateSource {
     async fn fetch(
         &self,
         fiat: &CurrencyUnit,
-    ) -> Result<(f64, Option<SystemTime>), RateOracleError> {
+    ) -> Result<(u64, Option<SystemTime>), RateOracleError> {
         let url = format!("https://api.kraken.com/0/public/Ticker?pair=XBT{fiat}");
         let response = self
             .client
@@ -80,16 +80,8 @@ struct KrakenTicker {
     c: Vec<String>,
 }
 
-fn btc_fiat_to_sats_per_fiat(value: &str) -> Result<f64, RateOracleError> {
-    let btc_fiat = value
-        .parse::<f64>()
-        .map_err(|error| RateOracleError::SourceError(error.to_string()))?;
-    if !btc_fiat.is_finite() || btc_fiat <= 0.0 {
-        return Err(RateOracleError::SourceError(format!(
-            "invalid BTC/fiat rate: {btc_fiat}"
-        )));
-    }
-    Ok(100_000_000.0 / btc_fiat)
+fn btc_fiat_to_sats_per_fiat(value: &str) -> Result<u64, RateOracleError> {
+    crate::sources::parse_btc_fiat_to_sats_per_fiat(value)
 }
 
 fn source_error(error: reqwest::Error) -> RateOracleError {

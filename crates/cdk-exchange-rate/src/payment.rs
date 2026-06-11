@@ -20,13 +20,13 @@ use tokio::sync::Mutex;
 
 use crate::oracle::RateOracle;
 use crate::store::{DynRateQuoteStore, ParkedPaymentRecord, RateQuoteRecord, RateQuoteStoreError};
-use crate::types::{RateOracleError, RateSnapshot};
+use crate::types::{fiat_subunit_scale, RateOracleError, RateSnapshot};
 
 /// Number of basis points in 100%.
 const BPS_DENOMINATOR: u64 = 10_000;
 
 /// Default rate-quoted invoice TTL in seconds.
-pub const DEFAULT_RATE_QUOTE_TTL_SECS: u64 = 120;
+pub const DEFAULT_RATE_QUOTE_TTL_SECS: u64 = 90;
 
 static PARKED_PAYMENT_EVENTS: AtomicU64 = AtomicU64::new(0);
 
@@ -61,7 +61,7 @@ impl Default for RateConvertingPaymentConfig {
     fn default() -> Self {
         Self {
             fiat_unit: CurrencyUnit::Usd,
-            buffer_bps: 0,
+            buffer_bps: 100,
             ttl_secs: DEFAULT_RATE_QUOTE_TTL_SECS,
         }
     }
@@ -85,9 +85,12 @@ pub enum RateConvertingPaymentError {
     /// Unsupported unit.
     #[error("unsupported unit {0}")]
     UnsupportedUnit(CurrencyUnit),
+    /// Unsupported fiat subunit scale.
+    #[error("unsupported fiat subunit scale for unit {0}")]
+    UnsupportedFiatScale(CurrencyUnit),
     /// Invalid rate.
     #[error("invalid rate {0}")]
-    InvalidRate(f64),
+    InvalidRate(u64),
     /// Amount overflow.
     #[error("amount overflow")]
     AmountOverflow,
@@ -116,7 +119,8 @@ impl From<RateConvertingPaymentError> for cdk_common::payment::Error {
         match error {
             RateConvertingPaymentError::Inner(inner) => inner,
             RateConvertingPaymentError::UnsupportedPaymentOption => Self::UnsupportedPaymentOption,
-            RateConvertingPaymentError::UnsupportedUnit(_) => Self::UnsupportedUnit,
+            RateConvertingPaymentError::UnsupportedUnit(_)
+            | RateConvertingPaymentError::UnsupportedFiatScale(_) => Self::UnsupportedUnit,
             RateConvertingPaymentError::UnitPaused { .. }
             | RateConvertingPaymentError::IssuanceCapExceeded { .. } => {
                 Self::Custom(error.to_string())
@@ -535,9 +539,10 @@ impl<T> RateConvertingPayment<T> {
         &self.config.fiat_unit
     }
 
-    async fn quote_terms(&self, fiat_subunits: u64) -> Result<(RateSnapshot, u64), SelfError> {
+    async fn mint_quote_terms(&self, fiat_subunits: u64) -> Result<(RateSnapshot, u64), SelfError> {
         let snapshot = self.oracle.snapshot(&self.config.fiat_unit).await?;
-        let sats = sats_for_fiat(
+        let sats = sats_for_fiat_subunits(
+            &self.config.fiat_unit,
             fiat_subunits,
             snapshot.aggregated_rate,
             self.config.buffer_bps,
@@ -591,7 +596,7 @@ where
             .await?;
 
         let fiat_subunits = options.amount.value();
-        let (snapshot, sats_invoiced) = self.quote_terms(fiat_subunits).await?;
+        let (snapshot, sats_invoiced) = self.mint_quote_terms(fiat_subunits).await?;
         let expiry_unix = effective_expiry(self.config.ttl_secs);
         options.amount = Amount::new(sats_invoiced, CurrencyUnit::Sat);
         options.unix_expiry = Some(expiry_unix);
@@ -614,6 +619,7 @@ where
             payment_lookup_id: response.request_lookup_id.clone(),
             fiat_unit: self.config.fiat_unit.clone(),
             fiat_subunits,
+            fiat_fee_subunits: 0,
             snapshot_json: snapshot_json.clone(),
             sats_invoiced,
             expiry_unix,
@@ -648,15 +654,26 @@ where
             .inner
             .get_payment_quote(&CurrencyUnit::Sat, options)
             .await?;
-        let fiat_subunits = inner_quote.amount.value();
-        let (snapshot, sats_reserved) = self.quote_terms(fiat_subunits).await?;
+        let snapshot = self.oracle.snapshot(&self.config.fiat_unit).await?;
+        let fiat_subunits = fiat_subunits_for_sats(
+            &self.config.fiat_unit,
+            inner_quote.amount.value(),
+            snapshot.aggregated_rate,
+            self.config.buffer_bps,
+        )?;
+        let fiat_fee_subunits = fiat_subunits_for_sats(
+            &self.config.fiat_unit,
+            inner_quote.fee.value(),
+            snapshot.aggregated_rate,
+            self.config.buffer_bps,
+        )?;
         let expiry_unix = unix_time().saturating_add(self.config.ttl_secs);
         let snapshot_json = snapshot_json(
             &self.config.fiat_unit,
             fiat_subunits,
             &snapshot,
             self.config.buffer_bps,
-            sats_reserved,
+            inner_quote.amount.value(),
             expiry_unix,
         )?;
 
@@ -666,25 +683,18 @@ where
                     payment_lookup_id: payment_lookup_id.clone(),
                     fiat_unit: self.config.fiat_unit.clone(),
                     fiat_subunits,
+                    fiat_fee_subunits,
                     snapshot_json: snapshot_json.clone(),
-                    sats_invoiced: sats_reserved,
+                    sats_invoiced: inner_quote.amount.value(),
                     expiry_unix,
                 })
-                .await?;
-            self.control
-                .reserve(
-                    &self.config.fiat_unit,
-                    &payment_lookup_id,
-                    fiat_subunits,
-                    expiry_unix,
-                )
                 .await?;
         }
 
         Ok(PaymentQuoteResponse {
             request_lookup_id: inner_quote.request_lookup_id,
             amount: Amount::new(fiat_subunits, self.config.fiat_unit.clone()),
-            fee: Amount::new(inner_quote.fee.value(), self.config.fiat_unit.clone()),
+            fee: Amount::new(fiat_fee_subunits, self.config.fiat_unit.clone()),
             state: inner_quote.state,
             extra_json: merge_extra(inner_quote.extra_json, snapshot_json),
         })
@@ -719,7 +729,7 @@ where
             payment_lookup_id: response.payment_lookup_id,
             payment_proof: response.payment_proof,
             status: response.status,
-            total_spent: Amount::new(record.fiat_subunits, record.fiat_unit),
+            total_spent: Amount::new(record_total_fiat_subunits(&record), record.fiat_unit),
         })
     }
 
@@ -805,7 +815,7 @@ where
             payment_lookup_id: response.payment_lookup_id,
             payment_proof: response.payment_proof,
             status: response.status,
-            total_spent: Amount::new(record.fiat_subunits, record.fiat_unit),
+            total_spent: Amount::new(record_total_fiat_subunits(&record), record.fiat_unit),
         })
     }
 }
@@ -878,25 +888,66 @@ async fn convert_payment_event(
     }
 }
 
-fn sats_for_fiat(
+fn sats_for_fiat_subunits(
+    fiat_unit: &CurrencyUnit,
     fiat_subunits: u64,
-    sats_per_fiat_subunit: f64,
+    sats_per_fiat_unit: u64,
     buffer_bps: u64,
 ) -> Result<u64, SelfError> {
-    if !sats_per_fiat_subunit.is_finite() || sats_per_fiat_subunit <= 0.0 {
-        return Err(SelfError::InvalidRate(sats_per_fiat_subunit));
+    if sats_per_fiat_unit == 0 {
+        return Err(SelfError::InvalidRate(sats_per_fiat_unit));
     }
 
-    let buffered = sats_per_fiat_subunit
-        * fiat_subunits as f64
-        * (BPS_DENOMINATOR
-            .checked_add(buffer_bps)
-            .ok_or(SelfError::AmountOverflow)? as f64
-            / BPS_DENOMINATOR as f64);
-    if !buffered.is_finite() || buffered > u64::MAX as f64 {
-        return Err(SelfError::AmountOverflow);
+    let scale = fiat_subunit_scale(fiat_unit)
+        .ok_or_else(|| SelfError::UnsupportedFiatScale(fiat_unit.clone()))?;
+    let buffered_bps = BPS_DENOMINATOR
+        .checked_add(buffer_bps)
+        .ok_or(SelfError::AmountOverflow)?;
+    let numerator = (fiat_subunits as u128)
+        .checked_mul(sats_per_fiat_unit as u128)
+        .and_then(|value| value.checked_mul(buffered_bps as u128))
+        .ok_or(SelfError::AmountOverflow)?;
+    u64::try_from(div_ceil(
+        numerator,
+        (scale as u128).saturating_mul(BPS_DENOMINATOR as u128),
+    ))
+    .map_err(|_| SelfError::AmountOverflow)
+}
+
+fn fiat_subunits_for_sats(
+    fiat_unit: &CurrencyUnit,
+    sats: u64,
+    sats_per_fiat_unit: u64,
+    buffer_bps: u64,
+) -> Result<u64, SelfError> {
+    if sats_per_fiat_unit == 0 {
+        return Err(SelfError::InvalidRate(sats_per_fiat_unit));
     }
-    Ok(buffered.ceil() as u64)
+
+    let scale = fiat_subunit_scale(fiat_unit)
+        .ok_or_else(|| SelfError::UnsupportedFiatScale(fiat_unit.clone()))?;
+    let buffered_bps = BPS_DENOMINATOR
+        .checked_add(buffer_bps)
+        .ok_or(SelfError::AmountOverflow)?;
+    let numerator = (sats as u128)
+        .checked_mul(scale as u128)
+        .and_then(|value| value.checked_mul(buffered_bps as u128))
+        .ok_or(SelfError::AmountOverflow)?;
+    u64::try_from(div_ceil(
+        numerator,
+        (sats_per_fiat_unit as u128).saturating_mul(BPS_DENOMINATOR as u128),
+    ))
+    .map_err(|_| SelfError::AmountOverflow)
+}
+
+fn div_ceil(numerator: u128, denominator: u128) -> u128 {
+    numerator / denominator + u128::from(numerator % denominator != 0)
+}
+
+fn record_total_fiat_subunits(record: &RateQuoteRecord) -> u64 {
+    record
+        .fiat_subunits
+        .saturating_add(record.fiat_fee_subunits)
 }
 
 fn effective_expiry(ttl_secs: u64) -> u64 {
@@ -915,7 +966,7 @@ struct StoredSnapshot<'a> {
     fiat_unit: &'a CurrencyUnit,
     collateral_unit: CurrencyUnit,
     fiat_subunits: u64,
-    aggregated_rate_sats_per_fiat_subunit: f64,
+    aggregated_rate_sats_per_fiat_unit: u64,
     source_readings: &'a [crate::types::SourceReading],
     aggregation_meta: &'a crate::types::AggregationMeta,
     buffer_bps: u64,
@@ -935,7 +986,7 @@ fn snapshot_json(
         fiat_unit,
         collateral_unit: CurrencyUnit::Sat,
         fiat_subunits,
-        aggregated_rate_sats_per_fiat_subunit: snapshot.aggregated_rate,
+        aggregated_rate_sats_per_fiat_unit: snapshot.aggregated_rate,
         source_readings: &snapshot.source_readings,
         aggregation_meta: &snapshot.aggregation_meta,
         buffer_bps,
@@ -968,19 +1019,27 @@ mod tests {
     use crate::types::{AggregationMeta, SourceReading};
 
     #[test]
-    fn sats_for_fiat_applies_ceil_and_buffer() {
-        let sats = sats_for_fiat(100, 15.2, 100).expect("valid amount");
-        assert_eq!(sats, 1536);
+    fn sats_for_fiat_subunits_uses_whole_unit_rate() {
+        let sats =
+            sats_for_fiat_subunits(&CurrencyUnit::Usd, 100, 1_000, 100).expect("valid amount");
+        assert_eq!(sats, 1010);
+    }
+
+    #[test]
+    fn fiat_subunits_for_sats_applies_mint_favoring_buffer() {
+        let cents =
+            fiat_subunits_for_sats(&CurrencyUnit::Usd, 1_000, 1_000, 100).expect("valid amount");
+        assert_eq!(cents, 101);
     }
 
     #[test]
     fn snapshot_json_contains_stored_terms() {
         let snapshot = RateSnapshot {
             fiat: CurrencyUnit::Usd,
-            aggregated_rate: 17.0,
+            aggregated_rate: 17,
             source_readings: vec![SourceReading {
                 source_name: "test".to_string(),
-                rate: 17.0,
+                rate: 17,
                 fetched_at_age_secs: 0,
                 source_reported_timestamp: None,
                 included_in_aggregation: true,
@@ -989,8 +1048,8 @@ mod tests {
                 sources_fetched: 1,
                 sources_trimmed: 0,
                 sources_survived: 1,
-                median_before_trim: 17.0,
-                deviation_threshold_pct: 1.0,
+                median_before_trim: 17,
+                deviation_threshold_bps: 100,
             },
             created_at: SystemTime::now(),
         };
@@ -1000,12 +1059,14 @@ mod tests {
         assert_eq!(json["fiat_subunits"], 100);
         assert_eq!(json["sats_invoiced"], 1717);
         assert_eq!(json["buffer_bps"], 100);
+        assert_eq!(json["aggregated_rate_sats_per_fiat_unit"], 17);
     }
 
     #[test]
-    fn config_defaults_to_120_second_ttl() {
+    fn config_defaults_to_90_second_ttl_and_100_bps_buffer() {
         let config = RateConvertingPaymentConfig::default();
         assert_eq!(config.ttl_secs, DEFAULT_RATE_QUOTE_TTL_SECS);
+        assert_eq!(config.buffer_bps, 100);
     }
 
     #[test]
