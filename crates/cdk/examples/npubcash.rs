@@ -77,15 +77,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     wallet.enable_npubcash(npubcash_url.clone()).await?;
     println!("✓ NpubCash integration enabled\n");
 
+    let npubcash_keys = wallet.get_npubcash_keys()?;
+    let npubcash_npub = npubcash_keys.public_key().to_bech32()?;
+
     // Display the npub.cash address
     let display_url = npubcash_url
         .trim_start_matches("https://")
         .trim_start_matches("http://");
     println!("Your npub.cash address:");
-    println!("   {}@{}\n", keys.public_key().to_bech32()?, display_url);
+    println!("   {}@{}\n", npubcash_npub, display_url);
     println!("Requesting invoice for 100 sats from the fake mint...");
 
-    request_invoice(&keys.public_key().to_bech32()?, PAYMENT_AMOUNT_MSATS).await?;
+    request_invoice(&npubcash_npub, PAYMENT_AMOUNT_MSATS).await?;
 
     println!("Invoice requested - the fake mint should auto-pay shortly.\n");
 

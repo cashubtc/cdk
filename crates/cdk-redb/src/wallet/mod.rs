@@ -1594,7 +1594,7 @@ mod test {
 
     #[tokio::test]
     async fn increment_keyset_counter_returns_error_on_overflow() {
-        let db = provide_db("counter-overflow".to_string()).await;
+        let db = provide_db(format!("counter-overflow-{}", uuid::Uuid::new_v4())).await;
         let keyset_id = Id::from_str("00916bbf7ef91a36").expect("valid keyset id");
 
         let first = db

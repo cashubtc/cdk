@@ -38,6 +38,24 @@ async fn get_wallet_for_mint(
     }
 }
 
+/// Helper function to get or create a Sat wallet without probing the mint.
+async fn get_wallet_for_mint_without_probe(
+    wallet_repository: &WalletRepository,
+    mint_url: MintUrl,
+) -> Result<Arc<Wallet>> {
+    match wallet_repository
+        .get_wallet(&mint_url, &CurrencyUnit::Sat)
+        .await
+    {
+        Ok(wallet) => Ok(Arc::new(wallet)),
+        Err(_) => Ok(Arc::new(
+            wallet_repository
+                .create_wallet(mint_url, CurrencyUnit::Sat, None)
+                .await?,
+        )),
+    }
+}
+
 #[derive(Subcommand)]
 pub enum NpubCashSubCommand {
     /// Sync quotes from NpubCash
@@ -256,13 +274,9 @@ async fn set_mint(
 ) -> Result<()> {
     println!("Setting NpubCash mint URL to: {}", url);
 
-    // Update active mint in KV store
     let mint_url_struct = MintUrl::from_str(url)?;
-    wallet_repository
-        .set_active_npubcash_mint(mint_url_struct)
-        .await?;
-
-    let wallet = get_wallet_for_mint(wallet_repository, url).await?;
+    let wallet =
+        get_wallet_for_mint_without_probe(wallet_repository, mint_url_struct.clone()).await?;
 
     // Enable NpubCash if not already enabled
     wallet.enable_npubcash(base_url.to_string()).await?;
@@ -270,6 +284,9 @@ async fn set_mint(
     // Try to set the mint URL on the NpubCash server
     match wallet.set_npubcash_mint_url(url).await {
         Ok(_) => {
+            wallet_repository
+                .set_active_npubcash_mint(mint_url_struct)
+                .await?;
             println!("✓ Mint URL updated successfully on NpubCash server");
             println!("\nThe NpubCash server will now include this mint URL");
             println!("when creating quotes for your npub address.");
@@ -286,7 +303,7 @@ async fn set_mint(
                     base_url
                 );
                 println!("  • Quotes will use whatever mint URL the server defaults to");
-                println!("  • You can still mint using your local wallet's mint configuration");
+                println!("  • Your local active NpubCash mint was not changed");
                 println!("\nNote: The official npubx.cash server supports this feature.");
                 println!("      Custom servers may not have it implemented.");
             } else {
@@ -296,57 +313,6 @@ async fn set_mint(
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::str::FromStr;
-    use std::sync::Arc;
-    use std::time::Duration;
-
-    use cdk::mint_url::MintUrl;
-    use cdk::wallet::WalletRepositoryBuilder;
-
-    use super::set_mint;
-
-    #[tokio::test]
-    async fn set_mint_persists_requested_url_not_global_mint() {
-        let localstore = Arc::new(
-            cdk_sqlite::wallet::memory::empty()
-                .await
-                .expect("memory db"),
-        );
-        let wallet_repository = WalletRepositoryBuilder::new()
-            .localstore(localstore)
-            .seed([0u8; 64])
-            .build()
-            .await
-            .expect("wallet repository builds");
-
-        let global_mint = "https://global-mint.invalid";
-        let requested_mint = "https://requested-mint.invalid";
-
-        let _ = tokio::time::timeout(
-            Duration::from_secs(10),
-            set_mint(
-                &wallet_repository,
-                global_mint,
-                "https://npubcash.invalid",
-                requested_mint,
-            ),
-        )
-        .await;
-
-        let active = wallet_repository
-            .get_active_npubcash_mint()
-            .await
-            .expect("active npubcash mint is readable");
-
-        assert_eq!(
-            active,
-            Some(MintUrl::from_str(requested_mint).expect("valid mint URL"))
-        );
-    }
 }
 
 async fn show_keys(wallet_repository: &WalletRepository, mint_url: &str) -> Result<()> {
@@ -387,4 +353,200 @@ async fn show_keys(wallet_repository: &WalletRepository, mint_url: &str) -> Resu
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use cdk::mint_url::MintUrl;
+    use cdk::wallet::WalletRepositoryBuilder;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::task::JoinHandle;
+
+    use super::set_mint;
+
+    #[tokio::test]
+    async fn set_mint_persists_requested_url_after_server_update() {
+        let localstore = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("memory db"),
+        );
+        let wallet_repository = WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed([0u8; 64])
+            .build()
+            .await
+            .expect("wallet repository builds");
+
+        let global_mint = "https://global-mint.invalid";
+        let requested_mint = "https://requested-mint.invalid";
+        let response_body = r#"{"error":false,"data":{"user":{"pubkey":"test","mintUrl":"https://requested-mint.invalid","lockQuote":false}}}"#;
+        let (npubcash_url, server) =
+            start_npubcash_settings_server("HTTP/1.1 200 OK", response_body, 2).await;
+
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            set_mint(
+                &wallet_repository,
+                global_mint,
+                &npubcash_url,
+                requested_mint,
+            ),
+        )
+        .await
+        .expect("set-mint does not hang on the requested mint")
+        .expect("set-mint succeeds");
+
+        let active = wallet_repository
+            .get_active_npubcash_mint()
+            .await
+            .expect("active npubcash mint is readable");
+
+        assert_eq!(
+            active,
+            Some(MintUrl::from_str(requested_mint).expect("valid mint URL"))
+        );
+
+        let requests = server.await.expect("server task completes");
+        assert_eq!(requests.len(), 2);
+        assert!(requests
+            .iter()
+            .all(|request| request.starts_with("PATCH /api/v2/user/mint HTTP/1.1")));
+        assert!(requests
+            .iter()
+            .all(|request| request.contains(requested_mint)));
+    }
+
+    #[tokio::test]
+    async fn set_mint_keeps_local_active_mint_when_server_update_fails() {
+        let localstore = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("memory db"),
+        );
+        let wallet_repository = WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed([0u8; 64])
+            .build()
+            .await
+            .expect("wallet repository builds");
+
+        let previous_mint =
+            MintUrl::from_str("https://previous-mint.invalid").expect("previous mint URL is valid");
+        wallet_repository
+            .set_active_npubcash_mint(previous_mint.clone())
+            .await
+            .expect("active mint can be set");
+
+        let response_body = r#"{"error":true,"message":"temporary failure"}"#;
+        let (npubcash_url, server) =
+            start_npubcash_settings_server("HTTP/1.1 500 Internal Server Error", response_body, 2)
+                .await;
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            set_mint(
+                &wallet_repository,
+                "https://global-mint.invalid",
+                &npubcash_url,
+                "https://requested-mint.invalid",
+            ),
+        )
+        .await
+        .expect("set-mint does not hang on the requested mint");
+
+        assert!(result.is_err());
+
+        let active = wallet_repository
+            .get_active_npubcash_mint()
+            .await
+            .expect("active npubcash mint is readable");
+
+        assert_eq!(active, Some(previous_mint));
+
+        let requests = server.await.expect("server task completes");
+        assert_eq!(requests.len(), 2);
+    }
+
+    async fn start_npubcash_settings_server(
+        status_line: &'static str,
+        response_body: &'static str,
+        request_count: usize,
+    ) -> (String, JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test server binds");
+        let addr = listener.local_addr().expect("test server has local addr");
+        let base_url = format!("http://{}", addr);
+
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::with_capacity(request_count);
+
+            for _ in 0..request_count {
+                let (mut stream, _) = listener.accept().await.expect("connection accepted");
+                let request = read_http_request(&mut stream).await;
+                requests.push(request);
+
+                let response = format!(
+                    "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                    response_body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("response is written");
+            }
+
+            requests
+        });
+
+        (base_url, server)
+    }
+
+    async fn read_http_request(stream: &mut tokio::net::TcpStream) -> String {
+        let mut buffer = Vec::new();
+        let mut chunk = [0u8; 1024];
+
+        loop {
+            let read = stream.read(&mut chunk).await.expect("request is readable");
+            if read == 0 {
+                break;
+            }
+
+            buffer.extend_from_slice(&chunk[..read]);
+
+            if let Some(header_end) = find_header_end(&buffer) {
+                let content_length = parse_content_length(&buffer[..header_end]);
+                let request_len = header_end + 4 + content_length;
+                if buffer.len() >= request_len {
+                    break;
+                }
+            }
+        }
+
+        String::from_utf8_lossy(&buffer).to_string()
+    }
+
+    fn find_header_end(buffer: &[u8]) -> Option<usize> {
+        buffer.windows(4).position(|window| window == b"\r\n\r\n")
+    }
+
+    fn parse_content_length(headers: &[u8]) -> usize {
+        String::from_utf8_lossy(headers)
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.eq_ignore_ascii_case("content-length") {
+                    value.trim().parse().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0)
+    }
 }
