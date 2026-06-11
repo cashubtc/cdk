@@ -597,6 +597,12 @@ where
 
         let fiat_subunits = options.amount.value();
         let (snapshot, sats_invoiced) = self.mint_quote_terms(fiat_subunits).await?;
+        let sats_unbuffered = sats_for_fiat_subunits(
+            &self.config.fiat_unit,
+            fiat_subunits,
+            snapshot.aggregated_rate,
+            0,
+        )?;
         let expiry_unix = effective_expiry(self.config.ttl_secs);
         options.amount = Amount::new(sats_invoiced, CurrencyUnit::Sat);
         options.unix_expiry = Some(expiry_unix);
@@ -622,6 +628,7 @@ where
             fiat_fee_subunits: 0,
             snapshot_json: snapshot_json.clone(),
             sats_invoiced,
+            sats_unbuffered,
             expiry_unix,
         };
         self.store.insert(record).await?;
@@ -686,6 +693,7 @@ where
                     fiat_fee_subunits,
                     snapshot_json: snapshot_json.clone(),
                     sats_invoiced: inner_quote.amount.value(),
+                    sats_unbuffered: inner_quote.amount.value(),
                     expiry_unix,
                 })
                 .await?;

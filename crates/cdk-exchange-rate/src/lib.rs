@@ -14,6 +14,6 @@ pub use payment::{
 };
 pub use store::{
     DynRateQuoteStore, InMemoryRateQuoteStore, ParkedPaymentRecord, RateQuoteRecord,
-    RateQuoteStore, RateQuoteStoreError,
+    RateQuoteStore, RateQuoteStoreError, UnitControlRecord,
 };
 pub use types::{AggregationMeta, RateOracleError, RateSnapshot, SourceReading};
