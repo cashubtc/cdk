@@ -234,7 +234,7 @@ impl WalletBuilder {
         };
         let auth_wallet = self.auth_wallet.take();
 
-        let metadata_cache_ttl = self.metadata_cache_ttl;
+        let metadata_cache_ttl = self.metadata_cache_ttl.clone();
 
         let metadata_cache = self.metadata_cache.take().unwrap_or_else(|| {
             // Check if we already have a cache for this mint in the HashMap

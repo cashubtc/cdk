@@ -660,11 +660,13 @@ mod tests {
                 .expect("in-memory wallet database should initialize"),
         );
         let metadata_cache = Arc::new(MintMetadataCache::new(mint_url.clone()));
+        let metadata_cache_ttl = Arc::new(ParkingRwLock::new(Some(Duration::from_secs(3600))));
 
         AuthWallet {
             mint_url,
             localstore,
             metadata_cache,
+            metadata_cache_ttl,
             protected_endpoints: Arc::new(RwLock::new(HashMap::new())),
             refresh_token: Arc::new(RwLock::new(None)),
             auth_client: connector,
