@@ -626,6 +626,8 @@ impl MeltSaga<SetupComplete> {
                             "Lightning payment for quote {} unknown.",
                             self.state_data.quote.id
                         );
+                        self.persist_pending_payment_lookup_id(&response.payment_lookup_id)
+                            .await;
                         return Ok(PaymentOutcome::Pending {
                             #[cfg(feature = "prometheus")]
                             metrics: self.metrics,
@@ -636,6 +638,8 @@ impl MeltSaga<SetupComplete> {
                             "LN payment pending, proofs remain pending for quote: {}",
                             self.state_data.quote.id
                         );
+                        self.persist_pending_payment_lookup_id(&response.payment_lookup_id)
+                            .await;
                         return Ok(PaymentOutcome::Pending {
                             #[cfg(feature = "prometheus")]
                             metrics: self.metrics,
@@ -825,6 +829,67 @@ impl MeltSaga<SetupComplete> {
         }
 
         Ok(check_response)
+    }
+
+    /// Persists the backend's payment lookup id on the quote before the saga
+    /// parks the payment as pending.
+    ///
+    /// For bolt12 melts the quote is created with `request_lookup_id: None`
+    /// (no invoice exists until `make_payment`), so the id returned by the
+    /// backend is the only durable handle to the in-flight payment. The
+    /// pending waiter and startup recovery reload the quote from the database
+    /// and poll the backend via `quote.request_lookup_id`; without this write,
+    /// a payment that settles after the in-process recheck can never be
+    /// resolved, and startup recovery would treat the quote as never sent and
+    /// compensate while the payment may still settle.
+    ///
+    /// Best-effort: a database failure here is logged loudly but does not
+    /// change the outcome — the payment is still pending and the in-process
+    /// state is no worse than before.
+    async fn persist_pending_payment_lookup_id(
+        &self,
+        payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
+    ) {
+        let quote_id = &self.state_data.quote.id;
+
+        if self.state_data.quote.request_lookup_id.as_ref() == Some(payment_lookup_id) {
+            return;
+        }
+
+        let result: Result<(), Error> = async {
+            let mut tx = self.db.begin_transaction().await?;
+
+            let mut quote = tx
+                .get_melt_quote(quote_id)
+                .await?
+                .ok_or(Error::UnknownQuote)?;
+
+            if quote.request_lookup_id.as_ref() != Some(payment_lookup_id) {
+                tracing::info!(
+                    "Updating payment lookup id for pending melt quote {} from {:?} to {}",
+                    quote_id,
+                    quote.request_lookup_id,
+                    payment_lookup_id
+                );
+                tx.update_melt_quote_request_lookup_id(&mut quote, payment_lookup_id)
+                    .await?;
+            }
+
+            tx.commit().await?;
+            Ok(())
+        }
+        .await;
+
+        if let Err(err) = result {
+            tracing::error!(
+                "Failed to persist payment lookup id {} for pending melt quote {}: {}. \
+                 The pending payment cannot be polled from the database until a lookup id \
+                 is recorded; recovery may require manual intervention.",
+                payment_lookup_id,
+                quote_id,
+                err
+            );
+        }
     }
 
     /// Helper to check payment state with LN backend

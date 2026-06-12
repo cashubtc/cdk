@@ -26,6 +26,7 @@ struct NoEventPendingBackend {
     status_checks: AtomicUsize,
     settle_after_checks: usize,
     final_status: Option<MeltQuoteState>,
+    strip_quote_lookup_id: bool,
 }
 
 impl NoEventPendingBackend {
@@ -46,7 +47,15 @@ impl NoEventPendingBackend {
             status_checks: AtomicUsize::new(0),
             settle_after_checks,
             final_status,
+            strip_quote_lookup_id: false,
         }
+    }
+
+    /// Simulates backends (e.g. bolt12) that cannot provide a lookup id at
+    /// quote creation because no invoice exists until `make_payment`.
+    fn with_stripped_quote_lookup_id(mut self) -> Self {
+        self.strip_quote_lookup_id = true;
+        self
     }
 }
 
@@ -70,7 +79,11 @@ impl MintPayment for NoEventPendingBackend {
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
-        self.inner.get_payment_quote(unit, options).await
+        let mut response = self.inner.get_payment_quote(unit, options).await?;
+        if self.strip_quote_lookup_id {
+            response.request_lookup_id = None;
+        }
+        Ok(response)
     }
 
     async fn make_payment(
@@ -358,4 +371,81 @@ async fn pending_melt_wait_times_out_without_settled_progress() {
         saga.is_some(),
         "pending melt should remain recoverable after timeout"
     );
+}
+
+#[tokio::test]
+async fn pending_melt_persists_payment_lookup_id_when_quote_has_none() {
+    // Simulates the bolt12 situation: no lookup id exists at quote creation,
+    // so the quote is persisted with request_lookup_id: None. When the payment
+    // parks as Pending, the saga must persist the lookup id returned by
+    // make_payment — it is the only durable handle to the in-flight payment
+    // for the pending wait loop and startup recovery.
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
+        Arc::new(NoEventPendingBackend::new(usize::MAX, None).with_stripped_quote_lookup_id());
+    let mint = create_pending_test_mint(backend).await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    assert!(
+        quote.request_lookup_id.is_none(),
+        "test premise: quote persisted without a lookup id"
+    );
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    let pending = mint.melt(&melt_request).await.unwrap();
+    let err = pending.await.unwrap_err();
+    assert!(matches!(err, Error::PendingMeltTimeout { .. }));
+
+    let expected_lookup_id = match &quote.request {
+        cdk_common::mint::MeltPaymentRequest::Bolt11 { bolt11 } => {
+            PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref())
+        }
+        request => panic!("expected bolt11 melt payment request, got {request}"),
+    };
+
+    let stored_quote = mint
+        .localstore()
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_quote.state, MeltQuoteState::Pending);
+    assert_eq!(
+        stored_quote.request_lookup_id,
+        Some(expected_lookup_id),
+        "lookup id returned by make_payment must be persisted while pending"
+    );
+}
+
+#[tokio::test]
+async fn pending_melt_without_quote_lookup_id_resolves_via_status_check() {
+    // End-to-end regression for the bolt12-style flow: with the quote created
+    // without a lookup id, the pending wait loop can only settle the quote by
+    // polling the backend with the lookup id persisted when the payment parked
+    // as Pending. Without that persistence this times out with
+    // PendingMeltTimeout and the quote is stuck.
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> = Arc::new(
+        NoEventPendingBackend::new(2, Some(MeltQuoteState::Paid)).with_stripped_quote_lookup_id(),
+    );
+    let mint = create_pending_test_mint(backend).await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    assert!(
+        quote.request_lookup_id.is_none(),
+        "test premise: quote persisted without a lookup id"
+    );
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    let pending = mint.melt(&melt_request).await.unwrap();
+    let response = pending.await.unwrap();
+
+    assert_eq!(response.state(), MeltQuoteState::Paid);
+
+    let stored_quote = mint
+        .localstore()
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_quote.state, MeltQuoteState::Paid);
+    assert!(stored_quote.request_lookup_id.is_some());
 }
