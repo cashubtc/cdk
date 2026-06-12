@@ -1120,7 +1120,6 @@ impl MintPayment for CdkLdkNode {
         }
         .ok_or(Error::PaymentNotFound)?;
 
-        // This check seems reversed in the original code, so I'm fixing it here
         if payment_details.direction != PaymentDirection::Outbound {
             return Err(Error::InvalidPaymentDirection.into());
         }

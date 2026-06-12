@@ -6,6 +6,8 @@
 
 **ALPHA** This library is in early development, the API will change and should be used with caution.
 
+> **⚠️ Deprecation Notice:** 0.17.0 will be the last release where LNbits is supported as a first-class backend. Mints using LNbits should consider switching to another Lightning backend.
+
 LNBits backend implementation for the Cashu Development Kit (CDK). This provides integration with [LNBits](https://lnbits.com/) for Lightning Network functionality.
 
 **Note: Only LNBits v1 API is supported.** This backend uses the websocket-based v1 API for real-time payment notifications.
