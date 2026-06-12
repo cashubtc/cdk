@@ -193,6 +193,7 @@ impl UnitControlState {
 pub struct RateQuoteControlHandle {
     units: Arc<Mutex<HashMap<CurrencyUnit, UnitControlState>>>,
     store: Option<DynRateQuoteStore>,
+    buffer_bps: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for RateQuoteControlHandle {
@@ -209,13 +210,41 @@ impl RateQuoteControlHandle {
         Self::default()
     }
 
+    /// Create an in-memory-only rate-quote control handle with the active
+    /// mint-favoring buffer basis points.
+    pub fn with_buffer_bps(buffer_bps: u64) -> Self {
+        Self {
+            units: Arc::default(),
+            store: None,
+            buffer_bps: Arc::new(AtomicU64::new(buffer_bps)),
+        }
+    }
+
     /// Create a control handle that writes pause/cap/outstanding state
     /// through to a durable store.
     pub fn with_store(store: DynRateQuoteStore) -> Self {
+        Self::with_store_and_buffer_bps(store, 0)
+    }
+
+    /// Create a control handle that writes pause/cap/outstanding state
+    /// through to a durable store and knows the active mint-favoring buffer.
+    pub fn with_store_and_buffer_bps(store: DynRateQuoteStore, buffer_bps: u64) -> Self {
         Self {
             units: Arc::default(),
             store: Some(store),
+            buffer_bps: Arc::new(AtomicU64::new(buffer_bps)),
         }
+    }
+
+    /// Set the active mint-favoring buffer basis points for later management
+    /// control requests.
+    pub fn set_buffer_bps(&self, buffer_bps: u64) {
+        self.buffer_bps.store(buffer_bps, Ordering::Relaxed);
+    }
+
+    /// Return the active mint-favoring buffer basis points.
+    pub fn running_buffer_bps(&self) -> u64 {
+        self.buffer_bps.load(Ordering::Relaxed)
     }
 
     /// Load persisted unit-control state into memory. Returns the units that
@@ -271,12 +300,28 @@ impl RateQuoteControlHandle {
         unit: CurrencyUnit,
         cap: u64,
     ) -> Result<(), RateQuoteStoreError> {
+        if cap != 0 && self.running_buffer_bps() == 0 {
+            return Err(RateQuoteStoreError::InvalidControl(
+                "rate quote buffer_bps must be nonzero before setting a nonzero issuance cap"
+                    .to_string(),
+            ));
+        }
         if let Some(store) = &self.store {
             store.set_unit_issuance_cap(&unit, cap).await?;
         }
         let mut units = self.units.lock().await;
         units.entry(unit).or_default().cap = cap;
         Ok(())
+    }
+
+    /// Configured issuance cap for one unit.
+    pub async fn unit_issuance_cap(&self, unit: &CurrencyUnit) -> u64 {
+        self.units
+            .lock()
+            .await
+            .get(unit)
+            .map(|state| state.cap)
+            .unwrap_or_default()
     }
 
     /// Outstanding issued fiat subunits (issued minus melted) for one unit.
@@ -635,8 +680,8 @@ impl<T> RateConvertingPayment<T> {
             inner,
             oracle,
             store,
+            control: RateQuoteControlHandle::with_buffer_bps(config.buffer_bps),
             config,
-            control: RateQuoteControlHandle::new(),
         }
     }
 
@@ -648,6 +693,7 @@ impl<T> RateConvertingPayment<T> {
         config: RateConvertingPaymentConfig,
         control: RateQuoteControlHandle,
     ) -> Self {
+        control.set_buffer_bps(config.buffer_bps);
         Self {
             inner,
             oracle,
@@ -1376,7 +1422,7 @@ mod tests {
 
     #[tokio::test]
     async fn quote_control_reserves_against_cap() {
-        let control = RateQuoteControlHandle::new();
+        let control = RateQuoteControlHandle::with_buffer_bps(100);
         control
             .set_unit_issuance_cap(CurrencyUnit::Usd, 100)
             .await
@@ -1399,6 +1445,16 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn quote_control_rejects_nonzero_cap_without_buffer() {
+        let control = RateQuoteControlHandle::new();
+        let error = control
+            .set_unit_issuance_cap(CurrencyUnit::Usd, 100)
+            .await
+            .expect_err("nonzero cap without buffer must fail");
+        assert!(matches!(error, RateQuoteStoreError::InvalidControl(_)));
     }
 
     #[tokio::test]
@@ -1428,7 +1484,7 @@ mod tests {
 
     #[tokio::test]
     async fn quote_control_releases_reservation_after_expiry() {
-        let control = RateQuoteControlHandle::new();
+        let control = RateQuoteControlHandle::with_buffer_bps(100);
         control
             .set_unit_issuance_cap(CurrencyUnit::Usd, 100)
             .await
@@ -1449,7 +1505,7 @@ mod tests {
 
     #[tokio::test]
     async fn quote_control_counts_outstanding_against_cap() {
-        let control = RateQuoteControlHandle::new();
+        let control = RateQuoteControlHandle::with_buffer_bps(100);
         control
             .set_unit_issuance_cap(CurrencyUnit::Usd, 150)
             .await

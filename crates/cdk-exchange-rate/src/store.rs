@@ -101,6 +101,9 @@ pub enum RateQuoteSettlement {
 /// Storage failure returned by [`RateQuoteStore`] implementations.
 #[derive(Debug, thiserror::Error)]
 pub enum RateQuoteStoreError {
+    /// Invalid unit-control request.
+    #[error("invalid rate quote control request: {0}")]
+    InvalidControl(String),
     /// Storage backend error.
     #[error("rate quote store error: {0}")]
     Storage(String),

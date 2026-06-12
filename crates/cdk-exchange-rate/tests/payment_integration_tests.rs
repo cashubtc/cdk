@@ -97,7 +97,7 @@ async fn spawn_usd_mint() -> (
     let mint_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let store = InMemoryRateQuoteStore::new();
     let dyn_store: DynRateQuoteStore = Arc::new(store);
-    let control = RateQuoteControlHandle::with_store(dyn_store.clone());
+    let control = RateQuoteControlHandle::with_store_and_buffer_bps(dyn_store.clone(), 100);
     control
         .set_unit_issuance_cap(CurrencyUnit::Usd, 10_000)
         .await
@@ -156,7 +156,7 @@ fn mint_quote(amount: u64) -> IncomingPaymentOptions {
 /// Control handle with an open USD issuance cap. The default cap of 0 fails
 /// closed, so every test that mints must opt in to headroom explicitly.
 async fn open_control(cap: u64) -> RateQuoteControlHandle {
-    let control = RateQuoteControlHandle::new();
+    let control = RateQuoteControlHandle::with_buffer_bps(100);
     control
         .set_unit_issuance_cap(CurrencyUnit::Usd, cap)
         .await
@@ -593,7 +593,7 @@ async fn unit_control_state_survives_restart_via_store() {
     // (simulated restart).
     let store = InMemoryRateQuoteStore::new();
     let dyn_store: DynRateQuoteStore = Arc::new(store.clone());
-    let control = RateQuoteControlHandle::with_store(dyn_store.clone());
+    let control = RateQuoteControlHandle::with_store_and_buffer_bps(dyn_store.clone(), 100);
     control
         .set_unit_issuance_cap(CurrencyUnit::Usd, 500)
         .await
@@ -616,7 +616,7 @@ async fn unit_control_state_survives_restart_via_store() {
     assert_eq!(control.outstanding(&CurrencyUnit::Usd).await, 200);
 
     // "Restart": a fresh handle over the same persisted store.
-    let restarted = RateQuoteControlHandle::with_store(dyn_store);
+    let restarted = RateQuoteControlHandle::with_store_and_buffer_bps(dyn_store, 100);
     let loaded = restarted.load_persisted().await.expect("load persisted");
     assert!(loaded.contains(&CurrencyUnit::Usd));
     assert_eq!(restarted.outstanding(&CurrencyUnit::Usd).await, 200);

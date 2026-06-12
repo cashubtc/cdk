@@ -699,6 +699,10 @@ pub struct RateQuoter {
     /// it never means unlimited.
     #[serde(default)]
     pub per_unit_caps: HashMap<CurrencyUnit, u64>,
+    /// Allow volatile in-memory rate-quote control storage. This is suitable
+    /// only for ephemeral development and tests.
+    #[serde(default)]
+    pub allow_in_memory_store: bool,
 }
 
 impl Default for RateQuoter {
@@ -712,6 +716,7 @@ impl Default for RateQuoter {
             min_fetched: default_rate_quoter_min_fetched(),
             min_survived: default_rate_quoter_min_survived(),
             per_unit_caps: HashMap::new(),
+            allow_in_memory_store: false,
         }
     }
 }
@@ -932,6 +937,7 @@ per_unit_caps = { usd = 1000 }
         assert_eq!(rate_quoter.staleness_secs, 45);
         assert_eq!(rate_quoter.min_fetched, 4);
         assert_eq!(rate_quoter.min_survived, 3);
+        assert!(!rate_quoter.allow_in_memory_store);
         assert_eq!(
             rate_quoter.per_unit_caps.get(&CurrencyUnit::Usd),
             Some(&1000)
