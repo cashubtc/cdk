@@ -23,13 +23,15 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v14
+
       - name: Set up Cachix
         uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           useDaemon: false
-          installCommand: nix profile install nixpkgs#cachix
         continue-on-error: true
 
       - name: Build cdk-mintd-static
