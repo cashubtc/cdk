@@ -324,7 +324,7 @@
                 # Target-side libraries (musl static libs linked into the binary)
                 buildInputs = with pkgsMusl; [
                   openssl.dev
-                  zlib.static
+                  zlib
                 ];
 
                 # Tell the cc crate and cargo to use the musl-targeting C compiler/linker
