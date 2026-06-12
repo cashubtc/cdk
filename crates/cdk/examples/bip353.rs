@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
     let seed = random::<[u8; 64]>();
 
     // Mint URL and currency unit
-    let mint_url = "https://fake.thesimplekid.dev";
+    let mint_url = "https://testnut.cashudevkit.org";
     let unit = CurrencyUnit::Sat;
     let initial_amount = Amount::from(1000); // Start with 1000 sats
 

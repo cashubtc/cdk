@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
     let seed = random::<[u8; 64]>();
     let localstore = Arc::new(memory::empty().await?);
     let wallet = Wallet::new(
-        "https://fake.thesimplekid.dev",
+        "https://testnut.cashudevkit.org",
         CurrencyUnit::Sat,
         localstore,
         seed,

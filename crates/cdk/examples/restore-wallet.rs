@@ -23,7 +23,7 @@ use rand::random;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configuration
-    let mint_url = "https://fake.thesimplekid.dev";
+    let mint_url = "https://testnut.cashudevkit.org";
     let unit = CurrencyUnit::Sat;
     let amount = Amount::from(50);
 

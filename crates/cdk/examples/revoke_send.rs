@@ -24,7 +24,7 @@ use cdk_sqlite::wallet::memory;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configuration
-    let mint_url = MintUrl::from_str("https://fake.thesimplekid.dev")?;
+    let mint_url = MintUrl::from_str("https://testnut.cashudevkit.org")?;
     let unit = CurrencyUnit::Sat;
 
     // Generate a seed
@@ -66,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
-    // Wait for quote to be paid (automatic with fake mint)
+    // Wait for quote to be paid (automatic with test mint)
     let _proofs = mint_wallet
         .wait_and_mint_quote(
             mint_quote.clone(),

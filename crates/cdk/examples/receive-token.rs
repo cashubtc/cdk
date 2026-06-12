@@ -17,7 +17,7 @@ use rand::random;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Mint URL and currency unit
-    let mint_url = "https://fake.thesimplekid.dev";
+    let mint_url = "https://testnut.cashudevkit.org";
     let unit = CurrencyUnit::Sat;
     let amount = Amount::from(10);
 
@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Mint quote created. Invoice: {}", quote.request);
 
     // Wait for the quote to be paid and mint the proofs
-    // Note: With the fake mint, this happens automatically
+    // Note: With the test mint, this happens automatically
     let proofs = sender_wallet
         .wait_and_mint_quote(
             quote,

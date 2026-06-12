@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seed = random::<[u8; 64]>();
 
     // Mint URL and currency unit
-    let mint_url = "https://fake.thesimplekid.dev";
+    let mint_url = "https://testnut.cashudevkit.org";
     let unit = CurrencyUnit::Sat;
 
     // Initialize the memory store

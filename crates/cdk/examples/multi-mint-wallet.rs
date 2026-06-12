@@ -28,7 +28,7 @@ use cdk_sqlite::wallet::memory;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configuration
-    let mint_url = MintUrl::from_str("https://fake.thesimplekid.dev")?;
+    let mint_url = MintUrl::from_str("https://testnut.cashudevkit.org")?;
     let unit = CurrencyUnit::Sat;
 
     // Generate a seed from a mnemonic (in production, store this securely!)
@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Invoice to pay: {}", mint_quote.request);
 
     // Wait for quote to be paid and mint proofs
-    // With the fake mint, this happens automatically
+    // With the test mint, this happens automatically
     let proofs = mint_wallet
         .wait_and_mint_quote(
             mint_quote.clone(),
@@ -155,7 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- MELT ---");
     println!("Creating invoice for {} sats to melt...", melt_amount_sats);
 
-    // Create a fake invoice (works with fake.thesimplekid.dev)
+    // Create a fake invoice accepted by the test mint
     let invoice = create_fake_invoice(melt_amount_sats * 1000, "test melt".to_string());
     println!("Invoice: {}", invoice);
 

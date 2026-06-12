@@ -23,7 +23,7 @@ use cdk_sqlite::wallet::memory;
 use nostr_sdk::ToBech32;
 
 const NPUBCASH_URL: &str = "https://npubx.cash";
-const MINT_URL_1: &str = "https://fake.thesimplekid.dev";
+const MINT_URL_1: &str = "https://testnut.cashudevkit.org";
 const MINT_URL_2: &str = "https://testnut.cashu.space";
 const PAYMENT_AMOUNT_MSATS: u64 = 10000; // 10 sats
 

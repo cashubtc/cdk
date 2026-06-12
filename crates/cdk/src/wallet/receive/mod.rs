@@ -47,7 +47,7 @@ impl Wallet {
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
     ///  let seed = random::<[u8; 64]>();
-    ///  let mint_url = "https://fake.thesimplekid.dev";
+    ///  let mint_url = "https://testnut.cashudevkit.org";
     ///  let unit = CurrencyUnit::Sat;
     ///
     ///  let localstore = memory::empty().await?;
@@ -105,7 +105,7 @@ impl Wallet {
     /// #[tokio::main]
     /// async fn main() -> anyhow::Result<()> {
     ///  let seed = random::<[u8; 64]>();
-    ///  let mint_url = "https://fake.thesimplekid.dev";
+    ///  let mint_url = "https://testnut.cashudevkit.org";
     ///  let unit = CurrencyUnit::Sat;
     ///
     ///  let localstore = memory::empty().await?;

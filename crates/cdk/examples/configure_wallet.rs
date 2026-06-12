@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Configure a single Wallet
     // ==========================================
     println!("\n=== Single Wallet Configuration ===");
-    let mint_url = MintUrl::from_str("https://fake.thesimplekid.dev")?;
+    let mint_url = MintUrl::from_str("https://testnut.cashudevkit.org")?;
 
     // Create a wallet with a custom 10-minute TTL (default is 1 hour)
     let wallet = WalletBuilder::new()

@@ -60,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
     println!("-----------------------------------");
 
     let mints = vec![
-        "https://fake.thesimplekid.dev",
+        "https://testnut.cashudevkit.org",
         "https://testnut.cashu.space",
     ];
 

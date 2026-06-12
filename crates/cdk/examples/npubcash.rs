@@ -10,7 +10,7 @@
 //!
 //! Uses constants:
 //! - NPUBCASH_URL: https://npubx.cash
-//! - MINT_URL: https://fake.thesimplekid.dev (fake mint that auto-pays)
+//! - MINT_URL: https://testnut.cashudevkit.org (test mint that auto-pays)
 //!
 //! This example uses the NpubCash Proof Stream which continuously polls and mints.
 
@@ -26,7 +26,7 @@ use cdk_sqlite::wallet::memory;
 use nostr_sdk::{Keys, ToBech32};
 
 const NPUBCASH_URL: &str = "https://npubx.cash";
-const MINT_URL: &str = "https://fake.thesimplekid.dev";
+const MINT_URL: &str = "https://testnut.cashudevkit.org";
 const PAYMENT_AMOUNT_MSATS: u64 = 100000; // 100 sats
 
 #[tokio::main]
@@ -86,11 +86,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .trim_start_matches("http://");
     println!("Your npub.cash address:");
     println!("   {}@{}\n", npubcash_npub, display_url);
-    println!("Requesting invoice for 100 sats from the fake mint...");
+    println!("Requesting invoice for 100 sats from the test mint...");
 
     request_invoice(&npubcash_npub, PAYMENT_AMOUNT_MSATS).await?;
 
-    println!("Invoice requested - the fake mint should auto-pay shortly.\n");
+    println!("Invoice requested - the test mint should auto-pay shortly.\n");
 
     // Check if auto-minting is enabled
     // Note: With the new stream API, auto-mint is always enabled as it's the primary purpose of the stream.
