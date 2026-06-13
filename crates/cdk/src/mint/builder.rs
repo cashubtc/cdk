@@ -1285,7 +1285,10 @@ mod tests {
             )
             .unwrap();
 
-        let bolt12_settings = Bolt12Settings { amountless: true, ..Default::default() };
+        let bolt12_settings = Bolt12Settings {
+            amountless: true,
+            ..Default::default()
+        };
 
         let settings = SettingsResponse {
             unit: "sat".to_string(),
@@ -1454,8 +1457,14 @@ mod tests {
             bolt12: None,
             onchain: Some(OnchainSettings {
                 confirmations: 6,
-                receive_limits: AmountLimitSettings { min: Some(1000), max: None },
-                send_limits: AmountLimitSettings { min: Some(546), max: None },
+                receive_limits: AmountLimitSettings {
+                    min: Some(1000),
+                    max: None,
+                },
+                send_limits: AmountLimitSettings {
+                    min: Some(546),
+                    max: None,
+                },
             }),
             custom: HashMap::new(),
         };
@@ -1499,8 +1508,14 @@ mod tests {
             bolt12: None,
             onchain: Some(OnchainSettings {
                 confirmations: 1,
-                receive_limits: AmountLimitSettings { min: Some(1000), max: None },
-                send_limits: AmountLimitSettings { min: Some(546), max: None },
+                receive_limits: AmountLimitSettings {
+                    min: Some(1000),
+                    max: None,
+                },
+                send_limits: AmountLimitSettings {
+                    min: Some(546),
+                    max: None,
+                },
             }),
             custom: HashMap::new(),
         };
@@ -1535,8 +1550,14 @@ mod tests {
             bolt12: None,
             onchain: Some(OnchainSettings {
                 confirmations: 1,
-                receive_limits: AmountLimitSettings { min: Some(1000), max: None },
-                send_limits: AmountLimitSettings { min: Some(546), max: None },
+                receive_limits: AmountLimitSettings {
+                    min: Some(1000),
+                    max: None,
+                },
+                send_limits: AmountLimitSettings {
+                    min: Some(546),
+                    max: None,
+                },
             }),
             custom: HashMap::new(),
         };
@@ -1609,7 +1630,10 @@ mod tests {
             .unwrap();
 
         // Add Bolt12
-        let bolt12_settings = Bolt12Settings { amountless: false, ..Default::default() };
+        let bolt12_settings = Bolt12Settings {
+            amountless: false,
+            ..Default::default()
+        };
         let settings2 = SettingsResponse {
             unit: "sat".to_string(),
             bolt11: None,

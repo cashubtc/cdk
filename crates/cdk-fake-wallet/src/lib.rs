@@ -506,8 +506,14 @@ impl MintPayment for FakeWallet {
             }),
             onchain: Some(payment::OnchainSettings {
                 confirmations: 1,
-                receive_limits: payment::AmountLimitSettings { min: Some(1), max: None },
-                send_limits: payment::AmountLimitSettings { min: Some(1), max: None },
+                receive_limits: payment::AmountLimitSettings {
+                    min: Some(1),
+                    max: None,
+                },
+                send_limits: payment::AmountLimitSettings {
+                    min: Some(1),
+                    max: None,
+                },
             }),
             custom: self.custom_payment_methods.clone(),
         })

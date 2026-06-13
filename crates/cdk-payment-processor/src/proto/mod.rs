@@ -497,8 +497,14 @@ mod tests {
 
         let settings = OnchainSettings {
             confirmations: 3,
-            receive_limits: AmountLimitSettings { min: Some(1_000), max: Some(0) },
-            send_limits: AmountLimitSettings { min: Some(546), max: Some(500_000) },
+            receive_limits: AmountLimitSettings {
+                min: Some(1_000),
+                max: Some(0),
+            },
+            send_limits: AmountLimitSettings {
+                min: Some(546),
+                max: Some(500_000),
+            },
         };
 
         // Simulate the server→proto→client roundtrip via the helper functions in client/server.

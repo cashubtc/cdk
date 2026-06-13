@@ -195,10 +195,8 @@ impl MintPayment for PaymentProcessorClient {
 
     async fn wait_settings(
         &self,
-    ) -> Result<
-        Pin<Box<dyn Stream<Item = cdk_common::payment::SettingsResponse> + Send>>,
-        Self::Err,
-    > {
+    ) -> Result<Pin<Box<dyn Stream<Item = cdk_common::payment::SettingsResponse> + Send>>, Self::Err>
+    {
         let mut inner = self.inner.clone();
         let stream = inner
             .get_settings(Request::new(EmptyRequest {}))

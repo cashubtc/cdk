@@ -659,7 +659,8 @@ impl Mint {
             {
                 group.1.push((key.clone(), operator_limits));
             } else {
-                processor_groups.push((Arc::clone(processor), vec![(key.clone(), operator_limits)]));
+                processor_groups
+                    .push((Arc::clone(processor), vec![(key.clone(), operator_limits)]));
             }
         }
 

@@ -231,7 +231,9 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::error!("Could not get settings stream: {}", e);
-                    let _ = tx.send(Err(Status::internal("Could not get settings"))).await;
+                    let _ = tx
+                        .send(Err(Status::internal("Could not get settings")))
+                        .await;
                     return;
                 }
             };
@@ -263,7 +265,9 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
         });
 
         let output_stream = ReceiverStream::new(rx);
-        Ok(Response::new(Box::pin(output_stream) as Self::GetSettingsStream))
+        Ok(Response::new(
+            Box::pin(output_stream) as Self::GetSettingsStream
+        ))
     }
 
     async fn create_payment(
