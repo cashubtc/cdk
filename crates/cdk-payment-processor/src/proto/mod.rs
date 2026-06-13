@@ -497,15 +497,15 @@ mod tests {
 
         let settings = OnchainSettings {
             confirmations: 3,
-            receive_limits: AmountLimitSettings { min: 1_000, max: 0 },
-            send_limits: AmountLimitSettings { min: 546, max: 500_000 },
+            receive_limits: AmountLimitSettings { min: Some(1_000), max: Some(0) },
+            send_limits: AmountLimitSettings { min: Some(546), max: Some(500_000) },
         };
 
         // Simulate the server→proto→client roundtrip via the helper functions in client/server.
         // Here we just verify the Rust structs round-trip through field access.
-        assert_eq!(settings.receive_limits.min, 1_000);
-        assert_eq!(settings.send_limits.min, 546);
-        assert_eq!(settings.send_limits.max, 500_000);
+        assert_eq!(settings.receive_limits.min, Some(1_000));
+        assert_eq!(settings.send_limits.min, Some(546));
+        assert_eq!(settings.send_limits.max, Some(500_000));
     }
 
     #[test]
