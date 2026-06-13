@@ -7,7 +7,7 @@ use cdk_common::database::mint::{ConditionsDatabase, ConditionsTransaction};
 use cdk_common::database::Error;
 use cdk_common::mint::{MintKeySetInfo, StoredCondition};
 use cdk_common::nuts::nut_ctf::ConditionalKeySetInfo;
-use cdk_common::nuts::Id;
+use cdk_common::nuts::{CurrencyUnit, Id};
 
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
@@ -21,6 +21,7 @@ fn sql_row_to_stored_condition(row: Vec<Column>) -> Result<StoredCondition, Erro
             threshold,
             tags_json,
             announcements_json,
+            collateral,
             attestation_status,
             winning_outcome,
             attested_at,
@@ -50,6 +51,14 @@ fn sql_row_to_stored_condition(row: Vec<Column>) -> Result<StoredCondition, Erro
         _ => "enum".to_string(),
     };
 
+    let collateral_val = match &collateral {
+        Column::Text(s) => Some(
+            s.parse::<CurrencyUnit>()
+                .map_err(|e| Error::Internal(format!("Invalid collateral unit: {e}")))?,
+        ),
+        _ => None,
+    };
+
     let lo_bound_val: Option<i64> = match &lo_bound {
         Column::Integer(n) => Some(*n),
         _ => None,
@@ -70,6 +79,7 @@ fn sql_row_to_stored_condition(row: Vec<Column>) -> Result<StoredCondition, Erro
         threshold: threshold_val as u32,
         tags_json: column_as_string!(&tags_json),
         announcements_json: column_as_string!(&announcements_json),
+        collateral: collateral_val,
         attestation_status: column_as_string!(&attestation_status),
         winning_outcome,
         attested_at,
@@ -193,11 +203,11 @@ where
         r#"
         INSERT INTO conditions (
             condition_id, threshold, tags_json, announcements_json,
-            attestation_status, winning_outcome, attested_at, created_at,
+            collateral, attestation_status, winning_outcome, attested_at, created_at,
             condition_type, lo_bound, hi_bound, precision
         ) VALUES (
             :condition_id, :threshold, :tags_json, :announcements_json,
-            :attestation_status, :winning_outcome, :attested_at, :created_at,
+            :collateral, :attestation_status, :winning_outcome, :attested_at, :created_at,
             :condition_type, :lo_bound, :hi_bound, :precision
         )
         "#,
@@ -206,6 +216,10 @@ where
     .bind("threshold", condition.threshold as i64)
     .bind("tags_json", condition.tags_json)
     .bind("announcements_json", condition.announcements_json)
+    .bind(
+        "collateral",
+        condition.collateral.map(|unit| unit.to_string()),
+    )
     .bind("attestation_status", condition.attestation_status)
     .bind("winning_outcome", condition.winning_outcome)
     .bind("attested_at", condition.attested_at.map(|a| a as i64))
@@ -388,7 +402,7 @@ where
         let row = query(
             r#"
             SELECT condition_id, threshold, tags_json, announcements_json,
-                   attestation_status, winning_outcome, attested_at, created_at,
+                   collateral, attestation_status, winning_outcome, attested_at, created_at,
                    condition_type, lo_bound, hi_bound, precision
             FROM conditions
             WHERE condition_id = :condition_id
@@ -415,7 +429,7 @@ where
         // Build SQL dynamically for status IN clause
         let mut sql = String::from(
             "SELECT condition_id, threshold, tags_json, announcements_json, \
-             attestation_status, winning_outcome, attested_at, created_at, \
+             collateral, attestation_status, winning_outcome, attested_at, created_at, \
              condition_type, lo_bound, hi_bound, precision FROM conditions WHERE 1=1",
         );
 

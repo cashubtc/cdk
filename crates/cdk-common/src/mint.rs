@@ -1404,6 +1404,9 @@ pub struct StoredCondition {
     pub tags_json: String,
     /// Hex-encoded oracle announcement TLV bytes (JSON array)
     pub announcements_json: String,
+    /// Collateral unit accepted during condition registration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collateral: Option<CurrencyUnit>,
     /// Attestation status
     pub attestation_status: String,
     /// Winning outcome (if attested)

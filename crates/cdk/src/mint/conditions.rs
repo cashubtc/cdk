@@ -13,6 +13,7 @@ use cdk_common::nuts::nut_ctf::{
     MAX_ANNOUNCEMENT_HEX_LENGTH, MAX_OUTCOMES, MAX_OUTCOME_COLLECTIONS, MAX_TAGS_JSON_LENGTH,
 };
 use cdk_common::nuts::{BlindSignature, BlindedMessage};
+use cdk_common::CurrencyUnit;
 use tracing::instrument;
 
 use super::Mint;
@@ -170,6 +171,17 @@ impl Mint {
         let required_fee = self
             .required_registration_fee(requested_collections.len())
             .await?;
+        let collateral_unit = request
+            .collateral
+            .as_deref()
+            .map(CurrencyUnit::from_str)
+            .transpose()
+            .map_err(|_| {
+                Error::Custom(format!(
+                    "Invalid collateral unit: {}",
+                    request.collateral.as_deref().unwrap_or_default()
+                ))
+            })?;
 
         // 4. Check for existing condition (idempotency or conflict)
         if let Some(existing) = self.localstore.get_condition(&condition_id).await? {
@@ -194,6 +206,7 @@ impl Mint {
                 || existing.lo_bound != request.lo_bound
                 || existing.hi_bound != request.hi_bound
                 || existing.precision != request.precision
+                || existing.collateral != collateral_unit
             {
                 return Err(Error::ConditionAlreadyExists);
             }
@@ -222,8 +235,12 @@ impl Mint {
                         .to_string(),
                 )
             })?;
-            cdk_common::CurrencyUnit::from_str(collateral)
-                .map_err(|_| Error::Custom(format!("Invalid collateral unit: {}", collateral)))?;
+            if collateral_unit.is_none() {
+                return Err(Error::Custom(format!(
+                    "Invalid collateral unit: {}",
+                    collateral
+                )));
+            }
         }
 
         let fee_verification = if required_fee > 0 {
@@ -255,6 +272,7 @@ impl Mint {
             threshold: request.threshold,
             tags_json,
             announcements_json: serde_json::to_string(&request.announcements)?,
+            collateral: collateral_unit,
             attestation_status: STATUS_PENDING.to_string(),
             winning_outcome: None,
             attested_at: None,
@@ -768,6 +786,7 @@ impl Mint {
             threshold: condition.threshold,
             tags: serde_json::from_str(&condition.tags_json).unwrap_or_default(),
             announcements,
+            collateral: condition.collateral,
             keysets,
             attestation: Some(AttestationState {
                 status: match condition.attestation_status.as_str() {

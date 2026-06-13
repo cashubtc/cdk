@@ -39,6 +39,7 @@ fn test_condition(condition_id: &str) -> StoredCondition {
         threshold: 1,
         tags_json: r#"[["description","Test condition"]]"#.to_string(),
         announcements_json: r#"["deadbeef"]"#.to_string(),
+        collateral: Some(CurrencyUnit::Sat),
         attestation_status: "pending".to_string(),
         winning_outcome: None,
         attested_at: None,

@@ -11,7 +11,7 @@ use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
-use super::nut00::{BlindSignature, BlindedMessage, Proofs};
+use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, Proofs};
 use super::nut02::Id;
 use crate::dhke;
 
@@ -216,6 +216,9 @@ pub struct ConditionInfo {
     pub tags: Vec<Vec<String>>,
     /// Hex-encoded oracle announcement TLV bytes
     pub announcements: Vec<String>,
+    /// Collateral unit accepted during registration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collateral: Option<CurrencyUnit>,
     /// Registered root-level outcome collection keysets
     #[serde(default)]
     pub keysets: HashMap<String, Id>,

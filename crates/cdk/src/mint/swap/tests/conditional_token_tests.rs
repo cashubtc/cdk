@@ -256,6 +256,47 @@ async fn test_get_condition_by_id() {
     assert_eq!(info.keysets, keysets);
 }
 
+#[tokio::test]
+async fn nut_ctf_register_with_collateral_condition_info_echoes_it() {
+    let mint = create_test_mint().await.unwrap();
+    let oracle = create_test_oracle();
+    let (_, hex_tlv) = create_test_announcement(&oracle, &["YES", "NO"], "collateral-event");
+
+    let mut request = enum_condition_request("Collateral condition", vec![hex_tlv]);
+    request.collateral = Some("usd".to_string());
+
+    let response = mint.register_condition(request).await.unwrap();
+    let info = mint.get_condition(&response.condition_id).await.unwrap();
+
+    assert_eq!(info.collateral, Some(CurrencyUnit::Usd));
+
+    let conditions = mint.get_conditions(None, None, &[]).await.unwrap();
+    assert_eq!(conditions.conditions.len(), 1);
+    assert_eq!(conditions.conditions[0].collateral, Some(CurrencyUnit::Usd));
+}
+
+#[test]
+fn nut_ctf_legacy_stored_condition_without_collateral_deserializes_with_none() {
+    let json = r#"{
+        "condition_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "threshold": 1,
+        "tags_json": "[[\"description\",\"legacy\"]]",
+        "announcements_json": "[\"deadbeef\"]",
+        "attestation_status": "pending",
+        "winning_outcome": null,
+        "attested_at": null,
+        "created_at": 1000000,
+        "condition_type": "enum",
+        "lo_bound": null,
+        "hi_bound": null,
+        "precision": null
+    }"#;
+
+    let stored: cdk_common::mint::StoredCondition = serde_json::from_str(json).unwrap();
+
+    assert_eq!(stored.collateral, None);
+}
+
 /// Full redeem outcome flow:
 /// mint regular proofs -> register condition -> swap to conditional -> redeem with witness
 #[tokio::test]
