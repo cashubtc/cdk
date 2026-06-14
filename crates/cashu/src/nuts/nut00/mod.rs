@@ -1512,6 +1512,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_payment_method_custom_name_validation() {
+        for method in ["paypal", "pay-pal", "pay_pal", "pay123", "Pay-123_USD"] {
+            assert!(
+                PaymentMethod::is_valid_custom_method_name(method),
+                "{method} should be valid"
+            );
+        }
+
+        for method in [
+            "",
+            "pay pal",
+            "pay/pal",
+            "pay.pal",
+            "pay:pal",
+            "\u{00fc}mlaut",
+        ] {
+            assert!(
+                !PaymentMethod::is_valid_custom_method_name(method),
+                "{method} should be invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn test_payment_method_name_validation() {
+        assert!(PaymentMethod::BOLT11.is_valid_method_name());
+        assert!(PaymentMethod::Known(KnownMethod::Onchain).is_valid_method_name());
+        assert!(PaymentMethod::Custom("pay-pal_123".to_string()).is_valid_method_name());
+        assert!(!PaymentMethod::Custom("pay/pal".to_string()).is_valid_method_name());
+    }
+
     /// Tests that is_bolt12 correctly identifies BOLT12 payment methods.
     ///
     /// This is critical for code that needs to distinguish between BOLT11 and BOLT12.
