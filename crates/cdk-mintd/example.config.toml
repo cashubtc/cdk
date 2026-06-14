@@ -31,6 +31,9 @@ melt_ttl = 120
 enabled = false
 # address = "127.0.0.1"
 # port = 8086
+# tls_dir_path = "/path/to/tls"
+# To allow plaintext management RPC, omit tls_dir_path and set:
+# CDK_MINTD_MANAGEMENT_ALLOW_INSECURE=true
 
 #[prometheus]
 #enabled = true

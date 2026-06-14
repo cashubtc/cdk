@@ -1,3 +1,4 @@
+use std::env;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -27,6 +28,8 @@ use crate::{
     UpdateResponse, UpdateTosUrlRequest, UpdateUrlRequest,
 };
 
+const ENV_MINT_MANAGEMENT_ALLOW_INSECURE: &str = "CDK_MINTD_MANAGEMENT_ALLOW_INSECURE";
+
 /// Error
 #[derive(Debug, Error)]
 pub enum Error {
@@ -39,6 +42,11 @@ pub enum Error {
     /// Io error
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    /// Insecure plaintext gRPC is disabled
+    #[error(
+        "management RPC requires mTLS; provide a TLS directory or set {ENV_MINT_MANAGEMENT_ALLOW_INSECURE}=true to allow insecure plaintext gRPC"
+    )]
+    InsecureRpcDisabled,
 }
 
 /// CDK Mint RPC Server
@@ -76,6 +84,8 @@ impl MintRPCServer {
     /// - server.pem: Server certificate
     /// - server.key: Server private key
     /// - ca.pem: CA certificate for client authentication
+    ///
+    /// Plaintext gRPC requires `CDK_MINTD_MANAGEMENT_ALLOW_INSECURE=true`.
     pub async fn start(&mut self, tls_dir: Option<PathBuf>) -> Result<(), Error> {
         tracing::info!("Starting RPC server {}", self.socket_addr);
 
@@ -147,7 +157,11 @@ impl MintRPCServer {
                 )
             }
             None => {
-                tracing::warn!("No valid TLS configuration found, starting insecure server");
+                if !allow_insecure_management_rpc()? {
+                    return Err(Error::InsecureRpcDisabled);
+                }
+
+                tracing::warn!("Starting management RPC without TLS");
                 Server::builder().add_service(CdkMintServer::with_interceptor(
                     self.clone(),
                     create_version_check_interceptor(
@@ -185,6 +199,19 @@ impl MintRPCServer {
 
         tracing::info!("Mint rpc server stopped");
         Ok(())
+    }
+}
+
+fn allow_insecure_management_rpc() -> std::io::Result<bool> {
+    match env::var(ENV_MINT_MANAGEMENT_ALLOW_INSECURE) {
+        Ok(value) => value.parse::<bool>().map_err(|err| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{ENV_MINT_MANAGEMENT_ALLOW_INSECURE} must be true or false: {err}"),
+            )
+        }),
+        Err(env::VarError::NotPresent) => Ok(false),
+        Err(err) => Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, err)),
     }
 }
 

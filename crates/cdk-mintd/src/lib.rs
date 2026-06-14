@@ -1274,7 +1274,7 @@ async fn start_services_with_shutdown(
                     Some(tls_dir)
                 } else {
                     tracing::warn!(
-                        "TLS directory does not exist: {}. Starting RPC server in INSECURE mode without TLS encryption",
+                        "TLS directory does not exist: {}. Management RPC startup without TLS requires CDK_MINTD_MANAGEMENT_ALLOW_INSECURE=true",
                         tls_dir.display()
                     );
                     None
