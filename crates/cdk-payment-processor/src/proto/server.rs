@@ -1,3 +1,4 @@
+use std::env;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -23,6 +24,9 @@ use crate::error::Error;
 use crate::proto::{TryFromProtoAmount, *};
 
 type ResponseStream = Pin<Box<dyn Stream<Item = Result<PaymentEventResponse, Status>> + Send>>;
+
+const ENV_PAYMENT_PROCESSOR_TLS_DIR: &str = "CDK_PAYMENT_PROCESSOR_TLS_DIR";
+const ENV_PAYMENT_PROCESSOR_ALLOW_INSECURE: &str = "CDK_PAYMENT_PROCESSOR_ALLOW_INSECURE";
 
 /// Payment Processor
 #[derive(Clone)]
@@ -58,6 +62,9 @@ impl PaymentProcessorServer {
     }
 
     /// Start fake wallet grpc server
+    ///
+    /// Plaintext gRPC is rejected by default unless explicitly enabled with
+    /// `CDK_PAYMENT_PROCESSOR_ALLOW_INSECURE`.
     pub async fn start(&mut self, tls_dir: Option<PathBuf>) -> anyhow::Result<()> {
         tracing::info!("Starting RPC server {}", self.socket_addr);
 
@@ -114,7 +121,13 @@ impl PaymentProcessorServer {
                 )
             }
             None => {
-                tracing::warn!("No valid TLS configuration found, starting insecure server");
+                if !allow_insecure_payment_processor()? {
+                    anyhow::bail!(
+                        "payment processor gRPC requires mTLS; set {ENV_PAYMENT_PROCESSOR_TLS_DIR} or set {ENV_PAYMENT_PROCESSOR_ALLOW_INSECURE}=true to allow insecure plaintext gRPC"
+                    );
+                }
+
+                tracing::warn!("Starting payment processor gRPC without TLS");
                 Server::builder().add_service(CdkPaymentProcessorServer::with_interceptor(
                     self.clone(),
                     create_version_check_interceptor(
@@ -170,6 +183,16 @@ impl PaymentProcessorServer {
         }
 
         Ok(())
+    }
+}
+
+fn allow_insecure_payment_processor() -> anyhow::Result<bool> {
+    match env::var(ENV_PAYMENT_PROCESSOR_ALLOW_INSECURE) {
+        Ok(value) => value.parse::<bool>().map_err(|err| {
+            anyhow::anyhow!("{ENV_PAYMENT_PROCESSOR_ALLOW_INSECURE} must be true or false: {err}")
+        }),
+        Err(env::VarError::NotPresent) => Ok(false),
+        Err(err) => Err(err.into()),
     }
 }
 

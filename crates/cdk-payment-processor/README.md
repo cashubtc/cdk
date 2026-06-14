@@ -36,7 +36,16 @@ export CDK_PAYMENT_PROCESSOR_LN_BACKEND="CLN"
 # Server configuration
 export CDK_PAYMENT_PROCESSOR_LISTEN_HOST="127.0.0.1"
 export CDK_PAYMENT_PROCESSOR_LISTEN_PORT="8090"
+
+# Required mTLS certificate directory
+# Must contain server.pem, server.key, and ca.pem.
+export CDK_PAYMENT_PROCESSOR_TLS_DIR="/path/to/tls"
 ```
+
+Plaintext gRPC is disabled by default because the processor can make outgoing
+payments from the backend wallet. To allow insecure plaintext gRPC, omit
+`CDK_PAYMENT_PROCESSOR_TLS_DIR` and set
+`CDK_PAYMENT_PROCESSOR_ALLOW_INSECURE=true`.
 
 #### Backend-Specific Configuration
 
