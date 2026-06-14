@@ -1268,7 +1268,7 @@ async fn start_services_with_shutdown(
                 let port = rpc_settings.port.unwrap_or(8086);
                 let mut mint_rpc = cdk_mint_rpc::MintRPCServer::new(&addr, port, mint.clone())?;
 
-                let tls_dir = rpc_settings.tls_dir_path.unwrap_or(_work_dir.join("tls"));
+                let tls_dir = rpc_settings.tls_dir.unwrap_or(_work_dir.join("tls"));
 
                 let tls_dir = if tls_dir.exists() {
                     Some(tls_dir)

@@ -38,7 +38,7 @@ Management RPC requires mTLS by default. The server TLS directory must contain:
 - `server.key`
 - `ca.pem`
 
-When running through `cdk-mintd`, configure it with `CDK_MINTD_MANAGEMENT_TLS_DIR_PATH`.
+When running through `cdk-mintd`, configure it with `CDK_MINTD_MANAGEMENT_TLS_DIR`.
 To allow insecure plaintext gRPC, omit the TLS directory and set
 `CDK_MINTD_MANAGEMENT_ALLOW_INSECURE=true`.
 

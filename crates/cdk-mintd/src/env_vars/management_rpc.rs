@@ -9,7 +9,8 @@ pub const ENV_MINT_MANAGEMENT_ENABLED: &str = "CDK_MINTD_MANAGEMENT_ENABLED";
 pub const ENV_MINT_MANAGEMENT_ENABLED_LEGACY: &str = "CDK_MINTD_MINT_MANAGEMENT_ENABLED";
 pub const ENV_MINT_MANAGEMENT_ADDRESS: &str = "CDK_MINTD_MANAGEMENT_ADDRESS";
 pub const ENV_MINT_MANAGEMENT_PORT: &str = "CDK_MINTD_MANAGEMENT_PORT";
-pub const ENV_MINT_MANAGEMENT_TLS_DIR_PATH: &str = "CDK_MINTD_MANAGEMENT_TLS_DIR_PATH";
+pub const ENV_MINT_MANAGEMENT_TLS_DIR: &str = "CDK_MINTD_MANAGEMENT_TLS_DIR";
+pub const ENV_MINT_MANAGEMENT_TLS_DIR_LEGACY: &str = "CDK_MINTD_MANAGEMENT_TLS_DIR_PATH";
 
 impl MintManagementRpc {
     pub fn from_env(mut self) -> Self {
@@ -31,8 +32,10 @@ impl MintManagementRpc {
             }
         }
 
-        if let Ok(tls_path) = env::var(ENV_MINT_MANAGEMENT_TLS_DIR_PATH) {
-            self.tls_dir_path = Some(tls_path.into());
+        if let Ok(tls_dir) = env::var(ENV_MINT_MANAGEMENT_TLS_DIR)
+            .or_else(|_| env::var(ENV_MINT_MANAGEMENT_TLS_DIR_LEGACY))
+        {
+            self.tls_dir = Some(tls_dir.into());
         }
 
         self
@@ -59,7 +62,8 @@ mod tests {
         env::remove_var(ENV_MINT_MANAGEMENT_ENABLED_LEGACY);
         env::remove_var(ENV_MINT_MANAGEMENT_ADDRESS);
         env::remove_var(ENV_MINT_MANAGEMENT_PORT);
-        env::remove_var(ENV_MINT_MANAGEMENT_TLS_DIR_PATH);
+        env::remove_var(ENV_MINT_MANAGEMENT_TLS_DIR);
+        env::remove_var(ENV_MINT_MANAGEMENT_TLS_DIR_LEGACY);
     }
 
     #[test]
@@ -68,7 +72,8 @@ mod tests {
             ENV_MINT_MANAGEMENT_ENABLED,
             ENV_MINT_MANAGEMENT_ADDRESS,
             ENV_MINT_MANAGEMENT_PORT,
-            ENV_MINT_MANAGEMENT_TLS_DIR_PATH,
+            ENV_MINT_MANAGEMENT_TLS_DIR,
+            ENV_MINT_MANAGEMENT_TLS_DIR_LEGACY,
         ];
 
         let prefixes: BTreeSet<&str> = names
@@ -96,7 +101,7 @@ mod tests {
         env::set_var(ENV_MINT_MANAGEMENT_ENABLED, "true");
         env::set_var(ENV_MINT_MANAGEMENT_ADDRESS, "0.0.0.0");
         env::set_var(ENV_MINT_MANAGEMENT_PORT, "10000");
-        env::set_var(ENV_MINT_MANAGEMENT_TLS_DIR_PATH, "/var/lib/cdk/tls");
+        env::set_var(ENV_MINT_MANAGEMENT_TLS_DIR, "/var/lib/cdk/tls");
 
         let management_rpc = MintManagementRpc::default().from_env();
 
@@ -104,7 +109,7 @@ mod tests {
         assert_eq!(management_rpc.address.as_deref(), Some("0.0.0.0"));
         assert_eq!(management_rpc.port, Some(10000));
         assert_eq!(
-            management_rpc.tls_dir_path,
+            management_rpc.tls_dir,
             Some(PathBuf::from("/var/lib/cdk/tls"))
         );
 
@@ -126,6 +131,47 @@ mod tests {
     }
 
     #[test]
+    fn management_rpc_from_env_still_reads_legacy_tls_dir_path_env_var() {
+        let _guard = env_lock();
+        clear_env_vars();
+
+        env::set_var(
+            ENV_MINT_MANAGEMENT_TLS_DIR_LEGACY,
+            "/var/lib/cdk/legacy-tls",
+        );
+
+        let management_rpc = MintManagementRpc::default().from_env();
+
+        assert_eq!(
+            management_rpc.tls_dir,
+            Some(PathBuf::from("/var/lib/cdk/legacy-tls"))
+        );
+
+        clear_env_vars();
+    }
+
+    #[test]
+    fn management_rpc_from_env_prefers_canonical_tls_dir_env_var() {
+        let _guard = env_lock();
+        clear_env_vars();
+
+        env::set_var(ENV_MINT_MANAGEMENT_TLS_DIR, "/var/lib/cdk/tls");
+        env::set_var(
+            ENV_MINT_MANAGEMENT_TLS_DIR_LEGACY,
+            "/var/lib/cdk/legacy-tls",
+        );
+
+        let management_rpc = MintManagementRpc::default().from_env();
+
+        assert_eq!(
+            management_rpc.tls_dir,
+            Some(PathBuf::from("/var/lib/cdk/tls"))
+        );
+
+        clear_env_vars();
+    }
+
+    #[test]
     fn management_rpc_from_env_allows_no_tls_configuration() {
         let _guard = env_lock();
         clear_env_vars();
@@ -135,7 +181,7 @@ mod tests {
         let management_rpc = MintManagementRpc::default().from_env();
 
         assert!(management_rpc.enabled);
-        assert_eq!(management_rpc.tls_dir_path, None);
+        assert_eq!(management_rpc.tls_dir, None);
 
         clear_env_vars();
     }

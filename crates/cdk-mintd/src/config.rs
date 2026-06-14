@@ -1097,7 +1097,8 @@ pub struct MintManagementRpc {
     pub enabled: bool,
     pub address: Option<String>,
     pub port: Option<u16>,
-    pub tls_dir_path: Option<PathBuf>,
+    #[serde(alias = "tls_dir_path")]
+    pub tls_dir: Option<PathBuf>,
 }
 
 impl Settings {
@@ -1807,6 +1808,36 @@ max_melt = 500000
         assert_eq!(settings.ln.len(), 1);
         assert_eq!(settings.ln[0].ln_backend, LnBackend::FakeWallet);
         assert_eq!(settings.ln[0].unit, CurrencyUnit::Sat);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(feature = "management-rpc")]
+    #[test]
+    fn test_management_rpc_legacy_tls_dir_path_alias_parses() {
+        use std::{env, fs};
+
+        let temp_dir = env::temp_dir().join("cdk_test_management_rpc_tls_alias");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        let config_content = r#"
+[mint_management_rpc]
+enabled = true
+tls_dir_path = "/var/lib/cdk/tls"
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        let settings = Settings::try_new(Some(&config_path)).expect("config should parse");
+
+        let management_rpc = settings
+            .mint_management_rpc
+            .expect("management RPC section should parse");
+        assert!(management_rpc.enabled);
+        assert_eq!(
+            management_rpc.tls_dir,
+            Some(PathBuf::from("/var/lib/cdk/tls"))
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
