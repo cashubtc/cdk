@@ -62,7 +62,7 @@ impl DatabasePool for SqliteConnectionManager {
         };
 
         if let Some(password) = config.password.as_ref() {
-            conn.execute_batch(&format!("pragma key = '{password}';"))?;
+            conn.pragma_update(None, "key", password)?;
         }
 
         conn.execute_batch(
