@@ -11,6 +11,7 @@ use tonic::transport::server::Connected;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status};
 
+use super::{allow_insecure_signatory_rpc, ENV_SIGNATORY_ALLOW_INSECURE};
 use crate::proto::{self, signatory_server};
 use crate::signatory::Signatory;
 
@@ -187,6 +188,11 @@ pub enum Error {
     /// Io error
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    /// Insecure plaintext gRPC is disabled
+    #[error(
+        "signatory gRPC requires mTLS; provide a TLS directory or set {ENV_SIGNATORY_ALLOW_INSECURE}=true to allow insecure plaintext gRPC"
+    )]
+    InsecureRpcDisabled,
 }
 
 /// Runs the signatory server
@@ -262,7 +268,11 @@ where
             Server::builder().tls_config(tls_config)?
         }
         None => {
-            tracing::warn!("No valid TLS configuration found, starting insecure server");
+            if !allow_insecure_signatory_rpc()? {
+                return Err(Error::InsecureRpcDisabled);
+            }
+
+            tracing::warn!("Starting signatory gRPC without TLS");
             Server::builder()
         }
     };
@@ -291,6 +301,12 @@ where
     IO: AsyncRead + AsyncWrite + Connected + Unpin + Send + 'static,
     IE: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
+    if !allow_insecure_signatory_rpc()? {
+        return Err(Error::InsecureRpcDisabled);
+    }
+
+    tracing::warn!("Starting signatory gRPC without TLS on an incoming stream");
+
     let version_str = (proto::Constants::SchemaVersion as u8).to_string();
     let version: &'static str = Box::leak(version_str.into_boxed_str());
     Server::builder()

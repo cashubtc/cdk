@@ -6,6 +6,7 @@ use cdk_common::{BlindSignature, BlindedMessage, Proof};
 use tonic::codegen::InterceptedService;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
+use super::{allow_insecure_signatory_rpc, ENV_SIGNATORY_ALLOW_INSECURE};
 use crate::proto;
 use crate::proto::signatory_client::SignatoryClient;
 use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
@@ -35,6 +36,12 @@ pub enum ClientError {
     /// Invalid URL
     #[error("Invalid URL")]
     InvalidUrl,
+
+    /// Insecure plaintext gRPC is disabled
+    #[error(
+        "signatory gRPC client requires mTLS; provide signatory certs or set {ENV_SIGNATORY_ALLOW_INSECURE}=true to allow insecure plaintext gRPC"
+    )]
+    InsecureRpcDisabled,
 }
 
 impl SignatoryRpcClient {
@@ -65,6 +72,11 @@ impl SignatoryRpcClient {
                 .connect()
                 .await?
         } else {
+            if !allow_insecure_signatory_rpc()? {
+                return Err(ClientError::InsecureRpcDisabled);
+            }
+
+            tracing::warn!("Connecting to signatory gRPC without TLS");
             Channel::from_shared(url.clone())
                 .map_err(|_| ClientError::InvalidUrl)?
                 .connect()
