@@ -183,6 +183,16 @@ struct CleanupGuard {
 impl CleanupGuard {
     fn stop_nutshell(&mut self) {
         if let Some(name) = &self.container_name {
+            if let Ok(output) = std::process::Command::new("docker")
+                .args(["logs", name])
+                .output()
+            {
+                let s = String::from_utf8_lossy(&output.stdout);
+                let err_s = String::from_utf8_lossy(&output.stderr);
+                if !s.is_empty() || !err_s.is_empty() {
+                    println!("NUTSHELL DOCKER LOGS:\nstdout:\n{}\nstderr:\n{}", s, err_s);
+                }
+            }
             let _ = std::process::Command::new("docker")
                 .args(["stop", name])
                 .output();
