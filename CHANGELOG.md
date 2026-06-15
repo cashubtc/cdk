@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+## [0.17.1](https://github.com/cashubtc/cdk/releases/tag/v0.17.1)
+
+### Fixed
+
+- cdk: Token handling now decodes proofs from inactive keysets when redeeming or inspecting tokens ([thesimplekid]).
+- cdk: Issue saga recovery treats mint input and output limit errors as definitive failures instead of falling back to restore ([thesimplekid]).
+- cdk-cln: Persist CLN Bolt12 quote lookup IDs before payment so pending payments can be checked after restart ([thesimplekid]).
+- cdk-ldk-node: Release reserved proofs when pending LDK payments fail during melt recovery ([thesimplekid]).
+
 ## [0.17.0](https://github.com/cashubtc/cdk/releases/tag/v0.17.0)
 
 ### Summary
