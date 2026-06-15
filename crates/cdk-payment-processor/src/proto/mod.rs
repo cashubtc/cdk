@@ -187,7 +187,7 @@ impl From<CreateIncomingPaymentResponse> for CreatePaymentResponse {
             request_identifier: Some(value.request_lookup_id.into()),
             request: value.request,
             expiry: value.expiry,
-            extra_json: None,
+            extra_json: value.extra_json.map(|v| v.to_string()),
         }
     }
 }
