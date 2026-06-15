@@ -76,54 +76,15 @@ fn create_truly_random_fake_invoice(amount_msat: u64) -> lightning_invoice::Bolt
 
 async fn do_mint(
     wallet: &Wallet,
-    container_name: &Option<String>,
-    poetry_path: &Option<String>,
+    _container_name: &Option<String>,
+    _poetry_path: &Option<String>,
 ) -> Result<()> {
     let amount = Amount::from(100);
     let quote = wallet
         .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
         .await?;
 
-    let pay_output = match container_name {
-        Some(name) => std::process::Command::new("docker")
-            .args([
-                "exec",
-                name,
-                "poetry",
-                "run",
-                "cashu",
-                "-h",
-                "http://127.0.0.1:4444",
-                "-y",
-                "pay",
-                &quote.request,
-            ])
-            .output()?,
-        None => {
-            let path = poetry_path.as_deref().unwrap_or("nutshell");
-            std::process::Command::new("poetry")
-                .args([
-                    "run",
-                    "cashu",
-                    "-h",
-                    "http://127.0.0.1:4444",
-                    "-y",
-                    "pay",
-                    &quote.request,
-                ])
-                .current_dir(path)
-                .output()?
-        }
-    };
-
-    if !pay_output.status.success() {
-        anyhow::bail!(
-            "Failed to pay invoice via nutshell: {}",
-            String::from_utf8_lossy(&pay_output.stderr)
-        );
-    }
-
-    // Mint the proofs in the wallet
+    // Mint the proofs in the wallet (automatically paid via CASHU_FAKEWALLET_BRR=True)
     let proofs = wallet
         .wait_and_mint_quote(quote, SplitTarget::default(), None, Duration::from_secs(10))
         .await?;
@@ -329,6 +290,8 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
                     "-e",
                     "MINT_BACKEND_BOLT11_SAT=FakeWallet",
                     "-e",
+                    "MINT_LIGHTNING_BACKEND=FakeWallet",
+                    "-e",
                     "CASHU_FAKEWALLET_BRR=True",
                     "-e",
                     "FAKEWALLET_BRR=True",
@@ -507,7 +470,8 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
         .unwrap();
 
     let target_keysets = db.get_keyset_infos().await?;
-    let cdk_keyset_ids: std::collections::HashSet<String> = target_keysets.iter().map(|k| k.id.to_string()).collect();
+    let cdk_keyset_ids: std::collections::HashSet<String> =
+        target_keysets.iter().map(|k| k.id.to_string()).collect();
     println!("CDK keyset IDs: {:?}", cdk_keyset_ids);
 
     for id in &nutshell_keyset_ids {
@@ -588,7 +552,10 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
         );
     }
 
-    let router = cdk_axum::create_mint_router(Arc::new(mint), vec!["bolt11".to_string()])
+    let mint_arc = Arc::new(mint);
+    mint_arc.start().await.unwrap();
+
+    let router = cdk_axum::create_mint_router(mint_arc.clone(), vec!["bolt11".to_string()])
         .await
         .unwrap();
 
