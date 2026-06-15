@@ -750,9 +750,11 @@
           ];
 
           "lightning-and-api" = [
+            "-p cdk-http-client"
             "-p cdk-axum"
             "-p cdk-axum --no-default-features"
             "-p cdk-axum --no-default-features --features redis"
+            "-p cdk-bdk"
             "-p cdk-cln"
             "-p cdk-lnd"
             "-p cdk-lnbits"
