@@ -861,6 +861,31 @@ mod tests {
     }
 
     #[test]
+    fn custom_mint_quote_response_flattens_extra_on_wire() {
+        let response = MintQuoteCustomResponse {
+            quote: "q1".to_string(),
+            request: "custom://pay".to_string(),
+            amount: Some(Amount::from(100)),
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            unit: Some(CurrencyUnit::Sat),
+            expiry: Some(9999),
+            pubkey: None,
+            extra: json!({"payment_url": "https://example.com", "ref": 42}),
+        };
+
+        let serialized = to_string(&response).expect("serializes");
+        let parsed: serde_json::Value = from_str(&serialized).expect("parses");
+
+        assert_eq!(parsed["payment_url"], json!("https://example.com"));
+        assert_eq!(parsed["ref"], json!(42));
+        assert!(
+            parsed.get("extra").is_none(),
+            "extra must be flattened, not nested under an 'extra' key"
+        );
+    }
+
+    #[test]
     fn test_onchain_settings_nested_options_round_trip() {
         // NUT-26 spec format: confirmations nested inside "options"
         let json_str = r#"{

@@ -1376,7 +1376,7 @@ impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
                     amount_issued: quote.amount_issued().into(),
                     unit: Some(quote.unit.clone()),
                     pubkey: quote.pubkey,
-                    extra: serde_json::Value::Null,
+                    extra: quote.extra_json.clone().unwrap_or_default(),
                 },
             })
         }
@@ -2091,6 +2091,35 @@ mod tests {
 
         let returned: Vec<u32> = quote.fee_options().iter().map(|o| o.fee_index).collect();
         assert_eq!(returned, vec![0, 0]);
+    }
+
+    #[test]
+    fn test_custom_mint_quote_response_surfaces_extra_json() {
+        let extra = serde_json::json!({"payment_url": "https://example.com/pay", "ref": 42});
+        let quote = MintQuote::new(
+            Some(QuoteId::new()),
+            "custom://request".to_string(),
+            CurrencyUnit::Sat,
+            Some(Amount::new(500, CurrencyUnit::Sat)),
+            unix_time() + 3600,
+            PaymentIdentifier::Label("test".to_string()),
+            None,
+            Amount::new(0, CurrencyUnit::Sat),
+            Amount::new(0, CurrencyUnit::Sat),
+            PaymentMethod::Custom("custom".to_string()),
+            unix_time(),
+            Vec::new(),
+            Vec::new(),
+            Some(extra.clone()),
+        );
+
+        let response: MintQuoteResponse<QuoteId> = quote.try_into().expect("conversion succeeds");
+        match response {
+            MintQuoteResponse::Custom { response, .. } => {
+                assert_eq!(response.extra, extra);
+            }
+            other => panic!("expected Custom variant, got {:?}", other),
+        }
     }
 
     #[test]
