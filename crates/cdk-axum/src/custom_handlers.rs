@@ -356,6 +356,10 @@ pub async fn post_batch_check_mint_quote(
         .await
         .map_err(into_response)?;
 
+    validate_mint_quote_methods(&state, &method, &payload.quotes)
+        .await
+        .map_err(into_response)?;
+
     let responses = state
         .mint
         .check_mint_quotes(&payload.quotes)
@@ -807,6 +811,77 @@ mod tests {
         }
     }
 
+    async fn create_test_state_with_custom_methods(methods: &[&str]) -> MintState {
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let mut builder = MintBuilder::new(db.clone()).with_batch_minting(
+            Some(10),
+            Some(methods.iter().map(|method| method.to_string()).collect()),
+        );
+
+        let custom_methods = methods
+            .iter()
+            .map(|method| (method.to_string(), "{}".to_string()))
+            .collect::<HashMap<_, _>>();
+
+        for method in methods {
+            let fake = FakeWallet::new(
+                FeeReserve {
+                    min_fee_reserve: 1.into(),
+                    percent_fee_reserve: 0.0,
+                },
+                HashMap::default(),
+                HashSet::default(),
+                0,
+                CurrencyUnit::Sat,
+            )
+            .with_custom_payment_methods(custom_methods.clone());
+
+            builder
+                .add_payment_processor(
+                    CurrencyUnit::Sat,
+                    PaymentMethod::Custom(method.to_string()),
+                    MintMeltLimits::new(1, 10_000),
+                    Arc::new(fake),
+                )
+                .await
+                .unwrap();
+        }
+
+        let mnemonic = Mnemonic::generate(12).unwrap();
+        let mint = builder
+            .build_with_seed(db, &mnemonic.to_seed_normalized(""))
+            .await
+            .unwrap();
+        mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000))
+            .await
+            .unwrap();
+        mint.start().await.unwrap();
+
+        MintState {
+            mint: Arc::new(mint),
+            cache: Arc::new(HttpCache::default()),
+        }
+    }
+
+    async fn create_custom_quote(state: &MintState, method: &str, amount: u64) -> QuoteId {
+        let quote = state
+            .mint
+            .get_mint_quote(cdk::mint::MintQuoteRequest::Custom {
+                method: PaymentMethod::Custom(method.to_string()),
+                request: MintQuoteCustomRequest {
+                    amount: Amount::from(amount),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                    extra: Value::Null,
+                },
+            })
+            .await
+            .unwrap();
+
+        quote.quote().clone()
+    }
+
     async fn create_paid_bolt11_quote(state: &MintState) -> QuoteId {
         let quote: MintQuoteBolt11Response<QuoteId> = state
             .mint
@@ -994,6 +1069,27 @@ mod tests {
         assert!(
             result.is_err(),
             "cache_post_batch_mint must reject cross-method cached mint"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_batch_check_mint_quote_rejects_url_method_quote_method_mismatch() {
+        let state = create_test_state_with_custom_methods(&["paypal", "venmo"]).await;
+        let quote_id = create_custom_quote(&state, "venmo", 2).await;
+
+        let result = post_batch_check_mint_quote(
+            AuthHeader::None,
+            State(state),
+            Path("paypal".to_string()),
+            Json(BatchCheckMintQuoteRequest {
+                quotes: vec![quote_id],
+            }),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "post_batch_check_mint_quote must reject cross-method quote checks"
         );
     }
 }
