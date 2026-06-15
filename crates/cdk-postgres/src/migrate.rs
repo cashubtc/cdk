@@ -85,7 +85,8 @@ async fn read_keysets_postgres(
         "SELECT id, derivation_path, valid_from::text, valid_to::text, active, version, unit, input_fee_ppk, amounts, NULL::integer FROM keysets;"
     };
 
-    let rows = client.query(query, &[])
+    let rows = client
+        .query(query, &[])
         .await
         .map_err(|e| Error::Database(Box::new(e)))?;
     let mut keysets = Vec::new();

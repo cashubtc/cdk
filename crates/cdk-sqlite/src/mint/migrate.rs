@@ -93,7 +93,8 @@ fn read_keysets_sqlite(conn: &rusqlite::Connection) -> Result<Vec<MintKeySetInfo
         "SELECT id, derivation_path, valid_from, valid_to, active, version, unit, input_fee_ppk, amounts, NULL FROM keysets;"
     };
 
-    let mut stmt = conn.prepare(query)
+    let mut stmt = conn
+        .prepare(query)
         .map_err(|e| Error::Database(Box::new(e)))?;
     let keysets_iter = stmt
         .query_map([], |row| {
