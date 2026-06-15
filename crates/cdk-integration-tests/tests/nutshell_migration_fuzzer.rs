@@ -333,7 +333,7 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
 
     // Wait until the port is open and nutshell is listening
     let mut ready = false;
-    for _ in 0..30 {
+    for _ in 0..240 {
         if std::net::TcpStream::connect("127.0.0.1:4444").is_ok() {
             ready = true;
             break;
@@ -345,7 +345,7 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
         let mut nutshell_proc = nutshell_proc;
         let _ = nutshell_proc.kill();
         let _ = nutshell_proc.wait();
-        panic!("Nutshell mint failed to start on port 4444 within 15 seconds.");
+        panic!("Nutshell mint failed to start on port 4444 within 120 seconds.");
     }
     println!("Nutshell mint is online and listening.");
 
