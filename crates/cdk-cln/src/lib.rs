@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use bitcoin::hashes::sha256::Hash;
+use bitcoin::hashes::sha256;
 use cdk_common::amount::Amount;
 use cdk_common::common::FeeReserve;
 use cdk_common::database::DynKVStore;
@@ -24,6 +24,7 @@ use cdk_common::payment::{
 };
 use cdk_common::util::{hex, unix_time};
 use cdk_common::Bolt11Invoice;
+use cdk_common::QuoteId;
 use cln_rpc::model::requests::{
     DecodeRequest, FetchinvoiceRequest, InvoiceRequest, ListinvoicesRequest, ListpaysRequest,
     OfferRequest, PayRequest, WaitanyinvoiceRequest,
@@ -45,6 +46,7 @@ pub mod error;
 // KV Store constants for CLN
 const CLN_KV_PRIMARY_NAMESPACE: &str = "cdk_cln_lightning_backend";
 const CLN_KV_SECONDARY_NAMESPACE: &str = "payment_indices";
+const CLN_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE: &str = "bolt12_outgoing_payments";
 const LAST_PAY_INDEX_KV_KEY: &str = "last_pay_index";
 
 /// CLN mint backend
@@ -240,7 +242,8 @@ impl MintPayment for Cln {
                                 }
                             };
 
-                            let payment_hash = Hash::from_bytes_ref(payment_hash.as_ref());
+                            let payment_hash =
+                                sha256::Hash::from_bytes_ref(payment_hash.as_ref());
 
                             let request_lookup_id = match wait_any_response.bolt12 {
                                 // If it is a bolt12 payment we need to get the offer_id as this is what we use as the request look up.
@@ -368,6 +371,8 @@ impl MintPayment for Cln {
                 })
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
+                let quote_id = bolt12_options.quote_id.clone();
+                Self::bolt12_quote_payment_hash_key(&quote_id)?;
                 let offer = bolt12_options.offer;
 
                 let amount_msat: u64 = if let Some(amount) = bolt12_options.melt_options {
@@ -392,7 +397,7 @@ impl MintPayment for Cln {
                 let fee = max(relative_fee_reserve, absolute_fee_reserve);
 
                 Ok(PaymentQuoteResponse {
-                    request_lookup_id: None,
+                    request_lookup_id: Some(PaymentIdentifier::QuoteId(quote_id)),
                     amount,
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
@@ -414,6 +419,7 @@ impl MintPayment for Cln {
         let max_fee_msat: Option<u64>;
         let mut partial_amount: Option<u64> = None;
         let mut amount_msat: Option<u64> = None;
+        let payment_lookup_id: PaymentIdentifier;
 
         let mut cln_client = self.cln_client().await?;
 
@@ -423,6 +429,7 @@ impl MintPayment for Cln {
                     PaymentIdentifier::PaymentHash(*bolt11_options.bolt11.payment_hash().as_ref());
 
                 self.check_outgoing_unpaided(&payment_identifier).await?;
+                payment_lookup_id = payment_identifier;
 
                 if let Some(melt_options) = bolt11_options.melt_options {
                     match melt_options {
@@ -443,6 +450,11 @@ impl MintPayment for Cln {
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
                 let offer = &bolt12_options.offer;
+                let quote_id = bolt12_options.quote_id.clone();
+                let quote_payment_identifier = PaymentIdentifier::QuoteId(quote_id.clone());
+
+                self.check_outgoing_unpaided(&quote_payment_identifier)
+                    .await?;
 
                 let amount_msat: u64 = if let Some(amount) = bolt12_options.melt_options {
                     amount.amount_msat().into()
@@ -479,18 +491,18 @@ impl MintPayment for Cln {
 
                 let decode_response = self.decode_string(cln_response.invoice.clone()).await?;
 
-                let payment_identifier = PaymentIdentifier::Bolt12PaymentHash(
-                    hex::decode(
-                        decode_response
-                            .invoice_payment_hash
-                            .ok_or(Error::UnknownInvoice)?,
-                    )
-                    .map_err(|e| Error::Bolt12(e.to_string()))?
-                    .try_into()
-                    .map_err(|_| Error::InvalidHash)?,
-                );
+                let payment_hash = Self::parse_payment_hash(
+                    decode_response
+                        .invoice_payment_hash
+                        .ok_or(Error::UnknownInvoice)?,
+                )?;
+
+                let payment_identifier = PaymentIdentifier::Bolt12PaymentHash(payment_hash);
 
                 self.check_outgoing_unpaided(&payment_identifier).await?;
+                self.write_bolt12_quote_payment_hash(&quote_id, &payment_hash)
+                    .await?;
+                payment_lookup_id = quote_payment_identifier;
 
                 max_fee_msat = bolt12_options
                     .max_fee_amount
@@ -501,8 +513,7 @@ impl MintPayment for Cln {
                 cln_response.invoice
             }
             _ => {
-                max_fee_msat = None;
-                "".to_string()
+                return Err(payment::Error::UnsupportedPaymentOption);
             }
         };
         if invoice.is_empty() {
@@ -537,23 +548,8 @@ impl MintPayment for Cln {
                     PayStatus::FAILED => MeltQuoteState::Failed,
                 };
 
-                let payment_identifier = match options {
-                    cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
-                        PaymentIdentifier::PaymentHash(*pay_response.payment_hash.as_ref())
-                    }
-                    OutgoingPaymentOptions::Bolt11(_) => {
-                        PaymentIdentifier::PaymentHash(*pay_response.payment_hash.as_ref())
-                    }
-                    OutgoingPaymentOptions::Bolt12(_) => {
-                        PaymentIdentifier::Bolt12PaymentHash(*pay_response.payment_hash.as_ref())
-                    }
-                    OutgoingPaymentOptions::Onchain(_) => {
-                        return Err(payment::Error::UnsupportedPaymentOption);
-                    }
-                };
-
                 MakePaymentResponse {
-                    payment_lookup_id: payment_identifier,
+                    payment_lookup_id,
                     payment_proof: Some(hex::encode(pay_response.payment_preimage.to_vec())),
                     status,
                     total_spent: Amount::new(
@@ -775,20 +771,42 @@ impl MintPayment for Cln {
         &self,
         payment_identifier: &PaymentIdentifier,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        let mut cln_client = self.cln_client().await?;
-
-        let payment_hash = match payment_identifier {
-            PaymentIdentifier::PaymentHash(hash) => hash,
-            PaymentIdentifier::Bolt12PaymentHash(hash) => hash,
+        let (payment_hash, missing_payment_state) = match payment_identifier {
+            PaymentIdentifier::PaymentHash(hash) | PaymentIdentifier::Bolt12PaymentHash(hash) => {
+                (*hash, MeltQuoteState::Unknown)
+            }
+            PaymentIdentifier::QuoteId(quote_id) => match self
+                .read_bolt12_quote_payment_hash(quote_id)
+                .await
+                .map_err(payment::Error::from)?
+            {
+                Bolt12QuotePaymentHashLookup::Found(payment_hash) => {
+                    (payment_hash, MeltQuoteState::Unpaid)
+                }
+                Bolt12QuotePaymentHashLookup::Missing => {
+                    return Ok(outgoing_payment_response_with_status(
+                        payment_identifier,
+                        MeltQuoteState::Unpaid,
+                    ));
+                }
+                Bolt12QuotePaymentHashLookup::Malformed => {
+                    return Ok(outgoing_payment_response_with_status(
+                        payment_identifier,
+                        MeltQuoteState::Unknown,
+                    ));
+                }
+            },
             _ => {
                 tracing::error!("Unsupported identifier to check outgoing payment for cln.");
                 return Err(payment::Error::UnknownPaymentState);
             }
         };
 
+        let mut cln_client = self.cln_client().await?;
+
         let listpays_response = cln_client
             .call_typed(&ListpaysRequest {
-                payment_hash: Some(*Sha256::from_bytes_ref(payment_hash)),
+                payment_hash: Some(*Sha256::from_bytes_ref(&payment_hash)),
                 bolt11: None,
                 status: None,
                 start: None,
@@ -816,7 +834,7 @@ impl MintPayment for Cln {
             None => Ok(MakePaymentResponse {
                 payment_lookup_id: payment_identifier.clone(),
                 payment_proof: None,
-                status: MeltQuoteState::Unknown,
+                status: missing_payment_state,
                 total_spent: Amount::new(0, CurrencyUnit::Msat),
             }),
         }
@@ -826,6 +844,114 @@ impl MintPayment for Cln {
 impl Cln {
     async fn cln_client(&self) -> Result<ClnRpc, Error> {
         Ok(cln_rpc::ClnRpc::new(&self.rpc_socket).await?)
+    }
+
+    fn bolt12_quote_payment_hash_key(quote_id: &QuoteId) -> Result<String, Error> {
+        match quote_id {
+            QuoteId::UUID(uuid) => Ok(uuid.to_string()),
+            QuoteId::BASE64(_) => Err(Error::InvalidQuoteId),
+        }
+    }
+
+    fn parse_payment_hash(payment_hash: String) -> Result<[u8; 32], Error> {
+        hex::decode(payment_hash)
+            .map_err(|e| Error::Bolt12(e.to_string()))?
+            .try_into()
+            .map_err(|_| Error::InvalidHash)
+    }
+
+    async fn write_bolt12_quote_payment_hash(
+        &self,
+        quote_id: &QuoteId,
+        payment_hash: &[u8; 32],
+    ) -> Result<(), Error> {
+        let key = Self::bolt12_quote_payment_hash_key(quote_id)?;
+        let value = hex::encode(payment_hash);
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        tx.kv_write(
+            CLN_KV_PRIMARY_NAMESPACE,
+            CLN_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+            &key,
+            value.as_bytes(),
+        )
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn read_bolt12_quote_payment_hash(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Bolt12QuotePaymentHashLookup, Error> {
+        let key = Self::bolt12_quote_payment_hash_key(quote_id)?;
+        let Some(stored_hash) = self
+            .kv_store
+            .kv_read(
+                CLN_KV_PRIMARY_NAMESPACE,
+                CLN_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+                &key,
+            )
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?
+        else {
+            return Ok(Bolt12QuotePaymentHashLookup::Missing);
+        };
+
+        let payment_hash = match String::from_utf8(stored_hash) {
+            Ok(payment_hash) => payment_hash,
+            Err(err) => {
+                tracing::warn!(
+                    "CLN: invalid UTF-8 in BOLT12 payment hash mapping for quote {quote_id}: {err}"
+                );
+                return Ok(Bolt12QuotePaymentHashLookup::Malformed);
+            }
+        };
+
+        match Self::parse_payment_hash(payment_hash) {
+            Ok(payment_hash) => Ok(Bolt12QuotePaymentHashLookup::Found(payment_hash)),
+            Err(err) => {
+                tracing::warn!(
+                    "CLN: invalid BOLT12 payment hash mapping for quote {quote_id}: {err}"
+                );
+                Ok(Bolt12QuotePaymentHashLookup::Malformed)
+            }
+        }
+    }
+
+    #[cfg(test)]
+    async fn outgoing_payment_hash(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<Option<[u8; 32]>, payment::Error> {
+        match payment_identifier {
+            PaymentIdentifier::PaymentHash(hash) | PaymentIdentifier::Bolt12PaymentHash(hash) => {
+                Ok(Some(*hash))
+            }
+            PaymentIdentifier::QuoteId(quote_id) => {
+                match self
+                    .read_bolt12_quote_payment_hash(quote_id)
+                    .await
+                    .map_err(payment::Error::from)?
+                {
+                    Bolt12QuotePaymentHashLookup::Found(payment_hash) => Ok(Some(payment_hash)),
+                    Bolt12QuotePaymentHashLookup::Missing
+                    | Bolt12QuotePaymentHashLookup::Malformed => Ok(None),
+                }
+            }
+            _ => {
+                tracing::error!("Unsupported identifier to check outgoing payment for cln.");
+                Err(payment::Error::UnknownPaymentState)
+            }
+        }
     }
 
     /// Get last pay index for cln
@@ -907,6 +1033,13 @@ impl Cln {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bolt12QuotePaymentHashLookup {
+    Found([u8; 32]),
+    Missing,
+    Malformed,
+}
+
 fn cln_pays_status_to_mint_state(status: ListpaysPaysStatus) -> MeltQuoteState {
     match status {
         ListpaysPaysStatus::PENDING => MeltQuoteState::Pending,
@@ -917,7 +1050,7 @@ fn cln_pays_status_to_mint_state(status: ListpaysPaysStatus) -> MeltQuoteState {
 
 async fn fetch_invoice_by_payment_hash(
     cln_client: &mut cln_rpc::ClnRpc,
-    payment_hash: &Hash,
+    payment_hash: &sha256::Hash,
 ) -> Result<Option<ListinvoicesInvoices>, Error> {
     tracing::debug!("Fetching invoice by payment hash: {}", payment_hash);
 
@@ -973,16 +1106,210 @@ async fn fetch_invoice_by_payment_hash(
     }
 }
 
+fn outgoing_payment_response_with_status(
+    payment_identifier: &PaymentIdentifier,
+    status: MeltQuoteState,
+) -> MakePaymentResponse {
+    MakePaymentResponse {
+        payment_lookup_id: payment_identifier.clone(),
+        payment_proof: None,
+        status,
+        total_spent: Amount::new(0, CurrencyUnit::Msat),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeSet, HashMap};
     use std::str::FromStr;
+    use std::sync::{Arc, Mutex};
 
     use cdk_common::database::{
-        Error as DatabaseError, KVStore, KVStoreDatabase, KVStoreTransaction,
+        DbTransactionFinalizer, Error as DatabaseError, KVStore, KVStoreDatabase,
+        KVStoreTransaction,
     };
     use cdk_common::payment::Bolt11OutgoingPaymentOptions;
 
     use super::*;
+
+    type MemoryKvKey = (String, String, String);
+
+    #[derive(Debug, Default)]
+    struct MemoryKvStore {
+        entries: Arc<Mutex<HashMap<MemoryKvKey, Vec<u8>>>>,
+    }
+
+    #[derive(Debug)]
+    struct MemoryKvTransaction {
+        entries: Arc<Mutex<HashMap<MemoryKvKey, Vec<u8>>>>,
+        writes: HashMap<MemoryKvKey, Option<Vec<u8>>>,
+    }
+
+    fn memory_kv_lock_error() -> DatabaseError {
+        DatabaseError::Database(Box::new(std::io::Error::other(
+            "memory kv store lock poisoned",
+        )))
+    }
+
+    fn memory_kv_key(primary_namespace: &str, secondary_namespace: &str, key: &str) -> MemoryKvKey {
+        (
+            primary_namespace.to_string(),
+            secondary_namespace.to_string(),
+            key.to_string(),
+        )
+    }
+
+    #[async_trait::async_trait]
+    impl KVStoreDatabase for MemoryKvStore {
+        type Err = DatabaseError;
+
+        async fn kv_read(
+            &self,
+            primary_namespace: &str,
+            secondary_namespace: &str,
+            key: &str,
+        ) -> Result<Option<Vec<u8>>, Self::Err> {
+            let entries = self.entries.lock().map_err(|_| memory_kv_lock_error())?;
+
+            Ok(entries
+                .get(&memory_kv_key(primary_namespace, secondary_namespace, key))
+                .cloned())
+        }
+
+        async fn kv_list(
+            &self,
+            primary_namespace: &str,
+            secondary_namespace: &str,
+        ) -> Result<Vec<String>, Self::Err> {
+            let entries = self.entries.lock().map_err(|_| memory_kv_lock_error())?;
+
+            Ok(entries
+                .keys()
+                .filter(|(primary, secondary, _)| {
+                    primary == primary_namespace && secondary == secondary_namespace
+                })
+                .map(|(_, _, key)| key.clone())
+                .collect())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl KVStore for MemoryKvStore {
+        async fn begin_transaction(
+            &self,
+        ) -> Result<Box<dyn KVStoreTransaction<Self::Err> + Send + Sync>, DatabaseError> {
+            Ok(Box::new(MemoryKvTransaction {
+                entries: Arc::clone(&self.entries),
+                writes: HashMap::new(),
+            }))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl KVStoreTransaction<DatabaseError> for MemoryKvTransaction {
+        async fn kv_read(
+            &mut self,
+            primary_namespace: &str,
+            secondary_namespace: &str,
+            key: &str,
+        ) -> Result<Option<Vec<u8>>, DatabaseError> {
+            let key = memory_kv_key(primary_namespace, secondary_namespace, key);
+
+            if let Some(value) = self.writes.get(&key) {
+                return Ok(value.clone());
+            }
+
+            let entries = self.entries.lock().map_err(|_| memory_kv_lock_error())?;
+
+            Ok(entries.get(&key).cloned())
+        }
+
+        async fn kv_write(
+            &mut self,
+            primary_namespace: &str,
+            secondary_namespace: &str,
+            key: &str,
+            value: &[u8],
+        ) -> Result<(), DatabaseError> {
+            self.writes.insert(
+                memory_kv_key(primary_namespace, secondary_namespace, key),
+                Some(value.to_vec()),
+            );
+
+            Ok(())
+        }
+
+        async fn kv_remove(
+            &mut self,
+            primary_namespace: &str,
+            secondary_namespace: &str,
+            key: &str,
+        ) -> Result<(), DatabaseError> {
+            self.writes.insert(
+                memory_kv_key(primary_namespace, secondary_namespace, key),
+                None,
+            );
+
+            Ok(())
+        }
+
+        async fn kv_list(
+            &mut self,
+            primary_namespace: &str,
+            secondary_namespace: &str,
+        ) -> Result<Vec<String>, DatabaseError> {
+            let entries = self.entries.lock().map_err(|_| memory_kv_lock_error())?;
+            let mut keys = entries
+                .keys()
+                .filter(|(primary, secondary, _)| {
+                    primary == primary_namespace && secondary == secondary_namespace
+                })
+                .map(|(_, _, key)| key.clone())
+                .collect::<BTreeSet<_>>();
+
+            for ((primary, secondary, key), value) in &self.writes {
+                if primary == primary_namespace && secondary == secondary_namespace {
+                    match value {
+                        Some(_) => {
+                            keys.insert(key.clone());
+                        }
+                        None => {
+                            keys.remove(key);
+                        }
+                    }
+                }
+            }
+
+            Ok(keys.into_iter().collect())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DbTransactionFinalizer for MemoryKvTransaction {
+        type Err = DatabaseError;
+
+        async fn commit(self: Box<Self>) -> Result<(), Self::Err> {
+            let this = *self;
+            let mut entries = this.entries.lock().map_err(|_| memory_kv_lock_error())?;
+
+            for (key, value) in this.writes {
+                match value {
+                    Some(value) => {
+                        entries.insert(key, value);
+                    }
+                    None => {
+                        entries.remove(&key);
+                    }
+                }
+            }
+
+            Ok(())
+        }
+
+        async fn rollback(self: Box<Self>) -> Result<(), Self::Err> {
+            Ok(())
+        }
+    }
 
     #[derive(Debug)]
     struct UnusedKvStore;
@@ -1020,7 +1347,7 @@ mod tests {
         }
     }
 
-    fn test_cln() -> Cln {
+    fn test_cln_with_kv(kv_store: DynKVStore) -> Cln {
         Cln {
             rpc_socket: PathBuf::new(),
             fee_reserve: FeeReserve {
@@ -1030,8 +1357,16 @@ mod tests {
             expose_private_channels: false,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
-            kv_store: Arc::new(UnusedKvStore),
+            kv_store,
         }
+    }
+
+    fn test_cln() -> Cln {
+        test_cln_with_kv(Arc::new(UnusedKvStore))
+    }
+
+    fn test_cln_with_memory_kv() -> Cln {
+        test_cln_with_kv(Arc::new(MemoryKvStore::default()))
     }
 
     fn test_invoice() -> Bolt11Invoice {
@@ -1089,6 +1424,137 @@ mod tests {
         assert_eq!(
             quote.amount,
             Amount::new(invoice_amount, CurrencyUnit::Msat)
+        );
+    }
+
+    #[tokio::test]
+    async fn bolt12_quote_payment_hash_round_trips_through_kv() {
+        let cln = test_cln_with_memory_kv();
+        let quote_id = QuoteId::new();
+        let payment_hash = [42; 32];
+
+        cln.write_bolt12_quote_payment_hash(&quote_id, &payment_hash)
+            .await
+            .expect("payment hash should be written");
+
+        let stored_payment_hash = cln
+            .read_bolt12_quote_payment_hash(&quote_id)
+            .await
+            .expect("payment hash should be read");
+
+        assert_eq!(
+            stored_payment_hash,
+            Bolt12QuotePaymentHashLookup::Found(payment_hash)
+        );
+        assert_eq!(
+            Cln::bolt12_quote_payment_hash_key(&quote_id).expect("uuid quote id should be valid"),
+            quote_id.to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn bolt12_quote_payment_hash_write_overwrites_existing_mapping() {
+        let cln = test_cln_with_memory_kv();
+        let quote_id = QuoteId::new();
+        let first_payment_hash = [1; 32];
+        let second_payment_hash = [2; 32];
+
+        cln.write_bolt12_quote_payment_hash(&quote_id, &first_payment_hash)
+            .await
+            .expect("first payment hash should be written");
+        cln.write_bolt12_quote_payment_hash(&quote_id, &second_payment_hash)
+            .await
+            .expect("second payment hash should be written");
+
+        let stored_payment_hash = cln
+            .read_bolt12_quote_payment_hash(&quote_id)
+            .await
+            .expect("payment hash should be read");
+
+        assert_eq!(
+            stored_payment_hash,
+            Bolt12QuotePaymentHashLookup::Found(second_payment_hash)
+        );
+    }
+
+    #[tokio::test]
+    async fn quote_id_outgoing_lookup_without_mapping_returns_unpaid() {
+        let cln = test_cln_with_memory_kv();
+        let payment_identifier = PaymentIdentifier::QuoteId(QuoteId::new());
+
+        let response = cln
+            .check_outgoing_payment(&payment_identifier)
+            .await
+            .expect("missing quote mapping should not require CLN lookup");
+
+        assert_eq!(response.payment_lookup_id, payment_identifier);
+        assert_eq!(response.status, MeltQuoteState::Unpaid);
+        assert_eq!(response.payment_proof, None);
+        assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Msat));
+    }
+
+    #[tokio::test]
+    async fn malformed_quote_id_mapping_returns_unknown() {
+        let kv_store = Arc::new(MemoryKvStore::default());
+        let cln = test_cln_with_kv(kv_store.clone());
+        let quote_id = QuoteId::new();
+        let key =
+            Cln::bolt12_quote_payment_hash_key(&quote_id).expect("uuid quote id should be valid");
+
+        let mut tx = kv_store
+            .begin_transaction()
+            .await
+            .expect("transaction should begin");
+        tx.kv_write(
+            CLN_KV_PRIMARY_NAMESPACE,
+            CLN_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+            &key,
+            b"not-a-payment-hash",
+        )
+        .await
+        .expect("malformed payment hash should be written");
+        tx.commit().await.expect("transaction should commit");
+
+        let payment_identifier = PaymentIdentifier::QuoteId(quote_id);
+        let response = cln
+            .check_outgoing_payment(&payment_identifier)
+            .await
+            .expect("malformed quote mapping should not require CLN lookup");
+
+        assert_eq!(response.payment_lookup_id, payment_identifier);
+        assert_eq!(response.status, MeltQuoteState::Unknown);
+    }
+
+    #[tokio::test]
+    async fn base64_quote_id_mapping_is_rejected() {
+        let cln = test_cln_with_memory_kv();
+        let quote_id = QuoteId::BASE64("SGVsbG8gV29ybGQh".to_string());
+        let payment_hash = [9; 32];
+
+        let err = cln
+            .write_bolt12_quote_payment_hash(&quote_id, &payment_hash)
+            .await
+            .expect_err("base64 quote ids should not be stored in CLN bolt12 mapping");
+
+        assert!(matches!(err, Error::InvalidQuoteId));
+    }
+
+    #[tokio::test]
+    async fn direct_hash_outgoing_lookup_bypasses_quote_mapping() {
+        let cln = test_cln();
+        let payment_hash = [7; 32];
+
+        assert_eq!(
+            cln.outgoing_payment_hash(&PaymentIdentifier::PaymentHash(payment_hash))
+                .await
+                .expect("payment hash should resolve"),
+            Some(payment_hash)
+        );
+        assert_eq!(
+            cln.outgoing_payment_hash(&PaymentIdentifier::Bolt12PaymentHash(payment_hash))
+                .await
+                .expect("bolt12 payment hash should resolve"),
+            Some(payment_hash)
         );
     }
 }
