@@ -22,7 +22,7 @@ use ldk_node::lightning::routing::router::RouteParametersConfig;
 use ldk_node::lightning_invoice::{Bolt11InvoiceDescription, Description};
 use ldk_node::lightning_types::payment::PaymentHash;
 use ldk_node::logger::{LogLevel, LogWriter};
-use ldk_node::payment::{PaymentDirection, PaymentKind, PaymentStatus};
+use ldk_node::payment::{PaymentDetails, PaymentDirection, PaymentKind, PaymentStatus};
 use ldk_node::{Builder, Event, Node};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
@@ -253,6 +253,41 @@ impl CdkLdkNode {
     /// the system to automatically assign an available port
     pub fn default_web_addr() -> SocketAddr {
         SocketAddr::from(([127, 0, 0, 1], 8091))
+    }
+
+    fn make_payment_response_from_details(
+        unit: &CurrencyUnit,
+        payment_lookup_id: PaymentIdentifier,
+        payment_details: &PaymentDetails,
+    ) -> Result<MakePaymentResponse, payment::Error> {
+        let status = match payment_details.status {
+            PaymentStatus::Pending => MeltQuoteState::Pending,
+            PaymentStatus::Succeeded => MeltQuoteState::Paid,
+            PaymentStatus::Failed => MeltQuoteState::Failed,
+        };
+
+        let payment_proof = match &payment_details.kind {
+            PaymentKind::Bolt11 { preimage, .. } => preimage.map(|p| p.to_string()),
+            PaymentKind::Bolt12Offer { preimage, .. } => preimage.map(|p| p.to_string()),
+            _ => return Err(Error::UnexpectedPaymentKind.into()),
+        };
+
+        let total_spent = if status == MeltQuoteState::Paid {
+            let total_spent = payment_details
+                .amount_msat
+                .ok_or(Error::CouldNotGetAmountSpent)?
+                + payment_details.fee_paid_msat.unwrap_or_default();
+            Amount::new(total_spent, CurrencyUnit::Msat).convert_to(unit)?
+        } else {
+            Amount::new(0, unit.clone())
+        };
+
+        Ok(MakePaymentResponse {
+            payment_lookup_id,
+            payment_proof,
+            status,
+            total_spent,
+        })
     }
 
     /// Start the CDK LDK Node
@@ -803,24 +838,24 @@ impl MintPayment for CdkLdkNode {
                 let start = std::time::Instant::now();
                 let timeout = std::time::Duration::from_secs(10);
 
-                let (status, payment_details) = loop {
+                let payment_details = loop {
                     let details = self
                         .inner
                         .payment(&payment_id)
                         .ok_or(Error::PaymentNotFound)?;
 
                     match details.status {
-                        PaymentStatus::Succeeded => break (MeltQuoteState::Paid, details),
+                        PaymentStatus::Succeeded => break details,
                         PaymentStatus::Failed => {
                             tracing::error!("Failed to pay bolt11 payment.");
-                            break (MeltQuoteState::Failed, details);
+                            break details;
                         }
                         PaymentStatus::Pending => {
                             if start.elapsed() > timeout {
                                 tracing::warn!(
                                     "Paying bolt11 exceeded timeout 10 seconds no longer waitning."
                                 );
-                                break (MeltQuoteState::Pending, details);
+                                break details;
                             }
                             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                             continue;
@@ -828,30 +863,11 @@ impl MintPayment for CdkLdkNode {
                     }
                 };
 
-                let payment_proof = match payment_details.kind {
-                    PaymentKind::Bolt11 {
-                        hash: _,
-                        preimage,
-                        secret: _,
-                    } => preimage.map(|p| p.to_string()),
-                    _ => return Err(Error::UnexpectedPaymentKind.into()),
-                };
-
-                let total_spent = payment_details
-                    .amount_msat
-                    .ok_or(Error::CouldNotGetAmountSpent)?
-                    + payment_details.fee_paid_msat.unwrap_or_default();
-
-                let total_spent = Amount::new(total_spent, CurrencyUnit::Msat).convert_to(unit)?;
-
-                Ok(MakePaymentResponse {
-                    payment_lookup_id: PaymentIdentifier::PaymentHash(
-                        bolt11.payment_hash().to_byte_array(),
-                    ),
-                    payment_proof,
-                    status,
-                    total_spent,
-                })
+                Self::make_payment_response_from_details(
+                    unit,
+                    PaymentIdentifier::PaymentHash(bolt11.payment_hash().to_byte_array()),
+                    &payment_details,
+                )
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
                 let offer = bolt12_options.offer;
@@ -898,14 +914,14 @@ impl MintPayment for CdkLdkNode {
                 let start = std::time::Instant::now();
                 let timeout = std::time::Duration::from_secs(10);
 
-                let (status, payment_details) = loop {
+                let payment_details = loop {
                     let details = self
                         .inner
                         .payment(&payment_id)
                         .ok_or(Error::PaymentNotFound)?;
 
                     match details.status {
-                        PaymentStatus::Succeeded => break (MeltQuoteState::Paid, details),
+                        PaymentStatus::Succeeded => break details,
                         PaymentStatus::Failed => {
                             tracing::error!(
                                 payment_id = %payment_id,
@@ -914,14 +930,14 @@ impl MintPayment for CdkLdkNode {
                                 payment_kind = ?details.kind,
                                 "Bolt12 payment failed"
                             );
-                            break (MeltQuoteState::Failed, details);
+                            break details;
                         }
                         PaymentStatus::Pending => {
                             if start.elapsed() > timeout {
                                 tracing::warn!(
                                     "Payment has been being for 10 seconds. No longer waiting"
                                 );
-                                break (MeltQuoteState::Pending, details);
+                                break details;
                             }
                             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                             continue;
@@ -929,31 +945,11 @@ impl MintPayment for CdkLdkNode {
                     }
                 };
 
-                let payment_proof = match payment_details.kind {
-                    PaymentKind::Bolt12Offer {
-                        hash: _,
-                        preimage,
-                        secret: _,
-                        offer_id: _,
-                        payer_note: _,
-                        quantity: _,
-                    } => preimage.map(|p| p.to_string()),
-                    _ => return Err(Error::UnexpectedPaymentKind.into()),
-                };
-
-                let total_spent = payment_details
-                    .amount_msat
-                    .ok_or(Error::CouldNotGetAmountSpent)?
-                    + payment_details.fee_paid_msat.unwrap_or_default();
-
-                let total_spent = Amount::new(total_spent, CurrencyUnit::Msat).convert_to(unit)?;
-
-                Ok(MakePaymentResponse {
-                    payment_lookup_id: PaymentIdentifier::PaymentId(payment_id.0),
-                    payment_proof,
-                    status,
-                    total_spent,
-                })
+                Self::make_payment_response_from_details(
+                    unit,
+                    PaymentIdentifier::PaymentId(payment_id.0),
+                    &payment_details,
+                )
             }
             OutgoingPaymentOptions::Onchain(_) => {
                 Err(cdk_common::payment::Error::UnsupportedPaymentOption)
@@ -1124,29 +1120,11 @@ impl MintPayment for CdkLdkNode {
             return Err(Error::InvalidPaymentDirection.into());
         }
 
-        let status = match payment_details.status {
-            PaymentStatus::Pending => MeltQuoteState::Pending,
-            PaymentStatus::Succeeded => MeltQuoteState::Paid,
-            PaymentStatus::Failed => MeltQuoteState::Failed,
-        };
-
-        let payment_proof = match payment_details.kind {
-            PaymentKind::Bolt11 { preimage, .. } => preimage.map(|p| p.to_string()),
-            PaymentKind::Bolt12Offer { preimage, .. } => preimage.map(|p| p.to_string()),
-            _ => return Err(Error::UnexpectedPaymentKind.into()),
-        };
-
-        let total_spent = payment_details
-            .amount_msat
-            .ok_or(Error::CouldNotGetAmountSpent)?
-            + payment_details.fee_paid_msat.unwrap_or_default();
-
-        Ok(MakePaymentResponse {
-            payment_lookup_id: request_lookup_id.clone(),
-            payment_proof,
-            status,
-            total_spent: Amount::new(total_spent, CurrencyUnit::Msat),
-        })
+        Self::make_payment_response_from_details(
+            &CurrencyUnit::Msat,
+            request_lookup_id.clone(),
+            &payment_details,
+        )
     }
 }
 
@@ -1155,5 +1133,70 @@ impl Drop for CdkLdkNode {
         tracing::info!("Drop called on CdkLdkNode");
         self.wait_invoice_cancel_token.cancel();
         tracing::debug!("Cancelled wait_invoice token in drop");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_payment_details(status: PaymentStatus, amount_msat: Option<u64>) -> PaymentDetails {
+        PaymentDetails {
+            id: PaymentId([2; 32]),
+            kind: PaymentKind::Bolt11 {
+                hash: PaymentHash([1; 32]),
+                preimage: None,
+                secret: None,
+            },
+            amount_msat,
+            fee_paid_msat: None,
+            direction: PaymentDirection::Outbound,
+            status,
+            latest_update_timestamp: 0,
+        }
+    }
+
+    #[test]
+    fn failed_payment_response_does_not_require_amount() {
+        let details = test_payment_details(PaymentStatus::Failed, None);
+
+        let response = CdkLdkNode::make_payment_response_from_details(
+            &CurrencyUnit::Msat,
+            PaymentIdentifier::PaymentId([2; 32]),
+            &details,
+        )
+        .expect("failed payment details should map without amount");
+
+        assert_eq!(response.status, MeltQuoteState::Failed);
+        assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Msat));
+    }
+
+    #[test]
+    fn pending_payment_response_does_not_require_amount() {
+        let details = test_payment_details(PaymentStatus::Pending, None);
+
+        let response = CdkLdkNode::make_payment_response_from_details(
+            &CurrencyUnit::Msat,
+            PaymentIdentifier::PaymentId([2; 32]),
+            &details,
+        )
+        .expect("pending payment details should map without amount");
+
+        assert_eq!(response.status, MeltQuoteState::Pending);
+        assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Msat));
+    }
+
+    #[test]
+    fn paid_payment_response_requires_amount() {
+        let details = test_payment_details(PaymentStatus::Succeeded, None);
+
+        let err = CdkLdkNode::make_payment_response_from_details(
+            &CurrencyUnit::Msat,
+            PaymentIdentifier::PaymentId([2; 32]),
+            &details,
+        )
+        .expect_err("paid payment details without amount should fail");
+
+        assert!(matches!(err, payment::Error::Lightning(_)));
     }
 }
