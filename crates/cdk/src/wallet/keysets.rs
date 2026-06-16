@@ -5,7 +5,7 @@ use cdk_common::nut02::KeySetInfosMethods;
 pub use cdk_common::wallet::KeysetFilter;
 use tracing::instrument;
 
-use crate::nuts::{Id, KeySetInfo, Keys};
+use crate::nuts::{Id, KeySetInfo, Keys, Proofs, Token};
 use crate::{Error, Wallet};
 
 impl Wallet {
@@ -69,6 +69,17 @@ impl Wallet {
         } else {
             Err(Error::UnknownKeySet)
         }
+    }
+
+    /// Decode proofs from a token using all known keysets for this mint.
+    ///
+    /// Tokens may contain proofs from inactive keysets. Inactive keysets no
+    /// longer issue new signatures, but mints can still accept their proofs for
+    /// redemption.
+    #[instrument(skip(self, token))]
+    pub(crate) async fn token_proofs(&self, token: &Token) -> Result<Proofs, Error> {
+        let keysets = self.get_mint_keysets(KeysetFilter::All).await?;
+        Ok(token.proofs(&keysets)?)
     }
 
     /// Refresh keysets by fetching the latest from mint - always fetches fresh data
@@ -188,5 +199,78 @@ impl Wallet {
             .get(&keyset_id)
             .cloned()
             .ok_or(Error::UnknownKeySet)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::nuts::{CurrencyUnit, Token};
+    use crate::wallet::test_utils::{
+        create_test_db, create_test_wallet_with_mock, test_mint_url, test_proof, MockMintConnector,
+    };
+
+    #[tokio::test]
+    async fn token_proofs_decodes_inactive_keyset_proofs() {
+        let active_id =
+            Id::from_str("01fb5c0e707d1a26e1ea8e8a70f6117beecc22b4797ac3548e802ec7ee477ec627")
+                .expect("valid active id");
+        let inactive_id =
+            Id::from_str("01950154227f1f2b94eb0f14cb460fa7ec35c096457afdf2b4c09fddda15dc0c44")
+                .expect("valid inactive id");
+
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        db.add_mint(mint_url.clone(), None)
+            .await
+            .expect("mint should be stored");
+        db.add_mint_keysets(
+            mint_url.clone(),
+            vec![
+                KeySetInfo {
+                    id: active_id,
+                    unit: CurrencyUnit::Sat,
+                    active: true,
+                    input_fee_ppk: 100,
+                    final_expiry: None,
+                },
+                KeySetInfo {
+                    id: inactive_id,
+                    unit: CurrencyUnit::Sat,
+                    active: false,
+                    input_fee_ppk: 0,
+                    final_expiry: None,
+                },
+            ],
+        )
+        .await
+        .expect("keysets should be stored");
+
+        let wallet = create_test_wallet_with_mock(db, Arc::new(MockMintConnector::new())).await;
+        let token = Token::new(
+            mint_url,
+            vec![test_proof(inactive_id, 1)],
+            None,
+            CurrencyUnit::Sat,
+        );
+
+        let active_keysets = wallet
+            .get_mint_keysets(KeysetFilter::Active)
+            .await
+            .expect("active keysets should load");
+        assert!(
+            token.proofs(&active_keysets).is_err(),
+            "active-only keysets should not decode an inactive keyset proof"
+        );
+
+        let proofs = wallet
+            .token_proofs(&token)
+            .await
+            .expect("all keysets should decode an inactive keyset proof");
+        assert_eq!(proofs.len(), 1);
+        assert_eq!(proofs[0].keyset_id, inactive_id);
     }
 }

@@ -782,8 +782,7 @@ impl Wallet {
             )));
         }
         // We need the keysets information to properly convert from token proof to proof
-        let keysets_info = self.load_mint_keysets().await?;
-        let proofs = token.proofs(&keysets_info)?;
+        let proofs = self.token_proofs(token).await?;
 
         for proof in proofs {
             let secret: nut10::Secret = (&proof.secret).try_into()?;
@@ -876,8 +875,7 @@ impl Wallet {
         }
 
         // We need the keysets information to properly convert from token proof to proof
-        let keysets_info = self.load_mint_keysets().await?;
-        let proofs = token.proofs(&keysets_info)?;
+        let proofs = self.token_proofs(token).await?;
         let mut keys_cache: HashMap<Id, Keys> = HashMap::new();
         for proof in proofs {
             let mint_pubkey = match keys_cache.get(&proof.keyset_id) {

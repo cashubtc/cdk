@@ -217,6 +217,14 @@ impl WalletRepository {
             wallet,
         ))))
     }
+
+    /// Get token data, including the expected redemption fee, without redeeming it.
+    pub async fn get_token_data(
+        &self,
+        token: Arc<crate::token::Token>,
+    ) -> Result<TokenData, FfiError> {
+        Ok(self.inner.get_token_data(&token.inner).await?.into())
+    }
 }
 
 /// Token data FFI type

@@ -87,11 +87,7 @@ impl Wallet {
         let token = prepared_send.confirm(None).await?;
 
         // We need the keysets information to properly convert from token proof to proof
-        let keysets_info = match self.localstore.get_mint_keysets(token.mint_url()?).await? {
-            Some(keysets_info) => keysets_info,
-            None => self.load_mint_keysets().await?,
-        };
-        let proofs = token.proofs(&keysets_info)?;
+        let proofs = self.token_proofs(&token).await?;
 
         if let Some(transport) = transport {
             let payload = PaymentRequestPayload {
