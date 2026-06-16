@@ -739,9 +739,7 @@ impl Wallet {
         ensure_cdk!(unit == self.unit, Error::UnsupportedUnit);
         ensure_cdk!(self.mint_url == token.mint_url()?, Error::IncorrectMint);
 
-        let keysets_info = self.load_mint_keysets().await?;
-        println!("{:?}", keysets_info);
-        let proofs = token.proofs(&keysets_info)?;
+        let proofs = self.token_proofs(&token).await?;
 
         self.prepare_melt_proofs(quote_id, proofs, metadata).await
     }
