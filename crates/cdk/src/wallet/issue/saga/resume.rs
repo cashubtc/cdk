@@ -30,6 +30,13 @@ use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::CompensatingAction;
 use crate::{Error, Wallet};
 
+fn is_mint_limit_error(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::MaxInputsExceeded { .. } | Error::MaxOutputsExceeded { .. }
+    )
+}
+
 impl Wallet {
     /// Resume an incomplete issue saga after crash recovery.
     ///
@@ -94,7 +101,14 @@ impl Wallet {
         let quote_ids = data.quote_ids();
 
         // Try replay first
-        if let Some(proofs) = self.try_replay_mint(saga_id, data).await? {
+        let replay_result = self.try_replay_mint(saga_id, data).await;
+        if let Err(e) = &replay_result {
+            if is_mint_limit_error(e) {
+                self.compensate_issue(saga_id).await?;
+            }
+        }
+
+        if let Some(proofs) = replay_result? {
             // Replay succeeded - save proofs and clean up
             self.localstore
                 .update_proofs(proofs.clone(), vec![])
@@ -325,6 +339,15 @@ impl Wallet {
             {
                 Ok(response) => response,
                 Err(e) => {
+                    if is_mint_limit_error(&e) {
+                        tracing::warn!(
+                            "Issue saga {} - batch replay failed with mint limit: {}",
+                            saga_id,
+                            e
+                        );
+                        return Err(e);
+                    }
+
                     tracing::info!(
                         "Issue saga {} - batch replay failed ({}), falling back to restore",
                         saga_id,
@@ -431,6 +454,15 @@ impl Wallet {
         {
             Ok(response) => response,
             Err(e) => {
+                if is_mint_limit_error(&e) {
+                    tracing::warn!(
+                        "Issue saga {} - replay failed with mint limit: {}",
+                        saga_id,
+                        e
+                    );
+                    return Err(e);
+                }
+
                 tracing::info!(
                     "Issue saga {} - replay failed ({}), falling back to restore",
                     saga_id,
@@ -519,17 +551,34 @@ impl Wallet {
 mod tests {
     use std::sync::Arc;
 
+    use cdk_common::amount::{FeeAndAmounts, SplitTarget};
     use cdk_common::nuts::{CurrencyUnit, RestoreResponse};
     use cdk_common::wallet::{
         IssueSagaState, MintOperationData, OperationData, WalletSaga, WalletSagaState,
     };
     use cdk_common::Amount;
 
+    use crate::nuts::PreMintSecrets;
     use crate::wallet::recovery::RecoveryAction;
     use crate::wallet::saga::test_utils::{create_test_db, test_mint_url};
     use crate::wallet::test_utils::{
-        create_test_wallet_with_mock, test_mint_quote, MockMintConnector,
+        create_test_wallet_with_mock, test_keyset_id, test_mint_quote, MockMintConnector,
     };
+
+    #[test]
+    fn test_only_mint_limit_errors_abort_replay_recovery() {
+        assert!(super::is_mint_limit_error(
+            &crate::Error::MaxOutputsExceeded { actual: 2, max: 1 }
+        ));
+        assert!(super::is_mint_limit_error(
+            &crate::Error::MaxInputsExceeded { actual: 2, max: 1 }
+        ));
+        assert!(!super::is_mint_limit_error(&crate::Error::IssuedQuote));
+        assert!(!super::is_mint_limit_error(&crate::Error::HttpError(
+            Some(429),
+            "Too Many Requests".to_string()
+        )));
+    }
 
     #[tokio::test]
     async fn test_recover_issue_secrets_prepared() {
@@ -693,5 +742,63 @@ mod tests {
         // No transaction for compensated issue
         let transactions = db.list_transactions(None, None, None).await.unwrap();
         assert!(transactions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_recover_issue_mint_requested_max_outputs_does_not_restore() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let saga_id = uuid::Uuid::new_v4();
+        let quote_id = format!("test_mint_quote_{}", uuid::Uuid::new_v4());
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client
+            .set_post_mint_response(Err(crate::Error::MaxOutputsExceeded { actual: 2, max: 1 }));
+
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let fee_and_amounts = FeeAndAmounts::from((0, vec![1]));
+        let premint_secrets = PreMintSecrets::from_seed(
+            test_keyset_id(),
+            0,
+            &wallet.seed,
+            Amount::from(1),
+            &SplitTarget::None,
+            &fee_and_amounts,
+        )
+        .unwrap();
+
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Issue(IssueSagaState::MintRequested),
+            Amount::from(1),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Mint(MintOperationData::new_single(
+                quote_id.clone(),
+                Amount::from(1),
+                Some(0),
+                Some(1),
+                Some(premint_secrets.blinded_messages()),
+            )),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        let mut mint_quote = test_mint_quote(mint_url);
+        mint_quote.id = quote_id.clone();
+        mint_quote.used_by_operation = Some(saga_id.to_string());
+        db.add_mint_quote(mint_quote).await.unwrap();
+
+        let result = wallet
+            .resume_issue_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(crate::Error::MaxOutputsExceeded { actual: 2, max: 1 })
+        ));
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+
+        let mint_quote = db.get_mint_quote(&quote_id).await.unwrap().unwrap();
+        assert!(mint_quote.used_by_operation.is_none());
     }
 }
