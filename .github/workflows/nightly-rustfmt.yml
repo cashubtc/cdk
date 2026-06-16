@@ -18,6 +18,7 @@ jobs:
         with:
           ref: main
           token: ${{ secrets.BACKPORT_TOKEN }}
+          persist-credentials: false
       - uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
