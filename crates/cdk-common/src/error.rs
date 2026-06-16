@@ -585,6 +585,8 @@ mod tests {
         assert!(Error::AmountOverflow.is_definitive_failure());
         assert!(Error::TokenAlreadySpent.is_definitive_failure());
         assert!(Error::MintingDisabled.is_definitive_failure());
+        assert!(Error::MaxInputsExceeded { actual: 2, max: 1 }.is_definitive_failure());
+        assert!(Error::MaxOutputsExceeded { actual: 2, max: 1 }.is_definitive_failure());
 
         // Test HTTP client errors (4xx) - simulated
         assert!(Error::HttpError(Some(400), "Bad Request".to_string()).is_definitive_failure());
@@ -619,6 +621,29 @@ mod tests {
         // reusing them risks a double-spend or loss of funds.
         assert!(!Error::TokenPending.is_definitive_failure());
         assert!(!Error::PendingQuote.is_definitive_failure());
+    }
+
+    #[test]
+    fn test_max_outputs_and_inputs_error_responses_decode() {
+        let max_inputs = Error::from(ErrorResponse {
+            code: ErrorCode::MaxInputsExceeded,
+            detail: "Maximum inputs exceeded: 2 provided, max 1".to_string(),
+        });
+        assert!(matches!(
+            max_inputs,
+            Error::MaxInputsExceeded { actual: 2, max: 1 }
+        ));
+        assert!(max_inputs.is_definitive_failure());
+
+        let max_outputs = Error::from(ErrorResponse {
+            code: ErrorCode::MaxOutputsExceeded,
+            detail: "Maximum outputs exceeded: 2 provided, max 1".to_string(),
+        });
+        assert!(matches!(
+            max_outputs,
+            Error::MaxOutputsExceeded { actual: 2, max: 1 }
+        ));
+        assert!(max_outputs.is_definitive_failure());
     }
 }
 
@@ -666,6 +691,8 @@ impl Error {
             | Self::TransactionUnbalanced(_, _, _)
             | Self::DuplicateInputs
             | Self::DuplicateOutputs
+            | Self::MaxInputsExceeded { .. }
+            | Self::MaxOutputsExceeded { .. }
             | Self::DuplicateQuoteIds
             | Self::BatchSizeExceeded { .. }
             | Self::MultipleUnits
@@ -1151,6 +1178,13 @@ impl From<crate::database::Error> for Error {
     }
 }
 
+fn parse_limit_counts(detail: &str) -> Option<(usize, usize)> {
+    let (_, counts) = detail.rsplit_once(": ")?;
+    let (actual, max) = counts.split_once(" provided, max ")?;
+
+    Some((actual.trim().parse().ok()?, max.trim().parse().ok()?))
+}
+
 impl From<ErrorResponse> for Error {
     fn from(err: ErrorResponse) -> Error {
         match err.code {
@@ -1167,6 +1201,14 @@ impl From<ErrorResponse> for Error {
             }
             ErrorCode::DuplicateInputs => Self::DuplicateInputs,
             ErrorCode::DuplicateOutputs => Self::DuplicateOutputs,
+            ErrorCode::MaxInputsExceeded => {
+                let (actual, max) = parse_limit_counts(&err.detail).unwrap_or((0, 0));
+                Self::MaxInputsExceeded { actual, max }
+            }
+            ErrorCode::MaxOutputsExceeded => {
+                let (actual, max) = parse_limit_counts(&err.detail).unwrap_or((0, 0));
+                Self::MaxOutputsExceeded { actual, max }
+            }
             ErrorCode::DuplicateQuoteIds => Self::DuplicateQuoteIds,
             ErrorCode::BatchSizeExceeded => Self::BatchSizeExceeded { actual: 0, max: 0 },
             ErrorCode::MultipleUnits => Self::MultipleUnits,
