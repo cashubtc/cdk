@@ -9,6 +9,9 @@ pub enum Error {
     /// Fee estimation failed
     #[error("Fee estimation failed: {0}")]
     FeeEstimationFailed(String),
+    /// Arithmetic overflow during fee estimation
+    #[error("Fee estimation overflow")]
+    FeeEstimationOverflow,
     /// Fee estimation unavailable
     #[error("Fee estimation unavailable")]
     FeeEstimationUnavailable,

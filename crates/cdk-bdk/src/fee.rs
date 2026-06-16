@@ -91,19 +91,37 @@ impl CoinSelectionAlgorithm for PessimisticFallback {
                 .checked_sub(input_fee)
                 .unwrap_or(BitcoinAmount::ZERO);
 
-            if selected_amount < target_amount + fee_amount || effective_value > BitcoinAmount::ZERO
-            {
+            let needed_amount = target_amount
+                .checked_add(fee_amount)
+                .ok_or(InsufficientFunds {
+                    needed: BitcoinAmount::MAX_MONEY,
+                    available: selected_amount,
+                })?;
+
+            if selected_amount < needed_amount || effective_value > BitcoinAmount::ZERO {
                 fee_amount += input_fee;
                 selected_amount += weighted_utxo.utxo.txout().value;
                 selected.push(weighted_utxo.utxo);
             }
 
-            if selected_amount >= target_amount + fee_amount {
+            let needed_amount = target_amount
+                .checked_add(fee_amount)
+                .ok_or(InsufficientFunds {
+                    needed: BitcoinAmount::MAX_MONEY,
+                    available: selected_amount,
+                })?;
+            if selected_amount >= needed_amount {
                 break;
             }
         }
 
-        let amount_needed_with_fees = target_amount + fee_amount;
+        let amount_needed_with_fees =
+            target_amount
+                .checked_add(fee_amount)
+                .ok_or(InsufficientFunds {
+                    needed: BitcoinAmount::MAX_MONEY,
+                    available: selected_amount,
+                })?;
         if selected_amount < amount_needed_with_fees {
             return Err(InsufficientFunds {
                 needed: amount_needed_with_fees,
@@ -176,7 +194,10 @@ fn base_transaction_fee(
     fee_rate * tx.weight()
 }
 
-fn raw_fee_from_selection(base_fee: BitcoinAmount, result: &CoinSelectionResult) -> BitcoinAmount {
+fn raw_fee_from_selection(
+    base_fee: BitcoinAmount,
+    result: &CoinSelectionResult,
+) -> Result<BitcoinAmount, Error> {
     let excess_fee = match result.excess {
         Excess::Change { fee, .. } => fee,
         Excess::NoChange {
@@ -184,7 +205,13 @@ fn raw_fee_from_selection(base_fee: BitcoinAmount, result: &CoinSelectionResult)
         } => remaining_amount,
     };
 
-    base_fee + result.fee_amount + excess_fee
+    let with_input_fees = base_fee
+        .checked_add(result.fee_amount)
+        .ok_or(Error::FeeEstimationOverflow)?;
+
+    with_input_fees
+        .checked_add(excess_fee)
+        .ok_or(Error::FeeEstimationOverflow)
 }
 
 /// Apply quote-time safety padding to a raw fee estimate.
@@ -269,7 +296,9 @@ impl CdkBdk {
         let sampled_utxo_count = weighted_utxos.len();
 
         let base_fee = base_transaction_fee(fee_rate, recipient_script.as_script(), amount_sat);
-        let target_amount = BitcoinAmount::from_sat(amount_sat) + base_fee;
+        let target_amount = BitcoinAmount::from_sat(amount_sat)
+            .checked_add(base_fee)
+            .ok_or(Error::FeeEstimationOverflow)?;
         let fallback_used = Cell::new(false);
         let fallback = TrackingFallback {
             fallback: PessimisticFallback,
@@ -288,7 +317,7 @@ impl CdkBdk {
             )
             .map_err(|e| Error::FeeEstimationFailed(e.to_string()))?;
 
-        let raw_fee_sat = raw_fee_from_selection(base_fee, &result).to_sat();
+        let raw_fee_sat = raw_fee_from_selection(base_fee, &result)?.to_sat();
         let padded_fee_sat = apply_quote_fee_safety(raw_fee_sat, &self.batch_config.fee_estimation);
         let fee_reserve_sat = self.fee_reserve_for_estimate(padded_fee_sat);
         let path = if fallback_used.get() {
