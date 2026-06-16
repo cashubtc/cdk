@@ -545,6 +545,38 @@ impl WalletRepository {
         client.get_mint_info().await
     }
 
+    /// Update mint url from wallet
+    ///
+    /// This will removes the old wallet and creates a new one with new mint url
+    pub async fn update_mint_url(
+        &self,
+        mint_url: &MintUrl,
+        new_mint_url: &MintUrl,
+        unit: &CurrencyUnit,
+    ) -> Result<(), Error> {
+        let key = WalletKey::new(mint_url.clone(), unit.clone());
+
+        let mut wallets = self.wallets.write().await;
+        let mut wallet = match Arc::try_unwrap(
+            wallets
+                .remove(&key)
+                .ok_or(Error::UnknownWallet(key.clone()))?,
+        ) {
+            Ok(wallet) => wallet,
+            Err(wallet) => {
+                wallets.insert(key.clone(), wallet);
+                return Err(Error::UnknownWallet(key.clone()));
+            }
+        };
+
+        wallet.update_mint_url(new_mint_url.clone()).await?;
+
+        let key = WalletKey::new(new_mint_url.clone(), unit.clone());
+        wallets.insert(key, Arc::new(wallet));
+
+        Ok(())
+    }
+
     /// Internal: Create wallet with optional custom configuration
     ///
     /// Priority order for configuration:
