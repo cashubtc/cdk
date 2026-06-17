@@ -290,7 +290,7 @@ impl MintQuote {
 
     /// Derive quote state from the tracked payment and issuance counters.
     pub fn state_from_amounts(&self) -> MintQuoteState {
-        quote_state_from_amounts(self.amount_paid, self.amount_issued)
+        quote_state_from_amounts(self.amount_paid, self.amount_issued).unwrap_or(self.state)
     }
 
     /// Update quote state from the tracked payment and issuance counters.

@@ -20,15 +20,21 @@ use crate::{Amount, Error, Wallet};
 pub(crate) fn apply_mint_quote_response(
     quote: &mut MintQuote,
     response: &MintQuoteResponse<String>,
-) {
+) -> bool {
     match response {
         MintQuoteResponse::Bolt11(response) => {
             let state =
                 if response.amount_paid > Amount::ZERO || response.amount_issued > Amount::ZERO {
-                    cdk_common::mint_quote::quote_state_from_amounts(
+                    match cdk_common::mint_quote::quote_state_from_amounts(
                         response.amount_paid,
                         response.amount_issued,
-                    )
+                    ) {
+                        Ok(state) => state,
+                        Err(err) => {
+                            tracing::debug!("Ignoring invalid mint quote accounting: {}", err);
+                            return false;
+                        }
+                    }
                 } else {
                     response.state
                 };
@@ -59,38 +65,33 @@ pub(crate) fn apply_mint_quote_response(
             };
 
             if is_stale_mint_quote_update(quote, response.updated_at, amount_paid, amount_issued) {
-                return;
+                return false;
             }
 
             quote.state = state;
             quote.amount_paid = amount_paid;
             quote.amount_issued = amount_issued;
             quote.updated_at = quote.updated_at.max(response.updated_at);
+            true
         }
-        MintQuoteResponse::Bolt12(response) => {
-            apply_accounting_mint_quote_update(
-                quote,
-                response.amount_paid,
-                response.amount_issued,
-                response.updated_at,
-            );
-        }
-        MintQuoteResponse::Onchain(response) => {
-            apply_accounting_mint_quote_update(
-                quote,
-                response.amount_paid,
-                response.amount_issued,
-                response.updated_at,
-            );
-        }
-        MintQuoteResponse::Custom { response, .. } => {
-            apply_accounting_mint_quote_update(
-                quote,
-                response.amount_paid,
-                response.amount_issued,
-                response.updated_at,
-            );
-        }
+        MintQuoteResponse::Bolt12(response) => apply_accounting_mint_quote_update(
+            quote,
+            response.amount_paid,
+            response.amount_issued,
+            response.updated_at,
+        ),
+        MintQuoteResponse::Onchain(response) => apply_accounting_mint_quote_update(
+            quote,
+            response.amount_paid,
+            response.amount_issued,
+            response.updated_at,
+        ),
+        MintQuoteResponse::Custom { response, .. } => apply_accounting_mint_quote_update(
+            quote,
+            response.amount_paid,
+            response.amount_issued,
+            response.updated_at,
+        ),
     }
 }
 
@@ -99,15 +100,25 @@ pub(crate) fn apply_accounting_mint_quote_update(
     amount_paid: Amount,
     amount_issued: Amount,
     updated_at: u64,
-) {
+) -> bool {
+    if amount_issued > amount_paid {
+        tracing::debug!(
+            "Ignoring invalid mint quote accounting: amount_issued {} exceeds amount_paid {}",
+            amount_issued,
+            amount_paid
+        );
+        return false;
+    }
+
     if is_stale_mint_quote_update(quote, updated_at, amount_paid, amount_issued) {
-        return;
+        return false;
     }
 
     quote.amount_paid = amount_paid;
     quote.amount_issued = amount_issued;
     quote.updated_at = quote.updated_at.max(updated_at);
     quote.update_state_from_amounts();
+    true
 }
 
 fn is_stale_mint_quote_update(
@@ -733,7 +744,7 @@ mod tests {
         quote.update_state_from_amounts();
 
         let stale_response = custom_mint_quote_response(Amount::from(200), Amount::from(20), 9);
-        apply_mint_quote_response(&mut quote, &stale_response);
+        assert!(!apply_mint_quote_response(&mut quote, &stale_response));
 
         assert_eq!(quote.amount_paid, Amount::from(100));
         assert_eq!(quote.amount_issued, Amount::from(20));
@@ -741,18 +752,44 @@ mod tests {
 
         let decreasing_response =
             custom_mint_quote_response(Amount::from(90), Amount::from(20), 11);
-        apply_mint_quote_response(&mut quote, &decreasing_response);
+        assert!(!apply_mint_quote_response(&mut quote, &decreasing_response));
 
         assert_eq!(quote.amount_paid, Amount::from(100));
         assert_eq!(quote.amount_issued, Amount::from(20));
         assert_eq!(quote.updated_at, 10);
 
         let fresh_response = custom_mint_quote_response(Amount::from(150), Amount::from(30), 12);
-        apply_mint_quote_response(&mut quote, &fresh_response);
+        assert!(apply_mint_quote_response(&mut quote, &fresh_response));
 
         assert_eq!(quote.amount_paid, Amount::from(150));
         assert_eq!(quote.amount_issued, Amount::from(30));
         assert_eq!(quote.updated_at, 12);
+    }
+
+    #[test]
+    fn invalid_mint_quote_response_does_not_apply_accounting() {
+        let mut quote = MintQuote::new(
+            "quote-id".to_string(),
+            MintUrl::from_str("https://mint.example.com").expect("valid mint url"),
+            PaymentMethod::Custom("custom".to_string()),
+            Some(Amount::from(200)),
+            CurrencyUnit::Sat,
+            "custom-request".to_string(),
+            1_700_000_000,
+            None,
+        );
+        quote.amount_paid = Amount::from(100);
+        quote.amount_issued = Amount::from(20);
+        quote.updated_at = 10;
+        quote.update_state_from_amounts();
+
+        let invalid_response = custom_mint_quote_response(Amount::from(120), Amount::from(150), 11);
+        assert!(!apply_mint_quote_response(&mut quote, &invalid_response));
+
+        assert_eq!(quote.amount_paid, Amount::from(100));
+        assert_eq!(quote.amount_issued, Amount::from(20));
+        assert_eq!(quote.updated_at, 10);
+        assert_eq!(quote.state, MintQuoteState::Paid);
     }
 
     fn custom_mint_quote_response(
