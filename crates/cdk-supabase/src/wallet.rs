@@ -213,7 +213,7 @@ impl SupabaseWalletDatabase {
     /// This must match the latest `schema_version` value set in the migration files.
     /// When adding new migrations, update this constant and set the same value
     /// in the new migration's `INSERT INTO schema_info` statement.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 7;
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 8;
 
     /// Get the full database schema SQL
     ///

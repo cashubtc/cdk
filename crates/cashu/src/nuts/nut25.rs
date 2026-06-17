@@ -40,15 +40,8 @@ pub struct MintQuoteBolt12Request {
 }
 
 /// Mint quote response [NUT-24]
-///
-/// `deny_unknown_fields` is intentional: the `NotificationPayload` enum is
-/// `#[serde(untagged)]` and Bolt11 mint quotes share the same core fields as
-/// Bolt12 mint quotes. Rejecting unknown fields lets `NotificationPayload`
-/// try the Bolt12 variant before Bolt11 without classifying Bolt11 payloads
-/// that carry a `state` field as Bolt12.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "Q: Serialize + for<'a> Deserialize<'a>")]
-#[serde(deny_unknown_fields)]
 pub struct MintQuoteBolt12Response<Q> {
     /// Quote Id
     pub quote: Q,
@@ -240,6 +233,28 @@ mod tests {
 
         let decoded: MintQuoteBolt12Response<String> =
             from_value(value).expect("deserialize response");
+        assert_eq!(decoded.method, PaymentMethod::Known(KnownMethod::Bolt12));
+    }
+
+    #[test]
+    fn mint_quote_bolt12_response_tolerates_unknown_fields() {
+        let value = json!({
+            "quote": "quote-id",
+            "request": "lno1...",
+            "amount": 10,
+            "unit": "sat",
+            "expiry": 1_701_704_757,
+            "pubkey": "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+            "amount_paid": 0,
+            "amount_issued": 0,
+            "future_extension": {
+                "payjoin": "https://payjoin.example/pj"
+            }
+        });
+
+        let decoded: MintQuoteBolt12Response<String> =
+            from_value(value).expect("deserialize response");
+        assert_eq!(decoded.quote, "quote-id");
         assert_eq!(decoded.method, PaymentMethod::Known(KnownMethod::Bolt12));
     }
 

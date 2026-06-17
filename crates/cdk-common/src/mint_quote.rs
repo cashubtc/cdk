@@ -112,6 +112,19 @@ pub enum MintQuoteResponse<Q> {
     },
 }
 
+/// Errors from mint quote accounting validation.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MintQuoteAccountingError {
+    /// The response reports more issued ecash than paid amount.
+    #[error("mint quote amount_issued ({amount_issued}) exceeds amount_paid ({amount_paid})")]
+    AmountIssuedExceedsAmountPaid {
+        /// Amount paid to the mint.
+        amount_paid: Amount,
+        /// Amount of ecash issued by the mint.
+        amount_issued: Amount,
+    },
+}
+
 impl<Q> MintQuoteResponse<Q> {
     /// Returns the payment method for this response.
     pub fn method(&self) -> PaymentMethod {
@@ -145,20 +158,24 @@ impl<Q> MintQuoteResponse<Q> {
 
     /// Returns the quote state derived from the response data.
     pub fn state(&self) -> Option<QuoteState> {
+        self.try_state().ok()
+    }
+
+    /// Returns the quote state derived from the response data, validating quote accounting.
+    pub fn try_state(&self) -> Result<QuoteState, MintQuoteAccountingError> {
         match self {
             Self::Bolt11(r) => {
                 if r.amount_paid > Amount::ZERO || r.amount_issued > Amount::ZERO {
-                    Some(quote_state_from_amounts(r.amount_paid, r.amount_issued))
+                    quote_state_from_amounts(r.amount_paid, r.amount_issued)
                 } else {
-                    Some(r.state)
+                    Ok(r.state)
                 }
             }
-            Self::Bolt12(r) => Some(quote_state_from_amounts(r.amount_paid, r.amount_issued)),
-            Self::Onchain(r) => Some(quote_state_from_amounts(r.amount_paid, r.amount_issued)),
-            Self::Custom { response, .. } => Some(quote_state_from_amounts(
-                response.amount_paid,
-                response.amount_issued,
-            )),
+            Self::Bolt12(r) => quote_state_from_amounts(r.amount_paid, r.amount_issued),
+            Self::Onchain(r) => quote_state_from_amounts(r.amount_paid, r.amount_issued),
+            Self::Custom { response, .. } => {
+                quote_state_from_amounts(response.amount_paid, response.amount_issued)
+            }
         }
     }
 
@@ -174,15 +191,26 @@ impl<Q> MintQuoteResponse<Q> {
 }
 
 /// Derive the deprecated single-use mint quote state from canonical quote counters.
-pub fn quote_state_from_amounts(amount_paid: Amount, amount_issued: Amount) -> QuoteState {
-    if amount_paid == Amount::ZERO && amount_issued == Amount::ZERO {
-        return QuoteState::Unpaid;
+pub fn quote_state_from_amounts(
+    amount_paid: Amount,
+    amount_issued: Amount,
+) -> Result<QuoteState, MintQuoteAccountingError> {
+    if amount_issued > amount_paid {
+        return Err(MintQuoteAccountingError::AmountIssuedExceedsAmountPaid {
+            amount_paid,
+            amount_issued,
+        });
     }
 
-    match amount_paid.cmp(&amount_issued) {
-        std::cmp::Ordering::Less | std::cmp::Ordering::Equal => QuoteState::Issued,
-        std::cmp::Ordering::Greater => QuoteState::Paid,
+    if amount_paid == Amount::ZERO && amount_issued == Amount::ZERO {
+        return Ok(QuoteState::Unpaid);
     }
+
+    if amount_paid == amount_issued {
+        return Ok(QuoteState::Issued);
+    }
+
+    Ok(QuoteState::Paid)
 }
 
 #[cfg(test)]
@@ -222,6 +250,14 @@ mod tests {
             custom_response(Amount::from(100), Amount::from(100)).state(),
             Some(QuoteState::Issued)
         );
+        assert_eq!(
+            custom_response(Amount::from(50), Amount::from(100)).state(),
+            None
+        );
+        assert!(matches!(
+            custom_response(Amount::from(50), Amount::from(100)).try_state(),
+            Err(MintQuoteAccountingError::AmountIssuedExceedsAmountPaid { .. })
+        ));
     }
 
     #[test]

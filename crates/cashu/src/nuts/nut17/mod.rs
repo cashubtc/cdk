@@ -582,7 +582,11 @@ mod tests {
             NotificationPayload::MintQuoteBolt11Response(resp.clone());
 
         let encoded = serde_json::to_string(&payload).unwrap();
-        let decoded: NotificationPayload<String> = serde_json::from_str(&encoded).unwrap();
+        let decoded = deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::Bolt11MintQuote,
+            serde_json::from_str(&encoded).unwrap(),
+        )
+        .unwrap();
 
         match decoded {
             NotificationPayload::MintQuoteBolt11Response(r) => {
@@ -787,6 +791,34 @@ mod tests {
                 assert_eq!(r.quote, "abc");
             }
             other => panic!("expected MintQuoteOnchainResponse, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn notification_payload_bolt12_mint_tolerates_unknown_fields() {
+        let encoded = r#"{
+            "quote": "abc",
+            "request": "lno1...",
+            "amount": 100,
+            "unit": "sat",
+            "expiry": 1701704757,
+            "pubkey": "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+            "amount_paid": 0,
+            "amount_issued": 0,
+            "some_future_extension": {"nested": true}
+        }"#;
+
+        let decoded = deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::Bolt12MintQuote,
+            serde_json::from_str(encoded).unwrap(),
+        )
+        .unwrap();
+
+        match decoded {
+            NotificationPayload::MintQuoteBolt12Response(r) => {
+                assert_eq!(r.quote, "abc");
+            }
+            other => panic!("expected MintQuoteBolt12Response, got {:?}", other),
         }
     }
 

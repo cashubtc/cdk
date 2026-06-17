@@ -1869,6 +1869,7 @@ mod tests {
         )
         .expect("test pubkey must parse");
         let quote_id = QuoteId::new();
+        let now = unix_time();
         let mint_quote = MintQuote::new(
             Some(quote_id.clone()),
             "lno1testoffer".to_string(),
@@ -1880,7 +1881,8 @@ mod tests {
             Amount::new(10_000, CurrencyUnit::Sat),
             Amount::new(1_000, CurrencyUnit::Sat),
             PaymentMethod::BOLT12,
-            unix_time(),
+            now,
+            now,
             vec![],
             vec![],
             None,
