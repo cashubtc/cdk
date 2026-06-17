@@ -478,6 +478,7 @@ mod tests {
                 .expect("valid mint URL should convert successfully"),
             amount_issued: Amount::zero(),
             amount_paid: Amount::zero(),
+            updated_at: 0,
             estimated_blocks: None,
             payment_method: PaymentMethod::Bolt11,
             secret_key: None,

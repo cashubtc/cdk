@@ -958,6 +958,7 @@ mod tests {
             amount: Some(cdk_common::Amount::from(1000)),
             amount_paid: cdk_common::Amount::ZERO,
             amount_issued: cdk_common::Amount::ZERO,
+            updated_at: 0,
             unit: Some(cdk_common::CurrencyUnit::Sat),
             expiry: Some(9999999),
             pubkey: None,

@@ -190,13 +190,9 @@ where
 /// Subscription response
 ///
 /// Note on variant ordering: serde `untagged` deserialization tries variants
-/// in declaration order and selects the first that matches. The Onchain
-/// variants are declared before the Bolt11/Bolt12 variants because the
-/// Onchain response structs use `#[serde(deny_unknown_fields)]`, which makes
-/// them reject Bolt11/Bolt12 payloads cleanly. Placing them first ensures
-/// onchain payloads are classified correctly without being consumed by the
-/// more permissive Bolt12 variant (which carries a superset of Onchain's
-/// field names).
+/// in declaration order and selects the first that matches. The stricter
+/// variants are declared before the more permissive ones so payloads with
+/// overlapping field names are classified correctly.
 pub enum NotificationPayload<T>
 where
     T: Clone,
@@ -213,12 +209,12 @@ where
     /// Declared before `MeltQuoteBolt11Response`/`MeltQuoteBolt12Response`
     /// for the same reason.
     MeltQuoteOnchainResponse(MeltQuoteOnchainResponse<T>),
+    /// Mint Quote Bolt12 Response
+    MintQuoteBolt12Response(MintQuoteBolt12Response<T>),
     /// Melt Quote Bolt11 Response
     MeltQuoteBolt11Response(MeltQuoteBolt11Response<T>),
     /// Mint Quote Bolt11 Response
     MintQuoteBolt11Response(MintQuoteBolt11Response<T>),
-    /// Mint Quote Bolt12 Response
-    MintQuoteBolt12Response(MintQuoteBolt12Response<T>),
     /// Melt Quote Bolt12 Response
     MeltQuoteBolt12Response(MeltQuoteBolt12Response<T>),
     /// Custom Mint Quote Response (method, response)
@@ -336,7 +332,7 @@ mod tests {
     use super::*;
     use crate::nuts::nut00::CurrencyUnit;
     use crate::nuts::nut01::PublicKey;
-    use crate::nuts::MeltQuoteState;
+    use crate::nuts::{MeltQuoteState, MintQuoteState};
     use crate::Amount;
 
     #[test]
@@ -352,6 +348,7 @@ mod tests {
             .unwrap(),
             amount_paid: Amount::from(100_000),
             amount_issued: Amount::from(0),
+            updated_at: 0,
         };
         let payload: NotificationPayload<String> =
             NotificationPayload::MintQuoteOnchainResponse(resp.clone());
@@ -384,6 +381,7 @@ mod tests {
             .unwrap(),
             amount_paid: Amount::from(0),
             amount_issued: Amount::from(0),
+            updated_at: 0,
         };
         let payload: NotificationPayload<String> =
             NotificationPayload::MintQuoteBolt12Response(resp.clone());
@@ -396,6 +394,39 @@ mod tests {
                 assert_eq!(r, resp);
             }
             other => panic!("expected MintQuoteBolt12Response, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn notification_payload_bolt11_mint_with_pubkey_roundtrip() {
+        let resp: MintQuoteBolt11Response<String> = MintQuoteBolt11Response {
+            quote: "abc".to_string(),
+            request: "lnbc...".to_string(),
+            amount: Some(Amount::from(100_000)),
+            unit: Some(CurrencyUnit::Sat),
+            amount_paid: Amount::from(0),
+            amount_issued: Amount::from(0),
+            updated_at: 0,
+            state: MintQuoteState::Unpaid,
+            expiry: Some(1701704757),
+            pubkey: Some(
+                PublicKey::from_hex(
+                    "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+                )
+                .unwrap(),
+            ),
+        };
+        let payload: NotificationPayload<String> =
+            NotificationPayload::MintQuoteBolt11Response(resp.clone());
+
+        let encoded = serde_json::to_string(&payload).unwrap();
+        let decoded: NotificationPayload<String> = serde_json::from_str(&encoded).unwrap();
+
+        match decoded {
+            NotificationPayload::MintQuoteBolt11Response(r) => {
+                assert_eq!(r, resp);
+            }
+            other => panic!("expected MintQuoteBolt11Response, got {:?}", other),
         }
     }
 

@@ -2568,6 +2568,8 @@ struct MintQuoteTable {
     amount_issued: i64,
     amount_paid: i64,
     #[serde(default)]
+    updated_at: i64,
+    #[serde(default)]
     used_by_operation: Option<String>,
     #[serde(default)]
     version: Option<i32>,
@@ -2601,6 +2603,7 @@ impl TryInto<MintQuote> for MintQuoteTable {
                 .map_err(|_| DatabaseError::Internal("Invalid payment method".into()))?,
             amount_issued: cdk_common::Amount::from(self.amount_issued as u64),
             amount_paid: cdk_common::Amount::from(self.amount_paid as u64),
+            updated_at: self.updated_at as u64,
             estimated_blocks: None,
             used_by_operation: self.used_by_operation,
             version: self.version.unwrap_or(0) as u32,
@@ -2623,6 +2626,7 @@ impl TryFrom<MintQuote> for MintQuoteTable {
             payment_method: q.payment_method.to_string(),
             amount_issued: q.amount_issued.to_u64() as i64,
             amount_paid: q.amount_paid.to_u64() as i64,
+            updated_at: q.updated_at as i64,
             used_by_operation: q.used_by_operation,
             version: Some(q.version as i32),
             _extra: Default::default(),

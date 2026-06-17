@@ -753,7 +753,6 @@ mod tests {
             "request": "lni1...",
             "amount": null,
             "unit": "sat",
-            "state": "UNPAID",
             "expiry": 1234,
             "pubkey": "02194603ffa062682c4f10e2dfe8f53e17d5d0329db51c8d3935cc74a4c0e0d4cb",
             "amount_paid": 0,

@@ -200,6 +200,9 @@ pub struct MintQuote {
     /// Amount paid to the mint for the quote
     #[serde(default)]
     pub amount_paid: Amount,
+    /// Unix timestamp indicating when the mint quote was last updated
+    #[serde(default)]
+    pub updated_at: u64,
     /// Estimated confirmation target in blocks for onchain quotes
     pub estimated_blocks: Option<u32>,
     /// Operation ID that has reserved this quote (for saga pattern)
@@ -273,6 +276,7 @@ impl MintQuote {
             secret_key,
             amount_issued: Amount::ZERO,
             amount_paid: Amount::ZERO,
+            updated_at: 0,
             estimated_blocks: None,
             used_by_operation: None,
             version: 0,
