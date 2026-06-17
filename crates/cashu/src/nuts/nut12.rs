@@ -4,6 +4,7 @@
 
 use core::ops::Deref;
 
+use bitcoin::secp256k1::hashes::{hmac, sha256, Hash, HashEngine, HmacEngine};
 use bitcoin::secp256k1::{self, Scalar};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -26,6 +27,9 @@ pub enum Error {
     /// Invalid DLEQ Proof
     #[error("Invalid DLEQ proof")]
     InvalidDleqProof,
+    /// Could not derive deterministic DLEQ nonce
+    #[error("Could not derive deterministic DLEQ nonce")]
+    CouldNotDeriveDleqNonce,
     /// DHKE error
     #[error(transparent)]
     DHKE(#[from] crate::dhke::Error),
@@ -109,13 +113,40 @@ fn verify_dleq(
     Ok(())
 }
 
+fn derive_deterministic_nonce(
+    blinded_signature: PublicKey, // C'
+    blinded_message: &PublicKey,  // B'
+    mint_secret_key: &SecretKey,  // a
+) -> Result<SecretKey, Error> {
+    for counter in u8::MIN..=u8::MAX {
+        let mut message = Vec::with_capacity(16 + (3 * 65) + 1);
+        message.extend_from_slice(b"Cashu_DLEQ_R_v1");
+        message.extend_from_slice(&mint_secret_key.public_key().to_uncompressed_bytes());
+        message.extend_from_slice(&blinded_message.to_uncompressed_bytes());
+        message.extend_from_slice(&blinded_signature.to_uncompressed_bytes());
+        message.push(counter);
+
+        let mut engine = HmacEngine::<sha256::Hash>::new(mint_secret_key.as_secret_bytes());
+        engine.input(&message);
+        let hmac_result = hmac::Hmac::<sha256::Hash>::from_engine(engine);
+        let result_bytes = hmac_result.to_byte_array();
+
+        match SecretKey::from_slice(&result_bytes) {
+            Ok(nonce) => return Ok(nonce),
+            Err(_) => continue,
+        }
+    }
+
+    Err(Error::CouldNotDeriveDleqNonce)
+}
+
 fn calculate_dleq(
     blinded_signature: PublicKey, // C'
     blinded_message: &PublicKey,  // B'
     mint_secret_key: &SecretKey,  // a
 ) -> Result<BlindSignatureDleq, Error> {
-    // Random nonce
-    let r: SecretKey = SecretKey::generate();
+    let r: SecretKey =
+        derive_deterministic_nonce(blinded_signature, blinded_message, mint_secret_key)?;
 
     // R1 = r*G
     let r1 = r.public_key();
@@ -200,11 +231,11 @@ impl BlindSignature {
 
     /// Add Dleq to proof
     /*
-    r = random nonce
+    r = HMAC-SHA256(key=a, data="Cashu_DLEQ_R_v1" || A || B' || C' || ctr)
     R1 = r*G
     R2 = r*B'
     e = hash(R1,R2,A,C')
-    s = r + e*a
+    s = (r + e*a) mod n
     */
     pub fn add_dleq_proof(
         &mut self,
@@ -242,6 +273,48 @@ mod tests {
         .unwrap();
 
         blinded.verify_dleq(mint_key, blinded_secret).unwrap()
+    }
+
+    #[test]
+    fn test_blind_signature_dleq_deterministic_nonce_vector() {
+        let mint_secret_key =
+            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000002")
+                .expect("valid mint secret key");
+        let blinded_message = PublicKey::from_str(
+            "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
+        )
+        .expect("valid blinded message");
+        let blinded_signature = PublicKey::from_str(
+            "0244eccfc7a348274458bb38044c7f3c389b3c2086c7ec18b5812d2877ab937787",
+        )
+        .expect("valid blinded signature");
+
+        let blind_signature = BlindSignature::new(
+            Amount::from(1),
+            blinded_signature,
+            Id::from_str("00882760bfa2eb41").expect("valid keyset id"),
+            &blinded_message,
+            mint_secret_key.clone(),
+        )
+        .expect("deterministic DLEQ proof");
+        let dleq = blind_signature.dleq.expect("DLEQ proof");
+
+        assert_eq!(
+            dleq.e.to_secret_hex(),
+            "2a16ffee280aff3c429045607f9b8e0bf8b35910c44c1b20b9dfaf01b263d7b3"
+        );
+        assert_eq!(
+            dleq.s.to_secret_hex(),
+            "9df27731238334718d120d4f74611a7c668233f988e687ac3fb188f0a34a2dab"
+        );
+        assert!(verify_dleq(
+            blinded_message,
+            blinded_signature,
+            &dleq.e,
+            &dleq.s,
+            mint_secret_key.public_key(),
+        )
+        .is_ok());
     }
 
     #[test]
