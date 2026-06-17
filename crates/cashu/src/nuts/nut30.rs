@@ -55,6 +55,9 @@ pub struct MintQuoteOnchainResponse<Q> {
     /// Amount of ecash that has been issued for the given mint quote
     #[serde(default)]
     pub amount_issued: Amount,
+    /// Unix timestamp indicating when the quote was last updated
+    #[serde(default)]
+    pub updated_at: u64,
 }
 
 impl<Q: ToString> MintQuoteOnchainResponse<Q> {
@@ -69,6 +72,7 @@ impl<Q: ToString> MintQuoteOnchainResponse<Q> {
             pubkey: self.pubkey,
             amount_paid: self.amount_paid,
             amount_issued: self.amount_issued,
+            updated_at: self.updated_at,
         }
     }
 }
@@ -85,6 +89,7 @@ impl From<MintQuoteOnchainResponse<QuoteId>> for MintQuoteOnchainResponse<String
             pubkey: value.pubkey,
             amount_paid: value.amount_paid,
             amount_issued: value.amount_issued,
+            updated_at: value.updated_at,
         }
     }
 }
@@ -420,6 +425,7 @@ mod tests {
             .unwrap(),
             amount_paid: Amount::from(100000),
             amount_issued: Amount::from(0),
+            updated_at: 0,
         };
 
         let string_id_response = response.to_string_id();

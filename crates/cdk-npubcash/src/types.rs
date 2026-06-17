@@ -168,6 +168,7 @@ impl From<Quote> for MintQuote {
             } else {
                 Amount::ZERO
             },
+            updated_at: quote.paid_at.unwrap_or(quote.created_at),
             estimated_blocks: None,
             used_by_operation: None,
             version: 0,

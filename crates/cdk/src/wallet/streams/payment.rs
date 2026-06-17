@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::RecvFuture;
 use crate::event::MintEvent;
+use crate::wallet::issue::{apply_accounting_mint_quote_update, apply_mint_quote_response};
 use crate::wallet::subscription::ActiveSubscription;
 use crate::{Wallet, WalletSubscription};
 
@@ -244,8 +245,10 @@ async fn update_mint_quote(wallet: &Wallet, notification: &NotificationPayload<S
         NotificationPayload::MintQuoteBolt11Response(info) => {
             let quote_id = info.quote.clone();
             if let Ok(Some(mut quote)) = wallet.localstore.get_mint_quote(&quote_id).await {
-                quote.state = info.state;
-                quote.amount_paid = info.amount.unwrap_or(Amount::ZERO);
+                apply_mint_quote_response(
+                    &mut quote,
+                    &cdk_common::MintQuoteResponse::Bolt11(info.clone()),
+                );
                 if let Err(e) = wallet.localstore.add_mint_quote(quote).await {
                     tracing::warn!("Failed to update quote state: {}", e);
                 }
@@ -254,8 +257,12 @@ async fn update_mint_quote(wallet: &Wallet, notification: &NotificationPayload<S
         NotificationPayload::MintQuoteBolt12Response(info) => {
             let quote_id = info.quote.clone();
             if let Ok(Some(mut quote)) = wallet.localstore.get_mint_quote(&quote_id).await {
-                quote.amount_paid = info.amount_paid;
-                quote.amount_issued = info.amount_issued;
+                apply_accounting_mint_quote_update(
+                    &mut quote,
+                    info.amount_paid,
+                    info.amount_issued,
+                    info.updated_at,
+                );
                 if let Err(e) = wallet.localstore.add_mint_quote(quote).await {
                     tracing::warn!("Failed to update quote state: {}", e);
                 }
@@ -264,8 +271,12 @@ async fn update_mint_quote(wallet: &Wallet, notification: &NotificationPayload<S
         NotificationPayload::MintQuoteOnchainResponse(info) => {
             let quote_id = info.quote.clone();
             if let Ok(Some(mut quote)) = wallet.localstore.get_mint_quote(&quote_id).await {
-                quote.amount_paid = info.amount_paid;
-                quote.amount_issued = info.amount_issued;
+                apply_accounting_mint_quote_update(
+                    &mut quote,
+                    info.amount_paid,
+                    info.amount_issued,
+                    info.updated_at,
+                );
                 if let Err(e) = wallet.localstore.add_mint_quote(quote).await {
                     tracing::warn!("Failed to update quote state: {}", e);
                 }
@@ -274,8 +285,12 @@ async fn update_mint_quote(wallet: &Wallet, notification: &NotificationPayload<S
         NotificationPayload::CustomMintQuoteResponse(_, info) => {
             let quote_id = info.quote.clone();
             if let Ok(Some(mut quote)) = wallet.localstore.get_mint_quote(&quote_id).await {
-                quote.amount_paid = info.amount_paid;
-                quote.amount_issued = info.amount_issued;
+                apply_accounting_mint_quote_update(
+                    &mut quote,
+                    info.amount_paid,
+                    info.amount_issued,
+                    info.updated_at,
+                );
                 if let Err(e) = wallet.localstore.add_mint_quote(quote).await {
                     tracing::warn!("Failed to update quote state: {}", e);
                 }
@@ -414,6 +429,7 @@ mod tests {
                 pubkey,
                 amount_paid: Amount::from(101u64),
                 amount_issued: Amount::from(100u64),
+                updated_at: 0,
             },
         ))
         .expect("positive unissued onchain amount should emit");
@@ -433,6 +449,7 @@ mod tests {
                 amount: None,
                 amount_paid: Amount::from(125u64),
                 amount_issued: Amount::from(100u64),
+                updated_at: 0,
                 unit: Some(CurrencyUnit::Sat),
                 expiry: None,
                 pubkey: Some(pubkey),
@@ -547,6 +564,7 @@ mod tests {
                     pubkey,
                     amount_paid: Amount::from(50u64),
                     amount_issued: Amount::from(100u64),
+                    updated_at: 0,
                 },
             ))
             .is_none()
@@ -561,6 +579,7 @@ mod tests {
                     amount: None,
                     amount_paid: Amount::from(50u64),
                     amount_issued: Amount::from(100u64),
+                    updated_at: 0,
                     unit: Some(CurrencyUnit::Sat),
                     expiry: None,
                     pubkey: Some(pubkey),
@@ -578,6 +597,9 @@ mod tests {
             amount: Some(Amount::from(100u64)),
             unit: Some(CurrencyUnit::Sat),
             method: PaymentMethod::BOLT11,
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
             state,
             expiry: None,
             pubkey: None,
@@ -599,6 +621,7 @@ mod tests {
             pubkey: SecretKey::generate().public_key(),
             amount_paid: Amount::from(amount_paid),
             amount_issued: Amount::from(amount_issued),
+            updated_at: 0,
         }
     }
 

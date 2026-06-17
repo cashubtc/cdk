@@ -146,7 +146,13 @@ impl<Q> MintQuoteResponse<Q> {
     /// Returns the quote state derived from the response data.
     pub fn state(&self) -> Option<QuoteState> {
         match self {
-            Self::Bolt11(r) => Some(r.state),
+            Self::Bolt11(r) => {
+                if r.amount_paid > Amount::ZERO || r.amount_issued > Amount::ZERO {
+                    Some(quote_state_from_amounts(r.amount_paid, r.amount_issued))
+                } else {
+                    Some(r.state)
+                }
+            }
             Self::Bolt12(r) => Some(quote_state_from_amounts(r.amount_paid, r.amount_issued)),
             Self::Onchain(r) => Some(quote_state_from_amounts(r.amount_paid, r.amount_issued)),
             Self::Custom { response, .. } => Some(quote_state_from_amounts(
@@ -167,7 +173,8 @@ impl<Q> MintQuoteResponse<Q> {
     }
 }
 
-pub(crate) fn quote_state_from_amounts(amount_paid: Amount, amount_issued: Amount) -> QuoteState {
+/// Derive the deprecated single-use mint quote state from canonical quote counters.
+pub fn quote_state_from_amounts(amount_paid: Amount, amount_issued: Amount) -> QuoteState {
     if amount_paid == Amount::ZERO && amount_issued == Amount::ZERO {
         return QuoteState::Unpaid;
     }
@@ -192,6 +199,7 @@ mod tests {
                 amount: Some(Amount::from(100)),
                 amount_paid,
                 amount_issued,
+                updated_at: 0,
                 unit: Some(CurrencyUnit::Sat),
                 expiry: None,
                 pubkey: None,
@@ -231,6 +239,7 @@ mod tests {
             .expect("valid public key"),
             amount_paid: Amount::from(100),
             amount_issued: Amount::from(40),
+            updated_at: 0,
         });
 
         assert_eq!(response.state(), Some(QuoteState::Paid));

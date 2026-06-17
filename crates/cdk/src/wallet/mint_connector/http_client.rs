@@ -1222,6 +1222,7 @@ mod tests {
             "amount": 1000,
             "amount_paid": 0,
             "amount_issued": 0,
+            "updated_at": 0,
             "unit": "sat",
             "expiry": 9999999
         })

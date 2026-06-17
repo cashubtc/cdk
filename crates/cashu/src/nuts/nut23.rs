@@ -100,7 +100,17 @@ pub struct MintQuoteBolt11Response<Q> {
     /// Payment method
     #[serde(default = "default_bolt11_method")]
     pub method: PaymentMethod,
+    /// Amount that has been paid
+    #[serde(default)]
+    pub amount_paid: Amount,
+    /// Amount that has been issued
+    #[serde(default)]
+    pub amount_issued: Amount,
+    /// Unix timestamp indicating when the quote was last updated
+    #[serde(default)]
+    pub updated_at: u64,
     /// Quote State
+    #[serde(default)]
     pub state: QuoteState,
     /// Unix timestamp until the quote is valid
     pub expiry: Option<u64>,
@@ -124,6 +134,9 @@ impl<Q: ToString> MintQuoteBolt11Response<Q> {
             amount: self.amount,
             unit: self.unit.clone(),
             method: self.method.clone(),
+            amount_paid: self.amount_paid,
+            amount_issued: self.amount_issued,
+            updated_at: self.updated_at,
         }
     }
 }
@@ -140,6 +153,9 @@ impl From<MintQuoteBolt11Response<QuoteId>> for MintQuoteBolt11Response<String> 
             amount: value.amount,
             unit: value.unit.clone(),
             method: value.method,
+            amount_paid: value.amount_paid,
+            amount_issued: value.amount_issued,
+            updated_at: value.updated_at,
         }
     }
 }
@@ -394,6 +410,9 @@ mod tests {
             amount: Some(Amount::from(10)),
             unit: Some(CurrencyUnit::Sat),
             method: PaymentMethod::Known(KnownMethod::Bolt11),
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
             state: QuoteState::Unpaid,
             expiry: Some(1_701_704_757),
             pubkey: None,

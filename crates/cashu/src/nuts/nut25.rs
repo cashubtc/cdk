@@ -40,8 +40,15 @@ pub struct MintQuoteBolt12Request {
 }
 
 /// Mint quote response [NUT-24]
+///
+/// `deny_unknown_fields` is intentional: the `NotificationPayload` enum is
+/// `#[serde(untagged)]` and Bolt11 mint quotes share the same core fields as
+/// Bolt12 mint quotes. Rejecting unknown fields lets `NotificationPayload`
+/// try the Bolt12 variant before Bolt11 without classifying Bolt11 payloads
+/// that carry a `state` field as Bolt12.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "Q: Serialize + for<'a> Deserialize<'a>")]
+#[serde(deny_unknown_fields)]
 pub struct MintQuoteBolt12Response<Q> {
     /// Quote Id
     pub quote: Q,
@@ -62,6 +69,9 @@ pub struct MintQuoteBolt12Response<Q> {
     pub amount_paid: Amount,
     /// Amount that has been issued
     pub amount_issued: Amount,
+    /// Unix timestamp indicating when the quote was last updated
+    #[serde(default)]
+    pub updated_at: u64,
 }
 
 #[cfg(feature = "mint")]
@@ -78,6 +88,7 @@ impl<Q: ToString> MintQuoteBolt12Response<Q> {
             pubkey: self.pubkey,
             amount_paid: self.amount_paid,
             amount_issued: self.amount_issued,
+            updated_at: self.updated_at,
         }
     }
 }
@@ -95,6 +106,7 @@ impl From<MintQuoteBolt12Response<QuoteId>> for MintQuoteBolt12Response<String> 
             amount: value.amount,
             unit: value.unit,
             method: value.method,
+            updated_at: value.updated_at,
         }
     }
 }
@@ -202,6 +214,7 @@ mod tests {
             .expect("valid public key"),
             amount_paid: Amount::ZERO,
             amount_issued: Amount::ZERO,
+            updated_at: 0,
         };
 
         let value = to_value(&response).expect("serialize response");

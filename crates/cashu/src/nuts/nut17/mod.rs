@@ -188,6 +188,10 @@ where
 #[serde(bound(serialize = "T: Serialize + DeserializeOwned"))]
 #[serde(untagged)]
 /// Subscription response
+///
+/// Deserialization is implemented below with explicit field discrimination
+/// because quote response payloads for different payment methods have
+/// overlapping fields.
 pub enum NotificationPayload<T>
 where
     T: Clone,
@@ -198,12 +202,12 @@ where
     MintQuoteOnchainResponse(MintQuoteOnchainResponse<T>),
     /// Melt Quote Onchain Response
     MeltQuoteOnchainResponse(MeltQuoteOnchainResponse<T>),
+    /// Mint Quote Bolt12 Response
+    MintQuoteBolt12Response(MintQuoteBolt12Response<T>),
     /// Melt Quote Bolt11 Response
     MeltQuoteBolt11Response(MeltQuoteBolt11Response<T>),
     /// Mint Quote Bolt11 Response
     MintQuoteBolt11Response(MintQuoteBolt11Response<T>),
-    /// Mint Quote Bolt12 Response
-    MintQuoteBolt12Response(MintQuoteBolt12Response<T>),
     /// Melt Quote Bolt12 Response
     MeltQuoteBolt12Response(MeltQuoteBolt12Response<T>),
     /// Custom Mint Quote Response (method, response)
@@ -480,7 +484,7 @@ mod tests {
     use super::*;
     use crate::nuts::nut00::{CurrencyUnit, KnownMethod, PaymentMethod};
     use crate::nuts::nut01::PublicKey;
-    use crate::nuts::MeltQuoteState;
+    use crate::nuts::{MeltQuoteState, MintQuoteState};
     use crate::Amount;
 
     #[test]
@@ -497,6 +501,7 @@ mod tests {
             .unwrap(),
             amount_paid: Amount::from(100_000),
             amount_issued: Amount::from(0),
+            updated_at: 0,
         };
         let payload: NotificationPayload<String> =
             NotificationPayload::MintQuoteOnchainResponse(resp.clone());
@@ -533,6 +538,7 @@ mod tests {
             .unwrap(),
             amount_paid: Amount::from(0),
             amount_issued: Amount::from(0),
+            updated_at: 0,
         };
         let payload: NotificationPayload<String> =
             NotificationPayload::MintQuoteBolt12Response(resp.clone());
@@ -549,6 +555,40 @@ mod tests {
                 assert_eq!(r, resp);
             }
             other => panic!("expected MintQuoteBolt12Response, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn notification_payload_bolt11_mint_with_pubkey_roundtrip() {
+        let resp: MintQuoteBolt11Response<String> = MintQuoteBolt11Response {
+            quote: "abc".to_string(),
+            request: "lnbc...".to_string(),
+            amount: Some(Amount::from(100_000)),
+            unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT11,
+            amount_paid: Amount::from(0),
+            amount_issued: Amount::from(0),
+            updated_at: 0,
+            state: MintQuoteState::Unpaid,
+            expiry: Some(1701704757),
+            pubkey: Some(
+                PublicKey::from_hex(
+                    "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+                )
+                .unwrap(),
+            ),
+        };
+        let payload: NotificationPayload<String> =
+            NotificationPayload::MintQuoteBolt11Response(resp.clone());
+
+        let encoded = serde_json::to_string(&payload).unwrap();
+        let decoded: NotificationPayload<String> = serde_json::from_str(&encoded).unwrap();
+
+        match decoded {
+            NotificationPayload::MintQuoteBolt11Response(r) => {
+                assert_eq!(r, resp);
+            }
+            other => panic!("expected MintQuoteBolt11Response, got {:?}", other),
         }
     }
 

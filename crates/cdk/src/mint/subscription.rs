@@ -388,6 +388,7 @@ mod tests {
             Amount::new(0, CurrencyUnit::Sat),
             cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11),
             0,
+            0,
             vec![],
             vec![],
             None,

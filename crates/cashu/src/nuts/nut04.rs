@@ -444,6 +444,9 @@ pub struct MintQuoteCustomResponse<Q> {
     pub amount_paid: Amount,
     /// Amount that has been issued
     pub amount_issued: Amount,
+    /// Unix timestamp indicating when the quote was last updated
+    #[serde(default)]
+    pub updated_at: u64,
     /// Currency unit
     pub unit: Option<CurrencyUnit>,
     /// Unix timestamp until the quote is valid
@@ -474,6 +477,7 @@ impl<Q: ToString> MintQuoteCustomResponse<Q> {
             amount: self.amount,
             amount_paid: self.amount_paid,
             amount_issued: self.amount_issued,
+            updated_at: self.updated_at,
             unit: self.unit.clone(),
             expiry: self.expiry,
             pubkey: self.pubkey,
@@ -492,6 +496,7 @@ impl From<MintQuoteCustomResponse<QuoteId>> for MintQuoteCustomResponse<String> 
             amount: value.amount,
             amount_paid: value.amount_paid,
             amount_issued: value.amount_issued,
+            updated_at: value.updated_at,
             unit: value.unit,
             expiry: value.expiry,
             pubkey: value.pubkey,
@@ -958,6 +963,7 @@ mod tests {
             amount: Some(Amount::from(1000)),
             amount_paid: Amount::ZERO,
             amount_issued: Amount::ZERO,
+            updated_at: 0,
             unit: Some(CurrencyUnit::Sat),
             expiry: Some(9999999),
             pubkey: None,
@@ -982,6 +988,7 @@ mod tests {
             amount: Some(Amount::from(100)),
             amount_paid: Amount::ZERO,
             amount_issued: Amount::ZERO,
+            updated_at: 0,
             unit: Some(CurrencyUnit::Sat),
             expiry: Some(9999),
             pubkey: None,

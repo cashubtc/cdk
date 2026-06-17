@@ -561,6 +561,8 @@ pub struct MintQuote {
     amount_paid: Amount<CurrencyUnit>,
     /// Amount issued (typed for type safety)
     amount_issued: Amount<CurrencyUnit>,
+    /// Unix timestamp indicating when the quote accounting last changed.
+    updated_at: u64,
     /// Payment of payment(s) that filled quote
     pub payments: Vec<IncomingPayment>,
     /// Payment Method
@@ -592,6 +594,7 @@ impl MintQuote {
         amount_issued: Amount<CurrencyUnit>,
         payment_method: PaymentMethod,
         created_time: u64,
+        updated_at: u64,
         payments: Vec<IncomingPayment>,
         issuance: Vec<Issuance>,
         extra_json: Option<serde_json::Value>,
@@ -609,6 +612,7 @@ impl MintQuote {
             created_time,
             amount_paid,
             amount_issued,
+            updated_at,
             payment_method,
             payments,
             issuance,
@@ -688,6 +692,16 @@ impl MintQuote {
     #[instrument(skip(self))]
     pub fn amount_issued(&self) -> Amount<CurrencyUnit> {
         self.amount_issued.clone()
+    }
+
+    /// Unix timestamp indicating when this quote was last updated.
+    pub fn updated_at(&self) -> u64 {
+        self.updated_at
+    }
+
+    /// Replaces `updated_at` with the value persisted by the database.
+    pub fn set_updated_at(&mut self, updated_at: u64) {
+        self.updated_at = updated_at;
     }
 
     /// Get state of mint quote
@@ -1183,6 +1197,7 @@ impl TryFrom<MintQuote> for MintQuoteOnchainResponse<QuoteId> {
             pubkey: quote.pubkey.ok_or(crate::error::Error::MissingPubkey)?,
             amount_paid: quote.amount_paid().into(),
             amount_issued: quote.amount_issued().into(),
+            updated_at: quote.updated_at(),
         })
     }
 }
@@ -1240,6 +1255,10 @@ impl From<MintKeySetInfo> for KeySetInfo {
 
 impl From<MintQuote> for MintQuoteBolt11Response<QuoteId> {
     fn from(mint_quote: MintQuote) -> MintQuoteBolt11Response<QuoteId> {
+        let amount_paid = mint_quote.amount_paid().into();
+        let amount_issued = mint_quote.amount_issued().into();
+        let updated_at = mint_quote.updated_at();
+
         MintQuoteBolt11Response {
             quote: mint_quote.id.clone(),
             state: mint_quote.state(),
@@ -1249,6 +1268,9 @@ impl From<MintQuote> for MintQuoteBolt11Response<QuoteId> {
             amount: mint_quote.amount.map(Into::into),
             unit: Some(mint_quote.unit),
             method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt11),
+            amount_paid,
+            amount_issued,
+            updated_at,
         }
     }
 }
@@ -1264,16 +1286,21 @@ impl TryFrom<MintQuote> for MintQuoteBolt12Response<QuoteId> {
     type Error = Error;
 
     fn try_from(mint_quote: MintQuote) -> Result<Self, Self::Error> {
+        let amount_paid = mint_quote.amount_paid().into();
+        let amount_issued = mint_quote.amount_issued().into();
+        let updated_at = mint_quote.updated_at();
+
         Ok(MintQuoteBolt12Response {
             quote: mint_quote.id.clone(),
             request: mint_quote.request,
             expiry: (mint_quote.expiry != 0).then_some(mint_quote.expiry),
-            amount_paid: mint_quote.amount_paid.into(),
-            amount_issued: mint_quote.amount_issued.into(),
+            amount_paid,
+            amount_issued,
             pubkey: mint_quote.pubkey.ok_or(Error::PubkeyRequired)?,
             amount: mint_quote.amount.map(Into::into),
             unit: mint_quote.unit,
             method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt12),
+            updated_at,
         })
     }
 }
@@ -1293,6 +1320,7 @@ impl TryFrom<MintQuote> for MintQuoteCustomResponse<QuoteId> {
     fn try_from(quote: MintQuote) -> Result<Self, Self::Error> {
         let amount_paid = quote.amount_paid().into();
         let amount_issued = quote.amount_issued().into();
+        let updated_at = quote.updated_at();
 
         Ok(MintQuoteCustomResponse {
             quote: quote.id,
@@ -1304,6 +1332,7 @@ impl TryFrom<MintQuote> for MintQuoteCustomResponse<QuoteId> {
             amount: quote.amount.map(Into::into),
             amount_paid,
             amount_issued,
+            updated_at,
             extra: quote.extra_json.unwrap_or_default(),
         })
     }
@@ -1390,6 +1419,9 @@ impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
                 unit: Some(quote.unit.clone()),
                 method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt11),
                 pubkey: quote.pubkey,
+                amount_paid: quote.amount_paid().into(),
+                amount_issued: quote.amount_issued().into(),
+                updated_at: quote.updated_at(),
             }))
         } else if quote.payment_method.is_bolt12() {
             Ok(Self::Bolt12(crate::nuts::nut25::MintQuoteBolt12Response {
@@ -1402,6 +1434,7 @@ impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
                 pubkey: quote.pubkey.ok_or(Error::PubkeyRequired)?,
                 amount_paid: quote.amount_paid().into(),
                 amount_issued: quote.amount_issued().into(),
+                updated_at: quote.updated_at(),
             }))
         } else if quote.payment_method.is_onchain() {
             let onchain_response = MintQuoteOnchainResponse::try_from(quote)?;
@@ -1418,6 +1451,7 @@ impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
                     amount: quote.amount.as_ref().map(|a| a.clone().into()),
                     amount_paid: quote.amount_paid().into(),
                     amount_issued: quote.amount_issued().into(),
+                    updated_at: quote.updated_at(),
                     unit: Some(quote.unit.clone()),
                     pubkey: quote.pubkey,
                     extra: quote.extra_json.clone().unwrap_or_default(),
@@ -1453,6 +1487,9 @@ impl From<MintQuoteResponse<QuoteId>> for MintQuoteBolt11Response<String> {
                 amount: bolt11_response.amount,
                 unit: bolt11_response.unit,
                 method: bolt11_response.method,
+                amount_paid: bolt11_response.amount_paid,
+                amount_issued: bolt11_response.amount_issued,
+                updated_at: bolt11_response.updated_at,
             },
             _ => panic!("Expected Bolt11 response"),
         }
@@ -1798,6 +1835,7 @@ mod tests {
         )
         .unwrap();
         let quote_id = QuoteId::new();
+        let now = unix_time();
         let mint_quote = MintQuote::new(
             Some(quote_id.clone()),
             "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
@@ -1809,7 +1847,8 @@ mod tests {
             Amount::new(10_000, CurrencyUnit::Sat),
             Amount::new(1_000, CurrencyUnit::Sat),
             PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Onchain),
-            unix_time(),
+            now,
+            now,
             vec![],
             vec![],
             None,
@@ -2211,6 +2250,7 @@ mod tests {
     #[test]
     fn test_custom_mint_quote_response_surfaces_extra_json() {
         let extra = serde_json::json!({"payment_url": "https://example.com/pay", "ref": 42});
+        let now = unix_time();
         let quote = MintQuote::new(
             Some(QuoteId::new()),
             "custom://request".to_string(),
@@ -2222,7 +2262,8 @@ mod tests {
             Amount::new(0, CurrencyUnit::Sat),
             Amount::new(0, CurrencyUnit::Sat),
             PaymentMethod::Custom("custom".to_string()),
-            unix_time(),
+            now,
+            now,
             Vec::new(),
             Vec::new(),
             Some(extra.clone()),
