@@ -90,6 +90,9 @@ message UpdateNut04Request {
     optional uint64 min_amount = 4;
     optional uint64 max_amount = 5;
     optional MintMethodOptions options = 6;
+    // Human-readable payment method name. If omitted, wallets should derive it
+    // from method by replacing '_' and '-' with spaces and title-casing words.
+    optional string method_name = 7;
 }
 
 
@@ -105,6 +108,9 @@ message UpdateNut05Request {
     optional uint64 min_amount = 4;
     optional uint64 max_amount = 5;
     optional MeltMethodOptions options = 6;
+    // Human-readable payment method name. If omitted, wallets should derive it
+    // from method by replacing '_' and '-' with spaces and title-casing words.
+    optional string method_name = 7;
 }
 
 message UpdateQuoteTtlRequest {

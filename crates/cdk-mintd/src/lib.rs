@@ -2412,6 +2412,7 @@ mod tests {
             MintMethodSettings {
                 method: PaymentMethod::Known(KnownMethod::Bolt11),
                 unit: CurrencyUnit::Sat,
+                method_name: None,
                 min_amount: None,
                 max_amount: None,
                 options: None,
@@ -2419,6 +2420,7 @@ mod tests {
             MintMethodSettings {
                 method: PaymentMethod::Known(KnownMethod::Bolt12),
                 unit: CurrencyUnit::Sat,
+                method_name: None,
                 min_amount: None,
                 max_amount: None,
                 options: None,
@@ -2426,6 +2428,7 @@ mod tests {
             MintMethodSettings {
                 method: PaymentMethod::Known(KnownMethod::Bolt11),
                 unit: CurrencyUnit::Msat,
+                method_name: None,
                 min_amount: None,
                 max_amount: None,
                 options: None,
@@ -2433,6 +2436,7 @@ mod tests {
             MintMethodSettings {
                 method: PaymentMethod::Custom("paypal".to_string()),
                 unit: CurrencyUnit::Usd,
+                method_name: None,
                 min_amount: None,
                 max_amount: None,
                 options: None,
@@ -2440,6 +2444,7 @@ mod tests {
             MintMethodSettings {
                 method: PaymentMethod::Custom("paypal".to_string()),
                 unit: CurrencyUnit::Eur,
+                method_name: None,
                 min_amount: None,
                 max_amount: None,
                 options: None,

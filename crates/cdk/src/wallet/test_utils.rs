@@ -220,6 +220,7 @@ pub fn test_mint_info() -> MintInfo {
                         MintMethodSettings {
                             method: PaymentMethod::Known(KnownMethod::Bolt11),
                             unit: CurrencyUnit::Sat,
+                            method_name: None,
                             min_amount: Some(Amount::from(1_u64)),
                             max_amount: Some(Amount::from(500_000_u64)),
                             options: Some(crate::nuts::nut04::MintMethodOptions::Bolt11 {
@@ -229,6 +230,7 @@ pub fn test_mint_info() -> MintInfo {
                         MintMethodSettings {
                             method: PaymentMethod::Known(KnownMethod::Bolt12),
                             unit: CurrencyUnit::Sat,
+                            method_name: None,
                             min_amount: Some(Amount::from(1_u64)),
                             max_amount: Some(Amount::from(500_000_u64)),
                             options: None,
@@ -241,6 +243,7 @@ pub fn test_mint_info() -> MintInfo {
                         MeltMethodSettings {
                             method: PaymentMethod::Known(KnownMethod::Bolt11),
                             unit: CurrencyUnit::Sat,
+                            method_name: None,
                             min_amount: Some(Amount::from(1_u64)),
                             max_amount: Some(Amount::from(500_000_u64)),
                             options: None,
@@ -248,6 +251,7 @@ pub fn test_mint_info() -> MintInfo {
                         MeltMethodSettings {
                             method: PaymentMethod::Known(KnownMethod::Bolt12),
                             unit: CurrencyUnit::Sat,
+                            method_name: None,
                             min_amount: Some(Amount::from(1_u64)),
                             max_amount: Some(Amount::from(500_000_u64)),
                             options: None,

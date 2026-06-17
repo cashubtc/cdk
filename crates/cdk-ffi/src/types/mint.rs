@@ -166,6 +166,11 @@ impl From<SupportedSettings> for cdk::nuts::nut06::SupportedSettings {
 pub struct MintMethodSettings {
     pub method: PaymentMethod,
     pub unit: CurrencyUnit,
+    /// Human-readable name for the payment method.
+    ///
+    /// If null or omitted, wallets should derive it from `method` by replacing
+    /// `_` and `-` with spaces and title-casing each word.
+    pub method_name: Option<String>,
     pub min_amount: Option<Amount>,
     pub max_amount: Option<Amount>,
     /// For bolt11, whether mint supports setting invoice description
@@ -181,6 +186,7 @@ impl From<cdk::nuts::nut04::MintMethodSettings> for MintMethodSettings {
         Self {
             method: s.method.into(),
             unit: s.unit.into(),
+            method_name: s.method_name,
             min_amount: s.min_amount.map(Into::into),
             max_amount: s.max_amount.map(Into::into),
             description,
@@ -202,6 +208,7 @@ impl TryFrom<MintMethodSettings> for cdk::nuts::nut04::MintMethodSettings {
         Ok(Self {
             method: s.method.into(),
             unit: s.unit.into(),
+            method_name: s.method_name,
             min_amount: s.min_amount.map(Into::into),
             max_amount: s.max_amount.map(Into::into),
             options,
@@ -245,6 +252,11 @@ impl TryFrom<Nut04Settings> for cdk::nuts::nut04::Settings {
 pub struct MeltMethodSettings {
     pub method: PaymentMethod,
     pub unit: CurrencyUnit,
+    /// Human-readable name for the payment method.
+    ///
+    /// If null or omitted, wallets should derive it from `method` by replacing
+    /// `_` and `-` with spaces and title-casing each word.
+    pub method_name: Option<String>,
     pub min_amount: Option<Amount>,
     pub max_amount: Option<Amount>,
     /// For bolt11, whether mint supports amountless invoices
@@ -260,6 +272,7 @@ impl From<cdk::nuts::nut05::MeltMethodSettings> for MeltMethodSettings {
         Self {
             method: s.method.into(),
             unit: s.unit.into(),
+            method_name: s.method_name,
             min_amount: s.min_amount.map(Into::into),
             max_amount: s.max_amount.map(Into::into),
             amountless,
@@ -280,6 +293,7 @@ impl TryFrom<MeltMethodSettings> for cdk::nuts::nut05::MeltMethodSettings {
         Ok(Self {
             method: s.method.into(),
             unit: s.unit.into(),
+            method_name: s.method_name,
             min_amount: s.min_amount.map(Into::into),
             max_amount: s.max_amount.map(Into::into),
             options,
@@ -700,6 +714,7 @@ mod tests {
                 methods: vec![cdk::nuts::nut04::MintMethodSettings {
                     method: cdk::nuts::PaymentMethod::Known(KnownMethod::Bolt11),
                     unit: cdk::nuts::CurrencyUnit::Sat,
+                    method_name: Some("Lightning".to_string()),
                     min_amount: Some(cdk::Amount::from(1)),
                     max_amount: Some(cdk::Amount::from(100000)),
                     options: Some(cdk::nuts::nut04::MintMethodOptions::Bolt11 {
@@ -712,6 +727,7 @@ mod tests {
                 methods: vec![cdk::nuts::nut05::MeltMethodSettings {
                     method: cdk::nuts::PaymentMethod::Known(KnownMethod::Bolt11),
                     unit: cdk::nuts::CurrencyUnit::Sat,
+                    method_name: Some("Lightning".to_string()),
                     min_amount: Some(cdk::Amount::from(1)),
                     max_amount: Some(cdk::Amount::from(100000)),
                     options: Some(cdk::nuts::nut05::MeltMethodOptions::Bolt11 { amountless: true }),
@@ -970,6 +986,7 @@ mod tests {
             .push(cdk::nuts::nut04::MintMethodSettings {
                 method: cdk::nuts::PaymentMethod::Known(KnownMethod::Bolt11),
                 unit: cdk::nuts::CurrencyUnit::Msat,
+                method_name: None,
                 min_amount: Some(cdk::Amount::from(1)),
                 max_amount: Some(cdk::Amount::from(100000)),
                 options: None,
@@ -981,6 +998,7 @@ mod tests {
             .push(cdk::nuts::nut05::MeltMethodSettings {
                 method: cdk::nuts::PaymentMethod::Known(KnownMethod::Bolt11),
                 unit: cdk::nuts::CurrencyUnit::Usd,
+                method_name: None,
                 min_amount: None,
                 max_amount: None,
                 options: None,

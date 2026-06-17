@@ -28,6 +28,9 @@ pub struct UpdateNut04Command {
     /// Whether this mint method is disabled (true) or enabled (false)
     #[arg(long)]
     disabled: Option<bool>,
+    /// Human-readable name for this payment method
+    #[arg(long)]
+    method_name: Option<String>,
     /// Whether the mint should include description fields in Lightning invoices
     #[arg(long)]
     description: Option<bool>,
@@ -57,6 +60,7 @@ pub async fn update_nut04(
             min_amount: sub_command_args.min_amount,
             max_amount: sub_command_args.max_amount,
             options,
+            method_name: sub_command_args.method_name.clone(),
         }))
         .await?;
 
