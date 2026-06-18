@@ -356,7 +356,7 @@ fn validate_signing_config(settings: &config::Settings) -> Result<()> {
     if let Some(seed) = seed {
         if seed.len() < MIN_SEED_BYTES {
             bail!(
-                "Seed in [info].seed/CDK_MINTD_SEED is too short ({} bytes); require at least {MIN_SEED_BYTES} bytes of entropy",
+                "Seed in [info].seed/CDK_MINTD_SEED is too short ({} bytes); require at least {MIN_SEED_BYTES} bytes",
                 seed.len()
             );
         }
@@ -374,10 +374,10 @@ fn validate_signing_config(settings: &config::Settings) -> Result<()> {
 }
 
 fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
-    if settings.ln.is_empty() {
-        bail!("Ln backend must be set via [[ln]] or CDK_MINTD_LN_* environment variables");
-    }
-
+    // No emptiness check here: `from_env` already guarantees at least one
+    // payment backend (Lightning *or* on-chain), so requiring `[[ln]]` here
+    // would wrongly reject valid on-chain-only configs. An empty `ln` simply
+    // skips the loop below.
     for ln in &settings.ln {
         if ln.min_mint > ln.max_mint {
             bail!("Lightning min_mint cannot be greater than max_mint");
@@ -481,16 +481,8 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
                 }
             }
             #[cfg(feature = "ldk-node")]
-            LnBackend::LdkNode => {
-                let _default_ldk_node;
-                let _ldk_node = match settings.ldk_node.as_ref() {
-                    Some(l) => l,
-                    None => {
-                        _default_ldk_node = config::LdkNode::default();
-                        &_default_ldk_node
-                    }
-                };
-            }
+            // LDK node has no required-field validation; defaults are usable.
+            LnBackend::LdkNode => {}
         }
     }
 
@@ -2752,9 +2744,6 @@ mod tests {
 
         assert_eq!(methods, vec!["bolt11", "bolt12", "paypal"]);
     }
-
-    const TEST_MNEMONIC: &str =
-        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
     fn clear_mintd_env() {
         for var in [

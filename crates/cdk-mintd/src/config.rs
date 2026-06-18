@@ -1231,11 +1231,10 @@ mod tests {
     use super::*;
 
     fn config_env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static CONFIG_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-        CONFIG_ENV_LOCK
-            .lock()
-            .expect("config env test lock should not be poisoned")
+        // Share the single process-wide env lock with the rest of the crate's
+        // tests. `std::env` is global, so config.rs and lib.rs tests must
+        // serialize on the *same* mutex or they race over env vars.
+        crate::test_utils::env_lock()
     }
 
     #[cfg(feature = "bdk")]
@@ -1873,7 +1872,7 @@ max_delay_time = 3
     /// This test runs sequentially for all enabled backends to avoid env var interference.
     #[test]
     fn test_env_var_only_config_all_backends() {
-       let _guard = config_env_lock();
+        let _guard = config_env_lock();
 
         // Run each backend test sequentially
         #[cfg(feature = "lnd")]
