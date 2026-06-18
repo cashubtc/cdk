@@ -73,6 +73,7 @@ impl LndClient {
                 public_only: false,
                 private_only: false,
                 peer: vec![],
+                ..Default::default()
             })
             .await?
             .into_inner();
@@ -96,6 +97,7 @@ impl LndClient {
                 public_only: false,
                 private_only: false,
                 peer: vec![],
+                ..Default::default()
             })
             .await?
             .into_inner();
@@ -201,7 +203,7 @@ impl LightningClient for LndClient {
             .lock()
             .await
             .lightning()
-            .wallet_balance(WalletBalanceRequest {})
+            .wallet_balance(WalletBalanceRequest::default())
             .await?
             .into_inner();
 
@@ -220,6 +222,7 @@ impl LightningClient for LndClient {
             ..Default::default()
         };
 
+        #[allow(deprecated)]
         let payment_response = self
             .client
             .lock()
@@ -271,6 +274,7 @@ impl LightningClient for LndClient {
                     public_only: false,
                     private_only: false,
                     peer: vec![],
+                    ..Default::default()
                 })
                 .await?
                 .into_inner();
@@ -341,6 +345,7 @@ impl LightningClient for LndClient {
             max_payments: 1000,
             reversed: false,
             count_total_payments: false,
+            ..Default::default()
         };
 
         let invoices = self
