@@ -290,6 +290,23 @@ impl CdkLdkNode {
         })
     }
 
+    fn select_bolt11_payment_details(
+        payment_details: impl IntoIterator<Item = PaymentDetails>,
+    ) -> Option<PaymentDetails> {
+        payment_details.into_iter().min_by_key(|details| {
+            let status_order = match details.status {
+                PaymentStatus::Succeeded => 0_u8,
+                PaymentStatus::Pending => 1,
+                PaymentStatus::Failed => 2,
+            };
+
+            (
+                status_order,
+                std::cmp::Reverse(details.latest_update_timestamp),
+            )
+        })
+    }
+
     /// Start the CDK LDK Node
     ///
     /// Starts the underlying LDK node and begins event processing.
@@ -1097,13 +1114,12 @@ impl MintPayment for CdkLdkNode {
         request_lookup_id: &PaymentIdentifier,
     ) -> Result<MakePaymentResponse, Self::Err> {
         let payment_details = match request_lookup_id {
-            PaymentIdentifier::PaymentHash(id_hash) => self
-                .inner
-                .list_payments_with_filter(
-                    |p| matches!(&p.kind, PaymentKind::Bolt11 { hash, .. } if &hash.0 == id_hash),
-                )
-                .first()
-                .cloned(),
+            PaymentIdentifier::PaymentHash(id_hash) => {
+                Self::select_bolt11_payment_details(self.inner.list_payments_with_filter(|p| {
+                    p.direction == PaymentDirection::Outbound
+                        && matches!(&p.kind, PaymentKind::Bolt11 { hash, .. } if &hash.0 == id_hash)
+                }))
+            }
             PaymentIdentifier::PaymentId(id) => self.inner.payment(&PaymentId(*id)),
             _ => {
                 return Ok(MakePaymentResponse {
@@ -1156,6 +1172,18 @@ mod tests {
         }
     }
 
+    fn test_payment_details_with_id(
+        id: [u8; 32],
+        status: PaymentStatus,
+        latest_update_timestamp: u64,
+    ) -> PaymentDetails {
+        PaymentDetails {
+            id: PaymentId(id),
+            latest_update_timestamp,
+            ..test_payment_details(status, None)
+        }
+    }
+
     #[test]
     fn failed_payment_response_does_not_require_amount() {
         let details = test_payment_details(PaymentStatus::Failed, None);
@@ -1198,5 +1226,44 @@ mod tests {
         .expect_err("paid payment details without amount should fail");
 
         assert!(matches!(err, payment::Error::Lightning(_)));
+    }
+
+    #[test]
+    fn bolt11_payment_selection_prefers_pending_over_failed() {
+        let failed = test_payment_details_with_id([1; 32], PaymentStatus::Failed, 2);
+        let pending = test_payment_details_with_id([2; 32], PaymentStatus::Pending, 1);
+
+        let selected = CdkLdkNode::select_bolt11_payment_details([failed, pending])
+            .expect("payment details should be selected");
+
+        assert_eq!(selected.id, PaymentId([2; 32]));
+        assert_eq!(selected.status, PaymentStatus::Pending);
+    }
+
+    #[test]
+    fn bolt11_payment_selection_prefers_succeeded_over_pending() {
+        let pending = test_payment_details_with_id([1; 32], PaymentStatus::Pending, 2);
+        let succeeded = PaymentDetails {
+            amount_msat: Some(1000),
+            ..test_payment_details_with_id([2; 32], PaymentStatus::Succeeded, 1)
+        };
+
+        let selected = CdkLdkNode::select_bolt11_payment_details([pending, succeeded])
+            .expect("payment details should be selected");
+
+        assert_eq!(selected.id, PaymentId([2; 32]));
+        assert_eq!(selected.status, PaymentStatus::Succeeded);
+    }
+
+    #[test]
+    fn bolt11_payment_selection_uses_latest_failed_when_all_failed() {
+        let older_failed = test_payment_details_with_id([1; 32], PaymentStatus::Failed, 1);
+        let newer_failed = test_payment_details_with_id([2; 32], PaymentStatus::Failed, 2);
+
+        let selected = CdkLdkNode::select_bolt11_payment_details([older_failed, newer_failed])
+            .expect("payment details should be selected");
+
+        assert_eq!(selected.id, PaymentId([2; 32]));
+        assert_eq!(selected.status, PaymentStatus::Failed);
     }
 }

@@ -31,7 +31,7 @@ use cln_rpc::model::requests::{
 };
 use cln_rpc::model::responses::{
     DecodeResponse, InvoiceResponse, ListinvoicesInvoices, ListinvoicesInvoicesStatus,
-    ListpaysPaysStatus, PayStatus, WaitanyinvoiceResponse, WaitanyinvoiceStatus,
+    ListpaysPays, ListpaysPaysStatus, PayStatus, WaitanyinvoiceResponse, WaitanyinvoiceStatus,
 };
 use cln_rpc::primitives::{Amount as CLN_Amount, AmountOrAny, Sha256};
 use cln_rpc::ClnRpc;
@@ -816,7 +816,7 @@ impl MintPayment for Cln {
             .await
             .map_err(Error::from)?;
 
-        match listpays_response.pays.first() {
+        match select_cln_payment(&listpays_response.pays) {
             Some(pays_response) => {
                 let status = cln_pays_status_to_mint_state(pays_response.status);
 
@@ -1048,6 +1048,14 @@ fn cln_pays_status_to_mint_state(status: ListpaysPaysStatus) -> MeltQuoteState {
     }
 }
 
+fn select_cln_payment(payments: &[ListpaysPays]) -> Option<&ListpaysPays> {
+    payments.iter().min_by_key(|payment| match payment.status {
+        ListpaysPaysStatus::COMPLETE => 0_u8,
+        ListpaysPaysStatus::PENDING => 1,
+        ListpaysPaysStatus::FAILED => 2,
+    })
+}
+
 async fn fetch_invoice_by_payment_hash(
     cln_client: &mut cln_rpc::ClnRpc,
     payment_hash: &sha256::Hash,
@@ -1157,6 +1165,27 @@ mod tests {
             secondary_namespace.to_string(),
             key.to_string(),
         )
+    }
+
+    fn test_listpays_payment(id: u8, status: ListpaysPaysStatus) -> ListpaysPays {
+        ListpaysPays {
+            amount_msat: None,
+            amount_sent_msat: None,
+            bolt11: None,
+            bolt12: None,
+            completed_at: None,
+            created_index: None,
+            description: None,
+            destination: None,
+            erroronion: None,
+            label: None,
+            number_of_parts: None,
+            preimage: None,
+            updated_index: None,
+            status,
+            created_at: 0,
+            payment_hash: *Sha256::from_bytes_ref(&[id; 32]),
+        }
     }
 
     #[async_trait::async_trait]
@@ -1475,6 +1504,45 @@ mod tests {
             stored_payment_hash,
             Bolt12QuotePaymentHashLookup::Found(second_payment_hash)
         );
+    }
+
+    #[test]
+    fn cln_payment_selection_prefers_pending_over_failed() {
+        let failed = test_listpays_payment(1, ListpaysPaysStatus::FAILED);
+        let pending = test_listpays_payment(2, ListpaysPaysStatus::PENDING);
+        let payments = [failed, pending];
+
+        let selected = select_cln_payment(&payments).expect("payment should be selected");
+
+        assert_eq!(selected.status, ListpaysPaysStatus::PENDING);
+        assert_eq!(selected.payment_hash, *Sha256::from_bytes_ref(&[2; 32]));
+    }
+
+    #[test]
+    fn cln_payment_selection_prefers_complete_over_pending() {
+        let pending = test_listpays_payment(1, ListpaysPaysStatus::PENDING);
+        let complete = test_listpays_payment(2, ListpaysPaysStatus::COMPLETE);
+        let payments = [pending, complete];
+
+        let selected = select_cln_payment(&payments).expect("payment should be selected");
+
+        assert_eq!(selected.status, ListpaysPaysStatus::COMPLETE);
+        assert_eq!(selected.payment_hash, *Sha256::from_bytes_ref(&[2; 32]));
+    }
+
+    #[test]
+    fn cln_payment_selection_returns_failed_when_all_failed() {
+        let failed = test_listpays_payment(1, ListpaysPaysStatus::FAILED);
+        let payments = [failed];
+
+        let selected = select_cln_payment(&payments).expect("payment should be selected");
+
+        assert_eq!(selected.status, ListpaysPaysStatus::FAILED);
+    }
+
+    #[test]
+    fn cln_payment_selection_returns_none_when_missing() {
+        assert!(select_cln_payment(&[]).is_none());
     }
 
     #[tokio::test]
