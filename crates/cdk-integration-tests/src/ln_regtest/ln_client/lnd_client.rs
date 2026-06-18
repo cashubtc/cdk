@@ -7,10 +7,12 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use cashu::util::hex;
+use fedimint_tonic_lnd::lnrpc::payment::PaymentStatus;
 use fedimint_tonic_lnd::lnrpc::{
     ConnectPeerRequest, GetInfoRequest, GetInfoResponse, LightningAddress, ListChannelsRequest,
     NewAddressRequest, OpenChannelRequest, WalletBalanceRequest,
 };
+use fedimint_tonic_lnd::routerrpc::SendPaymentRequest;
 use fedimint_tonic_lnd::Client;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
@@ -18,6 +20,8 @@ use tokio::time::sleep;
 use super::types::{Balance, ConnectInfo};
 use super::LightningClient;
 use crate::ln_regtest::InvoiceStatus;
+
+const PAYMENT_TIMEOUT_SECONDS: i32 = 60;
 
 /// Lnd
 #[derive(Clone)]
@@ -217,26 +221,37 @@ impl LightningClient for LndClient {
     }
 
     async fn pay_invoice(&self, bolt11: String) -> Result<String> {
-        let pay_req = fedimint_tonic_lnd::lnrpc::SendRequest {
+        let pay_req = SendPaymentRequest {
             payment_request: bolt11,
+            timeout_seconds: PAYMENT_TIMEOUT_SECONDS,
+            fee_limit_msat: i64::MAX,
+            no_inflight_updates: true,
             ..Default::default()
         };
 
-        #[allow(deprecated)]
-        let payment_response = self
-            .client
-            .lock()
-            .await
-            .lightning()
-            .send_payment_sync(fedimint_tonic_lnd::tonic::Request::new(pay_req))
-            .await?
-            .into_inner();
+        let mut client = self.client.lock().await;
+        let mut payment_stream = client.router().send_payment_v2(pay_req).await?.into_inner();
 
-        if !payment_response.payment_error.is_empty() {
-            bail!("Lnd payment error: {}", payment_response.payment_error);
+        while let Some(payment) = payment_stream.message().await? {
+            match PaymentStatus::try_from(payment.status) {
+                Ok(PaymentStatus::InFlight | PaymentStatus::Initiated) => continue,
+                Ok(PaymentStatus::Succeeded) => {
+                    return Ok(payment.payment_preimage);
+                }
+                Ok(PaymentStatus::Failed) => {
+                    bail!(
+                        "Lnd payment failed with failure reason {}",
+                        payment.failure_reason
+                    );
+                }
+                Ok(PaymentStatus::Unknown) => {
+                    bail!("Lnd payment status unknown");
+                }
+                Err(_) => bail!("Lnd payment status unknown: {}", payment.status),
+            }
         }
 
-        Ok(hex::encode(payment_response.payment_preimage))
+        bail!("Lnd payment stream ended without a terminal payment status")
     }
 
     async fn create_invoice(&self, amount_sat: Option<u64>) -> Result<String> {
