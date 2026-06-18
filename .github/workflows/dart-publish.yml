@@ -102,6 +102,7 @@ jobs:
             --exclude='.git' \
             bindings/dart/ cdk-dart/
           cp rust-toolchain.toml cdk-dart/
+          cp Cargo.lock cdk-dart/rust/
 
       - name: Update versions and resolve workspace references
         run: |
@@ -254,12 +255,12 @@ jobs:
       - name: Build (native)
         if: "!contains(matrix.target, 'android')"
         working-directory: cdk-dart/rust
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Build (cross / Android)
         if: contains(matrix.target, 'android')
         working-directory: cdk-dart/rust
-        run: cross build --release --target ${{ matrix.target }}
+        run: cross build --release --locked --target ${{ matrix.target }}
 
       - name: Strip debug symbols
         shell: bash
@@ -277,7 +278,7 @@ jobs:
         working-directory: cdk-dart/rust
         run: |
           mkdir -p ../generated-bindings
-          cargo run --release --bin uniffi-bindgen -- \
+          cargo run --release --locked --bin uniffi-bindgen -- \
             target/${{ matrix.target }}/release/${{ matrix.artifact }} \
             --out-dir ../generated-bindings
 

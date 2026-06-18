@@ -103,6 +103,7 @@ jobs:
             --exclude='build' \
             bindings/swift/ cdk-swift/
           cp rust-toolchain.toml cdk-swift/
+          cp Cargo.lock cdk-swift/rust/
 
       - name: Update versions and resolve workspace references
         run: |
@@ -231,9 +232,9 @@ jobs:
           export DEVELOPER_DIR=$(/usr/bin/xcrun xcode-select -p)
           if [[ "${{ matrix.unset_macos_env }}" == "true" ]]; then
             env -u MACOSX_DEPLOYMENT_TARGET -u SDKROOT \
-              cargo build --release --target ${{ matrix.target }}
+              cargo build --release --locked --target ${{ matrix.target }}
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --release --locked --target ${{ matrix.target }}
           fi
 
       - name: Fix dylib install name
@@ -334,7 +335,7 @@ jobs:
         working-directory: cdk-swift/rust
         run: |
           # Build uniffi-bindgen-swift binary
-          cargo build --release --bin uniffi-bindgen-swift
+          cargo build --release --locked --bin uniffi-bindgen-swift
 
           BINDGEN="./target/release/uniffi-bindgen-swift"
 

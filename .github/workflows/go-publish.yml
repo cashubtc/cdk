@@ -66,6 +66,7 @@ jobs:
             --exclude='.git' \
             bindings/go/ cdk-go/
           cp rust-toolchain.toml cdk-go/
+          cp Cargo.lock cdk-go/rust/
 
       - name: Update versions and resolve workspace references
         run: |
@@ -182,7 +183,7 @@ jobs:
       - name: Build cdk-ffi
         shell: bash
         run: |
-          cargo build --release --package cdk-ffi \
+          cargo build --release --locked --package cdk-ffi \
             --target ${{ matrix.target }}
 
       - name: Fix dylib install name
