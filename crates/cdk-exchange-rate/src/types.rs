@@ -30,6 +30,8 @@ pub fn fiat_subunit_scale(unit: &CurrencyUnit) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::*;
 
     #[test]
@@ -44,6 +46,41 @@ mod tests {
         );
         assert_eq!(
             fiat_subunit_scale(&CurrencyUnit::Custom("MILLI-CENT".to_string())),
+            Some(100_000)
+        );
+    }
+
+    #[test]
+    fn milli_cent_custom_unit_does_not_trim_direct_custom_value() {
+        assert_eq!(
+            fiat_subunit_scale(&CurrencyUnit::Custom("  milli-cent  ".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn milli_cent_from_str_trims_and_matches() {
+        assert_eq!(
+            fiat_subunit_scale(
+                &CurrencyUnit::from_str("  milli-cent  ")
+                    .expect("custom currency unit should parse")
+            ),
+            Some(100_000)
+        );
+    }
+
+    #[test]
+    fn millicent_without_hyphen_does_not_match() {
+        assert_eq!(
+            fiat_subunit_scale(&CurrencyUnit::Custom("millicent".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn milli_cent_custom_constructor_uppercase_matches() {
+        assert_eq!(
+            fiat_subunit_scale(&CurrencyUnit::custom("milli-cent")),
             Some(100_000)
         );
     }

@@ -34,6 +34,7 @@ use cdk::nuts::{
 use cdk_axum::cache::HttpCache;
 use cdk_common::common::QuoteTTL;
 use cdk_common::database::DynMintDatabase;
+use cdk_common::Amount;
 // internal crate modules
 #[cfg(feature = "prometheus")]
 use cdk_common::payment::MetricsMintPayment;
@@ -735,11 +736,19 @@ async fn configure_backend_and_rate_quoter_for_unit(
     }
 
     let msat_processor = MsatSatConverter::new(SharedMintPayment::new(backend.clone()));
+    // The underlying Lightning backend is sat-denominated, while the msat
+    // facade exposes the same economic limits in millisatoshis: 1 sat = 1000 msat.
+    let msat_mint_melt_limits = MintMeltLimits {
+        mint_min: Amount::from(mint_melt_limits.mint_min.to_u64().saturating_mul(1000)),
+        mint_max: Amount::from(mint_melt_limits.mint_max.to_u64().saturating_mul(1000)),
+        melt_min: Amount::from(mint_melt_limits.melt_min.to_u64().saturating_mul(1000)),
+        melt_max: Amount::from(mint_melt_limits.melt_max.to_u64().saturating_mul(1000)),
+    };
     mint_builder = configure_backend_for_unit(
         settings,
         mint_builder,
         CurrencyUnit::Msat,
-        mint_melt_limits,
+        msat_mint_melt_limits,
         Arc::new(msat_processor),
     )
     .await?;

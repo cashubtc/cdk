@@ -3,6 +3,7 @@
 use std::pin::Pin;
 
 use async_trait::async_trait;
+use cdk_common::amount::MSAT_IN_SAT;
 use cdk_common::nuts::CurrencyUnit;
 use cdk_common::payment::{
     CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse, MintPayment,
@@ -11,8 +12,6 @@ use cdk_common::payment::{
 };
 use cdk_common::Amount;
 use futures::{Stream, StreamExt};
-
-const MSATS_PER_SAT: u64 = 1_000;
 
 /// Decorates a sat-denominated payment backend as an msat-denominated processor.
 #[derive(Debug, Clone)]
@@ -47,6 +46,12 @@ where
     #[tracing::instrument(skip_all)]
     async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
         let inner = self.inner.get_settings().await?;
+        if !inner.unit.eq_ignore_ascii_case("sat") {
+            tracing::error!(
+                inner_unit = %inner.unit,
+                "MsatSatConverter inner backend is not sat-denominated; conversions will be wrong"
+            );
+        }
         Ok(SettingsResponse {
             unit: CurrencyUnit::Msat.to_string(),
             bolt11: inner.bolt11,
@@ -111,7 +116,16 @@ where
     ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
         let stream = self.inner.wait_payment_event().await?;
         Ok(Box::pin(stream.filter_map(|event| async move {
-            convert_event_to_msat(event).ok()
+            match convert_event_to_msat(event) {
+                Ok(msat_event) => Some(msat_event),
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "failed to convert payment event to msat; dropping event"
+                    );
+                    None
+                }
+            }
         })))
     }
 
@@ -164,7 +178,7 @@ fn msats_to_sats(
         return Err(cdk_common::payment::Error::UnsupportedUnit);
     }
     Ok(Amount::new(
-        div_ceil(amount.value(), MSATS_PER_SAT),
+        div_ceil(amount.value(), MSAT_IN_SAT),
         CurrencyUnit::Sat,
     ))
 }
@@ -176,7 +190,7 @@ fn sats_to_msats(
         return Err(cdk_common::payment::Error::UnsupportedUnit);
     }
     Ok(Amount::new(
-        amount.value().checked_mul(MSATS_PER_SAT).ok_or_else(|| {
+        amount.value().checked_mul(MSAT_IN_SAT).ok_or_else(|| {
             cdk_common::payment::Error::Custom("msat amount overflow".to_string())
         })?,
         CurrencyUnit::Msat,
@@ -273,6 +287,7 @@ mod tests {
 
     use cdk_common::nuts::MeltQuoteState;
     use cdk_common::payment::{Bolt11IncomingPaymentOptions, CustomOutgoingPaymentOptions};
+    use cdk_common::QuoteId;
     use futures::stream;
 
     use super::*;
@@ -282,6 +297,9 @@ mod tests {
         incoming_amounts: Arc<Mutex<Vec<Amount<CurrencyUnit>>>>,
         quote: Arc<Mutex<Option<PaymentQuoteResponse>>>,
         incoming_status: Arc<Mutex<Vec<WaitPaymentResponse>>>,
+        make_response: Arc<Mutex<Option<MakePaymentResponse>>>,
+        check_response: Arc<Mutex<Option<MakePaymentResponse>>>,
+        events: Arc<Mutex<Vec<Event>>>,
     }
 
     #[async_trait]
@@ -336,13 +354,22 @@ mod tests {
             _unit: &CurrencyUnit,
             _options: OutgoingPaymentOptions,
         ) -> Result<MakePaymentResponse, Self::Err> {
-            Err(cdk_common::payment::Error::Custom("unused".to_string()))
+            self.make_response
+                .lock()
+                .expect("make response mutex should not be poisoned")
+                .clone()
+                .ok_or_else(|| cdk_common::payment::Error::Custom("missing response".to_string()))
         }
 
         async fn wait_payment_event(
             &self,
         ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
-            Ok(Box::pin(stream::empty()))
+            Ok(Box::pin(stream::iter(
+                self.events
+                    .lock()
+                    .expect("events mutex should not be poisoned")
+                    .clone(),
+            )))
         }
 
         fn is_payment_event_stream_active(&self) -> bool {
@@ -366,8 +393,23 @@ mod tests {
             &self,
             _payment_identifier: &PaymentIdentifier,
         ) -> Result<MakePaymentResponse, Self::Err> {
-            Err(cdk_common::payment::Error::Custom("unused".to_string()))
+            self.check_response
+                .lock()
+                .expect("check response mutex should not be poisoned")
+                .clone()
+                .ok_or_else(|| cdk_common::payment::Error::Custom("missing response".to_string()))
         }
+    }
+
+    fn custom_outgoing_options() -> OutgoingPaymentOptions {
+        OutgoingPaymentOptions::Custom(Box::new(CustomOutgoingPaymentOptions {
+            method: "test".to_string(),
+            request: "request".to_string(),
+            max_fee_amount: None,
+            timeout_secs: None,
+            melt_options: None,
+            extra_json: None,
+        }))
     }
 
     #[tokio::test]
@@ -400,6 +442,28 @@ mod tests {
             .expect("incoming amounts mutex should not be poisoned");
         assert_eq!(amounts[0], Amount::new(2, CurrencyUnit::Sat));
         assert_eq!(amounts[1], Amount::new(1, CurrencyUnit::Sat));
+    }
+
+    #[tokio::test]
+    async fn incoming_zero_msat_converts_to_zero_sats() {
+        let backend = MockSatPayment::default();
+        let converter = MsatSatConverter::new(backend.clone());
+
+        converter
+            .create_incoming_payment_request(IncomingPaymentOptions::Bolt11(
+                Bolt11IncomingPaymentOptions {
+                    amount: Amount::new(0, CurrencyUnit::Msat),
+                    ..Default::default()
+                },
+            ))
+            .await
+            .expect("zero msat quote should be converted without forcing a minimum");
+
+        let amounts = backend
+            .incoming_amounts
+            .lock()
+            .expect("incoming amounts mutex should not be poisoned");
+        assert_eq!(amounts[0], Amount::new(0, CurrencyUnit::Sat));
     }
 
     #[tokio::test]
@@ -459,5 +523,111 @@ mod tests {
 
         assert_eq!(quote.amount, Amount::new(2_000, CurrencyUnit::Msat));
         assert_eq!(quote.fee, Amount::new(1_000, CurrencyUnit::Msat));
+    }
+
+    #[test]
+    fn payment_successful_event_converts_sat_amount_to_msat() {
+        let quote_id = QuoteId::new_uuid();
+        let event = Event::PaymentSuccessful {
+            quote_id: quote_id.clone(),
+            details: MakePaymentResponse {
+                payment_lookup_id: PaymentIdentifier::CustomId("payment".to_string()),
+                payment_proof: Some("proof".to_string()),
+                status: MeltQuoteState::Paid,
+                total_spent: Amount::new(3, CurrencyUnit::Sat),
+            },
+        };
+
+        let converted = convert_event_to_msat(event).expect("event should convert");
+
+        match converted {
+            Event::PaymentSuccessful {
+                quote_id: id,
+                details,
+            } => {
+                assert_eq!(id, quote_id);
+                assert_eq!(details.total_spent, Amount::new(3_000, CurrencyUnit::Msat));
+            }
+            _ => panic!("expected payment successful event"),
+        }
+    }
+
+    #[test]
+    fn payment_failed_event_passes_through_without_amount() {
+        let quote_id = QuoteId::new_uuid();
+        let event = Event::PaymentFailed {
+            quote_id: quote_id.clone(),
+            reason: "failed".to_string(),
+        };
+
+        let converted = convert_event_to_msat(event).expect("event should pass through");
+
+        match converted {
+            Event::PaymentFailed {
+                quote_id: id,
+                reason,
+            } => {
+                assert_eq!(id, quote_id);
+                assert_eq!(reason, "failed");
+            }
+            _ => panic!("expected payment failed event"),
+        }
+    }
+
+    #[test]
+    fn sats_to_msats_overflow_fails_gracefully() {
+        let result = sats_to_msats(Amount::new(u64::MAX / 2, CurrencyUnit::Sat));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn ensure_msat_unit_rejects_non_msat_amounts() {
+        assert!(ensure_msat_unit(&CurrencyUnit::Sat).is_err());
+        assert!(ensure_msat_unit(&CurrencyUnit::Msat).is_ok());
+    }
+
+    #[tokio::test]
+    async fn make_payment_response_converts_total_spent_to_msat() {
+        let backend = MockSatPayment::default();
+        *backend
+            .make_response
+            .lock()
+            .expect("make response mutex should not be poisoned") = Some(MakePaymentResponse {
+            payment_lookup_id: PaymentIdentifier::CustomId("payment".to_string()),
+            payment_proof: None,
+            status: MeltQuoteState::Paid,
+            total_spent: Amount::new(4, CurrencyUnit::Sat),
+        });
+        let converter = MsatSatConverter::new(backend);
+
+        let response = converter
+            .make_payment(&CurrencyUnit::Msat, custom_outgoing_options())
+            .await
+            .expect("sat response should convert to msat");
+
+        assert_eq!(response.total_spent, Amount::new(4_000, CurrencyUnit::Msat));
+    }
+
+    #[tokio::test]
+    async fn check_outgoing_payment_response_converts_total_spent_to_msat() {
+        let backend = MockSatPayment::default();
+        *backend
+            .check_response
+            .lock()
+            .expect("check response mutex should not be poisoned") = Some(MakePaymentResponse {
+            payment_lookup_id: PaymentIdentifier::CustomId("payment".to_string()),
+            payment_proof: None,
+            status: MeltQuoteState::Paid,
+            total_spent: Amount::new(5, CurrencyUnit::Sat),
+        });
+        let converter = MsatSatConverter::new(backend);
+
+        let response = converter
+            .check_outgoing_payment(&PaymentIdentifier::CustomId("payment".to_string()))
+            .await
+            .expect("sat response should convert to msat");
+
+        assert_eq!(response.total_spent, Amount::new(5_000, CurrencyUnit::Msat));
     }
 }

@@ -715,14 +715,13 @@ mod currency_unit_tests {
 
     #[test]
     fn parses_msat_and_milli_cent_units() {
-        assert_eq!(
-            CurrencyUnit::from_str("msat").expect("msat should parse"),
-            CurrencyUnit::Msat
-        );
-        assert_eq!(
-            CurrencyUnit::from_str("milli-cent").expect("milli-cent should parse"),
-            CurrencyUnit::Custom("milli-cent".to_string())
-        );
+        let msat = CurrencyUnit::from_str("msat").expect("msat should parse");
+        assert_eq!(msat, CurrencyUnit::Msat);
+        assert_eq!(msat.to_string(), "msat");
+
+        let mc = CurrencyUnit::from_str("milli-cent").expect("milli-cent should parse");
+        assert_eq!(mc, CurrencyUnit::Custom("milli-cent".to_string()));
+        assert_eq!(mc.to_string(), "milli-cent");
     }
 }
 
