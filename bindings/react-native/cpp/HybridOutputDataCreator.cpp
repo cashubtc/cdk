@@ -14,8 +14,17 @@ std::vector<uint64_t> HybridOutputDataCreator::splitAmount(
 
   if (customSplit.has_value()) {
     std::vector<uint64_t> result;
+    uint64_t sum = 0;
     for (double v : customSplit.value()) {
-      result.push_back(static_cast<uint64_t>(v));
+      if (v != static_cast<double>(static_cast<uint64_t>(v)) || v <= 0) {
+        throw std::runtime_error("Custom split contains invalid denomination");
+      }
+      uint64_t uv = static_cast<uint64_t>(v);
+      result.push_back(uv);
+      sum += uv;
+    }
+    if (sum != amount) {
+      throw std::runtime_error("Custom split total does not equal requested amount");
     }
     return result;
   }

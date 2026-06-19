@@ -88,6 +88,10 @@ pub unsafe extern "C" fn cdk_create_p2pk_blinded_message(
     refund_pubkeys_len: u32,
     sig_flag_ptr: *const c_char,
 ) -> *mut CdkBlindResult {
+    if pubkey_hex.is_null() {
+        return ptr::null_mut();
+    }
+
     let pubkey_str = match unsafe { CStr::from_ptr(pubkey_hex) }.to_str() {
         Ok(s) => s,
         Err(_) => return ptr::null_mut(),
@@ -157,6 +161,10 @@ pub unsafe extern "C" fn cdk_create_deterministic_blinded_message(
     seed_len: u32,
     counter: u32,
 ) -> *mut CdkBlindResult {
+    if keyset_id.is_null() {
+        return ptr::null_mut();
+    }
+
     let keyset_id_str = match unsafe { CStr::from_ptr(keyset_id) }.to_str() {
         Ok(s) => s,
         Err(_) => return ptr::null_mut(),
@@ -167,12 +175,12 @@ pub unsafe extern "C" fn cdk_create_deterministic_blinded_message(
         Err(_) => return ptr::null_mut(),
     };
 
-    let seed_slice = unsafe { slice::from_raw_parts(seed, seed_len as usize) };
-
-    // NUT-13 requires a 64-byte seed
-    if seed_slice.len() != 64 {
+    // Validate pointer and length before creating the slice to avoid UB
+    if seed.is_null() || seed_len != 64 {
         return ptr::null_mut();
     }
+
+    let seed_slice = unsafe { slice::from_raw_parts(seed, seed_len as usize) };
     let seed_arr: &[u8; 64] = seed_slice.try_into().unwrap();
 
     // Derive secret and blinding factor deterministically
@@ -201,6 +209,9 @@ fn parse_pubkey_array(ptrs: *const *const c_char, len: u32) -> Result<Option<Vec
     let slice = unsafe { slice::from_raw_parts(ptrs, len as usize) };
     let mut pks = Vec::with_capacity(len as usize);
     for &p in slice {
+        if p.is_null() {
+            return Err(());
+        }
         let s = unsafe { CStr::from_ptr(p) }.to_str().map_err(|_| ())?;
         let pk = PublicKey::from_hex(s).map_err(|_| ())?;
         pks.push(pk);
