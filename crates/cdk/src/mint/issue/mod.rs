@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
 use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
@@ -436,8 +438,24 @@ impl Mint {
             Error::SignatureMissingOrInvalid
         });
 
+        let mint_pubkey = self
+            .mint_info()
+            .await?
+            .pubkey
+            .ok_or(Error::MissingPubkey)?
+            .to_hex();
+
         for (pubkey, signature) in pubkeys.iter().zip(signatures.iter()) {
-            pubkey.verify(&pubkey.serialize(), signature).map_err(|e| {
+            let pubkey_hex = pubkey.to_hex();
+
+            let mut preimage = Vec::with_capacity(24 + mint_pubkey.len() + pubkey_hex.len());
+            preimage.extend_from_slice(b"Cashu_MintQuoteLookup_v1");
+            preimage.extend_from_slice(mint_pubkey.as_bytes());
+            preimage.extend_from_slice(pubkey_hex.as_bytes());
+
+            let hash = Sha256Hash::hash(&preimage).to_byte_array();
+
+            pubkey.verify(&hash, signature).map_err(|e| {
                 tracing::error!("Failed to validate signature: {}", e);
                 Error::SignatureMissingOrInvalid
             })?;
