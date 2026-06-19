@@ -427,6 +427,8 @@ impl Mint {
         &self,
         pubkeys: Vec<PublicKey>,
         signatures: Vec<Signature>,
+        nonce: String,
+        timestamp: u64,
     ) -> Result<Vec<MintQuoteResponse<QuoteId>>, Error> {
         #[cfg(feature = "prometheus")]
         let metrics = super::MintMetricGuard::new("mint_quotes_by_pubkeys");

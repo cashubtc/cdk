@@ -11,4 +11,8 @@ pub struct MintQuoteByPubkeyRequest {
     pub pubkeys: Vec<String>,
     /// Signatures
     pub pubkeys_signatures: Vec<String>,
+    /// Timestamp
+    pub timestamp: u64,
+    /// Nonce
+    pub nonce: String,
 }
