@@ -285,17 +285,8 @@ fn read_mint_quotes_chunk_sqlite(
                 state_mapped == MintQuoteState::Paid || state_mapped == MintQuoteState::Issued;
             let is_issued = state_mapped == MintQuoteState::Issued;
 
-            let amount_paid = if is_paid {
-                Amount::from(amount as u64).with_unit(unit.clone())
-            } else {
-                Amount::from(0).with_unit(unit.clone())
-            };
-
-            let amount_issued = if is_issued {
-                Amount::from(amount as u64).with_unit(unit.clone())
-            } else {
-                Amount::from(0).with_unit(unit.clone())
-            };
+            let amount_paid = Amount::from(0).with_unit(unit.clone());
+            let amount_issued = Amount::from(0).with_unit(unit.clone());
 
             let pubkey = pubkey_str
                 .as_ref()
