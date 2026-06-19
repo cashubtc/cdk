@@ -23,7 +23,29 @@ use cdk_common::nuts::CurrencyUnit;
 pub fn fiat_subunit_scale(unit: &CurrencyUnit) -> Option<u64> {
     match unit {
         CurrencyUnit::Usd => Some(100),
+        CurrencyUnit::Custom(s) if s.eq_ignore_ascii_case("milli-cent") => Some(100_000),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn milli_cent_custom_unit_uses_one_hundred_thousand_subunits() {
+        assert_eq!(
+            fiat_subunit_scale(&CurrencyUnit::Custom("milli-cent".to_string())),
+            Some(100_000)
+        );
+        assert_eq!(
+            fiat_subunit_scale(&CurrencyUnit::Custom("Milli-Cent".to_string())),
+            Some(100_000)
+        );
+        assert_eq!(
+            fiat_subunit_scale(&CurrencyUnit::Custom("MILLI-CENT".to_string())),
+            Some(100_000)
+        );
     }
 }
 

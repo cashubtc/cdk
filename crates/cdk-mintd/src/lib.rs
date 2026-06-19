@@ -41,7 +41,7 @@ use cdk_common::payment::MintPayment;
 use cdk_exchange_rate::sources::{BitstampRateSource, CoinbaseRateSource, KrakenRateSource};
 use cdk_exchange_rate::{
     AggregatingRateOracle, AggregatorConfig, DynRateQuoteStore, InMemoryRateQuoteStore,
-    PaymentErrorAdapter, RateConvertingPayment, RateConvertingPaymentConfig,
+    MsatSatConverter, PaymentErrorAdapter, RateConvertingPayment, RateConvertingPaymentConfig,
     RateQuoteControlHandle, RateSource, SharedMintPayment,
 };
 #[cfg(feature = "postgres")]
@@ -721,7 +721,7 @@ async fn configure_backend_and_rate_quoter_for_unit(
     mint_melt_limits: MintMeltLimits,
     backend: Arc<dyn MintPayment<Err = cdk_common::payment::Error> + Send + Sync>,
 ) -> Result<(MintBuilder, Option<RateQuoteControlHandle>)> {
-    let mint_builder = configure_backend_for_unit(
+    let mut mint_builder = configure_backend_for_unit(
         settings,
         mint_builder,
         unit.clone(),
@@ -733,6 +733,16 @@ async fn configure_backend_and_rate_quoter_for_unit(
     if unit != CurrencyUnit::Sat {
         return Ok((mint_builder, None));
     }
+
+    let msat_processor = MsatSatConverter::new(SharedMintPayment::new(backend.clone()));
+    mint_builder = configure_backend_for_unit(
+        settings,
+        mint_builder,
+        CurrencyUnit::Msat,
+        mint_melt_limits,
+        Arc::new(msat_processor),
+    )
+    .await?;
 
     configure_rate_quoter_for_sat_backend(settings, mint_builder, mint_melt_limits, backend).await
 }

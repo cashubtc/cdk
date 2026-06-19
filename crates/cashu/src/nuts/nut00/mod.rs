@@ -709,6 +709,23 @@ impl FromStr for CurrencyUnit {
     }
 }
 
+#[cfg(test)]
+mod currency_unit_tests {
+    use super::*;
+
+    #[test]
+    fn parses_msat_and_milli_cent_units() {
+        assert_eq!(
+            CurrencyUnit::from_str("msat").expect("msat should parse"),
+            CurrencyUnit::Msat
+        );
+        assert_eq!(
+            CurrencyUnit::from_str("milli-cent").expect("milli-cent should parse"),
+            CurrencyUnit::Custom("milli-cent".to_string())
+        );
+    }
+}
+
 impl fmt::Display for CurrencyUnit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // let binding = normalize_custom_unit(&self).clone();

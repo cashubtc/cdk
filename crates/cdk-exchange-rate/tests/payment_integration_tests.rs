@@ -348,7 +348,7 @@ async fn parked_payment_suppresses_upstream_event_after_quote_store_failure() {
     let parked = store.parked_payments().await;
     assert_eq!(parked.len(), 1);
     assert_eq!(parked[0].received_sats, 505);
-    assert!(parked_payment_event_count() >= before + 1);
+    assert!(parked_payment_event_count() > before);
 }
 
 #[tokio::test]
@@ -477,7 +477,7 @@ async fn failed_atomic_mint_settle_parks_and_replay_credits_once() {
     let parked = store.parked_payments().await;
     assert_eq!(parked.len(), 1);
     assert_eq!(parked[0].resolution_status, "settlement_failed");
-    assert!(parked_payment_event_count() >= before + 1);
+    assert!(parked_payment_event_count() > before);
 
     let replayed = processor
         .check_incoming_payment_status(&quote.request_lookup_id)
@@ -545,7 +545,7 @@ async fn failed_atomic_melt_settle_parks_and_replay_debits_once() {
     let parked = store.parked_payments().await;
     assert_eq!(parked.len(), 1);
     assert_eq!(parked[0].resolution_status, "settlement_failed");
-    assert!(parked_payment_event_count() >= before + 1);
+    assert!(parked_payment_event_count() > before);
 
     let checked = processor
         .check_outgoing_payment(&response.payment_lookup_id)
