@@ -46,6 +46,7 @@ pub(crate) fn apply_proxy_if_needed(
 pub struct HttpClient {
     inner: Arc<bitreq::Client>,
     proxy_config: Option<ProxyConfig>,
+    no_redirects: bool,
 }
 
 impl std::fmt::Debug for HttpClient {
@@ -60,6 +61,7 @@ impl HttpClient {
         Self {
             inner: Arc::new(bitreq::Client::new(10)),
             proxy_config: None,
+            no_redirects: false,
         }
     }
 
@@ -67,10 +69,12 @@ impl HttpClient {
     pub(crate) fn from_parts(
         client: Arc<bitreq::Client>,
         proxy_config: Option<ProxyConfig>,
+        no_redirects: bool,
     ) -> Self {
         Self {
             inner: client,
             proxy_config,
+            no_redirects,
         }
     }
 
@@ -79,34 +83,25 @@ impl HttpClient {
         HttpClientBuilder::default()
     }
 
-    /// Helper method to apply proxy if URL matches the configured proxy rules
-    fn apply_proxy_if_needed(
-        &self,
-        request: bitreq::Request,
-        url: &str,
-    ) -> Response<bitreq::Request> {
-        apply_proxy_if_needed(request, url, &self.proxy_config)
+    /// Apply proxy and redirect settings to a request
+    fn configure_request(&self, request: bitreq::Request, url: &str) -> Response<bitreq::Request> {
+        let request = apply_proxy_if_needed(request, url, &self.proxy_config)?;
+        Ok(if self.no_redirects {
+            request.with_max_redirects(0)
+        } else {
+            request
+        })
     }
 
     /// GET request, returns JSON deserialized to R
     pub async fn fetch<R: DeserializeOwned>(&self, url: &str) -> Response<R> {
         let request = bitreq::get(url);
-        let request = self.apply_proxy_if_needed(request, url)?;
+        let request = self.configure_request(request, url)?;
         let response = request
             .send_async_with_client(&self.inner)
             .await
             .map_err(HttpError::from)?;
-        let status = response.status_code;
-
-        if !(200..300).contains(&status) {
-            let message = response.as_str().unwrap_or("").to_string();
-            return Err(HttpError::Status {
-                status: status as u16,
-                message,
-            });
-        }
-
-        response.json().map_err(HttpError::from)
+        RawResponse::new(response.status_code as u16, response.into_bytes()).json_or_status_error()
     }
 
     /// POST with JSON body, returns JSON deserialized to R
@@ -116,22 +111,13 @@ impl HttpClient {
         body: &B,
     ) -> Response<R> {
         let request = bitreq::post(url).with_json(body).map_err(HttpError::from)?;
-        let request = self.apply_proxy_if_needed(request, url)?;
+        let request = self.configure_request(request, url)?;
         let response: bitreq::Response = request
             .send_async_with_client(&self.inner)
             .await
             .map_err(HttpError::from)?;
-        let status = response.status_code;
 
-        if !(200..300).contains(&status) {
-            let message = response.as_str().unwrap_or("").to_string();
-            return Err(HttpError::Status {
-                status: status as u16,
-                message,
-            });
-        }
-
-        response.json().map_err(HttpError::from)
+        RawResponse::new(response.status_code as u16, response.into_bytes()).json_or_status_error()
     }
 
     /// POST with form data, returns JSON deserialized to R
@@ -145,22 +131,13 @@ impl HttpClient {
         let request = bitreq::post(url)
             .with_body(form_str.into_bytes())
             .with_header("Content-Type", "application/x-www-form-urlencoded");
-        let request = self.apply_proxy_if_needed(request, url)?;
+        let request = self.configure_request(request, url)?;
         let response: bitreq::Response = request
             .send_async_with_client(&self.inner)
             .await
             .map_err(HttpError::from)?;
-        let status = response.status_code;
 
-        if !(200..300).contains(&status) {
-            let message = response.as_str().unwrap_or("").to_string();
-            return Err(HttpError::Status {
-                status: status as u16,
-                message,
-            });
-        }
-
-        response.json().map_err(HttpError::from)
+        RawResponse::new(response.status_code as u16, response.into_bytes()).json_or_status_error()
     }
 
     /// PATCH with JSON body, returns JSON deserialized to R
@@ -172,28 +149,19 @@ impl HttpClient {
         let request = bitreq::patch(url)
             .with_json(body)
             .map_err(HttpError::from)?;
-        let request = self.apply_proxy_if_needed(request, url)?;
+        let request = self.configure_request(request, url)?;
         let response: bitreq::Response = request
             .send_async_with_client(&self.inner)
             .await
             .map_err(HttpError::from)?;
-        let status = response.status_code;
 
-        if !(200..300).contains(&status) {
-            let message = response.as_str().unwrap_or("").to_string();
-            return Err(HttpError::Status {
-                status: status as u16,
-                message,
-            });
-        }
-
-        response.json().map_err(HttpError::from)
+        RawResponse::new(response.status_code as u16, response.into_bytes()).json_or_status_error()
     }
 
     /// GET request returning raw response body
     pub async fn get_raw(&self, url: &str) -> Response<RawResponse> {
         let request = bitreq::get(url);
-        let request = self.apply_proxy_if_needed(request, url)?;
+        let request = self.configure_request(request, url)?;
         let response = request
             .send_async_with_client(&self.inner)
             .await
@@ -211,6 +179,7 @@ impl HttpClient {
             url,
             self.inner.clone(),
             self.proxy_config.clone(),
+            self.no_redirects,
         )
     }
 
@@ -221,6 +190,7 @@ impl HttpClient {
             url,
             self.inner.clone(),
             self.proxy_config.clone(),
+            self.no_redirects,
         )
     }
 
@@ -231,6 +201,7 @@ impl HttpClient {
             url,
             self.inner.clone(),
             self.proxy_config.clone(),
+            self.no_redirects,
         )
     }
 }
@@ -242,6 +213,7 @@ pub struct BitreqRequestBuilder {
     url: String,
     client: Arc<bitreq::Client>,
     proxy_config: Option<ProxyConfig>,
+    no_redirects: bool,
 }
 
 impl std::fmt::Debug for BitreqRequestBuilder {
@@ -260,6 +232,7 @@ impl BitreqRequestBuilder {
         url: &str,
         client: Arc<bitreq::Client>,
         proxy_config: Option<ProxyConfig>,
+        no_redirects: bool,
     ) -> Self {
         Self {
             inner,
@@ -267,6 +240,7 @@ impl BitreqRequestBuilder {
             url: url.to_string(),
             client,
             proxy_config,
+            no_redirects,
         }
     }
 }
@@ -279,6 +253,7 @@ impl RequestBuilderExt for BitreqRequestBuilder {
             url: self.url,
             client: self.client,
             proxy_config: self.proxy_config,
+            no_redirects: self.no_redirects,
         }
     }
 
@@ -311,6 +286,11 @@ impl RequestBuilderExt for BitreqRequestBuilder {
             return Err(err);
         }
         let request = apply_proxy_if_needed(self.inner, &self.url, &self.proxy_config)?;
+        let request = if self.no_redirects {
+            request.with_max_redirects(0)
+        } else {
+            request
+        };
         let response = request
             .send_async_with_client(&self.client)
             .await
@@ -326,21 +306,17 @@ impl RequestBuilderExt for BitreqRequestBuilder {
             return Err(err);
         }
         let request = apply_proxy_if_needed(self.inner, &self.url, &self.proxy_config)?;
+        let request = if self.no_redirects {
+            request.with_max_redirects(0)
+        } else {
+            request
+        };
         let response = request
             .send_async_with_client(&self.client)
             .await
             .map_err(HttpError::from)?;
-        let status = response.status_code;
 
-        if !(200..300).contains(&status) {
-            let message = response.as_str().unwrap_or("").to_string();
-            return Err(HttpError::Status {
-                status: status as u16,
-                message,
-            });
-        }
-
-        response.json().map_err(HttpError::from)
+        RawResponse::new(response.status_code as u16, response.into_bytes()).json_or_status_error()
     }
 }
 
@@ -349,12 +325,19 @@ impl RequestBuilderExt for BitreqRequestBuilder {
 pub struct HttpClientBuilder {
     proxy: Option<ProxyConfig>,
     accept_invalid_certs: bool,
+    no_redirects: bool,
 }
 
 impl HttpClientBuilder {
     /// Accept invalid TLS certificates
     pub fn danger_accept_invalid_certs(mut self, accept: bool) -> Self {
         self.accept_invalid_certs = accept;
+        self
+    }
+
+    /// Disable automatic HTTP redirect following
+    pub fn no_redirects(mut self) -> Self {
+        self.no_redirects = true;
         self
     }
 
@@ -386,6 +369,7 @@ impl HttpClientBuilder {
         Ok(HttpClient::from_parts(
             Arc::new(bitreq::Client::new(10)),
             self.proxy,
+            self.no_redirects,
         ))
     }
 }

@@ -41,9 +41,21 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
 
 /// Default async transport backed by the crate `HttpClient`.
 #[cfg(any(target_arch = "wasm32", feature = "bitreq", feature = "reqwest"))]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Async {
     inner: HttpClient,
+}
+
+#[cfg(any(target_arch = "wasm32", feature = "bitreq", feature = "reqwest"))]
+impl Default for Async {
+    fn default() -> Self {
+        Self {
+            inner: HttpClient::builder()
+                .no_redirects()
+                .build()
+                .expect("default no-redirect client"),
+        }
+    }
 }
 
 #[cfg(any(target_arch = "wasm32", feature = "bitreq", feature = "reqwest"))]
@@ -56,8 +68,9 @@ impl Transport for Async {
         host_matcher: Option<&str>,
         accept_invalid_certs: bool,
     ) -> Result<(), HttpError> {
-        let builder =
-            HttpClientBuilder::default().danger_accept_invalid_certs(accept_invalid_certs);
+        let builder = HttpClientBuilder::default()
+            .no_redirects()
+            .danger_accept_invalid_certs(accept_invalid_certs);
 
         let builder = match host_matcher {
             Some(pattern) => builder.proxy_with_matcher(proxy, pattern)?,

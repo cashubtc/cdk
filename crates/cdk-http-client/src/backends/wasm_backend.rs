@@ -100,6 +100,7 @@ pub struct WasmRequestBuilder {
     url: String,
     headers: Vec<(String, String)>,
     body: Option<WasmBody>,
+    error: Option<HttpError>,
 }
 
 #[derive(Debug)]
@@ -116,10 +117,14 @@ impl WasmRequestBuilder {
             url: url.to_string(),
             headers: Vec::new(),
             body: None,
+            error: None,
         }
     }
 
     async fn execute(self) -> Response<RawResponse> {
+        if let Some(err) = self.error {
+            return Err(err);
+        }
         let opts = web_sys::RequestInit::new();
         opts.set_method(&self.method);
 
@@ -184,7 +189,7 @@ impl RequestBuilderExt for WasmRequestBuilder {
                 self.headers
                     .push(("Content-Type".to_string(), "application/json".to_string()));
             }
-            Err(_) => {} // Error will surface when trying to send
+            Err(e) => self.error = Some(HttpError::Serialization(e.to_string())),
         }
         self
     }
@@ -198,7 +203,7 @@ impl RequestBuilderExt for WasmRequestBuilder {
                     "application/x-www-form-urlencoded".to_string(),
                 ));
             }
-            Err(_) => {}
+            Err(e) => self.error = Some(HttpError::Serialization(e.to_string())),
         }
         self
     }
@@ -208,15 +213,7 @@ impl RequestBuilderExt for WasmRequestBuilder {
     }
 
     async fn send_json<R: DeserializeOwned>(self) -> Response<R> {
-        let raw = self.execute().await?;
-        let status = raw.status();
-
-        if !raw.is_success() {
-            let message = String::from_utf8_lossy(&raw.body).to_string();
-            return Err(HttpError::Status { status, message });
-        }
-
-        serde_json::from_slice(&raw.body).map_err(HttpError::from)
+        self.execute().await?.json_or_status_error()
     }
 }
 
@@ -228,6 +225,11 @@ impl HttpClientBuilder {
     /// Accept invalid TLS certificates (not supported on WASM)
     pub fn danger_accept_invalid_certs(self, _accept: bool) -> Self {
         panic!("danger_accept_invalid_certs configuration is not supported on WASM")
+    }
+
+    /// Disable automatic HTTP redirect following (not supported on WASM)
+    pub fn no_redirects(self) -> Self {
+        self
     }
 
     /// Set a proxy URL (not supported on WASM)

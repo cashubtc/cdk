@@ -59,10 +59,12 @@ where
 {
     fn map_http_error(err: HttpError) -> Error {
         match err {
-            HttpError::Status { status, message } => match ErrorResponse::from_json(&message) {
-                Ok(ok) => ok.into(),
-                Err(_) => Error::HttpError(Some(status), message),
-            },
+            HttpError::Status { status, message } => {
+                match serde_json::from_str::<ErrorResponse>(&message) {
+                    Ok(err_response) => err_response.into(),
+                    Err(_) => Error::HttpError(Some(status), message),
+                }
+            }
             HttpError::Timeout => Error::Timeout,
             HttpError::Connection(message)
             | HttpError::Serialization(message)
@@ -405,7 +407,7 @@ where
             }
             MintQuoteRequest::Onchain(req) => {
                 let response: cdk_common::nut30::MintQuoteOnchainResponse<String> =
-                    self.transport.http_post(url, auth_token, req).await?;
+                    self.transport_http_post(url, auth_token, req).await?;
                 Ok(MintQuoteResponse::Onchain(response))
             }
             MintQuoteRequest::Custom { request: req, .. } => {
@@ -473,7 +475,7 @@ where
                     .await?;
 
                 let response: MintQuoteOnchainResponse<String> =
-                    self.transport.http_get(url, auth_token).await?;
+                    self.transport_http_get(url, auth_token).await?;
 
                 Ok(MintQuoteResponse::Onchain(response))
             }
@@ -559,7 +561,7 @@ where
             }
             PaymentMethod::Known(KnownMethod::Onchain) => {
                 let responses: Vec<MintQuoteOnchainResponse<String>> =
-                    self.transport.http_post(url, auth_token, &request).await?;
+                    self.transport_http_post(url, auth_token, &request).await?;
                 Ok(responses
                     .into_iter()
                     .map(MintQuoteResponse::Onchain)
@@ -626,7 +628,7 @@ where
             }
             MeltQuoteRequest::Onchain(req) => {
                 let response: cdk_common::nut30::MeltQuoteOnchainResponse<String> =
-                    self.transport.http_post(url, auth_token, req).await?;
+                    self.transport_http_post(url, auth_token, req).await?;
                 Ok(MeltQuoteCreateResponse::Onchain(response))
             }
             MeltQuoteRequest::Custom(req) => {
@@ -694,7 +696,7 @@ where
                     .await?;
 
                 let response: cdk_common::nut30::MeltQuoteOnchainResponse<String> =
-                    self.transport.http_get(url, auth_token).await?;
+                    self.transport_http_get(url, auth_token).await?;
 
                 Ok(MeltQuoteResponse::Onchain(response))
             }

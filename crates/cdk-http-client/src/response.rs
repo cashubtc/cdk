@@ -41,6 +41,22 @@ impl RawResponse {
         (500..600).contains(&self.status)
     }
 
+    /// Response body as lossy UTF-8 string
+    pub fn body_lossy(&self) -> String {
+        String::from_utf8_lossy(&self.body).into_owned()
+    }
+
+    /// Deserialize JSON from a successful response, or return `HttpError::Status`
+    pub fn json_or_status_error<T: DeserializeOwned>(self) -> Response<T> {
+        if !self.is_success() {
+            return Err(HttpError::Status {
+                status: self.status,
+                message: self.body_lossy(),
+            });
+        }
+        serde_json::from_slice(&self.body).map_err(HttpError::from)
+    }
+
     /// Get the response body as text
     pub async fn text(self) -> Response<String> {
         String::from_utf8(self.body).map_err(|e| HttpError::Other(e.to_string()))

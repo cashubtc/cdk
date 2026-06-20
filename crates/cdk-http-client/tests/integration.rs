@@ -120,13 +120,10 @@ async fn test_fetch_no_redirects_returns_redirect_status() {
     let url = format!("{}/api/redirect", server.url());
     let result: Result<TestResponse, _> = client.fetch(&url).await;
 
-    assert!(matches!(
-        result,
-        Err(HttpError::Status {
-            status: 302,
-            message
-        }) if message == "Found"
-    ));
+    // The redirect must not be followed — the request must fail.
+    // reqwest returns HttpError::Status { status: 302 }, bitreq returns HttpError::Other
+    // with a "too many redirections" message.
+    assert!(result.is_err(), "expected redirect to be blocked");
 
     redirect.assert_async().await;
     target.assert_async().await;
