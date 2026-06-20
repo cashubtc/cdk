@@ -78,7 +78,7 @@ mod tests {
     }
 
     #[test]
-    fn milli_cent_custom_constructor_uppercase_matches() {
+    fn milli_cent_custom_constructor_preserved_case_matches() {
         assert_eq!(
             fiat_subunit_scale(&CurrencyUnit::custom("milli-cent")),
             Some(100_000)
