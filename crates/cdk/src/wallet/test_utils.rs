@@ -397,6 +397,29 @@ pub async fn create_test_wallet_with_mock(
         .unwrap()
 }
 
+/// Create a test wallet with a mock client that uses HTTP polling for
+/// subscriptions instead of WebSocket.
+///
+/// Useful for exercising subscription-driven flows (e.g. `PendingMelt::wait`)
+/// deterministically against the mock connector, which has no WebSocket
+/// endpoint.
+pub async fn create_test_wallet_with_mock_http_subscription(
+    db: Arc<dyn WalletDatabase<cdk_common::database::Error> + Send + Sync>,
+    mock_client: Arc<MockMintConnector>,
+) -> Wallet {
+    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
+
+    crate::wallet::WalletBuilder::new()
+        .mint_url(test_mint_url())
+        .unit(CurrencyUnit::Sat)
+        .localstore(db)
+        .seed(seed)
+        .shared_client(mock_client)
+        .use_http_subscription()
+        .build()
+        .unwrap()
+}
+
 /// Mock MintConnector for testing recovery scenarios
 #[derive(Debug)]
 pub struct MockMintConnector {
@@ -410,6 +433,14 @@ pub struct MockMintConnector {
     pub restore_response: Mutex<Option<Result<RestoreResponse, Error>>>,
     /// Response for get_melt_quote_status calls
     pub melt_quote_status_response: Mutex<Option<Result<MeltQuoteBolt11Response<String>, Error>>>,
+    /// Queue of responses for successive get_melt_quote_status calls.
+    ///
+    /// When non-empty, each `get_melt_quote_status` call pops the front entry.
+    /// Takes precedence over `melt_quote_status_response`, letting a single
+    /// test stage a sequence of status responses (e.g. a subscription event
+    /// followed by an authoritative HTTP recheck).
+    pub melt_quote_status_responses:
+        Mutex<std::collections::VecDeque<Result<MeltQuoteBolt11Response<String>, Error>>>,
     /// Response for post_mint calls
     pub post_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
     /// Response for post_swap calls
@@ -446,6 +477,7 @@ impl MockMintConnector {
             check_state_response: Mutex::new(None),
             restore_response: Mutex::new(None),
             melt_quote_status_response: Mutex::new(None),
+            melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
             post_mint_response: Mutex::new(None),
             post_swap_response: Mutex::new(None),
             post_melt_response: Mutex::new(None),
@@ -534,6 +566,20 @@ impl MockMintConnector {
         response: Result<MeltQuoteBolt11Response<String>, Error>,
     ) {
         *self.melt_quote_status_response.lock().unwrap() = Some(response);
+    }
+
+    /// Enqueue a response for the next `get_melt_quote_status` call.
+    ///
+    /// Queued responses are consumed in FIFO order and take precedence over
+    /// any value set via [`set_melt_quote_status_response`](Self::set_melt_quote_status_response).
+    pub fn push_melt_quote_status_response(
+        &self,
+        response: Result<MeltQuoteBolt11Response<String>, Error>,
+    ) {
+        self.melt_quote_status_responses
+            .lock()
+            .unwrap()
+            .push_back(response);
     }
 
     pub fn set_post_mint_response(&self, response: Result<MintResponse, Error>) {
@@ -672,14 +718,18 @@ impl MintConnector for MockMintConnector {
         _method: PaymentMethod,
         _quote_id: &str,
     ) -> Result<MeltQuoteResponse<String>, Error> {
-        let response = self
-            .melt_quote_status_response
-            .lock()
-            .unwrap()
-            .take()
-            .expect(
-                "MockMintConnector: get_melt_quote_status called without configured response",
-            )?;
+        let queued = self.melt_quote_status_responses.lock().unwrap().pop_front();
+        let response = match queued {
+            Some(response) => response,
+            None => self
+                .melt_quote_status_response
+                .lock()
+                .unwrap()
+                .take()
+                .expect(
+                    "MockMintConnector: get_melt_quote_status called without configured response",
+                ),
+        }?;
         Ok(MeltQuoteResponse::Bolt11(response))
     }
 
