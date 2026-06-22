@@ -54,8 +54,6 @@ pub struct Info {
     /// Overrides mnemonic
     pub seed: Option<String>,
     pub mnemonic: Option<String>,
-    pub signatory_url: Option<String>,
-    pub signatory_certs: Option<String>,
     pub input_fee_ppk: Option<u64>,
     /// Use keyset v2
     pub use_keyset_v2: Option<bool>,
@@ -87,8 +85,6 @@ impl Default for Info {
             listen_port: 8091, // Default to port 8091 instead of 0
             seed: None,
             mnemonic: None,
-            signatory_url: None,
-            signatory_certs: None,
             input_fee_ppk: None,
             use_keyset_v2: None,
             http_cache: cache::Config::default(),
@@ -107,7 +103,7 @@ impl std::fmt::Debug for Info {
                 let hash = sha256::Hash::hash(mnemonic.as_bytes());
                 format!("<hashed: {hash}>")
             } else {
-                format!("<url: {}>", self.signatory_url.clone().unwrap_or_default())
+                "<not set>".to_string()
             }
         };
 
@@ -123,6 +119,40 @@ impl std::fmt::Debug for Info {
             .field("enable_info_page", &self.enable_info_page)
             .finish()
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Signatory {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_signatory_address")]
+    pub address: String,
+    #[serde(default = "default_signatory_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub tls_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub allow_insecure: bool,
+}
+
+impl Default for Signatory {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            address: default_signatory_address(),
+            port: default_signatory_port(),
+            tls_dir: None,
+            allow_insecure: false,
+        }
+    }
+}
+
+fn default_signatory_address() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_signatory_port() -> u16 {
+    15060
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
@@ -1004,6 +1034,7 @@ fn default_blind() -> AuthType {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
     pub info: Info,
+    pub signatory: Option<Signatory>,
     pub mint_info: MintInfo,
     #[serde(default, deserialize_with = "deserialize_ln")]
     pub ln: Vec<Ln>,
@@ -1209,9 +1240,13 @@ impl Settings {
             // override with file contents
             .add_source(File::with_name(&config))
             .build()?;
-        let settings: Settings = config.try_deserialize()?;
+        config.try_deserialize()
+    }
 
-        Ok(settings)
+    pub(crate) fn enabled_signatory(&self) -> Option<&Signatory> {
+        self.signatory
+            .as_ref()
+            .filter(|signatory| signatory.enabled)
     }
 }
 

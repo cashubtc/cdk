@@ -53,10 +53,13 @@ async fn start_fake_mint(
 ) -> Result<tokio::task::JoinHandle<()>> {
     let signatory_config = if external_signatory {
         println!("Configuring external signatory");
-        Some((
-            "https://127.0.0.1:15060".to_string(),  // Default signatory URL
-            temp_dir.to_string_lossy().to_string(), // Certs directory as string
-        ))
+        Some(cdk_mintd::config::Signatory {
+            enabled: true,
+            address: "127.0.0.1".to_string(),
+            port: 15060,
+            tls_dir: Some(temp_dir.to_path_buf()),
+            allow_insecure: false,
+        })
     } else {
         None
     };

@@ -1205,20 +1205,34 @@ async fn build_mint(
     keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     mint_builder: MintBuilder,
 ) -> Result<Mint> {
-    if let Some(signatory_url) = settings.info.signatory_url.clone() {
+    if let Some(signatory) = settings.enabled_signatory() {
+        let tls_dir = signatory.tls_dir.clone();
+
+        if tls_dir.is_none() {
+            if !signatory.allow_insecure {
+                bail!(
+                    "gRPC signatory TLS is not configured. Set [signatory].tls_dir or \
+                     [signatory].allow_insecure = true to connect without TLS"
+                );
+            }
+
+            tracing::warn!(
+                "No gRPC signatory TLS directory configured; connecting without TLS because \
+                 allow_insecure is true"
+            );
+        }
+
         tracing::info!(
-            "Connecting to remote signatory to {} with certs {:?}",
-            signatory_url,
-            settings.info.signatory_certs.clone()
+            "Connecting to remote signatory to {}:{} with TLS directory {:?}",
+            signatory.address,
+            signatory.port,
+            tls_dir.clone()
         );
 
         Ok(mint_builder
             .build_with_signatory(Arc::new(
-                cdk_signatory::SignatoryRpcClient::new(
-                    signatory_url,
-                    settings.info.signatory_certs.clone(),
-                )
-                .await?,
+                cdk_signatory::SignatoryRpcClient::new(&signatory.address, signatory.port, tls_dir)
+                    .await?,
             ))
             .await?)
     } else if let Some(seed) = settings.info.seed.clone() {
@@ -1789,10 +1803,15 @@ mod tests {
             info: config::Info {
                 seed: Some("raw seed from config".to_string()),
                 mnemonic: Some("mnemonic from config".to_string()),
-                signatory_url: Some("http://127.0.0.1:50051".to_string()),
-                signatory_certs: Some("/tmp/certs".to_string()),
                 ..Default::default()
             },
+            signatory: Some(config::Signatory {
+                enabled: true,
+                address: "127.0.0.1".to_string(),
+                port: 15060,
+                tls_dir: Some("/tmp/certs".into()),
+                allow_insecure: false,
+            }),
             ..Default::default()
         };
 
@@ -1801,12 +1820,22 @@ mod tests {
         assert_eq!(settings.info.seed, None);
         assert_eq!(settings.info.mnemonic, Some(TEST_MNEMONIC.to_string()));
         assert_eq!(
-            settings.info.signatory_url,
-            Some("http://127.0.0.1:50051".to_string())
+            settings
+                .signatory
+                .as_ref()
+                .map(|signatory| signatory.address.clone()),
+            Some("127.0.0.1".to_string())
         );
         assert_eq!(
-            settings.info.signatory_certs,
-            Some("/tmp/certs".to_string())
+            settings.signatory.as_ref().map(|signatory| signatory.port),
+            Some(15060)
+        );
+        assert_eq!(
+            settings
+                .signatory
+                .as_ref()
+                .and_then(|signatory| signatory.tls_dir.clone()),
+            Some("/tmp/certs".into())
         );
 
         let _ = fs::remove_file(&seed_file);

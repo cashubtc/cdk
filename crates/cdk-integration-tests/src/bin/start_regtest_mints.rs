@@ -445,8 +445,6 @@ fn create_ldk_settings(
                 "eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
                     .to_string(),
             ),
-            signatory_url: None,
-            signatory_certs: None,
             input_fee_ppk: None,
             use_keyset_v2: None,
             http_cache: cdk_axum::cache::Config::default(),
@@ -555,8 +553,6 @@ fn create_onchain_settings(port: u16) -> cdk_mintd::config::Settings {
                 "eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
                     .to_string(),
             ),
-            signatory_url: None,
-            signatory_certs: None,
             input_fee_ppk: None,
             use_keyset_v2: None,
             http_cache: cdk_axum::cache::Config::default(),
