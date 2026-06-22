@@ -296,7 +296,10 @@ impl<'a> MeltSaga<'a, Initial> {
 
         let quote_info = self.initialize_melt(quote_id).await?;
 
-        let inputs_needed_amount = quote_info.amount + quote_info.fee_reserve;
+        let inputs_needed_amount = quote_info
+            .amount
+            .checked_add(quote_info.fee_reserve)
+            .ok_or(Error::AmountOverflow)?;
 
         let active_keyset_ids = self
             .wallet
@@ -386,7 +389,9 @@ impl<'a> MeltSaga<'a, Initial> {
             .get_keyset_count_fee(&active_keyset_id, estimated_output_count as u64)
             .await?;
 
-        let selection_amount = inputs_needed_amount + estimated_melt_fee;
+        let selection_amount = inputs_needed_amount
+            .checked_add(estimated_melt_fee)
+            .ok_or(Error::AmountOverflow)?;
 
         let input_proofs = Wallet::select_proofs(
             selection_amount,
@@ -484,7 +489,10 @@ impl<'a> MeltSaga<'a, Initial> {
         let quote_info = self.initialize_melt(quote_id).await?;
 
         let proofs_total = proofs.total_amount()?;
-        let inputs_needed = quote_info.amount + quote_info.fee_reserve;
+        let inputs_needed = quote_info
+            .amount
+            .checked_add(quote_info.fee_reserve)
+            .ok_or(Error::AmountOverflow)?;
         if proofs_total < inputs_needed {
             return Err(Error::InsufficientFunds);
         }
@@ -675,7 +683,12 @@ impl<'a> MeltSaga<'a, Prepared> {
                 final_proofs.extend(self.state_data.proofs_to_swap.clone());
             } else {
                 // Current behavior: swap first to get optimal denominations
-                let target_swap_amount = quote_info.amount + quote_info.fee_reserve + input_fee;
+                let target_swap_amount = quote_info
+                    .amount
+                    .checked_add(quote_info.fee_reserve)
+                    .ok_or(Error::AmountOverflow)?
+                    .checked_add(input_fee)
+                    .ok_or(Error::AmountOverflow)?;
 
                 tracing::debug!(
                     "Swapping {} proofs (total: {}) for target amount {}",
@@ -703,7 +716,12 @@ impl<'a> MeltSaga<'a, Prepared> {
 
         // Recalculate the actual input_fee based on final_proofs
         let actual_input_fee = self.wallet.get_proofs_fee(&final_proofs).await?.total;
-        let inputs_needed_amount = quote_info.amount + quote_info.fee_reserve + actual_input_fee;
+        let inputs_needed_amount = quote_info
+            .amount
+            .checked_add(quote_info.fee_reserve)
+            .ok_or(Error::AmountOverflow)?
+            .checked_add(actual_input_fee)
+            .ok_or(Error::AmountOverflow)?;
 
         let proofs_total = final_proofs.total_amount()?;
         if proofs_total < inputs_needed_amount {
@@ -1327,6 +1345,38 @@ mod tests {
             stored[0].used_by_operation,
             Some(prepared.state_data.operation_id)
         );
+    }
+
+    /// Verify the Amount arithmetic used in prepare/request_melt does not panic on overflow.
+    ///
+    /// The saga uses checked_add to guard against malicious mint responses returning
+    /// quote amounts that would overflow u64.  Two storable i64-positive values cannot
+    /// overflow u64 when added, but three can (the triple-operand path in
+    /// request_melt_with_options).  This test documents both invariants.
+    #[test]
+    fn test_melt_amount_overflow_handled_gracefully() {
+        // Two-operand path (prepare / prepare_with_proofs): i64::MAX + i64::MAX = u64::MAX - 1
+        let a = Amount::from(i64::MAX as u64);
+        let b = Amount::from(i64::MAX as u64);
+        assert!(
+            a.checked_add(b).is_some(),
+            "two i64::MAX values must not overflow u64"
+        );
+
+        // Three-operand path (request_melt_with_options): can overflow when combined
+        let c = Amount::from(2u64); // pushes u64::MAX-1 over the top
+        assert!(
+            a.checked_add(b)
+                .expect("two i64::MAX fit in u64")
+                .checked_add(c)
+                .is_none(),
+            "three amounts summing to > u64::MAX must return None"
+        );
+
+        // Single overflow: u64::MAX + 1 must return None
+        assert!(Amount::from(u64::MAX)
+            .checked_add(Amount::from(1u64))
+            .is_none());
     }
 
     #[tokio::test]

@@ -576,8 +576,13 @@ impl<'a> PreparedMelt<'a> {
                 .total_amount()
                 .unwrap_or(Amount::ZERO);
         let quote = self.saga.quote();
-        let needed = quote.amount + quote.fee_reserve + self.input_fee_without_swap();
-        all_proofs_total.checked_sub(needed).unwrap_or(Amount::ZERO)
+        let needed = quote
+            .amount
+            .checked_add(quote.fee_reserve)
+            .and_then(|a| a.checked_add(self.input_fee_without_swap()));
+        needed
+            .and_then(|n| all_proofs_total.checked_sub(n))
+            .unwrap_or(Amount::ZERO)
     }
 
     /// Confirm the prepared melt and execute the payment.
