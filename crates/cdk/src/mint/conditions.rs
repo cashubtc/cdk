@@ -43,7 +43,7 @@ const KEYSET_POLICY_ALL: &str = "all";
 fn collateral_scale_for_base(unit: &CurrencyUnit) -> u64 {
     match unit {
         CurrencyUnit::Msat => 1_000,
-        CurrencyUnit::Custom(s) if s.eq_ignore_ascii_case("milli-cent") => 100_000,
+        CurrencyUnit::Custom(s) if s.eq_ignore_ascii_case("milli-cent") => 1_000,
         _ => 1,
     }
 }
