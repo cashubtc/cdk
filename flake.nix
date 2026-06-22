@@ -1458,6 +1458,7 @@
                 androidSdk = androidComposition.androidsdk;
                 ndkHome = "${androidSdk}/libexec/android-sdk/ndk/27.0.12077973";
                 toolchainBin = "${ndkHome}/toolchains/llvm/prebuilt/linux-x86_64/bin";
+                androidRustFlags = "-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384";
                 buildToolchain = pkgs.rust-bin.stable."1.96.0".default.override {
                   targets = [
                     "aarch64-linux-android"
@@ -1477,6 +1478,9 @@
                 CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = "${toolchainBin}/aarch64-linux-android24-clang";
                 CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER = "${toolchainBin}/armv7a-linux-androideabi24-clang";
                 CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER = "${toolchainBin}/x86_64-linux-android24-clang";
+                CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS = androidRustFlags;
+                CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS = androidRustFlags;
+                CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS = androidRustFlags;
                 CC_aarch64_linux_android = "${toolchainBin}/aarch64-linux-android24-clang";
                 CC_armv7_linux_androideabi = "${toolchainBin}/armv7a-linux-androideabi24-clang";
                 CC_x86_64_linux_android = "${toolchainBin}/x86_64-linux-android24-clang";
