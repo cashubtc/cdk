@@ -66,7 +66,6 @@ jobs:
             --exclude='.git' \
             bindings/go/ cdk-go/
           cp rust-toolchain.toml cdk-go/
-          cp Cargo.lock cdk-go/rust/
 
       - name: Update versions and resolve workspace references
         run: |
@@ -124,7 +123,7 @@ jobs:
           sed -i '/^\[lints\]/,/^$/s/^workspace = true//' cdk-go/rust/Cargo.toml
 
           # Add release profile
-          printf '\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-go/rust/Cargo.toml
+          printf '\n[workspace]\n\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-go/rust/Cargo.toml
 
           echo "--- rust/Cargo.toml ---"
           cat cdk-go/rust/Cargo.toml

@@ -102,7 +102,6 @@ jobs:
             --exclude='.git' \
             bindings/dart/ cdk-dart/
           cp rust-toolchain.toml cdk-dart/
-          cp Cargo.lock cdk-dart/rust/
 
       - name: Update versions and resolve workspace references
         run: |
@@ -162,11 +161,18 @@ jobs:
           sed -i '/^\[lints\]/,/^$/s/^workspace = true//' cdk-dart/rust/Cargo.toml
 
           # Add release profile
-          printf '\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-dart/rust/Cargo.toml
+          printf '\n[workspace]\n\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-dart/rust/Cargo.toml
 
           cat cdk-dart/pubspec.yaml
           echo "---"
           cat cdk-dart/rust/Cargo.toml
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate Cargo.lock for standalone crate
+        working-directory: cdk-dart/rust
+        run: cargo generate-lockfile
 
       - name: Push to cdk-dart release branch
         working-directory: cdk-dart
