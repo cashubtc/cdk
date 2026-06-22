@@ -11,6 +11,7 @@ mod limits;
 mod ln;
 mod mint_info;
 mod onchain;
+mod signatory;
 
 mod auth;
 #[cfg(feature = "bdk")]
@@ -95,6 +96,8 @@ impl Settings {
         });
 
         self.info = self.info.clone().from_env();
+        self.signatory = Some(self.signatory.clone().unwrap_or_default().from_env());
+
         self.mint_info = self.mint_info.clone().from_env();
         // CDK_MINTD_LN_* env vars only apply when there is exactly one
         // configured Lightning entry. Multi-backend setups must choose units

@@ -27,6 +27,13 @@ melt_ttl = 120
 # Log level for file output (default: "debug")
 # file_level = "debug"
 
+[signatory]
+enabled = false
+# address = "127.0.0.1"
+# port = 15060
+# tls_dir = "/path/to/tls"
+# allow_insecure = false
+
 [mint_management_rpc]
 enabled = false
 # address = "127.0.0.1"
@@ -320,7 +327,7 @@ max_delay_time = 3
 
 # [grpc_processor]
 # gRPC Payment Processor configuration
-# addr = "127.0.0.1"
+# address = "127.0.0.1"
 # port = 50051
 # tls_dir = "/path/to/tls"
 # allow_insecure = false
