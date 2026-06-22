@@ -38,12 +38,11 @@ const KEYSET_POLICY_ALL: &str = "all";
 /// Scale factor from the base asset to the collateral unit.
 /// Config values (registration_fee_base, registration_fee_per_keyset) are
 /// denominated in the base asset (sat or cent). Proof amounts are in the
-/// collateral unit (msat or milli-cent). This scales the fee so the
+/// collateral unit (msat for sat markets; usd/cents for USD markets). This scales the fee so the
 /// comparison is correct.
 fn collateral_scale_for_base(unit: &CurrencyUnit) -> u64 {
     match unit {
         CurrencyUnit::Msat => 1_000,
-        CurrencyUnit::Custom(s) if s.eq_ignore_ascii_case("milli-cent") => 1_000,
         _ => 1,
     }
 }
@@ -407,7 +406,7 @@ impl Mint {
             .ok_or(Error::AmountOverflow)?;
         // The fee config is denominated in the base asset (sat or cent).
         // Scale to the collateral unit so the comparison against proof amounts
-        // (which are in the collateral unit: msat or milli-cent) is correct.
+        // (which are in the collateral unit: msat for sat markets, cents for USD) is correct.
         let scale = collateral_scale_for_base(collateral_unit);
         base_fee
             .checked_mul(scale)

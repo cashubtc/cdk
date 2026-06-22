@@ -23,65 +23,24 @@ use cdk_common::nuts::CurrencyUnit;
 pub fn fiat_subunit_scale(unit: &CurrencyUnit) -> Option<u64> {
     match unit {
         CurrencyUnit::Usd => Some(100),
-        CurrencyUnit::Custom(s) if s.eq_ignore_ascii_case("milli-cent") => Some(100_000),
         _ => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
     use super::*;
 
     #[test]
-    fn milli_cent_custom_unit_uses_one_hundred_thousand_subunits() {
+    fn usd_uses_nut01_cent_subunits() {
+        assert_eq!(fiat_subunit_scale(&CurrencyUnit::Usd), Some(100));
+    }
+
+    #[test]
+    fn milli_cent_custom_unit_is_not_a_fiat_scale() {
         assert_eq!(
             fiat_subunit_scale(&CurrencyUnit::Custom("milli-cent".to_string())),
-            Some(100_000)
-        );
-        assert_eq!(
-            fiat_subunit_scale(&CurrencyUnit::Custom("Milli-Cent".to_string())),
-            Some(100_000)
-        );
-        assert_eq!(
-            fiat_subunit_scale(&CurrencyUnit::Custom("MILLI-CENT".to_string())),
-            Some(100_000)
-        );
-    }
-
-    #[test]
-    fn milli_cent_custom_unit_does_not_trim_direct_custom_value() {
-        assert_eq!(
-            fiat_subunit_scale(&CurrencyUnit::Custom("  milli-cent  ".to_string())),
             None
-        );
-    }
-
-    #[test]
-    fn milli_cent_from_str_trims_and_matches() {
-        assert_eq!(
-            fiat_subunit_scale(
-                &CurrencyUnit::from_str("  milli-cent  ")
-                    .expect("custom currency unit should parse")
-            ),
-            Some(100_000)
-        );
-    }
-
-    #[test]
-    fn millicent_without_hyphen_does_not_match() {
-        assert_eq!(
-            fiat_subunit_scale(&CurrencyUnit::Custom("millicent".to_string())),
-            None
-        );
-    }
-
-    #[test]
-    fn milli_cent_custom_constructor_preserved_case_matches() {
-        assert_eq!(
-            fiat_subunit_scale(&CurrencyUnit::custom("milli-cent")),
-            Some(100_000)
         );
     }
 }
