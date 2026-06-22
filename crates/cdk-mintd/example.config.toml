@@ -31,6 +31,8 @@ melt_ttl = 120
 enabled = false
 # address = "127.0.0.1"
 # port = 8086
+# tls_dir = "/path/to/tls"
+# allow_insecure = false
 
 #[prometheus]
 #enabled = true
@@ -321,6 +323,7 @@ max_delay_time = 3
 # addr = "127.0.0.1"
 # port = 50051
 # tls_dir = "/path/to/tls"
+# allow_insecure = false
 # 
 # Note: To support custom payment methods (e.g., paypal, venmo, cashapp),
 # your gRPC payment processor should return them in the `custom` field of 

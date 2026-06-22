@@ -321,12 +321,25 @@ impl LnBackendSetup for config::GrpcProcessor {
         _work_dir: &Path,
         _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_payment_processor::PaymentProcessorClient> {
-        let payment_processor = cdk_payment_processor::PaymentProcessorClient::new(
-            &self.addr,
-            self.port,
-            self.tls_dir.clone(),
-        )
-        .await?;
+        let tls_dir = self.tls_dir.clone();
+
+        if tls_dir.is_none() {
+            if !self.allow_insecure {
+                anyhow::bail!(
+                    "gRPC payment processor TLS is not configured. Set [grpc_processor].tls_dir \
+                     or [grpc_processor].allow_insecure = true to connect without TLS"
+                );
+            }
+
+            tracing::warn!(
+                "No gRPC payment processor TLS directory configured; connecting without TLS \
+                 because allow_insecure is true"
+            );
+        }
+
+        let payment_processor =
+            cdk_payment_processor::PaymentProcessorClient::new(&self.addr, self.port, tls_dir)
+                .await?;
 
         Ok(payment_processor)
     }

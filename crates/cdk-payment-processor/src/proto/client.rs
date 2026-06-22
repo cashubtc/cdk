@@ -74,7 +74,9 @@ impl std::fmt::Debug for PaymentProcessorClient {
 impl PaymentProcessorClient {
     /// Payment Processor
     pub async fn new(addr: &str, port: u16, tls_dir: Option<PathBuf>) -> anyhow::Result<Self> {
-        let addr = format!("{addr}:{port}");
+        let scheme = if tls_dir.is_some() { "https" } else { "http" };
+        let endpoint = format!("{scheme}://{addr}:{port}");
+
         let channel = if let Some(tls_dir) = tls_dir {
             // TLS directory exists, configure TLS
 
@@ -105,13 +107,13 @@ impl PaymentProcessorClient {
                 }
                 false => ClientTlsConfig::new().ca_certificate(server_root_ca_cert),
             };
-            Channel::from_shared(addr)?
+            Channel::from_shared(endpoint)?
                 .tls_config(tls)?
                 .connect()
                 .await?
         } else {
             // No TLS directory, skip TLS configuration
-            Channel::from_shared(addr)?.connect().await?
+            Channel::from_shared(endpoint)?.connect().await?
         };
 
         let interceptor = VersionInterceptor::new(

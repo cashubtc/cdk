@@ -1268,16 +1268,24 @@ async fn start_services_with_shutdown(
                 let port = rpc_settings.port.unwrap_or(8086);
                 let mut mint_rpc = cdk_mint_rpc::MintRPCServer::new(&addr, port, mint.clone())?;
 
-                let tls_dir = rpc_settings.tls_dir_path.unwrap_or(_work_dir.join("tls"));
+                let tls_dir = rpc_settings.tls_dir.unwrap_or(_work_dir.join("tls"));
 
                 let tls_dir = if tls_dir.exists() {
                     Some(tls_dir)
-                } else {
+                } else if rpc_settings.allow_insecure {
                     tracing::warn!(
-                        "TLS directory does not exist: {}. Starting RPC server in INSECURE mode without TLS encryption",
+                        "TLS directory does not exist: {}. Starting RPC server in INSECURE mode without TLS encryption because allow_insecure is true",
                         tls_dir.display()
                     );
                     None
+                } else {
+                    bail!(
+                        "Management RPC TLS directory does not exist: {}. Set \
+                         [mint_management_rpc].tls_dir or \
+                         [mint_management_rpc].allow_insecure = true to start without \
+                         TLS",
+                        tls_dir.display()
+                    );
                 };
 
                 mint_rpc.start(tls_dir).await?;

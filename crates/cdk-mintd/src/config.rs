@@ -851,6 +851,8 @@ pub struct GrpcProcessor {
     pub port: u16,
     #[serde(default)]
     pub tls_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub allow_insecure: bool,
 }
 
 impl Default for GrpcProcessor {
@@ -860,6 +862,7 @@ impl Default for GrpcProcessor {
             addr: default_grpc_addr(),
             port: default_grpc_port(),
             tls_dir: None,
+            allow_insecure: false,
         }
     }
 }
@@ -1097,7 +1100,9 @@ pub struct MintManagementRpc {
     pub enabled: bool,
     pub address: Option<String>,
     pub port: Option<u16>,
-    pub tls_dir_path: Option<PathBuf>,
+    pub tls_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub allow_insecure: bool,
 }
 
 impl Settings {
