@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
 
-use crate::{HttpClient, HttpClientBuilder, HttpError, RequestBuilderExt};
+use crate::{HttpClient, HttpClientBuilder, HttpError};
 
 /// Expected HTTP transport
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]

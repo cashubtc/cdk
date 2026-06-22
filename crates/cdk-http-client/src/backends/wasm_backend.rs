@@ -7,7 +7,6 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
 use crate::error::HttpError;
-use crate::request_builder_ext::RequestBuilderExt;
 use crate::response::{RawResponse, Response};
 
 #[wasm_bindgen]
@@ -173,16 +172,18 @@ impl WasmRequestBuilder {
 
         Ok(RawResponse::new(status, body))
     }
-}
-
-impl RequestBuilderExt for WasmRequestBuilder {
-    fn header(mut self, key: impl AsRef<str>, value: impl AsRef<str>) -> Self {
+    /// Add a header to the request.
+    pub fn header(mut self, key: impl AsRef<str>, value: impl AsRef<str>) -> Self {
         self.headers
             .push((key.as_ref().to_string(), value.as_ref().to_string()));
         self
     }
 
-    fn json<T: Serialize>(mut self, body: &T) -> Self {
+    /// Set the request body as JSON.
+    pub fn json<T>(mut self, body: &T) -> Self
+    where
+        T: Serialize + ?Sized,
+    {
         match serde_json::to_vec(body) {
             Ok(bytes) => {
                 self.body = Some(WasmBody::Json(bytes));
@@ -194,7 +195,11 @@ impl RequestBuilderExt for WasmRequestBuilder {
         self
     }
 
-    fn form<T: Serialize>(mut self, body: &T) -> Self {
+    /// Set the request body as form data.
+    pub fn form<T>(mut self, body: &T) -> Self
+    where
+        T: Serialize + ?Sized,
+    {
         match serde_urlencoded::to_string(body) {
             Ok(form_str) => {
                 self.body = Some(WasmBody::Form(form_str));
@@ -208,11 +213,13 @@ impl RequestBuilderExt for WasmRequestBuilder {
         self
     }
 
-    async fn send(self) -> Response<RawResponse> {
+    /// Send the request and return a raw response.
+    pub async fn send(self) -> Response<RawResponse> {
         self.execute().await
     }
 
-    async fn send_json<R: DeserializeOwned>(self) -> Response<R> {
+    /// Send the request and deserialize the response as JSON.
+    pub async fn send_json<R: DeserializeOwned>(self) -> Response<R> {
         self.execute().await?.json_or_status_error()
     }
 }

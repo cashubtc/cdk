@@ -7,7 +7,6 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::error::HttpError;
-use crate::request_builder_ext::RequestBuilderExt;
 use crate::response::{RawResponse, Response};
 
 #[derive(Debug, Clone)]
@@ -243,10 +242,8 @@ impl BitreqRequestBuilder {
             no_redirects,
         }
     }
-}
-
-impl RequestBuilderExt for BitreqRequestBuilder {
-    fn header(self, key: impl AsRef<str>, value: impl AsRef<str>) -> Self {
+    /// Add a header to the request.
+    pub fn header(self, key: impl AsRef<str>, value: impl AsRef<str>) -> Self {
         Self {
             inner: self.inner.with_header(key.as_ref(), value.as_ref()),
             error: self.error,
@@ -257,18 +254,28 @@ impl RequestBuilderExt for BitreqRequestBuilder {
         }
     }
 
-    fn json<T: Serialize>(mut self, body: &T) -> Self {
+    /// Set the request body as JSON.
+    pub fn json<T>(mut self, body: &T) -> Self
+    where
+        T: Serialize,
+    {
+        // Preserve any error already set by an earlier builder step rather than
+        // clearing it on a successful serialization.
+        if self.error.is_some() {
+            return self;
+        }
         match self.inner.clone().with_json(body) {
-            Ok(req) => {
-                self.inner = req;
-                self.error = None;
-            }
+            Ok(req) => self.inner = req,
             Err(e) => self.error = Some(HttpError::from(e)),
         }
         self
     }
 
-    fn form<T: Serialize>(mut self, body: &T) -> Self {
+    /// Set the request body as form data.
+    pub fn form<T>(mut self, body: &T) -> Self
+    where
+        T: Serialize + ?Sized,
+    {
         match serde_urlencoded::to_string(body) {
             Ok(form_str) => {
                 self.inner = self
@@ -281,7 +288,8 @@ impl RequestBuilderExt for BitreqRequestBuilder {
         self
     }
 
-    async fn send(self) -> Response<RawResponse> {
+    /// Send the request and return a raw response.
+    pub async fn send(self) -> Response<RawResponse> {
         if let Some(err) = self.error {
             return Err(err);
         }
@@ -301,7 +309,8 @@ impl RequestBuilderExt for BitreqRequestBuilder {
         ))
     }
 
-    async fn send_json<R: DeserializeOwned>(self) -> Response<R> {
+    /// Send the request and deserialize the response as JSON.
+    pub async fn send_json<R: DeserializeOwned>(self) -> Response<R> {
         if let Some(err) = self.error {
             return Err(err);
         }

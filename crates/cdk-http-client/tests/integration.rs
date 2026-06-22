@@ -1,6 +1,6 @@
 //! Integration tests for cdk-http-client using mockito
 
-use cdk_http_client::{HttpClient, HttpClientBuilder, HttpError, RequestBuilderExt};
+use cdk_http_client::{HttpClient, HttpClientBuilder, HttpError};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]

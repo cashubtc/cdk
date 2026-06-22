@@ -5,7 +5,6 @@ use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, MintInfo};
 use cdk::wallet::WalletRepository;
 use cdk::{Amount, OidcClient};
-use cdk_http_client::RequestBuilderExt;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 

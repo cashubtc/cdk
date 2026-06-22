@@ -25,7 +25,6 @@ mod backends;
 mod client;
 mod error;
 mod request;
-mod request_builder_ext;
 mod response;
 mod transport;
 pub mod ws;
@@ -38,7 +37,7 @@ pub use backends::ReqwestRequestBuilder;
 pub use backends::WasmRequestBuilder;
 pub use client::{fetch, HttpClient, HttpClientBuilder};
 pub use error::HttpError;
-pub use request::{RequestBuilder, RequestBuilderExt};
+pub use request::RequestBuilder;
 pub use response::{RawResponse, Response};
 #[cfg(any(target_arch = "wasm32", feature = "bitreq", feature = "reqwest"))]
 pub use transport::Async;

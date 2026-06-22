@@ -6,7 +6,6 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::error::HttpError;
-use crate::request_builder_ext::RequestBuilderExt;
 use crate::response::{RawResponse, Response};
 
 #[derive(Debug, Clone)]
@@ -202,16 +201,18 @@ impl ReqwestRequestBuilder {
 
         self
     }
-}
-
-impl RequestBuilderExt for ReqwestRequestBuilder {
-    fn header(self, key: impl AsRef<str>, value: impl AsRef<str>) -> Self {
+    /// Add a header to the request.
+    pub fn header(self, key: impl AsRef<str>, value: impl AsRef<str>) -> Self {
         let key = key.as_ref().to_string();
         let value = value.as_ref().to_string();
         self.map_inner(|inner| inner.header(key, value))
     }
 
-    fn json<T: Serialize>(self, body: &T) -> Self {
+    /// Set the request body as JSON.
+    pub fn json<T>(self, body: &T) -> Self
+    where
+        T: Serialize + ?Sized,
+    {
         match serde_json::to_value(body) {
             Ok(value) => self.map_inner(|inner| inner.json(&value)),
             Err(e) => Self {
@@ -222,7 +223,11 @@ impl RequestBuilderExt for ReqwestRequestBuilder {
         }
     }
 
-    fn form<T: Serialize>(self, body: &T) -> Self {
+    /// Set the request body as form data.
+    pub fn form<T>(self, body: &T) -> Self
+    where
+        T: Serialize + ?Sized,
+    {
         match serde_urlencoded::to_string(body) {
             Ok(form) => self.map_inner(|inner| {
                 inner
@@ -237,7 +242,8 @@ impl RequestBuilderExt for ReqwestRequestBuilder {
         }
     }
 
-    async fn send(self) -> Response<RawResponse> {
+    /// Send the request and return a raw response.
+    pub async fn send(self) -> Response<RawResponse> {
         if let Some(err) = self.error {
             return Err(err);
         }
@@ -252,7 +258,8 @@ impl RequestBuilderExt for ReqwestRequestBuilder {
         Ok(RawResponse::new(status, body))
     }
 
-    async fn send_json<R: DeserializeOwned>(self) -> Response<R> {
+    /// Send the request and deserialize the response as JSON.
+    pub async fn send_json<R: DeserializeOwned>(self) -> Response<R> {
         self.send().await?.json_or_status_error()
     }
 }
