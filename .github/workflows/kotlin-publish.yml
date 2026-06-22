@@ -214,6 +214,9 @@ jobs:
           - target: armv7-linux-androideabi
             runner: ubuntu-22.04
             artifact: libcdk_ffi.so
+          - target: i686-linux-android
+            runner: ubuntu-22.04
+            artifact: libcdk_ffi.so
           - target: x86_64-linux-android
             runner: ubuntu-22.04
             artifact: libcdk_ffi.so
@@ -384,6 +387,7 @@ jobs:
           declare -A ANDROID_ABI=(
             ["aarch64-linux-android"]="arm64-v8a"
             ["armv7-linux-androideabi"]="armeabi-v7a"
+            ["i686-linux-android"]="x86"
             ["x86_64-linux-android"]="x86_64"
           )
 
