@@ -1463,6 +1463,7 @@
                   targets = [
                     "aarch64-linux-android"
                     "armv7-linux-androideabi"
+                    "i686-linux-android"
                     "x86_64-linux-android"
                     "aarch64-apple-ios"
                     "aarch64-apple-darwin"
@@ -1477,15 +1478,19 @@
                 ANDROID_NDK_HOME = ndkHome;
                 CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = "${toolchainBin}/aarch64-linux-android24-clang";
                 CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER = "${toolchainBin}/armv7a-linux-androideabi24-clang";
+                CARGO_TARGET_I686_LINUX_ANDROID_LINKER = "${toolchainBin}/i686-linux-android24-clang";
                 CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER = "${toolchainBin}/x86_64-linux-android24-clang";
                 CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS = androidRustFlags;
                 CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS = androidRustFlags;
+                CARGO_TARGET_I686_LINUX_ANDROID_RUSTFLAGS = androidRustFlags;
                 CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS = androidRustFlags;
                 CC_aarch64_linux_android = "${toolchainBin}/aarch64-linux-android24-clang";
                 CC_armv7_linux_androideabi = "${toolchainBin}/armv7a-linux-androideabi24-clang";
+                CC_i686_linux_android = "${toolchainBin}/i686-linux-android24-clang";
                 CC_x86_64_linux_android = "${toolchainBin}/x86_64-linux-android24-clang";
                 AR_aarch64_linux_android = "${toolchainBin}/llvm-ar";
                 AR_armv7_linux_androideabi = "${toolchainBin}/llvm-ar";
+                AR_i686_linux_android = "${toolchainBin}/llvm-ar";
                 AR_x86_64_linux_android = "${toolchainBin}/llvm-ar";
               };
 

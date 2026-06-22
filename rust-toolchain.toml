@@ -6,6 +6,7 @@ targets = [
     # Android
     "armv7-linux-androideabi",
     "aarch64-linux-android",
+    "i686-linux-android",
     "x86_64-linux-android",
 
     # iOS (device + simulator)
@@ -25,4 +26,3 @@ targets = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
 ]
-
