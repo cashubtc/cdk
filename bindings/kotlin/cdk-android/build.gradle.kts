@@ -19,7 +19,12 @@ android {
 }
 
 dependencies {
-    api(project(":cdk-jvm"))
+    api(project(":cdk-jvm")) {
+        exclude(group = "net.java.dev.jna", module = "jna")
+    }
+    runtimeOnly("net.java.dev.jna:jna:5.14.0@aar") {
+        isTransitive = false
+    }
 }
 
 afterEvaluate {
