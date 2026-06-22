@@ -289,6 +289,15 @@ jobs:
             *)          strip --strip-all "$FILE" ;;
           esac
 
+      - name: Verify Android ELF 16 KB alignment
+        if: contains(matrix.target, 'android')
+        working-directory: cdk-kotlin/rust
+        shell: bash
+        run: |
+          FILE="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
+          nix develop -L ../../cdk#kotlin-build --command \
+            ../../cdk/.github/scripts/check-android-elf-alignment.sh "$FILE"
+
       - name: Generate Kotlin bindings (darwin only)
         if: matrix.target == 'aarch64-apple-darwin'
         working-directory: cdk-kotlin/rust
