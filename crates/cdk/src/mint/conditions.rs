@@ -35,6 +35,19 @@ const KEYSET_POLICY_NONE: &str = "none";
 const KEYSET_POLICY_ONE_VS_REST: &str = "one-vs-rest";
 const KEYSET_POLICY_ALL: &str = "all";
 
+/// Scale factor from the base asset to the collateral unit.
+/// Config values (registration_fee_base, registration_fee_per_keyset) are
+/// denominated in the base asset (sat or cent). Proof amounts are in the
+/// collateral unit (msat or milli-cent). This scales the fee so the
+/// comparison is correct.
+fn collateral_scale_for_base(unit: &CurrencyUnit) -> u64 {
+    match unit {
+        CurrencyUnit::Msat => 1_000,
+        CurrencyUnit::Custom(s) if s.eq_ignore_ascii_case("milli-cent") => 100_000,
+        _ => 1,
+    }
+}
+
 struct RegistrationFeeVerification {
     proofs: cdk_common::Proofs,
     amount: cdk_common::Amount<cdk_common::CurrencyUnit>,
@@ -168,9 +181,6 @@ impl Mint {
             is_numeric,
             &default_keyset_creation,
         )?;
-        let required_fee = self
-            .required_registration_fee(requested_collections.len())
-            .await?;
         let collateral_unit = request
             .collateral
             .as_deref()
@@ -182,6 +192,14 @@ impl Mint {
                     request.collateral.as_deref().unwrap_or_default()
                 ))
             })?;
+        let required_fee = self
+            .required_registration_fee(
+                requested_collections.len(),
+                collateral_unit
+                    .as_ref()
+                    .unwrap_or(&CurrencyUnit::Sat),
+            )
+            .await?;
 
         // 4. Check for existing condition (idempotency or conflict)
         if let Some(existing) = self.localstore.get_condition(&condition_id).await? {
@@ -373,15 +391,26 @@ impl Mint {
         })
     }
 
-    async fn required_registration_fee(&self, num_keysets: usize) -> Result<u64, Error> {
+    async fn required_registration_fee(
+        &self,
+        num_keysets: usize,
+        collateral_unit: &CurrencyUnit,
+    ) -> Result<u64, Error> {
         let settings = self.mint_info().await?.nuts.nut_ctf.unwrap_or_default();
         let per_keyset = settings
             .registration_fee_per_keyset
             .checked_mul(num_keysets as u64)
             .ok_or(Error::AmountOverflow)?;
-        settings
+        let base_fee = settings
             .registration_fee_base
             .checked_add(per_keyset)
+            .ok_or(Error::AmountOverflow)?;
+        // The fee config is denominated in the base asset (sat or cent).
+        // Scale to the collateral unit so the comparison against proof amounts
+        // (which are in the collateral unit: msat or milli-cent) is correct.
+        let scale = collateral_scale_for_base(collateral_unit);
+        base_fee
+            .checked_mul(scale)
             .ok_or(Error::AmountOverflow)
     }
 
