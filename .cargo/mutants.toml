@@ -107,4 +107,7 @@ exclude_re = [
 
     # KeysVisitor::expecting - just a diagnostic string for deserialization errors
     "crates/cashu/src/nuts/nut01/mod.rs:.*KeysVisitor.*expecting",
+
+    # MeltMethodSettingsVisitor::expecting - just a diagnostic string for deserialization errors
+    "crates/cashu/src/nuts/nut05.rs:.*MeltMethodSettingsVisitor.*expecting",
 ]

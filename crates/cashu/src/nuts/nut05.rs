@@ -568,6 +568,31 @@ mod tests {
     use super::*;
     use crate::nut00::KnownMethod;
 
+    const MELT_REQUEST_JSON: &str = r#"{
+        "quote": "quote-1",
+        "inputs": [
+            {
+                "amount": 2,
+                "id": "00bfa73302d12ffd",
+                "secret": "[\"P2PK\",{\"nonce\":\"c7f280eb55c1e8564e03db06973e94bc9b666d9e1ca42ad278408fe625950303\",\"data\":\"030d8acedfe072c9fa449a1efe0817157403fbec460d8e79f957966056e5dd76c1\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]",
+                "C": "02c97ee3d1db41cf0a3ddb601724be8711a032950811bf326f8219c50c4808d3cd"
+            },
+            {
+                "amount": 4,
+                "id": "00bfa73302d12ffd",
+                "secret": "[\"P2PK\",{\"nonce\":\"d7f280eb55c1e8564e03db06973e94bc9b666d9e1ca42ad278408fe625950304\",\"data\":\"030d8acedfe072c9fa449a1efe0817157403fbec460d8e79f957966056e5dd76c1\",\"tags\":[[\"sigflag\",\"SIG_ALL\"]]}]",
+                "C": "02c97ee3d1db41cf0a3ddb601724be8711a032950811bf326f8219c50c4808d3cd"
+            }
+        ],
+        "outputs": [
+            {
+                "amount": 3,
+                "id": "00bfa73302d12ffd",
+                "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+            }
+        ]
+    }"#;
+
     #[test]
     fn test_quote_state_display_outputs_wire_values() {
         assert_eq!(QuoteState::Unpaid.to_string(), "UNPAID");
@@ -598,6 +623,38 @@ mod tests {
             "unknown".parse::<QuoteState>(),
             Err(Error::UnknownState)
         ));
+    }
+
+    #[test]
+    fn test_melt_request_inputs_outputs_and_amounts() {
+        let req: MeltRequest<String> = from_str(MELT_REQUEST_JSON).unwrap();
+
+        let inputs = req.inputs();
+        assert_eq!(inputs.len(), 2, "expected 2 inputs");
+        assert_eq!(u64::from(inputs[0].amount), 2);
+        assert_eq!(u64::from(inputs[1].amount), 4);
+        assert_eq!(req.inputs_amount().unwrap(), Amount::from(6));
+
+        let outputs = req.outputs().as_ref().expect("expected change outputs");
+        assert_eq!(outputs.len(), 1, "expected 1 output");
+        assert_eq!(u64::from(outputs[0].amount), 3);
+        assert_eq!(req.output_amount(), Some(Amount::from(3)));
+    }
+
+    #[test]
+    fn test_melt_request_preserves_async_preference() {
+        let req: MeltRequest<String> = from_str(MELT_REQUEST_JSON).unwrap();
+        assert!(!req.is_prefer_async());
+
+        assert!(req.prefer_async(true).is_prefer_async());
+    }
+
+    #[test]
+    fn test_melt_request_preserves_selected_fee_index() {
+        let req: MeltRequest<String> = from_str(MELT_REQUEST_JSON).unwrap();
+        assert_eq!(req.selected_fee_index(), None);
+
+        assert_eq!(req.fee_index(42).selected_fee_index(), Some(42));
     }
 
     #[test]
@@ -702,6 +759,120 @@ mod tests {
             }
             _ => panic!("Expected Bolt11 options with amountless = true"),
         }
+    }
+
+    #[test]
+    fn test_melt_method_settings_options_amountless() {
+        let json_str = r#"{
+            "method": "bolt11",
+            "unit": "sat",
+            "options": {
+                "amountless": true
+            }
+        }"#;
+
+        let settings: MeltMethodSettings = from_str(json_str).unwrap();
+
+        assert_eq!(
+            settings.options,
+            Some(MeltMethodOptions::Bolt11 { amountless: true })
+        );
+    }
+
+    #[test]
+    fn test_melt_method_settings_non_bolt11_ignores_amountless() {
+        let json_str = r#"{
+            "method": "onchain",
+            "unit": "sat",
+            "amountless": true
+        }"#;
+
+        let settings: MeltMethodSettings = from_str(json_str).unwrap();
+
+        assert_eq!(settings.method, PaymentMethod::Known(KnownMethod::Onchain));
+        assert_eq!(settings.options, None);
+    }
+
+    #[test]
+    fn test_settings_get_and_remove_match_method_and_unit() {
+        let bolt11_sat = MeltMethodSettings {
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            unit: CurrencyUnit::Sat,
+            min_amount: Some(Amount::from(1)),
+            max_amount: None,
+            options: None,
+        };
+        let bolt11_usd = MeltMethodSettings {
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            unit: CurrencyUnit::Usd,
+            min_amount: Some(Amount::from(2)),
+            max_amount: None,
+            options: None,
+        };
+        let onchain_sat = MeltMethodSettings {
+            method: PaymentMethod::Known(KnownMethod::Onchain),
+            unit: CurrencyUnit::Sat,
+            min_amount: Some(Amount::from(3)),
+            max_amount: None,
+            options: None,
+        };
+
+        let mut settings = Settings::new(
+            vec![bolt11_sat.clone(), bolt11_usd.clone(), onchain_sat.clone()],
+            false,
+        );
+
+        assert_eq!(
+            settings.get_settings(
+                &CurrencyUnit::Usd,
+                &PaymentMethod::Known(KnownMethod::Bolt11)
+            ),
+            Some(bolt11_usd.clone())
+        );
+
+        assert_eq!(
+            settings.remove_settings(
+                &CurrencyUnit::Usd,
+                &PaymentMethod::Known(KnownMethod::Bolt11)
+            ),
+            Some(bolt11_usd)
+        );
+        assert_eq!(settings.methods, vec![bolt11_sat, onchain_sat]);
+    }
+
+    #[test]
+    fn test_settings_supported_methods_and_units() {
+        let settings = Settings::new(
+            vec![
+                MeltMethodSettings {
+                    method: PaymentMethod::Known(KnownMethod::Bolt11),
+                    unit: CurrencyUnit::Sat,
+                    min_amount: None,
+                    max_amount: None,
+                    options: None,
+                },
+                MeltMethodSettings {
+                    method: PaymentMethod::Known(KnownMethod::Onchain),
+                    unit: CurrencyUnit::Usd,
+                    min_amount: None,
+                    max_amount: None,
+                    options: None,
+                },
+            ],
+            false,
+        );
+
+        assert_eq!(
+            settings.supported_methods(),
+            vec![
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                &PaymentMethod::Known(KnownMethod::Onchain),
+            ]
+        );
+        assert_eq!(
+            settings.supported_units(),
+            vec![&CurrencyUnit::Sat, &CurrencyUnit::Usd]
+        );
     }
 
     #[test]
