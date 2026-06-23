@@ -18,11 +18,15 @@ fi
 failed=0
 while IFS= read -r line; do
   align="${line##*align }"
-  exponent="${align#2**}"
-  if [[ "$exponent" == "$align" || ! "$exponent" =~ ^[0-9]+$ ]]; then
+  if [[ "$align" =~ ^2\*\*([0-9]+)$ ]]; then
+    exponent="${BASH_REMATCH[1]}"
+  else
     echo "could not parse LOAD segment alignment: $line" >&2
     failed=1
-  elif (( exponent < 14 )); then
+    continue
+  fi
+
+  if (( exponent < 14 )); then
     echo "LOAD segment is not 16 KB aligned: $line" >&2
     failed=1
   fi
