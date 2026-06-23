@@ -86,6 +86,7 @@ pub unsafe extern "C" fn cdk_create_p2pk_blinded_message(
     locktime: u64,
     refund_pubkeys: *const *const c_char,
     refund_pubkeys_len: u32,
+    num_sigs_refund: u64,
     sig_flag_ptr: *const c_char,
 ) -> *mut CdkBlindResult {
     if pubkey_hex.is_null() {
@@ -128,7 +129,11 @@ pub unsafe extern "C" fn cdk_create_p2pk_blinded_message(
         refund_keys: refund_pks,
         num_sigs: if num_sigs > 1 { Some(num_sigs) } else { None },
         sig_flag,
-        num_sigs_refund: None,
+        num_sigs_refund: if num_sigs_refund > 1 {
+            Some(num_sigs_refund)
+        } else {
+            None
+        },
     };
 
     let spending_conditions = SpendingConditions::P2PKConditions {
@@ -325,6 +330,7 @@ mod tests {
                 0,
                 ptr::null(),
                 0,
+                0,
                 sig_flag.as_ptr(),
             )
         };
@@ -348,6 +354,7 @@ mod tests {
                 1,
                 0,
                 ptr::null(),
+                0,
                 0,
                 sig_flag.as_ptr(),
             )
@@ -384,6 +391,7 @@ mod tests {
                 0,
                 ptr::null(),
                 0,
+                0,
                 sig_flag.as_ptr(),
             )
         };
@@ -411,6 +419,7 @@ mod tests {
                 1700000000, // locktime
                 ptr::null(),
                 0,
+                0,
                 sig_flag.as_ptr(),
             )
         };
@@ -425,6 +434,43 @@ mod tests {
                 "locktime should be in secret"
             );
 
+            cdk_blind_result_free(res);
+        }
+    }
+
+    #[test]
+    fn p2pk_num_sigs_refund_appears_in_secret() {
+        let kid = keyset_id_cstr();
+        let pk = pubkey_cstr();
+        let sig_flag = CString::new("SigInputs").unwrap();
+
+        let refund_pk = pubkey_cstr();
+        let refund_pks_ptrs = [refund_pk.as_ptr()];
+
+        let res = unsafe {
+            cdk_create_p2pk_blinded_message(
+                1,
+                kid.as_ptr(),
+                pk.as_ptr(),
+                ptr::null(),
+                0,
+                1,
+                0,
+                refund_pks_ptrs.as_ptr(),
+                1,
+                2, // num_sigs_refund
+                sig_flag.as_ptr(),
+            )
+        };
+        assert!(!res.is_null());
+
+        unsafe {
+            let secret = read_cstr((*res).secret);
+            assert!(
+                secret.contains("n_sigs_refund") && secret.contains("\"2\""),
+                "num_sigs_refund should appear in the secret, got: {}",
+                secret
+            );
             cdk_blind_result_free(res);
         }
     }
@@ -445,6 +491,7 @@ mod tests {
                 1,
                 0,
                 ptr::null(),
+                0,
                 0,
                 sig_flag.as_ptr(),
             )
@@ -477,6 +524,7 @@ mod tests {
                 1,
                 0,
                 ptr::null(),
+                0,
                 0,
                 ptr::null(),
             )
@@ -511,6 +559,7 @@ mod tests {
                 0,
                 ptr::null(),
                 0,
+                0,
                 bad_flag.as_ptr(),
             )
         };
@@ -535,6 +584,7 @@ mod tests {
                 2,
                 0,
                 ptr::null(),
+                0,
                 0,
                 sig_flag.as_ptr(),
             )
@@ -564,6 +614,7 @@ mod tests {
                 0,
                 refund_pks_ptrs.as_ptr(),
                 1,
+                0,
                 sig_flag.as_ptr(),
             )
         };

@@ -56,7 +56,7 @@ const cdk_create_p2pk_blinded_message = lib.func(
     'const char **additional_pubkeys, uint32_t additional_pubkeys_len, ' +
     'uint64_t num_sigs, uint64_t locktime, ' +
     'const char **refund_pubkeys, uint32_t refund_pubkeys_len, ' +
-    'const char *sig_flag)',
+    'uint64_t num_sigs_refund, const char *sig_flag)',
 );
 
 const cdk_create_deterministic_blinded_message = lib.func(
@@ -163,6 +163,7 @@ export class OutputDataCreatorFFI {
       p2pk.locktime ?? 0,
       p2pk.refundPubkeys ?? null,
       p2pk.refundPubkeys?.length ?? 0,
+      p2pk.numSigsRefund ?? 0,
       p2pk.sigFlag ?? 'SigInputs',
     );
     const result = decodeResult(ptr, amount, keysetId);

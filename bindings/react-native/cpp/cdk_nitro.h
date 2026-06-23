@@ -34,6 +34,7 @@ CdkBlindResult* cdk_create_p2pk_blinded_message(
   uint64_t locktime,
   const char* const* refund_pubkeys,
   uint32_t refund_pubkeys_len,
+  uint64_t num_sigs_refund,
   const char* sig_flag
 );
 

@@ -38,6 +38,8 @@ export interface P2PKOptions {
   locktime?: number;
   /** Refund public keys */
   refundPubkeys?: string[];
+  /** Number of required refund signatures (default: 1) */
+  numSigsRefund?: number;
   /** Signature flag: 'SigInputs' | 'SigAll' */
   sigFlag?: string;
 }

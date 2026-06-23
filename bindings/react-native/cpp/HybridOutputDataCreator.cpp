@@ -113,6 +113,7 @@ OutputData HybridOutputDataCreator::createSingleP2PKData(
     p2pk.locktime.value_or(0),
     refundPks.empty() ? nullptr : refundPks.data(),
     static_cast<uint32_t>(refundPks.size()),
+    p2pk.numSigsRefund.value_or(0),
     p2pk.sigFlag.has_value() ? p2pk.sigFlag.value().c_str() : "SigInputs"
   );
   if (!res) throw std::runtime_error("Failed to create P2PK blinded message");
