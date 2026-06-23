@@ -497,6 +497,7 @@ mod tests {
             method: "cashapp".to_string(),
             unit: CurrencyUnit::Sat,
             request: "$tag".to_string(),
+            amount: None,
             extra: serde_json::Value::Null,
         };
         let req: MeltQuoteRequest = custom_req.into();

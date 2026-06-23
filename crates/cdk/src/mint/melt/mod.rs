@@ -682,6 +682,7 @@ impl Mint {
                 request,
                 unit,
                 method,
+                amount,
                 extra,
             } = melt_request;
 
@@ -720,6 +721,7 @@ impl Mint {
                 OutgoingPaymentOptions::Custom(Box::new(CustomOutgoingPaymentOptions {
                     method: method.to_string(),
                     request: request.clone(),
+                    amount: (*amount).map(|a| a.with_unit(unit.clone())),
                     max_fee_amount: None,
                     timeout_secs: None,
                     melt_options: None,
