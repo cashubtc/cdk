@@ -14,6 +14,8 @@ use cdk_common::nuts::{
     CurrencyUnit, Id, KeySet, KeySetInfo, KeysetResponse, MeltMethodSettings, MintInfo,
     MintMethodSettings, MintVersion, MppMethodSettings, Proof,
 };
+use cdk_common::nutxx::MintQuoteByPubkeyRequest;
+use cdk_common::secret::Secret;
 use cdk_common::wallet::{MeltQuote, MintQuote};
 use cdk_common::{
     Amount, CheckStateRequest, CheckStateResponse, MeltQuoteCreateResponse, MeltQuoteRequest,
@@ -25,7 +27,6 @@ use crate::nuts::{
     nut17, nut19, BatchCheckMintQuoteRequest, BatchMintRequest, MeltQuoteBolt11Response,
     MeltQuoteState, NUT04Settings, NUT05Settings, PaymentMethod, SecretKey, State,
 };
-use crate::secret::Secret;
 use crate::wallet::{MintConnector, Wallet};
 use crate::Error;
 
@@ -410,6 +411,9 @@ pub struct MockMintConnector {
     pub restore_response: Mutex<Option<Result<RestoreResponse, Error>>>,
     /// Response for get_melt_quote_status calls
     pub melt_quote_status_response: Mutex<Option<Result<MeltQuoteBolt11Response<String>, Error>>>,
+    /// Response for post_mint_quote_by_pubkeys calls
+    pub post_mint_quote_by_pubkey_response:
+        Mutex<Option<Result<Vec<MintQuoteResponse<String>>, Error>>>,
     /// Response for post_mint calls
     pub post_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
     /// Response for post_swap calls
@@ -446,6 +450,7 @@ impl MockMintConnector {
             check_state_response: Mutex::new(None),
             restore_response: Mutex::new(None),
             melt_quote_status_response: Mutex::new(None),
+            post_mint_quote_by_pubkey_response: Mutex::new(None),
             post_mint_response: Mutex::new(None),
             post_swap_response: Mutex::new(None),
             post_melt_response: Mutex::new(None),
@@ -534,6 +539,13 @@ impl MockMintConnector {
         response: Result<MeltQuoteBolt11Response<String>, Error>,
     ) {
         *self.melt_quote_status_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn set_post_mint_quote_by_pubkeys_response(
+        &self,
+        response: Result<Vec<MintQuoteResponse<String>>, Error>,
+    ) {
+        *self.post_mint_quote_by_pubkey_response.lock().unwrap() = Some(response);
     }
 
     pub fn set_post_mint_response(&self, response: Result<MintResponse, Error>) {
@@ -638,6 +650,20 @@ impl MintConnector for MockMintConnector {
         _request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<String>, Error> {
         unimplemented!()
+    }
+
+    async fn post_mint_quote_by_pubkey(
+        &self,
+        _method: PaymentMethod,
+        _request: MintQuoteByPubkeyRequest,
+    ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
+        self.post_mint_quote_by_pubkey_response
+            .lock()
+            .unwrap()
+            .take()
+            .expect(
+                "MockMintConnector: post_mint_quote_by_pubkey called without configured response",
+            )
     }
 
     async fn get_mint_quote_status(
