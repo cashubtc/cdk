@@ -63,7 +63,7 @@ impl MintQuoteRequest {
             Self::Bolt11(request) => Some(request.amount),
             Self::Bolt12(request) => request.amount,
             Self::Onchain(_) => None,
-            Self::Custom { request, .. } => Some(request.amount),
+            Self::Custom { request, .. } => request.amount,
         }
     }
 

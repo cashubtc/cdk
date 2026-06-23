@@ -181,7 +181,7 @@ impl MintPayment for PaymentProcessorClient {
                 options: Some(super::incoming_payment_options::Options::Custom(
                     super::CustomIncomingPaymentOptions {
                         description: opts.description,
-                        amount: Some(opts.amount.into()),
+                        amount: opts.amount.map(Into::into),
                         unix_expiry: opts.unix_expiry,
                         extra_json: opts.extra_json.clone(),
                     },
@@ -330,6 +330,7 @@ impl MintPayment for PaymentProcessorClient {
                     options: Some(super::outgoing_payment_variant::Options::Custom(
                         super::CustomOutgoingPaymentOptions {
                             offer: opts.request.to_string(),
+                            amount: opts.amount.map(Into::into),
                             max_fee_amount: opts.max_fee_amount.into_proto(),
                             timeout_secs: opts.timeout_secs,
                             melt_options: opts.melt_options.map(Into::into),

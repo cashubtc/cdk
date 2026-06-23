@@ -460,6 +460,12 @@ pub struct MeltQuoteCustomRequest {
     pub request: String,
     /// Currency unit
     pub unit: CurrencyUnit,
+    /// Amount the wallet would like to pay
+    ///
+    /// Optional common field. Method-specific NUTs make it required or ignore
+    /// it as needed (e.g. NUT-30 requires `amount` for onchain melts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<Amount>,
     /// Extra payment-method-specific fields
     ///
     /// These fields are flattened into the JSON representation, allowing

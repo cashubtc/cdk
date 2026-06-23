@@ -980,7 +980,7 @@ mod tests {
         let request = MintQuoteRequest::Custom {
             method: PaymentMethod::Custom("paypal".to_string()),
             request: MintQuoteCustomRequest {
-                amount: cdk_common::Amount::from(1000),
+                amount: Some(cdk_common::Amount::from(1000)),
                 unit: cdk_common::CurrencyUnit::Sat,
                 description: None,
                 pubkey: None,
@@ -1016,7 +1016,7 @@ mod tests {
 
         // Verify the actual field values round-tripped correctly
         let parsed = parsed.expect("already checked");
-        assert_eq!(parsed.amount, cdk_common::Amount::from(1000));
+        assert_eq!(parsed.amount, Some(cdk_common::Amount::from(1000)));
         assert_eq!(parsed.unit, cdk_common::CurrencyUnit::Sat);
     }
 
@@ -1033,7 +1033,7 @@ mod tests {
             .post_mint_quote(MintQuoteRequest::Custom {
                 method: invalid_method.clone(),
                 request: MintQuoteCustomRequest {
-                    amount: cdk_common::Amount::from(1000),
+                    amount: Some(cdk_common::Amount::from(1000)),
                     unit: cdk_common::CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
@@ -1088,6 +1088,7 @@ mod tests {
                 method: "../../v1/swap".to_string(),
                 request: "custom-payment-request".to_string(),
                 unit: cdk_common::CurrencyUnit::Sat,
+                amount: None,
                 extra: serde_json::Value::Null,
             }))
             .await;
