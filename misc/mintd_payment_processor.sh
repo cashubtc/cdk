@@ -7,17 +7,23 @@ cleanup() {
     echo "Cleaning up..."
 
 
-    echo "Killing the cdk payment processor"
-    kill -2 $CDK_PAYMENT_PROCESSOR_PID
-    wait $CDK_PAYMENT_PROCESSOR_PID
+    if [ -n "${CDK_PAYMENT_PROCESSOR_PID:-}" ] && kill -0 "$CDK_PAYMENT_PROCESSOR_PID" 2>/dev/null; then
+        echo "Killing the cdk payment processor"
+        kill -2 "$CDK_PAYMENT_PROCESSOR_PID"
+        wait "$CDK_PAYMENT_PROCESSOR_PID"
+    fi
 
-    echo "Killing the cdk mintd"
-    kill -2 $CDK_MINTD_PID
-    wait $CDK_MINTD_PID
+    if [ -n "${CDK_MINTD_PID:-}" ] && kill -0 "$CDK_MINTD_PID" 2>/dev/null; then
+        echo "Killing the cdk mintd"
+        kill -2 "$CDK_MINTD_PID"
+        wait "$CDK_MINTD_PID"
+    fi
 
-    echo "Killing the cdk regtest"
-    kill -2 $CDK_REGTEST_PID
-    wait $CDK_REGTEST_PID
+    if [ -n "${CDK_REGTEST_PID:-}" ] && kill -0 "$CDK_REGTEST_PID" 2>/dev/null; then
+        echo "Killing the cdk regtest"
+        kill -2 "$CDK_REGTEST_PID"
+        wait "$CDK_REGTEST_PID"
+    fi
 
     echo "Mint binary terminated"
 
@@ -54,6 +60,35 @@ cleanup() {
     unset CDK_MINTD_MNEMONIC
     unset CDK_MINTD_PID
     unset CDK_PAYMENT_PROCESSOR_CLN_BOLT12
+}
+
+wait_for_payment_processor() {
+    local host="$1"
+    local port="$2"
+    local pid="$3"
+    local timeout_seconds=60
+    local start_time
+
+    start_time=$(date +%s)
+
+    while true; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "Payment processor exited before listening on $host:$port"
+            exit 1
+        fi
+
+        if bash -c ':</dev/tcp/$0/$1' "$host" "$port" 2>/dev/null; then
+            echo "Payment processor is listening on $host:$port"
+            break
+        fi
+
+        if [ "$(($(date +%s) - start_time))" -ge "$timeout_seconds" ]; then
+            echo "Timeout waiting for payment processor on $host:$port after $timeout_seconds seconds"
+            exit 1
+        fi
+
+        sleep 1
+    done
 }
 
 # Set up trap to call cleanup on script exit
@@ -167,6 +202,7 @@ fi
 run_bin_bg cdk-payment-processor
 
 CDK_PAYMENT_PROCESSOR_PID=$!
+wait_for_payment_processor "$CDK_PAYMENT_PROCESSOR_LISTEN_HOST" "$CDK_PAYMENT_PROCESSOR_LISTEN_PORT" "$CDK_PAYMENT_PROCESSOR_PID"
 
 
 export CDK_MINTD_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0";
