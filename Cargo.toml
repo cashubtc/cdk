@@ -73,6 +73,7 @@ cdk-prometheus = { path = "./crates/cdk-prometheus", version = "=0.17.0", defaul
 cdk-supabase = { path = "./crates/cdk-supabase", version = "=0.17.0", default-features = false }
 cdk-npubcash = { path = "./crates/cdk-npubcash", version = "=0.17.0" }
 cdk-bdk = { path = "./crates/cdk-bdk", version = "=0.17.0", default-features = false }
+cdk-bark = { path = "./crates/cdk-bark", version = "=0.17.0" }
 clap = { version = "4.5.31", features = ["derive"] }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 cbor-diag = "0.1.12"

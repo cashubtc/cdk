@@ -1,0 +1,22 @@
+[package]
+name = "cdk-bark"
+version = "0.17.0"
+edition = "2021"
+license = "MIT"
+description = "Bark/Ark payment backend for CDK"
+
+[dependencies]
+anyhow.workspace = true
+ark = { version = "0.2.5", package = "ark-lib" }
+async-trait.workspace = true
+bark-wallet = "0.2.5"
+bip39.workspace = true
+bitcoin.workspace = true
+cdk-common = { workspace = true, features = ["mint"] }
+futures.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing = { workspace = true }
+
+[dev-dependencies]
+chrono = "0.4.45"
