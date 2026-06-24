@@ -1,0 +1,548 @@
+//! Nostr Wallet Connect (NIP-47) integration for the CDK wallet.
+//!
+//! This module bridges the transport-agnostic [`cdk_nwc`] wallet service to a
+//! Cashu [`Wallet`]. [`WalletNwcHandler`] implements [`cdk_nwc::NwcRequestHandler`]
+//! by mapping each NIP-47 command onto wallet operations:
+//!
+//! | NIP-47 command      | Wallet operation                                   |
+//! |---------------------|----------------------------------------------------|
+//! | `get_info`          | static capability advertisement                    |
+//! | `get_balance`       | [`Wallet::total_balance`]                           |
+//! | `make_invoice`      | [`Wallet::mint_quote`] (bolt11)                     |
+//! | `pay_invoice`       | [`Wallet::melt_quote`] + [`Wallet::prepare_melt`]   |
+//! | `lookup_invoice`    | transaction history + active mint quotes           |
+//! | `list_transactions` | [`Wallet::list_transactions`]                       |
+//!
+//! ## Units
+//!
+//! All NIP-47 amounts are **millisatoshis**. Cashu wallets denominated in `Sat`
+//! are converted with a ×1000 factor; sub-satoshi millisat amounts that cannot
+//! be represented exactly are rejected rather than silently rounded. Only `Sat`
+//! and `Msat` wallets are supported.
+
+use std::collections::HashMap;
+use std::str::FromStr;
+
+use async_trait::async_trait;
+use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
+use bitcoin::Network;
+use cdk_common::nut00::KnownMethod;
+use cdk_common::wallet::{Transaction, TransactionDirection};
+use cdk_common::{PaymentMethod, SECP256K1};
+use cdk_nwc::nip47::{
+    ErrorCode, GetBalanceResponse, GetInfoResponse, ListTransactionsRequest, LookupInvoiceRequest,
+    LookupInvoiceResponse, MakeInvoiceRequest, MakeInvoiceResponse, Method, NIP47Error,
+    PayInvoiceRequest, PayInvoiceResponse, TransactionType,
+};
+use cdk_nwc::service::SUPPORTED_METHODS;
+use lightning_invoice::Bolt11Invoice;
+use nostr_sdk::Timestamp;
+use tracing::instrument;
+
+use crate::error::Error;
+use crate::nuts::{CurrencyUnit, SecretKey};
+use crate::Amount;
+use crate::Wallet;
+
+/// Derive the NWC wallet-service secret key from a wallet seed.
+///
+/// Uses NIP-06 BIP-32 derivation under account index `1`
+/// (`m/44'/1237'/1'/0/0`), keeping it distinct from the npub.cash key
+/// (`m/44'/1237'/0'/0/0`) so a single seed yields independent identities. The
+/// derived key never equals raw seed material, so it cannot be used to recover
+/// the seed. Deriving from the seed keeps the connection URI stable across
+/// restarts.
+///
+/// # Errors
+///
+/// Returns an error if the key derivation fails.
+pub fn derive_nwc_secret_key_from_seed(seed: &[u8; 64]) -> Result<SecretKey, Error> {
+    let path = DerivationPath::from(vec![
+        ChildNumber::from_hardened_idx(44)?,
+        ChildNumber::from_hardened_idx(1237)?,
+        ChildNumber::from_hardened_idx(1)?,
+        ChildNumber::from_normal_idx(0)?,
+        ChildNumber::from_normal_idx(0)?,
+    ]);
+
+    let xpriv = Xpriv::new_master(Network::Bitcoin, seed)?;
+
+    Ok(SecretKey::from(
+        xpriv.derive_priv(&SECP256K1, &path)?.private_key,
+    ))
+}
+
+impl Wallet {
+    /// Derive the NWC wallet-service secret key from this wallet's seed.
+    ///
+    /// See [`derive_nwc_secret_key_from_seed`] for the derivation path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key derivation fails.
+    pub fn derive_nwc_secret_key(&self) -> Result<SecretKey, Error> {
+        derive_nwc_secret_key_from_seed(&self.seed)
+    }
+
+    /// Build a [`WalletNwcHandler`] for this wallet.
+    ///
+    /// `budget_msat` optionally caps the amount of any single `pay_invoice`
+    /// request (in millisatoshis); pass `None` for no cap.
+    pub fn nwc_handler(&self, budget_msat: Option<u64>) -> WalletNwcHandler {
+        WalletNwcHandler::new(self.clone(), budget_msat)
+    }
+}
+
+/// A [`cdk_nwc::NwcRequestHandler`] backed by a Cashu [`Wallet`].
+#[derive(Debug, Clone)]
+pub struct WalletNwcHandler {
+    wallet: Wallet,
+    budget_msat: Option<u64>,
+}
+
+impl WalletNwcHandler {
+    /// Create a new handler.
+    ///
+    /// `budget_msat` optionally caps the amount of any single `pay_invoice`
+    /// request (in millisatoshis).
+    pub fn new(wallet: Wallet, budget_msat: Option<u64>) -> Self {
+        Self {
+            wallet,
+            budget_msat,
+        }
+    }
+}
+
+/// Build a NIP-47 error with the given code.
+fn nip47_err(code: ErrorCode, message: impl Into<String>) -> NIP47Error {
+    NIP47Error {
+        code,
+        message: message.into(),
+    }
+}
+
+/// Convert a wallet [`Amount`] to millisatoshis for the given unit.
+fn amount_to_msat(amount: Amount, unit: &CurrencyUnit) -> Result<u64, NIP47Error> {
+    let value = u64::from(amount);
+    match unit {
+        CurrencyUnit::Sat => value
+            .checked_mul(1000)
+            .ok_or_else(|| nip47_err(ErrorCode::Internal, "amount overflow converting sat to msat")),
+        CurrencyUnit::Msat => Ok(value),
+        other => Err(nip47_err(
+            ErrorCode::Other,
+            format!("unsupported wallet unit: {other}"),
+        )),
+    }
+}
+
+/// Convert millisatoshis to a wallet [`Amount`] for the given unit.
+///
+/// For `Sat` wallets, millisat amounts that are not whole satoshis are rejected
+/// rather than rounded.
+fn msat_to_amount(msat: u64, unit: &CurrencyUnit) -> Result<Amount, NIP47Error> {
+    match unit {
+        CurrencyUnit::Sat => {
+            if msat % 1000 != 0 {
+                return Err(nip47_err(
+                    ErrorCode::Other,
+                    "sub-satoshi amounts are not supported by this wallet",
+                ));
+            }
+            Ok(Amount::from(msat / 1000))
+        }
+        CurrencyUnit::Msat => Ok(Amount::from(msat)),
+        other => Err(nip47_err(
+            ErrorCode::Other,
+            format!("unsupported wallet unit: {other}"),
+        )),
+    }
+}
+
+/// Extract the hex payment hash from a bolt11 invoice string.
+fn payment_hash_of(invoice: &str) -> Option<String> {
+    Bolt11Invoice::from_str(invoice)
+        .ok()
+        .map(|i| i.payment_hash().to_string())
+}
+
+/// Map a wallet [`Error`] from a melt operation to the appropriate NIP-47 code.
+fn melt_error(err: &Error) -> NIP47Error {
+    match err {
+        Error::InsufficientFunds => nip47_err(
+            ErrorCode::InsufficientBalance,
+            "insufficient balance to pay invoice",
+        ),
+        Error::PaymentFailed => nip47_err(ErrorCode::PaymentFailed, "payment failed"),
+        other => nip47_err(ErrorCode::Internal, other.to_string()),
+    }
+}
+
+/// Convert a wallet [`Transaction`] into a NIP-47 transaction object.
+fn transaction_to_nip47(
+    tx: &Transaction,
+    unit: &CurrencyUnit,
+) -> Result<LookupInvoiceResponse, NIP47Error> {
+    let transaction_type = match tx.direction {
+        TransactionDirection::Incoming => TransactionType::Incoming,
+        TransactionDirection::Outgoing => TransactionType::Outgoing,
+    };
+
+    let payment_hash = tx
+        .payment_request
+        .as_deref()
+        .and_then(payment_hash_of)
+        .unwrap_or_default();
+
+    Ok(LookupInvoiceResponse {
+        transaction_type: Some(transaction_type),
+        state: Some(cdk_nwc::nip47::TransactionState::Settled),
+        invoice: tx.payment_request.clone(),
+        description: tx.memo.clone(),
+        description_hash: None,
+        preimage: tx.payment_proof.clone(),
+        payment_hash,
+        amount: amount_to_msat(tx.amount, unit)?,
+        fees_paid: amount_to_msat(tx.fee, unit)?,
+        created_at: Timestamp::from(tx.timestamp),
+        expires_at: None,
+        settled_at: Some(Timestamp::from(tx.timestamp)),
+        metadata: None,
+    })
+}
+
+#[async_trait]
+impl cdk_nwc::NwcRequestHandler for WalletNwcHandler {
+    #[instrument(skip(self))]
+    async fn get_info(&self) -> Result<GetInfoResponse, NIP47Error> {
+        let methods = SUPPORTED_METHODS
+            .iter()
+            .filter_map(|m| Method::from_str(m).ok())
+            .collect();
+
+        Ok(GetInfoResponse {
+            alias: Some("CDK Cashu Wallet".to_string()),
+            color: None,
+            pubkey: None,
+            network: Some("mainnet".to_string()),
+            block_height: None,
+            block_hash: None,
+            methods,
+            notifications: Vec::new(),
+        })
+    }
+
+    #[instrument(skip(self))]
+    async fn get_balance(&self) -> Result<GetBalanceResponse, NIP47Error> {
+        let balance = self
+            .wallet
+            .total_balance()
+            .await
+            .map_err(|e| nip47_err(ErrorCode::Internal, e.to_string()))?;
+
+        Ok(GetBalanceResponse {
+            balance: amount_to_msat(balance, &self.wallet.unit)?,
+        })
+    }
+
+    #[instrument(skip(self))]
+    async fn make_invoice(
+        &self,
+        request: MakeInvoiceRequest,
+    ) -> Result<MakeInvoiceResponse, NIP47Error> {
+        let amount = msat_to_amount(request.amount, &self.wallet.unit)?;
+
+        let quote = self
+            .wallet
+            .mint_quote(
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                Some(amount),
+                request.description.clone(),
+                None,
+            )
+            .await
+            .map_err(|e| nip47_err(ErrorCode::Internal, e.to_string()))?;
+
+        let payment_hash = payment_hash_of(&quote.request);
+
+        Ok(MakeInvoiceResponse {
+            invoice: quote.request,
+            payment_hash,
+            description: request.description,
+            description_hash: request.description_hash,
+            preimage: None,
+            amount: Some(request.amount),
+            created_at: None,
+            expires_at: Some(Timestamp::from(quote.expiry)),
+        })
+    }
+
+    #[instrument(skip(self))]
+    async fn pay_invoice(
+        &self,
+        request: PayInvoiceRequest,
+    ) -> Result<PayInvoiceResponse, NIP47Error> {
+        let invoice = Bolt11Invoice::from_str(&request.invoice)
+            .map_err(|e| nip47_err(ErrorCode::Other, format!("invalid bolt11 invoice: {e}")))?;
+
+        // The invoice must carry its own amount: paying amountless invoices
+        // would require an amount override, which is not supported here.
+        let invoice_msat = invoice.amount_milli_satoshis().ok_or_else(|| {
+            nip47_err(
+                ErrorCode::Other,
+                "amountless invoices are not supported; invoice must specify an amount",
+            )
+        })?;
+
+        // A redundant `amount` is accepted only when it matches the invoice;
+        // a mismatch is rejected rather than silently paying a different sum.
+        if let Some(requested) = request.amount {
+            if requested != invoice_msat {
+                return Err(nip47_err(
+                    ErrorCode::Other,
+                    "requested amount does not match the invoice amount",
+                ));
+            }
+        }
+
+        // Budget enforcement (defense in depth, before any state changes).
+        if let Some(budget) = self.budget_msat {
+            if invoice_msat > budget {
+                return Err(nip47_err(
+                    ErrorCode::QuotaExceeded,
+                    "payment exceeds the connection budget",
+                ));
+            }
+        }
+
+        let quote = self
+            .wallet
+            .melt_quote(
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                request.invoice.clone(),
+                None,
+                None,
+            )
+            .await
+            .map_err(|e| melt_error(&e))?;
+
+        let prepared = self
+            .wallet
+            .prepare_melt(&quote.id, HashMap::new())
+            .await
+            .map_err(|e| melt_error(&e))?;
+
+        let finalized = prepared.confirm().await.map_err(|e| melt_error(&e))?;
+
+        let preimage = finalized.payment_proof().unwrap_or_default().to_string();
+        let fees_paid = amount_to_msat(finalized.fee_paid(), &self.wallet.unit)?;
+
+        Ok(PayInvoiceResponse {
+            preimage,
+            fees_paid: Some(fees_paid),
+        })
+    }
+
+    #[instrument(skip(self))]
+    async fn lookup_invoice(
+        &self,
+        request: LookupInvoiceRequest,
+    ) -> Result<LookupInvoiceResponse, NIP47Error> {
+        let target_hash = request
+            .payment_hash
+            .clone()
+            .or_else(|| request.invoice.as_deref().and_then(payment_hash_of))
+            .ok_or_else(|| {
+                nip47_err(
+                    ErrorCode::Other,
+                    "either payment_hash or invoice is required",
+                )
+            })?;
+
+        let unit = &self.wallet.unit;
+
+        // Settled transactions (incoming and outgoing).
+        let transactions = self
+            .wallet
+            .list_transactions(None)
+            .await
+            .map_err(|e| nip47_err(ErrorCode::Internal, e.to_string()))?;
+
+        for tx in &transactions {
+            if tx.payment_request.as_deref().and_then(payment_hash_of).as_deref()
+                == Some(target_hash.as_str())
+            {
+                return transaction_to_nip47(tx, unit);
+            }
+        }
+
+        // Outstanding (unpaid) invoices we issued.
+        let quotes = self
+            .wallet
+            .get_active_mint_quotes()
+            .await
+            .map_err(|e| nip47_err(ErrorCode::Internal, e.to_string()))?;
+
+        for quote in quotes {
+            if payment_hash_of(&quote.request).as_deref() == Some(target_hash.as_str()) {
+                let amount = quote
+                    .amount
+                    .map(|a| amount_to_msat(a, unit))
+                    .transpose()?
+                    .unwrap_or_default();
+
+                return Ok(LookupInvoiceResponse {
+                    transaction_type: Some(TransactionType::Incoming),
+                    state: Some(cdk_nwc::nip47::TransactionState::Pending),
+                    invoice: Some(quote.request.clone()),
+                    description: None,
+                    description_hash: None,
+                    preimage: None,
+                    payment_hash: target_hash,
+                    amount,
+                    fees_paid: 0,
+                    created_at: Timestamp::from(quote.expiry),
+                    expires_at: Some(Timestamp::from(quote.expiry)),
+                    settled_at: None,
+                    metadata: None,
+                });
+            }
+        }
+
+        Err(nip47_err(ErrorCode::NotFound, "invoice not found"))
+    }
+
+    #[instrument(skip(self))]
+    async fn list_transactions(
+        &self,
+        request: ListTransactionsRequest,
+    ) -> Result<Vec<LookupInvoiceResponse>, NIP47Error> {
+        let direction = request.transaction_type.map(|t| match t {
+            TransactionType::Incoming => TransactionDirection::Incoming,
+            TransactionType::Outgoing => TransactionDirection::Outgoing,
+        });
+
+        let unit = &self.wallet.unit;
+
+        let mut transactions = self
+            .wallet
+            .list_transactions(direction)
+            .await
+            .map_err(|e| nip47_err(ErrorCode::Internal, e.to_string()))?;
+
+        // Newest first, consistent with most NWC clients' expectations.
+        transactions.reverse();
+
+        let from = request.from.map(|t| t.as_secs());
+        let until = request.until.map(|t| t.as_secs());
+
+        let filtered = transactions.into_iter().filter(|tx| {
+            from.is_none_or(|f| tx.timestamp >= f) && until.is_none_or(|u| tx.timestamp <= u)
+        });
+
+        let offset = request.offset.unwrap_or(0) as usize;
+        let limit = request.limit.map(|l| l as usize);
+
+        let mut out = Vec::new();
+        for tx in filtered.skip(offset) {
+            if let Some(limit) = limit {
+                if out.len() >= limit {
+                    break;
+                }
+            }
+            out.push(transaction_to_nip47(&tx, unit)?);
+        }
+
+        Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use cdk_common::mint_url::MintUrl;
+
+    use super::*;
+
+    #[test]
+    fn sat_amounts_convert_to_and_from_msat() {
+        assert_eq!(
+            amount_to_msat(Amount::from(5u64), &CurrencyUnit::Sat).expect("to msat"),
+            5000
+        );
+        assert_eq!(
+            amount_to_msat(Amount::from(7u64), &CurrencyUnit::Msat).expect("msat passthrough"),
+            7
+        );
+        assert_eq!(
+            msat_to_amount(5000, &CurrencyUnit::Sat).expect("from msat"),
+            Amount::from(5u64)
+        );
+        assert_eq!(
+            msat_to_amount(9, &CurrencyUnit::Msat).expect("msat passthrough"),
+            Amount::from(9u64)
+        );
+    }
+
+    #[test]
+    fn sub_satoshi_msat_is_rejected_for_sat_wallet() {
+        let err = msat_to_amount(500, &CurrencyUnit::Sat).expect_err("sub-sat rejected");
+        assert_eq!(err.code, ErrorCode::Other);
+    }
+
+    #[test]
+    fn nwc_service_key_is_distinct_from_npubcash_key() {
+        let seed = [0x24u8; 64];
+        let nwc = derive_nwc_secret_key_from_seed(&seed).expect("nwc key");
+
+        // npub.cash uses account index 0 (`m/44'/1237'/0'/0/0`); the NWC key
+        // must not collide with it.
+        let npub_path = DerivationPath::from_str("m/44'/1237'/0'/0/0").expect("npub path");
+        let xpriv = Xpriv::new_master(Network::Bitcoin, &seed).expect("master key");
+        let npub = xpriv
+            .derive_priv(&SECP256K1, &npub_path)
+            .expect("derive npub")
+            .private_key;
+
+        assert_ne!(nwc.to_secret_bytes(), npub.secret_bytes());
+        // Never raw seed material.
+        assert_ne!(&nwc.to_secret_bytes()[..], &seed[..32]);
+    }
+
+    fn sample_transaction() -> Transaction {
+        Transaction {
+            mint_url: MintUrl::from_str("https://mint.example.com").expect("mint url"),
+            direction: TransactionDirection::Incoming,
+            amount: Amount::from(10u64),
+            fee: Amount::from(1u64),
+            unit: CurrencyUnit::Sat,
+            ys: Vec::new(),
+            timestamp: 1_700_000_000,
+            memo: Some("coffee".to_string()),
+            metadata: HashMap::new(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: None,
+        }
+    }
+
+    #[test]
+    fn transaction_maps_to_settled_nip47_object_in_msat() {
+        let tx = sample_transaction();
+        let mapped = transaction_to_nip47(&tx, &CurrencyUnit::Sat).expect("map tx");
+
+        assert_eq!(mapped.transaction_type, Some(TransactionType::Incoming));
+        assert_eq!(
+            mapped.state,
+            Some(cdk_nwc::nip47::TransactionState::Settled)
+        );
+        assert_eq!(mapped.amount, 10_000);
+        assert_eq!(mapped.fees_paid, 1_000);
+        assert_eq!(mapped.description.as_deref(), Some("coffee"));
+        assert!(mapped.settled_at.is_some());
+        assert_eq!(mapped.payment_hash, "");
+    }
+}

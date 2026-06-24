@@ -21,6 +21,7 @@ wallet = [
 ]
 nostr = ["wallet", "dep:nostr-sdk", "cdk-common/nostr"]
 npubcash = ["wallet", "nostr", "dep:cdk-npubcash"]
+nwc = ["wallet", "nostr", "dep:cdk-nwc"]
 mint = ["dep:futures", "cdk-common/mint", "cdk-common/http", "cdk-signatory"]
 bip353 = ["wallet", "cdk-common/bip353", "cdk-http-client?/bip353"]
 bench = []
@@ -54,6 +55,7 @@ uuid.workspace = true
 jsonwebtoken.workspace = true
 nostr-sdk = { workspace = true, optional = true }
 cdk-npubcash = { workspace = true, default-features = false, optional = true }
+cdk-nwc = { workspace = true, optional = true }
 cdk-prometheus = {workspace = true, optional = true}
 bitcoin-payment-instructions = { workspace = true }
 web-time.workspace = true

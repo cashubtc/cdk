@@ -21,7 +21,9 @@ cdk-sqlite = { workspace = true }
 cdk-postgres = { workspace = true, optional = true }
 cdk-supabase = { workspace = true, optional = true, features = ["wallet"] }
 cdk-npubcash = { workspace = true, optional = true }
+cdk-nwc = { workspace = true, optional = true }
 nostr-sdk = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
 futures = { workspace = true }
 once_cell = { workspace = true }
 rand = { workspace = true }
@@ -43,7 +45,7 @@ log = "0.4"
 
 
 [features]
-default = ["npubcash", "bip353"]
+default = ["npubcash", "nwc", "bip353"]
 bip353 = ["cdk/bip353"]
 # Enable Postgres-backed wallet database support in FFI
 postgres = ["cdk-postgres"]
@@ -51,6 +53,8 @@ postgres = ["cdk-postgres"]
 supabase = ["cdk-supabase"]
 # Enable NpubCash client bindings
 npubcash = ["cdk/npubcash", "cdk-npubcash", "nostr-sdk"]
+# Enable Nostr Wallet Connect (NIP-47) wallet service bindings
+nwc = ["cdk/nwc", "cdk-nwc", "nostr-sdk", "dep:tokio-util"]
 
 [dev-dependencies]
 
