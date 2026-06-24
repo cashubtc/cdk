@@ -447,6 +447,9 @@ pub trait ProofsDatabase {
     /// Get total proofs redeemed by keyset id
     async fn get_total_redeemed(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
 
+    /// Get total proof count redeemed per keyset id
+    async fn get_total_redeemed_count(&self) -> Result<HashMap<Id, u64>, Self::Err>;
+
     /// Get proof ys by operation id
     async fn get_proof_ys_by_operation_id(
         &self,
@@ -501,6 +504,9 @@ pub trait SignaturesDatabase {
 
     /// Get total amount issued by keyset id
     async fn get_total_issued(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
+
+    /// Get total blind signature count issued per keyset id
+    async fn get_total_issued_count(&self) -> Result<HashMap<Id, u64>, Self::Err>;
 
     /// Get blinded secrets (B values) by operation id
     async fn get_blinded_secrets_by_operation_id(
