@@ -168,6 +168,10 @@ coverage:
   echo "Running pure integration tests coverage (sqlite)..."
   CDK_TEST_DB_TYPE=sqlite cargo llvm-cov --no-report -p cdk-integration-tests --test integration_tests_pure
 
+  # Run NWC e2e tests with coverage (requires nostr-rs-relay on PATH)
+  echo "Running NWC e2e tests coverage (memory)..."
+  CDK_TEST_DB_TYPE=memory cargo llvm-cov --no-report -p cdk-integration-tests --test nwc_e2e
+
   # Generate report
   echo "Generating coverage report..."
   cargo llvm-cov report --lcov --output-path lcov.info
@@ -184,6 +188,7 @@ test-pure db="memory":
     CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~integration_tests_pure)" -j 1
     CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~test_swap_flow)" -j 1
     CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~wallet_saga)" -j 1
+    CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~nwc_e2e)" -j 1
   else
     # Run pure integration tests (cargo test will only build what's needed for the test)
     CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure -- --test-threads 1
@@ -193,6 +198,9 @@ test-pure db="memory":
 
     # Run wallet saga tests
     CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test wallet_saga -- --test-threads 1
+
+    # Run NWC (NIP-47) e2e tests (requires nostr-rs-relay on PATH; skipped locally if absent)
+    CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test nwc_e2e -- --test-threads 1
   fi
 
 # Mutation Testing Commands

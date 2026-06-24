@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 name = "cdk_ffi_go"
 
 [dependencies]
-cdk-ffi = { workspace = true, features = ["npubcash", "bip353"] }
+cdk-ffi = { workspace = true, features = ["npubcash", "nwc", "bip353"] }
 uniffi = { workspace = true, features = ["cli"] }
 
 [build-dependencies]
