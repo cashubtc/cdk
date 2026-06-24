@@ -834,12 +834,23 @@ pub struct MintInfo {
     /// NUT-CTF default keyset creation policy: none, one-vs-rest, or all.
     #[cfg(feature = "conditional-tokens")]
     pub ctf_default_keyset_creation: Option<String>,
-    /// NUT-CTF flat registration fee per new condition.
+    /// NUT-CTF per-unit registration fee policy.
     #[cfg(feature = "conditional-tokens")]
-    pub ctf_registration_fee_base: Option<u64>,
-    /// NUT-CTF registration fee per created keyset.
-    #[cfg(feature = "conditional-tokens")]
-    pub ctf_registration_fee_per_keyset: Option<u64>,
+    pub ctf_registration_fees: Option<Vec<CtfRegistrationFeeConfig>>,
+}
+
+#[cfg(feature = "conditional-tokens")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CtfRegistrationFeeConfig {
+    /// Collateral unit this registration fee applies to.
+    pub unit: String,
+    /// Flat registration fee per new condition.
+    #[serde(rename = "registration_fee_base")]
+    pub base: u64,
+    /// Additional registration fee per created keyset.
+    #[serde(rename = "registration_fee_per_keyset")]
+    pub per_keyset: u64,
 }
 
 #[cfg(feature = "management-rpc")]
@@ -953,6 +964,34 @@ per_unit_caps = { usd = 1000 }
         let rate_quoter = RateQuoter::default();
         assert_eq!(rate_quoter.min_fetched, 3);
         assert_eq!(rate_quoter.min_survived, 2);
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    #[test]
+    fn test_ctf_registration_fee_config_requires_base() {
+        let config_content = r#"
+[[mint_info.ctf_registration_fees]]
+unit = "msat"
+registration_fee_per_keyset = 10000
+"#;
+
+        let config = Config::builder()
+            .add_source(
+                Config::try_from(&Settings::default()).expect("default config should build"),
+            )
+            .add_source(config::File::from_str(
+                config_content,
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .expect("config source should build");
+
+        let result = config.try_deserialize::<Settings>();
+
+        assert!(
+            result.is_err(),
+            "missing registration_fee_base must fail config deserialization"
+        );
     }
 
     #[test]

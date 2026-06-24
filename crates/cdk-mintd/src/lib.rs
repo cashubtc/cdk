@@ -27,6 +27,8 @@ use cdk::nuts::nut00::KnownMethod;
 ))]
 use cdk::nuts::nut17::SupportedMethods;
 use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path};
+#[cfg(feature = "conditional-tokens")]
+use cdk::nuts::nut_ctf::RegistrationFeeSetting;
 use cdk::nuts::CurrencyUnit;
 use cdk::nuts::{
     AuthRequired, ContactInfo, Method, MintVersion, PaymentMethod, ProtectedEndpoint, RoutePath,
@@ -499,19 +501,16 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
         }
     }
     #[cfg(feature = "conditional-tokens")]
-    if settings.mint_info.ctf_registration_fee_base.is_some()
-        || settings.mint_info.ctf_registration_fee_per_keyset.is_some()
-    {
-        builder = builder.with_ctf_registration_fee(
-            settings
-                .mint_info
-                .ctf_registration_fee_base
-                .unwrap_or_default(),
-            settings
-                .mint_info
-                .ctf_registration_fee_per_keyset
-                .unwrap_or_default(),
-        );
+    if let Some(fees) = &settings.mint_info.ctf_registration_fees {
+        let fees = fees
+            .iter()
+            .map(|fee| RegistrationFeeSetting {
+                unit: fee.unit.to_string(),
+                registration_fee_base: fee.base,
+                registration_fee_per_keyset: fee.per_keyset,
+            })
+            .collect();
+        builder = builder.with_ctf_registration_fees(fees);
     }
 
     builder = builder.with_keyset_v2(settings.info.use_keyset_v2);

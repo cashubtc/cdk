@@ -450,6 +450,10 @@ pub enum Error {
     #[cfg(feature = "conditional-tokens")]
     #[error("Insufficient or invalid registration fee change outputs")]
     RegistrationFeeChangeOutputs,
+    /// Unsupported CTF collateral unit (13048)
+    #[cfg(feature = "conditional-tokens")]
+    #[error("Unsupported CTF collateral unit")]
+    UnsupportedCollateralUnit,
     /// Hash to curve failed (13045)
     #[cfg(feature = "conditional-tokens")]
     #[error("Hash to curve failed")]
@@ -730,6 +734,7 @@ impl Error {
             | Self::IncompletePartition
             | Self::RegistrationFeeInsufficient
             | Self::RegistrationFeeChangeOutputs
+            | Self::UnsupportedCollateralUnit
             | Self::HashToCurveFailed
             | Self::EcPointOperationFailed
             | Self::InvalidNumericRange
@@ -1119,6 +1124,11 @@ impl From<Error> for ErrorResponse {
                 detail: err.to_string(),
             },
             #[cfg(feature = "conditional-tokens")]
+            Error::UnsupportedCollateralUnit => ErrorResponse {
+                code: ErrorCode::UnsupportedCollateralUnit,
+                detail: err.to_string(),
+            },
+            #[cfg(feature = "conditional-tokens")]
             Error::HashToCurveFailed => ErrorResponse {
                 code: ErrorCode::HashToCurveFailed,
                 detail: err.to_string(),
@@ -1319,6 +1329,8 @@ impl From<ErrorResponse> for Error {
             ErrorCode::QuoteExpired => Self::ExpiredQuote(0, 0),
             ErrorCode::WitnessMissingOrInvalid => Self::SignatureMissingOrInvalid,
             ErrorCode::PubkeyRequired => Self::PubkeyRequired,
+            #[cfg(feature = "conditional-tokens")]
+            ErrorCode::UnsupportedCollateralUnit => Self::UnsupportedCollateralUnit,
             // 30xxx - Clear auth errors
             ErrorCode::ClearAuthRequired => Self::ClearAuthRequired,
             ErrorCode::ClearAuthFailed => Self::ClearAuthFailed,
@@ -1441,6 +1453,9 @@ pub enum ErrorCode {
     /// Insufficient or invalid registration fee change outputs (13047)
     #[cfg(feature = "conditional-tokens")]
     RegistrationFeeChangeOutputs,
+    /// Unsupported CTF collateral unit (13048)
+    #[cfg(feature = "conditional-tokens")]
+    UnsupportedCollateralUnit,
     /// Hash to curve failed (13045)
     #[cfg(feature = "conditional-tokens")]
     HashToCurveFailed,
@@ -1563,6 +1578,8 @@ impl ErrorCode {
             13046 => Self::EcPointOperationFailed,
             #[cfg(feature = "conditional-tokens")]
             13047 => Self::RegistrationFeeChangeOutputs,
+            #[cfg(feature = "conditional-tokens")]
+            13048 => Self::UnsupportedCollateralUnit,
             // 20xxx - Quote/Payment errors
             20001 => Self::QuoteNotPaid,
             20002 => Self::TokensAlreadyIssued,
@@ -1656,6 +1673,8 @@ impl ErrorCode {
             Self::EcPointOperationFailed => 13046,
             #[cfg(feature = "conditional-tokens")]
             Self::RegistrationFeeChangeOutputs => 13047,
+            #[cfg(feature = "conditional-tokens")]
+            Self::UnsupportedCollateralUnit => 13048,
             // 20xxx - Quote/Payment errors
             Self::QuoteNotPaid => 20001,
             Self::TokensAlreadyIssued => 20002,

@@ -1,6 +1,8 @@
 //! Mint Builder
 
 use std::collections::HashMap;
+#[cfg(feature = "conditional-tokens")]
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use bitcoin::bip32::DerivationPath;
@@ -20,7 +22,7 @@ use crate::amount::Amount;
 use crate::cdk_database;
 use crate::mint::Mint;
 #[cfg(feature = "conditional-tokens")]
-use crate::nuts::nut_ctf::{NutCtfSettings, MAX_OUTCOMES};
+use crate::nuts::nut_ctf::{NutCtfSettings, RegistrationFeeSetting, MAX_OUTCOMES};
 use crate::nuts::{
     ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings, MintVersion,
     MppMethodSettings, PaymentMethod, ProtectedEndpoint,
@@ -330,17 +332,28 @@ impl MintBuilder {
         self
     }
 
-    /// Set the conditional-token registration fee policy advertised in mint info.
+    /// Set the conditional-token registration fee policies advertised in mint info.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the provided fee settings contain duplicate units.
     #[cfg(feature = "conditional-tokens")]
-    pub fn with_ctf_registration_fee(mut self, base: u64, per_keyset: u64) -> Self {
+    pub fn with_ctf_registration_fees(mut self, fees: Vec<RegistrationFeeSetting>) -> Self {
+        let mut seen_units = HashSet::new();
+        for fee in &fees {
+            assert!(
+                seen_units.insert(fee.unit.clone()),
+                "duplicate CTF registration fee unit: {}",
+                fee.unit
+            );
+        }
         let mut settings = self
             .mint_info
             .nuts
             .nut_ctf
             .take()
             .unwrap_or_else(NutCtfSettings::default);
-        settings.registration_fee_base = base;
-        settings.registration_fee_per_keyset = per_keyset;
+        settings.registration_fees = fees;
         self.mint_info.nuts.nut_ctf = Some(settings);
         self
     }

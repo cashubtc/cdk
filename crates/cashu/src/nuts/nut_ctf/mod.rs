@@ -454,6 +454,20 @@ pub struct ConditionalKeysetsResponse {
     pub keysets: Vec<ConditionalKeySetInfo>,
 }
 
+/// Per-unit condition registration fee settings.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
+pub struct RegistrationFeeSetting {
+    /// Collateral unit this fee setting applies to.
+    pub unit: String,
+    /// Flat registration fee per new condition, denominated in the smallest unit of `unit`.
+    #[serde(default)]
+    pub registration_fee_base: u64,
+    /// Additional registration fee per created keyset, denominated in the smallest unit of `unit`.
+    #[serde(default)]
+    pub registration_fee_per_keyset: u64,
+}
+
 /// NUT-06 mint info extension for NUT-CTF
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "swagger", derive(utoipa::ToSchema))]
@@ -469,12 +483,9 @@ pub struct NutCtfSettings {
     /// Default keyset creation rule: none, one-vs-rest, or all.
     #[serde(default = "default_keyset_creation")]
     pub default_keyset_creation: String,
-    /// Flat registration fee per new condition.
+    /// Per-unit condition registration fee settings.
     #[serde(default)]
-    pub registration_fee_base: u64,
-    /// Additional registration fee per created keyset.
-    #[serde(default)]
-    pub registration_fee_per_keyset: u64,
+    pub registration_fees: Vec<RegistrationFeeSetting>,
 }
 
 fn default_keyset_creation() -> String {
@@ -488,8 +499,7 @@ impl Default for NutCtfSettings {
             dlc_version: Some("0".to_string()),
             vesting_period: Some(2592000), // 30 days
             default_keyset_creation: default_keyset_creation(),
-            registration_fee_base: 0,
-            registration_fee_per_keyset: 0,
+            registration_fees: Vec::new(),
         }
     }
 }
@@ -961,6 +971,7 @@ mod tests {
         assert_eq!(settings.dlc_version, Some("0".to_string()));
         assert!(settings.vesting_period.is_some());
         assert_eq!(settings.default_keyset_creation, "none");
+        assert!(settings.registration_fees.is_empty());
     }
 
     #[test]
@@ -970,13 +981,26 @@ mod tests {
             dlc_version: Some("0".to_string()),
             vesting_period: None,
             default_keyset_creation: "none".to_string(),
-            registration_fee_base: 0,
-            registration_fee_per_keyset: 0,
+            registration_fees: vec![RegistrationFeeSetting {
+                unit: "msat".to_string(),
+                registration_fee_base: 10000,
+                registration_fee_per_keyset: 10000,
+            }],
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         assert!(!json.contains("vesting_period"));
         let deser: NutCtfSettings = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(settings, deser);
+    }
+
+    #[test]
+    fn test_ctf_registration_fee_setting_defaults() {
+        let setting: RegistrationFeeSetting =
+            serde_json::from_str(r#"{"unit":"msat"}"#).expect("deserialize fee setting");
+
+        assert_eq!(setting.unit, "msat");
+        assert_eq!(setting.registration_fee_base, 0);
+        assert_eq!(setting.registration_fee_per_keyset, 0);
     }
 
     #[test]

@@ -35,18 +35,6 @@ const KEYSET_POLICY_NONE: &str = "none";
 const KEYSET_POLICY_ONE_VS_REST: &str = "one-vs-rest";
 const KEYSET_POLICY_ALL: &str = "all";
 
-/// Scale factor from the base asset to the collateral unit.
-/// Config values (registration_fee_base, registration_fee_per_keyset) are
-/// denominated in the base asset (sat or cent). Proof amounts are in the
-/// collateral unit (msat for sat markets; usd/cents for USD markets). This scales the fee so the
-/// comparison is correct.
-fn collateral_scale_for_base(unit: &CurrencyUnit) -> u64 {
-    match unit {
-        CurrencyUnit::Msat => 1_000,
-        _ => 1,
-    }
-}
-
 struct RegistrationFeeVerification {
     proofs: cdk_common::Proofs,
     amount: cdk_common::Amount<cdk_common::CurrencyUnit>,
@@ -194,9 +182,7 @@ impl Mint {
         let required_fee = self
             .required_registration_fee(
                 requested_collections.len(),
-                collateral_unit
-                    .as_ref()
-                    .unwrap_or(&CurrencyUnit::Sat),
+                collateral_unit.as_ref().unwrap_or(&CurrencyUnit::Sat),
             )
             .await?;
 
@@ -396,20 +382,18 @@ impl Mint {
         collateral_unit: &CurrencyUnit,
     ) -> Result<u64, Error> {
         let settings = self.mint_info().await?.nuts.nut_ctf.unwrap_or_default();
-        let per_keyset = settings
+        let fee_setting = settings
+            .registration_fees
+            .iter()
+            .find(|fee| fee.unit == collateral_unit.to_string())
+            .ok_or(Error::UnsupportedCollateralUnit)?;
+        let per_keyset = fee_setting
             .registration_fee_per_keyset
             .checked_mul(num_keysets as u64)
             .ok_or(Error::AmountOverflow)?;
-        let base_fee = settings
+        fee_setting
             .registration_fee_base
             .checked_add(per_keyset)
-            .ok_or(Error::AmountOverflow)?;
-        // The fee config is denominated in the base asset (sat or cent).
-        // Scale to the collateral unit so the comparison against proof amounts
-        // (which are in the collateral unit: msat for sat markets, cents for USD) is correct.
-        let scale = collateral_scale_for_base(collateral_unit);
-        base_fee
-            .checked_mul(scale)
             .ok_or(Error::AmountOverflow)
     }
 
