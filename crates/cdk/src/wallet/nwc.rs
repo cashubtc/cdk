@@ -41,8 +41,7 @@ use tracing::instrument;
 
 use crate::error::Error;
 use crate::nuts::{CurrencyUnit, SecretKey};
-use crate::Amount;
-use crate::Wallet;
+use crate::{Amount, Wallet};
 
 /// Derive the NWC wallet-service secret key from a wallet seed.
 ///
@@ -125,9 +124,12 @@ fn nip47_err(code: ErrorCode, message: impl Into<String>) -> NIP47Error {
 fn amount_to_msat(amount: Amount, unit: &CurrencyUnit) -> Result<u64, NIP47Error> {
     let value = u64::from(amount);
     match unit {
-        CurrencyUnit::Sat => value
-            .checked_mul(1000)
-            .ok_or_else(|| nip47_err(ErrorCode::Internal, "amount overflow converting sat to msat")),
+        CurrencyUnit::Sat => value.checked_mul(1000).ok_or_else(|| {
+            nip47_err(
+                ErrorCode::Internal,
+                "amount overflow converting sat to msat",
+            )
+        }),
         CurrencyUnit::Msat => Ok(value),
         other => Err(nip47_err(
             ErrorCode::Other,
@@ -369,7 +371,11 @@ impl cdk_nwc::NwcRequestHandler for WalletNwcHandler {
             .map_err(|e| nip47_err(ErrorCode::Internal, e.to_string()))?;
 
         for tx in &transactions {
-            if tx.payment_request.as_deref().and_then(payment_hash_of).as_deref()
+            if tx
+                .payment_request
+                .as_deref()
+                .and_then(payment_hash_of)
+                .as_deref()
                 == Some(target_hash.as_str())
             {
                 return transaction_to_nip47(tx, unit);

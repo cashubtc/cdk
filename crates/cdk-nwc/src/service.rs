@@ -21,8 +21,7 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use nostr_sdk::nips::nip47::{
-    ErrorCode, NIP47Error, NostrWalletConnectURI, Request, RequestParams, Response,
-    ResponseResult,
+    ErrorCode, NIP47Error, NostrWalletConnectURI, Request, RequestParams, Response, ResponseResult,
 };
 use nostr_sdk::nips::{nip04, nip44};
 use nostr_sdk::prelude::*;
@@ -247,29 +246,31 @@ impl NwcService {
 /// Any failure is logged and (where possible) answered with a NIP-47 error
 /// response. This function never panics and never returns an error to the
 /// caller — keeping the relay loop alive is part of the security contract.
-async fn handle_request<H>(
-    service_keys: &Keys,
-    client: &NostrClient,
-    handler: &H,
-    event: &Event,
-) where
+async fn handle_request<H>(service_keys: &Keys, client: &NostrClient, handler: &H, event: &Event)
+where
     H: NwcRequestHandler + ?Sized,
 {
     let secret = service_keys.secret_key();
 
-    let (request, encryption) =
-        match decrypt_request(secret, &event.pubkey, &event.content) {
-            Ok(parsed) => parsed,
-            Err(e) => {
-                tracing::warn!("Failed to decode NWC request {}: {e}", event.id);
-                return;
-            }
-        };
+    let (request, encryption) = match decrypt_request(secret, &event.pubkey, &event.content) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            tracing::warn!("Failed to decode NWC request {}: {e}", event.id);
+            return;
+        }
+    };
 
     let response = dispatch(handler, request).await;
 
-    if let Err(e) =
-        send_response(service_keys, client, &event.pubkey, event.id, &response, encryption).await
+    if let Err(e) = send_response(
+        service_keys,
+        client,
+        &event.pubkey,
+        event.id,
+        &response,
+        encryption,
+    )
+    .await
     {
         tracing::warn!("Failed to send NWC response for {}: {e}", event.id);
     }
@@ -506,12 +507,8 @@ mod tests {
         let request = Request::get_balance();
 
         for scheme in [Encryption::Nip44, Encryption::Nip04] {
-            let content = encrypt_request(
-                client.secret_key(),
-                &service.public_key(),
-                &request,
-                scheme,
-            );
+            let content =
+                encrypt_request(client.secret_key(), &service.public_key(), &request, scheme);
 
             let (decoded, detected) =
                 decrypt_request(service.secret_key(), &client.public_key(), &content)

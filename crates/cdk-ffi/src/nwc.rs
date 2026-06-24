@@ -46,7 +46,8 @@ impl NwcService {
         let relays = relays
             .iter()
             .map(|r| {
-                RelayUrl::parse(r).map_err(|e| FfiError::internal(format!("invalid relay {r}: {e}")))
+                RelayUrl::parse(r)
+                    .map_err(|e| FfiError::internal(format!("invalid relay {r}: {e}")))
             })
             .collect::<Result<Vec<_>, _>>()?;
 

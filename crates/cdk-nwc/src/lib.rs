@@ -34,8 +34,7 @@ pub mod service;
 
 pub use error::{Error, Result};
 pub use handler::NwcRequestHandler;
-pub use service::{NwcService, NwcServiceConfig, SUPPORTED_METHODS};
-
 // Re-export the NIP-47 protocol types so downstream crates depend on a single
 // source of truth without pulling `nostr_sdk` paths into their signatures.
 pub use nostr_sdk::nips::nip47;
+pub use service::{NwcService, NwcServiceConfig, SUPPORTED_METHODS};
