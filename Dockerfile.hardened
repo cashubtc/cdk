@@ -15,11 +15,14 @@ COPY --from=rootfs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certific
 COPY --from=rootfs --chown=10001:10001 /data /data
 COPY --chown=0:0 --chmod=0555 cdk-mintd /usr/local/bin/cdk-mintd
 
+# Add tmpfs for temporary files (faster, ephemeral)
+RUN mkdir -p /tmp && chmod 1777 /tmp
+
 ENV CDK_MINTD_WORK_DIR=/data \
     HOME=/data \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
-    SQLITE_TMPDIR=/data \
-    TMPDIR=/data
+    SQLITE_TMPDIR=/tmp \
+    TMPDIR=/tmp
 
 WORKDIR /data
 USER 10001:10001
