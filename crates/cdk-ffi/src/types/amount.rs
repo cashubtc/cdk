@@ -1,5 +1,7 @@
 //! Amount and currency related types
 
+use std::collections::HashMap;
+
 use cdk::nuts::CurrencyUnit as CdkCurrencyUnit;
 use cdk::Amount as CdkAmount;
 use serde::{Deserialize, Serialize};
@@ -104,6 +106,28 @@ impl From<cdk_common::amount::FeeAndAmounts> for FeeAndAmounts {
         Self {
             fee: fa.fee(),
             amounts: fa.amounts().to_vec(),
+        }
+    }
+}
+
+/// FFI-compatible ProofsFeeBreakdown
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct ProofsFeeBreakdown {
+    /// Total fee across all keysets
+    pub total: Amount,
+    /// Fee per keyset (keyset ID string -> fee amount)
+    pub per_keyset: HashMap<String, Amount>,
+}
+
+impl From<cdk_common::fees::ProofsFeeBreakdown> for ProofsFeeBreakdown {
+    fn from(b: cdk_common::fees::ProofsFeeBreakdown) -> Self {
+        Self {
+            total: b.total.into(),
+            per_keyset: b
+                .per_keyset
+                .into_iter()
+                .map(|(id, a)| (id.to_string(), a.into()))
+                .collect(),
         }
     }
 }

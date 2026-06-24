@@ -4,19 +4,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+pub use cdk_common::fees::ProofsFeeBreakdown;
 use tracing::instrument;
 
 use crate::nuts::Id;
-use crate::{Amount, Error};
-
-/// Fee breakdown containing total fee and fee per keyset
-#[derive(Debug, Clone, PartialEq)]
-pub struct ProofsFeeBreakdown {
-    /// Total fee across all keysets
-    pub total: Amount,
-    /// Fee collected per keyset
-    pub per_keyset: HashMap<Id, Amount>,
-}
+use crate::Error;
 
 /// Fee required for proof set
 #[instrument(skip_all)]
