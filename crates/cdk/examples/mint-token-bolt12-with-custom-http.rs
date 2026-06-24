@@ -52,6 +52,11 @@ impl HttpTransport for CustomHttp {
         panic!("Not supported");
     }
 
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, HttpError> {
+        panic!("Not supported");
+    }
+
     async fn http_get<R>(&self, url: Url, _auth: Option<AuthToken>) -> Result<R, HttpError>
     where
         R: DeserializeOwned,

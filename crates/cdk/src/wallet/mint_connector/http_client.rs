@@ -284,42 +284,11 @@ where
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, Error> {
-        use std::str::FromStr;
-
-        use hickory_resolver::config::{ResolverConfig, ResolverOpts};
-        use hickory_resolver::name_server::TokioConnectionProvider;
-        use hickory_resolver::Resolver;
-
-        if rustls::crypto::CryptoProvider::get_default().is_none() {
-            let _ = rustls::crypto::ring::default_provider().install_default();
-        }
-
-        let mut resolver_opts = ResolverOpts::default();
-        resolver_opts.validate = true;
-
-        let resolver = Resolver::builder_with_config(
-            ResolverConfig::default(),
-            TokioConnectionProvider::default(),
-        )
-        .with_options(resolver_opts)
-        .build();
-
-        let name = hickory_resolver::Name::from_str(domain)
-            .map_err(|e| Error::Custom(format!("Invalid domain name: {}", e)))?;
-
-        Ok(resolver
-            .txt_lookup(name)
+        self.transport
+            .as_ref()
+            .resolve_dns_txt(domain)
             .await
-            .map_err(|e| Error::Custom(e.to_string()))?
-            .into_iter()
-            .map(|txt| {
-                txt.txt_data()
-                    .iter()
-                    .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-                    .collect::<Vec<_>>()
-                    .join("")
-            })
-            .collect())
+            .map_err(Self::map_http_error)
     }
 
     /// Fetch Lightning address pay request data
@@ -1011,6 +980,11 @@ mod tests {
             _accept_invalid_certs: bool,
         ) -> Result<(), HttpError> {
             Ok(())
+        }
+
+        #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+        async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, HttpError> {
+            Ok(vec![])
         }
 
         async fn http_get<R>(&self, _url: Url, _auth: Option<AuthToken>) -> Result<R, HttpError>

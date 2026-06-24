@@ -45,6 +45,6 @@ pub use transport::Async;
 pub use transport::BitreqTransport;
 #[cfg(all(feature = "reqwest", not(target_arch = "wasm32")))]
 pub use transport::ReqwestTransport;
-#[cfg(feature = "tor")]
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 pub use transport::TorAsync;
 pub use transport::Transport;
