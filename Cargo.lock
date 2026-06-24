@@ -1257,6 +1257,7 @@ dependencies = [
  "cdk-common",
  "cdk-fake-wallet",
  "cdk-npubcash",
+ "cdk-nwc",
  "cdk-prometheus",
  "cdk-signatory",
  "cdk-sqlite",
@@ -1272,6 +1273,7 @@ dependencies = [
  "lightning",
  "lightning-invoice",
  "nostr-sdk",
+ "nwc",
  "rand 0.9.4",
  "regex",
  "ring 0.17.14",
@@ -1451,6 +1453,7 @@ dependencies = [
  "cdk",
  "cdk-common",
  "cdk-npubcash",
+ "cdk-nwc",
  "cdk-postgres",
  "cdk-sql-common",
  "cdk-sqlite",
@@ -1464,6 +1467,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "uniffi",
@@ -1548,6 +1552,7 @@ dependencies = [
  "cdk-ldk-node",
  "cdk-lnd",
  "cdk-mintd",
+ "cdk-nwc",
  "cdk-redb",
  "cdk-sqlite",
  "clap",
@@ -1558,6 +1563,8 @@ dependencies = [
  "ldk-node",
  "lightning",
  "lightning-invoice",
+ "nostr-sdk",
+ "nwc",
  "once_cell",
  "rand 0.9.4",
  "serde",
@@ -1728,6 +1735,19 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "web-time",
+]
+
+[[package]]
+name = "cdk-nwc"
+version = "0.17.2"
+dependencies = [
+ "async-trait",
+ "nostr-sdk",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -5038,6 +5058,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "nwc"
+version = "0.44.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f651e3c28dd9da0873151233e804a92b6240a1db1260f3c9d727950adb8e9036"
+dependencies = [
+ "nostr",
+ "nostr-relay-pool",
+ "tracing",
 ]
 
 [[package]]

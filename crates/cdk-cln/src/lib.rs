@@ -23,8 +23,7 @@ use cdk_common::payment::{
     WaitPaymentResponse,
 };
 use cdk_common::util::{hex, unix_time};
-use cdk_common::Bolt11Invoice;
-use cdk_common::QuoteId;
+use cdk_common::{Bolt11Invoice, QuoteId};
 use cln_rpc::model::requests::{
     DecodeRequest, FetchinvoiceRequest, InvoiceRequest, ListinvoicesRequest, ListpaysRequest,
     OfferRequest, PayRequest, WaitanyinvoiceRequest,
