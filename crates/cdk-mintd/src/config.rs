@@ -865,23 +865,12 @@ pub struct MintManagementRpc {
 }
 
 impl Settings {
-    #[must_use]
-    pub fn new<P>(config_file_name: Option<P>) -> Self
+    pub fn new<P>(config_file_name: Option<P>) -> Result<Self, ConfigError>
     where
         P: Into<PathBuf>,
     {
         let default_settings = Self::default();
-        // attempt to construct settings with file
-        let from_file = Self::new_from_default(&default_settings, config_file_name);
-        match from_file {
-            Ok(f) => f,
-            Err(e) => {
-                tracing::error!(
-                    "Error reading config file, falling back to defaults. Error: {e:?}"
-                );
-                default_settings
-            }
-        }
+        Self::new_from_default(&default_settings, config_file_name)
     }
 
     fn new_from_default<P>(
@@ -938,7 +927,7 @@ per_unit_caps = { usd = 1000 }
 "#;
         fs::write(&config_path, config_content).expect("write config");
 
-        let settings = Settings::new(Some(&config_path));
+        let settings = Settings::new(Some(&config_path)).expect("settings should load");
         let rate_quoter = settings.rate_quoter.expect("rate quoter config");
 
         assert_eq!(rate_quoter.units, vec![CurrencyUnit::Usd]);
@@ -991,6 +980,61 @@ registration_fee_per_keyset = 10000
         assert!(
             result.is_err(),
             "missing registration_fee_base must fail config deserialization"
+        );
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    #[test]
+    fn test_ctf_registration_fee_config_requires_per_keyset() {
+        let config_content = r#"
+[[mint_info.ctf_registration_fees]]
+unit = "msat"
+registration_fee_base = 10000
+"#;
+
+        let config = Config::builder()
+            .add_source(
+                Config::try_from(&Settings::default()).expect("default config should build"),
+            )
+            .add_source(config::File::from_str(
+                config_content,
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .expect("config source should build");
+
+        let result = config.try_deserialize::<Settings>();
+
+        assert!(
+            result.is_err(),
+            "missing registration_fee_per_keyset must fail config deserialization"
+        );
+    }
+
+    #[cfg(feature = "conditional-tokens")]
+    #[test]
+    fn test_partial_ctf_registration_fee_config_fails_load_settings() {
+        use std::{env, fs};
+
+        let temp_dir = env::temp_dir().join(format!(
+            "cdk_test_partial_ctf_registration_fee_config_{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let config_path = temp_dir.join("config.toml");
+        let config_content = r#"
+[[mint_info.ctf_registration_fees]]
+unit = "msat"
+registration_fee_per_keyset = 10000
+"#;
+        fs::write(&config_path, config_content).expect("write config");
+
+        let result = crate::load_settings(&temp_dir, Some(config_path));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+        assert!(
+            result.is_err(),
+            "load_settings must propagate partial CTF registration fee config errors"
         );
     }
 
@@ -1118,7 +1162,7 @@ max_melt = 500000
         env::set_var(crate::env_vars::ENV_LND_RESERVE_FEE_MIN, "4");
 
         // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::new(Some(&config_path));
+        let mut settings = Settings::new(Some(&config_path)).expect("settings should load");
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
@@ -1175,7 +1219,7 @@ max_melt = 500000
         env::set_var(crate::env_vars::ENV_CLN_RESERVE_FEE_MIN, "4");
 
         // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::new(Some(&config_path));
+        let mut settings = Settings::new(Some(&config_path)).expect("settings should load");
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
@@ -1233,7 +1277,7 @@ max_melt = 500000
         env::set_var(crate::env_vars::ENV_LNBITS_RESERVE_FEE_MIN, "5");
 
         // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::new(Some(&config_path));
+        let mut settings = Settings::new(Some(&config_path)).expect("settings should load");
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
@@ -1287,7 +1331,7 @@ max_melt = 500000
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_MAX_DELAY, "5");
 
         // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::new(Some(&config_path));
+        let mut settings = Settings::new(Some(&config_path)).expect("settings should load");
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
@@ -1341,7 +1385,7 @@ max_melt = 500000
         env::set_var(crate::env_vars::ENV_GRPC_PROCESSOR_PORT, "50051");
 
         // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::new(Some(&config_path));
+        let mut settings = Settings::new(Some(&config_path)).expect("settings should load");
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
@@ -1399,7 +1443,7 @@ max_melt = 500000
         );
 
         // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::new(Some(&config_path));
+        let mut settings = Settings::new(Some(&config_path)).expect("settings should load");
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars

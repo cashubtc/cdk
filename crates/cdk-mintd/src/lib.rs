@@ -288,7 +288,7 @@ pub fn load_settings(work_dir: &Path, config_path: Option<PathBuf>) -> Result<co
     };
 
     let mut settings = if config_file_arg.exists() {
-        config::Settings::new(Some(config_file_arg))
+        config::Settings::new(Some(config_file_arg))?
     } else {
         tracing::info!("Config file does not exist. Attempting to read env vars");
         config::Settings::default()

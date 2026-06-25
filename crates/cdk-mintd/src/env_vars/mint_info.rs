@@ -145,6 +145,8 @@ mod tests {
     fn clear_registration_fee_env() {
         env::remove_var(ENV_MINT_CTF_REGISTRATION_FEE_MSAT_BASE);
         env::remove_var(ENV_MINT_CTF_REGISTRATION_FEE_MSAT_PER_KEYSET);
+        env::remove_var(ENV_MINT_CTF_REGISTRATION_FEE_USD_BASE);
+        env::remove_var(ENV_MINT_CTF_REGISTRATION_FEE_USD_PER_KEYSET);
     }
 
     #[test]
@@ -215,5 +217,24 @@ mod tests {
         );
 
         assert!(fee.is_none());
+    }
+
+    #[test]
+    fn registration_fee_from_env_does_not_create_zero_fee_from_malformed_values() {
+        let _guard = env_lock();
+        clear_registration_fee_env();
+        env::set_var(ENV_MINT_CTF_REGISTRATION_FEE_MSAT_BASE, "abc");
+        env::set_var(ENV_MINT_CTF_REGISTRATION_FEE_MSAT_PER_KEYSET, "def");
+
+        let fee = registration_fee_from_env(
+            "msat",
+            ENV_MINT_CTF_REGISTRATION_FEE_MSAT_BASE,
+            ENV_MINT_CTF_REGISTRATION_FEE_MSAT_PER_KEYSET,
+        );
+        let mint_info = MintInfo::default().from_env();
+
+        clear_registration_fee_env();
+        assert!(fee.is_none());
+        assert!(mint_info.ctf_registration_fees.is_none());
     }
 }

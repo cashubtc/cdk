@@ -839,3 +839,57 @@ impl Mint {
         Ok(ConditionalKeysetsResponse { keysets })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use cdk_common::nuts::nut_ctf::{NutCtfSettings, RegistrationFeeSetting};
+    use cdk_common::CurrencyUnit;
+
+    use super::*;
+
+    async fn mint_with_registration_fee(base: u64, per_keyset: u64) -> Mint {
+        let mint = crate::test_helpers::mint::create_test_mint()
+            .await
+            .expect("test mint should be created");
+        let mut mint_info = mint.mint_info().await.expect("mint info should load");
+        mint_info.nuts.nut_ctf = Some(NutCtfSettings {
+            registration_fees: vec![RegistrationFeeSetting {
+                unit: CurrencyUnit::Sat.to_string(),
+                registration_fee_base: base,
+                registration_fee_per_keyset: per_keyset,
+            }],
+            ..NutCtfSettings::default()
+        });
+        mint.set_mint_info(mint_info)
+            .await
+            .expect("mint info should be updated");
+        mint
+    }
+
+    #[tokio::test]
+    async fn required_registration_fee_overflows_when_max_base_is_added_to_per_keyset_fee() {
+        let mint = mint_with_registration_fee(u64::MAX, 1).await;
+
+        let result = mint.required_registration_fee(1, &CurrencyUnit::Sat).await;
+
+        assert!(matches!(result, Err(Error::AmountOverflow)));
+    }
+
+    #[tokio::test]
+    async fn required_registration_fee_overflows_when_max_per_keyset_is_multiplied() {
+        let mint = mint_with_registration_fee(0, u64::MAX).await;
+
+        let result = mint.required_registration_fee(2, &CurrencyUnit::Sat).await;
+
+        assert!(matches!(result, Err(Error::AmountOverflow)));
+    }
+
+    #[tokio::test]
+    async fn required_registration_fee_overflows_for_large_num_keysets() {
+        let mint = mint_with_registration_fee(1, (u64::MAX / 2) + 1).await;
+
+        let result = mint.required_registration_fee(2, &CurrencyUnit::Sat).await;
+
+        assert!(matches!(result, Err(Error::AmountOverflow)));
+    }
+}
