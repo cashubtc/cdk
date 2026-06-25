@@ -209,6 +209,27 @@ if [[ "$SUITE" != "onchain" ]]; then
     done
 fi
 
+READY_FILE_PATH="$CDK_ITESTS_DIR/.ready"
+max_wait=300
+wait_count=0
+while [ $wait_count -lt $max_wait ]; do
+    if [ -f "$READY_FILE_PATH" ]; then
+        echo "Regtest mints readiness file found at: $READY_FILE_PATH"
+        break
+    fi
+    if ! ps -p "$CDK_REGTEST_PID" > /dev/null 2>&1; then
+        echo "ERROR: Regtest mints process exited before readiness file was created"
+        exit 1
+    fi
+    wait_count=$((wait_count + 1))
+    sleep 1
+done
+
+if [ ! -f "$READY_FILE_PATH" ]; then
+    echo "ERROR: Regtest mints did not become ready within $max_wait seconds"
+    exit 1
+fi
+
 # Run cargo test
 if [[ "$SUITE" == "all" || "$SUITE" == "ln" ]]; then
     echo "Running regtest test with CLN mint and CLN client"

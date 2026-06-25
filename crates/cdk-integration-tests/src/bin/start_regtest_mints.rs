@@ -19,20 +19,25 @@ use std::time::Duration;
 
 use anyhow::{bail, Result};
 use bip39::Mnemonic;
-use cashu::Amount;
+use cashu::{Amount, CurrencyUnit, PaymentMethod};
+use cdk::wallet::Wallet;
 use cdk_integration_tests::cli::CommonArgs;
-use cdk_integration_tests::init_regtest::start_regtest_end;
+use cdk_integration_tests::init_regtest::{get_cln_dir, start_regtest_end};
+use cdk_integration_tests::ln_regtest::ln_client::{ClnClient, LightningClient};
 use cdk_integration_tests::shared;
-use cdk_ldk_node::{CdkLdkNode, CdkLdkNodeBuilder};
+use cdk_ldk_node::CdkLdkNodeBuilder;
 use cdk_mintd::config::LoggingConfig;
+use cdk_sqlite::wallet::memory;
 use clap::Parser;
 use ldk_node::lightning::ln::msgs::SocketAddress;
 use tokio::runtime::Runtime;
 use tokio::signal;
 use tokio::signal::unix::SignalKind;
 use tokio::sync::{oneshot, Notify};
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
+
+const LDK_NODE_P2P_PORT: u16 = 8092;
 
 #[derive(Parser)]
 #[command(name = "start-regtest-mints")]
@@ -205,16 +210,13 @@ async fn start_lnd_mint(
     Ok(handle)
 }
 
-/// Start regtest LDK mint using the library
-/// If `existing_node` is provided, it will be used instead of creating a new one.
-/// This allows the mint to use a node that was already set up (e.g., with channels).
+/// Start regtest LDK mint using the library.
 async fn start_ldk_mint(
     temp_dir: &Path,
     port: u16,
     database_type: &str,
     shutdown: Arc<Notify>,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
-    existing_node: Option<CdkLdkNode>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let ldk_work_dir = temp_dir.join("ldk_mint");
 
@@ -237,7 +239,7 @@ async fn start_ldk_mint(
         ldk_node_announce_addresses: None,
         storage_dir_path: Some(ldk_work_dir.to_string_lossy().to_string()),
         ldk_node_host: Some("127.0.0.1".to_string()),
-        ldk_node_port: Some(port + 10), // Use a different port for the LDK node P2P connections
+        ldk_node_port: Some(LDK_NODE_P2P_PORT),
         gossip_source_type: None,
         rgs_url: None,
         webserver_host: Some("127.0.0.1".to_string()),
@@ -267,13 +269,6 @@ async fn start_ldk_mint(
             println!("LDK mint shutdown signal received");
         };
 
-        // Both nodes now use the same seed, so the standard flow should work.
-        // The existing_node parameter is kept for API compatibility but not used
-        // since run_mintd_with_shutdown will create its own node with the same seed.
-        if existing_node.is_some() {
-            println!("Using existing LDK node configuration (same seed as mint)");
-        }
-
         match cdk_mintd::run_mintd_with_shutdown(
             &ldk_work_dir,
             &settings,
@@ -290,6 +285,134 @@ async fn start_ldk_mint(
     });
 
     Ok(handle)
+}
+
+async fn wait_for_ldk_bolt12_ready(
+    temp_dir: &Path,
+    ldk_port: u16,
+    ldk_node_id: &str,
+    shutdown_notify: Arc<CancellationToken>,
+) -> Result<()> {
+    let mint_url = format!("http://127.0.0.1:{ldk_port}");
+    let readiness_amount = Amount::from(1);
+    let start_time = std::time::Instant::now();
+    let max_wait = Duration::from_secs(120);
+    let mut attempt = 1;
+    let mut last_error = None;
+
+    println!("Waiting for LDK mint BOLT12 readiness on port {ldk_port}...");
+
+    let wallet = Wallet::new(
+        &mint_url,
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await?),
+        Mnemonic::generate(12)?.to_seed_normalized(""),
+        None,
+    )?;
+
+    let cln_client = ClnClient::new(get_cln_dir(temp_dir, "one"), None).await?;
+    match cln_client
+        .connect_peer(
+            ldk_node_id.to_string(),
+            "127.0.0.1".to_string(),
+            LDK_NODE_P2P_PORT,
+        )
+        .await
+    {
+        Ok(_) => tracing::info!("CLN reconnected to LDK mint node for readiness check"),
+        Err(err) => {
+            tracing::warn!("CLN reconnect to LDK mint node failed before readiness check: {err}")
+        }
+    }
+
+    loop {
+        if shutdown_notify.is_cancelled() {
+            bail!("Canceled waiting for LDK mint BOLT12 readiness");
+        }
+
+        if start_time.elapsed() > max_wait {
+            let last_error = last_error
+                .as_deref()
+                .unwrap_or("no readiness attempt completed before timeout");
+            bail!("Timeout waiting for LDK mint BOLT12 readiness: {last_error}");
+        }
+
+        let mint_quote = match wallet
+            .mint_quote(
+                PaymentMethod::BOLT12,
+                Some(readiness_amount),
+                None,
+                None,
+            )
+            .await
+        {
+            Ok(quote) => quote,
+            Err(err) => {
+                last_error = Some(format!("quote creation failed: {err}"));
+                tracing::warn!(
+                    "LDK BOLT12 readiness attempt {attempt}: quote creation failed: {err}"
+                );
+                sleep(Duration::from_secs(2)).await;
+                attempt += 1;
+                continue;
+            }
+        };
+
+        match cln_client
+            .pay_bolt12_offer(None, mint_quote.request.clone())
+            .await
+        {
+            Ok(_) => (),
+            Err(err) => {
+                last_error = Some(format!("payment failed: {err}"));
+                tracing::warn!("LDK BOLT12 readiness attempt {attempt}: payment failed: {err}");
+                sleep(Duration::from_secs(2)).await;
+                attempt += 1;
+                continue;
+            }
+        }
+
+        let quote_poll_start = std::time::Instant::now();
+        let mut last_status_error = None;
+        while quote_poll_start.elapsed() <= Duration::from_secs(20) {
+            if shutdown_notify.is_cancelled() {
+                bail!("Canceled waiting for LDK mint BOLT12 readiness");
+            }
+
+            match wallet.check_mint_quote_status(&mint_quote.id).await {
+                Ok(quote_state) => {
+                    if quote_state.amount_paid >= readiness_amount {
+                        println!("LDK mint BOLT12 readiness confirmed on port {ldk_port}");
+                        return Ok(());
+                    }
+                }
+                Err(err) => {
+                    last_status_error = Some(err.to_string());
+                    tracing::warn!(
+                        "LDK BOLT12 readiness attempt {attempt}: quote status check failed: {err}"
+                    );
+                }
+            }
+
+            sleep(Duration::from_secs(1)).await;
+        }
+
+        tracing::warn!(
+            "LDK BOLT12 readiness attempt {attempt}: payment was sent but quote {} was not observed as paid",
+            mint_quote.id
+        );
+        last_error = Some(match last_status_error {
+            Some(err) => format!(
+                "payment was sent but quote {} was not observed as paid; last status check failed: {err}",
+                mint_quote.id
+            ),
+            None => format!(
+                "payment was sent but quote {} was not observed as paid",
+                mint_quote.id
+            ),
+        });
+        attempt += 1;
+    }
 }
 
 /// Create settings for an LDK mint
@@ -397,6 +520,11 @@ fn apply_database_settings(
     settings.database.engine = engine;
     settings.database.postgres = postgres_config;
 
+    Ok(())
+}
+
+fn signal_mints_ready(temp_dir: &Path) -> Result<()> {
+    fs::write(temp_dir.join(".ready"), "ready\n")?;
     Ok(())
 }
 
@@ -563,6 +691,7 @@ fn main() -> Result<()> {
             .await?;
 
             println!("Onchain-only mint is ready on port {}!", args.cln_port);
+            signal_mints_ready(&temp_dir)?;
 
             // Wait for shutdown
             shutdown_clone_one.notified().await;
@@ -591,7 +720,7 @@ fn main() -> Result<()> {
             },
             vec![SocketAddress::TcpIpV4 {
                 addr: [127, 0, 0, 1],
-                port: 8092,
+                port: LDK_NODE_P2P_PORT,
             }],
         )
         .with_seed(test_mnemonic.clone());
@@ -624,7 +753,7 @@ fn main() -> Result<()> {
                     },
                     vec![SocketAddress::TcpIpV4 {
                         addr: [127, 0, 0, 1],
-                        port: 8092,
+                        port: LDK_NODE_P2P_PORT,
                     }],
                 )
                 .with_seed(test_mnemonic);
@@ -634,6 +763,12 @@ fn main() -> Result<()> {
         };
 
         let inner_node = cdk_ldk.node();
+        let ldk_node_id = inner_node.node_id().to_string();
+        // The setup node is stopped by `start_regtest_end` after channels are
+        // opened. `ldk-node` 0.7 can panic when dropping a stopped node, so keep
+        // this setup wrapper alive for the short-lived regtest process and let
+        // the mint restart from the same storage and seed.
+        std::mem::forget(cdk_ldk);
 
         let temp_dir_clone = temp_dir.clone();
         let shutdown_clone_two = Arc::clone(&shutdown_clone);
@@ -667,14 +802,13 @@ fn main() -> Result<()> {
             start_lnd_mint(&temp_dir, args.lnd_port, &args.database_type, shutdown_clone.clone())
                 .await?;
 
-        // Start LDK mint (using the existing node that was already set up with channels)
+        // Start LDK mint from the node storage that was set up with channels.
         let ldk_handle = start_ldk_mint(
             &temp_dir,
             args.ldk_port,
             &args.database_type,
             shutdown_clone.clone(),
             Some(rt_clone),
-            Some(cdk_ldk),
         )
         .await?;
 
@@ -716,7 +850,7 @@ fn main() -> Result<()> {
                 Arc::clone(&cancel_token)
             ),
         ) {
-            Ok(_) => println!("All mints are ready!"),
+            Ok(_) => println!("All mint HTTP endpoints are ready!"),
             Err(e) => {
                 if cancel_token.is_cancelled() {
                     bail!("Startup canceled by user");
@@ -729,6 +863,15 @@ fn main() -> Result<()> {
         if cancel_token.is_cancelled() {
             bail!("Token canceled");
         }
+
+        wait_for_ldk_bolt12_ready(
+            &temp_dir,
+            args.ldk_port,
+            &ldk_node_id,
+            Arc::clone(&cancel_token),
+        )
+        .await?;
+        signal_mints_ready(&temp_dir)?;
 
         println!("All regtest mints started successfully!");
         println!("CLN mint: http://{}:{}", args.mint_addr, args.cln_port);
