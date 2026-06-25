@@ -1,4 +1,4 @@
-//! # Nostr Mint Backup Example (NUT-XX)
+//! # Nostr Mint Backup Example (NUT-27)
 //!
 //! This example demonstrates how to backup and restore your mint list
 //! to/from Nostr relays using the WalletRepository.
@@ -35,7 +35,7 @@ async fn main() -> anyhow::Result<()> {
         .with_max_level(tracing::Level::ERROR)
         .init();
 
-    println!("NUT-XX Nostr Mint Backup Example");
+    println!("NUT-27 Nostr Mint Backup Example");
     println!("=================================\n");
 
     // Generate a random seed for the wallet

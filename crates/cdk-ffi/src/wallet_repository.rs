@@ -183,6 +183,46 @@ impl WalletRepository {
         }
     }
 
+    /// Get the NUT-27 mint backup public key as hex.
+    pub fn mint_backup_public_key(&self) -> Result<String, FfiError> {
+        let keys = self.inner.backup_keys()?;
+        Ok(keys.public_key().to_hex())
+    }
+
+    /// Backup the current mint list to Nostr relays using NUT-27.
+    pub async fn backup_mints(
+        &self,
+        relays: Vec<String>,
+        options: BackupOptions,
+    ) -> Result<BackupResult, FfiError> {
+        let result = self.inner.backup_mints(relays, options.into()).await?;
+        Ok(result.into())
+    }
+
+    /// Restore the mint list from Nostr relays using NUT-27.
+    pub async fn restore_mints(
+        &self,
+        relays: Vec<String>,
+        add_mints: bool,
+        options: RestoreOptions,
+    ) -> Result<RestoreResult, FfiError> {
+        let result = self
+            .inner
+            .restore_mints(relays, add_mints, options.into())
+            .await?;
+        Ok(result.into())
+    }
+
+    /// Fetch the NUT-27 mint backup without adding mints to the repository.
+    pub async fn fetch_mint_backup(
+        &self,
+        relays: Vec<String>,
+        options: RestoreOptions,
+    ) -> Result<MintBackup, FfiError> {
+        let backup = self.inner.fetch_backup(relays, options.into()).await?;
+        Ok(backup.into())
+    }
+
     /// Get wallet balances for all mints
     pub async fn get_balances(&self) -> Result<HashMap<WalletKey, Amount>, FfiError> {
         let balances = self.inner.get_balances().await?;
