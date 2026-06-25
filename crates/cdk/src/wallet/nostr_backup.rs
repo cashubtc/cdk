@@ -3,6 +3,7 @@
 //! This module provides functionality to backup and restore the mint list
 //! to/from Nostr relays using NUT-27 specification.
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use nostr_sdk::prelude::*;
@@ -126,7 +127,12 @@ impl WalletRepository {
         let keys = self.backup_keys()?;
 
         let wallets = self.get_wallets().await;
-        let mint_urls: Vec<MintUrl> = wallets.iter().map(|w| w.mint_url.clone()).collect();
+        let mint_urls: Vec<MintUrl> = wallets
+            .iter()
+            .map(|w| w.mint_url.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
 
         let backup = MintBackup::new(mint_urls.clone());
 
