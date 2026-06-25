@@ -554,7 +554,12 @@ pub async fn start_regtest_end(
 
             lnd_client.wait_channels_active().await?;
 
-            node.stop()?;
+            let stop_result = node.stop();
+            // This setup-only node is intentionally restarted by the mint from
+            // the same storage and seed. `ldk-node` 0.7 can panic when dropping
+            // a stopped node, so avoid running its Drop implementation here.
+            std::mem::forget(node);
+            stop_result?;
         } else {
             cln_client.wait_channels_active().await?;
 

@@ -21,7 +21,7 @@ use cln_rpc::primitives::{Amount, AmountOrAll, AmountOrAny, PublicKey};
 use cln_rpc::{ClnRpc, Request};
 use lightning::offers::offer::Offer;
 use tokio::sync::Mutex;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 use super::types::{Balance, ConnectInfo};
@@ -141,28 +141,68 @@ impl ClnClient {
         amount_msat: Option<u64>,
         offer: String,
     ) -> Result<String> {
-        let mut cln_client = self.client.lock().await;
+        let max_attempts = 5;
+        let mut attempts_remaining = max_attempts;
+        let mut delay = Duration::from_millis(500);
 
-        let cln_response = cln_client
-            .call_typed(&FetchinvoiceRequest {
-                amount_msat: amount_msat.map(Amount::from_msat),
-                payer_note: None,
-                quantity: None,
-                recurrence_counter: None,
-                recurrence_label: None,
-                recurrence_start: None,
-                timeout: None,
-                offer,
-                bip353: None,
-                payer_metadata: None,
+        let invoice = loop {
+            let attempt = max_attempts - attempts_remaining + 1;
+            let cln_response = timeout(Duration::from_secs(15), async {
+                let mut cln_client = self.client.lock().await;
+                cln_client
+                    .call_typed(&FetchinvoiceRequest {
+                        amount_msat: amount_msat.map(Amount::from_msat),
+                        payer_note: None,
+                        quantity: None,
+                        recurrence_counter: None,
+                        recurrence_label: None,
+                        recurrence_start: None,
+                        timeout: None,
+                        offer: offer.clone(),
+                        bip353: None,
+                        payer_metadata: None,
+                    })
+                    .await
             })
-            .await?;
+            .await;
 
-        let invoice = cln_response.invoice;
+            match cln_response {
+                Ok(Ok(response)) => break response.invoice,
+                Ok(Err(err)) => {
+                    let err = anyhow!("CLN fetchinvoice for BOLT12 offer failed: {err}");
+                    tracing::warn!(
+                        "CLN fetchinvoice for BOLT12 offer failed on attempt {attempt}/{max_attempts}: {err}"
+                    );
 
-        drop(cln_client);
+                    attempts_remaining -= 1;
+                    if attempts_remaining == 0 {
+                        return Err(err);
+                    }
 
-        self.pay_invoice(invoice).await
+                    sleep(delay).await;
+                    delay = std::cmp::min(delay * 2, Duration::from_secs(5));
+                }
+                Err(_) => {
+                    let err =
+                        anyhow!("CLN fetchinvoice for BOLT12 offer timed out after 15 seconds");
+                    tracing::warn!(
+                        "CLN fetchinvoice for BOLT12 offer failed on attempt {attempt}/{max_attempts}: {err}"
+                    );
+
+                    attempts_remaining -= 1;
+                    if attempts_remaining == 0 {
+                        return Err(err);
+                    }
+
+                    sleep(delay).await;
+                    delay = std::cmp::min(delay * 2, Duration::from_secs(5));
+                }
+            }
+        };
+
+        self.pay_invoice(invoice)
+            .await
+            .map_err(|err| anyhow!("CLN failed to pay fetched BOLT12 invoice: {err}"))
     }
 
     pub async fn get_bolt12_offer(
@@ -416,7 +456,7 @@ impl LightningClient for ClnClient {
                 label: None,
                 riskfactor: None,
                 maxfeepercent: None,
-                retry_for: None,
+                retry_for: Some(10),
                 maxdelay: None,
                 exemptfee: None,
                 localinvreqid: None,
@@ -608,7 +648,7 @@ impl LightningClient for ClnClient {
                 label: None,
                 riskfactor: None,
                 maxfeepercent: None,
-                retry_for: None,
+                retry_for: Some(10),
                 maxdelay: None,
                 exemptfee: None,
                 localinvreqid: None,
