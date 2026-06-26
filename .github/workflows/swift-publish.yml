@@ -73,8 +73,17 @@ jobs:
       - name: Resolve variables
         run: |
           CDK_VER="${{ inputs.cdk_version }}"
-          echo "CDK_VER=${CDK_VER:-${TAG#v}}" >> "$GITHUB_ENV"
-          echo "RELEASE_VER=${TAG#v}" >> "$GITHUB_ENV"
+          RELEASE_VER="${TAG#v}"
+          BUNDLE_SHORT_VERSION="${RELEASE_VER%%[-+]*}"
+
+          if [[ ! "${BUNDLE_SHORT_VERSION}" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+            echo "::error::Could not derive App Store-safe CFBundleShortVersionString from ${TAG}; got ${BUNDLE_SHORT_VERSION}"
+            exit 1
+          fi
+
+          echo "CDK_VER=${CDK_VER:-${RELEASE_VER}}" >> "$GITHUB_ENV"
+          echo "RELEASE_VER=${RELEASE_VER}" >> "$GITHUB_ENV"
+          echo "BUNDLE_SHORT_VERSION=${BUNDLE_SHORT_VERSION}" >> "$GITHUB_ENV"
 
       - name: Checkout monorepo
         uses: actions/checkout@v5
@@ -106,7 +115,7 @@ jobs:
 
       - name: Update versions and resolve workspace references
         run: |
-          echo "Setting CDK version to ${CDK_VER}, release version to ${RELEASE_VER}"
+          echo "Setting CDK version to ${CDK_VER}, release version to ${RELEASE_VER}, framework bundle version to ${BUNDLE_SHORT_VERSION}"
 
           # Helper: extract a value from [workspace.package] in root Cargo.toml
           ws_pkg() {
@@ -161,6 +170,13 @@ jobs:
 
           # Add release profile
           printf '\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-swift/rust/Cargo.toml
+
+          # Stamp framework Info.plist bundle versions for App Store validation.
+          sed -i \
+            -e "s|__CDK_SWIFT_FRAMEWORK_VERSION__|${BUNDLE_SHORT_VERSION}|g" \
+            cdk-swift/resources/Info-iOS.plist \
+            cdk-swift/resources/Info-iOSSimulator.plist \
+            cdk-swift/resources/Info-macOS.plist
 
           echo "--- rust/Cargo.toml ---"
           cat cdk-swift/rust/Cargo.toml
