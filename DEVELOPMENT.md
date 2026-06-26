@@ -163,17 +163,22 @@ nix build .#cdk-mintd
 nix build .#checks.x86_64-linux.cashu
 ```
 
-### Static Binaries
+### Release Binaries
 
-CDK provides fully statically-linked Linux binaries built with [musl](https://musl.libc.org/). These binaries have zero runtime dependencies and run on any x86_64 Linux system.
+CDK provides fully statically-linked Linux binaries built with [musl](https://musl.libc.org/). These binaries have zero runtime dependencies and run on Linux x86_64 and aarch64 systems.
 
-**Available static build targets:**
+The release flow also builds macOS aarch64 binaries through the Darwin flake targets. These are optimized with the same `release-static` Cargo profile, but are not fully static because macOS system libraries are dynamically linked.
+
+**Available release build targets:**
 
 | Target | Binary | Features |
 | :--- | :--- | :--- |
-| `cdk-mintd-static` | `cdk-mintd-{version}-x86_64` | `postgres`, `prometheus`, `redis` |
-| `cdk-mintd-ldk-static` | `cdk-mintd-ldk-{version}-x86_64` | `ldk-node`, `postgres`, `prometheus`, `redis` |
-| `cdk-cli-static` | `cdk-cli-{version}-x86_64` | default |
+| `cdk-mintd-static` | `cdk-mintd-{version}-{arch}` | `postgres`, `prometheus`, `redis` |
+| `cdk-mintd-ldk-static` | `cdk-mintd-ldk-{version}-{arch}` | `ldk-node`, `postgres`, `prometheus`, `redis` |
+| `cdk-cli-static` | `cdk-cli-{version}-{arch}` | default |
+| `cdk-mintd-darwin` | `cdk-mintd-{version}-aarch64-apple-darwin` | `postgres`, `prometheus`, `redis` |
+| `cdk-mintd-ldk-darwin` | `cdk-mintd-ldk-{version}-aarch64-apple-darwin` | `ldk-node`, `postgres`, `prometheus`, `redis` |
+| `cdk-cli-darwin` | `cdk-cli-{version}-aarch64-apple-darwin` | default |
 
 **Building locally (requires Nix):**
 
@@ -195,7 +200,7 @@ Built binaries are placed in `./static-bin/`.
 
 When a GitHub release is published, the [`static-build-publish.yml`](.github/workflows/static-build-publish.yml) workflow automatically:
 
-1. Builds all three static binaries via Nix
+1. Builds the Linux static binaries and macOS aarch64 binaries via Nix
 2. Generates a `SHA256SUMS` file with checksums for each binary
 3. Uploads the binaries and checksums to the GitHub release
 
