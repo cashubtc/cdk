@@ -11,18 +11,40 @@ other CDK crates to avoid direct dependencies on a specific backend.
 - `reqwest` - enables the reqwest backend and transport implementation
 - `tor` - enables the Tor transport implementation
 
-`bitreq` and `reqwest` are mutually exclusive.
+Native builds must enable at least one HTTP backend: `bitreq` or `reqwest`.
+`bitreq` is the default. `cdk-common/http` enables it, and `cdk`'s `wallet` and
+`mint` features depend on that, so any CDK build that uses HTTP gets a working
+client out of the box — including `cdk --no-default-features --features wallet`.
+Depending on this crate directly with `--no-default-features` and selecting no
+backend is unsupported and fails at compile time with a clear error.
 
-Use reqwest backend:
-
-```bash
-cargo check -p cdk-http-client --no-default-features --features reqwest
-```
+The backend features are additive. When both `bitreq` and `reqwest` are enabled,
+`reqwest` takes precedence and is the single backend compiled in (it is a strict
+superset, adding SOCKS proxy and invalid-certificate support). This means Cargo
+feature unification across a dependency graph never produces a build conflict: a
+crate that enables `reqwest` and another that enables `bitreq` resolve to
+`reqwest`.
 
 Use default bitreq backend:
 
 ```bash
 cargo check -p cdk-http-client
+```
+
+Use reqwest backend (standalone):
+
+```bash
+cargo check -p cdk-http-client --no-default-features --features reqwest
+```
+
+To use the `reqwest` backend with CDK, add a direct `cdk-http-client` dependency
+with the `reqwest` feature. It takes precedence wherever it is enabled, so there
+is no need to disable default features:
+
+```toml
+[dependencies]
+cdk = { version = "0.17.0", features = ["wallet"] }
+cdk-http-client = { version = "0.17.0", features = ["reqwest"] }
 ```
 
 ## Usage

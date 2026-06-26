@@ -129,6 +129,62 @@ async fn test_fetch_no_redirects_returns_redirect_status() {
     target.assert_async().await;
 }
 
+#[cfg(feature = "reqwest")]
+#[tokio::test]
+async fn test_reqwest_proxy_matcher_applies_after_redirect() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy listener");
+    let proxy_addr = listener.local_addr().expect("proxy listener addr");
+    let proxy_task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept proxy request");
+        let mut request = vec![0u8; 4096];
+        let bytes_read = socket.read(&mut request).await.expect("read proxy request");
+        let request = String::from_utf8_lossy(&request[..bytes_read]).to_string();
+        let response_body = r#"{"success": true, "data": "proxied"}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        socket
+            .write_all(response.as_bytes())
+            .await
+            .expect("write proxy response");
+        request
+    });
+
+    let mut server = mockito::Server::new_async().await;
+    let redirect = server
+        .mock("GET", "/api/redirect")
+        .with_status(302)
+        .with_header("location", "http://matched.example/proxied")
+        .create_async()
+        .await;
+
+    let proxy_url = url::Url::parse(&format!("http://{}", proxy_addr)).expect("valid proxy URL");
+    let client = HttpClientBuilder::default()
+        .proxy_with_matcher(proxy_url, r"^matched\.example$")
+        .expect("valid proxy matcher")
+        .build()
+        .expect("reqwest client with proxy should build");
+
+    let url = format!("{}/api/redirect", server.url());
+    let response: TestResponse = client.fetch(&url).await.expect("redirect should use proxy");
+
+    assert_eq!(response.data, "proxied");
+    redirect.assert_async().await;
+
+    let proxied_request = proxy_task.await.expect("proxy task should finish");
+    assert!(
+        proxied_request.starts_with("GET http://matched.example/proxied "),
+        "redirected request should be sent through HTTP proxy, got: {proxied_request}"
+    );
+}
+
 // === HttpClient::post_json tests ===
 
 #[tokio::test]

@@ -8,13 +8,19 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
 
-use crate::{HttpClient, HttpClientBuilder, HttpError};
+use crate::HttpError;
+#[cfg(any(target_arch = "wasm32", feature = "bitreq", feature = "reqwest"))]
+use crate::{HttpClient, HttpClientBuilder};
 
 /// Expected HTTP transport
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait Transport: Default + Send + Sync + Debug + Clone {
     /// Make the transport use a proxy.
+    ///
+    /// SOCKS proxy schemes such as `socks5h` are available only when this crate
+    /// is built with the `reqwest` feature. The default `bitreq` backend accepts
+    /// HTTP proxy URLs only.
     fn with_proxy(
         &mut self,
         proxy: Url,
@@ -172,7 +178,11 @@ impl Transport for Async {
     }
 }
 
-#[cfg(all(feature = "bitreq", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "bitreq",
+    not(feature = "reqwest"),
+    not(target_arch = "wasm32")
+))]
 /// Bitreq-backed transport implementation.
 pub type BitreqTransport = Async;
 

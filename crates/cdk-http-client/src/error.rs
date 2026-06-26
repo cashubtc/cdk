@@ -33,7 +33,11 @@ pub enum HttpError {
     Other(String),
 }
 
-#[cfg(all(feature = "bitreq", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "bitreq",
+    not(feature = "reqwest"),
+    not(target_arch = "wasm32")
+))]
 impl From<bitreq::Error> for HttpError {
     fn from(err: bitreq::Error) -> Self {
         use std::io;

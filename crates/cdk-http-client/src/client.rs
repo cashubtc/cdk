@@ -76,7 +76,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "bitreq")]
+    #[cfg(all(feature = "bitreq", not(feature = "reqwest")))]
     mod bitreq_tests {
         use super::*;
         use crate::error::HttpError;
@@ -101,6 +101,39 @@ mod tests {
                 .build();
             assert!(result.is_ok());
         }
+
+        #[test]
+        fn test_builder_http_proxy_ok() {
+            let proxy_url = url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
+            let result = HttpClientBuilder::default().proxy(proxy_url).build();
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_builder_socks_proxy_returns_error() {
+            let proxy_url = url::Url::parse("socks5h://localhost:9050").expect("Valid proxy URL");
+            let result = HttpClientBuilder::default().proxy(proxy_url).build();
+            assert!(result.is_err());
+            if let Err(HttpError::Proxy(msg)) = result {
+                assert!(msg.contains("Unsupported proxy URL scheme"));
+                assert!(msg.contains("socks5h"));
+            } else {
+                panic!("Expected HttpError::Proxy");
+            }
+        }
+
+        #[test]
+        fn test_builder_https_proxy_returns_error() {
+            let proxy_url = url::Url::parse("https://localhost:8080").expect("Valid proxy URL");
+            let result = HttpClientBuilder::default().proxy(proxy_url).build();
+            assert!(result.is_err());
+            if let Err(HttpError::Proxy(msg)) = result {
+                assert!(msg.contains("Unsupported proxy URL scheme"));
+                assert!(msg.contains("https"));
+            } else {
+                panic!("Expected HttpError::Proxy");
+            }
+        }
     }
 
     #[cfg(feature = "reqwest")]
@@ -118,6 +151,13 @@ mod tests {
         #[test]
         fn test_builder_no_redirects() {
             let result = HttpClientBuilder::default().no_redirects().build();
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_builder_socks_proxy_ok() {
+            let proxy_url = url::Url::parse("socks5h://localhost:9050").expect("Valid proxy URL");
+            let result = HttpClientBuilder::default().proxy(proxy_url).build();
             assert!(result.is_ok());
         }
     }

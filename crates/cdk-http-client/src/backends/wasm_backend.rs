@@ -17,12 +17,16 @@ extern "C" {
 
 /// HTTP client wrapper
 #[derive(Clone, Debug)]
-pub struct HttpClient;
+pub struct HttpClient {
+    no_redirects: bool,
+}
 
 impl HttpClient {
     /// Create a new HTTP client with default settings
     pub fn new() -> Self {
-        Self
+        Self {
+            no_redirects: false,
+        }
     }
 
     /// Create a new HTTP client builder
@@ -32,7 +36,7 @@ impl HttpClient {
 
     /// GET request, returns JSON deserialized to R
     pub async fn fetch<R: DeserializeOwned>(&self, url: &str) -> Response<R> {
-        WasmRequestBuilder::new("GET", url).send_json().await
+        self.get(url).send_json().await
     }
 
     /// POST with JSON body, returns JSON deserialized to R
@@ -41,10 +45,7 @@ impl HttpClient {
         url: &str,
         body: &B,
     ) -> Response<R> {
-        WasmRequestBuilder::new("POST", url)
-            .json(body)
-            .send_json()
-            .await
+        self.post(url).json(body).send_json().await
     }
 
     /// POST with form data, returns JSON deserialized to R
@@ -53,10 +54,7 @@ impl HttpClient {
         url: &str,
         form: &F,
     ) -> Response<R> {
-        WasmRequestBuilder::new("POST", url)
-            .form(form)
-            .send_json()
-            .await
+        self.post(url).form(form).send_json().await
     }
 
     /// PATCH with JSON body, returns JSON deserialized to R
@@ -65,30 +63,27 @@ impl HttpClient {
         url: &str,
         body: &B,
     ) -> Response<R> {
-        WasmRequestBuilder::new("PATCH", url)
-            .json(body)
-            .send_json()
-            .await
+        self.patch(url).json(body).send_json().await
     }
 
     /// GET request returning raw response body
     pub async fn get_raw(&self, url: &str) -> Response<RawResponse> {
-        WasmRequestBuilder::new("GET", url).send().await
+        self.get(url).send().await
     }
 
     /// POST request builder for complex cases
     pub fn post(&self, url: &str) -> WasmRequestBuilder {
-        WasmRequestBuilder::new("POST", url)
+        WasmRequestBuilder::new("POST", url, self.no_redirects)
     }
 
     /// GET request builder for complex cases
     pub fn get(&self, url: &str) -> WasmRequestBuilder {
-        WasmRequestBuilder::new("GET", url)
+        WasmRequestBuilder::new("GET", url, self.no_redirects)
     }
 
     /// PATCH request builder for complex cases
     pub fn patch(&self, url: &str) -> WasmRequestBuilder {
-        WasmRequestBuilder::new("PATCH", url)
+        WasmRequestBuilder::new("PATCH", url, self.no_redirects)
     }
 }
 
@@ -100,6 +95,7 @@ pub struct WasmRequestBuilder {
     headers: Vec<(String, String)>,
     body: Option<WasmBody>,
     error: Option<HttpError>,
+    no_redirects: bool,
 }
 
 #[derive(Debug)]
@@ -110,13 +106,14 @@ enum WasmBody {
 
 impl WasmRequestBuilder {
     /// Create a new WasmRequestBuilder
-    pub(crate) fn new(method: &str, url: &str) -> Self {
+    pub(crate) fn new(method: &str, url: &str, no_redirects: bool) -> Self {
         Self {
             method: method.to_string(),
             url: url.to_string(),
             headers: Vec::new(),
             body: None,
             error: None,
+            no_redirects,
         }
     }
 
@@ -126,6 +123,9 @@ impl WasmRequestBuilder {
         }
         let opts = web_sys::RequestInit::new();
         opts.set_method(&self.method);
+        if self.no_redirects {
+            opts.set_redirect(web_sys::RequestRedirect::Error);
+        }
 
         if let Some(body) = &self.body {
             match body {
@@ -226,31 +226,116 @@ impl WasmRequestBuilder {
 
 /// HTTP client builder for configuring proxy and TLS settings
 #[derive(Debug, Default)]
-pub struct HttpClientBuilder;
+pub struct HttpClientBuilder {
+    no_redirects: bool,
+    error: Option<HttpError>,
+}
 
 impl HttpClientBuilder {
     /// Accept invalid TLS certificates (not supported on WASM)
-    pub fn danger_accept_invalid_certs(self, _accept: bool) -> Self {
-        panic!("danger_accept_invalid_certs configuration is not supported on WASM")
+    pub fn danger_accept_invalid_certs(mut self, accept: bool) -> Self {
+        if accept {
+            self.set_error(HttpError::Build(
+                "danger_accept_invalid_certs configuration is not supported on WASM".to_string(),
+            ));
+        }
+        self
     }
 
-    /// Disable automatic HTTP redirect following (not supported on WASM)
-    pub fn no_redirects(self) -> Self {
+    /// Disable automatic HTTP redirect following.
+    pub fn no_redirects(mut self) -> Self {
+        self.no_redirects = true;
         self
     }
 
     /// Set a proxy URL (not supported on WASM)
-    pub fn proxy(self, _url: url::Url) -> Self {
-        panic!("proxy configuration is not supported on WASM")
+    pub fn proxy(mut self, _url: url::Url) -> Self {
+        self.set_proxy_error();
+        self
     }
 
     /// Set a proxy URL with a host pattern matcher (not supported on WASM)
-    pub fn proxy_with_matcher(self, _url: url::Url, _pattern: &str) -> Response<Self> {
-        panic!("proxy configuration is not supported on WASM")
+    pub fn proxy_with_matcher(mut self, _url: url::Url, pattern: &str) -> Response<Self> {
+        regex::Regex::new(pattern)
+            .map_err(|e| HttpError::Proxy(format!("Invalid proxy pattern: {}", e)))?;
+        self.set_proxy_error();
+        Ok(self)
     }
 
     /// Build the HTTP client
     pub fn build(self) -> Response<HttpClient> {
-        Ok(HttpClient)
+        if let Some(err) = self.error {
+            return Err(err);
+        }
+
+        Ok(HttpClient {
+            no_redirects: self.no_redirects,
+        })
+    }
+
+    fn set_proxy_error(&mut self) {
+        self.set_error(HttpError::Proxy(
+            "proxy configuration is not supported on WASM".to_string(),
+        ));
+    }
+
+    fn set_error(&mut self, error: HttpError) {
+        if self.error.is_none() {
+            self.error = Some(error);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accept_invalid_certs_false_is_noop() {
+        let result = HttpClientBuilder::default()
+            .danger_accept_invalid_certs(false)
+            .build();
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn accept_invalid_certs_true_returns_build_error() {
+        let result = HttpClientBuilder::default()
+            .danger_accept_invalid_certs(true)
+            .build();
+
+        match result {
+            Err(HttpError::Build(message)) => {
+                assert!(message.contains("danger_accept_invalid_certs"));
+            }
+            _ => panic!("Expected HttpError::Build"),
+        }
+    }
+
+    #[test]
+    fn proxy_returns_proxy_error_from_build() {
+        let proxy_url = url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
+        let result = HttpClientBuilder::default().proxy(proxy_url).build();
+
+        match result {
+            Err(HttpError::Proxy(message)) => {
+                assert!(message.contains("proxy configuration"));
+            }
+            _ => panic!("Expected HttpError::Proxy"),
+        }
+    }
+
+    #[test]
+    fn proxy_with_matcher_preserves_invalid_pattern_error() {
+        let proxy_url = url::Url::parse("http://localhost:8080").expect("Valid proxy URL");
+        let result = HttpClientBuilder::default().proxy_with_matcher(proxy_url, "[invalid");
+
+        match result {
+            Err(HttpError::Proxy(message)) => {
+                assert!(message.contains("Invalid proxy pattern"));
+            }
+            _ => panic!("Expected HttpError::Proxy"),
+        }
     }
 }

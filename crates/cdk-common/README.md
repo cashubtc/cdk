@@ -26,6 +26,15 @@ This crate provides common functionality used across CDK crates including:
 - Utility functions
 - Error types
 
+The `http` feature enables CDK common's HTTP-facing helpers and re-exports,
+including `cdk-http-client` types, the WebSocket client re-export, HTTP error
+conversion, and OIDC auth helpers.
+
+`cdk-common/http` selects the default `bitreq` backend so consumers get a working
+HTTP client automatically. Applications that need the `reqwest` backend can add a
+direct `cdk-http-client` dependency with the `reqwest` feature; backend features
+are additive, and `reqwest` takes precedence when both are enabled.
+
 ## License
 
 This project is licensed under the [MIT License](../../LICENSE).

@@ -727,14 +727,25 @@
             "-p cashu --no-default-features"
             "-p cashu --no-default-features --features wallet"
             "-p cashu --no-default-features --features mint"
+            "-p cdk-http-client"
+            "-p cdk-http-client --no-default-features --features reqwest"
             "-p cdk-common"
             "-p cdk-common --no-default-features"
             "-p cdk-common --no-default-features --features wallet"
             "-p cdk-common --no-default-features --features mint"
-            "-p cdk"
+            "-p cdk-common -p cdk-http-client --no-default-features --features cdk-common/wallet,cdk-common/http,cdk-http-client/bitreq"
+            "-p cdk-common -p cdk-http-client --no-default-features --features cdk-common/wallet,cdk-common/http,cdk-http-client/reqwest"
+            "-p cdk-common -p cdk-http-client --no-default-features --features cdk-common/mint,cdk-common/http,cdk-http-client/bitreq"
+            "-p cdk-common -p cdk-http-client --no-default-features --features cdk-common/mint,cdk-common/http,cdk-http-client/reqwest"
+            "-p cdk -p cdk-http-client"
             "-p cdk --no-default-features"
-            "-p cdk --no-default-features --features wallet"
-            "-p cdk --no-default-features --features mint"
+            "-p cdk --no-default-features --features bip353"
+            "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk-http-client/bitreq"
+            "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk-http-client/reqwest"
+            "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk/tor,cdk-http-client/bitreq"
+            "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk/npubcash,cdk-http-client/reqwest"
+            "-p cdk -p cdk-http-client --no-default-features --features cdk/mint,cdk-http-client/bitreq"
+            "-p cdk -p cdk-http-client --no-default-features --features cdk/mint,cdk-http-client/reqwest"
           ];
 
           "storage-and-cli" = [
@@ -758,10 +769,10 @@
             "-p cdk-cln"
             "-p cdk-lnd"
             "-p cdk-lnbits"
-            "-p cdk-fake-wallet"
+            "-p cdk-fake-wallet -p cdk-http-client --no-default-features --features cdk-http-client/bitreq"
             "-p cdk-payment-processor"
             "-p cdk-ldk-node"
-            "-p cdk-npubcash"
+            "-p cdk-npubcash -p cdk-http-client --no-default-features --features cdk-http-client/bitreq"
           ];
 
           "mintd-main" = [
@@ -808,7 +819,7 @@
           "cdk-cli" = "-p cdk-cli";
 
           # Minimal builds to ensure no-default-features works
-          "cdk-wallet-only" = "-p cdk --no-default-features --features wallet";
+          "cdk-wallet-only" = "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk-http-client/bitreq";
         };
 
         # ========================================

@@ -36,6 +36,7 @@ axum.workspace = true
 cdk = { workspace = true, features = [
     "mint",
 ] }
+cdk-http-client = { workspace = true, features = ["bitreq"] }
 cdk-sqlite = { workspace = true, features = [
     "mint"
 ], optional = true  }

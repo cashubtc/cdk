@@ -15,6 +15,15 @@ pub(crate) struct ProxyConfig {
     matcher: Option<regex::Regex>,
 }
 
+fn validate_proxy_url(url: &url::Url) -> Response<()> {
+    match url.scheme() {
+        "http" => Ok(()),
+        scheme => Err(HttpError::Proxy(format!(
+            "Unsupported proxy URL scheme for bitreq backend: {scheme}"
+        ))),
+    }
+}
+
 pub(crate) fn apply_proxy_if_needed(
     request: bitreq::Request,
     url: &str,
@@ -350,13 +359,19 @@ impl HttpClientBuilder {
         self
     }
 
-    /// Set a proxy URL
+    /// Set an HTTP proxy URL.
+    ///
+    /// The `bitreq` backend supports HTTP proxy URLs only. SOCKS proxy schemes
+    /// such as `socks5h` require building this crate with the `reqwest` feature.
     pub fn proxy(mut self, url: url::Url) -> Self {
         self.proxy = Some(ProxyConfig { url, matcher: None });
         self
     }
 
-    /// Set a proxy URL with a host pattern matcher
+    /// Set an HTTP proxy URL with a host pattern matcher.
+    ///
+    /// The `bitreq` backend supports HTTP proxy URLs only. SOCKS proxy schemes
+    /// such as `socks5h` require building this crate with the `reqwest` feature.
     pub fn proxy_with_matcher(mut self, url: url::Url, pattern: &str) -> Response<Self> {
         let matcher = regex::Regex::new(pattern)
             .map_err(|e| HttpError::Proxy(format!("Invalid proxy pattern: {}", e)))?;
@@ -373,6 +388,10 @@ impl HttpClientBuilder {
             return Err(HttpError::Build(
                 "danger_accept_invalid_certs is not supported".to_string(),
             ));
+        }
+
+        if let Some(proxy) = &self.proxy {
+            validate_proxy_url(&proxy.url)?;
         }
 
         Ok(HttpClient::from_parts(

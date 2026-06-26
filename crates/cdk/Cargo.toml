@@ -12,23 +12,28 @@ license.workspace = true
 
 [features]
 default = ["mint", "wallet", "nostr", "bip353"]
-wallet = ["dep:futures", "cdk-common/wallet", "cdk-common/http", "dep:rustls"]
+wallet = [
+    "dep:cdk-http-client",
+    "dep:futures",
+    "cdk-common/wallet",
+    "cdk-common/http",
+    "dep:rustls",
+]
 nostr = ["wallet", "dep:nostr-sdk", "cdk-common/nostr"]
 npubcash = ["wallet", "nostr", "dep:cdk-npubcash"]
 mint = ["dep:futures", "cdk-common/mint", "cdk-common/http", "cdk-signatory"]
-bip353 = ["cdk-common/bip353", "cdk-http-client/bip353"]
+bip353 = ["wallet", "cdk-common/bip353", "cdk-http-client?/bip353"]
 bench = []
 http_subscription = []
 tor = [
     "wallet",
-    "http-client-bitreq",
     "cdk-http-client/tor",
 ]
 prometheus = ["dep:cdk-prometheus"]
 
 [dependencies]
 arc-swap = "1.7.1"
-cdk-common.workspace = true
+cdk-common = { workspace = true, default-features = false }
 cbor-diag.workspace = true
 async-trait.workspace = true
 anyhow.workspace = true
@@ -48,7 +53,7 @@ url.workspace = true
 uuid.workspace = true
 jsonwebtoken.workspace = true
 nostr-sdk = { workspace = true, optional = true }
-cdk-npubcash = { workspace = true, optional = true }
+cdk-npubcash = { workspace = true, default-features = false, optional = true }
 cdk-prometheus = {workspace = true, optional = true}
 bitcoin-payment-instructions = { workspace = true }
 web-time.workspace = true
@@ -56,7 +61,7 @@ zeroize = "1"
 tokio-util.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-cdk-http-client.workspace = true
+cdk-http-client = { workspace = true, default-features = false, optional = true }
 tokio = { workspace = true, features = [
     "rt-multi-thread",
     "time",
@@ -69,7 +74,7 @@ cdk-signatory = { workspace = true, features = ["grpc"], optional = true }
 rustls = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-cdk-http-client = { workspace = true }
+cdk-http-client = { workspace = true, default-features = false, optional = true }
 tokio = { workspace = true, default-features = false, features = ["rt", "macros", "sync", "time"] }
 cdk-signatory = { workspace = true, default-features = false }
 getrandom = { version = "0.2", features = ["js"] }

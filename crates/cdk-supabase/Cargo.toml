@@ -11,7 +11,7 @@ rust-version.workspace = true
 
 [features]
 default = ["wallet"]
-wallet = ["cdk-common/wallet"]
+wallet = ["cdk-common/wallet", "cdk-common/http"]
 integration-tests = []
 
 [dependencies]

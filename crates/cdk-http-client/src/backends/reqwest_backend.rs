@@ -17,9 +17,7 @@ pub(crate) struct ProxyConfig {
 #[derive(Clone)]
 /// HTTP client wrapper backed by reqwest.
 pub struct HttpClient {
-    proxied: Arc<reqwest::Client>,
-    direct: Arc<reqwest::Client>,
-    proxy_config: Option<ProxyConfig>,
+    inner: Arc<reqwest::Client>,
 }
 
 impl std::fmt::Debug for HttpClient {
@@ -30,6 +28,10 @@ impl std::fmt::Debug for HttpClient {
 
 impl HttpClient {
     /// Create a new HTTP client with default settings.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the default reqwest client cannot be built.
     pub fn new() -> Self {
         Self::builder()
             .build()
@@ -41,38 +43,14 @@ impl HttpClient {
         HttpClientBuilder::default()
     }
 
-    fn from_parts(
-        proxied: reqwest::Client,
-        direct: reqwest::Client,
-        proxy: Option<ProxyConfig>,
-    ) -> Self {
+    fn from_parts(inner: reqwest::Client) -> Self {
         Self {
-            proxied: Arc::new(proxied),
-            direct: Arc::new(direct),
-            proxy_config: proxy,
-        }
-    }
-
-    fn use_proxy_for_url(&self, url: &str) -> bool {
-        let Some(proxy) = &self.proxy_config else {
-            return false;
-        };
-
-        match &proxy.matcher {
-            Some(matcher) => url::Url::parse(url)
-                .ok()
-                .and_then(|u| u.host_str().map(|h| matcher.is_match(h)))
-                .unwrap_or(false),
-            None => true,
+            inner: Arc::new(inner),
         }
     }
 
     fn request(&self, method: reqwest::Method, url: &str) -> reqwest::RequestBuilder {
-        if self.use_proxy_for_url(url) {
-            self.proxied.request(method, url)
-        } else {
-            self.direct.request(method, url)
-        }
+        self.inner.request(method, url)
     }
 
     async fn send_json_request<R: DeserializeOwned>(
@@ -286,12 +264,18 @@ impl HttpClientBuilder {
     }
 
     /// Set a proxy URL.
+    ///
+    /// The `reqwest` backend supports HTTP and SOCKS proxy schemes, including
+    /// `socks5h`.
     pub fn proxy(mut self, url: url::Url) -> Self {
         self.proxy = Some(ProxyConfig { url, matcher: None });
         self
     }
 
     /// Set a proxy URL with a host pattern matcher.
+    ///
+    /// The `reqwest` backend supports HTTP and SOCKS proxy schemes, including
+    /// `socks5h`.
     pub fn proxy_with_matcher(mut self, url: url::Url, pattern: &str) -> Response<Self> {
         let matcher = regex::Regex::new(pattern)
             .map_err(|e| HttpError::Proxy(format!("Invalid proxy pattern: {}", e)))?;
@@ -304,32 +288,32 @@ impl HttpClientBuilder {
 
     /// Build the HTTP client.
     pub fn build(self) -> Response<HttpClient> {
-        let mut direct_builder =
+        let mut builder =
             reqwest::Client::builder().danger_accept_invalid_certs(self.accept_invalid_certs);
         if self.no_redirects {
-            direct_builder = direct_builder.redirect(reqwest::redirect::Policy::none());
+            builder = builder.redirect(reqwest::redirect::Policy::none());
         }
-        let direct = direct_builder
+
+        if let Some(proxy) = self.proxy {
+            let proxy_url = proxy.url.to_string();
+            let proxy = match proxy.matcher {
+                Some(matcher) => reqwest::Proxy::custom(move |url| {
+                    if matcher.is_match(url.host_str().unwrap_or("")) {
+                        Some(proxy_url.clone())
+                    } else {
+                        None
+                    }
+                }),
+                None => {
+                    reqwest::Proxy::all(&proxy_url).map_err(|e| HttpError::Proxy(e.to_string()))?
+                }
+            };
+            builder = builder.proxy(proxy);
+        }
+
+        let client = builder
             .build()
             .map_err(|e| HttpError::Build(e.to_string()))?;
-
-        let proxied = if let Some(proxy) = &self.proxy {
-            let mut proxied_builder = reqwest::Client::builder()
-                .danger_accept_invalid_certs(self.accept_invalid_certs)
-                .proxy(
-                    reqwest::Proxy::all(proxy.url.as_str())
-                        .map_err(|e| HttpError::Proxy(e.to_string()))?,
-                );
-            if self.no_redirects {
-                proxied_builder = proxied_builder.redirect(reqwest::redirect::Policy::none());
-            }
-            proxied_builder
-                .build()
-                .map_err(|e| HttpError::Build(e.to_string()))?
-        } else {
-            direct.clone()
-        };
-
-        Ok(HttpClient::from_parts(proxied, direct, self.proxy))
+        Ok(HttpClient::from_parts(client))
     }
 }
