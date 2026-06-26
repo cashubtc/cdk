@@ -10,8 +10,12 @@
     <string>cdk-ffi</string>
     <key>CFBundleVersion</key>
     <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>__CDK_SWIFT_FRAMEWORK_VERSION__</string>
     <key>CFBundlePackageType</key>
     <string>FMWK</string>
+    <key>MinimumOSVersion</key>
+    <string>14.0</string>
     <key>CFBundleSupportedPlatforms</key>
     <array>
         <string>iPhoneOS</string>
