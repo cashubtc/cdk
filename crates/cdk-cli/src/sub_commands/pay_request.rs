@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use cdk::nuts::{CurrencyUnit, PaymentRequest};
+use cdk::nuts::PaymentRequest;
 use cdk::wallet::WalletRepository;
 use cdk::Amount;
 use clap::Args;
@@ -20,8 +20,6 @@ pub async fn pay_request(
 ) -> Result<()> {
     let payment_request = &sub_command_args.payment_request;
 
-    let unit = payment_request.unit.clone().unwrap_or(CurrencyUnit::Sat);
-
     let amount: Amount = match payment_request.amount {
         Some(amount) => amount,
         None => match sub_command_args.amount {
@@ -33,35 +31,8 @@ pub async fn pay_request(
         },
     };
 
-    let request_mints = &payment_request.mints;
-
-    let wallet_mints = wallet_repository.get_wallets().await;
-
-    // Wallets where unit, balance and mint match request
-    let mut matching_wallets = vec![];
-
-    for wallet in wallet_mints.iter() {
-        let balance = wallet.total_balance().await?;
-
-        if !request_mints.is_empty() && !request_mints.contains(&wallet.mint_url) {
-            continue;
-        }
-
-        if wallet.unit != unit {
-            continue;
-        }
-
-        if balance >= amount {
-            matching_wallets.push(wallet);
-        }
-    }
-
-    let matching_wallet = matching_wallets
-        .first()
-        .ok_or_else(|| anyhow!("No wallet found that can pay this request"))?;
-
-    matching_wallet
-        .pay_request(payment_request.clone(), Some(amount))
+    wallet_repository
+        .pay_request(payment_request.clone(), None, Some(amount))
         .await
         .map_err(|e| anyhow!(e.to_string()))
 }
@@ -73,6 +44,7 @@ mod tests {
     use std::time::Duration;
 
     use cdk::mint_url::MintUrl;
+    use cdk::nuts::CurrencyUnit;
     use cdk::wallet::WalletRepositoryBuilder;
     use cdk_sqlite::wallet::memory;
 
@@ -102,6 +74,9 @@ mod tests {
             unit: None,
             single_use: None,
             mints: vec![],
+            mint_preferred: None,
+            fee_reserve: None,
+            supported_methods: vec![],
             description: None,
             transports: vec![],
             nut10: None,
@@ -120,7 +95,7 @@ mod tests {
         .expect_err("usd wallet must not match unitless fixed-amount request");
 
         assert!(
-            result.to_string().contains("No wallet found"),
+            result.to_string().contains("Insufficient funds"),
             "unexpected error: {result}"
         );
     }
