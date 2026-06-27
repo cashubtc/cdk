@@ -318,6 +318,16 @@ impl NostrWaitInfo {
     pub fn pubkey(&self) -> String {
         self.inner.pubkey.to_hex()
     }
+
+    /// Get the mint URLs accepted or preferred by the original payment request
+    pub fn mints(&self) -> Vec<String> {
+        self.inner.mints.iter().map(|m| m.to_string()).collect()
+    }
+
+    /// Get whether the original request's mint list is preferred instead of strict
+    pub fn mint_preferred(&self) -> Option<bool> {
+        self.inner.mint_preferred
+    }
 }
 
 /// Result of creating a payment request
