@@ -287,8 +287,7 @@ impl CdkLdkServer {
                 Ok(None)
             }
             event_envelope::Event::PaymentForwarded(_)
-            | event_envelope::Event::PaymentClaimable(_)
-            | event_envelope::Event::ChannelStateChanged(_) => Ok(None),
+            | event_envelope::Event::PaymentClaimable(_) => Ok(None),
         }
     }
 }
@@ -957,7 +956,6 @@ mod tests {
                     hash: "01".repeat(32),
                     preimage: Some("03".repeat(32)),
                     secret: None,
-                    counterparty_skimmed_fee_msat: None,
                 })),
             }),
             amount_msat,
