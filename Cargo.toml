@@ -58,6 +58,7 @@ cdk-cln = { path = "./crates/cdk-cln", version = "=0.17.0" }
 cdk-lnbits = { path = "./crates/cdk-lnbits", version = "=0.17.0" }
 cdk-lnd = { path = "./crates/cdk-lnd", version = "=0.17.0" }
 cdk-ldk-node = { path = "./crates/cdk-ldk-node", version = "=0.17.0" }
+cdk-ldk-server = { path = "./crates/cdk-ldk-server", version = "=0.17.0" }
 cdk-fake-wallet = { path = "./crates/cdk-fake-wallet", version = "=0.17.0" }
 cdk-ffi = { path = "./crates/cdk-ffi", default-features = false, version = "=0.17.0" }
 cdk-http-client = { path = "./crates/cdk-http-client", version = "=0.17.0" }
@@ -82,6 +83,7 @@ futures = { version = "0.3.28", default-features = false, features = ["async-awa
 lightning-invoice = { version = "0.34.0", features = ["serde", "std"] }
 lightning = { version = "0.2.0", default-features = false, features = ["std"]}
 ldk-node = "0.7.0"
+ldk-server-client = { git = "https://github.com/lightningdevkit/ldk-server", rev = "8163f4fe139368613959bf4f10b19ee6a5b9b4ab" }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 thiserror = { version = "2" }

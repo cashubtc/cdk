@@ -12,7 +12,7 @@ Cashu mint daemon implementation for the Cashu Development Kit (CDK). This binar
 ## Features
 
 - **Multiple Database Backends**: SQLite, PostgreSQL, and ReDB
-- **Lightning Network Integration**: Support for CLN, LND, LNbits, LDK Node, and test backends
+- **Lightning Network Integration**: Support for CLN, LND, LNbits, LDK Node, LDK Server, and test backends
 - **Authentication**: Optional user authentication with OpenID Connect
 - **Management RPC**: gRPC interface for mint management
 - **Docker Support**: Ready-to-use Docker configurations
@@ -24,6 +24,7 @@ For detailed configuration of each Lightning backend, see:
 - **[LND](../cdk-lnd/README.md)** - Lightning Network Daemon
 - **[CLN](../cdk-cln/README.md)** - Core Lightning
 - **[LNbits](../cdk-lnbits/README.md)** - LNbits API integration
+- **[LDK Server](../cdk-ldk-server/README.md)** - External LDK Server daemon
 
 ## Installation
 

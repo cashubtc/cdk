@@ -20,6 +20,7 @@ use cdk::nuts::CurrencyUnit;
     feature = "cln",
     feature = "lnd",
     feature = "ldk-node",
+    feature = "ldk-server",
     feature = "bdk",
     feature = "fakewallet"
 ))]
@@ -526,6 +527,59 @@ impl LnBackendSetup for config::LdkNode {
         ldk_node.set_web_addr(webserver_addr);
 
         Ok(ldk_node)
+    }
+}
+
+#[cfg(feature = "ldk-server")]
+#[async_trait]
+impl LnBackendSetup for config::LdkServer {
+    async fn setup(
+        &self,
+        _settings: &Settings,
+        _unit: CurrencyUnit,
+        _runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+        _work_dir: &Path,
+        _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
+    ) -> anyhow::Result<cdk_ldk_server::CdkLdkServer> {
+        use anyhow::{bail, Context};
+
+        if self.address.is_empty() {
+            bail!(
+                "LDK Server address must be set via config or CDK_MINTD_LDK_SERVER_ADDRESS env var"
+            );
+        }
+
+        if self.api_key.is_empty() {
+            bail!(
+                "LDK Server api_key must be set via config or CDK_MINTD_LDK_SERVER_API_KEY env var"
+            );
+        }
+
+        if self.cert_path.as_os_str().is_empty() {
+            bail!("LDK Server cert_path must be set via config or CDK_MINTD_LDK_SERVER_CERT_PATH env var");
+        }
+
+        let cert_pem = std::fs::read(&self.cert_path).with_context(|| {
+            format!(
+                "Failed to read LDK Server TLS certificate at {}",
+                self.cert_path.display()
+            )
+        })?;
+
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: self.reserve_fee_min,
+            percent_fee_reserve: self.fee_percent,
+        };
+
+        let config = cdk_ldk_server::Config::new(
+            self.address.clone(),
+            self.api_key.clone(),
+            cert_pem,
+            fee_reserve,
+        )
+        .with_max_payment_scan_pages(self.max_payment_scan_pages);
+
+        Ok(cdk_ldk_server::CdkLdkServer::new(config)?)
     }
 }
 

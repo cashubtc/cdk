@@ -22,6 +22,7 @@ use cdk::nuts::nut00::KnownMethod;
     feature = "lnbits",
     feature = "lnd",
     feature = "ldk-node",
+    feature = "ldk-server",
     feature = "fakewallet",
     feature = "bdk",
     feature = "grpc-processor"
@@ -743,6 +744,34 @@ async fn configure_lightning_backend(
                     ln_entry.unit.clone(),
                     mint_melt_limits,
                     Arc::new(ldk_node),
+                )
+                .await?;
+            }
+            #[cfg(feature = "ldk-server")]
+            LnBackend::LdkServer => {
+                let ldk_server_settings = settings.ldk_server.clone().ok_or_else(|| {
+                    anyhow!(
+                        "LDK Server backend selected but [ldk_server] config section is missing"
+                    )
+                })?;
+                tracing::info!("Using LDK Server backend: {:?}", ldk_server_settings);
+
+                let ldk_server = ldk_server_settings
+                    .setup(
+                        settings,
+                        ln_entry.unit.clone(),
+                        _runtime.clone(),
+                        work_dir,
+                        None,
+                    )
+                    .await?;
+
+                mint_builder = configure_backend_for_unit(
+                    settings,
+                    mint_builder,
+                    ln_entry.unit.clone(),
+                    mint_melt_limits,
+                    Arc::new(ldk_server),
                 )
                 .await?;
             }

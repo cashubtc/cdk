@@ -139,7 +139,11 @@ pub enum LnBackend {
     #[cfg(feature = "lnd")]
     Lnd,
     #[cfg(feature = "ldk-node")]
+    #[serde(alias = "ldk-node")]
     LdkNode,
+    #[cfg(feature = "ldk-server")]
+    #[serde(alias = "ldk-server")]
+    LdkServer,
     #[cfg(feature = "grpc-processor")]
     GrpcProcessor,
 }
@@ -159,6 +163,8 @@ impl std::str::FromStr for LnBackend {
             "lnd" => Ok(LnBackend::Lnd),
             #[cfg(feature = "ldk-node")]
             "ldk-node" | "ldknode" => Ok(LnBackend::LdkNode),
+            #[cfg(feature = "ldk-server")]
+            "ldk-server" | "ldkserver" => Ok(LnBackend::LdkServer),
             #[cfg(feature = "grpc-processor")]
             "grpcprocessor" => Ok(LnBackend::GrpcProcessor),
             _ => Err(format!("Unknown Lightning backend: {s}")),
@@ -721,6 +727,59 @@ fn default_webserver_port() -> Option<u16> {
     Some(8091)
 }
 
+#[cfg(feature = "ldk-server")]
+#[derive(Clone, Serialize, Deserialize)]
+pub struct LdkServer {
+    /// LDK Server address without scheme, for example `127.0.0.1:3536`
+    pub address: String,
+    /// LDK Server HMAC API key
+    pub api_key: String,
+    /// Path to the pinned LDK Server TLS certificate PEM
+    pub cert_path: PathBuf,
+    /// Fee percentage (e.g., 0.02 for 2%)
+    #[serde(default = "default_fee_percent")]
+    pub fee_percent: f32,
+    /// Minimum reserve fee
+    #[serde(default = "default_reserve_fee_min")]
+    pub reserve_fee_min: Amount,
+    /// Maximum payment history pages to scan for incoming status lookup
+    #[serde(default = "default_ldk_server_max_payment_scan_pages")]
+    pub max_payment_scan_pages: u16,
+}
+
+#[cfg(feature = "ldk-server")]
+impl Default for LdkServer {
+    fn default() -> Self {
+        Self {
+            address: String::new(),
+            api_key: String::new(),
+            cert_path: PathBuf::new(),
+            fee_percent: default_fee_percent(),
+            reserve_fee_min: default_reserve_fee_min(),
+            max_payment_scan_pages: default_ldk_server_max_payment_scan_pages(),
+        }
+    }
+}
+
+#[cfg(feature = "ldk-server")]
+impl std::fmt::Debug for LdkServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LdkServer")
+            .field("address", &self.address)
+            .field("api_key", &"[REDACTED]")
+            .field("cert_path", &self.cert_path)
+            .field("fee_percent", &self.fee_percent)
+            .field("reserve_fee_min", &self.reserve_fee_min)
+            .field("max_payment_scan_pages", &self.max_payment_scan_pages)
+            .finish()
+    }
+}
+
+#[cfg(feature = "ldk-server")]
+fn default_ldk_server_max_payment_scan_pages() -> u16 {
+    32
+}
+
 #[cfg(feature = "fakewallet")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FakeWalletKeysetRotation {
@@ -811,12 +870,22 @@ impl Default for FakeWallet {
 
 // Helper functions to provide default values
 // Common fee defaults for all backends
-#[cfg(any(feature = "cln", feature = "lnbits", feature = "lnd"))]
+#[cfg(any(
+    feature = "cln",
+    feature = "lnbits",
+    feature = "lnd",
+    feature = "ldk-server"
+))]
 fn default_fee_percent() -> f32 {
     0.02
 }
 
-#[cfg(any(feature = "cln", feature = "lnbits", feature = "lnd"))]
+#[cfg(any(
+    feature = "cln",
+    feature = "lnbits",
+    feature = "lnd",
+    feature = "ldk-server"
+))]
 fn default_reserve_fee_min() -> Amount {
     2.into()
 }
@@ -1019,6 +1088,8 @@ pub struct Settings {
     pub lnd: Option<Lnd>,
     #[cfg(feature = "ldk-node")]
     pub ldk_node: Option<LdkNode>,
+    #[cfg(feature = "ldk-server")]
+    pub ldk_server: Option<LdkServer>,
     #[cfg(feature = "fakewallet")]
     pub fake_wallet: Option<FakeWallet>,
     pub grpc_processor: Option<GrpcProcessor>,
@@ -1883,6 +1954,9 @@ max_delay_time = 3
 
         #[cfg(feature = "ldk-node")]
         test_ldk_node_env_config();
+
+        #[cfg(feature = "ldk-server")]
+        test_ldk_server_env_config();
     }
 
     #[cfg(all(feature = "prometheus", feature = "fakewallet"))]
@@ -2304,6 +2378,71 @@ max_melt = 500000
         env::remove_var(crate::env_vars::LDK_NODE_STORAGE_DIR_PATH_ENV_VAR);
 
         // Cleanup test file
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(feature = "ldk-server")]
+    fn test_ldk_server_env_config() {
+        use std::{env, fs};
+
+        let temp_dir = env::temp_dir().join("cdk_test_env_vars_ldk_server");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        let config_content = r#"
+[ln]
+ln_backend = "ldk-server"
+min_mint = 1
+max_mint = 500000
+min_melt = 1
+max_melt = 500000
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        env::set_var(crate::env_vars::ENV_LN_BACKEND, "ldk-server");
+        env::set_var(
+            crate::env_vars::LDK_SERVER_ADDRESS_ENV_VAR,
+            "127.0.0.1:3536",
+        );
+        env::set_var(crate::env_vars::LDK_SERVER_API_KEY_ENV_VAR, "test-api-key");
+        env::set_var(
+            crate::env_vars::LDK_SERVER_CERT_PATH_ENV_VAR,
+            "/tmp/ldk-server/tls.crt",
+        );
+        env::set_var(crate::env_vars::LDK_SERVER_FEE_PERCENT_ENV_VAR, "0.03");
+        env::set_var(crate::env_vars::LDK_SERVER_RESERVE_FEE_MIN_ENV_VAR, "5");
+        env::set_var(
+            crate::env_vars::LDK_SERVER_MAX_PAYMENT_SCAN_PAGES_ENV_VAR,
+            "12",
+        );
+
+        let mut settings = Settings::new(Some(&config_path));
+        settings.from_env().expect("Failed to apply env vars");
+
+        assert!(settings.ldk_server.is_some());
+        let ldk_server_config = settings
+            .ldk_server
+            .as_ref()
+            .expect("ldk server config should be set");
+        assert_eq!(ldk_server_config.address, "127.0.0.1:3536");
+        assert_eq!(ldk_server_config.api_key, "test-api-key");
+        assert_eq!(
+            ldk_server_config.cert_path,
+            std::path::PathBuf::from("/tmp/ldk-server/tls.crt")
+        );
+        assert_eq!(ldk_server_config.fee_percent, 0.03);
+        let reserve_fee_u64: u64 = ldk_server_config.reserve_fee_min.into();
+        assert_eq!(reserve_fee_u64, 5);
+        assert_eq!(ldk_server_config.max_payment_scan_pages, 12);
+
+        env::remove_var(crate::env_vars::ENV_LN_BACKEND);
+        env::remove_var(crate::env_vars::LDK_SERVER_ADDRESS_ENV_VAR);
+        env::remove_var(crate::env_vars::LDK_SERVER_API_KEY_ENV_VAR);
+        env::remove_var(crate::env_vars::LDK_SERVER_CERT_PATH_ENV_VAR);
+        env::remove_var(crate::env_vars::LDK_SERVER_FEE_PERCENT_ENV_VAR);
+        env::remove_var(crate::env_vars::LDK_SERVER_RESERVE_FEE_MIN_ENV_VAR);
+        env::remove_var(crate::env_vars::LDK_SERVER_MAX_PAYMENT_SCAN_PAGES_ENV_VAR);
+
         let _ = fs::remove_dir_all(&temp_dir);
     }
 }

@@ -20,12 +20,13 @@ fn main() {
         || cfg!(feature = "lnbits")
         || cfg!(feature = "fakewallet")
         || cfg!(feature = "grpc-processor")
-        || cfg!(feature = "ldk-node");
+        || cfg!(feature = "ldk-node")
+        || cfg!(feature = "ldk-server");
 
     if !has_lightning_backend {
         panic!(
             "cdk-mintd requires at least one Lightning backend to be enabled.\n\
-             Available Lightning backends: cln, lnd, lnbits, fakewallet, grpc-processor\n\
+             Available Lightning backends: cln, lnd, lnbits, fakewallet, grpc-processor, ldk-node, ldk-server\n\
              Example: cargo build --features \"sqlite fakewallet\""
         );
     }
