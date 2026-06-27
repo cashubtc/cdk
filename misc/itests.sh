@@ -219,7 +219,13 @@ while [ $wait_count -lt $max_wait ]; do
     fi
     if ! ps -p "$CDK_REGTEST_PID" > /dev/null 2>&1; then
         echo "ERROR: Regtest mints process exited before readiness file was created"
-        exit 1
+        if wait "$CDK_REGTEST_PID"; then
+            exit 1
+        else
+            status=$?
+            echo "Regtest mints exited with status $status"
+            exit "$status"
+        fi
     fi
     wait_count=$((wait_count + 1))
     sleep 1
@@ -241,7 +247,7 @@ if [[ "$SUITE" == "all" || "$SUITE" == "ln" ]]; then
     fi
 
     echo "Running happy_path_mint_wallet test with CLN mint and CLN client"
-    run_test happy_path_mint_wallet
+    run_test happy_path_mint_wallet -- --test-threads 1
     if [ $? -ne 0 ]; then
         echo "happy_path_mint_wallet with cln mint test failed, exiting"
         exit 1
@@ -292,7 +298,7 @@ if [[ "$SUITE" == "all" || "$SUITE" == "ln" ]]; then
     fi
 
     echo "Running happy_path_mint_wallet test with LND mint and LND client"
-    run_test happy_path_mint_wallet
+    run_test happy_path_mint_wallet -- --test-threads 1
     if [ $? -ne 0 ]; then
         echo "happy_path_mint_wallet test with LND mint failed, exiting"
         exit 1
@@ -347,7 +353,7 @@ fi
 if [[ "$SUITE" == "all" || "$SUITE" == "ln" ]]; then
     echo "Running happy_path_mint_wallet test with LDK mint and CLN client"
     export CDK_TEST_LIGHTNING_CLIENT="cln"  # Use CLN client for LDK tests
-    run_test happy_path_mint_wallet
+    run_test happy_path_mint_wallet -- --test-threads 1
     if [ $? -ne 0 ]; then
         echo "happy_path_mint_wallet test with LDK mint failed, exiting"
         exit 1

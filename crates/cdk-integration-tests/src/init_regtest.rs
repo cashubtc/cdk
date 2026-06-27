@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use cdk::types::FeeReserve;
 use cdk_cln::Cln as CdkCln;
 use cdk_common::database::DynKVStore;
@@ -286,6 +286,70 @@ where
     Ok(())
 }
 
+fn summarize_ldk_channels(node: &Node) -> String {
+    let channel_summary = node
+        .list_channels()
+        .iter()
+        .map(|channel| {
+            let confirmations = match channel.confirmations {
+                Some(confirmations) => confirmations.to_string(),
+                None => "none".to_string(),
+            };
+            format!(
+                "peer={} usable={} ready={} confirmations={} inbound_msat={} outbound_msat={}",
+                channel.counterparty_node_id,
+                channel.is_usable,
+                channel.is_channel_ready,
+                confirmations,
+                channel.inbound_capacity_msat,
+                channel.outbound_capacity_msat
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    if channel_summary.is_empty() {
+        "none".to_string()
+    } else {
+        channel_summary
+    }
+}
+
+async fn wait_ldk_channels_usable(node: &Node, peer_ids: &[&str], max_checks: u32) -> Result<()> {
+    let mut count = 0;
+    while count < max_checks {
+        node.sync_wallets()?;
+        let channels = node.list_channels();
+        let missing_peers = peer_ids
+            .iter()
+            .copied()
+            .filter(|peer_id| {
+                !channels.iter().any(|channel| {
+                    channel.counterparty_node_id.to_string() == *peer_id && channel.is_usable
+                })
+            })
+            .collect::<Vec<_>>();
+
+        if missing_peers.is_empty() {
+            tracing::info!("All expected LDK channels are usable");
+            return Ok(());
+        }
+
+        tracing::warn!(
+            "Waiting for usable LDK channels with peers: {}",
+            missing_peers.join(", ")
+        );
+
+        count += 1;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+
+    bail!(
+        "Timeout waiting for usable LDK channels; channels: {}",
+        summarize_ldk_channels(node)
+    )
+}
+
 pub async fn start_regtest_end(
     work_dir: &Path,
     sender: Sender<()>,
@@ -493,7 +557,7 @@ pub async fn start_regtest_end(
                 .connect_peer(cln_two_info.pubkey, listen_addr.clone(), cln_two_info.port)
                 .await?;
 
-            tracing::info!("Opening channel from lnd to ldk");
+            tracing::info!("Preparing channel from ldk to lnd");
 
             let cln_info = cln_client.get_connect_info().await?;
 
@@ -523,32 +587,104 @@ pub async fn start_regtest_end(
                 true,
             )?;
 
-            // lnd_client
-            //     .open_channel(1_500_000, &pubkey.to_string(), Some(750_000))
-            //     .await
-            //     .unwrap();
+            let ldk_pubkey = pubkey.to_string();
+            let lnd_pubkey = lnd_info.pubkey.clone();
+            let mut ldk_lnd_channel_error = None;
+            let mut delay = Duration::from_millis(500);
+            let max_retries = 5;
+            for attempt in 1..=max_retries {
+                generate_block(&bitcoin_client)?;
+                lnd_client.wait_chain_sync().await?;
 
-            generate_block(&bitcoin_client)?;
-            lnd_client.wait_chain_sync().await?;
+                tracing::info!("Opening channel from ldk to lnd (attempt {attempt}/{max_retries})");
+                let open_result = node.open_announced_channel(
+                    lnd_pubkey.parse()?,
+                    SocketAddress::TcpIpV4 {
+                        addr: [127, 0, 0, 1],
+                        port: lnd_info.port,
+                    },
+                    1_000_000,
+                    Some(500_000_000),
+                    None,
+                );
 
-            node.open_announced_channel(
-                lnd_info.pubkey.parse()?,
-                SocketAddress::TcpIpV4 {
-                    addr: [127, 0, 0, 1],
-                    port: lnd_info.port,
-                },
-                1_000_000,
-                Some(500_000_000),
-                None,
-            )?;
+                match open_result {
+                    Ok(_) => {
+                        generate_block(&bitcoin_client)?;
+                        cln_client.wait_chain_sync().await?;
+                        lnd_client.wait_chain_sync().await?;
 
-            generate_block(&bitcoin_client)?;
+                        match wait_ldk_channels_usable(&node, &[lnd_pubkey.as_str()], 10).await {
+                            Ok(_) => match lnd_client
+                                .wait_channel_active_with_peer_attempts(&ldk_pubkey, 10)
+                                .await
+                            {
+                                Ok(_) => {
+                                    ldk_lnd_channel_error = None;
+                                    break;
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        "LND did not report an active channel with LDK after attempt {attempt}/{max_retries}: {err}"
+                                    );
+                                    ldk_lnd_channel_error = Some(err);
+                                }
+                            },
+                            Err(err) => {
+                                tracing::warn!(
+                                    "LDK did not report a usable channel with LND after attempt {attempt}/{max_retries}: {err}"
+                                );
+                                ldk_lnd_channel_error = Some(err);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        let err = anyhow::Error::from(err);
+                        tracing::warn!(
+                            "LDK failed to open a channel with LND on attempt {attempt}/{max_retries}: {err}"
+                        );
+                        ldk_lnd_channel_error = Some(err);
+                    }
+                }
+
+                if attempt < max_retries {
+                    tracing::warn!(
+                        "Retrying LDK to LND channel open in {} ms; LDK channels: {}",
+                        delay.as_millis(),
+                        summarize_ldk_channels(&node)
+                    );
+                    tokio::time::sleep(delay).await;
+                    delay = std::cmp::min(delay * 2, Duration::from_secs(5));
+                }
+            }
+
+            if let Some(err) = ldk_lnd_channel_error {
+                bail!(
+                    "Failed to open a usable LDK to LND channel after {max_retries} attempts: {err}; LDK channels: {}",
+                    summarize_ldk_channels(&node)
+                );
+            }
 
             tracing::info!("Ldk channels opened");
 
             node.sync_wallets()?;
 
             tracing::info!("Ldk wallet synced");
+
+            wait_ldk_channels_usable(
+                &node,
+                &[cln_info.pubkey.as_str(), lnd_info.pubkey.as_str()],
+                100,
+            )
+            .await?;
+
+            cln_client
+                .wait_channel_active_with_peer(&pubkey.to_string())
+                .await?;
+
+            lnd_client
+                .wait_channel_active_with_peer(&pubkey.to_string())
+                .await?;
 
             cln_client.wait_channels_active().await?;
 

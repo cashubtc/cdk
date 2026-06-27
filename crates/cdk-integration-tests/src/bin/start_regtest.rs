@@ -84,9 +84,13 @@ async fn main() -> Result<()> {
     });
 
     match timeout(Duration::from_secs(300), rx).await {
-        Ok(_) => {
+        Ok(Ok(())) => {
             tracing::info!("Regtest set up");
             signal_progress(&temp_dir);
+        }
+        Ok(Err(err)) => {
+            tracing::error!("regtest setup task exited before signaling readiness: {err}");
+            anyhow::bail!("Could not set up regtest");
         }
         Err(_) => {
             tracing::error!("regtest setup timed out after 5 minutes");
