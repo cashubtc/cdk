@@ -22,7 +22,7 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut10::{Conditions, SpendingConditions};
 use crate::nuts::nut11::SigFlag;
 use crate::nuts::nut18::Nut10SecretRequest;
-use crate::nuts::{CurrencyUnit, Nut10Secret, Transport};
+use crate::nuts::{CurrencyUnit, Nut10Secret, PaymentMethod, Transport};
 #[cfg(feature = "nostr")]
 use crate::wallet::ReceiveOptions;
 use crate::wallet::{SendOptions, WalletRepository};
@@ -39,13 +39,25 @@ impl Wallet {
         payment_request: PaymentRequest,
         custom_amount: Option<Amount>,
     ) -> Result<(), Error> {
-        let amount = match payment_request.amount {
+        let base_amount = match payment_request.amount {
             Some(amount) => amount,
             None => match custom_amount {
                 Some(a) => a,
                 None => return Err(Error::AmountUndefined),
             },
         };
+        let unit = payment_request.unit.clone().unwrap_or(CurrencyUnit::Sat);
+
+        if unit != self.unit {
+            return Err(Error::UnsupportedUnit);
+        }
+
+        let amount =
+            payment_request_amount_for_mint(base_amount, &payment_request, &self.mint_url)?;
+
+        if !wallet_supports_payment_request_methods(self, &payment_request, &unit).await? {
+            return Err(Error::UnsupportedPaymentMethod);
+        }
 
         // Extract optional NUT-10 spending conditions from the payment request.
         //
@@ -189,6 +201,74 @@ impl Wallet {
     }
 }
 
+fn payment_request_mint_list_is_strict(payment_request: &PaymentRequest) -> bool {
+    !payment_request.mints.is_empty() && payment_request.mint_preferred != Some(true)
+}
+
+fn payment_request_uses_unlisted_mint(
+    payment_request: &PaymentRequest,
+    mint_url: &MintUrl,
+) -> bool {
+    !payment_request.mints.is_empty() && !payment_request.mints.contains(mint_url)
+}
+
+fn payment_request_amount_for_mint(
+    amount: Amount,
+    payment_request: &PaymentRequest,
+    mint_url: &MintUrl,
+) -> Result<Amount, Error> {
+    if payment_request_mint_list_is_strict(payment_request)
+        && payment_request_uses_unlisted_mint(payment_request, mint_url)
+    {
+        return Err(Error::Custom(format!(
+            "Mint {} is not accepted by this payment request. Accepted mints: {:?}",
+            mint_url, payment_request.mints
+        )));
+    }
+
+    if payment_request.mint_preferred == Some(true)
+        && payment_request_uses_unlisted_mint(payment_request, mint_url)
+    {
+        if let Some(fee_reserve) = payment_request.fee_reserve {
+            return amount.checked_add(fee_reserve).ok_or(Error::AmountOverflow);
+        }
+    }
+
+    Ok(amount)
+}
+
+async fn wallet_supports_payment_request_methods(
+    wallet: &Wallet,
+    payment_request: &PaymentRequest,
+    unit: &CurrencyUnit,
+) -> Result<bool, Error> {
+    if payment_request.supported_methods.is_empty() {
+        return Ok(true);
+    }
+
+    let requested_methods = payment_request
+        .supported_methods
+        .iter()
+        .map(|method| PaymentMethod::from_str(method))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mint_info = wallet.load_mint_info().await?;
+
+    let mint_supports_method = mint_info
+        .nuts
+        .nut04
+        .methods
+        .iter()
+        .any(|settings| settings.unit == *unit && requested_methods.contains(&settings.method));
+    let melt_supports_method = mint_info
+        .nuts
+        .nut05
+        .methods
+        .iter()
+        .any(|settings| settings.unit == *unit && requested_methods.contains(&settings.method));
+
+    Ok(mint_supports_method || melt_supports_method)
+}
+
 /// Parameters for creating a PaymentRequest
 ///
 /// This mirrors the CLI inputs and is used by `create_request` to build a
@@ -275,14 +355,17 @@ impl WalletRepository {
 
         // Get the list of mints accepted by the payment request (empty means any mint is accepted)
         let accepted_mints = &payment_request.mints;
+        let mint_list_is_preferred = payment_request.mint_preferred == Some(true);
 
         // Get the unit from the payment request, defaulting to Sat
         let unit = payment_request.unit.clone().unwrap_or(CurrencyUnit::Sat);
 
         // Select the wallet to use for payment
         let selected_wallet = if let Some(specified_mint) = &mint_url {
-            // User specified a mint - verify it's accepted by the payment request
-            if !accepted_mints.is_empty() && !accepted_mints.contains(specified_mint) {
+            // User specified a mint - verify it's accepted by strict payment requests.
+            if payment_request_mint_list_is_strict(&payment_request)
+                && !accepted_mints.contains(specified_mint)
+            {
                 return Err(Error::Custom(format!(
                     "Mint {} is not accepted by this payment request. Accepted mints: {:?}",
                     specified_mint, accepted_mints
@@ -294,8 +377,10 @@ impl WalletRepository {
         } else {
             // No mint specified - find the best matching mint with highest balance
             let balances = self.get_balances().await?;
-            let mut best_wallet: Option<Arc<Wallet>> = None;
-            let mut best_balance = Amount::ZERO;
+            let mut best_preferred_wallet: Option<Arc<Wallet>> = None;
+            let mut best_preferred_balance = Amount::ZERO;
+            let mut best_fallback_wallet: Option<Arc<Wallet>> = None;
+            let mut best_fallback_balance = Amount::ZERO;
 
             for (wallet_key, balance) in balances.iter() {
                 // Only consider wallets with matching unit
@@ -303,24 +388,47 @@ impl WalletRepository {
                     continue;
                 }
 
-                // Check if this mint is accepted by the payment request
-                let is_accepted =
+                let mint_is_listed =
                     accepted_mints.is_empty() || accepted_mints.contains(&wallet_key.mint_url);
 
-                if !is_accepted {
+                if !mint_is_listed && !mint_list_is_preferred {
                     continue;
                 }
 
+                let Ok(wallet) = self.get_wallet(&wallet_key.mint_url, &unit).await else {
+                    continue;
+                };
+
+                if !wallet_supports_payment_request_methods(&wallet, &payment_request, &unit)
+                    .await?
+                {
+                    continue;
+                }
+
+                let required_amount = payment_request_amount_for_mint(
+                    amount,
+                    &payment_request,
+                    &wallet_key.mint_url,
+                )?;
+
                 // Check balance meets requirements and is best so far
-                if *balance >= amount && *balance > best_balance {
-                    if let Ok(wallet) = self.get_wallet(&wallet_key.mint_url, &unit).await {
-                        best_balance = *balance;
-                        best_wallet = Some(Arc::new(wallet));
+                if *balance < required_amount {
+                    continue;
+                }
+
+                if mint_is_listed {
+                    if *balance > best_preferred_balance {
+                        best_preferred_balance = *balance;
+                        best_preferred_wallet = Some(Arc::new(wallet));
                     }
+                } else if *balance > best_fallback_balance {
+                    best_fallback_balance = *balance;
+                    best_fallback_wallet = Some(Arc::new(wallet));
                 }
             }
 
-            best_wallet
+            best_preferred_wallet
+                .or(best_fallback_wallet)
                 .map(|w| (*w).clone())
                 .ok_or(Error::InsufficientFunds)?
         };
@@ -542,7 +650,7 @@ impl WalletRepository {
             unit: Some(CurrencyUnit::from_str(&params.unit)?),
             single_use: Some(true),
             mints,
-            mints_strict: None,
+            mint_preferred: None,
             fee_reserve: None,
             supported_methods: vec![],
             description: params.description,
@@ -614,7 +722,7 @@ impl WalletRepository {
             unit: Some(CurrencyUnit::from_str(&params.unit)?),
             single_use: Some(true),
             mints,
-            mints_strict: None,
+            mint_preferred: None,
             fee_reserve: None,
             supported_methods: vec![],
             description: params.description,

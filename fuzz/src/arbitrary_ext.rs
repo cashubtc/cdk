@@ -623,7 +623,7 @@ impl<'a> Arbitrary<'a> for PaymentRequestArb {
             unit,
             single_use,
             mints,
-            mints_strict: None,
+            mint_preferred: None,
             fee_reserve: None,
             supported_methods: Vec::new(),
             description,

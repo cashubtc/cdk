@@ -17,45 +17,71 @@ use crate::Amount;
 
 const PAYMENT_REQUEST_PREFIX: &str = "creqA";
 
-/// Payment Request
+/// NUT-18 payment request.
+///
+/// A receiver creates this request to tell a payer how much to send, which
+/// mints and payment methods are acceptable, and which transports can deliver
+/// the resulting [`PaymentRequestPayload`].
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentRequest {
-    /// `Payment id`
+    /// Payment id to include in the payment payload.
     #[serde(rename = "i")]
     pub payment_id: Option<String>,
-    /// Amount
+    /// Requested amount.
+    ///
+    /// If this is set, [`Self::unit`] must also be set.
     #[serde(rename = "a")]
     pub amount: Option<Amount>,
-    /// Unit
+    /// Unit of the requested amount.
     #[serde(rename = "u")]
     pub unit: Option<CurrencyUnit>,
-    /// Single use
+    /// Whether this request is intended for a single payment.
     #[serde(rename = "s")]
     pub single_use: Option<bool>,
-    /// Mints
+    /// Mint URLs the receiver accepts or prefers.
+    ///
+    /// If non-empty and [`Self::mint_preferred`] is omitted or `false`, this
+    /// list is strict and the payer must only send proofs from these mints. If
+    /// [`Self::mint_preferred`] is `true`, this list is advisory and other
+    /// mints may be used.
     #[serde(rename = "m")]
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub mints: Vec<MintUrl>,
-    /// Mints strict flag
-    #[serde(rename = "ms")]
+    /// Whether [`Self::mints`] is preferred instead of strict.
+    ///
+    /// `true` means the payer should prefer the listed mints but may send from
+    /// others. `false` or omitted means the mint list is strict. Ignored when
+    /// [`Self::mints`] is empty.
+    #[serde(rename = "mp")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mints_strict: Option<bool>,
-    /// Additional fee reserve for payments from non-preferred mints
+    pub mint_preferred: Option<bool>,
+    /// Additional fee reserve for payments from outside a preferred mint list.
+    ///
+    /// When [`Self::mints`] is non-empty and [`Self::mint_preferred`] is
+    /// `true`, a payer using a mint outside [`Self::mints`] must add this
+    /// amount to the requested amount. Ignored when the mint list is strict or
+    /// empty.
     #[serde(rename = "fr")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fee_reserve: Option<Amount>,
-    /// Supported payment methods the mint must support
+    /// Payment methods the payer's mint must support.
+    ///
+    /// If non-empty, the payer must send ecash from a mint that supports at
+    /// least one listed method, such as `bolt11`, `bolt12`, or `onchain`.
     #[serde(rename = "sm")]
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub supported_methods: Vec<String>,
-    /// Description
+    /// Human-readable description for the payer to display.
     #[serde(rename = "d")]
     pub description: Option<String>,
-    /// Transport
+    /// Transports for delivering the payment payload, sorted by preference.
+    ///
+    /// An empty list means the payment is expected to be delivered in-band by
+    /// the surrounding protocol.
     #[serde(rename = "t")]
     #[serde(skip_serializing_if = "Vec::is_empty", default = "Vec::default")]
     pub transports: Vec<Transport>,
-    /// Nut10
+    /// Optional NUT-10 locking condition requested for the payment proofs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nut10: Option<Nut10SecretRequest>,
 }
@@ -114,7 +140,7 @@ pub struct PaymentRequestBuilder {
     unit: Option<CurrencyUnit>,
     single_use: Option<bool>,
     mints: Vec<MintUrl>,
-    mints_strict: Option<bool>,
+    mint_preferred: Option<bool>,
     fee_reserve: Option<Amount>,
     supported_methods: Vec<String>,
     description: Option<String>,
@@ -132,7 +158,10 @@ impl PaymentRequestBuilder {
         self
     }
 
-    /// Set amount
+    /// Set requested amount.
+    ///
+    /// Call [`Self::unit`] as well to produce a spec-valid fixed-amount
+    /// request.
     pub fn amount<A>(mut self, amount: A) -> Self
     where
         A: Into<Amount>,
@@ -159,19 +188,26 @@ impl PaymentRequestBuilder {
         self
     }
 
-    /// Set mints
+    /// Set mint URLs the receiver accepts or prefers.
+    ///
+    /// Unless [`Self::mint_preferred`] is set to `true`, a non-empty list is
+    /// strict.
     pub fn mints(mut self, mints: Vec<MintUrl>) -> Self {
         self.mints = mints;
         self
     }
 
-    /// Set mints strict flag
-    pub fn mints_strict(mut self, mints_strict: bool) -> Self {
-        self.mints_strict = Some(mints_strict);
+    /// Set whether the mint list is preferred instead of strict.
+    ///
+    /// `true` means the payer should prefer listed mints but may use other
+    /// mints. `false` means the payer must only use listed mints. Omit this
+    /// field to get the same strict behavior as `false`.
+    pub fn mint_preferred(mut self, mint_preferred: bool) -> Self {
+        self.mint_preferred = Some(mint_preferred);
         self
     }
 
-    /// Set fee reserve for payments from non-preferred mints
+    /// Set fee reserve for payments from outside a preferred mint list.
     pub fn fee_reserve<A>(mut self, fee_reserve: A) -> Self
     where
         A: Into<Amount>,
@@ -180,7 +216,7 @@ impl PaymentRequestBuilder {
         self
     }
 
-    /// Set supported payment methods
+    /// Set payment methods the payer's mint must support.
     pub fn supported_methods(mut self, methods: Vec<String>) -> Self {
         self.supported_methods = methods;
         self
@@ -218,7 +254,7 @@ impl PaymentRequestBuilder {
             unit: self.unit,
             single_use: self.single_use,
             mints: self.mints,
-            mints_strict: self.mints_strict,
+            mint_preferred: self.mint_preferred,
             fee_reserve: self.fee_reserve,
             supported_methods: self.supported_methods,
             description: self.description,
@@ -288,7 +324,7 @@ mod tests {
             mints: vec!["https://nofees.testnut.cashu.space"
                 .parse()
                 .expect("valid mint url")],
-            mints_strict: None,
+            mint_preferred: None,
             fee_reserve: None,
             supported_methods: vec![],
             description: None,
@@ -442,6 +478,26 @@ mod tests {
         let r = PaymentRequest::from_str(&payment_request_str).unwrap();
 
         assert_eq!(payment_request, r);
+    }
+
+    #[test]
+    fn test_mint_preferred_serializes_as_mp() {
+        let payment_request = PaymentRequestBuilder::default()
+            .mints(vec![MintUrl::from_str("https://mint.example.com").unwrap()])
+            .mint_preferred(true)
+            .build();
+
+        let value = serde_json::to_value(&payment_request).unwrap();
+
+        assert_eq!(value.get("mp"), Some(&serde_json::Value::Bool(true)));
+        assert!(value.get("ms").is_none());
+
+        let decoded: PaymentRequest = serde_json::from_value(serde_json::json!({
+            "m": ["https://mint.example.com"],
+            "mp": false
+        }))
+        .unwrap();
+        assert_eq!(decoded.mint_preferred, Some(false));
     }
 
     #[test]
@@ -735,7 +791,7 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
-            mints_strict: None,
+            mint_preferred: None,
             fee_reserve: None,
             supported_methods: vec![],
             description: Some("Test both formats".to_string()),
