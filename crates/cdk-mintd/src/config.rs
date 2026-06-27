@@ -166,15 +166,35 @@ impl std::str::FromStr for LnBackend {
     }
 }
 
+fn default_min_mint() -> Amount {
+    1.into()
+}
+
+fn default_max_mint() -> Amount {
+    500_000.into()
+}
+
+fn default_min_melt() -> Amount {
+    1.into()
+}
+
+fn default_max_melt() -> Amount {
+    500_000.into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ln {
     pub ln_backend: LnBackend,
     #[serde(default)]
     pub unit: CurrencyUnit,
     pub invoice_description: Option<String>,
+    #[serde(default = "default_min_mint")]
     pub min_mint: Amount,
+    #[serde(default = "default_max_mint")]
     pub max_mint: Amount,
+    #[serde(default = "default_min_melt")]
     pub min_melt: Amount,
+    #[serde(default = "default_max_melt")]
     pub max_melt: Amount,
 }
 
@@ -184,10 +204,10 @@ impl Default for Ln {
             ln_backend: LnBackend::default(),
             unit: CurrencyUnit::default(),
             invoice_description: None,
-            min_mint: 1.into(),
-            max_mint: 500_000.into(),
-            min_melt: 1.into(),
-            max_melt: 500_000.into(),
+            min_mint: default_min_mint(),
+            max_mint: default_max_mint(),
+            min_melt: default_min_melt(),
+            max_melt: default_max_melt(),
         }
     }
 }
@@ -238,9 +258,13 @@ impl std::str::FromStr for OnchainBackend {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Onchain {
     pub onchain_backend: OnchainBackend,
+    #[serde(default = "default_min_mint")]
     pub min_mint: Amount,
+    #[serde(default = "default_max_mint")]
     pub max_mint: Amount,
+    #[serde(default = "default_min_melt")]
     pub min_melt: Amount,
+    #[serde(default = "default_max_melt")]
     pub max_melt: Amount,
 }
 
@@ -248,10 +272,10 @@ impl Default for Onchain {
     fn default() -> Self {
         Onchain {
             onchain_backend: OnchainBackend::default(),
-            min_mint: 1.into(),
-            max_mint: 500_000.into(),
-            min_melt: 1.into(),
-            max_melt: 500_000.into(),
+            min_mint: default_min_mint(),
+            max_mint: default_max_mint(),
+            min_melt: default_min_melt(),
+            max_melt: default_max_melt(),
         }
     }
 }
@@ -1812,6 +1836,72 @@ max_melt = 500000
         assert_eq!(settings.ln.len(), 1);
         assert_eq!(settings.ln[0].ln_backend, LnBackend::FakeWallet);
         assert_eq!(settings.ln[0].unit, CurrencyUnit::Sat);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_legacy_ln_block_without_bounds_parses() {
+        use std::{env, fs};
+
+        let temp_dir = env::temp_dir().join("cdk_test_ln_block_without_bounds");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        // A single `[ln]` table without explicit bounds uses the default bounds.
+        let config_content = r#"
+[ln]
+ln_backend = "fakewallet"
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        let settings = Settings::try_new(Some(&config_path)).expect("config should parse");
+
+        assert_eq!(settings.ln.len(), 1);
+        assert_eq!(settings.ln[0].ln_backend, LnBackend::FakeWallet);
+
+        let min_mint: u64 = settings.ln[0].min_mint.into();
+        let max_mint: u64 = settings.ln[0].max_mint.into();
+        let min_melt: u64 = settings.ln[0].min_melt.into();
+        let max_melt: u64 = settings.ln[0].max_melt.into();
+        assert_eq!(min_mint, 1);
+        assert_eq!(max_mint, 500_000);
+        assert_eq!(min_melt, 1);
+        assert_eq!(max_melt, 500_000);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_onchain_block_without_bounds_parses() {
+        use std::{env, fs};
+
+        let temp_dir = env::temp_dir().join("cdk_test_onchain_block_without_bounds");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        // A single `[onchain]` table without explicit bounds uses the default bounds.
+        let config_content = r#"
+[onchain]
+onchain_backend = "fakewallet"
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        let settings = Settings::try_new(Some(&config_path)).expect("config should parse");
+
+        let onchain = settings.onchain.expect("onchain config should be present");
+        assert_eq!(onchain.onchain_backend, OnchainBackend::FakeWallet);
+
+        let min_mint: u64 = onchain.min_mint.into();
+        let max_mint: u64 = onchain.max_mint.into();
+        let min_melt: u64 = onchain.min_melt.into();
+        let max_melt: u64 = onchain.max_melt.into();
+        assert_eq!(min_mint, 1);
+        assert_eq!(max_mint, 500_000);
+        assert_eq!(min_melt, 1);
+        assert_eq!(max_melt, 500_000);
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
