@@ -543,13 +543,13 @@ impl LnBackendSetup for config::LdkServer {
     ) -> anyhow::Result<cdk_ldk_server::CdkLdkServer> {
         use anyhow::{bail, Context};
 
-        if self.address.is_empty() {
+        if self.address.trim().is_empty() {
             bail!(
                 "LDK Server address must be set via config or CDK_MINTD_LDK_SERVER_ADDRESS env var"
             );
         }
 
-        if self.api_key.is_empty() {
+        if self.api_key.trim().is_empty() {
             bail!(
                 "LDK Server api_key must be set via config or CDK_MINTD_LDK_SERVER_API_KEY env var"
             );
@@ -557,6 +557,14 @@ impl LnBackendSetup for config::LdkServer {
 
         if self.cert_path.as_os_str().is_empty() {
             bail!("LDK Server cert_path must be set via config or CDK_MINTD_LDK_SERVER_CERT_PATH env var");
+        }
+
+        if !self.fee_percent.is_finite() || self.fee_percent < 0.0 {
+            bail!("LDK Server fee_percent must be finite and non-negative");
+        }
+
+        if self.max_payment_scan_pages == 0 {
+            bail!("LDK Server max_payment_scan_pages must be greater than zero");
         }
 
         let cert_pem = std::fs::read(&self.cert_path).with_context(|| {

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bitcoin::hashes::Hash;
-use cdk_common::amount::Amount;
+use cdk_common::amount::{Amount, MSAT_IN_SAT};
 use cdk_common::common::FeeReserve;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
@@ -211,7 +211,7 @@ impl CdkLdkServer {
                 .ok_or(Error::CouldNotGetAmountSpent)?
                 .checked_add(payment.fee_paid_msat.unwrap_or_default())
                 .ok_or(Error::AmountOverflow)?;
-            Amount::new(total_spent, CurrencyUnit::Msat).convert_to(unit)?
+            msat_total_spent_for_unit(total_spent, unit)?
         } else {
             Amount::new(0, unit.clone())
         };
@@ -837,8 +837,8 @@ fn bolt11_amount_msat_for_send(
 fn bolt12_amount_msat_for_quote(
     options: &cdk_common::payment::Bolt12OutgoingPaymentOptions,
 ) -> Result<u64, payment::Error> {
-    match &options.melt_options {
-        Some(melt_options) => Ok(u64::from(melt_options.amount_msat())),
+    match bolt12_melt_options_amount_msat(options)? {
+        Some(amount_msat) => Ok(amount_msat),
         None => {
             let amount = options
                 .offer
@@ -856,10 +856,47 @@ fn bolt12_amount_msat_for_quote(
 fn bolt12_amount_msat_for_send(
     options: &cdk_common::payment::Bolt12OutgoingPaymentOptions,
 ) -> Result<Option<u64>, payment::Error> {
+    bolt12_melt_options_amount_msat(options)
+}
+
+fn bolt12_melt_options_amount_msat(
+    options: &cdk_common::payment::Bolt12OutgoingPaymentOptions,
+) -> Result<Option<u64>, payment::Error> {
     match &options.melt_options {
-        Some(MeltOptions::Amountless { amountless }) => Ok(Some(u64::from(amountless.amount_msat))),
+        Some(MeltOptions::Amountless { amountless }) => {
+            let amount_msat = u64::from(amountless.amount_msat);
+            validate_bolt12_amount_msat(&options.offer, amount_msat)?;
+            Ok(Some(amount_msat))
+        }
         Some(MeltOptions::Mpp { mpp: _ }) => Err(payment::Error::UnsupportedPaymentOption),
         None => Ok(None),
+    }
+}
+
+fn validate_bolt12_amount_msat(
+    offer: &lightning::offers::offer::Offer,
+    amount_msat: u64,
+) -> Result<(), payment::Error> {
+    match offer.amount() {
+        Some(OfferAmount::Bitcoin { amount_msats }) if amount_msats == amount_msat => Ok(()),
+        Some(_) => Err(payment::Error::AmountMismatch),
+        None => Ok(()),
+    }
+}
+
+fn msat_total_spent_for_unit(
+    total_msat: u64,
+    unit: &CurrencyUnit,
+) -> Result<Amount<CurrencyUnit>, payment::Error> {
+    match unit {
+        CurrencyUnit::Msat => Ok(Amount::new(total_msat, CurrencyUnit::Msat)),
+        CurrencyUnit::Sat => Ok(Amount::new(
+            total_msat.div_ceil(MSAT_IN_SAT),
+            CurrencyUnit::Sat,
+        )),
+        _ => Amount::new(total_msat, CurrencyUnit::Msat)
+            .convert_to(unit)
+            .map_err(payment::Error::from),
     }
 }
 
@@ -907,7 +944,10 @@ async fn sleep_or_cancel(cancel_token: &CancellationToken, duration: Duration) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
+    use cdk_common::payment::Bolt12OutgoingPaymentOptions;
     use ldk_server_client::ldk_server_grpc::types::{Bolt11, PaymentKind};
+    use lightning::offers::offer::OfferBuilder;
 
     fn test_bolt11_payment(status: PaymentStatus, amount_msat: Option<u64>) -> Payment {
         Payment {
@@ -937,6 +977,35 @@ mod tests {
             id: format!("{id_byte:02x}").repeat(32),
             latest_update_timestamp,
             ..test_bolt11_payment(status, None)
+        }
+    }
+
+    fn test_offer(amount_msats: Option<u64>) -> lightning::offers::offer::Offer {
+        let secp_ctx = Secp256k1::new();
+        let secret_key = SecretKey::from_slice(&[42; 32]).expect("test secret key should be valid");
+        let keys = Keypair::from_secret_key(&secp_ctx, &secret_key);
+        let pubkey = PublicKey::from(keys);
+        let builder = OfferBuilder::new(pubkey);
+
+        match amount_msats {
+            Some(amount_msats) => builder
+                .amount_msats(amount_msats)
+                .build()
+                .expect("fixed test offer should build"),
+            None => builder.build().expect("variable test offer should build"),
+        }
+    }
+
+    fn bolt12_options(
+        offer: lightning::offers::offer::Offer,
+        melt_options: Option<MeltOptions>,
+    ) -> Bolt12OutgoingPaymentOptions {
+        Bolt12OutgoingPaymentOptions {
+            offer,
+            max_fee_amount: None,
+            timeout_secs: None,
+            melt_options,
+            quote_id: cdk_common::QuoteId::new(),
         }
     }
 
@@ -976,6 +1045,68 @@ mod tests {
         .expect_err("paid payment details without amount should fail");
 
         assert!(matches!(err, payment::Error::Lightning(_)));
+    }
+
+    #[test]
+    fn paid_payment_response_rounds_msats_up_for_sat_unit() {
+        let payment = Payment {
+            fee_paid_msat: Some(1),
+            ..test_bolt11_payment(PaymentStatus::Succeeded, Some(1000))
+        };
+
+        let response = CdkLdkServer::make_payment_response_from_payment(
+            &CurrencyUnit::Sat,
+            PaymentIdentifier::PaymentId([2; 32]),
+            &payment,
+        )
+        .expect("paid payment details should map");
+
+        assert_eq!(response.status, MeltQuoteState::Paid);
+        assert_eq!(response.total_spent, Amount::new(2, CurrencyUnit::Sat));
+    }
+
+    #[test]
+    fn bolt12_amountless_quote_rejects_mismatched_fixed_offer() {
+        let offer = test_offer(Some(10_000));
+        let options = bolt12_options(offer, Some(MeltOptions::new_amountless(1_000_u64)));
+
+        let err = bolt12_amount_msat_for_quote(&options)
+            .expect_err("mismatched fixed offer amount should fail");
+
+        assert!(matches!(err, payment::Error::AmountMismatch));
+    }
+
+    #[test]
+    fn bolt12_amountless_send_rejects_mismatched_fixed_offer() {
+        let offer = test_offer(Some(10_000));
+        let options = bolt12_options(offer, Some(MeltOptions::new_amountless(1_000_u64)));
+
+        let err = bolt12_amount_msat_for_send(&options)
+            .expect_err("mismatched fixed offer amount should fail");
+
+        assert!(matches!(err, payment::Error::AmountMismatch));
+    }
+
+    #[test]
+    fn bolt12_amountless_accepts_matching_fixed_offer() {
+        let offer = test_offer(Some(10_000));
+        let options = bolt12_options(offer, Some(MeltOptions::new_amountless(10_000_u64)));
+
+        let amount_msat =
+            bolt12_amount_msat_for_quote(&options).expect("matching fixed offer amount is valid");
+
+        assert_eq!(amount_msat, 10_000);
+    }
+
+    #[test]
+    fn bolt12_amountless_accepts_variable_offer() {
+        let offer = test_offer(None);
+        let options = bolt12_options(offer, Some(MeltOptions::new_amountless(10_000_u64)));
+
+        let amount_msat =
+            bolt12_amount_msat_for_send(&options).expect("variable offer amount is valid");
+
+        assert_eq!(amount_msat, Some(10_000));
     }
 
     #[test]
