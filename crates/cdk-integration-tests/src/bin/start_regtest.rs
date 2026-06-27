@@ -73,6 +73,10 @@ async fn main() -> Result<()> {
     let cdk_ldk = node_builder.build()?;
 
     let inner_node = cdk_ldk.node();
+    // The setup node is stopped by `start_regtest_end`. `ldk-node` 0.7 can
+    // panic when dropping a stopped node, so keep this short-lived wrapper
+    // alive for the rest of the regtest process.
+    std::mem::forget(cdk_ldk);
 
     let temp_dir_clone = temp_dir.clone();
 
@@ -84,9 +88,13 @@ async fn main() -> Result<()> {
     });
 
     match timeout(Duration::from_secs(300), rx).await {
-        Ok(_) => {
+        Ok(Ok(())) => {
             tracing::info!("Regtest set up");
             signal_progress(&temp_dir);
+        }
+        Ok(Err(err)) => {
+            tracing::error!("regtest setup task exited before signaling readiness: {err}");
+            anyhow::bail!("Could not set up regtest");
         }
         Err(_) => {
             tracing::error!("regtest setup timed out after 5 minutes");

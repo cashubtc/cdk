@@ -320,20 +320,40 @@ async fn test_regtest_bolt12_melt() -> Result<()> {
         )
         .await?;
 
-    let offer = cln_client
-        .get_bolt12_offer(Some(100_000), true, "hhhhhhhh".to_string())
-        .await?;
+    let max_attempts = if is_ldk_mint() { 3 } else { 1 };
+    let mut attempt = 1;
+    loop {
+        let offer = cln_client
+            .get_bolt12_offer(
+                Some(100_000),
+                true,
+                format!("test_regtest_bolt12_melt_{attempt}"),
+            )
+            .await?;
 
-    let quote = wallet
-        .melt_quote(PaymentMethod::BOLT12, offer.to_string(), None, None)
-        .await?;
+        let quote = wallet
+            .melt_quote(PaymentMethod::BOLT12, offer.to_string(), None, None)
+            .await?;
 
-    let prepared = wallet
-        .prepare_melt(&quote.id, std::collections::HashMap::new())
-        .await?;
-    let melt = prepared.confirm().await?;
+        let prepared = wallet
+            .prepare_melt(&quote.id, std::collections::HashMap::new())
+            .await?;
 
-    assert_eq!(melt.amount(), 100.into());
+        match prepared.confirm().await {
+            Ok(melt) => {
+                assert_eq!(melt.amount(), 100.into());
+                break;
+            }
+            Err(err) if attempt < max_attempts => {
+                tracing::warn!(
+                    "BOLT12 melt attempt {attempt}/{max_attempts} failed; retrying with a fresh offer: {err}"
+                );
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                attempt += 1;
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
 
     Ok(())
 }

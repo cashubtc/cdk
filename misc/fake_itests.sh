@@ -176,7 +176,7 @@ fi
 
 # Run second test only if the first one succeeded
 echo "Running happy_path_mint_wallet test"
-run_test happy_path_mint_wallet -- --nocapture
+run_test happy_path_mint_wallet -- --nocapture --test-threads 1
 status2=$?
 
 # Exit if the second test failed

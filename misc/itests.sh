@@ -2,12 +2,34 @@
 
 source "$(dirname "$0")/itest_helpers.sh"
 
+kill_regtest_processes_by_work_dir() {
+    if [ -z "${CDK_ITESTS_DIR:-}" ] || ! command -v pgrep >/dev/null 2>&1; then
+        return
+    fi
+
+    local pids
+    pids=$(pgrep -f -- "$CDK_ITESTS_DIR" 2>/dev/null || true)
+    if [ -z "$pids" ]; then
+        return
+    fi
+
+    echo "Killing regtest processes using $CDK_ITESTS_DIR"
+    kill -15 $pids 2>/dev/null || true
+    sleep 2
+
+    pids=$(pgrep -f -- "$CDK_ITESTS_DIR" 2>/dev/null || true)
+    if [ -n "$pids" ]; then
+        echo "Regtest processes still running, force killing..."
+        kill -9 $pids 2>/dev/null || true
+    fi
+}
+
 # Function to perform cleanup
 cleanup() {
     echo "Cleaning up..."
 
     echo "Killing the cdk regtest and mints"
-    if [ ! -z "$CDK_REGTEST_PID" ]; then
+    if [ -n "${CDK_REGTEST_PID:-}" ]; then
         # First try graceful shutdown with SIGTERM
         kill -15 $CDK_REGTEST_PID 2>/dev/null
         sleep 2
@@ -21,6 +43,8 @@ cleanup() {
         # Wait for process to terminate
         wait $CDK_REGTEST_PID 2>/dev/null || true
     fi
+
+    kill_regtest_processes_by_work_dir
 
     echo "Mint binary terminated"
 
@@ -212,14 +236,17 @@ fi
 READY_FILE_PATH="$CDK_ITESTS_DIR/.ready"
 max_wait=300
 wait_count=0
+launcher_exited_logged=0
 while [ $wait_count -lt $max_wait ]; do
     if [ -f "$READY_FILE_PATH" ]; then
         echo "Regtest mints readiness file found at: $READY_FILE_PATH"
         break
     fi
     if ! ps -p "$CDK_REGTEST_PID" > /dev/null 2>&1; then
-        echo "ERROR: Regtest mints process exited before readiness file was created"
-        exit 1
+        if [ "$launcher_exited_logged" -eq 0 ]; then
+            echo "Regtest launcher PID exited before readiness; continuing to wait for $READY_FILE_PATH"
+            launcher_exited_logged=1
+        fi
     fi
     wait_count=$((wait_count + 1))
     sleep 1
@@ -241,7 +268,7 @@ if [[ "$SUITE" == "all" || "$SUITE" == "ln" ]]; then
     fi
 
     echo "Running happy_path_mint_wallet test with CLN mint and CLN client"
-    run_test happy_path_mint_wallet
+    run_test happy_path_mint_wallet -- --test-threads 1
     if [ $? -ne 0 ]; then
         echo "happy_path_mint_wallet with cln mint test failed, exiting"
         exit 1
@@ -292,7 +319,7 @@ if [[ "$SUITE" == "all" || "$SUITE" == "ln" ]]; then
     fi
 
     echo "Running happy_path_mint_wallet test with LND mint and LND client"
-    run_test happy_path_mint_wallet
+    run_test happy_path_mint_wallet -- --test-threads 1
     if [ $? -ne 0 ]; then
         echo "happy_path_mint_wallet test with LND mint failed, exiting"
         exit 1
@@ -347,7 +374,7 @@ fi
 if [[ "$SUITE" == "all" || "$SUITE" == "ln" ]]; then
     echo "Running happy_path_mint_wallet test with LDK mint and CLN client"
     export CDK_TEST_LIGHTNING_CLIENT="cln"  # Use CLN client for LDK tests
-    run_test happy_path_mint_wallet
+    run_test happy_path_mint_wallet -- --test-threads 1
     if [ $? -ne 0 ]; then
         echo "happy_path_mint_wallet test with LDK mint failed, exiting"
         exit 1

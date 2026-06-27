@@ -36,6 +36,12 @@ pub struct ClnClient {
 }
 
 impl ClnClient {
+    async fn reconnect(&self) -> Result<()> {
+        let cln_client = cln_rpc::ClnRpc::new(&self.rpc_path).await?;
+        *self.client.lock().await = cln_client;
+        Ok(())
+    }
+
     /// Open a private (unannounced) channel to a peer
     pub async fn open_private_channel(
         &self,
@@ -136,6 +142,38 @@ impl ClnClient {
         }
     }
 
+    pub async fn wait_channel_active_with_peer(&self, peer_id: &str) -> Result<()> {
+        let peer_id = PublicKey::from_str(peer_id)?.to_string();
+        let mut count = 0;
+        while count < 100 {
+            let channels = self.list_channels().await?;
+            let peer_channels = channels
+                .channels
+                .iter()
+                .filter(|channel| {
+                    channel.source.to_string() == peer_id
+                        || channel.destination.to_string() == peer_id
+                })
+                .collect::<Vec<_>>();
+
+            if peer_channels.iter().any(|channel| channel.active) {
+                tracing::info!("CLN channel with peer {peer_id} is active");
+                return Ok(());
+            }
+
+            if peer_channels.is_empty() {
+                tracing::warn!("No CLN channel found with peer {peer_id}");
+            } else {
+                tracing::warn!("CLN channel with peer {peer_id} is not active yet");
+            }
+
+            count += 1;
+            sleep(Duration::from_secs(2)).await;
+        }
+
+        bail!("Time out exceeded waiting for active CLN channel with peer {peer_id}")
+    }
+
     pub async fn pay_bolt12_offer(
         &self,
         amount_msat: Option<u64>,
@@ -188,6 +226,11 @@ impl ClnClient {
                     tracing::warn!(
                         "CLN fetchinvoice for BOLT12 offer failed on attempt {attempt}/{max_attempts}: {err}"
                     );
+                    if let Err(reconnect_err) = self.reconnect().await {
+                        tracing::warn!(
+                            "Failed to reconnect CLN RPC after fetchinvoice timeout: {reconnect_err}"
+                        );
+                    }
 
                     attempts_remaining -= 1;
                     if attempts_remaining == 0 {

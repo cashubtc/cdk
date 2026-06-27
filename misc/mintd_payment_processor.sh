@@ -255,7 +255,7 @@ while true; do
 done
 
 
-run_test happy_path_mint_wallet
+run_test happy_path_mint_wallet -- --test-threads 1
 
 # Capture the exit status of cargo test
 test_status=$?

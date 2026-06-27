@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use cdk::types::FeeReserve;
 use cdk_cln::Cln as CdkCln;
 use cdk_common::database::DynKVStore;
@@ -286,6 +286,72 @@ where
     Ok(())
 }
 
+fn summarize_ldk_channels(node: &Node) -> String {
+    let channel_summary = node
+        .list_channels()
+        .iter()
+        .map(|channel| {
+            let confirmations = match channel.confirmations {
+                Some(confirmations) => confirmations.to_string(),
+                None => "none".to_string(),
+            };
+            format!(
+                "peer={} usable={} ready={} confirmations={} inbound_msat={} outbound_msat={}",
+                channel.counterparty_node_id,
+                channel.is_usable,
+                channel.is_channel_ready,
+                confirmations,
+                channel.inbound_capacity_msat,
+                channel.outbound_capacity_msat
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    if channel_summary.is_empty() {
+        "none".to_string()
+    } else {
+        channel_summary
+    }
+}
+
+async fn wait_ldk_channels_usable(node: &Node, peer_ids: &[&str], max_checks: u32) -> Result<()> {
+    for check in 0..=max_checks {
+        node.sync_wallets()?;
+        let channels = node.list_channels();
+        let missing_peers = peer_ids
+            .iter()
+            .copied()
+            .filter(|peer_id| {
+                !channels.iter().any(|channel| {
+                    channel.counterparty_node_id.to_string() == *peer_id && channel.is_usable
+                })
+            })
+            .collect::<Vec<_>>();
+
+        if missing_peers.is_empty() {
+            tracing::info!("All expected LDK channels are usable");
+            return Ok(());
+        }
+
+        if check == max_checks {
+            break;
+        }
+
+        tracing::warn!(
+            "Waiting for usable LDK channels with peers: {}",
+            missing_peers.join(", ")
+        );
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+
+    bail!(
+        "Timeout waiting for usable LDK channels; channels: {}",
+        summarize_ldk_channels(node)
+    )
+}
+
 pub async fn start_regtest_end(
     work_dir: &Path,
     sender: Sender<()>,
@@ -493,7 +559,7 @@ pub async fn start_regtest_end(
                 .connect_peer(cln_two_info.pubkey, listen_addr.clone(), cln_two_info.port)
                 .await?;
 
-            tracing::info!("Opening channel from lnd to ldk");
+            tracing::info!("Preparing LDK channel readiness");
 
             let cln_info = cln_client.get_connect_info().await?;
 
@@ -512,43 +578,17 @@ pub async fn start_regtest_end(
                 true,
             )?;
 
-            let lnd_info = lnd_client.get_connect_info().await?;
-
-            node.connect(
-                lnd_info.pubkey.parse()?,
-                SocketAddress::TcpIpV4 {
-                    addr: [127, 0, 0, 1],
-                    port: lnd_info.port,
-                },
-                true,
-            )?;
-
-            // lnd_client
-            //     .open_channel(1_500_000, &pubkey.to_string(), Some(750_000))
-            //     .await
-            //     .unwrap();
-
-            generate_block(&bitcoin_client)?;
-            lnd_client.wait_chain_sync().await?;
-
-            node.open_announced_channel(
-                lnd_info.pubkey.parse()?,
-                SocketAddress::TcpIpV4 {
-                    addr: [127, 0, 0, 1],
-                    port: lnd_info.port,
-                },
-                1_000_000,
-                Some(500_000_000),
-                None,
-            )?;
-
-            generate_block(&bitcoin_client)?;
-
             tracing::info!("Ldk channels opened");
 
             node.sync_wallets()?;
 
             tracing::info!("Ldk wallet synced");
+
+            wait_ldk_channels_usable(&node, &[cln_info.pubkey.as_str()], 100).await?;
+
+            cln_client
+                .wait_channel_active_with_peer(&pubkey.to_string())
+                .await?;
 
             cln_client.wait_channels_active().await?;
 

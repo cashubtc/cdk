@@ -37,7 +37,14 @@ use tokio::sync::{oneshot, Notify};
 use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 
-const LDK_NODE_P2P_PORT: u16 = 8092;
+const LDK_NODE_P2P_PORT_OFFSET: u16 = 10;
+
+fn derive_ldk_node_p2p_port(ldk_port: u16) -> Result<u16> {
+    match ldk_port.checked_add(LDK_NODE_P2P_PORT_OFFSET) {
+        Some(port) => Ok(port),
+        None => bail!("LDK mint port {ldk_port} is too high to derive a P2P port"),
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "start-regtest-mints")]
@@ -219,6 +226,7 @@ async fn start_ldk_mint(
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let ldk_work_dir = temp_dir.join("ldk_mint");
+    let ldk_node_p2p_port = derive_ldk_node_p2p_port(port)?;
 
     // Create work directory for LDK mint
     fs::create_dir_all(&ldk_work_dir)?;
@@ -239,7 +247,7 @@ async fn start_ldk_mint(
         ldk_node_announce_addresses: None,
         storage_dir_path: Some(ldk_work_dir.to_string_lossy().to_string()),
         ldk_node_host: Some("127.0.0.1".to_string()),
-        ldk_node_port: Some(LDK_NODE_P2P_PORT),
+        ldk_node_port: Some(ldk_node_p2p_port),
         gossip_source_type: None,
         rgs_url: None,
         webserver_host: Some("127.0.0.1".to_string()),
@@ -290,6 +298,7 @@ async fn start_ldk_mint(
 async fn wait_for_ldk_bolt12_ready(
     temp_dir: &Path,
     ldk_port: u16,
+    ldk_node_p2p_port: u16,
     ldk_node_id: &str,
     shutdown_notify: Arc<CancellationToken>,
 ) -> Result<()> {
@@ -311,19 +320,6 @@ async fn wait_for_ldk_bolt12_ready(
     )?;
 
     let cln_client = ClnClient::new(get_cln_dir(temp_dir, "one"), None).await?;
-    match cln_client
-        .connect_peer(
-            ldk_node_id.to_string(),
-            "127.0.0.1".to_string(),
-            LDK_NODE_P2P_PORT,
-        )
-        .await
-    {
-        Ok(_) => tracing::info!("CLN reconnected to LDK mint node for readiness check"),
-        Err(err) => {
-            tracing::warn!("CLN reconnect to LDK mint node failed before readiness check: {err}")
-        }
-    }
 
     loop {
         if shutdown_notify.is_cancelled() {
@@ -337,13 +333,31 @@ async fn wait_for_ldk_bolt12_ready(
             bail!("Timeout waiting for LDK mint BOLT12 readiness: {last_error}");
         }
 
-        let mint_quote = match wallet
-            .mint_quote(
-                PaymentMethod::BOLT12,
-                Some(readiness_amount),
-                None,
-                None,
+        match cln_client
+            .connect_peer(
+                ldk_node_id.to_string(),
+                "127.0.0.1".to_string(),
+                ldk_node_p2p_port,
             )
+            .await
+        {
+            Ok(_) => tracing::info!("CLN reconnected to LDK mint node for readiness check"),
+            Err(err) => {
+                let err = err.to_string();
+                if !err.to_lowercase().contains("already connected") {
+                    last_error = Some(format!("peer reconnect failed: {err}"));
+                    tracing::warn!(
+                        "LDK BOLT12 readiness attempt {attempt}: CLN reconnect to LDK mint node failed: {err}"
+                    );
+                    sleep(Duration::from_secs(2)).await;
+                    attempt += 1;
+                    continue;
+                }
+            }
+        }
+
+        let mint_quote = match wallet
+            .mint_quote(PaymentMethod::BOLT12, Some(readiness_amount), None, None)
             .await
         {
             Ok(quote) => quote,
@@ -701,6 +715,7 @@ fn main() -> Result<()> {
 
         let ldk_work_dir = temp_dir.join("ldk_mint");
         fs::create_dir_all(ldk_work_dir.join("logs"))?;
+        let ldk_node_p2p_port = derive_ldk_node_p2p_port(args.ldk_port)?;
         let test_mnemonic: Mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
             .parse()
             .expect("Failed to parse test mnemonic");
@@ -720,7 +735,7 @@ fn main() -> Result<()> {
             },
             vec![SocketAddress::TcpIpV4 {
                 addr: [127, 0, 0, 1],
-                port: LDK_NODE_P2P_PORT,
+                port: ldk_node_p2p_port,
             }],
         )
         .with_seed(test_mnemonic.clone());
@@ -753,7 +768,7 @@ fn main() -> Result<()> {
                     },
                     vec![SocketAddress::TcpIpV4 {
                         addr: [127, 0, 0, 1],
-                        port: LDK_NODE_P2P_PORT,
+                        port: ldk_node_p2p_port,
                     }],
                 )
                 .with_seed(test_mnemonic);
@@ -794,8 +809,6 @@ fn main() -> Result<()> {
                 anyhow::bail!("Could not set up regtest");
             }
         }
-
-        println!("ldk port: {}", args.ldk_port);
 
         // Start LND mint
         let lnd_handle =
@@ -867,6 +880,7 @@ fn main() -> Result<()> {
         wait_for_ldk_bolt12_ready(
             &temp_dir,
             args.ldk_port,
+            ldk_node_p2p_port,
             &ldk_node_id,
             Arc::clone(&cancel_token),
         )
