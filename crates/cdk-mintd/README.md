@@ -379,7 +379,10 @@ cdk-mintd --help
 
 - `CDK_MINTD_DATABASE`: Database engine (`sqlite`/`postgres`/`redb`)
 - `CDK_MINTD_DATABASE_URL`: PostgreSQL connection string
-- `CDK_MINTD_LN_BACKEND`: Lightning backend (`cln`/`lnd`/`lnbits`/`ldk-node`/`fakewallet`)
+- `CDK_MINTD_LN_BACKEND`: Lightning backend (`cln`/`lnd`/`lnbits`/`ldk-node`/`ldk-server`/`fakewallet`)
+- `CDK_MINTD_LDK_SERVER_ADDRESS`: LDK Server host and port, without scheme
+- `CDK_MINTD_LDK_SERVER_API_KEY`: LDK Server HMAC API key
+- `CDK_MINTD_LDK_SERVER_CERT_PATH`: Path to the pinned LDK Server TLS certificate PEM
 - `CDK_MINTD_FAKE_WALLET_CUSTOM_PAYMENT_METHODS`: Comma-separated fake wallet custom methods, optionally scoped as `method:unit`
 - `CDK_MINTD_LISTEN_HOST`: Host to bind to (default: `127.0.0.1`)
 - `CDK_MINTD_LISTEN_PORT`: Port to bind to (default: `8085`)

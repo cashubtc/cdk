@@ -116,7 +116,8 @@ connection_timeout_seconds = 10
 #   unit = "usd"
 
 [ln]
-# Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits', 'ldknode' or 'none' (if onchain is enabled)
+# Required ln backend `cln`, `lnd`, `fakewallet`, `lnbits`, `ldk-node`,
+# `ldk-server`, or `none` (if onchain is enabled)
 # NOTE: fakewallet is isolated testing mode and cannot be mixed with real payment backends.
 ln_backend = "fakewallet"
 # unit = "sat"          # Optional, defaults to "sat"
@@ -230,6 +231,14 @@ onchain_backend = "fakewallet"
 # macaroon_file = "/path/to/.lnd/data/chain/bitcoin/mainnet/admin.macaroon"
 # fee_percent = 0.02         # Optional, defaults to 2%
 # reserve_fee_min = 2        # Optional, defaults to 2 sats
+
+# [ldk_server]
+# address = "127.0.0.1:3536"
+# api_key = "<hex API key>"
+# cert_path = "/path/to/ldk-server/tls.crt"
+# fee_percent = 0.02         # Optional, defaults to 2%
+# reserve_fee_min = 2        # Optional, defaults to 2 sats
+# max_payment_scan_pages = 32 # Optional, defaults to 32 pages
 
 # [ldk_node]
 # fee_percent = 0.02         # Optional, defaults to 2%
