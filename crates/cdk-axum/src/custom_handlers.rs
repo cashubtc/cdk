@@ -98,13 +98,10 @@ async fn validate_melt_quote_method(
     method: &str,
     quote_id: &QuoteId,
 ) -> Result<(), cdk::Error> {
-    let quote_method = state
-        .mint
-        .get_melt_quote_method(quote_id)
-        .await?
-        .to_string();
+    let quote_method = state.mint.get_melt_quote_method(quote_id).await?;
+    let expected_method = PaymentMethod::from(method);
 
-    if quote_method != method {
+    if quote_method != expected_method {
         return Err(cdk::Error::InvalidPaymentMethod);
     }
 
@@ -473,6 +470,13 @@ pub async fn post_melt_custom_quote(
                     tracing::error!("Failed to parse custom melt request: {}", e);
                     into_response(cdk::Error::InvalidPaymentMethod)
                 })?;
+
+            let request_method = PaymentMethod::from(custom_request.method.as_str());
+            let route_method = PaymentMethod::from(method.as_str());
+
+            if request_method != route_method {
+                return Err(into_response(cdk::Error::InvalidPaymentMethod));
+            }
 
             state
                 .mint
@@ -1090,6 +1094,84 @@ mod tests {
         assert!(
             result.is_err(),
             "post_batch_check_mint_quote must reject cross-method quote checks"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_melt_custom_quote_rejects_url_method_request_body_mismatch() {
+        let state = create_test_state_with_custom_methods(&["paypal", "venmo"]).await;
+
+        let payload = serde_json::to_value(MeltQuoteCustomRequest {
+            method: "venmo".to_string(),
+            request: "test-payment-request".to_string(),
+            unit: CurrencyUnit::Sat,
+            extra: Value::Null,
+        })
+        .unwrap();
+
+        let result = post_melt_custom_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("paypal".to_string()),
+            Json(payload),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "post_melt_custom_quote must reject cross-method quote creation"
+        );
+
+        let venmo_quote_created = state
+            .mint
+            .melt_quotes()
+            .await
+            .unwrap()
+            .into_iter()
+            .any(|quote| quote.payment_method == PaymentMethod::Custom("venmo".to_string()));
+
+        assert!(
+            !venmo_quote_created,
+            "request to the paypal melt-quote endpoint must not create a venmo-method quote"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_melt_custom_quote_accepts_normalized_method_match() {
+        let state = create_test_state_with_custom_methods(&["paypal"]).await;
+
+        let payload = serde_json::to_value(MeltQuoteCustomRequest {
+            method: "PayPal".to_string(),
+            request: "test-payment-request".to_string(),
+            unit: CurrencyUnit::Sat,
+            extra: Value::Null,
+        })
+        .unwrap();
+
+        let result = post_melt_custom_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("paypal".to_string()),
+            Json(payload),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "post_melt_custom_quote must accept path/body methods that normalize to the same value"
+        );
+
+        let paypal_quote_created = state
+            .mint
+            .melt_quotes()
+            .await
+            .unwrap()
+            .into_iter()
+            .any(|quote| quote.payment_method == PaymentMethod::Custom("paypal".to_string()));
+
+        assert!(
+            paypal_quote_created,
+            "mixed-case body method should create a quote under the normalized payment method"
         );
     }
 }
