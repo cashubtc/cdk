@@ -307,9 +307,14 @@ impl PaymentRequest {
                     if mint_preferred.is_some() {
                         return Err(Error::InvalidStructure);
                     }
-                    if !value.is_empty() {
-                        mint_preferred = Some(value[0] != 0);
+                    if value.len() != 1 {
+                        return Err(Error::InvalidLength);
                     }
+                    mint_preferred = Some(match value[0] {
+                        0 => false,
+                        1 => true,
+                        _ => return Err(Error::InvalidStructure),
+                    });
                 }
                 0x0a => {
                     // fee_reserve: u64
@@ -2521,6 +2526,31 @@ mod tests {
 
         assert!(matches!(
             PaymentRequest::from_bech32_string(&encoded),
+            Err(Error::InvalidStructure)
+        ));
+    }
+
+    #[test]
+    fn test_decode_rejects_malformed_mint_preferred_tlv() {
+        for value in [&[][..], &[0, 1][..]] {
+            let mut writer = TlvWriter::new();
+            writer
+                .write_tlv(0x09, value)
+                .expect("mint_preferred should fit in TLV length");
+
+            assert!(matches!(
+                PaymentRequest::from_bech32_bytes(&writer.into_bytes()),
+                Err(Error::InvalidLength)
+            ));
+        }
+
+        let mut writer = TlvWriter::new();
+        writer
+            .write_tlv(0x09, &[2])
+            .expect("mint_preferred should fit in TLV length");
+
+        assert!(matches!(
+            PaymentRequest::from_bech32_bytes(&writer.into_bytes()),
             Err(Error::InvalidStructure)
         ));
     }
