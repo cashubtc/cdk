@@ -611,6 +611,7 @@ impl<'a> Arbitrary<'a> for PaymentRequestArb {
             None
         };
         let single_use: Option<bool> = u.arbitrary()?;
+        let mint_preferred: Option<bool> = u.arbitrary()?;
         let num_mints = u.int_in_range(0..=2)?;
         let mints: Vec<MintUrl> = (0..num_mints)
             .map(|_| MintUrlArb::arbitrary(u).map(|m| m.into_inner()))
@@ -623,7 +624,7 @@ impl<'a> Arbitrary<'a> for PaymentRequestArb {
             unit,
             single_use,
             mints,
-            mint_preferred: None,
+            mint_preferred,
             fee_reserve: None,
             supported_methods: Vec::new(),
             description,
