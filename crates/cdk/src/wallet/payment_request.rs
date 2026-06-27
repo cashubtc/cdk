@@ -201,8 +201,68 @@ impl Wallet {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    #[test]
+    fn strict_mint_policy_only_accepts_listed_mints() {
+        let listed_mint = MintUrl::from_str("https://listed.example.com").expect("valid URL");
+        let unlisted_mint = MintUrl::from_str("https://unlisted.example.com").expect("valid URL");
+        let mints = vec![listed_mint.clone()];
+
+        assert!(payment_request_mint_policy_accepts_mint(
+            &mints,
+            None,
+            &listed_mint
+        ));
+        assert!(!payment_request_mint_policy_accepts_mint(
+            &mints,
+            None,
+            &unlisted_mint
+        ));
+        assert!(!payment_request_mint_policy_accepts_mint(
+            &mints,
+            Some(false),
+            &unlisted_mint
+        ));
+    }
+
+    #[test]
+    fn preferred_or_empty_mint_policy_accepts_unlisted_mints() {
+        let listed_mint = MintUrl::from_str("https://listed.example.com").expect("valid URL");
+        let unlisted_mint = MintUrl::from_str("https://unlisted.example.com").expect("valid URL");
+        let mints = vec![listed_mint];
+
+        assert!(payment_request_mint_policy_accepts_mint(
+            &mints,
+            Some(true),
+            &unlisted_mint
+        ));
+        assert!(payment_request_mint_policy_accepts_mint(
+            &[],
+            None,
+            &unlisted_mint
+        ));
+    }
+}
+
 fn payment_request_mint_list_is_strict(payment_request: &PaymentRequest) -> bool {
-    !payment_request.mints.is_empty() && payment_request.mint_preferred != Some(true)
+    payment_request_mint_policy_is_strict(&payment_request.mints, payment_request.mint_preferred)
+}
+
+fn payment_request_mint_policy_is_strict(mints: &[MintUrl], mint_preferred: Option<bool>) -> bool {
+    !mints.is_empty() && mint_preferred != Some(true)
+}
+
+fn payment_request_mint_policy_accepts_mint(
+    mints: &[MintUrl],
+    mint_preferred: Option<bool>,
+    mint_url: &MintUrl,
+) -> bool {
+    !payment_request_mint_policy_is_strict(mints, mint_preferred) || mints.contains(mint_url)
 }
 
 fn payment_request_uses_unlisted_mint(
@@ -314,6 +374,10 @@ pub struct NostrWaitInfo {
     pub relays: Vec<String>,
     /// The recipient public key to subscribe to for incoming events
     pub pubkey: nostr_sdk::PublicKey,
+    /// Mint URLs accepted or preferred by the original payment request
+    pub mints: Vec<MintUrl>,
+    /// Whether the original request's mint list is preferred instead of strict
+    pub mint_preferred: Option<bool>,
 }
 
 impl WalletRepository {
@@ -620,6 +684,8 @@ impl WalletRepository {
                             keys,
                             relays,
                             pubkey: nprofile.public_key,
+                            mints: mints.clone(),
+                            mint_preferred: None,
                         }),
                     )
                 }
@@ -744,6 +810,8 @@ impl WalletRepository {
             keys,
             relays,
             pubkey,
+            mints,
+            mint_preferred,
         } = info;
 
         let mut stream = NostrPaymentEventStream::new(keys, relays, pubkey);
@@ -755,6 +823,14 @@ impl WalletRepository {
         while let Some(item) = stream.next().await {
             match item {
                 Ok(payload) => {
+                    if !payment_request_mint_policy_accepts_mint(
+                        &mints,
+                        mint_preferred,
+                        &payload.mint,
+                    ) {
+                        continue;
+                    }
+
                     let token = crate::nuts::Token::new(
                         payload.mint.clone(),
                         payload.proofs,
@@ -801,6 +877,8 @@ impl WalletRepository {
             keys,
             relays,
             pubkey,
+            mints,
+            mint_preferred,
         } = info;
 
         let client = nostr_sdk::Client::new(keys);
@@ -830,6 +908,14 @@ impl WalletRepository {
                         let rumor = unwrapped.rumor;
                         match serde_json::from_str::<PaymentRequestPayload>(&rumor.content) {
                             Ok(payload) => {
+                                if !payment_request_mint_policy_accepts_mint(
+                                    &mints,
+                                    mint_preferred,
+                                    &payload.mint,
+                                ) {
+                                    continue;
+                                }
+
                                 let token = crate::nuts::Token::new(
                                     payload.mint.clone(),
                                     payload.proofs,
