@@ -159,9 +159,9 @@ impl PaymentRequest {
         self.inner.mints.iter().map(|m| m.to_string()).collect()
     }
 
-    /// Get whether the mint list is strict
-    pub fn mints_strict(&self) -> Option<bool> {
-        self.inner.mints_strict
+    /// Get whether the mint list is preferred instead of strict.
+    pub fn mint_preferred(&self) -> Option<bool> {
+        self.inner.mint_preferred
     }
 
     /// Get the fee reserve for payments from non-preferred mints
