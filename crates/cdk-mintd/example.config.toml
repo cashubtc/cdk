@@ -120,10 +120,10 @@ connection_timeout_seconds = 10
 # NOTE: fakewallet is isolated testing mode and cannot be mixed with real payment backends.
 ln_backend = "fakewallet"
 # unit = "sat"          # Optional, defaults to "sat"
-# min_mint = 1          # Optional, defaults to 1
-# max_mint = 500000     # Optional, defaults to 500000
-# min_melt = 1          # Optional, defaults to 1
-# max_melt = 500000     # Optional, defaults to 500000
+min_mint = 1
+max_mint = 500000
+min_melt = 1
+max_melt = 500000
 
 [onchain]
 # Required onchain backend `bdk`, `fakewallet`, or `none`.
@@ -131,10 +131,10 @@ ln_backend = "fakewallet"
 # Use `fakewallet` with `ln_backend = "fakewallet"` for fully fake rails, or with
 # `ln_backend = "none"` for fake onchain-only testing.
 onchain_backend = "fakewallet"
-# min_mint = 1          # Optional, defaults to 1
-# max_mint = 500000     # Optional, defaults to 500000
-# min_melt = 1          # Optional, defaults to 1
-# max_melt = 500000     # Optional, defaults to 500000
+min_mint = 1000
+max_mint = 1000000
+min_melt = 546
+max_melt = 1000000
 
 # [bdk]
 # mnemonic = "your twelve or twenty-four word mnemonic phrase here"
