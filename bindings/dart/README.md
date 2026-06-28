@@ -72,6 +72,27 @@ and variables must be configured in the **CDK monorepo** repository settings
 
 Set this under **Settings → Secrets and variables → Actions → Variables**.
 
+## Testing
+
+By default, running tests will skip live mint integration tests to allow offline/local testing:
+
+```bash
+dart test
+```
+
+To run the live mint integration tests, provide the `CDK_DART_TEST_MINT_URL` environment variable:
+
+```bash
+CDK_DART_TEST_MINT_URL=https://testnut.cashudevkit.org dart test
+```
+
+If the mint has a slower auto-payment settlement, you can optionally configure the settlement delay (in seconds):
+
+```bash
+CDK_DART_TEST_MINT_URL=https://testnut.cashudevkit.org CDK_DART_MINT_SETTLEMENT_DELAY_SECONDS=5 dart test
+```
+
 ## License
 
 [MIT](https://github.com/cashubtc/cdk/blob/main/LICENSE)
+
