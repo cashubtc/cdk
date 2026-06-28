@@ -39,6 +39,30 @@ jobs:
       - name: typos
         run: nix develop -i -L .#stable --command typos
 
+  # Warm the shared Crane dependency derivation on each physical NixOS runner.
+  # The ephemeral nspawn job containers use the host Nix daemon/store, but
+  # cdk-runner-01 and cdk-runner-02 do not share a store with each other.
+  warm-nix-cache:
+    name: "Warm Nix cache (${{ matrix.host }})"
+    runs-on: [self-hosted, nix, "${{ matrix.host }}"]
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [fuzz-a, fuzz-b]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Build shared Crane dependencies
+        run: nix build -L .#deps
+
   quick-check:
     name: "Quick Check (lint, clippy, unit tests)"
     runs-on: self-hosted
@@ -78,7 +102,7 @@ jobs:
     name: "Example: ${{ matrix.example }}"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: [pre-commit-checks, discover-examples]
+    needs: [warm-nix-cache, discover-examples]
     strategy:
       fail-fast: true
       matrix:
@@ -126,7 +150,7 @@ jobs:
     name: "Check: ${{ matrix.check }}"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: [pre-commit-checks, discover-checks]
+    needs: [warm-nix-cache, discover-checks]
     strategy:
       fail-fast: false
       matrix:
@@ -150,7 +174,7 @@ jobs:
     name: "Build integration test binaries"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: warm-nix-cache
     steps:
       - name: checkout
         uses: actions/checkout@v5
@@ -513,7 +537,7 @@ jobs:
     name: "Documentation tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: warm-nix-cache
     steps:
       - name: checkout
         uses: actions/checkout@v5
@@ -547,7 +571,7 @@ jobs:
     name: "FFI Python tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: warm-nix-cache
     steps:
       - name: checkout
         uses: actions/checkout@v5
