@@ -63,6 +63,27 @@ jobs:
       - name: Build shared Crane dependencies
         run: nix build -L .#deps
 
+  warm-msrv-nix-cache:
+    name: "Warm MSRV Nix cache (${{ matrix.host }})"
+    runs-on: [self-hosted, nix, "${{ matrix.host }}"]
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [fuzz-a, fuzz-b]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Build MSRV Crane dependencies
+        run: nix build -L .#deps-msrv
+
   quick-check:
     name: "Quick Check (lint, clippy, unit tests)"
     runs-on: self-hosted
@@ -440,7 +461,7 @@ jobs:
     name: "MSRV: ${{ matrix.check }}"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: [pre-commit-checks, discover-msrv-checks]
+    needs: [warm-msrv-nix-cache, discover-msrv-checks]
     strategy:
       fail-fast: true
       matrix:
@@ -479,7 +500,7 @@ jobs:
     name: "WASM: ${{ matrix.check }}"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: [pre-commit-checks, discover-wasm-checks]
+    needs: [warm-nix-cache, discover-wasm-checks]
     strategy:
       fail-fast: true
       matrix:
@@ -611,7 +632,7 @@ jobs:
     name: "Dart binding tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: warm-nix-cache
     steps:
       - name: checkout
         uses: actions/checkout@v5
@@ -622,7 +643,10 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Build native library and generate bindings
-        run: nix develop -L .#bindings --command just binding-dart
+        run: |
+          result=$(nix build -L .#dart-bindings --print-out-paths --no-link)
+          cp -r "$result"/* bindings/dart/
+          chmod -R u+w bindings/dart/lib/src/generated/
       - name: Run Dart tests
         run: nix develop -L .#bindings --command just test-dart
 
@@ -630,7 +654,7 @@ jobs:
     name: "Kotlin binding tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: warm-nix-cache
     steps:
       - name: checkout
         uses: actions/checkout@v5
@@ -641,7 +665,10 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Build native library and generate bindings
-        run: nix develop -L .#bindings --command just binding-kotlin
+        run: |
+          result=$(nix build -L .#kotlin-bindings --print-out-paths --no-link)
+          cp -r "$result"/* bindings/kotlin/
+          chmod -R u+w bindings/kotlin/cdk-jvm/src/main/kotlin bindings/kotlin/cdk-jvm/src/main/resources
       - name: Run Kotlin tests
         run: nix develop -L .#bindings --command just test-kotlin
 
@@ -649,7 +676,7 @@ jobs:
     name: "Go binding tests"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: warm-nix-cache
     steps:
       - name: checkout
         uses: actions/checkout@v5
