@@ -699,10 +699,21 @@ _ffi-lib-ext:
 
 # Build the FFI library
 ffi-build *ARGS="--release":
-  cargo build {{ARGS}} --package cdk-ffi
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  if [[ "{{ARGS}}" == *"--debug"* ]]; then
+    cargo build --package cdk-ffi
+  else
+    cargo build {{ARGS}} --package cdk-ffi
+  fi
+
+# Check the FFI crate
+ffi-check:
+  cargo check --package cdk-ffi --all-targets
 
 # Generate bindings for a specific language
-ffi-generate LANGUAGE *ARGS="--release": ffi-build
+ffi-generate LANGUAGE *ARGS="--release":
   #!/usr/bin/env bash
   set -euo pipefail
   LANG="{{LANGUAGE}}"
@@ -730,8 +741,9 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
     BUILD_TYPE="release"
   else
     BUILD_TYPE="debug"
-    cargo build --package cdk-ffi
   fi
+
+  just ffi-build {{ARGS}}
 
   LIB_EXT=$(just _ffi-lib-ext)
 
@@ -741,7 +753,8 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
   cargo run -p cdk-ffi --bin uniffi-bindgen generate \
     --library target/$BUILD_TYPE/libcdk_ffi.$LIB_EXT \
     --language $LANG \
-    --out-dir target/bindings/$LANG
+    --out-dir target/bindings/$LANG \
+    --no-format
 
   echo "✅ $LANG bindings generated in target/bindings/$LANG/"
 
@@ -824,7 +837,7 @@ ffi-generate-kotlin *ARGS="--release":
   just ffi-generate kotlin {{ARGS}}
 
 # Generate bindings for all supported languages
-ffi-generate-all *ARGS="--release": ffi-build
+ffi-generate-all *ARGS="--release":
   @echo "🔧 Generating UniFFI bindings for all languages..."
   just ffi-generate python {{ARGS}}
   just ffi-generate swift {{ARGS}}

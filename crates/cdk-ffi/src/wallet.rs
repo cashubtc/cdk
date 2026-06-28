@@ -13,8 +13,14 @@ use crate::types::bip321::BitcoinNetwork;
 use crate::types::payment_request::PaymentRequest;
 use crate::types::*;
 
-/// FFI-compatible Wallet
-
+/// FFI-compatible wallet.
+///
+/// Wallet methods can write to the configured local store while they perform
+/// mint, receive, recovery, subscription, and status operations. Mobile host
+/// apps own platform lifecycle handling around these calls: pause or cancel work
+/// when moving to the background unless background network and storage activity
+/// is intended, and use platform facilities such as iOS `beginBackgroundTask`
+/// when an operation must finish after a lifecycle transition.
 #[derive(uniffi::Object)]
 pub struct Wallet {
     inner: Arc<CdkWallet>,
@@ -34,7 +40,13 @@ impl Wallet {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl Wallet {
-    /// Create a new Wallet
+    /// Create a new wallet.
+    ///
+    /// The returned wallet uses `store` for local state. FFI wallet methods may
+    /// write to that store later, so mobile host apps are responsible for
+    /// choosing durable storage locations and coordinating lifecycle transitions
+    /// around wallet calls. For example, use iOS `beginBackgroundTask` if a
+    /// write-capable operation must continue after the app backgrounds.
     ///
     /// Accepts a `WalletStore` which can be:
     /// - `Sqlite { path }` — built-in Rust SQLite backend
@@ -136,7 +148,11 @@ impl Wallet {
         Ok(info.into())
     }
 
-    /// Receive tokens
+    /// Receive tokens.
+    ///
+    /// This verifies and persists received proofs in the local store. Mobile
+    /// hosts should avoid starting it during app background transitions unless
+    /// background network and storage activity is intended.
     pub async fn receive(
         &self,
         token: std::sync::Arc<Token>,
@@ -168,7 +184,11 @@ impl Wallet {
         Ok(())
     }
 
-    /// Receive proofs directly
+    /// Receive proofs directly.
+    ///
+    /// This verifies and persists received proofs in the local store. Mobile
+    /// hosts should avoid starting it during app background transitions unless
+    /// background network and storage activity is intended.
     pub async fn receive_proofs(
         &self,
         proofs: Proofs,
@@ -251,6 +271,9 @@ impl Wallet {
     /// Updates local store with current state from mint.
     /// If there was a crashed mid-mint (pending saga), attempts to complete it.
     /// Does NOT mint tokens directly - use mint() for that.
+    /// This may perform network requests and write recovery/status updates to
+    /// the local store, so mobile hosts should coordinate it with app lifecycle
+    /// transitions.
     ///
     /// **Note:** The mint quote must be known to the wallet (stored locally) for this
     /// function to work. If the quote is not stored locally, use `fetch_mint_quote`
@@ -265,6 +288,9 @@ impl Wallet {
     /// Updates local store with current state from mint.
     /// If there was a crashed mid-mint (pending saga), attempts to complete it.
     /// Does NOT mint tokens directly - use mint() for that.
+    /// This may perform network requests and write recovery/status updates to
+    /// the local store, so mobile hosts should coordinate it with app lifecycle
+    /// transitions.
     ///
     /// **Note:** The mint quote must be known to the wallet (stored locally) for this
     /// function to work. If the quote is not stored locally, use `fetch_mint_quote`
@@ -274,7 +300,11 @@ impl Wallet {
         Ok(quote.into())
     }
 
-    /// Fetch a mint quote from the mint and store it locally
+    /// Fetch a mint quote from the mint and store it locally.
+    ///
+    /// This performs network I/O and writes the fetched quote to the local store.
+    /// Mobile hosts should avoid starting it during app background transitions
+    /// unless background network and storage activity is intended.
     ///
     /// Works with all payment methods (Bolt11, Bolt12, and custom payment methods).
     ///
@@ -293,7 +323,12 @@ impl Wallet {
         Ok(quote.into())
     }
 
-    /// Mint tokens
+    /// Mint tokens.
+    ///
+    /// This writes newly issued proofs and saga state to the local store while
+    /// communicating with the mint. Mobile hosts should coordinate it with app
+    /// lifecycle transitions, using platform background-task support when the
+    /// operation must finish after backgrounding.
     pub async fn mint(
         &self,
         quote_id: String,
@@ -376,6 +411,12 @@ impl Wallet {
         Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
     }
 
+    /// Mint tokens using the unified payment-method interface.
+    ///
+    /// This writes newly issued proofs and saga state to the local store while
+    /// communicating with the mint. Mobile hosts should coordinate it with app
+    /// lifecycle transitions, using platform background-task support when the
+    /// operation must finish after backgrounding.
     pub async fn mint_unified(
         &self,
         quote_id: String,
@@ -561,7 +602,12 @@ impl Wallet {
         Ok(())
     }
 
-    /// Subscribe to wallet events
+    /// Subscribe to wallet events.
+    ///
+    /// The returned subscription may keep polling or receiving network events
+    /// until it is dropped or closed. Mobile hosts should cancel, drop, or stop
+    /// waiting on subscriptions during app background transitions when
+    /// background network or storage activity is not desired.
     pub async fn subscribe(
         &self,
         params: SubscribeParams,
@@ -581,6 +627,10 @@ impl Wallet {
     ///
     /// Use `recv()` on the returned `ActiveSubscription` to receive updates as
     /// `NotificationPayload::MintQuoteUpdate`.
+    /// The returned subscription may keep polling or receiving network events
+    /// until it is dropped or closed. Mobile hosts should cancel, drop, or stop
+    /// waiting on subscriptions during app background transitions when
+    /// background network or storage activity is not desired.
     ///
     /// All quote IDs must belong to the same payment method.
     ///
@@ -685,6 +735,9 @@ impl Wallet {
     ///
     /// This function checks orphaned pending proofs (not managed by active sagas)
     /// with the mint and marks spent proofs accordingly.
+    /// It may perform network requests and write proof-state updates to the
+    /// local store, so mobile hosts should coordinate it with app lifecycle
+    /// transitions.
     pub async fn check_all_pending_proofs(&self) -> Result<Amount, FfiError> {
         let amount = self.inner.check_all_pending_proofs().await?;
         Ok(amount.into())
@@ -694,6 +747,10 @@ impl Wallet {
     ///
     /// Handles interrupted swap, send, receive, issue, and melt operations. Requires
     /// network access to the mint for states that need external status checks.
+    /// Recovery writes saga, proof, quote, and transaction updates to the local
+    /// store. Mobile hosts should run it only when background network and storage
+    /// activity is acceptable, or wrap it in platform background-task support
+    /// such as iOS `beginBackgroundTask`.
     pub async fn recover_incomplete_sagas(&self) -> Result<RecoveryReport, FfiError> {
         let report = self.inner.recover_incomplete_sagas().await?;
         Ok(report.into())

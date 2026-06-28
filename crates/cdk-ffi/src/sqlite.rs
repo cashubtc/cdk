@@ -9,7 +9,14 @@ use crate::{
     SpendingConditions, Transaction, TransactionDirection, TransactionId, WalletDatabase,
 };
 
-/// FFI-compatible WalletSqliteDatabase implementation that implements the WalletDatabaseFfi trait
+/// FFI-compatible SQLite wallet database.
+///
+/// Wallet methods can write to this database from FFI calls that mint, receive,
+/// recover, subscribe, or check quote/proof state. Mobile host apps own
+/// lifecycle handling for the database file: choose a durable app-owned path,
+/// avoid interrupting writes during background transitions, and use platform
+/// facilities such as iOS `beginBackgroundTask` when an operation must finish
+/// after backgrounding.
 #[derive(uniffi::Object)]
 pub struct WalletSqliteDatabase {
     inner: Arc<FfiWalletDatabaseWrapper<CdkWalletSqliteDatabase, CdkDatabaseError>>,
@@ -19,7 +26,11 @@ pub struct WalletSqliteDatabase {
 
 #[uniffi::export]
 impl WalletSqliteDatabase {
-    /// Create a new WalletSqliteDatabase with the given work directory
+    /// Create a new SQLite wallet database at `file_path`.
+    ///
+    /// Wallet operations may later write to this database. Mobile hosts are
+    /// responsible for choosing a durable file location and coordinating app
+    /// lifecycle transitions around write-capable wallet calls.
     #[uniffi::constructor]
     pub fn new(file_path: String) -> Result<Arc<Self>, FfiError> {
         let rt = crate::runtime::RuntimeGuard::new().map_err(FfiError::internal)?;

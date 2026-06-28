@@ -106,7 +106,12 @@ pub fn encode_subscribe_params(params: SubscribeParams) -> Result<String, FfiErr
     Ok(serde_json::to_string(&params)?)
 }
 
-/// FFI-compatible ActiveSubscription
+/// FFI-compatible active wallet subscription.
+///
+/// Subscriptions may keep polling or receiving network events while callers
+/// wait for notifications. Mobile hosts should cancel, drop, or stop waiting on
+/// subscriptions during app background transitions when background network or
+/// storage activity is not desired.
 #[derive(uniffi::Object)]
 pub struct ActiveSubscription {
     inner: std::sync::Arc<tokio::sync::Mutex<cdk::wallet::subscription::ActiveSubscription>>,
@@ -132,7 +137,11 @@ impl ActiveSubscription {
         self.sub_id.clone()
     }
 
-    /// Receive the next notification
+    /// Receive the next notification.
+    ///
+    /// This waits for subscription activity. Mobile hosts should stop waiting or
+    /// cancel the subscription during app background transitions unless
+    /// background network activity is intended.
     pub async fn recv(&self) -> Result<NotificationPayload, FfiError> {
         let mut guard = self.inner.lock().await;
         guard
@@ -142,7 +151,10 @@ impl ActiveSubscription {
             .map(Into::into)
     }
 
-    /// Try to receive a notification without blocking
+    /// Try to receive a notification without blocking.
+    ///
+    /// Mobile hosts should still cancel or drop the subscription during app
+    /// background transitions when background network activity is not desired.
     pub async fn try_recv(&self) -> Result<Option<NotificationPayload>, FfiError> {
         let mut guard = self.inner.lock().await;
         Ok(guard.try_recv().map(Into::into))
