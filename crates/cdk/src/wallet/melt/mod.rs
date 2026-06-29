@@ -420,6 +420,11 @@ impl<'a> PreparedMelt<'a> {
         self.saga.proofs()
     }
 
+    /// Get the transaction metadata for this melt.
+    pub fn metadata(&self) -> &HashMap<String, String> {
+        &self.metadata
+    }
+
     /// Get the proofs that need to be swapped
     pub fn proofs_to_swap(&self) -> &Proofs {
         self.saga.proofs_to_swap()
@@ -1755,5 +1760,28 @@ mod tests {
         assert_eq!(reserved.len(), 1);
         assert_eq!(reserved[0].state, State::Reserved);
         assert_eq!(reserved[0].proof.amount, Amount::from(1010_u64));
+    }
+
+    #[tokio::test]
+    async fn test_prepared_melt_exposes_metadata() {
+        let db = create_test_db().await;
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        let mut metadata = HashMap::new();
+        metadata.insert("memo".to_string(), "ffi metadata".to_string());
+
+        let proof = test_proof(crate::wallet::test_utils::test_keyset_id(), 1200);
+        let prepared = wallet
+            .prepare_melt_proofs(&quote_id, vec![proof], metadata.clone())
+            .await
+            .unwrap();
+
+        assert_eq!(prepared.metadata(), &metadata);
     }
 }

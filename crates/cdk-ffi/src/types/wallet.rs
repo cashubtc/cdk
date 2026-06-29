@@ -632,7 +632,7 @@ impl PreparedMelt {
             swap_fee: prepared.swap_fee().into(),
             input_fee: prepared.input_fee().into(),
             input_fee_without_swap: prepared.input_fee_without_swap().into(),
-            metadata: HashMap::new(),
+            metadata: prepared.metadata().clone(),
         }
     }
 }
