@@ -378,8 +378,6 @@ where
                 keyset_id,
                 amount,
                 c,
-                dleq_e,
-                dleq_s,
                 blinded_message,
             FROM
                 blind_signature
