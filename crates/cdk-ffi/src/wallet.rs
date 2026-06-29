@@ -445,6 +445,18 @@ impl Wallet {
         Ok(quote.into())
     }
 
+    /// Check melt quote status and attempt to complete any in-progress saga.
+    pub async fn check_melt_quote_status(&self, quote_id: String) -> Result<MeltQuote, FfiError> {
+        let quote = self.inner.check_melt_quote_status(&quote_id).await?;
+        Ok(quote.into())
+    }
+
+    /// Finalize pending melt operations for this wallet.
+    pub async fn finalize_pending_melts(&self) -> Result<Vec<FinalizedMelt>, FfiError> {
+        let finalized = self.inner.finalize_pending_melts().await?;
+        Ok(finalized.into_iter().map(Into::into).collect())
+    }
+
     /// Swap proofs
     pub async fn swap(
         &self,

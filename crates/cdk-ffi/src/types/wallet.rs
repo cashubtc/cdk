@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
 use cdk_common::bitcoin;
 use serde::{Deserialize, Serialize};
@@ -589,6 +590,81 @@ impl From<cdk_common::common::FinalizedMelt> for FinalizedMelt {
     }
 }
 
+/// A pending async melt accepted by the mint.
+///
+/// FFI callers receive this handle when the mint accepts a melt for background
+/// processing. Call [`PendingMelt::wait`] from a background task/coroutine to
+/// poll existing wallet recovery until the melt settles.
+///
+/// Mobile apps should also call [`crate::Wallet::recover_incomplete_sagas`] or
+/// [`crate::Wallet::finalize_pending_melts`] on startup/resume, because
+/// operating systems may suspend or cancel long-running background waits.
+#[derive(uniffi::Object)]
+pub struct PendingMelt {
+    wallet: Arc<cdk::Wallet>,
+    quote_id: String,
+    operation_id: uuid::Uuid,
+    payment_method: cdk_common::PaymentMethod,
+}
+
+impl std::fmt::Debug for PendingMelt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingMelt")
+            .field("operation_id", &self.operation_id)
+            .field("quote_id", &self.quote_id)
+            .finish()
+    }
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl PendingMelt {
+    /// Quote ID for this pending melt.
+    pub fn quote_id(&self) -> String {
+        self.quote_id.clone()
+    }
+
+    /// Operation ID for this pending melt saga.
+    pub fn operation_id(&self) -> String {
+        self.operation_id.to_string()
+    }
+
+    /// Wait for this pending melt to complete.
+    ///
+    /// This method polls the wallet's existing melt recovery path until the
+    /// pending saga finalizes or fails.
+    ///
+    /// This can wait for an extended period. Swift/Kotlin callers should run it
+    /// in a cancellable background task or coroutine, not directly in UI
+    /// control flow. If the app is suspended or killed before this returns,
+    /// call `Wallet::recover_incomplete_sagas()` or
+    /// `Wallet::finalize_pending_melts()` after restart/resume.
+    pub async fn wait(&self) -> Result<FinalizedMelt, FfiError> {
+        let finalized = self
+            .wallet
+            .wait_pending_melt(
+                self.operation_id,
+                &self.quote_id,
+                self.payment_method.clone(),
+            )
+            .await?;
+
+        Ok(finalized.into())
+    }
+}
+
+/// Result of async-preferred melt confirmation.
+///
+/// `Paid` means the melt finalized during confirmation. `Pending` means the
+/// mint accepted the melt for asynchronous processing; call
+/// [`PendingMelt::wait`] to complete the normal app flow.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum MeltConfirmOutcome {
+    /// Melt finalized during confirmation.
+    Paid { finalized: FinalizedMelt },
+    /// Mint accepted async melt processing and the payment is still pending.
+    Pending { pending: Arc<PendingMelt> },
+}
+
 /// FFI-compatible PreparedMelt
 ///
 /// This wraps the data from a prepared melt operation along with a reference
@@ -596,7 +672,7 @@ impl From<cdk_common::common::FinalizedMelt> for FinalizedMelt {
 /// that doesn't work with FFI, so we store the wallet and cached data separately.
 #[derive(uniffi::Object)]
 pub struct PreparedMelt {
-    wallet: std::sync::Arc<cdk::Wallet>,
+    wallet: Arc<cdk::Wallet>,
     operation_id: uuid::Uuid,
     quote: cdk_common::wallet::MeltQuote,
     proofs: cdk::nuts::Proofs,
@@ -619,10 +695,7 @@ impl std::fmt::Debug for PreparedMelt {
 
 impl PreparedMelt {
     /// Create a new FFI PreparedMelt from a cdk::wallet::PreparedMelt and wallet
-    pub fn new(
-        wallet: std::sync::Arc<cdk::Wallet>,
-        prepared: &cdk::wallet::PreparedMelt<'_>,
-    ) -> Self {
+    pub fn new(wallet: Arc<cdk::Wallet>, prepared: &cdk::wallet::PreparedMelt<'_>) -> Self {
         Self {
             wallet,
             operation_id: prepared.operation_id(),
@@ -633,6 +706,39 @@ impl PreparedMelt {
             input_fee: prepared.input_fee().into(),
             input_fee_without_swap: prepared.input_fee_without_swap().into(),
             metadata: prepared.metadata().clone(),
+        }
+    }
+
+    async fn confirm_prefer_async_with_options(
+        &self,
+        options: MeltConfirmOptions,
+    ) -> Result<MeltConfirmOutcome, FfiError> {
+        let outcome = self
+            .wallet
+            .confirm_prepared_melt_prefer_async_with_options(
+                self.operation_id,
+                self.quote.clone(),
+                self.proofs.clone(),
+                self.proofs_to_swap.clone(),
+                self.input_fee.into(),
+                self.input_fee_without_swap.into(),
+                self.metadata.clone(),
+                options.into(),
+            )
+            .await?;
+
+        match outcome {
+            cdk::wallet::MeltOutcome::Paid(finalized) => Ok(MeltConfirmOutcome::Paid {
+                finalized: finalized.into(),
+            }),
+            cdk::wallet::MeltOutcome::Pending(_) => Ok(MeltConfirmOutcome::Pending {
+                pending: Arc::new(PendingMelt {
+                    wallet: Arc::clone(&self.wallet),
+                    quote_id: self.quote.id.clone(),
+                    operation_id: self.operation_id,
+                    payment_method: self.quote.payment_method.clone(),
+                }),
+            }),
         }
     }
 }
@@ -747,6 +853,23 @@ impl PreparedMelt {
             .await?;
 
         Ok(finalized.into())
+    }
+
+    /// Confirm the prepared melt using NUT-05 async support when the mint accepts it.
+    ///
+    /// If the melt completes immediately, this returns
+    /// `MeltConfirmOutcome::Paid`. If the mint accepts the payment for
+    /// background processing, this returns `MeltConfirmOutcome::Pending` with a
+    /// `PendingMelt` handle.
+    ///
+    /// FFI callers should call `PendingMelt::wait()` from a background
+    /// task/coroutine to poll for completion. Mobile apps should also call
+    /// `recover_incomplete_sagas()` or `finalize_pending_melts()` on
+    /// startup/resume, because operating systems may suspend or cancel
+    /// long-running background waits.
+    pub async fn confirm_prefer_async(&self) -> Result<MeltConfirmOutcome, FfiError> {
+        self.confirm_prefer_async_with_options(MeltConfirmOptions::default())
+            .await
     }
 
     /// Cancel the prepared melt and release reserved proofs
