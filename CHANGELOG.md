@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+## [0.17.2](https://github.com/cashubtc/cdk/releases/tag/v0.17.2)
+
+### Added
+
+- cdk-ffi: Expose NUT-27 mint backup through wallet repository bindings ([thesimplekid]).
+
+### Fixed
+
+- cdk-cln, cdk-ldk-node: Prioritize payment hash status checks when resolving Lightning payment status ([thesimplekid]).
+- kotlin: Support Android 16 KB page sizes, use the Android JNA artifact for `cdk-android`, ship compatible Android JNA and x86 libraries, and parse Android ELF alignment exponents ([thesimplekid]).
+- swift: Add framework bundle metadata to Swift release artifacts ([thesimplekid]).
+
 ## [0.17.1](https://github.com/cashubtc/cdk/releases/tag/v0.17.1)
 
 ### Fixed

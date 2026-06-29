@@ -1171,7 +1171,7 @@ dependencies = [
 
 [[package]]
 name = "cashu"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "bip39",
  "bitcoin 0.32.101",
@@ -1243,7 +1243,7 @@ dependencies = [
 
 [[package]]
 name = "cdk"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1296,7 +1296,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-axum"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1322,7 +1322,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-bdk"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "async-trait",
  "bdk_bitcoind_rpc",
@@ -1344,7 +1344,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-cli"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "anyhow",
  "bip39",
@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-cln"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.101",
@@ -1385,7 +1385,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-common"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1422,7 +1422,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-fake-wallet"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.101",
@@ -1443,7 +1443,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "android_logger",
  "async-trait",
@@ -1473,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi-dart"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "camino",
  "cdk-ffi",
@@ -1483,7 +1483,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi-go"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "cdk-ffi",
  "uniffi",
@@ -1491,7 +1491,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi-kotlin"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "cdk-ffi",
  "uniffi",
@@ -1499,7 +1499,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ffi-swift"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "cdk-ffi",
  "uniffi",
@@ -1507,7 +1507,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-http-client"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "futures",
  "futures-channel",
@@ -1529,7 +1529,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-integration-tests"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1575,7 +1575,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-ldk-node"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -1601,7 +1601,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-lnbits"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1619,7 +1619,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-lnd"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1644,7 +1644,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-mint-rpc"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "anyhow",
  "bip39",
@@ -1669,7 +1669,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-mintd"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1708,7 +1708,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-npubcash"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1732,7 +1732,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-payment-processor"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1768,7 +1768,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-postgres"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.101",
@@ -1791,7 +1791,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-prometheus"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "anyhow",
  "futures",
@@ -1809,7 +1809,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-redb"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "async-trait",
  "cdk-common",
@@ -1827,7 +1827,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-signatory"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1852,7 +1852,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-sql-common"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.101",
@@ -1870,7 +1870,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-sqlite"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.101",
@@ -1890,7 +1890,7 @@ dependencies = [
 
 [[package]]
 name = "cdk-supabase"
-version = "0.17.2-rc.2"
+version = "0.17.2"
 dependencies = [
  "aes-gcm",
  "async-trait",
