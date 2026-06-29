@@ -463,6 +463,12 @@ nutshell-wallet-itest:
   set -euo pipefail
   bash ./misc/nutshell_wallet_itest.sh
 
+# Run the nutshell database migration fuzzer integration test
+nutshell-migration-itest:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cargo test -p cdk-integration-tests --test nutshell_migration_fuzzer -- --test-threads 1
+
 # Start interactive regtest environment (Bitcoin + 4 LN nodes + 2 CDK mints)
 regtest db="sqlite" host="127.0.0.1":
   #!/usr/bin/env bash

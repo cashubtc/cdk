@@ -36,4 +36,19 @@ pub struct CLIArgs {
         default_value = "true"
     )]
     pub enable_logging: bool,
+    #[command(subcommand)]
+    pub subcommand: Option<Subcommand>,
+}
+
+#[derive(Debug, clap::Subcommand)]
+pub enum Subcommand {
+    /// Migrate from a Nutshell database
+    MigrateNutshell {
+        /// Path to nutshell sqlite DB file or nutshell postgres connection string
+        #[arg(
+            long,
+            help = "Path to nutshell sqlite DB file or nutshell postgres connection string"
+        )]
+        nutshell_db: String,
+    },
 }

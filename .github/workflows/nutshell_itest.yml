@@ -53,3 +53,19 @@ jobs:
       - name: Show Docker logs if tests fail
         if: failure()
         run: docker logs nutshell-wallet || true
+
+  nutshell-migration-integration-tests:
+    name: Nutshell Migration Integration Tests
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Test Nutshell Migration
+        run: nix develop -i -L .#integration --command just nutshell-migration-itest

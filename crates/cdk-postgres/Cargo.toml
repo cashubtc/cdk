@@ -31,6 +31,8 @@ tokio-postgres = "0.7.13"
 futures-util = "0.3.31"
 postgres-native-tls = "0.5.1"
 native-tls = "=0.2.14"
+chrono = { version = "0.4", features = ["serde"] }
+hex = "0.4"
 once_cell.workspace = true
 paste.workspace = true
 

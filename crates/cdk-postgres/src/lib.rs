@@ -21,6 +21,9 @@ use tokio_postgres::{connect, Client, Error as PgError, NoTls};
 mod db;
 mod value;
 
+/// Nutshell migration module
+pub mod migrate;
+
 #[derive(Debug)]
 /// Postgres connection pool
 pub struct PgConnectionPool;
