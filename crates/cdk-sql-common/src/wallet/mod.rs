@@ -1260,9 +1260,9 @@ where
         let rows_affected = query(
             r#"
  INSERT INTO melt_quote
- (id, unit, amount, request, fee_reserve, state, expiry, payment_method, estimated_blocks, fee_index, version, mint_url, used_by_operation)
+ (id, unit, amount, request, fee_reserve, state, expiry, payment_proof, payment_method, estimated_blocks, fee_index, version, mint_url, used_by_operation)
  VALUES
- (:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_method, :estimated_blocks, :fee_index, :version, :mint_url, :used_by_operation)
+ (:id, :unit, :amount, :request, :fee_reserve, :state, :expiry, :payment_proof, :payment_method, :estimated_blocks, :fee_index, :version, :mint_url, :used_by_operation)
  ON CONFLICT(id) DO UPDATE SET
      unit = excluded.unit,
      amount = excluded.amount,
@@ -1270,6 +1270,7 @@ where
      fee_reserve = excluded.fee_reserve,
      state = excluded.state,
      expiry = excluded.expiry,
+     payment_proof = COALESCE(excluded.payment_proof, melt_quote.payment_proof),
      payment_method = excluded.payment_method,
      estimated_blocks = excluded.estimated_blocks,
      fee_index = excluded.fee_index,
@@ -1287,6 +1288,7 @@ where
         .bind("fee_reserve", u64::from(quote.fee_reserve) as i64)
         .bind("state", quote.state.to_string())
         .bind("expiry", quote.expiry as i64)
+        .bind("payment_proof", quote.payment_proof)
         .bind("payment_method", quote.payment_method.to_string())
         .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
         .bind("fee_index", quote.fee_index.map(i64::from))
