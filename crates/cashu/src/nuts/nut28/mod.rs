@@ -102,7 +102,7 @@ pub fn ecdh_kdf(
     let shared = pubkey.mul_tweak(&SECP, &secret_key.as_scalar())?;
 
     // SharedSecret exposes 32 bytes (x-coordinate)
-    let z_x: [u8; 32] = shared.x_only_public_key().0.serialize();
+    let z_x: [u8; 32] = shared.x_only_public_key().serialize();
 
     // Build KDF input per NUT-28 spec: domain tag || x-only(Z) || canonical_slot (1 byte)
     let mut engine = Sha256::engine();
@@ -178,7 +178,7 @@ pub fn derive_signing_key_bip340(
     let privkey_pubkey = privkey.public_key();
 
     // Verify the x-coordinates match
-    let (unblinded_x_only, unblinded_parity) = unblinded_pubkey.x_only_public_key();
+    let (unblinded_x_only, unblinded_parity) = unblinded_pubkey.x_only_public_key_with_parity();
     let privkey_x_only = privkey_pubkey.x_only_public_key();
 
     // Compute parity from the compressed public key bytes

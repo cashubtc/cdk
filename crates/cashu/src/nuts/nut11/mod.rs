@@ -58,6 +58,9 @@ pub enum Error {
     /// Duplicate public key in multisig (same x-coordinate)
     #[error("Duplicate public key in multisig (same x-coordinate)")]
     DuplicatePubkey,
+    /// P2PK/HTLC spending conditions require secp256k1 public keys
+    #[error("P2PK/HTLC public keys must be secp256k1")]
+    NonSecp256k1Pubkey,
     /// Impossible multisig configuration: num_sigs exceeds available pubkeys
     #[error(
         "Impossible multisig: required {required} signatures but only {available} keys available"
@@ -361,7 +364,7 @@ pub(crate) fn valid_signatures(
 impl BlindedMessage {
     /// Sign [BlindedMessage]
     pub fn sign_p2pk(&mut self, secret_key: SecretKey) -> Result<(), Error> {
-        let msg: [u8; 33] = self.blinded_secret.to_bytes();
+        let msg = self.blinded_secret.to_bytes();
         let signature: Signature = secret_key.sign(&msg)?;
 
         let signatures = vec![signature.to_string()];
@@ -685,6 +688,36 @@ mod tests {
         let invalid_proof: Proof = serde_json::from_str(invalid_proof).unwrap();
 
         assert!(invalid_proof.verify_p2pk().is_err());
+    }
+
+    #[test]
+    fn test_verify_p2pk_with_bls_pubkey_data_is_rejected_not_panic() {
+        use crate::nuts::nut01::BlsG1PublicKey;
+
+        // An attacker-crafted P2PK secret whose `data` is a valid compressed BLS G1
+        // point (48 bytes / 96 hex chars) instead of a secp256k1 key. Before the fix
+        // this panicked in `PublicKey::x_only_public_key`; now it must return an error.
+        let bls_data = PublicKey::from(BlsG1PublicKey::hash_to_curve(b"attacker point")).to_hex();
+        assert_eq!(bls_data.len(), 96);
+
+        let secret_data = crate::nuts::nut10::SecretData::new(bls_data, None::<Vec<Vec<String>>>);
+        let nut10_secret = crate::nuts::nut10::Secret::new(Kind::P2PK, secret_data);
+        let secret: Secret = nut10_secret.try_into().unwrap();
+
+        let proof = Proof {
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            amount: Amount::ZERO,
+            secret,
+            c: PublicKey::from_str(
+                "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+            )
+            .unwrap(),
+            witness: Some(Witness::P2PKWitness(P2PKWitness { signatures: vec![] })),
+            dleq: None,
+            p2pk_e: None,
+        };
+
+        assert!(proof.verify_p2pk().is_err());
     }
 
     #[test]

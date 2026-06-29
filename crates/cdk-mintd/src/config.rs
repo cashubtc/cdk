@@ -729,7 +729,7 @@ pub struct FakeWalletKeysetRotation {
     /// Input fee in parts per thousand
     #[serde(default)]
     pub input_fee_ppk: u64,
-    /// Keyset version: "v1" (Version00) or "v2" (Version01)
+    /// Keyset version: "v1" (Version00), "v2" (Version01), or "v3" (Version02)
     #[serde(default = "default_keyset_version")]
     pub version: String,
     /// If true, the keyset will be created with a past expiry (expired)
@@ -739,7 +739,7 @@ pub struct FakeWalletKeysetRotation {
 
 #[cfg(feature = "fakewallet")]
 fn default_keyset_version() -> String {
-    "v1".to_string()
+    "v3".to_string()
 }
 
 #[cfg(feature = "fakewallet")]

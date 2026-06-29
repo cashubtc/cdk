@@ -352,9 +352,16 @@ impl WalletTrait for super::Wallet {
     }
 
     #[instrument(skip(self, token_str))]
+    async fn verify_token_signatures(&self, token_str: &str) -> Result<(), Self::Error> {
+        let token = cdk_common::nuts::nut00::token::Token::from_str(token_str)?;
+        self.verify_token_signatures(&token).await
+    }
+
+    #[allow(deprecated)]
+    #[instrument(skip(self, token_str))]
     async fn verify_token_dleq(&self, token_str: &str) -> Result<(), Self::Error> {
         let token = cdk_common::nuts::nut00::token::Token::from_str(token_str)?;
-        self.verify_token_dleq(&token).await
+        self.verify_token_signatures(&token).await
     }
 
     #[instrument(skip(self, request))]

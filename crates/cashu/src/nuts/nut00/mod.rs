@@ -23,8 +23,8 @@ use crate::amount::FeeAndAmounts;
 #[cfg(feature = "wallet")]
 use crate::amount::SplitTarget;
 #[cfg(feature = "wallet")]
-use crate::dhke::blind_message;
-use crate::dhke::hash_to_curve;
+use crate::dhke::blind_message_for_version;
+use crate::dhke::hash_to_curve_for_version;
 use crate::nuts::nut01::PublicKey;
 #[cfg(feature = "wallet")]
 use crate::nuts::nut01::SecretKey;
@@ -407,9 +407,13 @@ impl Proof {
 
     /// Get y from proof
     ///
-    /// Where y is `hash_to_curve(secret)`
+    /// Where y is `hash_to_curve(secret)` for secp256k1 keysets and BLS G1
+    /// hash-to-curve for v3 keysets.
     pub fn y(&self) -> Result<PublicKey, Error> {
-        Ok(hash_to_curve(self.secret.as_bytes())?)
+        Ok(hash_to_curve_for_version(
+            self.secret.as_bytes(),
+            self.keyset_id.get_version(),
+        )?)
     }
 }
 
@@ -450,7 +454,7 @@ pub struct ProofV4 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness: Option<Witness>,
     /// DLEQ Proof
-    #[serde(rename = "d")]
+    #[serde(rename = "d", default, skip_serializing_if = "Option::is_none")]
     pub dleq: Option<ProofDleq>,
     /// P2BK Ephemeral Public Key (NUT-28)
     #[serde(rename = "pe", default, skip_serializing_if = "Option::is_none")]
@@ -590,6 +594,60 @@ where
 {
     let bytes = Vec::<u8>::deserialize(deserializer)?;
     PublicKey::from_slice(&bytes).map_err(serde::de::Error::custom)
+}
+
+#[cfg(test)]
+mod proof_y_tests {
+    use super::*;
+    use crate::nuts::nut02::KeySetVersion;
+
+    fn keyset_id(version: KeySetVersion) -> Id {
+        match version {
+            KeySetVersion::Version00 => {
+                Id::from_bytes(&[vec![version.to_byte()], vec![1; 7]].concat())
+            }
+            KeySetVersion::Version01 | KeySetVersion::Version02 => {
+                Id::from_bytes(&[vec![version.to_byte()], vec![1; 32]].concat())
+            }
+        }
+        .expect("valid keyset id")
+    }
+
+    #[test]
+    fn proof_y_matches_keyset_version() {
+        let secret = Secret::from_str("test proof secret").expect("secret");
+        let secp_c = crate::nuts::SecretKey::generate().public_key();
+        let bls_c = crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"signature").into();
+
+        let v0_y = Proof::new(
+            Amount::from(1),
+            keyset_id(KeySetVersion::Version00),
+            secret.clone(),
+            secp_c,
+        )
+        .y()
+        .expect("v0 y");
+        let v1_y = Proof::new(
+            Amount::from(1),
+            keyset_id(KeySetVersion::Version01),
+            secret.clone(),
+            secp_c,
+        )
+        .y()
+        .expect("v1 y");
+        let v2_y = Proof::new(
+            Amount::from(1),
+            keyset_id(KeySetVersion::Version02),
+            secret,
+            bls_c,
+        )
+        .y()
+        .expect("v2 y");
+
+        assert!(matches!(v0_y, PublicKey::Secp256k1(_)));
+        assert!(matches!(v1_y, PublicKey::Secp256k1(_)));
+        assert!(matches!(v2_y, PublicKey::BlsG1(_)));
+    }
 }
 
 /// Currency Unit
@@ -968,7 +1026,8 @@ impl PreMintSecrets {
 
         for amount in amount_split {
             let secret = Secret::generate();
-            let (blinded, r) = blind_message(&secret.to_bytes(), None)?;
+            let (blinded, r) =
+                blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
@@ -995,7 +1054,8 @@ impl PreMintSecrets {
         let mut output = Vec::with_capacity(secrets.len());
 
         for (secret, amount) in secrets.into_iter().zip(amounts) {
-            let (blinded, r) = blind_message(&secret.to_bytes(), None)?;
+            let (blinded, r) =
+                blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
@@ -1021,7 +1081,8 @@ impl PreMintSecrets {
 
         for _i in 0..count {
             let secret = Secret::generate();
-            let (blinded, r) = blind_message(&secret.to_bytes(), None)?;
+            let (blinded, r) =
+                blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
 
@@ -1106,7 +1167,8 @@ impl PreMintSecrets {
 
             let secret: crate::nuts::nut10::Secret = p2pk_conditions.into();
             let secret: Secret = secret.try_into()?;
-            let (blinded, rs) = blind_message(&secret.to_bytes(), None)?;
+            let (blinded, rs) =
+                blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
@@ -1140,7 +1202,8 @@ impl PreMintSecrets {
             let secret: nut10::Secret = conditions.clone().into();
 
             let secret: Secret = secret.try_into()?;
-            let (blinded, r) = blind_message(&secret.to_bytes(), None)?;
+            let (blinded, r) =
+                blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 

@@ -13,11 +13,11 @@ use tracing::instrument;
 
 use super::AuthMintConnector;
 use crate::amount::SplitTarget;
-use crate::dhke::construct_proofs;
+use crate::dhke::{construct_proofs, verify_bls_message};
 use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
-    nut12, AuthRequired, AuthToken, BlindAuthToken, CurrencyUnit, KeySetInfo, PreMintSecrets,
-    Proofs, ProtectedEndpoint, State,
+    nut12, AuthRequired, AuthToken, BlindAuthToken, CurrencyUnit, KeySetInfo, KeySetVersion,
+    PreMintSecrets, Proofs, ProtectedEndpoint, State,
 };
 use crate::wallet::mint_connector::AuthHttpClient;
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
@@ -464,13 +464,24 @@ impl AuthWallet {
 
                 let keys = self.load_keyset_keys(sig.keyset_id).await?;
                 let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
-                match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
-                    Ok(_) => (),
-                    Err(nut12::Error::MissingDleqProof) => {
-                        tracing::warn!("Signature for bat returned without dleq proof.");
-                        return Err(Error::DleqProofNotProvided);
+                match sig.keyset_id.get_version() {
+                    KeySetVersion::Version00 | KeySetVersion::Version01 => {
+                        match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
+                            Ok(_) => (),
+                            Err(nut12::Error::MissingDleqProof) => {
+                                tracing::warn!("Signature for bat returned without dleq proof.");
+                                return Err(Error::DleqProofNotProvided);
+                            }
+                            Err(_) => return Err(Error::CouldNotVerifyDleq),
+                        }
                     }
-                    Err(_) => return Err(Error::CouldNotVerifyDleq),
+                    KeySetVersion::Version02 => {
+                        if sig.dleq.is_some() {
+                            return Err(Error::CouldNotVerifyDleq);
+                        }
+                        verify_bls_message(key, sig.c, premint.secret.as_bytes())
+                            .map_err(|_| Error::CouldNotVerifyDleq)?;
+                    }
                 }
             }
         }

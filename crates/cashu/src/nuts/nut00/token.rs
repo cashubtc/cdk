@@ -631,6 +631,8 @@ mod tests {
     use super::*;
     use crate::dhke::hash_to_curve;
     use crate::mint_url::MintUrl;
+    use crate::nuts::nut01::BlsG1PublicKey;
+    use crate::nuts::nut02::KeySetVersion;
     use crate::nuts::nut10::{Conditions, SpendingConditions};
     use crate::nuts::nut11::SigFlag;
     use crate::secret::Secret;
@@ -708,8 +710,35 @@ mod tests {
         let token_v3 =
             TokenV3::from_str(token_v3_str).expect("TokenV3 should be created from string");
         let token_v4 = TokenV4::try_from(token_v3).expect("TokenV3 should be converted to TokenV4");
-        let token_v4_expected = "cashuBpGFtd2h0dHBzOi8vODMzMy5zcGFjZTozMzM4YXVjc2F0YWRqVGhhbmsgeW91LmF0gaJhaUgAmh8pMlPkHmFwgqRhYQJhc3hANDA3OTE1YmMyMTJiZTYxYTc3ZTNlNmQyYWViNGM3Mjc5ODBiZGE1MWNkMDZhNmFmYzI5ZTI4NjE3NjhhNzgzN2FjWCECvJCXmX2Br7LMc0a15DRak0a9KlBut5WFmKcvDPhRY-phZPakYWEIYXN4QGZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmVhY1ghAp6OUFC4kKfWwJaNsWvB1dX6BA6h3ihPbsadYSmfZxBZYWT2";
+        let token_v4_expected = "cashuBpGFtd2h0dHBzOi8vODMzMy5zcGFjZTozMzM4YXVjc2F0YWRqVGhhbmsgeW91LmF0gaJhaUgAmh8pMlPkHmFwgqNhYQJhc3hANDA3OTE1YmMyMTJiZTYxYTc3ZTNlNmQyYWViNGM3Mjc5ODBiZGE1MWNkMDZhNmFmYzI5ZTI4NjE3NjhhNzgzN2FjWCECvJCXmX2Br7LMc0a15DRak0a9KlBut5WFmKcvDPhRY-qjYWEIYXN4QGZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmVhY1ghAp6OUFC4kKfWwJaNsWvB1dX6BA6h3ihPbsadYSmfZxBZ";
         assert_eq!(token_v4.to_string(), token_v4_expected);
+    }
+
+    #[test]
+    fn test_token_v4_omits_empty_dleq() {
+        let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        let keyset_id =
+            Id::from_bytes(&[vec![KeySetVersion::Version02.to_byte()], vec![1; 32]].concat())
+                .expect("valid keyset id");
+        let proof = Proof {
+            amount: Amount::from(1),
+            keyset_id,
+            secret: Secret::generate(),
+            c: BlsG1PublicKey::hash_to_curve(b"signature").into(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        };
+
+        let token = Token::new(
+            mint_url,
+            vec![proof].into_iter().collect(),
+            None,
+            CurrencyUnit::Sat,
+        );
+        let raw = token.to_raw_bytes().expect("token serializes");
+
+        assert!(!raw.windows(3).any(|window| window == [0x61, 0x64, 0xf6]));
     }
 
     #[test]

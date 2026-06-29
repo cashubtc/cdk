@@ -10,7 +10,7 @@ mnemonic = ""
 # Set keyset version preference.
 # true = Force upgrade to V2 (Version01).
 # false = Force downgrade to V1 (Version00).
-# If unset (default), existing keysets are preserved, but new ones use V2.
+# If unset (default), existing keysets are preserved, but new ones use V3 (Version02).
 # use_keyset_v2 = true
 
 [info.quote_ttl]
@@ -302,13 +302,13 @@ max_delay_time = 3
 # Optional keyset rotations to create inactive/expired test keysets
 # Each rotation creates a keyset that gets rotated out during mint build
 # unit: currency unit (e.g. "sat", "usd")
-# version: "v1" (Version00) or "v2" (Version01)
+# version: "v1" (Version00), "v2" (Version01), or "v3" (Version02, default)
 # input_fee_ppk: input fee in parts per thousand (default: 0)
 # expired: if true, keyset is created with a past expiry timestamp (default: false)
 #
 # [[fake_wallet.keyset_rotations]]
 # unit = "sat"
-# version = "v1"
+# version = "v3"
 # input_fee_ppk = 0
 # expired = true
 #

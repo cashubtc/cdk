@@ -416,8 +416,14 @@ impl WalletTraitDef for Wallet {
         Ok(restored)
     }
 
+    async fn verify_token_signatures(&self, token_str: &str) -> Result<(), Self::Error> {
+        WalletTraitDef::verify_token_signatures(self.inner().as_ref(), token_str).await?;
+        Ok(())
+    }
+
+    #[allow(deprecated)]
     async fn verify_token_dleq(&self, token_str: &str) -> Result<(), Self::Error> {
-        WalletTraitDef::verify_token_dleq(self.inner().as_ref(), token_str).await?;
+        WalletTraitDef::verify_token_signatures(self.inner().as_ref(), token_str).await?;
         Ok(())
     }
 

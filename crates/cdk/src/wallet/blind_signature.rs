@@ -1,4 +1,4 @@
-use crate::nuts::{nut12, BlindSignature, BlindedMessage};
+use crate::nuts::{nut12, BlindSignature, BlindedMessage, KeySetVersion};
 use crate::wallet::Wallet;
 use crate::{Amount, Error};
 
@@ -21,9 +21,10 @@ pub(crate) enum SignatureAmountValidation {
 /// wallet requested a specific denomination. Use
 /// [`SignatureAmountValidation::AllowZeroAmountPlaceholder`] for NUT-08/NUT-09
 /// style outputs where the wallet sends amount `0` and the mint fills in the
-/// actual change or restored amount. DLEQ proofs are optional for compatibility,
-/// but when present they are verified after the signature metadata has been
-/// cross-checked.
+/// actual change or restored amount. DLEQ proofs are optional for v0/v1
+/// compatibility, but when present they are verified after the signature
+/// metadata has been cross-checked. V2/BLS signatures must not include DLEQ
+/// proof data.
 pub(crate) async fn validate_mint_response_signatures<'a>(
     wallet: &Wallet,
     signatures: &[BlindSignature],
@@ -62,11 +63,20 @@ pub(crate) async fn validate_mint_response_signatures<'a>(
             )));
         }
 
-        let keys = wallet.load_keyset_keys(sig.keyset_id).await?;
-        let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
-        match sig.verify_dleq(key, blinded_message.blinded_secret) {
-            Ok(_) | Err(nut12::Error::MissingDleqProof) => (),
-            Err(_) => return Err(Error::CouldNotVerifyDleq),
+        match sig.keyset_id.get_version() {
+            KeySetVersion::Version00 | KeySetVersion::Version01 => {
+                let keys = wallet.load_keyset_keys(sig.keyset_id).await?;
+                let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
+                match sig.verify_dleq(key, blinded_message.blinded_secret) {
+                    Ok(_) | Err(nut12::Error::MissingDleqProof) => (),
+                    Err(_) => return Err(Error::CouldNotVerifyDleq),
+                }
+            }
+            KeySetVersion::Version02 => {
+                if sig.dleq.is_some() {
+                    return Err(Error::CouldNotVerifyDleq);
+                }
+            }
         }
     }
 

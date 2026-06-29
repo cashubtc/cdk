@@ -20,8 +20,11 @@ bench = []
 [dependencies]
 uuid.workspace = true
 bitcoin.workspace = true
+bls12_381.workspace = true
 cbor-diag.workspace = true
 ciborium.workspace = true
+ff.workspace = true
+group.workspace = true
 once_cell.workspace = true
 serde.workspace = true
 lightning-invoice.workspace = true
@@ -31,6 +34,8 @@ tracing.workspace = true
 url.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
+sha2.workspace = true
+sha2_09.workspace = true
 strum.workspace = true
 strum_macros.workspace = true
 nostr-sdk = { workspace = true, optional = true }
