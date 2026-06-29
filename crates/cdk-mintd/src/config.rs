@@ -875,8 +875,8 @@ fn default_fake_wallet_supported_units() -> Vec<CurrencyUnit> {
 pub struct GrpcProcessor {
     #[serde(default)]
     pub supported_units: Vec<CurrencyUnit>,
-    #[serde(default = "default_grpc_addr")]
-    pub addr: String,
+    #[serde(default = "default_grpc_address", alias = "addr")]
+    pub address: String,
     #[serde(default = "default_grpc_port")]
     pub port: u16,
     #[serde(default)]
@@ -889,7 +889,7 @@ impl Default for GrpcProcessor {
     fn default() -> Self {
         Self {
             supported_units: Vec::new(),
-            addr: default_grpc_addr(),
+            address: default_grpc_address(),
             port: default_grpc_port(),
             tls_dir: None,
             allow_insecure: false,
@@ -897,7 +897,7 @@ impl Default for GrpcProcessor {
     }
 }
 
-fn default_grpc_addr() -> String {
+fn default_grpc_address() -> String {
     "127.0.0.1".to_string()
 }
 
@@ -2260,7 +2260,7 @@ max_melt = 500000
         // Verify that settings were populated from env vars
         assert!(settings.grpc_processor.is_some());
         let grpc_config = settings.grpc_processor.as_ref().unwrap();
-        assert_eq!(grpc_config.addr, "localhost");
+        assert_eq!(grpc_config.address, "localhost");
         assert_eq!(grpc_config.port, 50051);
 
         // Cleanup env vars

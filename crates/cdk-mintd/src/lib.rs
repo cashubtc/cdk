@@ -701,7 +701,7 @@ async fn configure_lightning_backend(
 
                 tracing::info!(
                     "Attempting to start with gRPC payment processor at {}:{}.",
-                    grpc_processor.addr,
+                    grpc_processor.address,
                     grpc_processor.port
                 );
 

@@ -338,7 +338,7 @@ impl LnBackendSetup for config::GrpcProcessor {
         }
 
         let payment_processor =
-            cdk_payment_processor::PaymentProcessorClient::new(&self.addr, self.port, tls_dir)
+            cdk_payment_processor::PaymentProcessorClient::new(&self.address, self.port, tls_dir)
                 .await?;
 
         Ok(payment_processor)
