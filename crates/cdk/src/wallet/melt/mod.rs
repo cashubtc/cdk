@@ -43,7 +43,8 @@ use std::time::Duration;
 
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
-    MeltQuote, MeltSagaState, Transaction, TransactionDirection, WalletSagaState,
+    MeltQuote, MeltSagaState, OperationData, Transaction, TransactionDirection, WalletSaga,
+    WalletSagaState,
 };
 use cdk_common::{Error, MeltQuoteState, PaymentMethod, ProofsMethods, State};
 use tracing::instrument;
@@ -748,11 +749,20 @@ impl<'a> PreparedMelt<'a> {
         self,
         options: MeltConfirmOptions,
     ) -> Result<MeltOutcome<'a>, Error> {
-        let operation_id = self.saga.operation_id();
-        let wallet = self.saga.wallet;
+        let mut saga = self.saga;
+        let operation_id = saga.operation_id();
+        let wallet = saga.wallet;
         let metadata = self.metadata;
+        let db_saga = wallet
+            .localstore
+            .get_saga(&operation_id)
+            .await?
+            .ok_or(Error::Custom("Saga not found".to_string()))?;
+        wallet.ensure_melt_saga_state(&db_saga, MeltSagaState::ProofsReserved)?;
+        let metadata = wallet.melt_saga_metadata(&db_saga, metadata)?;
+        saga.state_data.saga = db_saga;
 
-        let melt_requested = match self.saga.request_melt_with_options(options).await {
+        let melt_requested = match saga.request_melt_with_options(options).await {
             Ok(melt_requested) => melt_requested,
             Err(err) => {
                 let finalized = wallet
@@ -806,6 +816,40 @@ impl Debug for PreparedMelt<'_> {
 }
 
 impl Wallet {
+    fn melt_saga_metadata(
+        &self,
+        saga: &WalletSaga,
+        fallback: HashMap<String, String>,
+    ) -> Result<HashMap<String, String>, Error> {
+        let OperationData::Melt(data) = &saga.data else {
+            return Err(Error::InvalidOperationState);
+        };
+
+        if data.metadata.is_empty() {
+            Ok(fallback)
+        } else {
+            Ok(data.metadata.clone())
+        }
+    }
+
+    fn ensure_melt_saga_state(
+        &self,
+        saga: &WalletSaga,
+        expected: MeltSagaState,
+    ) -> Result<(), Error> {
+        ensure_cdk!(
+            saga.mint_url == self.mint_url && saga.unit == self.unit,
+            Error::InvalidOperationState
+        );
+
+        let WalletSagaState::Melt(state) = saga.state else {
+            return Err(Error::InvalidOperationState);
+        };
+
+        ensure_cdk!(state == expected, Error::InvalidOperationState);
+        Ok(())
+    }
+
     /// Prepare a melt operation without executing it.
     #[instrument(skip(self, metadata))]
     pub async fn prepare_melt(
@@ -964,6 +1008,8 @@ impl Wallet {
             .get_saga(&operation_id)
             .await?
             .ok_or(Error::Custom("Saga not found".to_string()))?;
+        self.ensure_melt_saga_state(&db_saga, MeltSagaState::ProofsReserved)?;
+        let metadata = self.melt_saga_metadata(&db_saga, metadata)?;
 
         let saga = MeltSaga::from_prepared(
             self,
@@ -1029,6 +1075,8 @@ impl Wallet {
             .get_saga(&operation_id)
             .await?
             .ok_or(Error::Custom("Saga not found".to_string()))?;
+        self.ensure_melt_saga_state(&db_saga, MeltSagaState::ProofsReserved)?;
+        let metadata = self.melt_saga_metadata(&db_saga, metadata)?;
 
         let saga = MeltSaga::from_prepared(
             self,
@@ -1191,19 +1239,12 @@ impl Wallet {
     ) -> Result<(), Error> {
         tracing::info!("Cancelling prepared melt for operation {}", operation_id);
 
-        if let Some(saga) = self.localstore.get_saga(&operation_id).await? {
-            ensure_cdk!(
-                saga.mint_url == self.mint_url && saga.unit == self.unit,
-                Error::InvalidOperationState
-            );
-            ensure_cdk!(
-                matches!(
-                    saga.state,
-                    WalletSagaState::Melt(MeltSagaState::ProofsReserved)
-                ),
-                Error::InvalidOperationState
-            );
-        }
+        let db_saga = self
+            .localstore
+            .get_saga(&operation_id)
+            .await?
+            .ok_or(Error::InvalidOperationState)?;
+        self.ensure_melt_saga_state(&db_saga, MeltSagaState::ProofsReserved)?;
 
         let mut all_ys = proofs.ys()?;
         all_ys.extend(proofs_to_swap.ys()?);
@@ -1212,7 +1253,7 @@ impl Wallet {
             let current = self.localstore.get_proofs_by_ys(all_ys).await?;
             let ys_to_revert: Vec<_> = current
                 .into_iter()
-                .filter(|proof| proof.state == State::Reserved || proof.state == State::Pending)
+                .filter(|proof| proof.state == State::Reserved)
                 .map(|proof| proof.y)
                 .collect();
 
@@ -1238,7 +1279,6 @@ impl Wallet {
                 e
             );
         }
-
         Ok(())
     }
 
@@ -1299,6 +1339,27 @@ impl Wallet {
                         return Ok(());
                     }
                 };
+                let metadata = match self.localstore.get_saga(&operation_id).await? {
+                    Some(saga) => match saga.data {
+                        OperationData::Melt(data) => data.metadata,
+                        _ => {
+                            tracing::warn!(
+                                "Skipping transaction metadata for paid melt quote {} with non-melt saga {}",
+                                quote.id,
+                                operation_id
+                            );
+                            HashMap::new()
+                        }
+                    },
+                    None => {
+                        tracing::warn!(
+                            "Recording transaction for paid melt quote {} without saga metadata; saga {} not found",
+                            quote.id,
+                            operation_id
+                        );
+                        HashMap::new()
+                    }
+                };
                 let pending_proofs: Proofs = self
                     .localstore
                     .get_reserved_proofs(&operation_id)
@@ -1324,7 +1385,7 @@ impl Wallet {
                         ys: pending_proofs.ys()?,
                         timestamp: unix_time(),
                         memo: None,
-                        metadata: HashMap::new(),
+                        metadata,
                         quote_id: Some(quote.id.clone()),
                         payment_request: Some(quote.request.clone()),
                         payment_proof,
@@ -1725,7 +1786,9 @@ mod tests {
     use std::sync::Arc;
 
     use cdk_common::nuts::{CurrencyUnit, RestoreResponse, State};
-    use cdk_common::wallet::{MeltOperationData, OperationData, WalletSaga};
+    use cdk_common::wallet::{
+        MeltOperationData, MeltSagaState, OperationData, WalletSaga, WalletSagaState,
+    };
     use cdk_common::{Id, MeltQuoteBolt11Response, MeltQuoteResponse};
 
     use super::*;
@@ -1741,19 +1804,30 @@ mod tests {
     async fn test_cancel_prepared_melt_reverts_reserved_proofs() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
-        let keyset_id = test_keyset_id();
-        let operation_id = uuid::Uuid::new_v4();
+        let keyset_id = crate::wallet::test_utils::test_keyset_id();
 
-        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Reserved);
+        let proof_info = test_proof_info(keyset_id, 1200, mint_url.clone(), State::Unspent);
         let proof_y = proof_info.y;
         let proof = proof_info.proof.clone();
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
 
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
         let mock_client = Arc::new(MockMintConnector::new());
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let prepared = wallet
+            .prepare_melt_proofs(&quote_id, vec![proof], HashMap::new())
+            .await
+            .unwrap();
 
         wallet
-            .cancel_prepared_melt(operation_id, vec![proof], vec![])
+            .cancel_prepared_melt(
+                prepared.operation_id(),
+                prepared.proofs().clone(),
+                prepared.proofs_to_swap().clone(),
+            )
             .await
             .unwrap();
 
@@ -1763,28 +1837,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cancel_prepared_melt_reverts_pending_proofs() {
-        let db = create_test_db().await;
-        let mint_url = test_mint_url();
-        let keyset_id = test_keyset_id();
-        let operation_id = uuid::Uuid::new_v4();
+    async fn test_cancel_prepared_melt_rejects_pending_saga() {
+        let (db, proof_y, operation_id, _mock_client, pending) = pending_bolt11_melt(false).await;
 
-        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Pending);
-        let proof_y = proof_info.y;
-        let proof = proof_info.proof.clone();
-        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        let result = pending
+            .saga
+            .wallet
+            .cancel_prepared_melt(
+                operation_id,
+                pending.saga.state_data.final_proofs.clone(),
+                vec![],
+            )
+            .await;
 
-        let mock_client = Arc::new(MockMintConnector::new());
-        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
-
-        wallet
-            .cancel_prepared_melt(operation_id, vec![proof], vec![])
-            .await
-            .unwrap();
+        assert!(matches!(result, Err(Error::InvalidOperationState)));
 
         let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
         assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0].state, State::Unspent);
+        assert_eq!(stored[0].state, State::Pending);
+        assert!(db.get_saga(&operation_id).await.unwrap().is_some());
     }
 
     #[tokio::test]
@@ -1813,6 +1884,8 @@ mod tests {
                 counter_start: None,
                 counter_end: None,
                 change_amount: None,
+                metadata: HashMap::new(),
+                final_proof_ys: None,
                 change_blinded_messages: None,
             }),
         );
@@ -1837,19 +1910,33 @@ mod tests {
     async fn test_cancel_prepared_melt_preserves_spent_proofs() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
-        let keyset_id = test_keyset_id();
-        let operation_id = uuid::Uuid::new_v4();
+        let keyset_id = crate::wallet::test_utils::test_keyset_id();
 
-        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Spent);
+        let proof_info = test_proof_info(keyset_id, 1200, mint_url.clone(), State::Unspent);
         let proof_y = proof_info.y;
         let proof = proof_info.proof.clone();
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
 
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
         let mock_client = Arc::new(MockMintConnector::new());
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let prepared = wallet
+            .prepare_melt_proofs(&quote_id, vec![proof], HashMap::new())
+            .await
+            .unwrap();
+        db.update_proofs_state(vec![proof_y], State::Spent)
+            .await
+            .unwrap();
 
         wallet
-            .cancel_prepared_melt(operation_id, vec![], vec![proof])
+            .cancel_prepared_melt(
+                prepared.operation_id(),
+                prepared.proofs().clone(),
+                prepared.proofs_to_swap().clone(),
+            )
             .await
             .unwrap();
 
@@ -1859,13 +1946,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cancel_prepared_melt_mixed_states_only_reverts_reserved_and_pending() {
+    async fn test_cancel_prepared_melt_only_reverts_reserved_proofs() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
-        let keyset_id = test_keyset_id();
-        let operation_id = uuid::Uuid::new_v4();
+        let keyset_id = crate::wallet::test_utils::test_keyset_id();
 
-        let reserved = test_proof_info(keyset_id, 100, mint_url.clone(), State::Reserved);
+        let reserved = test_proof_info(keyset_id, 1200, mint_url.clone(), State::Unspent);
         let pending = test_proof_info(keyset_id, 200, mint_url.clone(), State::Pending);
         let spent = test_proof_info(keyset_id, 300, mint_url.clone(), State::Spent);
 
@@ -1881,14 +1967,22 @@ mod tests {
             .await
             .unwrap();
 
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
         let mock_client = Arc::new(MockMintConnector::new());
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let prepared = wallet
+            .prepare_melt_proofs(&quote_id, vec![reserved_proof], HashMap::new())
+            .await
+            .unwrap();
 
         wallet
             .cancel_prepared_melt(
-                operation_id,
-                vec![reserved_proof, pending_proof],
-                vec![spent_proof],
+                prepared.operation_id(),
+                prepared.proofs().clone(),
+                vec![pending_proof, spent_proof],
             )
             .await
             .unwrap();
@@ -1904,7 +1998,7 @@ mod tests {
                 .map(|proof| proof.state)
         };
         assert_eq!(state_for(reserved_y), Some(State::Unspent));
-        assert_eq!(state_for(pending_y), Some(State::Unspent));
+        assert_eq!(state_for(pending_y), Some(State::Pending));
         assert_eq!(state_for(spent_y), Some(State::Spent));
     }
 
@@ -1963,6 +2057,63 @@ mod tests {
         assert!(!tx.ys.contains(&operation_a_spent_y));
         assert_eq!(tx.fee, Amount::from(50));
         assert_eq!(tx.saga_id, Some(operation_a_id));
+    }
+
+    #[tokio::test]
+    async fn test_add_transaction_for_pending_melt_uses_saga_metadata() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let operation_id = uuid::Uuid::new_v4();
+
+        let mut pending = test_proof_info(keyset_id, 1200, mint_url.clone(), State::Pending);
+        pending.used_by_operation = Some(operation_id);
+        db.update_proofs(vec![pending], vec![]).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let mut quote = test_melt_quote();
+        quote.used_by_operation = Some(operation_id.to_string());
+        let quote_id = quote.id.clone();
+
+        let mut metadata = HashMap::new();
+        metadata.insert("memo".to_string(), "pending metadata".to_string());
+
+        let saga = WalletSaga::new(
+            operation_id,
+            WalletSagaState::Melt(MeltSagaState::PaymentPending),
+            quote.amount,
+            mint_url,
+            CurrencyUnit::Sat,
+            OperationData::Melt(MeltOperationData {
+                quote_id: quote_id.clone(),
+                amount: quote.amount,
+                fee_reserve: quote.fee_reserve,
+                counter_start: None,
+                counter_end: None,
+                change_amount: None,
+                metadata: metadata.clone(),
+                final_proof_ys: None,
+                change_blinded_messages: None,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        wallet
+            .add_transaction_for_pending_melt(
+                &quote,
+                MeltQuoteState::Paid,
+                quote.amount,
+                Some(Amount::from(150)),
+                Some("payment-proof".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].metadata, metadata);
     }
 
     #[tokio::test]
@@ -2101,6 +2252,150 @@ mod tests {
         assert_eq!(prepared.metadata(), &metadata);
     }
 
+    #[tokio::test]
+    async fn test_confirm_prepared_melt_prefers_persisted_saga_metadata() {
+        let db = create_test_db().await;
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        mock_client.set_post_melt_response(Ok(MeltQuoteResponse::Bolt11(bolt11_status(
+            &quote_id,
+            MeltQuoteState::Paid,
+            Some("preimage123".to_string()),
+        ))));
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let mut saga_metadata = HashMap::new();
+        saga_metadata.insert("memo".to_string(), "persisted saga metadata".to_string());
+        let mut stale_metadata = HashMap::new();
+        stale_metadata.insert("memo".to_string(), "stale handle metadata".to_string());
+
+        let proof = test_proof(crate::wallet::test_utils::test_keyset_id(), 1200);
+        let prepared = wallet
+            .prepare_melt_proofs(&quote_id, vec![proof], saga_metadata.clone())
+            .await
+            .unwrap();
+
+        wallet
+            .confirm_prepared_melt_with_options(
+                prepared.operation_id(),
+                prepared.quote().clone(),
+                prepared.proofs().clone(),
+                prepared.proofs_to_swap().clone(),
+                prepared.input_fee(),
+                prepared.input_fee_without_swap(),
+                stale_metadata,
+                MeltConfirmOptions::new(),
+            )
+            .await
+            .unwrap();
+
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].metadata, saga_metadata);
+    }
+
+    #[tokio::test]
+    async fn test_confirm_prefer_async_prefers_persisted_saga_metadata() {
+        let db = create_test_db().await;
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        mock_client.set_post_melt_response(Ok(MeltQuoteResponse::Bolt11(bolt11_status(
+            &quote_id,
+            MeltQuoteState::Paid,
+            Some("preimage123".to_string()),
+        ))));
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let mut stale_metadata = HashMap::new();
+        stale_metadata.insert("memo".to_string(), "stale handle metadata".to_string());
+        let mut saga_metadata = HashMap::new();
+        saga_metadata.insert("memo".to_string(), "persisted saga metadata".to_string());
+
+        let proof = test_proof(crate::wallet::test_utils::test_keyset_id(), 1200);
+        let prepared = wallet
+            .prepare_melt_proofs(&quote_id, vec![proof], stale_metadata)
+            .await
+            .unwrap();
+
+        let mut stored_saga = db
+            .get_saga(&prepared.operation_id())
+            .await
+            .unwrap()
+            .unwrap();
+        match &mut stored_saga.data {
+            OperationData::Melt(data) => {
+                data.metadata = saga_metadata.clone();
+            }
+            _ => panic!("expected melt saga"),
+        }
+        stored_saga.update_state(stored_saga.state.clone());
+        assert!(db.update_saga(stored_saga).await.unwrap());
+
+        let outcome = prepared
+            .confirm_prefer_async_with_options(MeltConfirmOptions::new())
+            .await
+            .unwrap();
+        assert!(matches!(outcome, MeltOutcome::Paid(_)));
+
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].metadata, saga_metadata);
+    }
+
+    #[tokio::test]
+    async fn test_confirm_prepared_melt_prefer_async_prefers_persisted_saga_metadata() {
+        let db = create_test_db().await;
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        mock_client.set_post_melt_response(Ok(MeltQuoteResponse::Bolt11(bolt11_status(
+            &quote_id,
+            MeltQuoteState::Paid,
+            Some("preimage123".to_string()),
+        ))));
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let mut saga_metadata = HashMap::new();
+        saga_metadata.insert("memo".to_string(), "persisted saga metadata".to_string());
+        let mut stale_metadata = HashMap::new();
+        stale_metadata.insert("memo".to_string(), "stale handle metadata".to_string());
+
+        let proof = test_proof(crate::wallet::test_utils::test_keyset_id(), 1200);
+        let prepared = wallet
+            .prepare_melt_proofs(&quote_id, vec![proof], saga_metadata.clone())
+            .await
+            .unwrap();
+
+        wallet
+            .confirm_prepared_melt_prefer_async_with_options(
+                prepared.operation_id(),
+                prepared.quote().clone(),
+                prepared.proofs().clone(),
+                prepared.proofs_to_swap().clone(),
+                prepared.input_fee(),
+                prepared.input_fee_without_swap(),
+                stale_metadata,
+                MeltConfirmOptions::new(),
+            )
+            .await
+            .unwrap();
+
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].metadata, saga_metadata);
+    }
+
     /// Build a bolt11 melt-quote status response with the given state/preimage.
     fn bolt11_status(
         quote_id: &str,
@@ -2130,6 +2425,19 @@ mod tests {
     /// the mock (which has no WebSocket endpoint).
     async fn pending_bolt11_melt(
         http_subscription: bool,
+    ) -> (
+        Arc<dyn cdk_common::database::WalletDatabase<cdk_common::database::Error> + Send + Sync>,
+        crate::nuts::PublicKey,
+        uuid::Uuid,
+        Arc<MockMintConnector>,
+        PendingMelt<'static>,
+    ) {
+        pending_bolt11_melt_with_metadata(http_subscription, HashMap::new()).await
+    }
+
+    async fn pending_bolt11_melt_with_metadata(
+        http_subscription: bool,
+        metadata: HashMap<String, String>,
     ) -> (
         Arc<dyn cdk_common::database::WalletDatabase<cdk_common::database::Error> + Send + Sync>,
         crate::nuts::PublicKey,
@@ -2172,7 +2480,7 @@ mod tests {
         };
 
         let prepared = wallet
-            .prepare_melt_proofs(&quote_id, vec![proof], HashMap::new())
+            .prepare_melt_proofs(&quote_id, vec![proof], metadata)
             .await
             .unwrap();
         let operation_id = prepared.operation_id();
@@ -2403,5 +2711,32 @@ mod tests {
         let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
         assert_eq!(stored[0].state, State::Spent);
         assert!(db.get_saga(&operation_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_wait_pending_melt_records_persisted_metadata() {
+        let mut metadata = HashMap::new();
+        metadata.insert("label".to_string(), "ffi wait".to_string());
+        let (db, _proof_y, _operation_id, mock_client, pending) =
+            pending_bolt11_melt_with_metadata(true, metadata.clone()).await;
+        let quote_id = pending.saga.quote().id.clone();
+
+        mock_client.push_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+            payment_preimage: Some("preimage123".to_string()),
+            ..bolt11_status(&quote_id, MeltQuoteState::Paid, None)
+        }));
+        mock_client.push_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+            payment_preimage: Some("preimage123".to_string()),
+            ..bolt11_status(&quote_id, MeltQuoteState::Paid, None)
+        }));
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), pending.into_future())
+            .await
+            .expect("wait timed out")
+            .expect("melt should finalize");
+
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].metadata, metadata);
     }
 }
