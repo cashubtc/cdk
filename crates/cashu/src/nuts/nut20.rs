@@ -5,9 +5,9 @@ use std::str::FromStr;
 use bitcoin::secp256k1::schnorr::Signature;
 use thiserror::Error;
 
-use super::{MintRequest, PublicKey, SecretKey};
+use super::{BlindedMessage, MintRequest, PublicKey, SecretKey};
 
-/// Nut19 Error
+/// NUT-20 Error
 #[derive(Debug, Error)]
 pub enum Error {
     /// Signature not provided
@@ -21,29 +21,71 @@ pub enum Error {
     NUT01(#[from] crate::nuts::nut01::Error),
 }
 
+const MINT_QUOTE_SIG_DOMAIN_TAG: &[u8] = b"Cashu_MintQuoteSig_v1";
+
+fn amount_to_minimal_bytes(amount: crate::Amount) -> Vec<u8> {
+    let value = u64::from(amount);
+    if value == 0 {
+        return Vec::new();
+    }
+
+    let bytes = value.to_be_bytes();
+    let first_non_zero = bytes
+        .iter()
+        .position(|byte| *byte != 0)
+        .unwrap_or(bytes.len());
+    bytes[first_non_zero..].to_vec()
+}
+
+fn append_len_prefixed(msg: &mut Vec<u8>, bytes: &[u8]) {
+    msg.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    msg.extend_from_slice(bytes);
+}
+
+pub(crate) fn mint_quote_msg_to_sign(quote_id: &str, outputs: &[BlindedMessage]) -> Vec<u8> {
+    let mut msg = Vec::with_capacity(
+        MINT_QUOTE_SIG_DOMAIN_TAG.len() + 4 + quote_id.len() + outputs.len() * (4 + 8 + 4 + 33),
+    );
+
+    msg.extend_from_slice(MINT_QUOTE_SIG_DOMAIN_TAG);
+    append_len_prefixed(&mut msg, quote_id.as_bytes());
+
+    for output in outputs {
+        append_len_prefixed(&mut msg, &amount_to_minimal_bytes(output.amount));
+        append_len_prefixed(&mut msg, &output.blinded_secret.to_bytes());
+    }
+
+    msg
+}
+
+pub(crate) fn legacy_mint_quote_msg_to_sign(quote_id: &str, outputs: &[BlindedMessage]) -> Vec<u8> {
+    let capacity = quote_id.len() + (outputs.len() * 66);
+    let mut msg = Vec::with_capacity(capacity);
+
+    msg.extend_from_slice(quote_id.as_bytes());
+    for output in outputs {
+        msg.extend_from_slice(output.blinded_secret.to_hex().as_bytes());
+    }
+
+    msg
+}
+
 impl<Q> MintRequest<Q>
 where
     Q: ToString,
 {
     /// Constructs the message to be signed according to NUT-20 specification.
     ///
-    /// The message is constructed by concatenating (as UTF-8 encoded bytes):
-    /// 1. The quote ID (as UTF-8)
-    /// 2. All blinded secrets (B_0 through B_n) converted to hex strings (as UTF-8)
-    ///
-    /// Format: `quote_id || B_0 || B_1 || ... || B_n`
-    /// where each component is encoded as UTF-8 bytes
+    /// The message is domain-separated and length-prefixed, committing to the
+    /// quote ID, output amounts, and blinded messages in request order.
     pub fn msg_to_sign(&self) -> Vec<u8> {
-        // Pre-calculate capacity to avoid reallocations
         let quote_id = self.quote.to_string();
-        let capacity = quote_id.len() + (self.outputs.len() * 66);
-        let mut msg = Vec::with_capacity(capacity);
-        msg.append(&mut quote_id.clone().into_bytes()); // String.into_bytes() produces UTF-8
-        for output in &self.outputs {
-            // to_hex() creates a hex string, into_bytes() converts it to UTF-8 bytes
-            msg.append(&mut output.blinded_secret.to_hex().into_bytes());
-        }
-        msg
+        mint_quote_msg_to_sign(&quote_id, &self.outputs)
+    }
+
+    fn legacy_msg_to_sign(&self) -> Vec<u8> {
+        let quote_id = self.quote.to_string();
+        legacy_mint_quote_msg_to_sign(&quote_id, &self.outputs)
     }
 
     /// Sign [`MintRequest`]
@@ -65,7 +107,10 @@ where
 
         let msg_to_sign = self.msg_to_sign();
 
-        pubkey.verify(&msg_to_sign, &signature)?;
+        match pubkey.verify(&msg_to_sign, &signature) {
+            Ok(()) => Ok(()),
+            Err(_) => pubkey.verify(&self.legacy_msg_to_sign(), &signature),
+        }?;
 
         Ok(())
     }
@@ -78,46 +123,45 @@ mod tests {
 
     #[test]
     fn test_msg_to_sign() {
-        let request: MintRequest<String> = serde_json::from_str(r#"{"quote":"9d745270-1405-46de-b5c5-e2762b4f5e00","outputs":[{"amount":1,"id":"00456a94ab4e1c46","B_":"0342e5bcc77f5b2a3c2afb40bb591a1e27da83cddc968abdc0ec4904201a201834"},{"amount":1,"id":"00456a94ab4e1c46","B_":"032fd3c4dc49a2844a89998d5e9d5b0f0b00dde9310063acb8a92e2fdafa4126d4"},{"amount":1,"id":"00456a94ab4e1c46","B_":"033b6fde50b6a0dfe61ad148fff167ad9cf8308ded5f6f6b2fe000a036c464c311"},{"amount":1,"id":"00456a94ab4e1c46","B_":"02be5a55f03e5c0aaea77595d574bce92c6d57a2a0fb2b5955c0b87e4520e06b53"},{"amount":1,"id":"00456a94ab4e1c46","B_":"02209fc2873f28521cbdde7f7b3bb1521002463f5979686fd156f23fe6a8aa2b79"}],"signature":"cb2b8e7ea69362dfe2a07093f2bbc319226db33db2ef686c940b5ec976bcbfc78df0cd35b3e998adf437b09ee2c950bd66dfe9eb64abd706e43ebc7c669c36c3"}"#).unwrap();
+        let request: MintRequest<String> = serde_json::from_str(r#"{"quote":"0192d3c0-7e8a-7c3d-8e9f-1a2b3c4d5e6f","outputs":[{"amount":1,"id":"009a1f293253e41e","B_":"036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2"},{"amount":1,"id":"009a1f293253e41e","B_":"021f8a566c205633d029094747d2e18f44e05993dda7a5f88f496078205f656e59"}],"signature":"4881093a332ff7c79f3e598ce5b249d64978b47165a0b19c18adf0ced0246228e61e702f0abaf1bf27b92be4336bdbabacfbe4c914076386b3c66fdcd0b3480e"}"#).unwrap();
 
-        // let expected_msg_to_sign = "9d745270-1405-46de-b5c5-e2762b4f5e000342e5bcc77f5b2a3c2afb40bb591a1e27da83cddc968abdc0ec4904201a201834032fd3c4dc49a2844a89998d5e9d5b0f0b00dde9310063acb8a92e2fdafa4126d4033b6fde50b6a0dfe61ad148fff167ad9cf8308ded5f6f6b2fe000a036c464c31102be5a55f03e5c0aaea77595d574bce92c6d57a2a0fb2b5955c0b87e4520e06b5302209fc2873f28521cbdde7f7b3bb1521002463f5979686fd156f23fe6a8aa2b79";
-
-        let expected_msg_to_sign = [
-            57, 100, 55, 52, 53, 50, 55, 48, 45, 49, 52, 48, 53, 45, 52, 54, 100, 101, 45, 98, 53,
-            99, 53, 45, 101, 50, 55, 54, 50, 98, 52, 102, 53, 101, 48, 48, 48, 51, 52, 50, 101, 53,
-            98, 99, 99, 55, 55, 102, 53, 98, 50, 97, 51, 99, 50, 97, 102, 98, 52, 48, 98, 98, 53,
-            57, 49, 97, 49, 101, 50, 55, 100, 97, 56, 51, 99, 100, 100, 99, 57, 54, 56, 97, 98,
-            100, 99, 48, 101, 99, 52, 57, 48, 52, 50, 48, 49, 97, 50, 48, 49, 56, 51, 52, 48, 51,
-            50, 102, 100, 51, 99, 52, 100, 99, 52, 57, 97, 50, 56, 52, 52, 97, 56, 57, 57, 57, 56,
-            100, 53, 101, 57, 100, 53, 98, 48, 102, 48, 98, 48, 48, 100, 100, 101, 57, 51, 49, 48,
-            48, 54, 51, 97, 99, 98, 56, 97, 57, 50, 101, 50, 102, 100, 97, 102, 97, 52, 49, 50, 54,
-            100, 52, 48, 51, 51, 98, 54, 102, 100, 101, 53, 48, 98, 54, 97, 48, 100, 102, 101, 54,
-            49, 97, 100, 49, 52, 56, 102, 102, 102, 49, 54, 55, 97, 100, 57, 99, 102, 56, 51, 48,
-            56, 100, 101, 100, 53, 102, 54, 102, 54, 98, 50, 102, 101, 48, 48, 48, 97, 48, 51, 54,
-            99, 52, 54, 52, 99, 51, 49, 49, 48, 50, 98, 101, 53, 97, 53, 53, 102, 48, 51, 101, 53,
-            99, 48, 97, 97, 101, 97, 55, 55, 53, 57, 53, 100, 53, 55, 52, 98, 99, 101, 57, 50, 99,
-            54, 100, 53, 55, 97, 50, 97, 48, 102, 98, 50, 98, 53, 57, 53, 53, 99, 48, 98, 56, 55,
-            101, 52, 53, 50, 48, 101, 48, 54, 98, 53, 51, 48, 50, 50, 48, 57, 102, 99, 50, 56, 55,
-            51, 102, 50, 56, 53, 50, 49, 99, 98, 100, 100, 101, 55, 102, 55, 98, 51, 98, 98, 49,
-            53, 50, 49, 48, 48, 50, 52, 54, 51, 102, 53, 57, 55, 57, 54, 56, 54, 102, 100, 49, 53,
-            54, 102, 50, 51, 102, 101, 54, 97, 56, 97, 97, 50, 98, 55, 57,
-        ]
-        .to_vec();
+        let expected_msg_to_sign = crate::util::hex::decode("43617368755f4d696e7451756f74655369675f76310000002430313932643363302d376538612d376333642d386539662d316132623363346435653666000000010100000021036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2000000010100000021021f8a566c205633d029094747d2e18f44e05993dda7a5f88f496078205f656e59").expect("valid hex");
 
         let request_msg_to_sign = request.msg_to_sign();
 
         assert_eq!(expected_msg_to_sign, request_msg_to_sign);
+
+        use bitcoin::hashes::sha256::Hash as Sha256Hash;
+        use bitcoin::hashes::Hash;
+
+        assert_eq!(
+            Sha256Hash::hash(&request_msg_to_sign).to_string(),
+            "c164fd384879f74ab6ea2e7cf13d90ed42e6df9d5de607eeb5c9cc7d36fb1c21"
+        );
     }
 
     #[cfg(feature = "mint")]
     #[test]
-    fn test_valid_signature() {
+    fn test_valid_signature_from_test_vector() {
+        let pubkey = PublicKey::from_hex(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        )
+        .expect("valid pubkey");
+
+        let request: MintRequest<String> = serde_json::from_str(r#"{"quote":"0192d3c0-7e8a-7c3d-8e9f-1a2b3c4d5e6f","outputs":[{"amount":1,"id":"009a1f293253e41e","B_":"036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2"},{"amount":1,"id":"009a1f293253e41e","B_":"021f8a566c205633d029094747d2e18f44e05993dda7a5f88f496078205f656e59"}],"signature":"4881093a332ff7c79f3e598ce5b249d64978b47165a0b19c18adf0ced0246228e61e702f0abaf1bf27b92be4336bdbabacfbe4c914076386b3c66fdcd0b3480e"}"#).expect("valid request");
+
+        assert!(request.verify_signature(pubkey).is_ok());
+    }
+
+    #[cfg(feature = "mint")]
+    #[test]
+    fn test_valid_legacy_signature_fallback() {
         use uuid::Uuid;
 
         let pubkey = PublicKey::from_hex(
             "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
         )
-        .unwrap();
+        .expect("valid pubkey");
 
         let request: MintRequest<Uuid> = serde_json::from_str(r#"{"quote":"9d745270-1405-46de-b5c5-e2762b4f5e00","outputs":[{"amount":1,"id":"00456a94ab4e1c46","B_":"0342e5bcc77f5b2a3c2afb40bb591a1e27da83cddc968abdc0ec4904201a201834"},{"amount":1,"id":"00456a94ab4e1c46","B_":"032fd3c4dc49a2844a89998d5e9d5b0f0b00dde9310063acb8a92e2fdafa4126d4"},{"amount":1,"id":"00456a94ab4e1c46","B_":"033b6fde50b6a0dfe61ad148fff167ad9cf8308ded5f6f6b2fe000a036c464c311"},{"amount":1,"id":"00456a94ab4e1c46","B_":"02be5a55f03e5c0aaea77595d574bce92c6d57a2a0fb2b5955c0b87e4520e06b53"},{"amount":1,"id":"00456a94ab4e1c46","B_":"02209fc2873f28521cbdde7f7b3bb1521002463f5979686fd156f23fe6a8aa2b79"}], "signature": "d4b386f21f7aa7172f0994ee6e4dd966539484247ea71c99b81b8e09b1bb2acbc0026a43c221fd773471dc30d6a32b04692e6837ddaccf0830a63128308e4ee0"}"#).unwrap();
 
@@ -130,7 +174,7 @@ mod tests {
 
         let secret =
             SecretKey::from_hex("50d7fd7aa2b2fe4607f41f4ce6f8794fc184dd47b8cdfbe4b3d1249aa02d35aa")
-                .unwrap();
+                .expect("valid secret key");
 
         request.sign(secret.clone()).unwrap();
 
@@ -142,7 +186,7 @@ mod tests {
         let pubkey = PublicKey::from_hex(
             "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
         )
-        .unwrap();
+        .expect("valid pubkey");
 
         let request: MintRequest<String> = serde_json::from_str(r#"{"quote":"9d745270-1405-46de-b5c5-e2762b4f5e00","outputs":[{"amount":1,"id":"00456a94ab4e1c46","B_":"0342e5bcc77f5b2a3c2afb40bb591a1e27da83cddc968abdc0ec4904201a201834"},{"amount":1,"id":"00456a94ab4e1c46","B_":"032fd3c4dc49a2844a89998d5e9d5b0f0b00dde9310063acb8a92e2fdafa4126d4"},{"amount":1,"id":"00456a94ab4e1c46","B_":"033b6fde50b6a0dfe61ad148fff167ad9cf8308ded5f6f6b2fe000a036c464c311"},{"amount":1,"id":"00456a94ab4e1c46","B_":"02be5a55f03e5c0aaea77595d574bce92c6d57a2a0fb2b5955c0b87e4520e06b53"},{"amount":1,"id":"00456a94ab4e1c46","B_":"02209fc2873f28521cbdde7f7b3bb1521002463f5979686fd156f23fe6a8aa2b79"}],"signature":"cb2b8e7ea69362dfe2a07093f2bbc319226db33db2ef686c940b5ec976bcbfc78df0cd35b3e998adf437b09ee2c950bd66dfe9eb64abd706e43ebc7c669c36c3"}"#).unwrap();
 
