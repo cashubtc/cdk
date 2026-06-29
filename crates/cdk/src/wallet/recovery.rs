@@ -74,6 +74,17 @@ pub enum RecoveryAction {
     Skipped,
 }
 
+/// Detailed result of a restore attempt against the mint.
+#[derive(Debug, Clone)]
+pub(crate) enum OutputRecoveryResult {
+    /// The mint returned signatures and the wallet reconstructed proofs.
+    Restored(Vec<ProofInfo>),
+    /// The mint accepted the restore request but had no matching signatures.
+    EmptyResponse,
+    /// The restore attempt could not be made definitively.
+    Unavailable,
+}
+
 /// Shared recovery helpers for saga resume operations.
 ///
 /// These methods are used by individual saga resume modules to check
@@ -159,23 +170,19 @@ impl RecoveryHelpers for Wallet {
         counter_start: Option<u32>,
         counter_end: Option<u32>,
     ) -> Result<Option<Vec<ProofInfo>>, Error> {
-        // Clone blinded messages to avoid temporary lifetime issues
-        let blinded_messages_owned = blinded_messages.map(|bm| bm.to_vec());
-
-        // Extract and validate parameters
-        let params = match Self::extract_recovery_params(
-            saga_id,
-            saga_type,
-            blinded_messages_owned.as_ref(),
-            counter_start,
-            counter_end,
-        ) {
-            Some(p) => p,
-            None => return Ok(None),
-        };
-
-        self.recover_outputs_from_blinded_messages(saga_id, saga_type, params)
-            .await
+        match self
+            .restore_outputs_with_result(
+                saga_id,
+                saga_type,
+                blinded_messages,
+                counter_start,
+                counter_end,
+            )
+            .await?
+        {
+            OutputRecoveryResult::Restored(proofs) => Ok(Some(proofs)),
+            OutputRecoveryResult::EmptyResponse | OutputRecoveryResult::Unavailable => Ok(None),
+        }
     }
 
     /// Attempt to replay a swap request using stored data.
@@ -294,6 +301,32 @@ impl RecoveryHelpers for Wallet {
 }
 
 impl Wallet {
+    /// Restore outputs and preserve whether the mint returned an empty response.
+    pub(crate) async fn restore_outputs_with_result(
+        &self,
+        saga_id: &uuid::Uuid,
+        saga_type: &str,
+        blinded_messages: Option<&[BlindedMessage]>,
+        counter_start: Option<u32>,
+        counter_end: Option<u32>,
+    ) -> Result<OutputRecoveryResult, Error> {
+        let blinded_messages_owned = blinded_messages.map(|bm| bm.to_vec());
+
+        let params = match Self::extract_recovery_params(
+            saga_id,
+            saga_type,
+            blinded_messages_owned.as_ref(),
+            counter_start,
+            counter_end,
+        ) {
+            Some(p) => p,
+            None => return Ok(OutputRecoveryResult::Unavailable),
+        };
+
+        self.recover_outputs_from_blinded_messages(saga_id, saga_type, params)
+            .await
+    }
+
     /// Recover from incomplete operations after a crash. Call on startup.
     ///
     /// Handles interrupted swap, send, receive, and melt operations to prevent
@@ -387,9 +420,9 @@ impl Wallet {
     ///
     /// # Returns
     ///
-    /// - `Ok(Some(proofs))` - Successfully recovered proofs
-    /// - `Ok(None)` - Could not recover (mint unreachable, no signatures, etc.)
-    ///   Caller should fall back to cleanup.
+    /// - `Ok(OutputRecoveryResult::Restored(proofs))` - Successfully recovered proofs
+    /// - `Ok(OutputRecoveryResult::EmptyResponse)` - Mint had no matching signatures
+    /// - `Ok(OutputRecoveryResult::Unavailable)` - Could not make a definitive restore attempt
     /// - `Err(_)` - Unrecoverable error (e.g., cryptographic failure)
     #[instrument(skip(self, params))]
     async fn recover_outputs_from_blinded_messages(
@@ -397,7 +430,7 @@ impl Wallet {
         saga_id: &uuid::Uuid,
         saga_type: &str,
         params: OutputRecoveryParams<'_>,
-    ) -> Result<Option<Vec<ProofInfo>>, Error> {
+    ) -> Result<OutputRecoveryResult, Error> {
         tracing::info!(
             "{} saga {} - attempting to recover {} outputs using stored blinded messages",
             saga_type,
@@ -420,7 +453,7 @@ impl Wallet {
                         saga_id,
                         e
                     );
-                    return Ok(None);
+                    return Ok(OutputRecoveryResult::Unavailable);
                 } else {
                     tracing::warn!(
                         "{} saga {} - failed to restore from mint (ambiguous): {}. \
@@ -441,7 +474,7 @@ impl Wallet {
                 saga_type,
                 saga_id
             );
-            return Ok(None);
+            return Ok(OutputRecoveryResult::EmptyResponse);
         }
 
         // Get keyset ID from the first blinded message
@@ -522,7 +555,7 @@ impl Wallet {
             .map(|p| ProofInfo::new(p, self.mint_url.clone(), State::Unspent, self.unit.clone()))
             .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(Some(proof_infos))
+        Ok(OutputRecoveryResult::Restored(proof_infos))
     }
 
     /// Extract recovery parameters from operation data.
@@ -679,6 +712,7 @@ impl Wallet {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::str::FromStr;
     use std::sync::Arc;
 
@@ -686,7 +720,7 @@ mod tests {
     use cdk_common::nuts::{MeltQuoteBolt11Response, MeltQuoteState, State};
     use cdk_common::wallet::{
         IssueSagaState, MeltOperationData, MeltSagaState, MintOperationData, OperationData,
-        ReceiveOperationData, ReceiveSagaState, WalletSaga, WalletSagaState,
+        ReceiveOperationData, ReceiveSagaState, TransactionDirection, WalletSaga, WalletSagaState,
     };
     use cdk_common::Amount;
 
@@ -811,6 +845,8 @@ mod tests {
                 counter_start: None,
                 counter_end: None,
                 change_amount: None,
+                metadata: HashMap::new(),
+                final_proof_ys: None,
                 change_blinded_messages: None,
             }),
         );
@@ -886,6 +922,8 @@ mod tests {
                     counter_start: None,
                     counter_end: None,
                     change_amount: None,
+                    metadata: HashMap::new(),
+                    final_proof_ys: None,
                     change_blinded_messages: None,
                 }),
             );
@@ -959,11 +997,11 @@ mod tests {
         let keyset_id = test_keyset_id();
         let saga_id = uuid::Uuid::new_v4();
 
-        // Create and reserve proofs
-        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
-        let proof_y = proof_info.y;
+        // Create pending proofs as they would be after a melt request is sent.
+        let mut proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
+        proof_info.state = State::Pending;
+        proof_info.used_by_operation = Some(saga_id);
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
-        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
 
         // Create a melt quote
         let mut quote = test_melt_quote();
@@ -985,6 +1023,8 @@ mod tests {
                 counter_start: None,
                 counter_end: None,
                 change_amount: None,
+                metadata: HashMap::new(),
+                final_proof_ys: None,
                 change_blinded_messages: None,
             }),
         );
@@ -1060,6 +1100,8 @@ mod tests {
                 counter_start: None,
                 counter_end: None,
                 change_amount: None,
+                metadata: HashMap::new(),
+                final_proof_ys: None,
                 change_blinded_messages: None,
             }),
         );
@@ -1129,6 +1171,8 @@ mod tests {
                 counter_start: None,
                 counter_end: None,
                 change_amount: None,
+                metadata: HashMap::new(),
+                final_proof_ys: None,
                 change_blinded_messages: None,
             }),
         );
@@ -1179,17 +1223,20 @@ mod tests {
         let keyset_id = test_keyset_id();
         let saga_id = uuid::Uuid::new_v4();
 
-        // Create and reserve proofs
-        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
-        let proof_y = proof_info.y;
-        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
-        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
-
         // Create a melt quote
         let mut quote = test_melt_quote();
         quote.used_by_operation = Some(saga_id.to_string());
         let quote_id = quote.id.clone();
         db.add_melt_quote(quote).await.unwrap();
+
+        let mut metadata = HashMap::new();
+        metadata.insert("label".to_string(), "restored melt".to_string());
+
+        // Create pending proofs as they would be after a melt request is sent.
+        let mut proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
+        proof_info.state = State::Pending;
+        proof_info.used_by_operation = Some(saga_id);
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
 
         // Create saga in MeltRequested state (no change blinded messages for simplicity)
         let saga = WalletSaga::new(
@@ -1205,6 +1252,8 @@ mod tests {
                 counter_start: None,
                 counter_end: None,
                 change_amount: None,
+                metadata: metadata.clone(),
+                final_proof_ys: None,
                 change_blinded_messages: None, // No change to recover
             }),
         );
@@ -1241,6 +1290,21 @@ mod tests {
 
         // Saga should be deleted
         assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+
+        let transactions = db
+            .list_transactions(None, Some(TransactionDirection::Outgoing), None)
+            .await
+            .unwrap();
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].metadata, metadata);
+        assert_eq!(transactions[0].saga_id, Some(saga_id));
+        assert_eq!(
+            transactions[0].payment_proof,
+            Some("preimage123".to_string())
+        );
+
+        let recovered_quote = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
+        assert_eq!(recovered_quote.state, MeltQuoteState::Paid);
     }
 
     #[tokio::test]

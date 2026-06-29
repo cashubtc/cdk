@@ -1,6 +1,8 @@
 //! Melt saga types
 
-use cashu::BlindedMessage;
+use std::collections::HashMap;
+
+use cashu::{BlindedMessage, PublicKey};
 use serde::{Deserialize, Serialize};
 
 use crate::{Amount, Error};
@@ -54,6 +56,16 @@ pub struct MeltOperationData {
     pub counter_end: Option<u32>,
     /// Change amount (if any)
     pub change_amount: Option<Amount>,
+    /// User-defined metadata for the outgoing melt transaction.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, String>,
+    /// Proof Ys actually sent to the melt request.
+    ///
+    /// Stored separately from `used_by_operation` so recovery can record the
+    /// correct transaction inputs even after a pre-melt swap or after inputs
+    /// were already marked spent before a crash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_proof_ys: Option<Vec<PublicKey>>,
     /// Blinded messages for change recovery
     ///
     /// Stored so that if a crash occurs after the mint accepts the melt,
