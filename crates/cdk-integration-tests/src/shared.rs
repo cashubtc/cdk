@@ -159,7 +159,7 @@ pub fn create_fake_wallet_settings(
     port: u16,
     database: &str,
     mnemonic: Option<String>,
-    signatory_config: Option<(String, String)>, // (url, certs_dir)
+    signatory_config: Option<cdk_mintd::config::Signatory>,
     fake_wallet_config: Option<cdk_mintd::config::FakeWallet>,
     onchain_config: Option<cdk_mintd::config::Onchain>,
 ) -> cdk_mintd::config::Settings {
@@ -187,10 +187,6 @@ pub fn create_fake_wallet_settings(
             listen_port: port,
             seed: None,
             mnemonic: mnemonic.clone(),
-            signatory_url: signatory_config.as_ref().map(|(url, _)| url.clone()),
-            signatory_certs: signatory_config
-                .as_ref()
-                .map(|(_, certs_dir)| certs_dir.clone()),
             input_fee_ppk: None,
             use_keyset_v2: None,
             http_cache: cache::Config::default(),
@@ -201,6 +197,7 @@ pub fn create_fake_wallet_settings(
             },
             enable_info_page: None,
         },
+        signatory: signatory_config,
         mint_info: cdk_mintd::config::MintInfo::default(),
         limits: cdk_mintd::config::Limits::default(),
         ln: vec![
@@ -262,8 +259,6 @@ pub fn create_cln_settings(
             listen_port: port,
             seed: None,
             mnemonic: Some(mnemonic),
-            signatory_url: None,
-            signatory_certs: None,
             input_fee_ppk: None,
             use_keyset_v2: None,
             http_cache: cache::Config::default(),
@@ -318,8 +313,6 @@ pub fn create_lnd_settings(
             listen_port: port,
             seed: None,
             mnemonic: Some(mnemonic),
-            signatory_url: None,
-            signatory_certs: None,
             input_fee_ppk: None,
             use_keyset_v2: None,
             http_cache: cache::Config::default(),

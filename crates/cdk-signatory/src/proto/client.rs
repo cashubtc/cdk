@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::PathBuf;
 
 use cdk_common::error::Error;
 use cdk_common::grpc::{VersionInterceptor, VERSION_SIGNATORY_HEADER};
@@ -39,17 +39,16 @@ pub enum ClientError {
 
 impl SignatoryRpcClient {
     /// Create a new RemoteSigner from a tonic transport channel.
-    pub async fn new<A>(url: String, tls_dir: Option<A>) -> Result<Self, ClientError>
-    where
-        A: AsRef<Path>,
-    {
+    pub async fn new(addr: &str, port: u16, tls_dir: Option<PathBuf>) -> Result<Self, ClientError> {
         #[cfg(not(target_arch = "wasm32"))]
         if rustls::crypto::CryptoProvider::get_default().is_none() {
             let _ = rustls::crypto::ring::default_provider().install_default();
         }
 
+        let scheme = if tls_dir.is_some() { "https" } else { "http" };
+        let url = format!("{scheme}://{addr}:{port}");
+
         let channel = if let Some(tls_dir) = tls_dir {
-            let tls_dir = tls_dir.as_ref();
             let server_root_ca_cert = std::fs::read_to_string(tls_dir.join("ca.pem"))?;
             let server_root_ca_cert = Certificate::from_pem(server_root_ca_cert);
             let client_cert = std::fs::read_to_string(tls_dir.join("client.pem"))?;
