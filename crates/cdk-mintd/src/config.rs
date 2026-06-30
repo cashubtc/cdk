@@ -47,6 +47,7 @@ pub struct LoggingConfig {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Info {
     pub url: String,
     pub listen_host: String,
@@ -167,6 +168,7 @@ impl std::str::FromStr for LnBackend {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Ln {
     pub ln_backend: LnBackend,
     #[serde(default)]
@@ -506,6 +508,7 @@ fn default_bdk_quote_safety_multiplier() -> f64 {
 
 #[cfg(feature = "lnbits")]
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LNbits {
     pub admin_api_key: String,
     pub invoice_api_key: String,
@@ -544,6 +547,7 @@ impl Default for LNbits {
 
 #[cfg(feature = "cln")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Cln {
     pub rpc_path: PathBuf,
     #[serde(default = "default_cln_bolt12")]
@@ -576,6 +580,7 @@ fn default_cln_bolt12() -> bool {
 
 #[cfg(feature = "lnd")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Lnd {
     pub address: String,
     pub cert_file: PathBuf,
@@ -601,6 +606,7 @@ impl Default for Lnd {
 
 #[cfg(feature = "ldk-node")]
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LdkNode {
     /// Fee percentage (e.g., 0.02 for 2%)
     #[serde(default = "default_ldk_fee_percent")]
@@ -778,6 +784,7 @@ impl FakeWalletCustomPaymentMethod {
 
 #[cfg(feature = "fakewallet")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FakeWallet {
     #[serde(default = "default_fake_wallet_supported_units")]
     pub supported_units: Vec<CurrencyUnit>,
@@ -842,6 +849,7 @@ fn default_fake_wallet_supported_units() -> Vec<CurrencyUnit> {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(default)]
 pub struct GrpcProcessor {
     #[serde(default)]
     pub supported_units: Vec<CurrencyUnit>,
@@ -896,17 +904,20 @@ impl std::str::FromStr for DatabaseEngine {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct Database {
     pub engine: DatabaseEngine,
     pub postgres: Option<PostgresConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct AuthDatabase {
     pub postgres: Option<PostgresAuthConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PostgresAuthConfig {
     pub url: String,
     pub tls_mode: Option<String>,
@@ -926,6 +937,7 @@ impl Default for PostgresAuthConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PostgresConfig {
     pub url: String,
     pub tls_mode: Option<String>,
@@ -967,6 +979,7 @@ impl std::str::FromStr for AuthType {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Auth {
     #[serde(default)]
     pub auth_enabled: bool,
@@ -1002,6 +1015,7 @@ fn default_blind() -> AuthType {
 
 /// CDK settings, derived from `config.toml`
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct Settings {
     pub info: Info,
     pub mint_info: MintInfo,
@@ -1036,6 +1050,7 @@ pub struct Settings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[cfg(feature = "prometheus")]
+#[serde(default)]
 pub struct Prometheus {
     pub enabled: bool,
     pub address: Option<String>,
@@ -1071,6 +1086,7 @@ fn default_max_outputs() -> usize {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct MintInfo {
     /// name of the mint and should be recognizable
     pub name: String,
@@ -1094,6 +1110,7 @@ pub struct MintInfo {
 
 #[cfg(feature = "management-rpc")]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct MintManagementRpc {
     /// When this is set to `true` the mint use the config file for the initial set up on first start.
     /// Changes to the `[mint_info]` after this **MUST** be made via the RPC changes to the config file or env vars will be ignored.
@@ -1106,7 +1123,6 @@ pub struct MintManagementRpc {
 }
 
 impl Settings {
-    /// Validate payment backend combinations after config and env overrides are applied.
     pub fn validate_backend_pairing(&self) -> Result<(), String> {
         #[cfg(feature = "fakewallet")]
         self.validate_fake_wallet_backend_pairing()?;
@@ -1131,7 +1147,6 @@ impl Settings {
             .iter()
             .any(|ln| !matches!(ln.ln_backend, LnBackend::None | LnBackend::FakeWallet));
 
-        // A fake Lightning backend cannot be combined with a real one.
         if has_fake_wallet_ln_backend && has_real_ln_backend {
             return Err(
                 "ln_backend = \"fakewallet\" cannot be combined with a real \
@@ -1160,30 +1175,30 @@ impl Settings {
         Ok(())
     }
 
+    pub fn try_new<P>(config_file_name: Option<P>) -> Result<Self, ConfigError>
+    where
+        P: Into<PathBuf>,
+    {
+        let default_settings = Self::default();
+        Self::new_from_default(&default_settings, config_file_name)
+    }
+
+    /// Loads settings from defaults and an optional config file.
+    ///
+    /// Prefer [`Self::try_new`] in any code path that can surface a recoverable
+    /// config error; this constructor exists for callers that want a hard fail.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the config file cannot be read or deserialized. Unlike earlier
+    /// versions, this never silently falls back to defaults — silent fallback
+    /// hid real misconfiguration.
     #[must_use]
     pub fn new<P>(config_file_name: Option<P>) -> Self
     where
         P: Into<PathBuf>,
     {
-        let default_settings = Self::default();
-        // attempt to construct settings with file
-        let from_file = Self::new_from_default(&default_settings, config_file_name);
-        match from_file {
-            Ok(f) => f,
-            Err(e) => {
-                tracing::error!(
-                    "Error reading config file, falling back to defaults. Error: {e:?}"
-                );
-                default_settings
-            }
-        }
-    }
-
-    pub fn try_new<P>(config_file_name: Option<P>) -> Result<Self, ConfigError>
-    where
-        P: Into<PathBuf>,
-    {
-        Self::new_from_default(&Self::default(), config_file_name)
+        Self::try_new(config_file_name).unwrap_or_else(|e| panic!("Error reading config file: {e}"))
     }
 
     fn new_from_default<P>(
@@ -1221,11 +1236,10 @@ mod tests {
     use super::*;
 
     fn config_env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static CONFIG_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-        CONFIG_ENV_LOCK
-            .lock()
-            .expect("config env test lock should not be poisoned")
+        // Share the single process-wide env lock with the rest of the crate's
+        // tests. `std::env` is global, so config.rs and lib.rs tests must
+        // serialize on the *same* mutex or they race over env vars.
+        crate::test_utils::env_lock()
     }
 
     #[cfg(feature = "bdk")]
@@ -1969,7 +1983,7 @@ max_melt = 500000
         env::set_var(crate::env_vars::ENV_LND_RESERVE_FEE_MIN, "4");
 
         // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::new(Some(&config_path));
+        let mut settings = Settings::try_new(Some(&config_path)).expect("Failed to load config");
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
@@ -2026,7 +2040,7 @@ max_melt = 500000
         env::set_var(crate::env_vars::ENV_CLN_RESERVE_FEE_MIN, "4");
 
         // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::new(Some(&config_path));
+        let mut settings = Settings::try_new(Some(&config_path)).expect("Failed to load config");
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
@@ -2084,7 +2098,7 @@ max_melt = 500000
         env::set_var(crate::env_vars::ENV_LNBITS_RESERVE_FEE_MIN, "5");
 
         // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::new(Some(&config_path));
+        let mut settings = Settings::try_new(Some(&config_path)).expect("Failed to load config");
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
@@ -2142,7 +2156,7 @@ max_melt = 500000
         env::set_var(crate::env_vars::ENV_FAKE_WALLET_MAX_DELAY, "5");
 
         // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::new(Some(&config_path));
+        let mut settings = Settings::try_new(Some(&config_path)).expect("Failed to load config");
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
@@ -2219,7 +2233,7 @@ max_melt = 500000
         env::set_var(crate::env_vars::ENV_GRPC_PROCESSOR_PORT, "50051");
 
         // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::new(Some(&config_path));
+        let mut settings = Settings::try_new(Some(&config_path)).expect("Failed to load config");
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
@@ -2277,7 +2291,7 @@ max_melt = 500000
         );
 
         // Load settings and apply environment variables (same as production code)
-        let mut settings = Settings::new(Some(&config_path));
+        let mut settings = Settings::try_new(Some(&config_path)).expect("Failed to load config");
         settings.from_env().expect("Failed to apply env vars");
 
         // Verify that settings were populated from env vars
