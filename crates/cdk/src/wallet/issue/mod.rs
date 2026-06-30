@@ -632,6 +632,7 @@ mod tests {
                 quote: "quote-id".to_string(),
                 request: "bc1qexample".to_string(),
                 unit: CurrencyUnit::Sat,
+                method: PaymentMethod::Known(KnownMethod::Onchain),
                 expiry: Some(1_700_000_000),
                 pubkey: SecretKey::generate().public_key(),
                 amount_paid: Amount::from(1_000),

@@ -471,6 +471,7 @@ impl MeltQuoteStatusResponse {
                 change: r.change,
                 request: Some(r.request),
                 unit: Some(r.unit),
+                method: PaymentMethod::Known(KnownMethod::Onchain),
             }),
             _ => Err(Error::Custom(
                 "Cannot convert response to standard bolt11 response".to_string(),
@@ -2116,6 +2117,7 @@ mod tests {
             payment_preimage,
             change: None,
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
         }
     }
 

@@ -366,7 +366,7 @@ mod tests {
         Amount, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteBolt12Response,
         MeltQuoteCustomResponse, MeltQuoteOnchainResponse, MeltQuoteState, MintQuoteBolt11Response,
         MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteOnchainResponse, MintQuoteState,
-        NotificationPayload,
+        NotificationPayload, PaymentMethod,
     };
 
     use super::{classify_payment_notification, handle_payment_notification, ClassifiedPayment};
@@ -409,6 +409,7 @@ mod tests {
                 quote: "onchain_quote".to_string(),
                 request: "test_request".to_string(),
                 unit: CurrencyUnit::Sat,
+                method: PaymentMethod::from("onchain"),
                 expiry: None,
                 pubkey,
                 amount_paid: Amount::from(101u64),
@@ -428,6 +429,7 @@ mod tests {
             MintQuoteCustomResponse::<String> {
                 quote: "custom_quote".to_string(),
                 request: "test_request".to_string(),
+                method: PaymentMethod::Custom("custom".to_string()),
                 amount: None,
                 amount_paid: Amount::from(125u64),
                 amount_issued: Amount::from(100u64),
@@ -540,6 +542,7 @@ mod tests {
                     quote: "onchain_quote".to_string(),
                     request: "test_request".to_string(),
                     unit: CurrencyUnit::Sat,
+                    method: PaymentMethod::from("onchain"),
                     expiry: None,
                     pubkey,
                     amount_paid: Amount::from(50u64),
@@ -554,6 +557,7 @@ mod tests {
                 MintQuoteCustomResponse::<String> {
                     quote: "custom_quote".to_string(),
                     request: "test_request".to_string(),
+                    method: PaymentMethod::Custom("custom".to_string()),
                     amount: None,
                     amount_paid: Amount::from(50u64),
                     amount_issued: Amount::from(100u64),
@@ -573,6 +577,7 @@ mod tests {
             request: "test_request".to_string(),
             amount: Some(Amount::from(100u64)),
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT11,
             state,
             expiry: None,
             pubkey: None,
@@ -589,6 +594,7 @@ mod tests {
             request: "test_request".to_string(),
             amount: None,
             unit: CurrencyUnit::Sat,
+            method: PaymentMethod::BOLT12,
             expiry: None,
             pubkey: SecretKey::generate().public_key(),
             amount_paid: Amount::from(amount_paid),
@@ -607,6 +613,7 @@ mod tests {
             change: None,
             request: Some("test_request".to_string()),
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT11,
         }
     }
 
@@ -622,6 +629,7 @@ mod tests {
             quote: quote.to_string(),
             amount: Amount::from(100u64),
             unit: CurrencyUnit::Sat,
+            method: PaymentMethod::from("onchain"),
             state,
             expiry: 1234,
             request: "test_request".to_string(),
@@ -647,6 +655,7 @@ mod tests {
             change: None,
             request: Some("test_request".to_string()),
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Custom("custom".to_string()),
             extra: serde_json::Value::Null,
         }
     }

@@ -188,6 +188,7 @@ mod tests {
             response: MintQuoteCustomResponse {
                 quote: "quote".to_string(),
                 request: "custom-request".to_string(),
+                method: PaymentMethod::Custom("custom".to_string()),
                 amount: Some(Amount::from(100)),
                 amount_paid,
                 amount_issued,
@@ -222,6 +223,7 @@ mod tests {
             request: "bolt12-request".to_string(),
             amount: Some(Amount::from(100)),
             unit: CurrencyUnit::Sat,
+            method: PaymentMethod::Known(KnownMethod::Bolt12),
             expiry: None,
             pubkey: PublicKey::from_hex(
                 "02a8cda4cf448bfce9a9e46e588c06ea1780fcb94e3bbdf3277f42995d403a8b0c",

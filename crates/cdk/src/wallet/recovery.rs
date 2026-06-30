@@ -683,7 +683,7 @@ mod tests {
     use std::sync::Arc;
 
     use cdk_common::mint_url::MintUrl;
-    use cdk_common::nuts::{MeltQuoteBolt11Response, MeltQuoteState, State};
+    use cdk_common::nuts::{MeltQuoteBolt11Response, MeltQuoteState, PaymentMethod, State};
     use cdk_common::wallet::{
         IssueSagaState, MeltOperationData, MeltSagaState, MintOperationData, OperationData,
         ReceiveOperationData, ReceiveSagaState, WalletSaga, WalletSagaState,
@@ -1002,6 +1002,7 @@ mod tests {
             change: None,
             request: None,
             unit: None,
+            method: PaymentMethod::BOLT11,
         }));
 
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
@@ -1077,6 +1078,7 @@ mod tests {
             change: None,
             request: None,
             unit: None,
+            method: PaymentMethod::BOLT11,
         }));
 
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
@@ -1146,6 +1148,7 @@ mod tests {
             change: None,
             request: None,
             unit: None,
+            method: PaymentMethod::BOLT11,
         }));
 
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
@@ -1222,6 +1225,7 @@ mod tests {
             change: None,
             request: None,
             unit: None,
+            method: PaymentMethod::BOLT11,
         }));
 
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;

@@ -839,6 +839,7 @@ impl Mint {
                         change: change.clone(),
                         request: Some(quote.request.to_string()),
                         unit: Some(quote.unit.clone()),
+                        method: PaymentMethod::Known(KnownMethod::Bolt11),
                     })
                 }
                 PaymentMethod::Known(KnownMethod::Bolt12) => {
@@ -852,6 +853,7 @@ impl Mint {
                         change: change.clone(),
                         request: Some(quote.request.to_string()),
                         unit: Some(quote.unit.clone()),
+                        method: PaymentMethod::Known(KnownMethod::Bolt12),
                     })
                 }
                 PaymentMethod::Known(KnownMethod::Onchain) => {

@@ -510,6 +510,7 @@ pub struct MeltQuoteCustomRequest {
 /// ```json
 /// {
 ///   "quote": "abc123",
+///   "method": "custom",
 ///   "state": "UNPAID",
 ///   "amount": 1000,
 ///   "fee_reserve": 10,
@@ -529,6 +530,8 @@ pub struct MeltQuoteCustomRequest {
 pub struct MeltQuoteCustomResponse<Q> {
     /// Quote ID
     pub quote: Q,
+    /// Payment method
+    pub method: PaymentMethod,
     /// Amount to be melted
     pub amount: Amount,
     /// Fee reserve required, if provided
@@ -563,6 +566,7 @@ impl<Q: ToString> MeltQuoteCustomResponse<Q> {
     pub fn to_string_id(&self) -> MeltQuoteCustomResponse<String> {
         MeltQuoteCustomResponse {
             quote: self.quote.to_string(),
+            method: self.method.clone(),
             amount: self.amount,
             fee_reserve: self.fee_reserve,
             state: self.state,
@@ -581,6 +585,7 @@ impl From<MeltQuoteCustomResponse<QuoteId>> for MeltQuoteCustomResponse<String> 
     fn from(value: MeltQuoteCustomResponse<QuoteId>) -> Self {
         Self {
             quote: value.quote.to_string(),
+            method: value.method,
             amount: value.amount,
             fee_reserve: value.fee_reserve,
             state: value.state,
@@ -975,6 +980,7 @@ mod tests {
     fn test_melt_quote_custom_response_fee_reserve_optional() {
         let json_str = r#"{
             "quote": "abc123",
+            "method": "cashapp",
             "state": "UNPAID",
             "amount": 1000,
             "expiry": 1234567890,
@@ -984,6 +990,10 @@ mod tests {
         let response: MeltQuoteCustomResponse<String> = from_str(json_str).unwrap();
 
         assert_eq!(response.fee_reserve, None);
+        assert_eq!(
+            response.method,
+            PaymentMethod::Custom("cashapp".to_string())
+        );
         assert_eq!(response.extra["custom_field"], json!("value"));
 
         let serialized = to_string(&response).unwrap();
@@ -996,6 +1006,7 @@ mod tests {
     fn test_melt_quote_custom_response_serializes_fee_reserve_when_present() {
         let response = MeltQuoteCustomResponse {
             quote: "abc123".to_string(),
+            method: PaymentMethod::Custom("custom".to_string()),
             amount: Amount::from(1000),
             fee_reserve: Some(Amount::from(10)),
             state: QuoteState::Unpaid,
@@ -1011,5 +1022,6 @@ mod tests {
         let parsed: serde_json::Value = from_str(&serialized).unwrap();
 
         assert_eq!(parsed["fee_reserve"], json!(10));
+        assert_eq!(parsed["method"], json!("custom"));
     }
 }

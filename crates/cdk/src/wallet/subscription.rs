@@ -718,6 +718,7 @@ mod tests {
         let mint_payload = json!({
             "quote": "mint-quote",
             "request": "lnbc1...",
+            "method": "bolt11",
             "state": "PAID",
             "expiry": 1234,
             "paid": true
@@ -726,6 +727,7 @@ mod tests {
             "quote": "melt-quote",
             "amount": 21,
             "fee_reserve": 1,
+            "method": "bolt11",
             "state": "PAID",
             "expiry": 1234,
             "payment_proof": "abc"
@@ -753,6 +755,7 @@ mod tests {
             "request": "lni1...",
             "amount": null,
             "unit": "sat",
+            "method": "bolt12",
             "state": "UNPAID",
             "expiry": 1234,
             "pubkey": "02194603ffa062682c4f10e2dfe8f53e17d5d0329db51c8d3935cc74a4c0e0d4cb",
@@ -775,6 +778,7 @@ mod tests {
         let mint_payload = json!({
             "quote": "mint-custom",
             "request": "custom-request",
+            "method": "foo",
             "amount": 42,
             "unit": "sat",
             "amount_paid": 0,
@@ -787,6 +791,7 @@ mod tests {
             "quote": "melt-custom",
             "amount": 42,
             "fee_reserve": 1,
+            "method": "foo",
             "state": "PAID",
             "expiry": 1234,
             "payment_proof": null,

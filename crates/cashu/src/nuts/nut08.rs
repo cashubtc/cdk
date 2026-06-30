@@ -38,7 +38,7 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-    use crate::nuts::{BlindSignature, Id, MeltQuoteState, PublicKey};
+    use crate::nuts::{BlindSignature, Id, MeltQuoteState, PaymentMethod, PublicKey};
     use crate::CurrencyUnit;
 
     fn blind_signature(amount: u64) -> BlindSignature {
@@ -65,6 +65,7 @@ mod tests {
             change: Some(vec![blind_signature(2), blind_signature(3)]),
             request: Some("invoice".to_string()),
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT11,
         };
 
         assert_eq!(response.change_amount(), Some(Amount::from(5)));
@@ -82,6 +83,7 @@ mod tests {
             change: Some(vec![blind_signature(4), blind_signature(6)]),
             request: None,
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Custom("custom".to_string()),
             extra: serde_json::Value::Null,
         };
 
