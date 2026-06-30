@@ -955,6 +955,7 @@ mod tests {
         let canned_response = MintQuoteCustomResponse::<String> {
             quote: "test-quote-id".to_string(),
             request: "paypal://pay?id=123".to_string(),
+            method: PaymentMethod::Custom("paypal".to_string()),
             amount: Some(cdk_common::Amount::from(1000)),
             amount_paid: cdk_common::Amount::ZERO,
             amount_issued: cdk_common::Amount::ZERO,
@@ -1121,6 +1122,7 @@ mod tests {
         let canned_json = serde_json::json!({
             "quote": "test-quote-id",
             "request": "paypal://pay?id=123",
+            "method": "paypal",
             "amount": 1000,
             "amount_paid": 1000,
             "amount_issued": 0,
@@ -1156,6 +1158,7 @@ mod tests {
             {
                 "quote": "test-quote-id",
                 "request": "paypal://pay?id=123",
+                "method": "paypal",
                 "amount": 1000,
                 "amount_paid": 1000,
                 "amount_issued": 1000,

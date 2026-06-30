@@ -3,7 +3,7 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit};
+use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
 use super::nut01::PublicKey;
 use super::nut05::MeltRequest;
 use super::MeltQuoteState;
@@ -42,6 +42,8 @@ pub struct MintQuoteOnchainResponse<Q> {
     pub request: String,
     /// Unit
     pub unit: CurrencyUnit,
+    /// Payment method
+    pub method: PaymentMethod,
     /// Unix timestamp until the quote is valid
     pub expiry: Option<u64>,
     /// NUT-20 Pubkey from the request
@@ -61,6 +63,7 @@ impl<Q: ToString> MintQuoteOnchainResponse<Q> {
             quote: self.quote.to_string(),
             request: self.request.clone(),
             unit: self.unit.clone(),
+            method: self.method.clone(),
             expiry: self.expiry,
             pubkey: self.pubkey,
             amount_paid: self.amount_paid,
@@ -76,6 +79,7 @@ impl From<MintQuoteOnchainResponse<QuoteId>> for MintQuoteOnchainResponse<String
             quote: value.quote.to_string(),
             request: value.request,
             unit: value.unit,
+            method: value.method,
             expiry: value.expiry,
             pubkey: value.pubkey,
             amount_paid: value.amount_paid,
@@ -167,6 +171,8 @@ pub struct MeltQuoteOnchainResponse<Q> {
     pub amount: Amount,
     /// Unit
     pub unit: CurrencyUnit,
+    /// Payment method
+    pub method: PaymentMethod,
     /// Quote state
     pub state: MeltQuoteState,
     /// Unix timestamp until the quote is valid
@@ -197,6 +203,7 @@ impl<Q: ToString> MeltQuoteOnchainResponse<Q> {
             quote: self.quote.to_string(),
             amount: self.amount,
             unit: self.unit.clone(),
+            method: self.method.clone(),
             state: self.state,
             expiry: self.expiry,
             request: self.request.clone(),
@@ -215,6 +222,7 @@ impl From<MeltQuoteOnchainResponse<QuoteId>> for MeltQuoteOnchainResponse<String
             quote: value.quote.to_string(),
             amount: value.amount,
             unit: value.unit,
+            method: value.method,
             state: value.state,
             expiry: value.expiry,
             request: value.request,
@@ -269,6 +277,7 @@ mod tests {
             quote: "TRmjduhIsPxd...".to_string(),
             amount: Amount::from(100000),
             unit: CurrencyUnit::Sat,
+            method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Onchain),
             state: MeltQuoteState::Pending,
             expiry: 1701704757,
             request: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
@@ -295,6 +304,7 @@ mod tests {
         assert_eq!(response.quote, deserialized.quote);
         assert_eq!(response.request, deserialized.request);
         assert_eq!(response.amount, deserialized.amount);
+        assert_eq!(response.method, deserialized.method);
         assert_eq!(response.fee_options, deserialized.fee_options);
         assert_eq!(response.selected_fee_index, deserialized.selected_fee_index);
         assert_eq!(response.state, deserialized.state);
@@ -308,6 +318,7 @@ mod tests {
             quote: "TRmjduhIsPxd...".to_string(),
             amount: Amount::from(100000),
             unit: CurrencyUnit::Sat,
+            method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Onchain),
             state: MeltQuoteState::Pending,
             expiry: 1701704757,
             request: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
@@ -339,6 +350,7 @@ mod tests {
             quote: "DSGLX9kevM...".to_string(),
             request: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
             unit: CurrencyUnit::Sat,
+            method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Onchain),
             expiry: Some(1701704757),
             pubkey: PublicKey::from_hex(
                 "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
@@ -361,6 +373,7 @@ mod tests {
             quote: "TRmjduhIsPxd...".to_string(),
             amount: Amount::from(100000),
             unit: CurrencyUnit::Sat,
+            method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Onchain),
             state: MeltQuoteState::Pending,
             expiry: 1701704757,
             request: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),

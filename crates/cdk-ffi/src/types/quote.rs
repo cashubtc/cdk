@@ -134,6 +134,8 @@ pub struct MintQuoteBolt11Response {
     pub quote: String,
     /// Request string
     pub request: String,
+    /// Payment method
+    pub method: PaymentMethod,
     /// State of the quote
     pub state: QuoteState,
     /// Expiry timestamp (optional)
@@ -151,6 +153,7 @@ impl From<cdk::nuts::MintQuoteBolt11Response<String>> for MintQuoteBolt11Respons
         Self {
             quote: response.quote,
             request: response.request,
+            method: response.method.into(),
             state: response.state.into(),
             expiry: response.expiry,
             amount: response.amount.map(Into::into),
@@ -165,6 +168,7 @@ impl From<cdk::wallet::MintQuote> for MintQuoteBolt11Response {
         Self {
             quote: quote.id,
             request: quote.request,
+            method: quote.payment_method.into(),
             state: quote.state.into(),
             expiry: Some(quote.expiry),
             amount: quote.amount.map(Into::into),
@@ -184,6 +188,8 @@ pub struct MintQuoteCustomResponse {
     pub quote: String,
     /// Request string
     pub request: String,
+    /// Payment method
+    pub method: PaymentMethod,
     /// Expiry timestamp (optional)
     pub expiry: Option<u64>,
     /// Amount (optional)
@@ -214,6 +220,7 @@ impl From<cdk::nuts::MintQuoteCustomResponse<String>> for MintQuoteCustomRespons
         Self {
             quote: response.quote,
             request: response.request,
+            method: response.method.into(),
             expiry: response.expiry,
             amount: response.amount.map(Into::into),
             amount_paid: response.amount_paid.into(),
@@ -230,6 +237,8 @@ impl From<cdk::nuts::MintQuoteCustomResponse<String>> for MintQuoteCustomRespons
 pub struct MeltQuoteBolt11Response {
     /// Quote ID
     pub quote: String,
+    /// Payment method
+    pub method: PaymentMethod,
     /// Amount
     pub amount: Amount,
     /// Fee reserve
@@ -250,6 +259,7 @@ impl From<cdk::nuts::MeltQuoteBolt11Response<String>> for MeltQuoteBolt11Respons
     fn from(response: cdk::nuts::MeltQuoteBolt11Response<String>) -> Self {
         Self {
             quote: response.quote,
+            method: response.method.into(),
             amount: response.amount.into(),
             fee_reserve: response.fee_reserve.into(),
             state: response.state.into(),
@@ -269,6 +279,8 @@ impl From<cdk::nuts::MeltQuoteBolt11Response<String>> for MeltQuoteBolt11Respons
 pub struct MeltQuoteCustomResponse {
     /// Quote ID
     pub quote: String,
+    /// Payment method
+    pub method: PaymentMethod,
     /// Amount
     pub amount: Amount,
     /// Fee reserve
@@ -300,6 +312,7 @@ impl From<cdk::nuts::MeltQuoteCustomResponse<String>> for MeltQuoteCustomRespons
 
         Self {
             quote: response.quote,
+            method: response.method.into(),
             amount: response.amount.into(),
             fee_reserve: response.fee_reserve.map(Into::into),
             state: response.state.into(),
@@ -356,6 +369,8 @@ pub struct MintQuoteOnchainResponse {
     pub quote: String,
     /// Bitcoin address to pay
     pub request: String,
+    /// Payment method
+    pub method: PaymentMethod,
     /// Unit
     pub unit: CurrencyUnit,
     /// Expiry timestamp
@@ -373,6 +388,7 @@ impl From<cdk::nuts::MintQuoteOnchainResponse<String>> for MintQuoteOnchainRespo
         Self {
             quote: response.quote,
             request: response.request,
+            method: response.method.into(),
             unit: response.unit.into(),
             expiry: response.expiry,
             pubkey: response.pubkey.to_string(),
@@ -408,6 +424,8 @@ impl From<cdk::nuts::nut30::MeltQuoteOnchainFeeOption> for MeltQuoteOnchainFeeOp
 pub struct MeltQuoteOnchainResponse {
     /// Quote ID
     pub quote: String,
+    /// Payment method
+    pub method: PaymentMethod,
     /// Amount being paid to the onchain address
     pub amount: Amount,
     /// Unit
@@ -437,6 +455,7 @@ impl From<cdk::nuts::MeltQuoteOnchainResponse<String>> for MeltQuoteOnchainRespo
 
         Self {
             quote: response.quote,
+            method: response.method.into(),
             amount: response.amount.into(),
             unit: response.unit.into(),
             state: response.state.into(),

@@ -377,7 +377,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use cdk_common::nuts::{CurrencyUnit, State};
+    use cdk_common::nuts::{CurrencyUnit, PaymentMethod, State};
     use cdk_common::wallet::{
         MeltOperationData, MeltSagaState, OperationData, Transaction, TransactionDirection,
         WalletSaga, WalletSagaState,
@@ -562,6 +562,7 @@ mod tests {
             payment_preimage: Some("preimage123".to_string()),
             change: None,
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT11,
         }));
 
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
@@ -1103,6 +1104,7 @@ mod tests {
             payment_preimage: None,
             change: None,
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT11,
         }));
 
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
@@ -1181,6 +1183,7 @@ mod tests {
             payment_preimage: None,
             change: None,
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT11,
         }));
 
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;

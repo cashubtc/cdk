@@ -306,7 +306,7 @@ mod tests {
 
     use cdk_common::{
         Amount, CurrencyUnit, MintQuoteBolt12Response, MintQuoteCustomResponse,
-        MintQuoteOnchainResponse, NotificationPayload,
+        MintQuoteOnchainResponse, NotificationPayload, PaymentMethod,
     };
     use futures::Stream;
 
@@ -329,6 +329,7 @@ mod tests {
                     request: "test_request".to_string(),
                     amount: None,
                     unit: CurrencyUnit::Sat,
+                    method: PaymentMethod::BOLT12,
                     expiry: None,
                     pubkey,
                     amount_paid: Amount::from(50u64),
@@ -340,6 +341,7 @@ mod tests {
                     quote: "onchain_quote".to_string(),
                     request: "test_request".to_string(),
                     unit: CurrencyUnit::Sat,
+                    method: PaymentMethod::from("onchain"),
                     expiry: None,
                     pubkey,
                     amount_paid: Amount::from(50u64),
@@ -351,6 +353,7 @@ mod tests {
                 MintQuoteCustomResponse::<String> {
                     quote: "custom_quote".to_string(),
                     request: "test_request".to_string(),
+                    method: PaymentMethod::Custom("custom".to_string()),
                     amount: None,
                     amount_paid: Amount::from(50u64),
                     amount_issued: Amount::from(100u64),
