@@ -1101,11 +1101,11 @@ mod batch_mint_tests {
         }
     }
 
-    async fn create_test_mint() -> Mint {
+    async fn create_test_mint() -> Arc<Mint> {
         create_test_mint_with_onchain_limits(1, 10_000).await
     }
 
-    async fn create_test_mint_with_onchain_limits(onchain_min: u64, onchain_max: u64) -> Mint {
+    async fn create_test_mint_with_onchain_limits(onchain_min: u64, onchain_max: u64) -> Arc<Mint> {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
 
         let mut mint_builder = MintBuilder::new(db.clone());
@@ -1158,10 +1158,12 @@ mod batch_mint_tests {
 
         let quote_ttl = QuoteTTL::new(10000, 10000);
 
-        let mint = mint_builder
-            .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
-            .await
-            .unwrap();
+        let mint = Arc::new(
+            mint_builder
+                .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
+                .await
+                .unwrap(),
+        );
 
         mint.set_quote_ttl(quote_ttl).await.unwrap();
 
