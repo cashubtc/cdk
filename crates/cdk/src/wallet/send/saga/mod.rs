@@ -845,6 +845,10 @@ impl<'a> SendSaga<'a, Prepared> {
             }
 
             if !proofs_to_swap.is_empty() {
+                if options.send_kind.is_offline() {
+                    return Err(Error::InsufficientFunds);
+                }
+
                 let swap_amount = total_send_amount
                     .checked_sub(final_proofs_to_send.total_amount()?)
                     .unwrap_or(Amount::ZERO);
@@ -1395,6 +1399,57 @@ mod tests {
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].state, State::PendingSpent);
         assert!(db.get_saga(&saga_id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_offline_confirm_rejects_prepared_swap_inputs() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let operation_id = uuid::Uuid::new_v4();
+        let proof = test_proof(keyset_id, 8);
+
+        let saga_record = WalletSaga::new(
+            operation_id,
+            WalletSagaState::Send(SendSagaState::ProofsReserved),
+            Amount::from(8),
+            mint_url,
+            CurrencyUnit::Sat,
+            OperationData::Send(SendOperationData {
+                amount: Amount::from(8),
+                memo: None,
+                counter_start: None,
+                counter_end: None,
+                token: None,
+                proofs: None,
+            }),
+        );
+        db.add_saga(saga_record.clone()).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+        let saga = SendSaga::from_prepared(
+            &wallet,
+            operation_id,
+            Amount::from(8),
+            SendOptions {
+                send_kind: SendKind::OfflineExact,
+                ..Default::default()
+            },
+            vec![proof],
+            vec![],
+            Amount::ZERO,
+            Amount::ZERO,
+            saga_record,
+        )
+        .unwrap();
+
+        let err = match saga.confirm(None).await {
+            Ok(_) => panic!("offline confirm must reject swap inputs before contacting mint"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, crate::Error::InsufficientFunds));
     }
 
     #[tokio::test]
