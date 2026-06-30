@@ -266,3 +266,74 @@ impl HttpCache {
         }
     }
 }
+
+#[cfg(all(test, feature = "redis", feature = "integration-tests"))]
+mod tests {
+    use std::sync::Arc;
+
+    use super::config::{Backend, Config};
+    use super::{HttpCache, RedisConfig};
+
+    #[tokio::test]
+    async fn redis_single_node_set_get_roundtrip() {
+        let url = std::env::var("CDK_MINTD_CACHE_REDIS_URL")
+            .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+
+        let cache = Arc::new(
+            HttpCache::from_config(Config {
+                backend: Backend::Redis(RedisConfig {
+                    connection_string: url,
+                    use_cluster: false,
+                    cluster_nodes: None,
+                    key_prefix: None,
+                }),
+                ttl: Some(60),
+                tti: Some(60),
+            })
+            .await
+            .expect("failed to connect to single-node Redis"),
+        );
+
+        let key = cache
+            .calculate_key(&"redis_single_node_roundtrip")
+            .expect("key calculation failed");
+
+        cache.set(key.clone(), &"test_value_single").await;
+
+        let retrieved: Option<String> = cache.get(&key).await;
+        assert_eq!(retrieved, Some("test_value_single".to_string()));
+    }
+
+    #[tokio::test]
+    async fn redis_cluster_set_get_roundtrip() {
+        let nodes_str = std::env::var("CDK_MINTD_CACHE_REDIS_CLUSTER_NODES").unwrap_or_else(|_| {
+            "redis://127.0.0.1:7001,redis://127.0.0.1:7002,redis://127.0.0.1:7003".to_string()
+        });
+
+        let nodes: Vec<String> = nodes_str.split(',').map(|s| s.trim().to_string()).collect();
+
+        let cache = Arc::new(
+            HttpCache::from_config(Config {
+                backend: Backend::Redis(RedisConfig {
+                    connection_string: String::new(),
+                    use_cluster: true,
+                    cluster_nodes: Some(nodes),
+                    key_prefix: None,
+                }),
+                ttl: Some(60),
+                tti: Some(60),
+            })
+            .await
+            .expect("failed to connect to Redis cluster"),
+        );
+
+        let key = cache
+            .calculate_key(&"redis_cluster_roundtrip")
+            .expect("key calculation failed");
+
+        cache.set(key.clone(), &"test_value_cluster").await;
+
+        let retrieved: Option<String> = cache.get(&key).await;
+        assert_eq!(retrieved, Some("test_value_cluster".to_string()));
+    }
+}

@@ -12,6 +12,7 @@ readme = "README.md"
 
 [features]
 redis = ["dep:redis"]
+integration-tests = []
 prometheus = ["dep:cdk-prometheus"]
 info-page = ["dep:maud"]
 
