@@ -67,6 +67,7 @@ impl LNbits {
                     mpp: false,
                     amountless: false,
                     invoice_description: true,
+                    ..Default::default()
                 }),
                 bolt12: None,
                 onchain: None,

@@ -86,8 +86,8 @@ impl MintPayment for OnchainQuoteMock {
             bolt12: None,
             onchain: Some(OnchainSettings {
                 confirmations: self.confirmations,
-                min_receive_amount_sat: 0,
-                min_send_amount_sat: 0,
+                receive_limits: Default::default(),
+                send_limits: Default::default(),
             }),
             custom: std::collections::HashMap::new(),
         })

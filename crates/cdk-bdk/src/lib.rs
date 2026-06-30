@@ -472,8 +472,14 @@ impl MintPayment for CdkBdk {
             bolt12: None,
             onchain: Some(OnchainSettings {
                 confirmations: self.num_confs,
-                min_receive_amount_sat: self.min_receive_amount_sat,
-                min_send_amount_sat: self.min_send_amount_sat,
+                receive_limits: cdk_common::payment::AmountLimitSettings {
+                    min: (self.min_receive_amount_sat > 0).then_some(self.min_receive_amount_sat),
+                    max: None,
+                },
+                send_limits: cdk_common::payment::AmountLimitSettings {
+                    min: (self.min_send_amount_sat > 0).then_some(self.min_send_amount_sat),
+                    max: None,
+                },
             }),
             custom: std::collections::HashMap::new(),
         })
@@ -1244,8 +1250,8 @@ mod tests {
         let settings = backend.get_settings().await.expect("settings");
         let onchain = settings.onchain.expect("onchain settings");
 
-        assert_eq!(onchain.min_receive_amount_sat, 0);
-        assert_eq!(onchain.min_send_amount_sat, 546);
+        assert_eq!(onchain.receive_limits.min, None);
+        assert_eq!(onchain.send_limits.min, Some(546));
     }
 
     // ------------------------------------------------------------------

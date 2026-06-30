@@ -216,6 +216,7 @@ mod tests {
                 signatory,
                 localstore,
                 HashMap::new(),
+                HashMap::new(),
                 max_inputs,
                 max_outputs,
             )

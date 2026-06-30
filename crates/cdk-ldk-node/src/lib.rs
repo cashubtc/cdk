@@ -583,8 +583,12 @@ impl MintPayment for CdkLdkNode {
                 mpp: false,
                 amountless: true,
                 invoice_description: true,
+                ..Default::default()
             }),
-            bolt12: Some(payment::Bolt12Settings { amountless: true }),
+            bolt12: Some(payment::Bolt12Settings {
+                amountless: true,
+                ..Default::default()
+            }),
             onchain: None,
             custom: std::collections::HashMap::new(),
         };

@@ -99,8 +99,14 @@ impl MintPayment for Cln {
                 mpp: true,
                 amountless: true,
                 invoice_description: true,
+                receive_limits: None,
+                send_limits: None,
             }),
-            bolt12: Some(payment::Bolt12Settings { amountless: true }),
+            bolt12: Some(payment::Bolt12Settings {
+                amountless: true,
+                receive_limits: None,
+                send_limits: None,
+            }),
             onchain: None,
             custom: HashMap::new(),
         })

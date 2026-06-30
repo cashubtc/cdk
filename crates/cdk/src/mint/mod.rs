@@ -66,6 +66,8 @@ pub struct Mint {
     auth_localstore: Option<DynMintAuthDatabase>,
     /// Payment processors for mint
     payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+    /// Operator-configured limits per processor, used to compute effective limits on settings updates.
+    processor_limits: Arc<HashMap<PaymentProcessorKey, MintMeltLimits>>,
     /// Subscription manager
     pubsub_manager: Arc<PubSubManager>,
     oidc_client: Option<OidcClient>,
@@ -101,6 +103,7 @@ impl Mint {
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: DynMintDatabase,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
+        processor_limits: HashMap<PaymentProcessorKey, MintMeltLimits>,
         max_inputs: usize,
         max_outputs: usize,
     ) -> Result<Self, Error> {
@@ -110,6 +113,7 @@ impl Mint {
             localstore,
             None,
             payment_processors,
+            processor_limits,
             max_inputs,
             max_outputs,
         )
@@ -123,6 +127,7 @@ impl Mint {
         localstore: DynMintDatabase,
         auth_localstore: DynMintAuthDatabase,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
+        processor_limits: HashMap<PaymentProcessorKey, MintMeltLimits>,
         max_inputs: usize,
         max_outputs: usize,
     ) -> Result<Self, Error> {
@@ -132,6 +137,7 @@ impl Mint {
             localstore,
             Some(auth_localstore),
             payment_processors,
+            processor_limits,
             max_inputs,
             max_outputs,
         )
@@ -146,6 +152,7 @@ impl Mint {
         localstore: DynMintDatabase,
         auth_localstore: Option<DynMintAuthDatabase>,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
+        processor_limits: HashMap<PaymentProcessorKey, MintMeltLimits>,
         max_inputs: usize,
         max_outputs: usize,
     ) -> Result<Self, Error> {
@@ -231,6 +238,7 @@ impl Mint {
         }
 
         let payment_processors = Arc::new(payment_processors);
+        let processor_limits = Arc::new(processor_limits);
 
         Ok(Self {
             signatory,
@@ -243,6 +251,7 @@ impl Mint {
                 )
             }),
             payment_processors,
+            processor_limits,
             auth_localstore,
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
             task_state: Arc::new(Mutex::new(TaskState::default())),
@@ -631,30 +640,50 @@ impl Mint {
     ) -> Result<(), Error> {
         let mut join_set = JoinSet::new();
 
-        // Group processors by unique instance (using Arc pointer equality)
-        let mut seen_processors = Vec::new();
+        // Group all (key, limits) pairs by unique processor instance.
+        // A single processor (e.g. arkade) may handle both bolt11 and onchain keys;
+        // it needs one payment task and one settings task that fans out to all its keys.
+        let mut processor_groups: Vec<(
+            DynMintPayment,
+            Vec<(PaymentProcessorKey, Option<MintMeltLimits>)>,
+        )> = Vec::new();
+
         for (key, processor) in payment_processors {
-            // Skip if processor is already active
             if processor.is_payment_event_stream_active() {
                 continue;
             }
+            let operator_limits = mint.processor_limits.get(key).copied();
+            if let Some(group) = processor_groups
+                .iter_mut()
+                .find(|(p, _)| Arc::ptr_eq(p, processor))
+            {
+                group.1.push((key.clone(), operator_limits));
+            } else {
+                processor_groups
+                    .push((Arc::clone(processor), vec![(key.clone(), operator_limits)]));
+            }
+        }
 
-            // Skip if we've already spawned a task for this processor instance
-            if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
-                continue;
+        for (processor, keys_with_limits) in processor_groups {
+            tracing::info!(
+                "Starting tasks for processor handling keys: {:?}",
+                keys_with_limits.iter().map(|(k, _)| k).collect::<Vec<_>>()
+            );
+
+            {
+                let processor = Arc::clone(&processor);
+                let localstore = Arc::clone(&localstore);
+                let shutdown = Arc::clone(&shutdown);
+                let keys = keys_with_limits.clone();
+                join_set.spawn(async move {
+                    Self::wait_for_processor_settings(processor, localstore, keys, shutdown).await;
+                });
             }
 
-            seen_processors.push(Arc::clone(processor));
-
-            tracing::info!("Starting payment wait task for {:?}", key);
-
-            // Clone for the spawned task
             let mint = Arc::clone(&mint);
-            let processor = Arc::clone(processor);
             let localstore = Arc::clone(&localstore);
             let pubsub_manager = Arc::clone(&pubsub_manager);
             let shutdown = Arc::clone(&shutdown);
-
             join_set.spawn(async move {
                 let result = Self::wait_for_processor_payments(
                     mint,
@@ -696,6 +725,195 @@ impl Mint {
 
         join_set.shutdown().await;
         Ok(())
+    }
+
+    /// Updates `MintInfo` in the database when the payment processor reports new settings.
+    ///
+    /// Updates NUT-04/NUT-05 options, NUT-15 MPP, and amount limits.
+    /// Effective limits: `max(processor_min, operator_min)` and `min(processor_max, operator_max)`.
+    async fn update_mint_info_from_settings(
+        localstore: &DynMintDatabase,
+        key: &PaymentProcessorKey,
+        settings: cdk_common::payment::SettingsResponse,
+        operator_limits: Option<MintMeltLimits>,
+    ) -> Result<(), Error> {
+        let mint_info_bytes = localstore
+            .kv_read(
+                CDK_MINT_PRIMARY_NAMESPACE,
+                CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+                CDK_MINT_CONFIG_KV_KEY,
+            )
+            .await?
+            .ok_or(Error::CouldNotGetMintInfo)?;
+
+        let mut mint_info: MintInfo = serde_json::from_slice(&mint_info_bytes)?;
+
+        match &key.method {
+            cdk_common::nuts::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => {
+                if let Some(bolt11) = &settings.bolt11 {
+                    // Update NUT-04 bolt11 options and limits
+                    for entry in mint_info.nuts.nut04.methods.iter_mut() {
+                        if entry.unit == key.unit && entry.method == key.method {
+                            entry.options = Some(nut04::MintMethodOptions::Bolt11 {
+                                description: bolt11.invoice_description,
+                            });
+                            if let Some(limits) = operator_limits {
+                                let (min, max) = builder::apply_processor_limits(
+                                    limits.mint_min,
+                                    limits.mint_max,
+                                    bolt11.receive_limits.as_ref(),
+                                );
+                                entry.min_amount = Some(min);
+                                entry.max_amount = Some(max);
+                            }
+                        }
+                    }
+
+                    // Update NUT-05 bolt11 options and limits
+                    for entry in mint_info.nuts.nut05.methods.iter_mut() {
+                        if entry.unit == key.unit && entry.method == key.method {
+                            entry.options = Some(nut05::MeltMethodOptions::Bolt11 {
+                                amountless: bolt11.amountless,
+                            });
+                            if let Some(limits) = operator_limits {
+                                let (min, max) = builder::apply_processor_limits(
+                                    limits.melt_min,
+                                    limits.melt_max,
+                                    bolt11.send_limits.as_ref(),
+                                );
+                                entry.min_amount = Some(min);
+                                entry.max_amount = Some(max);
+                            }
+                        }
+                    }
+
+                    // Update NUT-15 MPP: add or remove this unit/method pair
+                    let mpp_entry = nut15::MppMethodSettings {
+                        method: key.method.clone(),
+                        unit: key.unit.clone(),
+                    };
+                    mint_info
+                        .nuts
+                        .nut15
+                        .methods
+                        .retain(|m| !(m.unit == key.unit && m.method == key.method));
+                    if bolt11.mpp {
+                        mint_info.nuts.nut15.methods.push(mpp_entry);
+                    }
+                }
+            }
+            cdk_common::nuts::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Onchain) => {
+                if let Some(onchain) = &settings.onchain {
+                    // Update NUT-04 onchain options and limits
+                    for entry in mint_info.nuts.nut04.methods.iter_mut() {
+                        if entry.unit == key.unit && entry.method == key.method {
+                            entry.options = Some(nut04::MintMethodOptions::Onchain {
+                                confirmations: onchain.confirmations,
+                            });
+                            if let Some(limits) = operator_limits {
+                                let (min, max) = builder::apply_processor_limits(
+                                    limits.mint_min,
+                                    limits.mint_max,
+                                    Some(&onchain.receive_limits),
+                                );
+                                entry.min_amount = Some(min);
+                                entry.max_amount = Some(max);
+                            }
+                        }
+                    }
+
+                    // Update NUT-05 onchain limits
+                    for entry in mint_info.nuts.nut05.methods.iter_mut() {
+                        if entry.unit == key.unit && entry.method == key.method {
+                            if let Some(limits) = operator_limits {
+                                let (min, max) = builder::apply_processor_limits(
+                                    limits.melt_min,
+                                    limits.melt_max,
+                                    Some(&onchain.send_limits),
+                                );
+                                entry.min_amount = Some(min);
+                                entry.max_amount = Some(max);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        let updated = serde_json::to_vec(&mint_info)?;
+        let mut tx = localstore.begin_transaction().await?;
+        tx.kv_write(
+            CDK_MINT_PRIMARY_NAMESPACE,
+            CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+            CDK_MINT_CONFIG_KV_KEY,
+            &updated,
+        )
+        .await?;
+        tx.commit().await?;
+
+        tracing::info!(
+            "Mint info updated from settings change for {:?}/{:?}",
+            key.unit,
+            key.method
+        );
+
+        Ok(())
+    }
+
+    /// Watches the settings stream for a processor and applies updates to MintInfo for all its keys.
+    ///
+    /// A single processor instance may handle multiple payment keys (e.g. arkade handles both
+    /// bolt11 and onchain). Each settings event is applied to every key the processor owns.
+    async fn wait_for_processor_settings(
+        processor: DynMintPayment,
+        localstore: DynMintDatabase,
+        keys: Vec<(PaymentProcessorKey, Option<MintMeltLimits>)>,
+        shutdown: Arc<Notify>,
+    ) {
+        let shutdown_future = shutdown.notified();
+        tokio::pin!(shutdown_future);
+
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_future => break,
+                result = processor.wait_settings() => {
+                    match result {
+                        Ok(mut stream) => {
+                            loop {
+                                tokio::select! {
+                                    _ = &mut shutdown_future => return,
+                                    maybe_settings = stream.next() => {
+                                        let Some(settings) = maybe_settings else { break };
+                                        for (key, operator_limits) in &keys {
+                                            if let Err(e) = Self::update_mint_info_from_settings(
+                                                &localstore,
+                                                key,
+                                                settings.clone(),
+                                                *operator_limits,
+                                            ).await {
+                                                tracing::warn!(
+                                                    "Failed to apply settings update for {:?}: {}",
+                                                    key, e
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Could not get settings stream for keys {:?}: {}",
+                                keys.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+                                e
+                            );
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Handles payment waiting for a single processor
@@ -1371,6 +1589,7 @@ mod tests {
             MintInfo::default(),
             signatory,
             localstore,
+            HashMap::new(),
             HashMap::new(),
             1000,
             1000,
