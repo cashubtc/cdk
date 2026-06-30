@@ -84,6 +84,7 @@ impl WalletSagaState {
             WalletSagaState::Receive(s) => match s {
                 ReceiveSagaState::ProofsPending => "proofs_pending",
                 ReceiveSagaState::SwapRequested => "swap_requested",
+                ReceiveSagaState::OfflinePendingReceive => "offline_pending_receive",
             },
             WalletSagaState::Swap(s) => match s {
                 SwapSagaState::ProofsReserved => "proofs_reserved",

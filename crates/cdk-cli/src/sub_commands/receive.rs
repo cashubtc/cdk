@@ -37,6 +37,9 @@ pub struct ReceiveSubCommand {
     /// Allow receiving from untrusted mints (mints not already in the wallet)
     #[arg(long, default_value = "false")]
     allow_untrusted: bool,
+    /// Only accept the token offline and place it into PendingReceive state
+    #[arg(long, default_value = "false")]
+    offline: bool,
 }
 
 pub async fn receive(
@@ -72,6 +75,7 @@ pub async fn receive(
                 &signing_keys,
                 &sub_command_args.preimage,
                 sub_command_args.allow_untrusted,
+                sub_command_args.offline,
                 unit,
             )
             .await?
@@ -114,6 +118,7 @@ pub async fn receive(
                     &signing_keys,
                     &sub_command_args.preimage,
                     sub_command_args.allow_untrusted,
+                    sub_command_args.offline,
                     unit,
                 )
                 .await
@@ -142,6 +147,7 @@ async fn receive_token(
     signing_keys: &[SecretKey],
     preimage: &[String],
     allow_untrusted: bool,
+    offline: bool,
     unit: &CurrencyUnit,
 ) -> Result<Amount> {
     let token: Token = Token::from_str(token_str)?;
@@ -162,15 +168,24 @@ async fn receive_token(
     // Get or create wallet for the token's mint
     let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
 
-    // Create receive options
-    let receive_options = ReceiveOptions {
-        p2pk_signing_keys: signing_keys.to_vec(),
-        preimages: preimage.to_vec(),
-        ..Default::default()
-    };
+    if offline {
+        let options = cdk_common::wallet::OfflineReceiveOptions {
+            minimum_locktime: None,
+            require_locked: false,
+        };
+        let received = wallet.receive_offline(token_str, options).await?;
+        Ok(received)
+    } else {
+        // Create receive options
+        let receive_options = ReceiveOptions {
+            p2pk_signing_keys: signing_keys.to_vec(),
+            preimages: preimage.to_vec(),
+            ..Default::default()
+        };
 
-    let received = wallet.receive(token_str, receive_options).await?;
-    Ok(received)
+        let received = wallet.receive(token_str, receive_options).await?;
+        Ok(received)
+    }
 }
 
 /// Receive tokens sent to nostr pubkey via dm
