@@ -898,6 +898,20 @@ ffi-test-bindings LANGUAGE: (ffi-generate LANGUAGE "--debug")
 ffi-test-python:
   just ffi-test-bindings python
 
+# Run live Python FFI tests against testnut.cashudevkit.org
+ffi-test-live-python:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  just ffi-generate python --debug
+
+  LIB_EXT=$(just _ffi-lib-ext)
+  echo "📦 Copying debug library to Python bindings directory..."
+  cp target/debug/libcdk_ffi.$LIB_EXT target/bindings/python/
+
+  echo "🧪 Running live Python FFI tests..."
+  python3 crates/cdk-ffi/tests/test_live_async_onchain_melt.py
+
 # Trigger all FFI binding releases (Dart, Kotlin, Swift, Go)
 ffi-release-all VERSION:
   #!/usr/bin/env bash
