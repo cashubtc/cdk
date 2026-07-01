@@ -1809,6 +1809,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdk-sigsum"
+version = "0.17.0"
+dependencies = [
+ "bitcoin 0.32.100",
+ "ed25519-dalek",
+ "hex",
+ "rand_core 0.6.4",
+ "reqwest",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "cdk-sql-common"
 version = "0.17.0"
 dependencies = [
