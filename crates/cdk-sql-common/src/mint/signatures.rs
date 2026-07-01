@@ -4,13 +4,14 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use async_trait::async_trait;
+use cdk_common::database::mint::{EventOp, LoggedEntity};
 use cdk_common::database::{self, Error, MintSignatureTransaction, MintSignaturesDatabase};
 use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
 use cdk_common::{Amount, BlindSignature, BlindSignatureDleq, Id, PublicKey, SecretKey};
 
 use super::proofs::sql_row_to_hashmap_amount;
-use super::{SQLMintDatabase, SQLTransaction};
+use super::{event_log, SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
 use crate::{column_as_nullable_string, column_as_number, column_as_string, unpack_into};
@@ -174,6 +175,21 @@ where
                             .bind("amount", u64::from(signature.amount) as i64)
                             .bind("keyset_id", signature.keyset_id.to_string())
                             .execute(&self.inner)
+                            .await?;
+
+                            event_log::append_event(
+                                &self.inner,
+                                LoggedEntity::BlindSignature,
+                                &message.to_string(),
+                                EventOp::Update,
+                                &serde_json::to_vec(&serde_json::json!({
+                                    "c": signature.c.to_string(),
+                                    "dleq_e": signature.dleq.as_ref().map(|dleq| dleq.e.to_secret_hex()),
+                                    "dleq_s": signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()),
+                                    "signed_time": current_time,
+                                    "amount": u64::from(signature.amount),
+                                }))?,
+                            )
                             .await?;
                         }
                         _ => {

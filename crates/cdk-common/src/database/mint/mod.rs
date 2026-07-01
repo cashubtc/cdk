@@ -18,11 +18,16 @@ use crate::nuts::{
 use crate::payment::PaymentIdentifier;
 
 mod auth;
+mod transparency;
 
 #[cfg(feature = "test")]
 pub mod test;
 
 pub use auth::{DynMintAuthDatabase, MintAuthDatabase, MintAuthTransaction};
+pub use transparency::{
+    event_leaf_preimage, DynTransparencyLogDatabase, EventOp, LoggedEntity, MintEventLogEntry,
+    TransparencyLogDatabase,
+};
 
 // Re-export KVStore types from shared module for backward compatibility
 pub use super::kvstore::{

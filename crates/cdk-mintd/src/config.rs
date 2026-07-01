@@ -1032,6 +1032,31 @@ pub struct Settings {
     #[cfg(feature = "prometheus")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prometheus: Option<Prometheus>,
+    #[cfg(feature = "sigsum-anchor")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sigsum_anchor: Option<SigsumAnchor>,
+}
+
+/// External anchoring of transparency-log checkpoints to a public Sigsum
+/// log (see `docs/adr/0001-append-only-transparency-log.md` §7.1).
+#[cfg(feature = "sigsum-anchor")]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SigsumAnchor {
+    pub enabled: bool,
+    /// Base URL of the Sigsum log to submit to, e.g.
+    /// `https://test.sigsum.org/barreleye/` (no rate-limit registration
+    /// required) or `https://seasalp.glasklar.is/` (production, requires
+    /// `domain`/`rate_limit_key` below).
+    pub log_url: String,
+    /// The Sigsum log's own hex-encoded Ed25519 public key.
+    pub log_public_key: String,
+    /// Domain registered via a `_sigsum_v1.<domain>` DNS TXT record, for
+    /// logs that enforce domain-based rate limiting. Leave unset for logs
+    /// (like the `barreleye` test log) that don't require it.
+    pub domain: Option<String>,
+    /// Hex-encoded Ed25519 secret key bytes matching the `domain`'s
+    /// published rate-limit public key.
+    pub rate_limit_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

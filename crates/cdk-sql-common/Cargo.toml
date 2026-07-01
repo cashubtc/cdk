@@ -20,6 +20,7 @@ prometheus = ["cdk-prometheus"]
 async-trait.workspace = true
 cdk-common = { workspace = true, features = ["test"] }
 cdk-prometheus = { workspace = true, optional = true }
+cdk-tlog.workspace = true
 bitcoin.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

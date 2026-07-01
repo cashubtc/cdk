@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use cdk_common::database::mint::{Acquired, LockedMeltQuotes};
+use cdk_common::database::mint::{Acquired, EventOp, LockedMeltQuotes, LoggedEntity};
 use cdk_common::database::{
     self, ConversionError, Error, MintQuotesDatabase, MintQuotesTransaction,
 };
@@ -24,7 +24,7 @@ use cdk_prometheus::MintMetricGuard;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
-use super::{SQLMintDatabase, SQLTransaction};
+use super::{event_log, SQLMintDatabase, SQLTransaction};
 use crate::database::DatabaseExecutor;
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
@@ -1027,6 +1027,19 @@ where
             .execute(&self.inner)
             .await?;
         quote.request_lookup_id = Some(new_request_lookup_id.clone());
+
+        event_log::append_event(
+            &self.inner,
+            LoggedEntity::MeltQuote,
+            &quote.id.to_string(),
+            EventOp::Update,
+            &serde_json::to_vec(&serde_json::json!({
+                "request_lookup_id": new_request_lookup_id.to_string(),
+                "request_lookup_id_kind": new_request_lookup_id.kind(),
+            }))?,
+        )
+        .await?;
+
         Ok(())
     }
 
@@ -1080,6 +1093,25 @@ where
         };
 
         quote.state = state;
+
+        let mut log_payload = serde_json::json!({
+            "state": state.to_string(),
+            "fee_reserve": quote.fee_reserve().value(),
+            "estimated_blocks": quote.estimated_blocks,
+            "selected_fee_index": quote.selected_fee_index,
+        });
+        if state == MeltQuoteState::Paid {
+            log_payload["paid_time"] = serde_json::json!(quote.paid_time);
+            log_payload["payment_proof"] = serde_json::json!(quote.payment_proof);
+        }
+        event_log::append_event(
+            &self.inner,
+            LoggedEntity::MeltQuote,
+            &quote.id.to_string(),
+            EventOp::Update,
+            &serde_json::to_vec(&log_payload)?,
+        )
+        .await?;
 
         if state == MeltQuoteState::Unpaid || state == MeltQuoteState::Failed {
             self.delete_melt_request(&quote.id).await?;

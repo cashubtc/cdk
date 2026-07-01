@@ -21,6 +21,8 @@ pub mod cache;
 mod custom_handlers;
 mod custom_router;
 mod router_handlers;
+mod transparency;
+mod witness;
 mod ws;
 
 /// CDK Mint State
@@ -107,9 +109,30 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/ws", get(ws_handler))
         .route("/checkstate", post(post_check))
         .route("/info", get(get_mint_info))
-        .route("/restore", post(post_restore));
+        .route("/restore", post(post_restore))
+        .route("/audit/pubkey", get(transparency::get_pubkey))
+        .route(
+            "/audit/checkpoint",
+            get(transparency::get_latest_checkpoint),
+        )
+        .route(
+            "/audit/checkpoint/{tree_size}",
+            get(transparency::get_checkpoint_at),
+        )
+        .route("/audit/entries", get(transparency::get_entries))
+        .route(
+            "/audit/proof/inclusion",
+            get(transparency::get_inclusion_proof),
+        )
+        .route(
+            "/audit/proof/consistency",
+            get(transparency::get_consistency_proof),
+        );
 
-    let mut mint_router = Router::new().nest("/v1", v1_router);
+    let mut mint_router = Router::new().nest("/v1", v1_router).route(
+        "/witness/add-checkpoint",
+        post(witness::post_add_checkpoint),
+    );
 
     #[cfg(feature = "info-page")]
     if enable_info_page {

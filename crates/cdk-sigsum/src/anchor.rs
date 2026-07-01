@@ -49,14 +49,21 @@ pub async fn anchor(
     token: Option<&SubmitToken>,
     data: &[u8],
 ) -> Result<SigsumProof, Error> {
+    // Per spec §2.2.4: `message = H(data)` is what's sent on the wire and
+    // what the log recomputes `checksum` from server-side; `checksum =
+    // H(message) = H(H(data))` is what actually gets signed and stored in
+    // the leaf. These are deliberately two different 32-byte values.
+    let message = sha256(data);
     let checksum = checksum_of(data);
+    debug_assert_eq!(checksum, sha256(&message));
     let leaf = sign_leaf(submit_key, checksum);
+    let submit_public_key = submit_key.verifying_key();
 
     // `add-leaf` may need to be retried until the log moves the
     // submission from "accepted" to "committed" (spec section 3.5).
     let mut attempt = 0;
     loop {
-        match log.add_leaf(&leaf, token).await? {
+        match log.add_leaf(message, &leaf, &submit_public_key, token).await? {
             AddLeafOutcome::Committed => break,
             AddLeafOutcome::Accepted => {
                 attempt += 1;

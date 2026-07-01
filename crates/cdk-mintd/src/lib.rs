@@ -34,6 +34,7 @@ use cdk::nuts::{
 use cdk_axum::cache::HttpCache;
 use cdk_common::common::QuoteTTL;
 use cdk_common::database::DynMintDatabase;
+use cdk_common::database::DynTransparencyLogDatabase;
 // internal crate modules
 #[cfg(feature = "prometheus")]
 use cdk_common::payment::MetricsMintPayment;
@@ -101,11 +102,13 @@ async fn initial_setup(
     DynMintDatabase,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
+    DynTransparencyLogDatabase,
 )> {
     tracing::info!("Initializing database...");
-    let (localstore, keystore, kv) = setup_database(settings, work_dir, db_password).await?;
+    let (localstore, keystore, kv, log_db) =
+        setup_database(settings, work_dir, db_password).await?;
     tracing::info!("Database initialized successfully");
-    Ok((localstore, keystore, kv))
+    Ok((localstore, keystore, kv, log_db))
 }
 
 /// Sets up and initializes a tracing subscriber with custom log filtering.
@@ -321,6 +324,7 @@ async fn setup_database(
     DynMintDatabase,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
+    DynTransparencyLogDatabase,
 )> {
     tracing::info!("Using database engine: {:?}", settings.database.engine);
     match settings.database.engine {
@@ -329,8 +333,9 @@ async fn setup_database(
             let db = setup_sqlite_database(_work_dir, _db_password).await?;
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
             let kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync> = db.clone();
+            let log_db: DynTransparencyLogDatabase = db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
-            Ok((localstore, keystore, kv))
+            Ok((localstore, keystore, kv, log_db))
         }
         #[cfg(feature = "postgres")]
         DatabaseEngine::Postgres => {
@@ -359,11 +364,13 @@ async fn setup_database(
             #[cfg(feature = "postgres")]
             let kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync> = pg_db.clone();
             #[cfg(feature = "postgres")]
+            let log_db: DynTransparencyLogDatabase = pg_db.clone();
+            #[cfg(feature = "postgres")]
             let keystore: Arc<
                 dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync,
             > = pg_db;
             #[cfg(feature = "postgres")]
-            return Ok((localstore, keystore, kv));
+            return Ok((localstore, keystore, kv, log_db));
 
             #[cfg(not(feature = "postgres"))]
             bail!("PostgreSQL support not compiled in. Enable the 'postgres' feature to use PostgreSQL database.")
@@ -1702,6 +1709,112 @@ pub async fn run_mintd(
     result
 }
 
+#[cfg(feature = "sigsum-anchor")]
+const SIGSUM_KV_NAMESPACE: &str = "cdk_sigsum";
+#[cfg(feature = "sigsum-anchor")]
+const SIGSUM_KV_SUBMIT_KEY: &str = "submit_key";
+
+/// Loads (or, on first run, generates and persists) the Ed25519 keypair
+/// this mint uses to sign leaves it submits to a Sigsum log. Distinct from
+/// the transparency log's own log-signing key (see
+/// `cdk::mint::transparency::TransparencyLogService`).
+#[cfg(feature = "sigsum-anchor")]
+async fn load_or_create_sigsum_submit_key(
+    db: &DynMintDatabase,
+) -> Result<ed25519_dalek::SigningKey> {
+    if let Some(bytes) = db
+        .kv_read(SIGSUM_KV_NAMESPACE, "keys", SIGSUM_KV_SUBMIT_KEY)
+        .await?
+    {
+        let seed: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| anyhow!("stored sigsum submit key was not 32 bytes"))?;
+        return Ok(ed25519_dalek::SigningKey::from_bytes(&seed));
+    }
+
+    let key = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
+    let mut tx = db.begin_transaction().await?;
+    tx.kv_write(
+        SIGSUM_KV_NAMESPACE,
+        "keys",
+        SIGSUM_KV_SUBMIT_KEY,
+        key.to_bytes().as_slice(),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(key)
+}
+
+/// Configures a [`cdk::mint::transparency::TransparencyLogService`] to
+/// anchor its checkpoints to a public Sigsum log, per `[sigsum_anchor]` in
+/// `config.toml` (see `docs/adr/0001-append-only-transparency-log.md`
+/// §7.1). Returns `service` unmodified if anchoring is disabled or
+/// misconfigured — this must never prevent the mint's own transparency log
+/// from starting.
+#[cfg(feature = "sigsum-anchor")]
+async fn attach_sigsum_anchor(
+    service: cdk::mint::transparency::TransparencyLogService,
+    settings: &config::Settings,
+    kv_db: DynMintDatabase,
+) -> cdk::mint::transparency::TransparencyLogService {
+    let Some(cfg) = settings.sigsum_anchor.as_ref().filter(|c| c.enabled) else {
+        return service;
+    };
+
+    let log_url = match url::Url::parse(&cfg.log_url) {
+        Ok(url) => url,
+        Err(err) => {
+            tracing::warn!("invalid sigsum_anchor.log_url, skipping Sigsum anchoring: {err}");
+            return service;
+        }
+    };
+
+    let log_public_key = match hex::decode(&cfg.log_public_key)
+        .ok()
+        .and_then(|b| <[u8; 32]>::try_from(b).ok())
+        .and_then(|b| ed25519_dalek::VerifyingKey::from_bytes(&b).ok())
+    {
+        Some(key) => key,
+        None => {
+            tracing::warn!("invalid sigsum_anchor.log_public_key, skipping Sigsum anchoring");
+            return service;
+        }
+    };
+
+    let submit_key = match load_or_create_sigsum_submit_key(&kv_db).await {
+        Ok(key) => key,
+        Err(err) => {
+            tracing::warn!("failed to load/create Sigsum submit key, skipping anchoring: {err}");
+            return service;
+        }
+    };
+
+    let token = match (&cfg.domain, &cfg.rate_limit_key) {
+        (Some(domain), Some(rate_limit_key_hex)) => hex::decode(rate_limit_key_hex)
+            .ok()
+            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+            .map(|seed| {
+                cdk_sigsum::RateLimitKeyPair::from_bytes(&seed)
+                    .submit_token(domain, &log_public_key)
+            })
+            .or_else(|| {
+                tracing::warn!(
+                    "invalid sigsum_anchor.rate_limit_key, submitting without a rate-limit token"
+                );
+                None
+            }),
+        _ => None,
+    };
+
+    tracing::info!(log_url = %log_url, "Sigsum checkpoint anchoring enabled");
+    service.with_sigsum_anchor(cdk::mint::transparency::SigsumAnchorConfig {
+        log_url,
+        log_public_key,
+        submit_key,
+        token,
+    })
+}
+
 /// Run mintd with a custom shutdown signal
 pub async fn run_mintd_with_shutdown(
     work_dir: &Path,
@@ -1711,7 +1824,8 @@ pub async fn run_mintd_with_shutdown(
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     routers: Vec<Router>,
 ) -> Result<()> {
-    let (localstore, keystore, kv) = initial_setup(work_dir, settings, db_password.clone()).await?;
+    let (localstore, keystore, kv, log_db) =
+        initial_setup(work_dir, settings, db_password.clone()).await?;
 
     let mint_builder = MintBuilder::new(localstore);
 
@@ -1753,6 +1867,35 @@ pub async fn run_mintd_with_shutdown(
     tracing::debug!("Mint built from builder.");
 
     let mint = Arc::new(mint);
+
+    // Attach the transparency log publisher (see
+    // docs/adr/0001-append-only-transparency-log.md). The checkpoint
+    // origin is derived from the mint's own advertised URL, so no
+    // additional configuration is required to enable it.
+    {
+        let origin = format!(
+            "{}/transparency-log",
+            settings.info.url.trim_end_matches('/')
+        );
+        match cdk::mint::transparency::TransparencyLogService::load_or_create(
+            log_db,
+            mint.localstore(),
+            origin,
+        )
+        .await
+        {
+            Ok(service) => {
+                #[cfg(feature = "sigsum-anchor")]
+                let service = attach_sigsum_anchor(service, settings, mint.localstore()).await;
+                mint.set_transparency_log(std::sync::Arc::new(service));
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to initialize transparency log, continuing without it: {err}"
+                );
+            }
+        }
+    }
 
     start_services_with_shutdown(
         mint.clone(),

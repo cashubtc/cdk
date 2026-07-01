@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use cdk_common::database::mint::Acquired;
+use cdk_common::database::mint::{Acquired, EventOp, LoggedEntity};
 use cdk_common::database::{self, Error, MintProofsDatabase};
 use cdk_common::mint::{Operation, ProofsWithState};
 use cdk_common::nut00::ProofsMethods;
@@ -13,7 +13,7 @@ use cdk_common::secret::Secret;
 use cdk_common::util::unix_time;
 use cdk_common::{Amount, Id, Proof, Proofs, PublicKey, State};
 
-use super::{SQLMintDatabase, SQLTransaction};
+use super::{event_log, SQLMintDatabase, SQLTransaction};
 use crate::database::DatabaseExecutor;
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
@@ -230,6 +230,17 @@ where
 
         proofs.state = new_state;
 
+        for y in &ys {
+            event_log::append_event(
+                &self.inner,
+                LoggedEntity::Proof,
+                &y.to_string(),
+                EventOp::Update,
+                &serde_json::to_vec(&serde_json::json!({ "state": new_state.to_string() }))?,
+            )
+            .await?;
+        }
+
         Ok(())
     }
 
@@ -283,6 +294,17 @@ where
             );
 
             return Err(Self::Err::AttemptRemoveSpentProof);
+        }
+
+        for y in ys {
+            event_log::append_event(
+                &self.inner,
+                LoggedEntity::Proof,
+                &y.to_string(),
+                EventOp::Delete,
+                &serde_json::to_vec(&serde_json::json!({ "state": "removed" }))?,
+            )
+            .await?;
         }
 
         Ok(())

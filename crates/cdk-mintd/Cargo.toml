@@ -28,6 +28,7 @@ sqlcipher = ["sqlite", "cdk-sqlite/sqlcipher"]
 redis = ["cdk-axum/redis"]
 prometheus = ["cdk/prometheus", "dep:cdk-prometheus", "cdk-sqlite?/prometheus", "cdk-axum/prometheus"]
 info-page = ["cdk-axum/info-page"]
+sigsum-anchor = ["cdk/sigsum-anchor", "dep:cdk-sigsum", "dep:ed25519-dalek", "dep:url", "dep:rand_core", "dep:hex"]
 
 [dependencies]
 anyhow.workspace = true
@@ -68,6 +69,11 @@ tower-http = { workspace = true, features = ["compression-full", "decompression-
 tower.workspace = true
 lightning-invoice.workspace = true
 home.workspace = true
+cdk-sigsum = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+rand_core = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
 
 [lints]
 workspace = true

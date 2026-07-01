@@ -18,6 +18,11 @@ pub type DynKVStore = std::sync::Arc<dyn KVStore<Err = Error> + Send + Sync>;
 
 #[cfg(feature = "mint")]
 pub use mint::{
+    event_leaf_preimage, DynTransparencyLogDatabase, EventOp, LoggedEntity, MintEventLogEntry,
+    TransparencyLogDatabase,
+};
+#[cfg(feature = "mint")]
+pub use mint::{
     Database as MintDatabase, DynMintDatabase, DynMintTransaction,
     KeysDatabase as MintKeysDatabase, KeysDatabaseTransaction as MintKeyDatabaseTransaction,
     ProofsDatabase as MintProofsDatabase, ProofsTransaction as MintProofsTransaction,

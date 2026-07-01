@@ -179,18 +179,38 @@ impl SigsumClient {
     /// enforce domain-based rate limiting (see [`crate::RateLimitKeyPair`]);
     /// it is omitted entirely for private/self-hosted logs that don't
     /// require it.
-    #[instrument(skip(self, leaf))]
+    ///
+    /// `message` is the wire-format `message` field — *not* the same value
+    /// as `leaf.checksum`. Per spec §2.2.4, `checksum = H(message)`; when
+    /// following the recommended `message = H(data)` convention (as
+    /// [`crate::anchor`] does), `checksum` ends up as `H(H(data))`, one
+    /// hash deeper than `message`. The log recomputes `checksum` from
+    /// `message` itself and rejects the signature (over the namespaced
+    /// `checksum`) if it doesn't match — so sending `leaf.checksum` here
+    /// instead of the true `message` fails with "invalid signature" even
+    /// though the signature itself was computed correctly.
+    ///
+    /// `public_key` is the submitter's raw Ed25519 public key — required by
+    /// the spec's `add-leaf` input so the log can verify `leaf.signature`
+    /// itself. This is deliberately a separate parameter rather than
+    /// derived from `leaf.key_hash`: `TreeLeaf` only ever carries the
+    /// *hash* of the submitter's key (that's what's serialized on the
+    /// wire per §2.2.4), so the raw key has to come from the caller, who
+    /// still has it (it's `submit_key.verifying_key()` in [`crate::anchor`]).
+    #[instrument(skip(self, message, leaf, public_key))]
     pub async fn add_leaf(
         &self,
+        message: Hash,
         leaf: &TreeLeaf,
+        public_key: &ed25519_dalek::VerifyingKey,
         token: Option<&SubmitToken>,
     ) -> Result<AddLeafOutcome, Error> {
         let url = self.base_url.join("add-leaf")?;
         let body = format!(
             "message={}\nsignature={}\npublic_key={}\n",
-            hex::encode(leaf.checksum),
+            hex::encode(message),
             hex::encode(leaf.signature),
-            hex::encode(leaf.key_hash),
+            hex::encode(public_key.as_bytes()),
         );
 
         let mut request = self.http.post(url).body(body);
