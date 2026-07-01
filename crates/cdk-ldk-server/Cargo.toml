@@ -1,0 +1,26 @@
+[package]
+name = "cdk-ldk-server"
+version.workspace = true
+edition.workspace = true
+authors = ["CDK Developers"]
+license.workspace = true
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
+rust-version.workspace = true
+description = "CDK Lightning backend for LDK Server"
+readme = "README.md"
+
+[dependencies]
+async-trait.workspace = true
+bitcoin.workspace = true
+cdk-common = { workspace = true, features = ["mint"] }
+futures.workspace = true
+ldk-server-client.workspace = true
+lightning.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

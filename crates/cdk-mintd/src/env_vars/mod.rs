@@ -23,6 +23,8 @@ mod fake_wallet;
 mod grpc_processor;
 #[cfg(feature = "ldk-node")]
 mod ldk_node;
+#[cfg(feature = "ldk-server")]
+mod ldk_server;
 #[cfg(feature = "lnbits")]
 mod lnbits;
 #[cfg(feature = "lnd")]
@@ -49,6 +51,8 @@ pub use fake_wallet::*;
 pub use grpc_processor::*;
 #[cfg(feature = "ldk-node")]
 pub use ldk_node::*;
+#[cfg(feature = "ldk-server")]
+pub use ldk_server::*;
 pub use limits::*;
 pub use ln::*;
 #[cfg(feature = "lnbits")]
@@ -201,6 +205,19 @@ impl Settings {
             }
         }
 
+        #[cfg(feature = "ldk-server")]
+        {
+            let ldk_server = self.ldk_server.clone().unwrap_or_default().from_env();
+            if ldk_server.address.is_empty()
+                && ldk_server.api_key.is_empty()
+                && ldk_server.cert_path.as_os_str().is_empty()
+            {
+                self.ldk_server = None;
+            } else {
+                self.ldk_server = Some(ldk_server);
+            }
+        }
+
         #[cfg(feature = "grpc-processor")]
         {
             let grpc_processor = self.grpc_processor.clone().unwrap_or_default().from_env();
@@ -237,6 +254,8 @@ impl Settings {
                 LnBackend::Lnd => {}
                 #[cfg(feature = "ldk-node")]
                 LnBackend::LdkNode => {}
+                #[cfg(feature = "ldk-server")]
+                LnBackend::LdkServer => {}
                 #[cfg(feature = "grpc-processor")]
                 LnBackend::GrpcProcessor => {}
                 LnBackend::None => {}

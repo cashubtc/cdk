@@ -12,7 +12,7 @@ Cashu mint daemon implementation for the Cashu Development Kit (CDK). This binar
 ## Features
 
 - **Multiple Database Backends**: SQLite, PostgreSQL, and ReDB
-- **Lightning Network Integration**: Support for CLN, LND, LNbits, LDK Node, and test backends
+- **Lightning Network Integration**: Support for CLN, LND, LNbits, LDK Node, LDK Server, and test backends
 - **Authentication**: Optional user authentication with OpenID Connect
 - **Management RPC**: gRPC interface for mint management
 - **Docker Support**: Ready-to-use Docker configurations
@@ -24,6 +24,7 @@ For detailed configuration of each Lightning backend, see:
 - **[LND](../cdk-lnd/README.md)** - Lightning Network Daemon
 - **[CLN](../cdk-cln/README.md)** - Core Lightning
 - **[LNbits](../cdk-lnbits/README.md)** - LNbits API integration
+- **[LDK Server](../cdk-ldk-server/README.md)** - External LDK Server daemon
 
 ## Installation
 
@@ -378,7 +379,10 @@ cdk-mintd --help
 
 - `CDK_MINTD_DATABASE`: Database engine (`sqlite`/`postgres`/`redb`)
 - `CDK_MINTD_DATABASE_URL`: PostgreSQL connection string
-- `CDK_MINTD_LN_BACKEND`: Lightning backend (`cln`/`lnd`/`lnbits`/`ldk-node`/`fakewallet`)
+- `CDK_MINTD_LN_BACKEND`: Lightning backend (`cln`/`lnd`/`lnbits`/`ldk-node`/`ldk-server`/`fakewallet`)
+- `CDK_MINTD_LDK_SERVER_ADDRESS`: LDK Server host and port, without scheme
+- `CDK_MINTD_LDK_SERVER_API_KEY`: LDK Server HMAC API key
+- `CDK_MINTD_LDK_SERVER_CERT_PATH`: Path to the pinned LDK Server TLS certificate PEM
 - `CDK_MINTD_FAKE_WALLET_CUSTOM_PAYMENT_METHODS`: Comma-separated fake wallet custom methods, optionally scoped as `method:unit`
 - `CDK_MINTD_LISTEN_HOST`: Host to bind to (default: `127.0.0.1`)
 - `CDK_MINTD_LISTEN_PORT`: Port to bind to (default: `8085`)

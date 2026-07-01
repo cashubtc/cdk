@@ -22,6 +22,7 @@ lnd = ["dep:cdk-lnd"]
 lnbits = ["dep:cdk-lnbits"]
 fakewallet = ["dep:cdk-fake-wallet"]
 ldk-node = ["dep:cdk-ldk-node"]
+ldk-server = ["dep:cdk-ldk-server"]
 bdk = ["dep:cdk-bdk", "cdk-bdk/bitcoin-rpc", "cdk-bdk/esplora"]
 grpc-processor = ["dep:cdk-payment-processor", "cdk-signatory/grpc"]
 sqlcipher = ["sqlite", "cdk-sqlite/sqlcipher"]
@@ -45,6 +46,7 @@ cdk-cln = { workspace = true, optional = true }
 cdk-lnbits = { workspace = true, optional = true }
 cdk-lnd = { workspace = true, optional = true }
 cdk-ldk-node = { workspace = true, optional = true }
+cdk-ldk-server = { workspace = true, optional = true }
 cdk-fake-wallet = { workspace = true, optional = true }
 cdk-bdk = { workspace = true, optional = true }
 cdk-axum.workspace = true
