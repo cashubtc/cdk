@@ -1160,6 +1160,7 @@ impl From<MeltQuote> for MeltQuoteOnchainResponse<QuoteId> {
             quote: quote.id.clone(),
             amount: quote.amount().into(),
             unit: quote.unit.clone(),
+            method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Onchain),
             state: quote.state,
             expiry: quote.expiry,
             request: quote.request.to_string(),
@@ -1178,6 +1179,7 @@ impl TryFrom<MintQuote> for MintQuoteOnchainResponse<QuoteId> {
             quote: quote.id.clone(),
             request: quote.request.clone(),
             unit: quote.unit.clone(),
+            method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Onchain),
             expiry: (quote.expiry != 0).then_some(quote.expiry),
             pubkey: quote.pubkey.ok_or(crate::error::Error::MissingPubkey)?,
             amount_paid: quote.amount_paid().into(),
@@ -1247,6 +1249,7 @@ impl From<MintQuote> for MintQuoteBolt11Response<QuoteId> {
             pubkey: mint_quote.pubkey,
             amount: mint_quote.amount.map(Into::into),
             unit: Some(mint_quote.unit),
+            method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt11),
         }
     }
 }
@@ -1271,6 +1274,7 @@ impl TryFrom<MintQuote> for MintQuoteBolt12Response<QuoteId> {
             pubkey: mint_quote.pubkey.ok_or(Error::PubkeyRequired)?,
             amount: mint_quote.amount.map(Into::into),
             unit: mint_quote.unit,
+            method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt12),
         })
     }
 }
@@ -1294,6 +1298,7 @@ impl TryFrom<MintQuote> for MintQuoteCustomResponse<QuoteId> {
         Ok(MintQuoteCustomResponse {
             quote: quote.id,
             request: quote.request,
+            method: quote.payment_method,
             unit: Some(quote.unit),
             expiry: Some(quote.expiry),
             pubkey: quote.pubkey,
@@ -1316,6 +1321,7 @@ impl TryFrom<MintQuote> for MintQuoteCustomResponse<String> {
 
 impl From<MeltQuote> for crate::nuts::MeltQuoteCustomResponse<QuoteId> {
     fn from(melt_quote: MeltQuote) -> Self {
+        let method = melt_quote.payment_method.clone();
         let request = match melt_quote.request {
             MeltPaymentRequest::Custom { request, .. } => Some(request),
             _ => None,
@@ -1323,6 +1329,7 @@ impl From<MeltQuote> for crate::nuts::MeltQuoteCustomResponse<QuoteId> {
 
         Self {
             quote: melt_quote.id,
+            method,
             amount: melt_quote.amount.into(),
             fee_reserve: Some(melt_quote.fee_reserve.into()),
             state: melt_quote.state,
@@ -1347,6 +1354,7 @@ impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
                 expiry: Some(quote.expiry),
                 amount: quote.amount.as_ref().map(|a| a.clone().into()),
                 unit: Some(quote.unit.clone()),
+                method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt11),
                 pubkey: quote.pubkey,
             }))
         } else if quote.payment_method.is_bolt12() {
@@ -1355,6 +1363,7 @@ impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
                 request: quote.request.clone(),
                 amount: quote.amount.as_ref().map(|a| a.clone().into()),
                 unit: quote.unit.clone(),
+                method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt12),
                 expiry: Some(quote.expiry),
                 pubkey: quote.pubkey.ok_or(Error::PubkeyRequired)?,
                 amount_paid: quote.amount_paid().into(),
@@ -1366,10 +1375,11 @@ impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
         } else {
             let method = quote.payment_method.clone();
             Ok(MintQuoteResponse::Custom {
-                method,
+                method: method.clone(),
                 response: crate::nuts::nut04::MintQuoteCustomResponse {
                     quote: quote.id.clone(),
                     request: quote.request.clone(),
+                    method: method.clone(),
                     expiry: Some(quote.expiry),
                     amount: quote.amount.as_ref().map(|a| a.clone().into()),
                     amount_paid: quote.amount_paid().into(),
@@ -1408,6 +1418,7 @@ impl From<MintQuoteResponse<QuoteId>> for MintQuoteBolt11Response<String> {
                 pubkey: bolt11_response.pubkey,
                 amount: bolt11_response.amount,
                 unit: bolt11_response.unit,
+                method: bolt11_response.method,
             },
             _ => panic!("Expected Bolt11 response"),
         }
@@ -1459,6 +1470,7 @@ impl From<&MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
             fee_reserve: melt_quote.fee_reserve().into(),
             request: None,
             unit: Some(melt_quote.unit.clone()),
+            method: melt_quote.payment_method.clone(),
         }
     }
 }
@@ -1475,6 +1487,7 @@ impl From<MeltQuote> for MeltQuoteBolt11Response<QuoteId> {
             change: None,
             request: Some(melt_quote.request.to_string()),
             unit: Some(melt_quote.unit.clone()),
+            method: melt_quote.payment_method.clone(),
         }
     }
 }

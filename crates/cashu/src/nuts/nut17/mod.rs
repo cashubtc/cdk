@@ -334,7 +334,7 @@ pub enum Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nuts::nut00::CurrencyUnit;
+    use crate::nuts::nut00::{CurrencyUnit, KnownMethod, PaymentMethod};
     use crate::nuts::nut01::PublicKey;
     use crate::nuts::MeltQuoteState;
     use crate::Amount;
@@ -345,6 +345,7 @@ mod tests {
             quote: "abc".to_string(),
             request: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),
             unit: CurrencyUnit::Sat,
+            method: PaymentMethod::Known(KnownMethod::Onchain),
             expiry: Some(1701704757),
             pubkey: PublicKey::from_hex(
                 "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
@@ -377,6 +378,7 @@ mod tests {
             request: "lno1...".to_string(),
             amount: Some(Amount::from(100_000)),
             unit: CurrencyUnit::Sat,
+            method: PaymentMethod::Known(KnownMethod::Bolt12),
             expiry: Some(1701704757),
             pubkey: PublicKey::from_hex(
                 "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
@@ -405,6 +407,7 @@ mod tests {
             quote: "abc".to_string(),
             amount: Amount::from(100_000),
             unit: CurrencyUnit::Sat,
+            method: PaymentMethod::Known(KnownMethod::Onchain),
             state: MeltQuoteState::Pending,
             expiry: 1701704757,
             request: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string(),

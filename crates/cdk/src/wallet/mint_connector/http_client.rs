@@ -39,6 +39,36 @@ fn payment_method_path_segment(method: &PaymentMethod) -> Result<&str, Error> {
     }
 }
 
+fn fill_response_method(value: &mut serde_json::Value, method: &PaymentMethod) {
+    if let serde_json::Value::Object(object) = value {
+        object
+            .entry("method".to_string())
+            .or_insert_with(|| serde_json::Value::String(method.to_string()));
+    }
+}
+
+fn fill_response_methods(value: &mut serde_json::Value, method: &PaymentMethod) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                fill_response_method(item, method);
+            }
+        }
+        _ => fill_response_method(value, method),
+    }
+}
+
+fn deserialize_with_route_method<R>(
+    mut value: serde_json::Value,
+    method: &PaymentMethod,
+) -> Result<R, Error>
+where
+    R: DeserializeOwned,
+{
+    fill_response_methods(&mut value, method);
+    serde_json::from_value(value).map_err(|e| Error::Custom(e.to_string()))
+}
+
 /// Http Client
 #[derive(Debug, Clone)]
 pub struct HttpClient<T>
@@ -323,8 +353,10 @@ where
                 Ok(MintQuoteResponse::Onchain(response))
             }
             MintQuoteRequest::Custom { request: req, .. } => {
-                let response: cdk_common::nut04::MintQuoteCustomResponse<String> =
+                let value: serde_json::Value =
                     self.transport.http_post(url, auth_token, req).await?;
+                let response: cdk_common::nut04::MintQuoteCustomResponse<String> =
+                    deserialize_with_route_method(value, &method)?;
                 Ok(MintQuoteResponse::Custom { method, response })
             }
         }
@@ -401,8 +433,9 @@ where
                     .get_auth_token(Method::Get, RoutePath::MintQuote(method_name.to_string()))
                     .await?;
 
+                let value: serde_json::Value = self.transport.http_get(url, auth_token).await?;
                 let response: MintQuoteCustomResponse<String> =
-                    self.transport.http_get(url, auth_token).await?;
+                    deserialize_with_route_method(value, &method)?;
 
                 Ok(MintQuoteResponse::Custom { method, response })
             }
@@ -480,8 +513,10 @@ where
                     .collect())
             }
             PaymentMethod::Custom(method_name) => {
-                let responses: Vec<MintQuoteCustomResponse<String>> =
+                let value: serde_json::Value =
                     self.transport.http_post(url, auth_token, &request).await?;
+                let responses: Vec<MintQuoteCustomResponse<String>> =
+                    deserialize_with_route_method(value, method)?;
                 Ok(responses
                     .into_iter()
                     .map(|response| MintQuoteResponse::Custom {
@@ -544,8 +579,10 @@ where
                 Ok(MeltQuoteCreateResponse::Onchain(response))
             }
             MeltQuoteRequest::Custom(req) => {
-                let response: cdk_common::nut05::MeltQuoteCustomResponse<String> =
+                let value: serde_json::Value =
                     self.transport.http_post(url, auth_token, req).await?;
+                let response: cdk_common::nut05::MeltQuoteCustomResponse<String> =
+                    deserialize_with_route_method(value, &method)?;
                 Ok(MeltQuoteCreateResponse::Custom((method, response)))
             }
         }
@@ -622,8 +659,9 @@ where
                     .get_auth_token(Method::Get, RoutePath::MeltQuote(method_name.to_string()))
                     .await?;
 
+                let value: serde_json::Value = self.transport.http_get(url, auth_token).await?;
                 let response: cdk_common::nut05::MeltQuoteCustomResponse<String> =
-                    self.transport.http_get(url, auth_token).await?;
+                    deserialize_with_route_method(value, &method)?;
 
                 Ok(MeltQuoteResponse::Custom((method.clone(), response)))
             }
@@ -684,9 +722,11 @@ where
                 Ok(MeltQuoteResponse::Onchain(res))
             }
             PaymentMethod::Custom(_) => {
-                let res: cdk_common::nuts::MeltQuoteCustomResponse<String> = self
+                let value: serde_json::Value = self
                     .retriable_http_request(nut19::Method::Post, path, auth_token, &request)
                     .await?;
+                let res: cdk_common::nuts::MeltQuoteCustomResponse<String> =
+                    deserialize_with_route_method(value, method)?;
                 Ok(MeltQuoteResponse::Custom((method.clone(), res)))
             }
         }
@@ -951,19 +991,16 @@ mod tests {
     /// serializes as a JSON array.
     #[tokio::test]
     async fn test_post_mint_quote_custom_sends_request_object() {
-        // Build a canned MintQuoteCustomResponse<String> for the mock
-        let canned_response = MintQuoteCustomResponse::<String> {
-            quote: "test-quote-id".to_string(),
-            request: "paypal://pay?id=123".to_string(),
-            amount: Some(cdk_common::Amount::from(1000)),
-            amount_paid: cdk_common::Amount::ZERO,
-            amount_issued: cdk_common::Amount::ZERO,
-            unit: Some(cdk_common::CurrencyUnit::Sat),
-            expiry: Some(9999999),
-            pubkey: None,
-            extra: serde_json::Value::Null,
-        };
-        let canned_json = serde_json::to_string(&canned_response).expect("serialize response");
+        let canned_json = serde_json::json!({
+            "quote": "test-quote-id",
+            "request": "paypal://pay?id=123",
+            "amount": 1000,
+            "amount_paid": 0,
+            "amount_issued": 0,
+            "unit": "sat",
+            "expiry": 9999999
+        })
+        .to_string();
 
         let transport = MockTransport {
             captured_payload: Arc::new(Mutex::new(None)),
@@ -988,12 +1025,18 @@ mod tests {
             },
         };
 
-        let result = client.post_mint_quote(request).await;
-        assert!(
-            result.is_ok(),
-            "post_mint_quote should succeed: {:?}",
-            result.err()
-        );
+        let response = client
+            .post_mint_quote(request)
+            .await
+            .expect("post_mint_quote should succeed");
+
+        match response {
+            MintQuoteResponse::Custom { method, response } => {
+                assert_eq!(method, PaymentMethod::Custom("paypal".to_string()));
+                assert_eq!(response.method, PaymentMethod::Custom("paypal".to_string()));
+            }
+            _ => panic!("expected custom response"),
+        }
 
         // Verify the payload sent to the transport was a JSON object (not an array)
         let payload = captured
@@ -1142,7 +1185,9 @@ mod tests {
 
         assert_eq!(response.state(), Some(MintQuoteState::Paid));
         match response {
-            MintQuoteResponse::Custom { response, .. } => {
+            MintQuoteResponse::Custom { method, response } => {
+                assert_eq!(method, PaymentMethod::Custom("paypal".to_string()));
+                assert_eq!(response.method, PaymentMethod::Custom("paypal".to_string()));
                 assert_eq!(response.amount_paid, cdk_common::Amount::from(1000));
                 assert_eq!(response.amount_issued, cdk_common::Amount::ZERO);
             }
@@ -1183,7 +1228,52 @@ mod tests {
 
         assert_eq!(responses.len(), 1);
         assert_eq!(responses[0].state(), Some(MintQuoteState::Issued));
-        assert!(matches!(responses[0], MintQuoteResponse::Custom { .. }));
+        match &responses[0] {
+            MintQuoteResponse::Custom { method, response } => {
+                assert_eq!(method, &PaymentMethod::Custom("paypal".to_string()));
+                assert_eq!(response.method, PaymentMethod::Custom("paypal".to_string()));
+            }
+            _ => panic!("expected custom response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_post_melt_quote_custom_derives_missing_method_from_route() {
+        let canned_json = serde_json::json!({
+            "quote": "test-melt-quote-id",
+            "amount": 1000,
+            "fee_reserve": 10,
+            "state": "UNPAID",
+            "expiry": 9999999,
+            "request": "paypal://pay?id=123",
+            "unit": "sat"
+        })
+        .to_string();
+
+        let transport = MockTransport {
+            post_response: Arc::new(Mutex::new(Some(canned_json))),
+            ..Default::default()
+        };
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+
+        let response = client
+            .post_melt_quote(MeltQuoteRequest::Custom(MeltQuoteCustomRequest {
+                method: "paypal".to_string(),
+                request: "paypal://pay?id=123".to_string(),
+                unit: cdk_common::CurrencyUnit::Sat,
+                extra: serde_json::Value::Null,
+            }))
+            .await
+            .expect("custom melt quote");
+
+        match response {
+            MeltQuoteCreateResponse::Custom((method, response)) => {
+                assert_eq!(method, PaymentMethod::Custom("paypal".to_string()));
+                assert_eq!(response.method, PaymentMethod::Custom("paypal".to_string()));
+            }
+            _ => panic!("expected custom response"),
+        }
     }
 
     #[tokio::test]
