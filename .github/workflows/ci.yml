@@ -559,6 +559,8 @@ jobs:
         continue-on-error: true
       - name: Run FFI tests
         run: nix build -L .#checks.x86_64-linux.ffi-tests
+      - name: Run live Python FFI tests
+        run: nix develop -i -L .#ffi --command just ffi-test-live-python
 
   coverage:
     name: "Code Coverage"
