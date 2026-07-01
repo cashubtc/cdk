@@ -14,6 +14,10 @@ use crate::quote_id::QuoteId;
 use crate::util::serde_helpers::deserialize_empty_string_as_none;
 use crate::Amount;
 
+fn default_bolt11_method() -> PaymentMethod {
+    PaymentMethod::BOLT11
+}
+
 /// NUT023 Error
 #[derive(Debug, Error)]
 pub enum Error {
@@ -94,6 +98,7 @@ pub struct MintQuoteBolt11Response<Q> {
     // REVIEW: This is now required in the spec, we should remove the option once all mints update
     pub unit: Option<CurrencyUnit>,
     /// Payment method
+    #[serde(default = "default_bolt11_method")]
     pub method: PaymentMethod,
     /// Quote State
     pub state: QuoteState,
@@ -265,6 +270,7 @@ pub struct MeltQuoteBolt11Response<Q> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unit: Option<CurrencyUnit>,
     /// Payment method
+    #[serde(default = "default_bolt11_method")]
     pub method: PaymentMethod,
 }
 
@@ -334,6 +340,22 @@ mod tests {
     }
 
     #[test]
+    fn mint_quote_bolt11_response_defaults_method() {
+        let value = json!({
+            "quote": "quote-id",
+            "request": "lnbc...",
+            "amount": 10,
+            "unit": "sat",
+            "state": "UNPAID",
+            "expiry": 1_701_704_757
+        });
+
+        let decoded: MintQuoteBolt11Response<String> =
+            from_value(value).expect("deserialize response");
+        assert_eq!(decoded.method, PaymentMethod::Known(KnownMethod::Bolt11));
+    }
+
+    #[test]
     fn melt_quote_bolt11_response_serializes_method() {
         let response = MeltQuoteBolt11Response {
             quote: "quote-id".to_string(),
@@ -350,6 +372,23 @@ mod tests {
 
         let value = to_value(&response).expect("serialize response");
         assert_eq!(value["method"], json!("bolt11"));
+
+        let decoded: MeltQuoteBolt11Response<String> =
+            from_value(value).expect("deserialize response");
+        assert_eq!(decoded.method, PaymentMethod::Known(KnownMethod::Bolt11));
+    }
+
+    #[test]
+    fn melt_quote_bolt11_response_defaults_method() {
+        let value = json!({
+            "quote": "quote-id",
+            "amount": 10,
+            "fee_reserve": 2,
+            "state": "UNPAID",
+            "expiry": 1_701_704_757,
+            "request": "lnbc...",
+            "unit": "sat"
+        });
 
         let decoded: MeltQuoteBolt11Response<String> =
             from_value(value).expect("deserialize response");

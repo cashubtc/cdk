@@ -7,6 +7,10 @@ use super::{CurrencyUnit, MeltOptions, PaymentMethod, PublicKey};
 use crate::quote_id::QuoteId;
 use crate::Amount;
 
+fn default_bolt12_method() -> PaymentMethod {
+    PaymentMethod::BOLT12
+}
+
 /// NUT18 Error
 #[derive(Debug, Error)]
 pub enum Error {
@@ -47,6 +51,7 @@ pub struct MintQuoteBolt12Response<Q> {
     /// Unit wallet would like to pay with
     pub unit: CurrencyUnit,
     /// Payment method
+    #[serde(default = "default_bolt12_method")]
     pub method: PaymentMethod,
     /// Unix timestamp until the quote is valid
     pub expiry: Option<u64>,
@@ -133,6 +138,24 @@ mod tests {
 
         let value = to_value(&response).expect("serialize response");
         assert_eq!(value["method"], json!("bolt12"));
+
+        let decoded: MintQuoteBolt12Response<String> =
+            from_value(value).expect("deserialize response");
+        assert_eq!(decoded.method, PaymentMethod::Known(KnownMethod::Bolt12));
+    }
+
+    #[test]
+    fn mint_quote_bolt12_response_defaults_method() {
+        let value = json!({
+            "quote": "quote-id",
+            "request": "lno1...",
+            "amount": 10,
+            "unit": "sat",
+            "expiry": 1_701_704_757,
+            "pubkey": "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+            "amount_paid": 0,
+            "amount_issued": 0
+        });
 
         let decoded: MintQuoteBolt12Response<String> =
             from_value(value).expect("deserialize response");

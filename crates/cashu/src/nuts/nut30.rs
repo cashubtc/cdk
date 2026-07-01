@@ -3,7 +3,7 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod};
+use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, KnownMethod, PaymentMethod};
 use super::nut01::PublicKey;
 use super::nut05::MeltRequest;
 use super::MeltQuoteState;
@@ -11,6 +11,10 @@ use super::MeltQuoteState;
 use crate::quote_id::QuoteId;
 use crate::util::serde_helpers::deserialize_empty_string_as_none;
 use crate::{Amount, Proofs};
+
+fn default_onchain_method() -> PaymentMethod {
+    PaymentMethod::Known(KnownMethod::Onchain)
+}
 
 /// Mint quote onchain request
 ///
@@ -43,6 +47,7 @@ pub struct MintQuoteOnchainResponse<Q> {
     /// Unit
     pub unit: CurrencyUnit,
     /// Payment method
+    #[serde(default = "default_onchain_method")]
     pub method: PaymentMethod,
     /// Unix timestamp until the quote is valid
     pub expiry: Option<u64>,
@@ -172,6 +177,7 @@ pub struct MeltQuoteOnchainResponse<Q> {
     /// Unit
     pub unit: CurrencyUnit,
     /// Payment method
+    #[serde(default = "default_onchain_method")]
     pub method: PaymentMethod,
     /// Quote state
     pub state: MeltQuoteState,
@@ -313,6 +319,30 @@ mod tests {
     }
 
     #[test]
+    fn test_melt_quote_onchain_response_defaults_method() {
+        let value = serde_json::json!({
+            "quote": "TRmjduhIsPxd...",
+            "amount": 100000,
+            "unit": "sat",
+            "state": "PENDING",
+            "expiry": 1701704757,
+            "request": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            "fee_options": [
+                {
+                    "fee_index": 0,
+                    "fee_reserve": 5000,
+                    "estimated_blocks": 1
+                }
+            ],
+            "selected_fee_index": 0
+        });
+
+        let decoded: MeltQuoteOnchainResponse<String> =
+            serde_json::from_value(value).expect("deserialize response");
+        assert_eq!(decoded.method, PaymentMethod::Known(KnownMethod::Onchain));
+    }
+
+    #[test]
     fn test_melt_quote_onchain_response_serializes_null_outpoint() {
         let response: MeltQuoteOnchainResponse<String> = MeltQuoteOnchainResponse {
             quote: "TRmjduhIsPxd...".to_string(),
@@ -362,6 +392,23 @@ mod tests {
 
         let string_id_response = response.to_string_id();
         assert_eq!(string_id_response.quote, "DSGLX9kevM...");
+    }
+
+    #[test]
+    fn test_mint_quote_onchain_response_defaults_method() {
+        let value = serde_json::json!({
+            "quote": "DSGLX9kevM...",
+            "request": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            "unit": "sat",
+            "expiry": 1701704757,
+            "pubkey": "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+            "amount_paid": 100000,
+            "amount_issued": 0
+        });
+
+        let decoded: MintQuoteOnchainResponse<String> =
+            serde_json::from_value(value).expect("deserialize response");
+        assert_eq!(decoded.method, PaymentMethod::Known(KnownMethod::Onchain));
     }
 
     #[test]
