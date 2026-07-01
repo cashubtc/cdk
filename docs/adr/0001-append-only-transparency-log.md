@@ -3,7 +3,7 @@
 * Status: proposed
 * Authors: @asmogo
 * Date: 2026-07-01
-* Targeted modules: `cashu`, `cdk-common`, `cdk-sql-common`, `cdk` (mint), `cdk-axum`, `cdk-mintd`
+* Targeted modules: `cashu`, `cdk-common`, `cdk-sql-common`, `cdk` (mint), `cdk-axum`, `cdk-mintd`, `cdk-sigsum` (new)
 * Associated tickets/PRs: supersedes/merges [#2173](https://github.com/cashubtc/cdk/pull/2173) ("ADR for append-only change log in mint database")
 
 ## Context and Problem Statement
@@ -48,21 +48,26 @@ Same single generic log as above, but every appended entry is also folded into a
 **Pros:** replay (same as option 2) *and* cryptographic tamper-evidence; well-understood, widely deployed design; can be built with primitives the workspace already depends on (`bitcoin::secp256k1` for Schnorr signatures — no new crypto dependency).
 **Cons:** more moving parts than a plain log table; requires a decision about checkpoint publication and (optionally) witnessing; unbounded log growth needs a retention story, same as option 1/2 but now also constrained by proof validity.
 
-#### Externally hosted transparency infrastructure (Trillian / Sigstore-Rekor)
+#### Externally hosted transparency infrastructure (Trillian / Tessera / Sigstore-Rekor / Sigsum)
 
-Reuse Google's Trillian or the public Rekor instance instead of building the Merkle layer in-crate.
+This option splits into two genuinely different things that are easy to conflate:
 
-**Pros:** battle-tested, handles scale most mints will never reach.
-**Cons:** requires running (or depending on) a separate service with its own database; publishing mint activity to a shared public Rekor instance leaks mint activity to a third party by default; heavy for a "one process, one SQL database" deployment model. Rejected for now; nothing in this design precludes federating to something like this later.
+* **Self-hosted server software** — Trillian, and its modern successor [Tessera](https://github.com/transparency-dev/tessera) (transparency.dev's own recommendation over Trillian as of 2024). Both are Go libraries/services *you run yourself*; there is no shared public multi-tenant instance to submit to. Adopting either means operating a second, Go-based process per mint, plus its own storage. Rejected for the mint's own local tree (§5) — running a second language runtime per mint for something `sha2` + ~100 lines of Rust already does is not a good trade.
+* **Already-running public services** — [Sigsum](https://www.sigsum.org/) (a stable production log, `seasalp`, operated by Glasklar Teknik, with independent stable witnesses run by Glasklar and Mullvad — see [sigsum.org/services](https://www.sigsum.org/services/)) and the public [Rekor](https://rekor.sigstore.dev) instance (operated by the Sigstore project, 99.5% availability SLO). These are not something to run — they're something to *submit to*. Sigsum in particular is explicitly designed to be content-agnostic (submit any signed 32-byte checksum) and to be embedded into third-party systems exactly like this one.
+
+**Pros (public services):** real, operating infrastructure with independent witnesses already in place today, at effectively zero operational cost to a mint — no new service to run, just an HTTP client. Solves the operator-equivocation gap in §9 that this design otherwise leaves unsolved.
+**Cons:** these are shared, general-purpose, and at least partially rate-limited services (Sigsum's stable log requires DNS-domain-based registration, see §7); they are appropriate for anchoring a small number of periodic checkpoint hashes, not for hosting a mint's entire event stream. Rekor's public instance is governed and resourced for software-supply-chain use cases, so depending on it for payment-system checkpoints, while technically supported by its generic "hashed artifact" entry type, is a judgment call worth raising with that community rather than assuming indefinitely.
+
+**Decision:** adopt the public-service half of this option — see §7 — while continuing to reject the self-hosted-server half for the mint's own tree.
 
 #### Blockchain/timestamp anchoring only (OpenTimestamps, `OP_RETURN`)
 
-**Pros:** cheap, credibly neutral timestamping of a single hash.
-**Cons:** anchors a *point in time* for one hash, not a queryable, replayable log, and gives no inclusion/consistency proof machinery by itself. Kept as an optional *add-on* for checkpoint anchoring (§7), not a replacement for the log/tree design.
+**Pros:** free, decentralized, Bitcoin-anchored timestamping of a single hash; thematically the most natural fit for a Bitcoin e-cash mint of anything in this list.
+**Cons:** anchors a *point in time* for one hash, not a queryable, replayable log, and gives no inclusion-among-many-entries proof machinery by itself. Kept as a complementary, low-cost redundant anchor for the checkpoint hash (§7), not a replacement for Sigsum's witnessed inclusion proofs or for the log/tree design itself.
 
 ## Decision Outcome
 
-Chosen option: **single generic event log + Merkle transparency layer**. It fully subsumes #2173's replay requirement (folding the generic log in `seq` order reconstructs current state exactly as the per-table logs would have), removes the schema-duplication failure mode already observed in review, and is the only option that satisfies the "external parties should be able to trust a playback, not just perform one" requirement.
+Chosen option: **single generic event log + Merkle transparency layer, with periodic checkpoints anchored to already-running public Sigsum/OpenTimestamps infrastructure**. It fully subsumes #2173's replay requirement (folding the generic log in `seq` order reconstructs current state exactly as the per-table logs would have), removes the schema-duplication failure mode already observed in review, and — by anchoring checkpoints externally instead of only self-reporting them — is the only option that satisfies "external parties should be able to trust a playback, not just perform one" without requiring the cashu ecosystem to build and operate new public transparency-log infrastructure.
 
 ---
 
@@ -292,24 +297,45 @@ A new NUT ("Mint transparency log") exposes, served by `cdk-axum`:
 | Endpoint | Purpose |
 |---|---|
 | `GET /v1/audit/pubkey` | The mint's log-signing public key. |
-| `GET /v1/audit/checkpoint` | Latest signed checkpoint. |
+| `GET /v1/audit/checkpoint` | Latest signed checkpoint, including its external anchors (§7.1). |
 | `GET /v1/audit/checkpoint/{tree_size}` | Historical checkpoint, for consistency proofs. |
 | `GET /v1/audit/entries?start=&end=` | Raw `mint_event_log` rows in `[start, end)`, for bulk replay. |
 | `GET /v1/audit/proof/inclusion?seq=&tree_size=` | Merkle audit path for entry `seq` under checkpoint `tree_size`. |
 | `GET /v1/audit/proof/consistency?first=&second=` | Merkle consistency proof between two checkpoints. |
+
+#### 7.1. External anchoring (new `cdk-sigsum` crate)
+
+Never submit `mint_event_log` itself externally — it's a shared, general-purpose, partially rate-limited public resource, and a mint's full event stream is unnecessary load regardless of whether the mint minds the data being public. Only the periodic checkpoint (§6) — a root hash, a size, a timestamp; a few dozen bytes — is anchored externally, on the same cadence the checkpoint itself is published:
+
+1. **Primary anchor: [Sigsum](https://www.sigsum.org/)'s stable public log, `seasalp`** (operated by Glasklar Teknik). Sigsum logs are content-agnostic — a submitter signs and submits `H(H(checkpoint_bytes))`, the log doesn't interpret it at all — which is exactly the right shape for anchoring a commitment without needing the log operator's cooperation on data model. This is implemented in a new crate, `cdk-sigsum` (added alongside this ADR), a from-scratch client for the [Sigsum log server protocol](https://git.glasklar.is/sigsum/project/documentation/-/blob/main/log.md) built only on `reqwest`, `ed25519-dalek`, and `bitcoin::hashes::sha256` (no dependency on Sigsum's own Go tooling). It implements all five log endpoints (`get-tree-head`, `get-inclusion-proof`, `get-consistency-proof`, `get-leaves`, `add-leaf`), the domain-based rate-limit token required by public logs (a `_sigsum_v1.<domain>` DNS TXT record the mint publishes under a domain it already controls — its own mint domain works fine), and assembles a self-contained, offline-verifiable ["sigsum proof"](https://git.glasklar.is/sigsum/core/sigsum-go/-/blob/main/doc/sigsum-proof.md) for each anchored checkpoint. See `crates/cdk-sigsum/README.md` for usage; the core call is:
+
+   ```rust
+   let client = SigsumClient::new(Url::parse("https://seasalp.glasklar.is/")?);
+   let proof = cdk_sigsum::anchor(&client, &log_public_key, &submit_key, Some(&token), &checkpoint_bytes).await?;
+   ```
+
+   The resulting `SigsumProof` (log key hash, leaf, cosigned tree head, inclusion proof) is stored alongside the mint's own `transparency_checkpoint` row and served back via `GET /v1/audit/checkpoint`. Because `seasalp` already has independent witnesses (Glasklar and Mullvad, per [sigsum.org/services](https://www.sigsum.org/services/)) cosigning its tree heads, this is also how §9's equivocation gap gets closed, for free, without the cashu ecosystem operating anything.
+2. **Secondary anchor: OpenTimestamps.** The same checkpoint hash is additionally submitted to the free, decentralized, Bitcoin-anchored [OpenTimestamps](https://opentimestamps.org) calendar servers (Rust support: the `opentimestamps` and `opentimestamps-cli` crates). This gives a redundant, independently-secured "this existed at time T" proof that doesn't depend on Sigsum's or Glasklar's continued operation, and is thematically the most natural fit for a Bitcoin e-cash mint of anything considered.
+3. Both anchors are best-effort and asynchronous relative to checkpoint publication — a mint's own `/v1/audit/*` endpoints keep working even if `seasalp` or an OpenTimestamps calendar is temporarily unreachable; the external anchors are attached to a checkpoint once available, not required to serve it.
 
 ### 8. Playback / replay procedure
 
 Any third party with a copy of `mint_event_log` (via `/v1/audit/entries`) and the mint's initial keyset generation parameters can:
 
 1. **Reconstruct state** — fold `op`/`entity_type`/`entity_id`/`payload` over `seq` order to rebuild the current-state tables (`melt_quote`, `proof`, `keyset`, `blind_signature`). This alone fully replaces #2173's replay use case.
-2. **Verify the replay is authentic**, not merely self-consistent — recompute `leaf_hash` for each entry, rebuild the `MerkleTreeState` incrementally, and compare the resulting root at `tree_size = N` against a `Checkpoint` signed by the mint (or by an independent witness — see §9) for that same `tree_size`. A match proves the replayed entries are exactly, and only, the ones the mint publicly committed to — not a curated subset, not reordered, not edited after the fact.
+2. **Verify the replay is authentic**, not merely self-consistent — recompute `leaf_hash` for each entry, rebuild the `MerkleTreeState` incrementally, and compare the resulting root at `tree_size = N` against a `Checkpoint` signed by the mint for that same `tree_size`. A match proves the replayed entries are exactly, and only, the ones the mint publicly committed to.
+3. **Verify the mint itself couldn't have quietly rewritten that checkpoint** — check the checkpoint's Sigsum inclusion proof against a `seasalp` tree head that carries the Glasklar/Mullvad witness cosignatures (using the [`sigsum`](https://docs.rs/sigsum) crate for offline verification), and/or check its OpenTimestamps proof against the Bitcoin blockchain. Steps 1–2 alone still trust the mint's own signature; step 3 is what makes the trust independently checkable.
 
-Step 2 is the piece #2173 cannot provide on its own, and is the actual "transparency" deliverable behind the original ask.
+Step 3 is the piece #2173 cannot provide on its own, and — now that it's backed by already-running, independently-witnessed public infrastructure rather than deferred future work — is the actual "transparency" deliverable behind the original ask.
 
-### 9. Witnessing (explicitly out of scope for this ADR, reserved for)
+### 9. Witnessing
 
-Because the mint operator controls both the database and the log-signing key, an operator could still equivocate — sign two different checkpoints at the same `tree_size` and show each to a different audience. Mitigations (CT/Sigsum "gossip" pattern): wallets remember the highest checkpoint seen per mint and reject any checkpoint that fails a consistency proof against it; checkpoints can optionally be cosigned by independent witnesses. This ADR reserves the checkpoint format to the `c2sp.org/checkpoint` text convention specifically so this can be added later without a breaking format change, but does not implement witnessing now — it needs ecosystem coordination beyond one mint's codebase.
+Because the mint operator controls both the database and the log-signing key, an operator could in principle still equivocate — sign two different checkpoints at the same `tree_size` and show each to a different audience. §7.1 already closes most of this gap today, for free, by anchoring checkpoints to Sigsum's `seasalp` log, which is independently witnessed by Glasklar and Mullvad: as long as any auditor or wallet checks a checkpoint's Sigsum inclusion proof against a witnessed tree head (rather than trusting the mint's bare signature), an equivocating mint gets caught the moment two witnessed views diverge.
+
+What's left, and genuinely still ecosystem-level future work rather than something one mint's codebase can solve alone:
+
+* **Wallet-side gossip/pinning** — wallets should remember the highest Sigsum-witnessed checkpoint seen per mint and refuse any earlier-looking checkpoint, the standard CT/Sigsum client-side mitigation. Not yet implemented in `cdk`'s wallet code.
+* **A witness built into `cdk-mintd` itself** — the [C2SP tlog-witness protocol](https://github.com/C2SP/C2SP/blob/main/tlog-witness.md) that Sigsum (and Tessera) already speak is a small, standardized, implementable-in-a-few-hundred-lines protocol: "receive a checkpoint, check it's consistent with the last one seen for that log, cosign it." Shipping one alongside `cdk-mintd` would let any two mints running CDK opt in to witnessing each other's checkpoints, turning the cashu mint ecosystem into its own mutual-witness network for free, using a standard protocol rather than a new bespoke one, and without needing a central authority or new shared infrastructure. Not implemented yet; tracked as follow-up to this ADR, not a blocker for it, since Sigsum's own witnesses already cover the same threat in the meantime.
 
 ### Invariants
 
@@ -323,15 +349,16 @@ Because the mint operator controls both the database and the log-signing key, an
 
 * Full audit trail *and* cryptographic tamper-evidence, not just one or the other.
 * One schema instead of N — the exact review-flagged failure mode from #2173 (drifting typed log tables) structurally cannot recur.
-* Third parties can verify a replay instead of merely trusting one.
-* Built entirely on primitives already in the dependency tree (`sha2`, `bitcoin::secp256k1`); no new heavyweight service dependency (Trillian/Rekor/immudb) required.
+* Third parties can verify a replay instead of merely trusting one, and can do so against already-witnessed public checkpoints (§7.1) rather than only the mint's own signature.
+* Built entirely on primitives already in the dependency tree (`bitcoin::hashes::sha256`, `bitcoin::secp256k1`) plus one small new crate (`cdk-sigsum`, ~600 lines, no dependency on Trillian/Rekor/immudb or any Go tooling); no new public infrastructure needs to be built or operated by the cashu ecosystem.
 
 ## Negative Consequences
 
-* More moving parts than a plain log table (tree state, checkpoints, a new NUT).
+* More moving parts than a plain log table (tree state, checkpoints, a new NUT, an external anchoring client).
 * Requires a decision, per deployment, about who runs the single "appender" role in an HA Postgres setup (§4) — not automatic.
 * Log and tree growth are unbounded; pruning must preserve provability for still-referenced ranges (RFC 9162-style "expired" shards), which is a harder retention story than deleting old rows from a plain log table. This ADR does not solve retention, only flags that it's a harder problem than in #2173 and should be its own follow-up before this ships to mints with high transaction volume.
-* Witnessing (§9) is deferred; until it exists, external verifiability protects against silent tampering by anyone *without* the log key, but not against an operator willing to actively equivocate to different audiences.
+* External anchoring (§7.1) depends on the continued operation of Sigsum's `seasalp` log and Glasklar's rate-limit registration process for it; both are outside CDK's control. This is mitigated, not eliminated, by also anchoring to OpenTimestamps, and by the mint's own `/v1/audit/*` endpoints remaining fully functional (just not externally witnessed) if both anchors are temporarily unavailable.
+* Wallet-side checkpoint pinning/gossip and a built-in `cdk-mintd` witness (§9) are not implemented yet. Until then, external verifiability meaningfully protects against tampering by anyone *without* the mint's log key (§7.1's Sigsum witnesses already cover most of the operator-equivocation case too), but a fully closed-loop "wallet detects an equivocating mint entirely on its own" story is still follow-up work.
 
 ## Links
 
@@ -341,4 +368,11 @@ Because the mint operator controls both the database and the log-signing key, an
 * [c2sp.org/checkpoint](https://c2sp.org/checkpoint) — witness-cosignable checkpoint text format
 * [Russ Cox, "Transparent Logs for Skeptical Clients"](https://research.swtch.com/tlog)
 * [Sigsum](https://www.sigsum.org/) — minimal transparency log with witness cosigning, designed to be embedded into third-party systems
+* [Sigsum log server protocol](https://git.glasklar.is/sigsum/project/documentation/-/blob/main/log.md) — wire format implemented by `crates/cdk-sigsum`
+* [Sigsum services](https://www.sigsum.org/services/) — the `seasalp` stable log and its Glasklar/Mullvad witnesses used for external anchoring (§7.1)
+* [`sigsum` crate](https://docs.rs/sigsum) (Mullvad) — offline verification of Sigsum proofs of logging, for the wallet/auditor side
+* [C2SP tlog-witness protocol](https://github.com/C2SP/C2SP/blob/main/tlog-witness.md) — protocol a future built-in `cdk-mintd` witness (§9) would speak
+* [Rekor / Sigstore transparency log](https://docs.sigstore.dev/logging/overview/) — considered as an additional public anchor, not adopted in this revision
+* [OpenTimestamps](https://opentimestamps.org) — secondary, Bitcoin-anchored checkpoint anchor (§7.1)
+* [Tessera](https://github.com/transparency-dev/tessera) — modern self-hosted alternative to Trillian, considered and not adopted for the mint's own tree (§5) since it would require running a second, Go-based process per mint
 * [`warg-transparency`](https://docs.rs/warg-transparency) — Rust verifiable log + verifiable map, used in production by the Bytecode Alliance's `warg` package registry
