@@ -31,6 +31,8 @@ pub enum PreparedMintRequest {
         quote_info: MintQuote,
         /// Mint request ready to send
         request: MintRequestString,
+        /// Legacy-formatted retry request for compatibility with older mints.
+        legacy_request: Option<MintRequestString>,
     },
     /// Batch mint request (NUT-29)
     Batch {
@@ -40,6 +42,8 @@ pub enum PreparedMintRequest {
         quote_infos: Vec<MintQuote>,
         /// Batch mint request ready to send
         request: BatchMintRequest<String>,
+        /// Legacy-formatted retry request for compatibility with older mints.
+        legacy_request: Option<BatchMintRequest<String>>,
     },
 }
 

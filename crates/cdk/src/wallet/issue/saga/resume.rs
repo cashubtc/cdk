@@ -26,6 +26,7 @@ use crate::wallet::blind_signature::{
     validate_mint_response_signatures, SignatureAmountValidation,
 };
 use crate::wallet::issue::saga::compensation::ReleaseMintQuote;
+use crate::wallet::issue::saga::state::PreparedMintRequest;
 use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::CompensatingAction;
 use crate::{Error, Wallet};
@@ -311,31 +312,53 @@ impl Wallet {
 
             // Build signatures for locked quotes (NUT-20)
             let mut signatures: Vec<Option<String>> = Vec::new();
+            let mut legacy_signatures: Vec<Option<String>> = Vec::new();
             for quote in &quote_infos {
                 if let Some(secret_key) = self.mint_quote_signing_key(quote).await? {
                     let sig = batch_request
                         .sign_quote(&quote.id, &secret_key)
                         .map_err(|e| Error::Custom(format!("NUT-20 signing failed: {}", e)))?;
+                    let legacy_sig = batch_request
+                        .sign_quote_legacy(&quote.id, &secret_key)
+                        .map_err(|e| {
+                            Error::Custom(format!("NUT-20 legacy signing failed: {}", e))
+                        })?;
                     signatures.push(Some(sig));
+                    legacy_signatures.push(Some(legacy_sig));
                 } else {
                     signatures.push(None);
+                    legacy_signatures.push(None);
                 }
             }
 
             let has_locked = signatures.iter().any(Option::is_some);
             let signatures_to_send = if has_locked { Some(signatures) } else { None };
             batch_request.signatures = signatures_to_send;
+            let legacy_request = has_locked.then(|| {
+                let mut retry_request = batch_request.clone();
+                retry_request.signatures = Some(legacy_signatures);
+                retry_request
+            });
 
             tracing::info!(
                 "Issue saga {} - attempting replay of post_batch_mint request",
                 saga_id
             );
 
+            let mint_request = PreparedMintRequest::Batch {
+                quote_ids: quote_ids.clone(),
+                quote_infos: quote_infos.clone(),
+                request: batch_request,
+                legacy_request,
+            };
+
             // Attempt batch replay
-            let mint_response = match self
-                .client
-                .post_batch_mint(&payment_method, batch_request)
-                .await
+            let mint_response = match super::post_mint_request_with_legacy_fallback(
+                self,
+                &payment_method,
+                &mint_request,
+            )
+            .await
             {
                 Ok(response) => response,
                 Err(e) => {
@@ -430,8 +453,8 @@ impl Wallet {
         };
 
         // Sign the request if the quote has a signing key (required for bolt12)
-        if let Some(secret_key) = self.mint_quote_signing_key(&quote).await? {
-            if let Err(e) = mint_request.sign(secret_key) {
+        let legacy_request = if let Some(secret_key) = self.mint_quote_signing_key(&quote).await? {
+            if let Err(e) = mint_request.sign(secret_key.clone()) {
                 tracing::warn!(
                     "Issue saga {} - failed to sign mint request: {}, cannot replay",
                     saga_id,
@@ -439,18 +462,41 @@ impl Wallet {
                 );
                 return Ok(None);
             }
-        }
+
+            let mut retry_request = mint_request.clone();
+            if let Err(e) = retry_request.sign_legacy(secret_key) {
+                tracing::warn!(
+                    "Issue saga {} - failed to legacy-sign mint request: {}, cannot replay with legacy fallback",
+                    saga_id,
+                    e
+                );
+                None
+            } else {
+                Some(retry_request)
+            }
+        } else {
+            None
+        };
 
         tracing::info!(
             "Issue saga {} - attempting replay of post_mint request",
             saga_id
         );
 
+        let mint_request = PreparedMintRequest::Single {
+            quote_id: data.primary_quote_id().to_string(),
+            quote_info: quote.clone(),
+            request: mint_request,
+            legacy_request,
+        };
+
         // Attempt the replay
-        let mint_response = match self
-            .client
-            .post_mint(&quote.payment_method, mint_request)
-            .await
+        let mint_response = match super::post_mint_request_with_legacy_fallback(
+            self,
+            &quote.payment_method,
+            &mint_request,
+        )
+        .await
         {
             Ok(response) => response,
             Err(e) => {

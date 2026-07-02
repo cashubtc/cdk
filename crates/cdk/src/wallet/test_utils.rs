@@ -443,6 +443,14 @@ pub struct MockMintConnector {
         Mutex<std::collections::VecDeque<Result<MeltQuoteBolt11Response<String>, Error>>>,
     /// Response for post_mint calls
     pub post_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
+    /// Queue of responses for successive post_mint calls.
+    pub post_mint_responses: Mutex<std::collections::VecDeque<Result<MintResponse, Error>>>,
+    /// Captured post_mint requests.
+    pub post_mint_requests: Mutex<Vec<(PaymentMethod, MintRequest<String>)>>,
+    /// Queue of responses for successive post_batch_mint calls.
+    pub post_batch_mint_responses: Mutex<std::collections::VecDeque<Result<MintResponse, Error>>>,
+    /// Captured post_batch_mint requests.
+    pub post_batch_mint_requests: Mutex<Vec<(PaymentMethod, BatchMintRequest<String>)>>,
     /// Response for post_swap calls
     pub post_swap_response: Mutex<Option<Result<SwapResponse, Error>>>,
     /// Response for post_melt calls
@@ -479,6 +487,10 @@ impl MockMintConnector {
             melt_quote_status_response: Mutex::new(None),
             melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
             post_mint_response: Mutex::new(None),
+            post_mint_responses: Mutex::new(std::collections::VecDeque::new()),
+            post_mint_requests: Mutex::new(Vec::new()),
+            post_batch_mint_responses: Mutex::new(std::collections::VecDeque::new()),
+            post_batch_mint_requests: Mutex::new(Vec::new()),
             post_swap_response: Mutex::new(None),
             post_melt_response: Mutex::new(None),
             last_post_melt_request: Mutex::new(None),
@@ -584,6 +596,29 @@ impl MockMintConnector {
 
     pub fn set_post_mint_response(&self, response: Result<MintResponse, Error>) {
         *self.post_mint_response.lock().unwrap() = Some(response);
+    }
+
+    /// Enqueue a response for the next `post_mint` call.
+    pub fn push_post_mint_response(&self, response: Result<MintResponse, Error>) {
+        self.post_mint_responses.lock().unwrap().push_back(response);
+    }
+
+    /// Return all captured `post_mint` requests.
+    pub fn post_mint_requests(&self) -> Vec<(PaymentMethod, MintRequest<String>)> {
+        self.post_mint_requests.lock().unwrap().clone()
+    }
+
+    /// Enqueue a response for the next `post_batch_mint` call.
+    pub fn push_post_batch_mint_response(&self, response: Result<MintResponse, Error>) {
+        self.post_batch_mint_responses
+            .lock()
+            .unwrap()
+            .push_back(response);
+    }
+
+    /// Return all captured `post_batch_mint` requests.
+    pub fn post_batch_mint_requests(&self) -> Vec<(PaymentMethod, BatchMintRequest<String>)> {
+        self.post_batch_mint_requests.lock().unwrap().clone()
     }
 
     pub fn set_post_swap_response(&self, response: Result<SwapResponse, Error>) {
@@ -696,14 +731,24 @@ impl MintConnector for MockMintConnector {
 
     async fn post_mint(
         &self,
-        _method: &PaymentMethod,
-        _request: MintRequest<String>,
+        method: &PaymentMethod,
+        request: MintRequest<String>,
     ) -> Result<MintResponse, Error> {
-        self.post_mint_response
+        self.post_mint_requests
             .lock()
             .unwrap()
-            .take()
-            .expect("MockMintConnector: post_mint called without configured response")
+            .push((method.clone(), request));
+
+        let queued = self.post_mint_responses.lock().unwrap().pop_front();
+        match queued {
+            Some(response) => response,
+            None => self
+                .post_mint_response
+                .lock()
+                .unwrap()
+                .take()
+                .expect("MockMintConnector: post_mint called without configured response"),
+        }
     }
 
     async fn post_melt_quote(
@@ -793,9 +838,18 @@ impl MintConnector for MockMintConnector {
 
     async fn post_batch_mint(
         &self,
-        _method: &PaymentMethod,
-        _request: BatchMintRequest<String>,
+        method: &PaymentMethod,
+        request: BatchMintRequest<String>,
     ) -> Result<MintResponse, Error> {
-        unimplemented!()
+        self.post_batch_mint_requests
+            .lock()
+            .unwrap()
+            .push((method.clone(), request));
+
+        self.post_batch_mint_responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("MockMintConnector: post_batch_mint called without configured response")
     }
 }
