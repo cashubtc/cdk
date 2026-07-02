@@ -26,6 +26,7 @@ use crate::wallet::blind_signature::{
     validate_mint_response_signatures, SignatureAmountValidation,
 };
 use crate::wallet::issue::saga::compensation::ReleaseMintQuote;
+use crate::wallet::issue::saga::state::PreparedMintRequest;
 use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::CompensatingAction;
 use crate::{Error, Wallet};
@@ -331,11 +332,19 @@ impl Wallet {
                 saga_id
             );
 
+            let mint_request = PreparedMintRequest::Batch {
+                quote_ids: quote_ids.clone(),
+                quote_infos: quote_infos.clone(),
+                request: batch_request,
+            };
+
             // Attempt batch replay
-            let mint_response = match self
-                .client
-                .post_batch_mint(&payment_method, batch_request)
-                .await
+            let mint_response = match super::post_mint_request_with_legacy_fallback(
+                self,
+                &payment_method,
+                &mint_request,
+            )
+            .await
             {
                 Ok(response) => response,
                 Err(e) => {
@@ -446,11 +455,19 @@ impl Wallet {
             saga_id
         );
 
+        let mint_request = PreparedMintRequest::Single {
+            quote_id: data.primary_quote_id().to_string(),
+            quote_info: quote.clone(),
+            request: mint_request,
+        };
+
         // Attempt the replay
-        let mint_response = match self
-            .client
-            .post_mint(&quote.payment_method, mint_request)
-            .await
+        let mint_response = match super::post_mint_request_with_legacy_fallback(
+            self,
+            &quote.payment_method,
+            &mint_request,
+        )
+        .await
         {
             Ok(response) => response,
             Err(e) => {
