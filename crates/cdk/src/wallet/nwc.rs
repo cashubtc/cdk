@@ -22,6 +22,7 @@
 
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
@@ -41,7 +42,7 @@ use tracing::instrument;
 
 use crate::error::Error;
 use crate::nuts::{CurrencyUnit, SecretKey};
-use crate::{Amount, Wallet};
+use crate::{amount, Amount, Wallet};
 
 /// Derive the NWC wallet-service secret key from a wallet seed.
 ///
@@ -85,29 +86,29 @@ impl Wallet {
 
     /// Build a [`WalletNwcHandler`] for this wallet.
     ///
-    /// `budget_msat` optionally caps the amount of any single `pay_invoice`
+    /// `max_payment_msat` optionally caps the amount of any single `pay_invoice`
     /// request (in millisatoshis); pass `None` for no cap.
-    pub fn nwc_handler(&self, budget_msat: Option<u64>) -> WalletNwcHandler {
-        WalletNwcHandler::new(self.clone(), budget_msat)
+    pub fn nwc_handler(&self, max_payment_msat: Option<u64>) -> WalletNwcHandler {
+        WalletNwcHandler::new(Arc::new(self.clone()), max_payment_msat)
     }
 }
 
 /// A [`cdk_nwc::NwcRequestHandler`] backed by a Cashu [`Wallet`].
 #[derive(Debug, Clone)]
 pub struct WalletNwcHandler {
-    wallet: Wallet,
-    budget_msat: Option<u64>,
+    wallet: Arc<Wallet>,
+    max_payment_msat: Option<u64>,
 }
 
 impl WalletNwcHandler {
     /// Create a new handler.
     ///
-    /// `budget_msat` optionally caps the amount of any single `pay_invoice`
+    /// `max_payment_msat` optionally caps the amount of any single `pay_invoice`
     /// request (in millisatoshis).
-    pub fn new(wallet: Wallet, budget_msat: Option<u64>) -> Self {
+    pub fn new(wallet: Arc<Wallet>, max_payment_msat: Option<u64>) -> Self {
         Self {
             wallet,
-            budget_msat,
+            max_payment_msat,
         }
     }
 }
@@ -120,22 +121,26 @@ fn nip47_err(code: ErrorCode, message: impl Into<String>) -> NIP47Error {
     }
 }
 
+/// Map an [`Amount`] conversion error to a NIP-47 error.
+fn amount_conversion_error(err: amount::Error, unit: &CurrencyUnit) -> NIP47Error {
+    match err {
+        amount::Error::CannotConvertUnits => {
+            nip47_err(ErrorCode::Other, format!("unsupported wallet unit: {unit}"))
+        }
+        amount::Error::AmountOverflow => nip47_err(
+            ErrorCode::Internal,
+            "amount overflow converting wallet units",
+        ),
+        other => nip47_err(ErrorCode::Internal, other.to_string()),
+    }
+}
+
 /// Convert a wallet [`Amount`] to millisatoshis for the given unit.
 fn amount_to_msat(amount: Amount, unit: &CurrencyUnit) -> Result<u64, NIP47Error> {
     let value = u64::from(amount);
-    match unit {
-        CurrencyUnit::Sat => value.checked_mul(1000).ok_or_else(|| {
-            nip47_err(
-                ErrorCode::Internal,
-                "amount overflow converting sat to msat",
-            )
-        }),
-        CurrencyUnit::Msat => Ok(value),
-        other => Err(nip47_err(
-            ErrorCode::Other,
-            format!("unsupported wallet unit: {other}"),
-        )),
-    }
+    Amount::new(value, unit.clone())
+        .to_msat()
+        .map_err(|e| amount_conversion_error(e, unit))
 }
 
 /// Convert millisatoshis to a wallet [`Amount`] for the given unit.
@@ -143,22 +148,20 @@ fn amount_to_msat(amount: Amount, unit: &CurrencyUnit) -> Result<u64, NIP47Error
 /// For `Sat` wallets, millisat amounts that are not whole satoshis are rejected
 /// rather than rounded.
 fn msat_to_amount(msat: u64, unit: &CurrencyUnit) -> Result<Amount, NIP47Error> {
-    match unit {
-        CurrencyUnit::Sat => {
-            if msat % 1000 != 0 {
-                return Err(nip47_err(
-                    ErrorCode::Other,
-                    "sub-satoshi amounts are not supported by this wallet",
-                ));
-            }
-            Ok(Amount::from(msat / 1000))
-        }
-        CurrencyUnit::Msat => Ok(Amount::from(msat)),
-        other => Err(nip47_err(
+    if unit == &CurrencyUnit::Sat && msat % 1000 != 0 {
+        return Err(nip47_err(
             ErrorCode::Other,
-            format!("unsupported wallet unit: {other}"),
-        )),
+            "sub-satoshi amounts are not supported by this wallet",
+        ));
     }
+
+    let amount = Amount::new(msat, CurrencyUnit::Msat);
+    match unit {
+        CurrencyUnit::Sat => amount.to_sat().map(Amount::from),
+        CurrencyUnit::Msat => amount.to_msat().map(Amount::from),
+        other => amount.convert_to(other).map(Into::into),
+    }
+    .map_err(|e| amount_conversion_error(e, unit))
 }
 
 /// Extract the hex payment hash from a bolt11 invoice string.
@@ -166,6 +169,13 @@ fn payment_hash_of(invoice: &str) -> Option<String> {
     Bolt11Invoice::from_str(invoice)
         .ok()
         .map(|i| i.payment_hash().to_string())
+}
+
+/// Extract the creation timestamp from a bolt11 invoice string.
+fn invoice_created_at(invoice: &str) -> Option<Timestamp> {
+    Bolt11Invoice::from_str(invoice)
+        .ok()
+        .map(|i| Timestamp::from(i.duration_since_epoch().as_secs()))
 }
 
 /// Map a wallet [`Error`] from a melt operation to the appropriate NIP-47 code.
@@ -176,6 +186,21 @@ fn melt_error(err: &Error) -> NIP47Error {
             "insufficient balance to pay invoice",
         ),
         Error::PaymentFailed => nip47_err(ErrorCode::PaymentFailed, "payment failed"),
+        other => nip47_err(ErrorCode::Internal, other.to_string()),
+    }
+}
+
+/// Map a wallet [`Error`] from a mint quote operation to the appropriate NIP-47 code.
+fn mint_quote_error(err: &Error) -> NIP47Error {
+    match err {
+        Error::InvoiceDescriptionUnsupported => nip47_err(
+            ErrorCode::Other,
+            "mint does not support invoice descriptions for bolt11 mint quotes",
+        ),
+        Error::UnsupportedUnit => nip47_err(
+            ErrorCode::Other,
+            "wallet unit is not supported by this mint for bolt11 mint quotes",
+        ),
         other => nip47_err(ErrorCode::Internal, other.to_string()),
     }
 }
@@ -252,6 +277,13 @@ impl cdk_nwc::NwcRequestHandler for WalletNwcHandler {
         &self,
         request: MakeInvoiceRequest,
     ) -> Result<MakeInvoiceResponse, NIP47Error> {
+        if request.description_hash.is_some() {
+            return Err(nip47_err(
+                ErrorCode::Other,
+                "description_hash is not supported by Cashu mint quotes",
+            ));
+        }
+
         let amount = msat_to_amount(request.amount, &self.wallet.unit)?;
 
         let quote = self
@@ -263,7 +295,7 @@ impl cdk_nwc::NwcRequestHandler for WalletNwcHandler {
                 None,
             )
             .await
-            .map_err(|e| nip47_err(ErrorCode::Internal, e.to_string()))?;
+            .map_err(|e| mint_quote_error(&e))?;
 
         let payment_hash = payment_hash_of(&quote.request);
 
@@ -307,12 +339,12 @@ impl cdk_nwc::NwcRequestHandler for WalletNwcHandler {
             }
         }
 
-        // Budget enforcement (defense in depth, before any state changes).
-        if let Some(budget) = self.budget_msat {
-            if invoice_msat > budget {
+        // Per-payment cap enforcement (defense in depth, before any state changes).
+        if let Some(max_payment_msat) = self.max_payment_msat {
+            if invoice_msat > max_payment_msat {
                 return Err(nip47_err(
                     ErrorCode::QuotaExceeded,
-                    "payment exceeds the connection budget",
+                    "payment exceeds max_payment_msat",
                 ));
             }
         }
@@ -396,6 +428,8 @@ impl cdk_nwc::NwcRequestHandler for WalletNwcHandler {
                     .map(|a| amount_to_msat(a, unit))
                     .transpose()?
                     .unwrap_or_default();
+                let created_at =
+                    invoice_created_at(&quote.request).unwrap_or_else(|| Timestamp::from(0));
 
                 return Ok(LookupInvoiceResponse {
                     transaction_type: Some(TransactionType::Incoming),
@@ -407,7 +441,7 @@ impl cdk_nwc::NwcRequestHandler for WalletNwcHandler {
                     payment_hash: target_hash,
                     amount,
                     fees_paid: 0,
-                    created_at: Timestamp::from(quote.expiry),
+                    created_at,
                     expires_at: Some(Timestamp::from(quote.expiry)),
                     settled_at: None,
                     metadata: None,
@@ -430,14 +464,11 @@ impl cdk_nwc::NwcRequestHandler for WalletNwcHandler {
 
         let unit = &self.wallet.unit;
 
-        let mut transactions = self
+        let transactions = self
             .wallet
             .list_transactions(direction)
             .await
             .map_err(|e| nip47_err(ErrorCode::Internal, e.to_string()))?;
-
-        // Newest first, consistent with most NWC clients' expectations.
-        transactions.reverse();
 
         let from = request.from.map(|t| t.as_secs());
         let until = request.until.map(|t| t.as_secs());
@@ -467,9 +498,16 @@ impl cdk_nwc::NwcRequestHandler for WalletNwcHandler {
 mod tests {
     use std::str::FromStr;
 
+    use cdk_common::database::WalletDatabase;
     use cdk_common::mint_url::MintUrl;
+    use cdk_common::wallet::MintQuote;
+
+    use crate::nuts::{MintInfo, MintMethodSettings, NUT04Settings, Nuts};
+    use crate::wallet::test_utils::MockMintConnector;
 
     use super::*;
+
+    const TEST_BOLT11: &str = "lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq";
 
     #[test]
     fn sat_amounts_convert_to_and_from_msat() {
@@ -516,15 +554,15 @@ mod tests {
         assert_ne!(&nwc.to_secret_bytes()[..], &seed[..32]);
     }
 
-    fn sample_transaction() -> Transaction {
+    fn sample_transaction(timestamp: u64) -> Transaction {
         Transaction {
             mint_url: MintUrl::from_str("https://mint.example.com").expect("mint url"),
             direction: TransactionDirection::Incoming,
             amount: Amount::from(10u64),
             fee: Amount::from(1u64),
             unit: CurrencyUnit::Sat,
-            ys: Vec::new(),
-            timestamp: 1_700_000_000,
+            ys: vec![SecretKey::generate().public_key()],
+            timestamp,
             memo: Some("coffee".to_string()),
             metadata: HashMap::new(),
             quote_id: None,
@@ -537,7 +575,7 @@ mod tests {
 
     #[test]
     fn transaction_maps_to_settled_nip47_object_in_msat() {
-        let tx = sample_transaction();
+        let tx = sample_transaction(1_700_000_000);
         let mapped = transaction_to_nip47(&tx, &CurrencyUnit::Sat).expect("map tx");
 
         assert_eq!(mapped.transaction_type, Some(TransactionType::Incoming));
@@ -550,5 +588,164 @@ mod tests {
         assert_eq!(mapped.description.as_deref(), Some("coffee"));
         assert!(mapped.settled_at.is_some());
         assert_eq!(mapped.payment_hash, "");
+    }
+
+    #[tokio::test]
+    async fn list_transactions_keeps_newest_first_before_pagination() {
+        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let wallet = Wallet::new(
+            "https://mint.example.com",
+            CurrencyUnit::Sat,
+            localstore.clone(),
+            [0x42; 64],
+            None,
+        )
+        .expect("wallet");
+
+        localstore
+            .add_transaction(sample_transaction(1_700_000_000))
+            .await
+            .expect("add older transaction");
+        localstore
+            .add_transaction(sample_transaction(1_700_000_100))
+            .await
+            .expect("add newer transaction");
+
+        let handler = WalletNwcHandler::new(Arc::new(wallet), None);
+        let transactions = cdk_nwc::NwcRequestHandler::list_transactions(
+            &handler,
+            ListTransactionsRequest {
+                limit: Some(1),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("list transactions");
+
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].created_at.as_secs(), 1_700_000_100);
+    }
+
+    #[tokio::test]
+    async fn lookup_pending_invoice_uses_bolt11_created_at_and_quote_expiry() {
+        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("mint url");
+        let wallet = Wallet::new(
+            "https://mint.example.com",
+            CurrencyUnit::Sat,
+            localstore.clone(),
+            [0x42; 64],
+            None,
+        )
+        .expect("wallet");
+        let expiry = 9_999_999_999;
+
+        localstore
+            .add_mint_quote(MintQuote::new(
+                "quote-id".to_string(),
+                mint_url,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                Some(Amount::from(10u64)),
+                CurrencyUnit::Sat,
+                TEST_BOLT11.to_string(),
+                expiry,
+                None,
+            ))
+            .await
+            .expect("add mint quote");
+
+        let handler = WalletNwcHandler::new(Arc::new(wallet), None);
+        let payment_hash = payment_hash_of(TEST_BOLT11).expect("payment hash");
+        let invoice_created_at = invoice_created_at(TEST_BOLT11).expect("invoice created at");
+        let transaction = cdk_nwc::NwcRequestHandler::lookup_invoice(
+            &handler,
+            LookupInvoiceRequest {
+                payment_hash: Some(payment_hash),
+                invoice: None,
+            },
+        )
+        .await
+        .expect("lookup invoice");
+
+        assert_eq!(
+            transaction.state,
+            Some(cdk_nwc::nip47::TransactionState::Pending)
+        );
+        assert_eq!(transaction.created_at, invoice_created_at);
+        assert_eq!(transaction.expires_at, Some(Timestamp::from(expiry)));
+    }
+
+    #[tokio::test]
+    async fn make_invoice_rejects_description_hash() {
+        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let wallet = Wallet::new(
+            "https://mint.example.com",
+            CurrencyUnit::Sat,
+            localstore,
+            [0x24; 64],
+            None,
+        )
+        .expect("wallet");
+
+        let handler = WalletNwcHandler::new(Arc::new(wallet), None);
+        let err = cdk_nwc::NwcRequestHandler::make_invoice(
+            &handler,
+            MakeInvoiceRequest {
+                amount: 1_000,
+                description: None,
+                description_hash: Some("00".repeat(32)),
+                expiry: None,
+            },
+        )
+        .await
+        .expect_err("description hash is unsupported");
+
+        assert_eq!(err.code, ErrorCode::Other);
+        assert!(err.message.contains("description_hash"));
+    }
+
+    #[tokio::test]
+    async fn make_invoice_rejects_description_when_mint_does_not_support_it() {
+        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_mint_info_response(Ok(MintInfo::new().nuts(Nuts::new().nut04(
+            NUT04Settings::new(
+                vec![MintMethodSettings {
+                    method: PaymentMethod::Known(KnownMethod::Bolt11),
+                    unit: CurrencyUnit::Sat,
+                    min_amount: Some(Amount::from(1_u64)),
+                    max_amount: Some(Amount::from(500_000_u64)),
+                    options: Some(crate::nuts::nut04::MintMethodOptions::Bolt11 {
+                        description: false,
+                    }),
+                }],
+                false,
+            ),
+        ))));
+
+        let wallet = crate::wallet::WalletBuilder::new()
+            .mint_url(MintUrl::from_str("https://mint.example.com").expect("mint url"))
+            .unit(CurrencyUnit::Sat)
+            .localstore(localstore)
+            .seed([0x42; 64])
+            .shared_client(mock_client)
+            .build()
+            .expect("wallet");
+
+        let handler = WalletNwcHandler::new(Arc::new(wallet), None);
+        let err = cdk_nwc::NwcRequestHandler::make_invoice(
+            &handler,
+            MakeInvoiceRequest {
+                amount: 1_000,
+                description: Some("zap receipt".to_string()),
+                description_hash: None,
+                expiry: None,
+            },
+        )
+        .await
+        .expect_err("invoice descriptions are unsupported");
+
+        assert_eq!(err.code, ErrorCode::Other);
+        assert!(err.message.contains("invoice descriptions"));
     }
 }

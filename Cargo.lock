@@ -1212,6 +1212,7 @@ dependencies = [
  "lightning",
  "lightning-invoice",
  "nostr-sdk",
+ "nwc",
  "rand 0.9.4",
  "regex",
  "ring 0.17.14",
@@ -4979,6 +4980,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "nwc"
+version = "0.44.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f651e3c28dd9da0873151233e804a92b6240a1db1260f3c9d727950adb8e9036"
+dependencies = [
+ "nostr",
+ "nostr-relay-pool",
+ "tracing",
 ]
 
 [[package]]

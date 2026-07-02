@@ -37,7 +37,7 @@ impl NwcService {
         relays: Vec<String>,
         service_keys: Keys,
         client_secret: SecretKey,
-        budget_msat: Option<u64>,
+        max_payment_msat: Option<u64>,
     ) -> Result<Self, FfiError> {
         if relays.is_empty() {
             return Err(FfiError::internal("at least one relay is required"));
@@ -51,8 +51,10 @@ impl NwcService {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let cdk_wallet = wallet.inner().as_ref().clone();
-        let handler = Arc::new(WalletNwcHandler::new(cdk_wallet, budget_msat));
+        let handler = Arc::new(WalletNwcHandler::new(
+            wallet.inner().clone(),
+            max_payment_msat,
+        ));
 
         let service = CdkNwcService::new(NwcServiceConfig {
             service_keys,
@@ -70,6 +72,19 @@ impl NwcService {
     }
 }
 
+impl Drop for NwcService {
+    fn drop(&mut self) {
+        let Ok(mut guard) = self.task.lock() else {
+            return;
+        };
+
+        if let Some((handle, cancel)) = guard.take() {
+            cancel.cancel();
+            handle.abort();
+        }
+    }
+}
+
 #[uniffi::export(async_runtime = "tokio")]
 impl NwcService {
     /// Create a new wallet service with a freshly generated client connection.
@@ -81,7 +96,7 @@ impl NwcService {
     /// * `service_secret_key` - Secret key of the wallet service (the signer).
     ///   Accepts hex or bech32 `nsec`. Derive a stable one from the wallet seed
     ///   with [`nwc_derive_service_secret_key_from_seed`].
-    /// * `budget_msat` - Optional cap (in millisatoshis) on any single
+    /// * `max_payment_msat` - Optional cap (in millisatoshis) on any single
     ///   `pay_invoice` request.
     ///
     /// # Errors
@@ -92,11 +107,17 @@ impl NwcService {
         wallet: Arc<Wallet>,
         relays: Vec<String>,
         service_secret_key: String,
-        budget_msat: Option<u64>,
+        max_payment_msat: Option<u64>,
     ) -> Result<Self, FfiError> {
         let service_keys = parse_keys(&service_secret_key)?;
         let client_secret = SecretKey::generate();
-        Self::build(&wallet, relays, service_keys, client_secret, budget_msat)
+        Self::build(
+            &wallet,
+            relays,
+            service_keys,
+            client_secret,
+            max_payment_msat,
+        )
     }
 
     /// Restore a wallet service for an existing connection.
@@ -120,11 +141,17 @@ impl NwcService {
         relays: Vec<String>,
         service_secret_key: String,
         client_secret_key: String,
-        budget_msat: Option<u64>,
+        max_payment_msat: Option<u64>,
     ) -> Result<Self, FfiError> {
         let service_keys = parse_keys(&service_secret_key)?;
         let client_secret = parse_secret_key(&client_secret_key)?;
-        Self::build(&wallet, relays, service_keys, client_secret, budget_msat)
+        Self::build(
+            &wallet,
+            relays,
+            service_keys,
+            client_secret,
+            max_payment_msat,
+        )
     }
 
     /// The `nostr+walletconnect://` connection URI to hand to the Nostr app.
