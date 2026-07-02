@@ -375,9 +375,32 @@ jobs:
             cargo nextest run --archive-file \"\$CDK_ITEST_ARCHIVE\" --workspace-remap . -E \"binary(/^mint$/)\"
           "
 
-  payment-processor-itests:
-    name: "Payment processor tests"
+  nwc-itest:
+    name: "NWC e2e tests"
     runs-on: self-hosted
+    timeout-minutes: 30
+    needs: [pre-commit-checks, build-itest-binaries]
+    strategy:
+      fail-fast: true
+      matrix:
+        database: [memory, sqlite]
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Resolve nextest archive path
+        id: archive
+        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
+      - name: Test NWC e2e
+        run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just test-nwc ${{ matrix.database }}"
+
+  payment-processor-itests:
+    name: "Payment processor tests"    runs-on: self-hosted
     timeout-minutes: 30
     needs: [pre-commit-checks, build-itest-binaries]
     strategy:

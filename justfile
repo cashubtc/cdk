@@ -160,6 +160,22 @@ test-pure db="memory":
     CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test wallet_saga -- --test-threads 1
   fi
 
+# Run NWC (NIP-47) end-to-end integration tests.
+# Requires nostr-rs-relay on PATH (provided by `nix develop .#regtest`).
+# Usage: just test-nwc [db]  (default: memory)
+test-nwc db="memory":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+
+  if [ -n "${CDK_ITEST_ARCHIVE:-}" ] && [ -f "$CDK_ITEST_ARCHIVE" ]; then
+    CDK_TEST_DB_TYPE={{db}} cargo nextest run --archive-file "$CDK_ITEST_ARCHIVE" --workspace-remap . -E "binary(~nwc_e2e)" -j 1
+  else
+    CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test nwc_e2e -- --test-threads 1
+  fi
+
 # Mutation Testing Commands
 
 # Run mutation tests on a specific crate
