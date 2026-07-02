@@ -79,7 +79,7 @@ async fn post_mint_request_with_legacy_fallback(
     match mint_request {
         PreparedMintRequest::Single {
             request,
-            legacy_request,
+            quote_info,
             ..
         } => match wallet
             .client
@@ -88,7 +88,7 @@ async fn post_mint_request_with_legacy_fallback(
         {
             Ok(response) => Ok(response),
             Err(error) if should_retry_with_legacy_quote_signature(&error) => {
-                let Some(legacy_request) = legacy_request else {
+                let Some(secret_key) = wallet.mint_quote_signing_key(quote_info).await? else {
                     return Err(error);
                 };
 
@@ -96,16 +96,16 @@ async fn post_mint_request_with_legacy_fallback(
                     "Mint request rejected with new NUT-20 signature format; retrying legacy format"
                 );
 
-                wallet
-                    .client
-                    .post_mint(payment_method, legacy_request.clone())
-                    .await
+                let mut retry_request = request.clone();
+                retry_request.sign_legacy(secret_key)?;
+
+                wallet.client.post_mint(payment_method, retry_request).await
             }
             Err(error) => Err(error),
         },
         PreparedMintRequest::Batch {
             request,
-            legacy_request,
+            quote_infos,
             ..
         } => {
             match wallet
@@ -115,7 +115,9 @@ async fn post_mint_request_with_legacy_fallback(
             {
                 Ok(response) => Ok(response),
                 Err(error) if should_retry_with_legacy_quote_signature(&error) => {
-                    let Some(legacy_request) = legacy_request else {
+                    let Some(legacy_signatures) =
+                        legacy_batch_signatures(wallet, request, quote_infos).await?
+                    else {
                         return Err(error);
                     };
 
@@ -123,15 +125,51 @@ async fn post_mint_request_with_legacy_fallback(
                         "Batch mint request rejected with new NUT-20 signature format; retrying legacy format"
                     );
 
+                    let mut retry_request = request.clone();
+                    retry_request.signatures = Some(legacy_signatures);
+
                     wallet
                         .client
-                        .post_batch_mint(payment_method, legacy_request.clone())
+                        .post_batch_mint(payment_method, retry_request)
                         .await
                 }
                 Err(error) => Err(error),
             }
         }
     }
+}
+
+async fn legacy_batch_signatures(
+    wallet: &Wallet,
+    request: &crate::nuts::BatchMintRequest<String>,
+    quote_infos: &[MintQuote],
+) -> Result<Option<Vec<Option<String>>>, Error> {
+    let Some(signatures) = &request.signatures else {
+        return Ok(None);
+    };
+
+    if signatures.len() != request.quotes.len() || signatures.len() != quote_infos.len() {
+        return Ok(None);
+    }
+
+    let mut legacy_signatures = Vec::with_capacity(signatures.len());
+    for ((quote_id, quote_info), signature) in
+        request.quotes.iter().zip(quote_infos).zip(signatures)
+    {
+        if signature.is_some() {
+            let Some(secret_key) = wallet.mint_quote_signing_key(quote_info).await? else {
+                return Ok(None);
+            };
+            let legacy_signature = request
+                .sign_quote_legacy(quote_id, &secret_key)
+                .map_err(|e| Error::Custom(format!("NUT-20 legacy signing failed: {}", e)))?;
+            legacy_signatures.push(Some(legacy_signature));
+        } else {
+            legacy_signatures.push(None);
+        }
+    }
+
+    Ok(Some(legacy_signatures))
 }
 
 /// Saga pattern implementation for mint (issue) operations.
@@ -305,14 +343,9 @@ impl<'a> MintSaga<'a, Initial> {
             outputs: premint_secrets.blinded_messages(),
             signature: None,
         };
-        let mut legacy_request = None;
 
         if let Some(secret_key) = self.wallet.mint_quote_signing_key(quote_info).await? {
-            request.sign(secret_key.clone())?;
-
-            let mut retry_request = request.clone();
-            retry_request.sign_legacy(secret_key)?;
-            legacy_request = Some(retry_request);
+            request.sign(secret_key)?;
         } else if quote_info.payment_method.is_bolt12() {
             // Bolt12 requires signature
             tracing::error!("Signature is required for bolt12.");
@@ -366,7 +399,6 @@ impl<'a> MintSaga<'a, Initial> {
                 quote_id: quote_id.to_string(),
                 quote_info: quote_info.clone(),
                 request,
-                legacy_request,
             },
             payment_method: quote_info.payment_method.clone(),
             saga,
@@ -599,7 +631,6 @@ impl<'a> MintSaga<'a, Initial> {
 
         // Build signatures for each quote (NUT-20)
         let mut signatures: Vec<Option<String>> = Vec::new();
-        let mut legacy_signatures: Vec<Option<String>> = Vec::new();
 
         for quote in &quote_infos {
             let secret_key = match self.wallet.mint_quote_signing_key(quote).await? {
@@ -614,15 +645,10 @@ impl<'a> MintSaga<'a, Initial> {
                 let sig = batch_request
                     .sign_quote(&quote.id, &sk)
                     .map_err(|e| Error::Custom(format!("NUT-20 signing failed: {}", e)))?;
-                let legacy_sig = batch_request
-                    .sign_quote_legacy(&quote.id, &sk)
-                    .map_err(|e| Error::Custom(format!("NUT-20 legacy signing failed: {}", e)))?;
                 signatures.push(Some(sig));
-                legacy_signatures.push(Some(legacy_sig));
             } else {
                 // Quote is unlocked
                 signatures.push(None);
-                legacy_signatures.push(None);
             }
         }
 
@@ -630,11 +656,6 @@ impl<'a> MintSaga<'a, Initial> {
         let has_locked = signatures.iter().any(Option::is_some);
         let signatures_to_send = if has_locked { Some(signatures) } else { None };
         batch_request.signatures = signatures_to_send;
-        let legacy_request = has_locked.then(|| {
-            let mut retry_request = batch_request.clone();
-            retry_request.signatures = Some(legacy_signatures);
-            retry_request
-        });
 
         // Get counter range for recovery
         let counter_end = self
@@ -684,7 +705,6 @@ impl<'a> MintSaga<'a, Initial> {
                     quote_ids: quote_ids.iter().map(|s| s.to_string()).collect(),
                     quote_infos,
                     request: batch_request,
-                    legacy_request,
                 },
                 payment_method,
                 saga,
