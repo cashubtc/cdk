@@ -162,11 +162,18 @@ jobs:
           sed -i '/^\[lints\]/,/^$/s/^workspace = true//' cdk-kotlin/rust/Cargo.toml
 
           # Add release profile
-          printf '\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-kotlin/rust/Cargo.toml
+          printf '\n[workspace]\n\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> cdk-kotlin/rust/Cargo.toml
 
           cat cdk-kotlin/gradle.properties
           echo "---"
           cat cdk-kotlin/rust/Cargo.toml
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate Cargo.lock for standalone crate
+        working-directory: cdk-kotlin/rust
+        run: cargo generate-lockfile
 
       - name: Push to cdk-kotlin release branch
         working-directory: cdk-kotlin
@@ -274,10 +281,10 @@ jobs:
                 DEVELOPER_DIR="$XCODE_DEV_DIR" \
                 CC_aarch64_apple_ios=/usr/bin/clang \
                 CARGO_TARGET_AARCH64_APPLE_IOS_LINKER=/usr/bin/clang \
-                cargo build --release --target ${{ matrix.target }}
+                cargo build --release --locked --target ${{ matrix.target }}
           else
             nix develop -L ../../cdk#kotlin-build --command \
-              cargo build --release --target ${{ matrix.target }}
+              cargo build --release --locked --target ${{ matrix.target }}
           fi
 
       - name: Strip debug symbols
@@ -307,7 +314,7 @@ jobs:
         run: |
           mkdir -p ../generated-bindings
           nix develop -L ../../cdk#kotlin-build --command \
-            cargo run --release --bin uniffi-bindgen -- generate \
+            cargo run --release --locked --bin uniffi-bindgen -- generate \
               --library "target/${{ matrix.target }}/release/${{ matrix.artifact }}" \
               --language kotlin \
               --out-dir ../generated-bindings \
