@@ -713,6 +713,7 @@ mod tests {
                 vec![MintMethodSettings {
                     method: PaymentMethod::Known(KnownMethod::Bolt11),
                     unit: CurrencyUnit::Sat,
+                    method_name: None,
                     min_amount: Some(Amount::from(1_u64)),
                     max_amount: Some(Amount::from(500_000_u64)),
                     options: Some(crate::nuts::nut04::MintMethodOptions::Bolt11 {
