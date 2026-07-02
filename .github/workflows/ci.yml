@@ -159,7 +159,11 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           useDaemon: false
         continue-on-error: true
-      - name: Build nextest archive and harness binaries
+      - name: Build nextest archive
+        run: nix build -L .#itest-archive
+      - name: Build Payjoin nextest archive
+        run: nix build -L .#itest-archive-payjoin
+      - name: Build harness binaries (warm cache)
         run: |
           nix build -L \
             .#itest-archive \
@@ -314,7 +318,7 @@ jobs:
         continue-on-error: true
       - name: Resolve nextest archive path
         id: archive
-        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
+        run: echo "path=$(nix build .#itest-archive-payjoin --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
       - name: Test
         run: nix develop -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just itest-onchain ${{ matrix.database }}"
 

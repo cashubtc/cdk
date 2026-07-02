@@ -16,7 +16,8 @@ use cdk_common::database::wallet::Database;
 use cdk_common::database::{Error as DatabaseError, KVStoreDatabase};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{
-    CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
+    CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PayjoinV2, PublicKey, SpendingConditions,
+    State,
 };
 use cdk_common::secret::Secret;
 use cdk_common::util::hex;
@@ -213,7 +214,7 @@ impl SupabaseWalletDatabase {
     /// This must match the latest `schema_version` value set in the migration files.
     /// When adding new migrations, update this constant and set the same value
     /// in the new migration's `INSERT INTO schema_info` statement.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 7;
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 8;
 
     /// Get the full database schema SQL
     ///
@@ -2568,6 +2569,8 @@ struct MintQuoteTable {
     amount_issued: i64,
     amount_paid: i64,
     #[serde(default)]
+    payjoin: Option<PayjoinV2>,
+    #[serde(default)]
     used_by_operation: Option<String>,
     #[serde(default)]
     version: Option<i32>,
@@ -2602,6 +2605,7 @@ impl TryInto<MintQuote> for MintQuoteTable {
             amount_issued: cdk_common::Amount::from(self.amount_issued as u64),
             amount_paid: cdk_common::Amount::from(self.amount_paid as u64),
             estimated_blocks: None,
+            payjoin: self.payjoin,
             used_by_operation: self.used_by_operation,
             version: self.version.unwrap_or(0) as u32,
         })
@@ -2623,6 +2627,7 @@ impl TryFrom<MintQuote> for MintQuoteTable {
             payment_method: q.payment_method.to_string(),
             amount_issued: q.amount_issued.to_u64() as i64,
             amount_paid: q.amount_paid.to_u64() as i64,
+            payjoin: q.payjoin,
             used_by_operation: q.used_by_operation,
             version: Some(q.version as i32),
             _extra: Default::default(),
@@ -2645,6 +2650,8 @@ struct MeltQuoteTable {
     estimated_blocks: Option<i64>,
     #[serde(default)]
     fee_index: Option<i64>,
+    #[serde(default)]
+    payjoin: Option<PayjoinV2>,
     #[serde(default)]
     mint_url: Option<String>,
     #[serde(default)]
@@ -2688,6 +2695,7 @@ impl TryInto<wallet::MeltQuote> for MeltQuoteTable {
                 .map(u32::try_from)
                 .transpose()
                 .map_err(|_| DatabaseError::Internal("Invalid fee_index".into()))?,
+            payjoin: self.payjoin,
             used_by_operation: self.used_by_operation,
             version: self.version.unwrap_or(0) as u32,
         })
@@ -2710,6 +2718,7 @@ impl TryFrom<wallet::MeltQuote> for MeltQuoteTable {
             payment_method: q.payment_method.to_string(),
             estimated_blocks: q.estimated_blocks.map(i64::from),
             fee_index: q.fee_index.map(i64::from),
+            payjoin: q.payjoin,
             used_by_operation: q.used_by_operation,
             version: Some(q.version as i32),
             _extra: Default::default(),

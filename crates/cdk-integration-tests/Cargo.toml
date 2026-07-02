@@ -12,6 +12,14 @@ repository = "https://github.com/cashubtc/cdk.git"
 [features]
 http_subscription = ["cdk/http_subscription"]
 bdk = ["cdk-mintd/bdk"]
+payjoin-regtest = [
+    "cdk-mintd/payjoin-local-https",
+    "dep:ohttp-relay",
+    "dep:payjoin",
+    "dep:payjoin-directory",
+    "dep:rcgen",
+    "dep:rustls",
+]
 
 [dependencies]
 async-trait.workspace = true
@@ -38,6 +46,8 @@ once_cell.workspace = true
 uuid.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+reqwest.workspace = true
+url.workspace = true
 lightning-invoice.workspace = true
 fedimint-tonic-lnd = "0.4.0"
 cln-rpc = "0.4.0"
@@ -53,6 +63,11 @@ bitcoin = "0.32.0"
 clap = { workspace = true, features = ["derive"] }
 web-time.workspace = true
 lightning.workspace = true
+ohttp-relay = { version = "=0.0.10", features = ["_test-util"], optional = true }
+payjoin = { version = "0.25.0", default-features = false, features = ["v2", "io"], optional = true }
+payjoin-directory = { version = "=0.0.3", features = ["_danger-local-https"], optional = true }
+rcgen = { version = "0.11", optional = true }
+rustls = { version = "0.22", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio.workspace = true

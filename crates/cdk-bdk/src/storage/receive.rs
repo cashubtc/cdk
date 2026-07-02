@@ -136,6 +136,41 @@ impl BdkStorage {
         Ok(true)
     }
 
+    /// Check whether an active or finalized receive intent already tracks an outpoint.
+    ///
+    /// This is a non-atomic preflight for scan paths. Callers that create
+    /// receive intents must still use `create_receive_intent_if_absent` for
+    /// race-safe duplicate protection.
+    pub async fn has_receive_intent_for_outpoint(&self, outpoint: &str) -> Result<bool, Error> {
+        let outpoint_key = outpoint_to_key(outpoint);
+
+        let active = self
+            .kv_store
+            .kv_read(
+                BDK_NAMESPACE,
+                RECEIVE_INTENT_OUTPOINT_NAMESPACE,
+                &outpoint_key,
+            )
+            .await
+            .map_err(Error::from)?;
+
+        if active.is_some() {
+            return Ok(true);
+        }
+
+        let finalized = self
+            .kv_store
+            .kv_read(
+                BDK_NAMESPACE,
+                FINALIZED_RECEIVE_INTENT_OUTPOINT_NAMESPACE,
+                &outpoint_key,
+            )
+            .await
+            .map_err(Error::from)?;
+
+        Ok(finalized.is_some())
+    }
+
     /// Get a receive intent by ID.
     pub async fn get_receive_intent(
         &self,

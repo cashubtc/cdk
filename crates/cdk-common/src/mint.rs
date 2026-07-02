@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::common::IssuerVersion;
 use crate::mint_quote::MintQuoteResponse;
 use crate::nuts::{MeltQuoteState, MintQuoteState};
+use crate::payjoin::payjoin_v2_from_extra_json;
 use crate::payment::PaymentIdentifier;
 use crate::{Amount, CurrencyUnit, Error, Id, KeySetInfo, PublicKey};
 
@@ -1167,6 +1168,7 @@ impl From<MeltQuote> for MeltQuoteOnchainResponse<QuoteId> {
             selected_fee_index: quote.selected_fee_index,
             outpoint: quote.payment_proof.clone(),
             change: None,
+            payjoin: payjoin_v2_from_extra_json(quote.extra_json.as_ref()),
         }
     }
 }
@@ -1182,6 +1184,7 @@ impl TryFrom<MintQuote> for MintQuoteOnchainResponse<QuoteId> {
             pubkey: quote.pubkey.ok_or(crate::error::Error::MissingPubkey)?,
             amount_paid: quote.amount_paid().into(),
             amount_issued: quote.amount_issued().into(),
+            payjoin: payjoin_v2_from_extra_json(quote.extra_json.as_ref()),
         })
     }
 }

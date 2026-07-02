@@ -24,6 +24,8 @@ use cdk::wallet::Wallet;
 use cdk_integration_tests::cli::CommonArgs;
 use cdk_integration_tests::init_regtest::{get_cln_dir, start_regtest_end};
 use cdk_integration_tests::ln_regtest::ln_client::{ClnClient, LightningClient};
+#[cfg(feature = "payjoin-regtest")]
+use cdk_integration_tests::payjoin_regtest::PayjoinRegtestServices;
 use cdk_integration_tests::shared;
 use cdk_ldk_node::CdkLdkNodeBuilder;
 use cdk_mintd::config::LoggingConfig;
@@ -80,6 +82,20 @@ struct Args {
     skip_ln: bool,
 }
 
+#[derive(Clone)]
+struct LocalPayjoinConfig {
+    directory_url: String,
+    ohttp_relay_url: String,
+    cert_path: String,
+}
+
+const CLN_BDK_MNEMONIC: &str =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+const LND_BDK_MNEMONIC: &str =
+    "legal winner thank year wave sausage worth useful legal winner thank yellow";
+const LDK_BDK_MNEMONIC: &str =
+    "letter advice cage absurd amount doctor acoustic avoid letter advice cage above";
+
 /// Start regtest CLN mint using the library
 async fn start_cln_mint(
     temp_dir: &Path,
@@ -113,7 +129,7 @@ async fn start_cln_mint(
         cln_config,
     );
 
-    apply_onchain_settings(&mut settings);
+    apply_onchain_settings(&mut settings, CLN_BDK_MNEMONIC);
     apply_database_settings(&mut settings, database_type, port)?;
 
     println!("Starting CLN mintd on port {port}");
@@ -183,7 +199,7 @@ async fn start_lnd_mint(
         "cattle gold bind busy sound reduce tone addict baby spend february strategy".to_string(),
     );
 
-    apply_onchain_settings(&mut settings);
+    apply_onchain_settings(&mut settings, LND_BDK_MNEMONIC);
     apply_database_settings(&mut settings, database_type, port)?;
 
     println!("Starting LND mintd on port {port}");
@@ -261,7 +277,7 @@ async fn start_ldk_mint(
     // Create settings struct for LDK mint using a new shared function
     let mut settings = create_ldk_settings(port, ldk_config);
 
-    apply_onchain_settings(&mut settings);
+    apply_onchain_settings(&mut settings, LDK_BDK_MNEMONIC);
     apply_database_settings(&mut settings, database_type, port)?;
 
     println!("Starting LDK mintd on port {port}");
@@ -474,7 +490,7 @@ fn create_ldk_settings(
     }
 }
 
-fn apply_onchain_settings(settings: &mut cdk_mintd::config::Settings) {
+fn apply_onchain_settings(settings: &mut cdk_mintd::config::Settings, mnemonic: &str) {
     settings.onchain = Some(cdk_mintd::config::Onchain {
         onchain_backend: cdk_mintd::config::OnchainBackend::Bdk,
         min_mint: 1.into(),
@@ -483,10 +499,7 @@ fn apply_onchain_settings(settings: &mut cdk_mintd::config::Settings) {
         max_melt: 500_000.into(),
     });
     settings.bdk = Some(cdk_mintd::config::Bdk {
-        mnemonic: Some(
-            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
-                .to_string(),
-        ),
+        mnemonic: Some(mnemonic.to_string()),
         network: Some("regtest".to_string()),
         bitcoind_rpc_host: Some("127.0.0.1".to_string()),
         bitcoind_rpc_port: Some(18443),
@@ -580,9 +593,16 @@ async fn start_onchain_mint(
     port: u16,
     database_type: &str,
     shutdown: Arc<Notify>,
+    payjoin_config: Option<LocalPayjoinConfig>,
+    bdk_mnemonic: &str,
 ) -> Result<tokio::task::JoinHandle<()>> {
     let mut settings = create_onchain_settings(port);
-    apply_onchain_settings(&mut settings);
+    apply_onchain_settings(&mut settings, bdk_mnemonic);
+    if let (Some(config), Some(bdk)) = (payjoin_config, settings.bdk.as_mut()) {
+        bdk.payjoin_directory_url = Some(config.directory_url);
+        bdk.payjoin_ohttp_relay_url = Some(config.ohttp_relay_url);
+        bdk.payjoin_local_tls_cert_path = Some(config.cert_path);
+    }
     apply_database_settings(&mut settings, database_type, port)?;
 
     println!("Starting onchain-only mintd on port {port}");
@@ -615,6 +635,34 @@ async fn start_onchain_mint(
     Ok(handle)
 }
 
+fn write_mint_env_file(
+    temp_dir: &Path,
+    mint_url_1: &str,
+    mint_url_2: &str,
+    mint_url_3: &str,
+    payjoin_config: Option<&LocalPayjoinConfig>,
+) -> Result<()> {
+    let mut env_vars = vec![
+        ("CDK_TEST_MINT_URL", mint_url_1),
+        ("CDK_TEST_MINT_URL_2", mint_url_2),
+        ("CDK_TEST_MINT_URL_3", mint_url_3),
+    ];
+
+    if let Some(config) = payjoin_config {
+        env_vars.push(("CDK_MINTD_BDK_PAYJOIN_DIRECTORY_URL", &config.directory_url));
+        env_vars.push((
+            "CDK_MINTD_BDK_PAYJOIN_OHTTP_RELAY_URL",
+            &config.ohttp_relay_url,
+        ));
+        env_vars.push((
+            "CDK_MINTD_BDK_PAYJOIN_LOCAL_TLS_CERT_PATH",
+            &config.cert_path,
+        ));
+    }
+
+    shared::write_env_file(temp_dir, &env_vars)
+}
+
 fn main() -> Result<()> {
     let rt = Arc::new(Runtime::new()?);
 
@@ -632,13 +680,9 @@ fn main() -> Result<()> {
         let mint_url_1 = format!("http://{}:{}", args.mint_addr, args.cln_port);
         let mint_url_2 = format!("http://{}:{}", args.mint_addr, args.lnd_port);
         let mint_url_3 = format!("http://{}:{}", args.mint_addr, args.ldk_port);
-        let env_vars: Vec<(&str, &str)> = vec![
-            ("CDK_TEST_MINT_URL", &mint_url_1),
-            ("CDK_TEST_MINT_URL_2", &mint_url_2),
-            ("CDK_TEST_MINT_URL_3", &mint_url_3),
-        ];
-
-        shared::write_env_file(&temp_dir, &env_vars)?;
+        if !args.skip_ln {
+            write_mint_env_file(&temp_dir, &mint_url_1, &mint_url_2, &mint_url_3, None)?;
+        }
 
         // Start regtest
         println!("Starting regtest...");
@@ -675,11 +719,44 @@ fn main() -> Result<()> {
                 }
             }
 
+            #[cfg(feature = "payjoin-regtest")]
+            let (_payjoin_services, payjoin_config) = {
+                let services = PayjoinRegtestServices::start(&temp_dir).await?;
+                let config = LocalPayjoinConfig {
+                    directory_url: services.directory_url.clone(),
+                    ohttp_relay_url: services.ohttp_relay_url.clone(),
+                    cert_path: services.cert_path.clone(),
+                };
+                (Some(services), Some(config))
+            };
+            #[cfg(not(feature = "payjoin-regtest"))]
+            let (_payjoin_services, payjoin_config): (Option<()>, Option<LocalPayjoinConfig>) =
+                (None, None);
+
+            write_mint_env_file(
+                &temp_dir,
+                &mint_url_1,
+                &mint_url_2,
+                &mint_url_3,
+                payjoin_config.as_ref(),
+            )?;
+
             let onchain_handle = start_onchain_mint(
                 &temp_dir.join("onchain_mint"),
                 args.cln_port,
                 &args.database_type,
                 shutdown_clone.clone(),
+                payjoin_config.clone(),
+                CLN_BDK_MNEMONIC,
+            )
+            .await?;
+            let onchain_second_handle = start_onchain_mint(
+                &temp_dir.join("onchain_mint_2"),
+                args.lnd_port,
+                &args.database_type,
+                shutdown_clone.clone(),
+                payjoin_config.clone(),
+                LND_BDK_MNEMONIC,
             )
             .await?;
 
@@ -697,19 +774,29 @@ fn main() -> Result<()> {
                 s_u.notify_waiters();
             });
 
-            shared::wait_for_mint_ready_with_shutdown(
-                args.cln_port,
-                100,
-                Arc::clone(&cancel_token),
-            )
-            .await?;
+            tokio::try_join!(
+                shared::wait_for_mint_ready_with_shutdown(
+                    args.cln_port,
+                    100,
+                    Arc::clone(&cancel_token),
+                ),
+                shared::wait_for_mint_ready_with_shutdown(
+                    args.lnd_port,
+                    100,
+                    Arc::clone(&cancel_token),
+                ),
+            )?;
 
-            println!("Onchain-only mint is ready on port {}!", args.cln_port);
+            println!(
+                "Onchain-only mints are ready on ports {} and {}!",
+                args.cln_port, args.lnd_port
+            );
             signal_mints_ready(&temp_dir)?;
 
             // Wait for shutdown
             shutdown_clone_one.notified().await;
             let _ = onchain_handle.await;
+            let _ = onchain_second_handle.await;
             return Ok(());
         }
 

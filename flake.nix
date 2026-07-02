@@ -882,6 +882,7 @@
           ])
           ++ (with pkgs; [
             mprocs
+            redis
           ]);
 
         commonShellHook = ''
@@ -1134,7 +1135,7 @@
 
         itestBinaries = {
           start-fake-mint = mkItestBinary "start-fake-mint" "--bin start_fake_mint";
-          start-regtest-mints = mkItestBinary "start-regtest-mints" "--bin start_regtest_mints";
+          start-regtest-mints = mkItestBinary "start-regtest-mints" "--bin start_regtest_mints --features payjoin-regtest";
           start-fake-auth-mint = mkItestBinary "start-fake-auth-mint" "--bin start_fake_auth_mint";
           start-regtest = mkItestBinary "start-regtest" "--bin start_regtest";
           signatory = mkItestBinary "signatory" "--bin signatory";
@@ -1155,6 +1156,26 @@
               mkdir -p $out
               cargo nextest archive \
                 -p cdk-integration-tests \
+                --archive-file $out/itest-archive.tar.zst
+            '';
+            doCheck = false;
+            installPhaseCommand = "";
+          }
+        );
+
+        itestArchivePayjoin = craneLib.mkCargoDerivation (
+          commonCraneArgs
+          // {
+            pname = "cdk-itest-archive-payjoin";
+            cargoArtifacts = workspaceDeps;
+            nativeBuildInputs = commonCraneArgs.nativeBuildInputs ++ [
+              pkgs.cargo-nextest
+            ];
+            buildPhaseCargoCommand = ''
+              mkdir -p $out
+              cargo nextest archive \
+                -p cdk-integration-tests \
+                --features payjoin-regtest \
                 --archive-file $out/itest-archive.tar.zst
             '';
             doCheck = false;
@@ -1228,6 +1249,7 @@
         // itestBinaries
         // {
           itest-archive = itestArchive;
+          itest-archive-payjoin = itestArchivePayjoin;
         }
         # Example packages (binaries that can be run outside sandbox with network access)
         // (builtins.listToAttrs (

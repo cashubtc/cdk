@@ -37,6 +37,8 @@ pub mod init_auth_mint;
 pub mod init_pure_tests;
 pub mod init_regtest;
 pub mod ln_regtest;
+#[cfg(feature = "payjoin-regtest")]
+pub mod payjoin_regtest;
 pub mod shared;
 
 /// Generate standard keyset amounts as powers of 2

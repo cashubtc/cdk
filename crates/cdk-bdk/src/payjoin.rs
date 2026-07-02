@@ -1,0 +1,3193 @@
+//! Payjoin support for the BDK on-chain backend.
+
+use std::collections::HashSet;
+use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, AtomicUsize};
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
+
+use bdk_wallet::bitcoin::{
+    consensus, FeeRate, OutPoint, Script, Sequence, Transaction, TxIn, TxOut,
+};
+use bdk_wallet::KeychainKind;
+use cdk_common::nuts::nut31::PayjoinV2;
+use cdk_common::payjoin::{
+    format_bip21_amount_from_sats, payjoin_v2_from_bip77_endpoint, payjoin_v2_to_bip77_endpoint,
+};
+use cdk_common::payment::{Event, MakePaymentResponse, PaymentIdentifier, WaitPaymentResponse};
+use cdk_common::{Amount, CurrencyUnit, MeltQuoteState};
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
+
+use crate::error::Error;
+use crate::receive::payjoin_session::{self, PayjoinReceiveSession, PayjoinReceiveSessionAny};
+use crate::send::batch_transaction::record::{
+    BatchOutputAssignment, SendBatchRecord, SendBatchState,
+};
+use crate::send::payment_intent::{state as intent_state, SendIntent};
+use crate::types::{PayjoinConfig, PaymentMetadata, PaymentTier};
+use crate::util::parse_checked_address;
+use crate::CdkBdk;
+
+const PAYJOIN_RECEIVE_SESSION_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
+const PAYJOIN_OHTTP_KEYS_CACHE_TTL_SECS: u64 = 10 * 60;
+const PAYJOIN_OHTTP_KEYS_FETCH_TIMEOUT: Duration = Duration::from_secs(3);
+const PAYJOIN_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(35);
+const PAYJOIN_RECEIVER_MAX_EFFECTIVE_FEE_RATE: FeeRate = FeeRate::ZERO;
+/// Minimum fee rate enforced on a sender's original PSBT during the
+/// broadcast-suitability check. On backends without `testmempoolaccept` (Esplora)
+/// this floor is the primary anti-probing protection; on Bitcoin Core it is an
+/// additional constraint on top of the full mempool-acceptance check.
+const PAYJOIN_RECEIVER_MIN_ORIGINAL_FEE_RATE: FeeRate = FeeRate::from_sat_per_vb_u32(1);
+#[cfg(test)]
+const TEST_OHTTP_KEYS: &str = "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ";
+#[cfg(test)]
+static TEST_OHTTP_FETCH_ENABLED: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static TEST_OHTTP_FETCH_FAIL: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static TEST_OHTTP_FETCH_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static TEST_OHTTP_FETCH_CALLS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static TEST_OHTTP_FETCH_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[cfg(test)]
+pub(crate) async fn lock_test_ohttp_fetch() -> tokio::sync::MutexGuard<'static, ()> {
+    TEST_OHTTP_FETCH_TEST_LOCK.lock().await
+}
+
+#[cfg(test)]
+pub(crate) fn configure_test_ohttp_fetch(delay: Duration, fail: bool) {
+    TEST_OHTTP_FETCH_ENABLED.store(true, Ordering::SeqCst);
+    TEST_OHTTP_FETCH_FAIL.store(fail, Ordering::SeqCst);
+    TEST_OHTTP_FETCH_DELAY_MS.store(delay.as_millis() as u64, Ordering::SeqCst);
+    TEST_OHTTP_FETCH_CALLS.store(0, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn disable_test_ohttp_fetch() {
+    TEST_OHTTP_FETCH_ENABLED.store(false, Ordering::SeqCst);
+    TEST_OHTTP_FETCH_FAIL.store(false, Ordering::SeqCst);
+    TEST_OHTTP_FETCH_DELAY_MS.store(0, Ordering::SeqCst);
+    TEST_OHTTP_FETCH_CALLS.store(0, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn test_ohttp_fetch_calls() -> usize {
+    TEST_OHTTP_FETCH_CALLS.load(Ordering::SeqCst)
+}
+
+#[derive(Debug, Clone)]
+struct RecordingSessionPersister<E> {
+    events: Arc<StdMutex<Vec<E>>>,
+    closed: Arc<AtomicBool>,
+}
+
+impl<E> RecordingSessionPersister<E>
+where
+    E: Clone,
+{
+    fn new(events: Vec<E>, closed: bool) -> Self {
+        Self {
+            events: Arc::new(StdMutex::new(events)),
+            closed: Arc::new(AtomicBool::new(closed)),
+        }
+    }
+
+    fn events(&self) -> Result<Vec<E>, Error> {
+        self.events
+            .lock()
+            .map(|events| events.clone())
+            .map_err(|err| Error::Payjoin(format!("Payjoin session lock poisoned: {}", err)))
+    }
+
+    fn closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+
+    fn replace(&self, events: Vec<E>, closed: bool) -> Result<(), Error> {
+        *self
+            .events
+            .lock()
+            .map_err(|err| Error::Payjoin(format!("Payjoin session lock poisoned: {}", err)))? =
+            events;
+        self.closed.store(closed, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+impl<E> ::payjoin::persist::SessionPersister for RecordingSessionPersister<E>
+where
+    E: Clone + Send + Sync + 'static,
+{
+    type InternalStorageError = Error;
+    type SessionEvent = E;
+
+    fn save_event(&self, event: Self::SessionEvent) -> Result<(), Self::InternalStorageError> {
+        self.events
+            .lock()
+            .map_err(|err| Error::Payjoin(format!("Payjoin session lock poisoned: {}", err)))?
+            .push(event);
+
+        Ok(())
+    }
+
+    fn load(
+        &self,
+    ) -> Result<Box<dyn Iterator<Item = Self::SessionEvent>>, Self::InternalStorageError> {
+        let events = self
+            .events
+            .lock()
+            .map(|events| events.clone())
+            .map_err(|err| Error::Payjoin(format!("Payjoin session lock poisoned: {}", err)))?;
+
+        Ok(Box::new(events.into_iter()))
+    }
+
+    fn close(&self) -> Result<(), Self::InternalStorageError> {
+        self.closed.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+/// Pre-exposure state for a Payjoin send: everything built and signed before
+/// the original PSBT is shared with the receiver. The `Sender` itself is not
+/// returned — it is saved into `persister`'s event log, from which the
+/// background poller replays it; the persisted events plus the signed original
+/// are all the poller needs to drive (and resume) the session.
+struct PreparedPayjoinSend {
+    /// The signed original transaction, broadcastable as the Payjoin fallback.
+    original_tx: Transaction,
+    original_fee_sat: u64,
+    persister: RecordingSessionPersister<::payjoin::send::v2::SessionEvent>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PayjoinSendValidation {
+    /// The single receiver-script output used for the melt payment proof.
+    payment_outpoint: OutPoint,
+    /// The mint wallet's net spend above the quoted receiver amount.
+    fee_contribution_sat: u64,
+}
+
+struct PayjoinReceiveProposal {
+    proposal: ::payjoin::receive::v2::Receiver<::payjoin::receive::v2::PayjoinProposal>,
+    cut_through: Option<CutThroughProposal>,
+}
+
+#[derive(Clone)]
+struct CutThroughProposal {
+    settlement_id: Uuid,
+    proposal_tx: Transaction,
+    original_tx: Transaction,
+    receive_payment_id: String,
+    receive_outpoint: String,
+    melt_outpoint: String,
+    fee_contribution_sat: u64,
+}
+
+impl CdkBdk {
+    pub(crate) fn requested_payjoin(metadata: Option<&str>) -> Option<PayjoinV2> {
+        let value = metadata
+            .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())?;
+        value
+            .get("payjoin")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+    }
+    pub(crate) fn accepted_payjoin_extra(payjoin: &PayjoinV2) -> serde_json::Value {
+        serde_json::json!({
+            "payjoin": payjoin,
+        })
+    }
+    pub(crate) async fn create_payjoin_receive_extra(
+        &self,
+        quote_id: &cdk_common::QuoteId,
+        address: &bdk_wallet::bitcoin::Address,
+        amount_sat: u64,
+    ) -> Result<Option<serde_json::Value>, Error> {
+        let Some(config) = self.payjoin_config() else {
+            return Ok(None);
+        };
+
+        let ohttp_keys = self.cached_ohttp_keys(config).await?;
+        let persister = RecordingSessionPersister::new(Vec::new(), false);
+        let mut receiver_builder = ::payjoin::receive::v2::ReceiverBuilder::new(
+            address.clone(),
+            config.directory_url.clone(),
+            ohttp_keys.clone(),
+        )
+        .map_err(|err| Error::Payjoin(err.to_string()))?
+        .with_expiration(Duration::from_secs(config.expiry_secs));
+        if amount_sat > 0 {
+            receiver_builder =
+                receiver_builder.with_amount(bdk_wallet::bitcoin::Amount::from_sat(amount_sat));
+        }
+        let receiver = receiver_builder
+            .build()
+            .save(&persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+
+        let pj_uri = receiver.pj_uri().to_string();
+        let endpoint = extract_bip21_payjoin_endpoint(&pj_uri)?;
+        let payjoin = payjoin_v2_from_bip77_endpoint(&endpoint)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+
+        let session = PayjoinReceiveSession::new(crate::storage::PayjoinReceiveSessionRecord {
+            quote_id: quote_id.to_string(),
+            fallback_address: address.to_string(),
+            amount_sat,
+            proposal_receiver_outpoints: Vec::new(),
+            expires_at: payjoin.expires_at,
+            events: persister.events()?,
+            closed: persister.closed(),
+        });
+        session.persist(&self.storage).await?;
+
+        tracing::debug!(
+            quote_id = %quote_id,
+            fallback_address = %address,
+            amount_sat,
+            endpoint = %payjoin.endpoint,
+            expires_at = payjoin.expires_at,
+            "Created Payjoin receive session"
+        );
+
+        Ok(Some(serde_json::json!({ "payjoin": payjoin })))
+    }
+
+    pub(crate) async fn run_payjoin_receive_poller(
+        &self,
+        cancel_token: CancellationToken,
+    ) -> Result<(), Error> {
+        let mut tick = tokio::time::interval(Duration::from_secs(15));
+        tracing::info!("Starting Payjoin receive poller");
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => break,
+                _ = tick.tick() => {
+                    let now = crate::util::unix_now();
+                    let sessions = self.storage.get_all_payjoin_receive_sessions().await?;
+                    let active_count = sessions
+                        .iter()
+                        .filter(|record| !record.closed && record.expires_at >= now)
+                        .count();
+                    tracing::debug!(
+                        session_count = sessions.len(),
+                        active_count,
+                        "Polling Payjoin receive sessions"
+                    );
+                    for record in sessions {
+                        if let Err(err) = self.handle_payjoin_receive_session_once(record, now).await {
+                            tracing::warn!("Payjoin receive session processing failed: {}", err);
+                        }
+                    }
+                    if let Err(err) = self.advance_cut_through_settlements_once().await {
+                        tracing::warn!("Cut-through settlement processing failed: {}", err);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn recover_payjoin_receive_sessions_once(&self) -> Result<(), Error> {
+        let now = crate::util::unix_now();
+        let sessions = self.storage.get_all_payjoin_receive_sessions().await?;
+
+        for record in sessions {
+            if let Err(err) = self.handle_payjoin_receive_session_once(record, now).await {
+                tracing::warn!("Payjoin receive session recovery failed: {}", err);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_payjoin_receive_session_once(
+        &self,
+        record: crate::storage::PayjoinReceiveSessionRecord,
+        now: u64,
+    ) -> Result<(), Error> {
+        match payjoin_session::from_record(record) {
+            PayjoinReceiveSessionAny::Closed(session) => {
+                if session.should_prune(now, PAYJOIN_RECEIVE_SESSION_RETENTION_SECS) {
+                    if !self
+                        .payjoin_receive_credit_cap_resolved(session.record())
+                        .await?
+                    {
+                        tracing::debug!(
+                            quote_id = %session.record().quote_id,
+                            "Retaining aged Payjoin receive session: signed proposal unresolved"
+                        );
+                        return Ok(());
+                    }
+                    tracing::debug!(
+                        quote_id = %session.record().quote_id,
+                        expires_at = session.record().expires_at,
+                        now,
+                        "Pruning closed Payjoin receive session"
+                    );
+                    self.storage
+                        .delete_payjoin_receive_session(&session.record().quote_id)
+                        .await?;
+                } else {
+                    tracing::trace!(
+                        quote_id = %session.record().quote_id,
+                        "Skipping closed Payjoin receive session"
+                    );
+                }
+            }
+            PayjoinReceiveSessionAny::Open(session) => {
+                if session.is_expired(now) {
+                    tracing::debug!(
+                        quote_id = %session.record().quote_id,
+                        expires_at = session.record().expires_at,
+                        now,
+                        "Closing expired Payjoin receive session"
+                    );
+                    session.close(&self.storage).await?;
+                    return Ok(());
+                }
+
+                if self.payjoin_config().is_none() {
+                    tracing::trace!(
+                        quote_id = %session.record().quote_id,
+                        "Payjoin receive config unavailable; leaving open session for fallback address detection"
+                    );
+                    return Ok(());
+                }
+
+                tracing::debug!(
+                    quote_id = %session.record().quote_id,
+                    fallback_address = %session.record().fallback_address,
+                    event_count = session.record().events.len(),
+                    "Processing Payjoin receive session"
+                );
+                self.process_payjoin_receive_session(session.into_record())
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn payjoin_receive_credit_cap_resolved(
+        &self,
+        record: &crate::storage::PayjoinReceiveSessionRecord,
+    ) -> Result<bool, Error> {
+        payjoin_receive_credit_cap_resolved(&self.storage, self.network, record).await
+    }
+
+    async fn process_payjoin_receive_session(
+        &self,
+        mut record: crate::storage::PayjoinReceiveSessionRecord,
+    ) -> Result<(), Error> {
+        use ::payjoin::persist::OptionalTransitionOutcome;
+
+        let Some(config) = self.payjoin_config() else {
+            return Ok(());
+        };
+        let fallback_address =
+            parse_checked_address(&record.fallback_address, self.network, Error::Payjoin)?;
+        let fallback_script = fallback_address.script_pubkey();
+        let persister = RecordingSessionPersister::new(record.events.clone(), record.closed);
+        let (session, _history) = ::payjoin::receive::v2::replay_event_log(&persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+        tracing::debug!(
+            quote_id = %record.quote_id,
+            state = payjoin_receive_session_state_name(&session),
+            event_count = record.events.len(),
+            "Replayed Payjoin receive session"
+        );
+        let mut closed = record.closed;
+
+        let result: Result<(), Error> = async {
+            let payjoin_proposal = match session {
+                ::payjoin::receive::v2::ReceiveSession::Initialized(receiver) => {
+                    tracing::debug!(
+                        quote_id = %record.quote_id,
+                        "Polling Payjoin directory for original PSBT"
+                    );
+                    let (request, context) = receiver
+                        .create_poll_request(&config.ohttp_relay_url)
+                        .map_err(|err| Error::Payjoin(err.to_string()))?;
+                    let response = payjoin_http_request(request).await?;
+                    match receiver
+                        .process_response(&response, context)
+                        .save(&persister)
+                        .map_err(|err| Error::Payjoin(err.to_string()))?
+                    {
+                        OptionalTransitionOutcome::Progress(unchecked) => {
+                            tracing::debug!(
+                                quote_id = %record.quote_id,
+                                "Received Payjoin original PSBT"
+                            );
+                            Some(
+                                self.accept_payjoin_receive_proposal(
+                                    unchecked,
+                                    &fallback_script,
+                                    &record.quote_id,
+                                    &persister,
+                                )
+                                .await?,
+                            )
+                        }
+                        OptionalTransitionOutcome::Stasis(_) => {
+                            tracing::debug!(
+                                quote_id = %record.quote_id,
+                                "No Payjoin original PSBT available yet"
+                            );
+                            None
+                        }
+                    }
+                }
+                ::payjoin::receive::v2::ReceiveSession::UncheckedOriginalPayload(unchecked) => {
+                    Some(
+                        self.accept_payjoin_receive_proposal(
+                            unchecked,
+                            &fallback_script,
+                            &record.quote_id,
+                            &persister,
+                        )
+                        .await?,
+                    )
+                }
+                ::payjoin::receive::v2::ReceiveSession::MaybeInputsOwned(receiver) => {
+                    let receiver = self
+                        .check_payjoin_inputs_not_owned(receiver, &persister)
+                        .await?;
+                    Some(
+                        self.accept_payjoin_checked_inputs(
+                            receiver,
+                            &fallback_script,
+                            &record.quote_id,
+                            &persister,
+                        )
+                        .await?,
+                    )
+                }
+                ::payjoin::receive::v2::ReceiveSession::MaybeInputsSeen(receiver) => Some(
+                    self.accept_payjoin_checked_inputs(
+                        receiver,
+                        &fallback_script,
+                        &record.quote_id,
+                        &persister,
+                    )
+                    .await?,
+                ),
+                ::payjoin::receive::v2::ReceiveSession::OutputsUnknown(receiver) => {
+                    let receiver = self.identify_payjoin_receiver_outputs(
+                        receiver,
+                        &fallback_script,
+                        &record.quote_id,
+                        &persister,
+                    )?;
+                    Some(
+                        self.accept_payjoin_wants_outputs(receiver, &record.quote_id, &persister)
+                            .await?,
+                    )
+                }
+                ::payjoin::receive::v2::ReceiveSession::WantsOutputs(receiver) => Some(
+                    self.accept_payjoin_wants_outputs(receiver, &record.quote_id, &persister)
+                        .await?,
+                ),
+                ::payjoin::receive::v2::ReceiveSession::WantsInputs(receiver) => {
+                    let receiver = self.contribute_payjoin_inputs(receiver, &persister).await?;
+                    Some(PayjoinReceiveProposal {
+                        proposal: self.finalize_payjoin_proposal(receiver, &persister).await?,
+                        cut_through: None,
+                    })
+                }
+                ::payjoin::receive::v2::ReceiveSession::WantsFeeRange(receiver) => {
+                    let receiver = apply_zero_receiver_fee_range(receiver, &persister)?;
+                    Some(PayjoinReceiveProposal {
+                        proposal: self.finalize_payjoin_proposal(receiver, &persister).await?,
+                        cut_through: None,
+                    })
+                }
+                ::payjoin::receive::v2::ReceiveSession::ProvisionalProposal(receiver) => {
+                    Some(PayjoinReceiveProposal {
+                        proposal: self.finalize_payjoin_proposal(receiver, &persister).await?,
+                        cut_through: None,
+                    })
+                }
+                ::payjoin::receive::v2::ReceiveSession::PayjoinProposal(proposal) => {
+                    Some(PayjoinReceiveProposal {
+                        proposal,
+                        cut_through: None,
+                    })
+                }
+                ::payjoin::receive::v2::ReceiveSession::HasReplyableError(receiver) => {
+                    if let Some(error_reply) =
+                        latest_payjoin_receive_replyable_error(&persister.events()?)
+                    {
+                        tracing::warn!(
+                            quote_id = %record.quote_id,
+                            error_reply = %error_reply,
+                            "Sending Payjoin receiver rejection to sender"
+                        );
+                    }
+                    let (request, context) = receiver
+                        .create_error_request(&config.ohttp_relay_url)
+                        .map_err(|err| Error::Payjoin(err.to_string()))?;
+                    let response = payjoin_http_request(request).await?;
+                    receiver
+                        .process_error_response(&response, context)
+                        .save(&persister)
+                        .map_err(|err| Error::Payjoin(err.to_string()))?;
+                    closed = true;
+                    None
+                }
+                ::payjoin::receive::v2::ReceiveSession::Closed(_) => {
+                    closed = true;
+                    None
+                }
+                _ => None,
+            };
+
+            if let Some(payjoin_proposal) = payjoin_proposal {
+                let PayjoinReceiveProposal {
+                    proposal,
+                    cut_through,
+                } = payjoin_proposal;
+                update_payjoin_receive_credit_cap(&mut record);
+                if cut_through.is_none() {
+                    if let Err(err) = ensure_payjoin_receiver_credit(
+                        proposal.psbt(),
+                        &fallback_script,
+                        record.amount_sat,
+                    ) {
+                        closed = true;
+                        return Err(err);
+                    }
+                    update_payjoin_receive_proposal_receiver_outpoints(
+                        &mut record,
+                        proposal.psbt(),
+                        &fallback_script,
+                    );
+                }
+                tracing::debug!(
+                    quote_id = %record.quote_id,
+                    "Posting Payjoin proposal response"
+                );
+                self.persist_payjoin_receive_session_progress(&mut record, &persister, closed)
+                    .await?;
+                if let Some(cut_through) = cut_through.as_ref() {
+                    self.persist_cut_through_exposure(cut_through).await?;
+                }
+
+                let (request, context) = proposal
+                    .create_post_request(&config.ohttp_relay_url)
+                    .map_err(|err| Error::Payjoin(err.to_string()))?;
+                let response = payjoin_http_request(request).await?;
+                proposal
+                    .process_response(&response, context)
+                    .save(&persister)
+                    .map_err(|err| Error::Payjoin(err.to_string()))?;
+            }
+
+            Ok(())
+        }
+        .await;
+
+        if result.is_err() {
+            if let Some(error_reply) = latest_payjoin_receive_replyable_error(&persister.events()?)
+            {
+                tracing::warn!(
+                    quote_id = %record.quote_id,
+                    error_reply = %error_reply,
+                    "Payjoin receiver rejected original PSBT"
+                );
+            }
+        }
+        self.persist_payjoin_receive_session_progress(&mut record, &persister, closed)
+            .await?;
+        result
+    }
+    async fn persist_payjoin_receive_session_progress(
+        &self,
+        record: &mut crate::storage::PayjoinReceiveSessionRecord,
+        persister: &RecordingSessionPersister<::payjoin::receive::v2::SessionEvent>,
+        closed: bool,
+    ) -> Result<(), Error> {
+        record.events = persister.events()?;
+        update_payjoin_receive_credit_cap(record);
+        record.closed = closed || persister.closed();
+        self.storage.put_payjoin_receive_session(record).await
+    }
+    async fn accept_payjoin_receive_proposal(
+        &self,
+        unchecked: ::payjoin::receive::v2::Receiver<
+            ::payjoin::receive::v2::UncheckedOriginalPayload,
+        >,
+        fallback_script: &bdk_wallet::bitcoin::Script,
+        quote_id: &str,
+        persister: &RecordingSessionPersister<::payjoin::receive::v2::SessionEvent>,
+    ) -> Result<PayjoinReceiveProposal, Error> {
+        // The mint is a non-interactive receiver (auto-published URI per quote),
+        // so validate the original is broadcastable before advancing — this is the
+        // probing/poisoning defense (inputs are only recorded as seen afterwards).
+        let chain_source = &self.chain_source;
+        let can_broadcast =
+            move |tx: &Transaction| -> Result<bool, ::payjoin::ImplementationError> {
+                match chain_source
+                    .accepts_broadcast(tx)
+                    .map_err(::payjoin::ImplementationError::new)?
+                {
+                    // Bitcoin Core: trust the testmempoolaccept verdict.
+                    Some(allowed) => Ok(allowed),
+                    // Esplora (no dry-run): rely on the enforced minimum fee rate.
+                    None => Ok(true),
+                }
+            };
+        let receiver = unchecked
+            .check_broadcast_suitability(
+                Some(PAYJOIN_RECEIVER_MIN_ORIGINAL_FEE_RATE),
+                can_broadcast,
+            )
+            .save(persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+
+        let receiver = self
+            .check_payjoin_inputs_not_owned(receiver, persister)
+            .await?;
+
+        self.accept_payjoin_checked_inputs(receiver, fallback_script, quote_id, persister)
+            .await
+    }
+    async fn accept_payjoin_checked_inputs(
+        &self,
+        receiver: ::payjoin::receive::v2::Receiver<::payjoin::receive::v2::MaybeInputsSeen>,
+        fallback_script: &bdk_wallet::bitcoin::Script,
+        quote_id: &str,
+        persister: &RecordingSessionPersister<::payjoin::receive::v2::SessionEvent>,
+    ) -> Result<PayjoinReceiveProposal, Error> {
+        let receiver = self
+            .check_payjoin_inputs_not_seen(receiver, quote_id, persister)
+            .await?;
+        let receiver =
+            self.identify_payjoin_receiver_outputs(receiver, fallback_script, quote_id, persister)?;
+
+        self.accept_payjoin_wants_outputs(receiver, quote_id, persister)
+            .await
+    }
+    async fn accept_payjoin_wants_outputs(
+        &self,
+        receiver: ::payjoin::receive::v2::Receiver<::payjoin::receive::v2::WantsOutputs>,
+        quote_id: &str,
+        persister: &RecordingSessionPersister<::payjoin::receive::v2::SessionEvent>,
+    ) -> Result<PayjoinReceiveProposal, Error> {
+        if let Some(cut_through) = self
+            .try_build_cut_through_receive_proposal(receiver.clone(), quote_id, persister)
+            .await?
+        {
+            return Ok(cut_through);
+        }
+
+        let receiver = receiver
+            .commit_outputs()
+            .save(persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+        let receiver = self.contribute_payjoin_inputs(receiver, persister).await?;
+
+        Ok(PayjoinReceiveProposal {
+            proposal: self.finalize_payjoin_proposal(receiver, persister).await?,
+            cut_through: None,
+        })
+    }
+
+    async fn try_build_cut_through_receive_proposal(
+        &self,
+        receiver: ::payjoin::receive::v2::Receiver<::payjoin::receive::v2::WantsOutputs>,
+        quote_id: &str,
+        persister: &RecordingSessionPersister<::payjoin::receive::v2::SessionEvent>,
+    ) -> Result<Option<PayjoinReceiveProposal>, Error> {
+        let events = persister.events()?;
+        let Some(original_receive_amount_sat) =
+            payjoin_original_receiver_output_amount_from_events(&events)
+        else {
+            return Ok(None);
+        };
+        let receiver_output_count = payjoin_receiver_output_count_from_events(&events).unwrap_or(1);
+        if receiver_output_count > 2 {
+            return Ok(None);
+        }
+
+        let Some((settlement, intent_record)) = self
+            .reserve_cut_through_candidate(quote_id, original_receive_amount_sat)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        let result = self
+            .build_reserved_cut_through_proposal(
+                receiver,
+                &events,
+                &settlement,
+                &intent_record,
+                original_receive_amount_sat,
+            )
+            .await;
+
+        match result {
+            Ok(Some((proposal, cut_through, staged_persister))) => {
+                persister.replace(staged_persister.events()?, staged_persister.closed())?;
+                Ok(Some(PayjoinReceiveProposal {
+                    proposal,
+                    cut_through: Some(cut_through),
+                }))
+            }
+            Ok(None) => {
+                self.abandon_cut_through_before_exposure(settlement).await?;
+                Ok(None)
+            }
+            Err(err) => {
+                tracing::warn!(
+                    settlement_id = %settlement.settlement_id,
+                    send_intent_id = %intent_record.intent_id,
+                    "Cut-through proposal construction failed before exposure; falling back to normal Payjoin: {}",
+                    err
+                );
+                self.abandon_cut_through_before_exposure(settlement).await?;
+                Ok(None)
+            }
+        }
+    }
+
+    async fn reserve_cut_through_candidate(
+        &self,
+        quote_id: &str,
+        original_receive_amount_sat: u64,
+    ) -> Result<
+        Option<(
+            crate::storage::CutThroughSettlementRecord,
+            crate::send::payment_intent::record::SendIntentRecord,
+        )>,
+        Error,
+    > {
+        if original_receive_amount_sat < self.min_receive_amount_sat {
+            return Ok(None);
+        }
+
+        let mut candidates = self.storage.get_pending_send_intents().await?;
+        candidates.retain(|record| {
+            record.amount_sat <= original_receive_amount_sat
+                && matches!(
+                    record.state,
+                    crate::send::payment_intent::record::SendIntentState::Pending { .. }
+                )
+        });
+        candidates.sort_by_key(|record| match record.state {
+            crate::send::payment_intent::record::SendIntentState::Pending { created_at } => {
+                created_at
+            }
+            _ => u64::MAX,
+        });
+
+        for candidate in candidates {
+            let settlement_id = Uuid::new_v4();
+            let settlement = crate::storage::CutThroughSettlementRecord {
+                settlement_id,
+                receive_quote_id: quote_id.to_string(),
+                send_intent_id: candidate.intent_id,
+                send_quote_id: candidate.quote_id.clone(),
+                original_receive_amount_sat,
+                melt_amount_sat: candidate.amount_sat,
+                max_fee_sat: candidate.max_fee_amount_sat,
+                created_at: crate::util::unix_now(),
+                state: crate::storage::CutThroughSettlementState::Reserved,
+            };
+
+            if let Some(reserved) = self
+                .storage
+                .reserve_pending_send_intent_for_cut_through(&candidate.intent_id, &settlement)
+                .await?
+            {
+                tracing::debug!(
+                    settlement_id = %settlement_id,
+                    receive_quote_id = quote_id,
+                    send_intent_id = %candidate.intent_id,
+                    "Reserved pending melt for Payjoin cut-through"
+                );
+                return Ok(Some((settlement, reserved)));
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn build_reserved_cut_through_proposal(
+        &self,
+        receiver: ::payjoin::receive::v2::Receiver<::payjoin::receive::v2::WantsOutputs>,
+        events: &[::payjoin::receive::v2::SessionEvent],
+        settlement: &crate::storage::CutThroughSettlementRecord,
+        intent_record: &crate::send::payment_intent::record::SendIntentRecord,
+        original_receive_amount_sat: u64,
+    ) -> Result<
+        Option<(
+            ::payjoin::receive::v2::Receiver<::payjoin::receive::v2::PayjoinProposal>,
+            CutThroughProposal,
+            RecordingSessionPersister<::payjoin::receive::v2::SessionEvent>,
+        )>,
+        Error,
+    > {
+        let original_tx = payjoin_original_tx_from_events(events)?;
+        let melt_address =
+            parse_checked_address(&intent_record.address, self.network, Error::Payjoin)?;
+        let melt_script = melt_address.script_pubkey();
+        let surplus_sat = original_receive_amount_sat.saturating_sub(intent_record.amount_sat);
+
+        let (drain_script, drain_is_original_surplus, drain_value_sat) = {
+            let mut wallet_with_db = self.wallet_with_db.lock().await;
+            let drain_address = wallet_with_db
+                .wallet
+                .reveal_next_address(KeychainKind::External);
+            let drain_script = drain_address.address.script_pubkey();
+            let dust_limit = TxOut::minimal_non_dust(drain_script.clone()).value.to_sat();
+            let drain_value_sat = if surplus_sat >= dust_limit {
+                surplus_sat
+            } else {
+                dust_limit
+            };
+            wallet_with_db.persist().map_err(Error::Database)?;
+            (drain_script, surplus_sat >= dust_limit, drain_value_sat)
+        };
+
+        let replacement_outputs = vec![
+            TxOut {
+                value: bdk_wallet::bitcoin::Amount::from_sat(intent_record.amount_sat),
+                script_pubkey: melt_script.clone(),
+            },
+            TxOut {
+                value: bdk_wallet::bitcoin::Amount::from_sat(drain_value_sat),
+                script_pubkey: drain_script.clone(),
+            },
+        ];
+
+        let staged_persister = RecordingSessionPersister::new(events.to_vec(), false);
+        let receiver = receiver
+            .replace_receiver_outputs(replacement_outputs, drain_script.as_script())
+            .map_err(|err| Error::Payjoin(err.to_string()))?
+            .commit_outputs()
+            .save(&staged_persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+        let receiver = self
+            .contribute_payjoin_inputs(receiver, &staged_persister)
+            .await?;
+        let proposal = self
+            .finalize_payjoin_proposal(receiver, &staged_persister)
+            .await?;
+        let proposal_tx =
+            proposal.psbt().clone().extract_tx().map_err(|err| {
+                Error::Payjoin(format!("Could not extract cut-through tx: {}", err))
+            })?;
+        let wallet_with_db = self.wallet_with_db.lock().await;
+        let (sent, received) = wallet_with_db.wallet.sent_and_received(&proposal_tx);
+        let fee_contribution_sat = sent.to_sat().saturating_sub(received.to_sat());
+        drop(wallet_with_db);
+        if fee_contribution_sat > intent_record.max_fee_amount_sat {
+            tracing::warn!(
+                settlement_id = %settlement.settlement_id,
+                fee_contribution_sat,
+                max_fee_sat = intent_record.max_fee_amount_sat,
+                "Cut-through proposal exceeds melt fee cap"
+            );
+            return Ok(None);
+        }
+
+        let melt_outpoint = find_output_outpoint(
+            &proposal_tx,
+            melt_script.as_script(),
+            intent_record.amount_sat,
+        )
+        .ok_or_else(|| Error::Payjoin("Cut-through proposal missing melt output".to_string()))?;
+        let surplus_outpoint = if drain_is_original_surplus {
+            find_output_outpoint(&proposal_tx, drain_script.as_script(), 1)
+        } else {
+            None
+        };
+        let receive_payment_id = surplus_outpoint.unwrap_or(melt_outpoint).to_string();
+        let receive_outpoint = receive_payment_id.clone();
+
+        Ok(Some((
+            proposal,
+            CutThroughProposal {
+                settlement_id: settlement.settlement_id,
+                proposal_tx,
+                original_tx,
+                receive_payment_id,
+                receive_outpoint,
+                melt_outpoint: melt_outpoint.to_string(),
+                fee_contribution_sat,
+            },
+            staged_persister,
+        )))
+    }
+
+    async fn abandon_cut_through_before_exposure(
+        &self,
+        mut settlement: crate::storage::CutThroughSettlementRecord,
+    ) -> Result<(), Error> {
+        self.storage
+            .release_cut_through_reserved_intent(
+                &settlement.send_intent_id,
+                settlement.settlement_id,
+            )
+            .await?;
+        settlement.state = crate::storage::CutThroughSettlementState::Abandoned {
+            abandoned_at: crate::util::unix_now(),
+        };
+        self.storage.put_cut_through_settlement(&settlement).await
+    }
+
+    async fn persist_cut_through_exposure(
+        &self,
+        cut_through: &CutThroughProposal,
+    ) -> Result<(), Error> {
+        {
+            let mut wallet_with_db = self.wallet_with_db.lock().await;
+            wallet_with_db.wallet.apply_unconfirmed_txs([(
+                cut_through.proposal_tx.clone(),
+                crate::util::unix_now(),
+            )]);
+            wallet_with_db.persist().map_err(Error::Database)?;
+        }
+
+        let Some(mut settlement) = self
+            .storage
+            .get_cut_through_settlement(&cut_through.settlement_id)
+            .await?
+        else {
+            return Err(Error::Payjoin(format!(
+                "Cut-through settlement {} missing before exposure",
+                cut_through.settlement_id
+            )));
+        };
+        settlement.state = crate::storage::CutThroughSettlementState::ProposalExposed {
+            proposal_tx_bytes: consensus::serialize(&cut_through.proposal_tx),
+            proposal_txid: cut_through.proposal_tx.compute_txid().to_string(),
+            original_tx_bytes: consensus::serialize(&cut_through.original_tx),
+            original_txid: cut_through.original_tx.compute_txid().to_string(),
+            receive_payment_id: cut_through.receive_payment_id.clone(),
+            receive_outpoint: cut_through.receive_outpoint.clone(),
+            melt_outpoint: cut_through.melt_outpoint.clone(),
+            fee_contribution_sat: cut_through.fee_contribution_sat,
+        };
+        self.storage.put_cut_through_settlement(&settlement).await
+    }
+    async fn check_payjoin_inputs_not_owned(
+        &self,
+        receiver: ::payjoin::receive::v2::Receiver<::payjoin::receive::v2::MaybeInputsOwned>,
+        persister: &RecordingSessionPersister<::payjoin::receive::v2::SessionEvent>,
+    ) -> Result<::payjoin::receive::v2::Receiver<::payjoin::receive::v2::MaybeInputsSeen>, Error>
+    {
+        let wallet_with_db = self.wallet_with_db.lock().await;
+        let mut is_owned = |script: &bdk_wallet::bitcoin::Script| {
+            Ok(wallet_with_db.wallet.is_mine(script.to_owned()))
+        };
+        let receiver = receiver
+            .check_inputs_not_owned(&mut is_owned)
+            .save(persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+        drop(wallet_with_db);
+
+        Ok(receiver)
+    }
+    async fn check_payjoin_inputs_not_seen(
+        &self,
+        receiver: ::payjoin::receive::v2::Receiver<::payjoin::receive::v2::MaybeInputsSeen>,
+        quote_id: &str,
+        persister: &RecordingSessionPersister<::payjoin::receive::v2::SessionEvent>,
+    ) -> Result<::payjoin::receive::v2::Receiver<::payjoin::receive::v2::OutputsUnknown>, Error>
+    {
+        let original_input_outpoints =
+            payjoin_original_input_outpoints_from_events(&persister.events()?)?;
+        let mut seen_outpoints = HashSet::new();
+        for outpoint in &original_input_outpoints {
+            if self
+                .storage
+                .is_payjoin_input_seen(&outpoint.to_string())
+                .await?
+            {
+                seen_outpoints.insert(*outpoint);
+            }
+        }
+        tracing::debug!(
+            quote_id,
+            input_count = original_input_outpoints.len(),
+            seen_input_count = seen_outpoints.len(),
+            "Checked Payjoin original input replay index"
+        );
+
+        let mut is_known =
+            |outpoint: &bdk_wallet::bitcoin::OutPoint| Ok(seen_outpoints.contains(outpoint));
+        let staged_persister =
+            RecordingSessionPersister::new(persister.events()?, persister.closed());
+        let receiver = match receiver
+            .check_no_inputs_seen_before(&mut is_known)
+            .save(&staged_persister)
+        {
+            Ok(receiver) => receiver,
+            Err(err) => {
+                persister.replace(staged_persister.events()?, staged_persister.closed())?;
+                return Err(Error::Payjoin(err.to_string()));
+            }
+        };
+
+        let checked_outpoints = original_input_outpoints
+            .into_iter()
+            .map(|outpoint| outpoint.to_string())
+            .collect::<Vec<_>>();
+        self.storage
+            .mark_payjoin_inputs_seen(&checked_outpoints)
+            .await?;
+        persister.replace(staged_persister.events()?, staged_persister.closed())?;
+
+        Ok(receiver)
+    }
+    fn identify_payjoin_receiver_outputs(
+        &self,
+        receiver: ::payjoin::receive::v2::Receiver<::payjoin::receive::v2::OutputsUnknown>,
+        fallback_script: &bdk_wallet::bitcoin::Script,
+        quote_id: &str,
+        persister: &RecordingSessionPersister<::payjoin::receive::v2::SessionEvent>,
+    ) -> Result<::payjoin::receive::v2::Receiver<::payjoin::receive::v2::WantsOutputs>, Error> {
+        let mut is_receiver_output =
+            |script: &bdk_wallet::bitcoin::Script| Ok(script == fallback_script);
+        let receiver = receiver
+            .identify_receiver_outputs(&mut is_receiver_output)
+            .save(persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+        let events = persister.events()?;
+        if let Some(receiver_output_count) = payjoin_receiver_output_count_from_events(&events) {
+            tracing::debug!(
+                quote_id,
+                receiver_output_count,
+                "Identified Payjoin original PSBT receiver outputs"
+            );
+        }
+
+        Ok(receiver)
+    }
+    async fn contribute_payjoin_inputs(
+        &self,
+        receiver: ::payjoin::receive::v2::Receiver<::payjoin::receive::v2::WantsInputs>,
+        persister: &RecordingSessionPersister<::payjoin::receive::v2::SessionEvent>,
+    ) -> Result<::payjoin::receive::v2::Receiver<::payjoin::receive::v2::ProvisionalProposal>, Error>
+    {
+        let wallet_with_db = self.wallet_with_db.lock().await;
+        let candidate_inputs = wallet_with_db
+            .wallet
+            .list_unspent()
+            .filter_map(|utxo| {
+                let psbt_input = wallet_with_db
+                    .wallet
+                    .get_psbt_input(utxo.clone(), None, false)
+                    .ok()?;
+                ::payjoin::receive::InputPair::new(
+                    TxIn {
+                        previous_output: utxo.outpoint,
+                        script_sig: Default::default(),
+                        sequence: Sequence::MAX,
+                        witness: Default::default(),
+                    },
+                    psbt_input,
+                    None,
+                )
+                .ok()
+            })
+            .collect::<Vec<_>>();
+        let selected = receiver
+            .try_preserving_privacy(candidate_inputs.clone())
+            .or_else(|_| {
+                candidate_inputs.into_iter().next().ok_or_else(|| {
+                    Error::Payjoin("no Payjoin contribution input available".to_string())
+                })
+            })?;
+        let receiver = receiver
+            .contribute_inputs([selected])
+            .map_err(|err| Error::Payjoin(err.to_string()))?
+            .commit_inputs()
+            .save(persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+        let receiver = apply_zero_receiver_fee_range(receiver, persister)?;
+        drop(wallet_with_db);
+
+        Ok(receiver)
+    }
+    async fn finalize_payjoin_proposal(
+        &self,
+        receiver: ::payjoin::receive::v2::Receiver<::payjoin::receive::v2::ProvisionalProposal>,
+        persister: &RecordingSessionPersister<::payjoin::receive::v2::SessionEvent>,
+    ) -> Result<::payjoin::receive::v2::Receiver<::payjoin::receive::v2::PayjoinProposal>, Error>
+    {
+        let wallet_with_db = self.wallet_with_db.lock().await;
+        let receiver = receiver
+            .finalize_proposal(|psbt| {
+                let mut psbt = psbt.clone();
+                wallet_with_db
+                    .wallet
+                    .sign(&mut psbt, Default::default())
+                    .map_err(|err| -> ::payjoin::ImplementationError {
+                        ::payjoin::ImplementationError::new(std::io::Error::other(err.to_string()))
+                    })?;
+                Ok(psbt)
+            })
+            .save(persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+        drop(wallet_with_db);
+
+        Ok(receiver)
+    }
+    /// Start an optional Payjoin send for an onchain melt.
+    ///
+    /// This only *prepares* the send: it builds and signs the original PSBT and
+    /// the Payjoin sender, reserves the original's inputs locally, persists the
+    /// send session, and returns `Pending` immediately. The actual negotiation
+    /// (post the original, poll for the proposal, broadcast the Payjoin tx or
+    /// the original fallback) is driven asynchronously by
+    /// [`Self::run_payjoin_send_poller`], so a slow or unresponsive receiver
+    /// never blocks the melt and there is no artificial negotiation timeout.
+    ///
+    /// Any failure here happens *before* anything is shared with the receiver,
+    /// so it is wrapped in [`Error::PayjoinSendNotStarted`] to tell the caller a
+    /// direct onchain fallback is safe (no signed transaction has been exposed).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn start_payjoin_send(
+        &self,
+        quote_id: &cdk_common::QuoteId,
+        address: &str,
+        amount_sat: u64,
+        max_fee_sat: u64,
+        tier: PaymentTier,
+        metadata: PaymentMetadata,
+        payjoin: &PayjoinV2,
+    ) -> Result<MakePaymentResponse, Error> {
+        let prepared = self
+            .prepare_payjoin_send(address, amount_sat, max_fee_sat, tier, payjoin)
+            .await
+            .map_err(|err| Error::PayjoinSendNotStarted(Box::new(err)))?;
+        let PreparedPayjoinSend {
+            original_tx,
+            original_fee_sat,
+            persister,
+        } = prepared;
+
+        let mut intent = SendIntent::<intent_state::PayjoinNegotiating>::new_payjoin(
+            &self.storage,
+            quote_id.to_string(),
+            address.to_string(),
+            amount_sat,
+            max_fee_sat,
+            tier,
+            metadata,
+            consensus::serialize(&original_tx),
+            original_fee_sat,
+            persister.events()?,
+        )
+        .await
+        .map_err(|err| Error::PayjoinSendNotStarted(Box::new(err)))?;
+
+        // Reserve the original's inputs immediately so a concurrent melt/batch
+        // cannot select the same coins while the (potentially long-lived)
+        // negotiation runs. The poller evicts/replaces this tx if a Payjoin
+        // proposal with different inputs arrives.
+        let original_txid = original_tx.compute_txid();
+        let reservation_result = {
+            let mut wallet_with_db = self.wallet_with_db.lock().await;
+            wallet_with_db
+                .wallet
+                .apply_unconfirmed_txs([(original_tx.clone(), crate::util::unix_now())]);
+            wallet_with_db.persist().map_err(Error::Database)
+        };
+        if let Err(err) = reservation_result {
+            if let Err(evict_err) = self.evict_unstaged_payjoin_tx(original_txid).await {
+                return Err(Error::PayjoinSendNotStarted(Box::new(Error::Payjoin(
+                    format!(
+                        "Could not persist reservation of original Payjoin tx {}: {}; \
+                         additionally could not persist eviction of the in-memory reservation: {}",
+                        original_txid, err, evict_err
+                    ),
+                ))));
+            }
+            if let Err(fail_err) = intent
+                .fail(
+                    &self.storage,
+                    format!("Could not persist Payjoin original tx reservation: {}", err),
+                )
+                .await
+            {
+                tracing::warn!(
+                    quote_id = %quote_id,
+                    error = %fail_err,
+                    "Could not mark Payjoin send intent failed after reservation failure"
+                );
+            }
+            return Err(Error::PayjoinSendNotStarted(Box::new(err)));
+        }
+
+        intent
+            .update_payjoin_events(&self.storage, persister.events()?)
+            .await?;
+
+        tracing::debug!(
+            quote_id = %quote_id,
+            original_txid = %original_txid,
+            "Started Payjoin send session; negotiation runs in the background poller"
+        );
+
+        // Return Pending immediately. `check_outgoing_payment` can see the
+        // PayjoinNegotiating intent and drive recovery if the poller is not
+        // running yet.
+        Ok(MakePaymentResponse {
+            payment_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
+            payment_proof: None,
+            status: MeltQuoteState::Pending,
+            total_spent: Amount::new(0, CurrencyUnit::Sat),
+        })
+    }
+
+    /// Build and sign the original PSBT and the Payjoin sender, saving the
+    /// sender into a fresh persister's event log. Nothing is shared with the
+    /// receiver here.
+    async fn prepare_payjoin_send(
+        &self,
+        address: &str,
+        amount_sat: u64,
+        max_fee_sat: u64,
+        tier: PaymentTier,
+        payjoin: &PayjoinV2,
+    ) -> Result<PreparedPayjoinSend, Error> {
+        use ::payjoin::UriExt;
+
+        if self.payjoin_config().is_none() {
+            return Err(Error::Payjoin(
+                "operator did not configure Payjoin directory and OHTTP relay".to_string(),
+            ));
+        }
+
+        let fallback_address = parse_checked_address(address, self.network, Error::Wallet)?;
+        let sat_per_vb = self
+            .estimate_fee_rate_sat_per_vb(tier)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    tier = ?tier,
+                    error = %e,
+                    "Payjoin fee-rate estimation failed, using configured fallback"
+                );
+                self.batch_config.fee_estimation.fallback_sat_per_vb
+            });
+        let fee_rate = bdk_wallet::bitcoin::FeeRate::from_sat_per_vb_u32(sat_per_vb.ceil() as u32);
+
+        let (original_psbt, original_fee_sat, original_tx) = {
+            let mut wallet_with_db = self.wallet_with_db.lock().await;
+            let mut tx_builder = wallet_with_db.wallet.build_tx();
+            tx_builder.add_recipient(
+                fallback_address.clone(),
+                bdk_wallet::bitcoin::Amount::from_sat(amount_sat),
+            );
+            tx_builder.fee_rate(fee_rate);
+            let mut original_psbt = tx_builder
+                .finish()
+                .map_err(|err| Error::Payjoin(format!("Could not build original PSBT: {}", err)))?;
+            let original_fee_sat = original_psbt
+                .fee()
+                .map_err(|err| {
+                    Error::Payjoin(format!("Could not calculate original PSBT fee: {}", err))
+                })?
+                .to_sat();
+            if original_fee_sat > max_fee_sat {
+                return Err(Error::Payjoin(format!(
+                    "original Payjoin PSBT fee {} exceeds max fee {}",
+                    original_fee_sat, max_fee_sat
+                )));
+            }
+            if !wallet_with_db
+                .wallet
+                .sign(&mut original_psbt, Default::default())
+                .map_err(|err| Error::Payjoin(format!("Could not sign original PSBT: {}", err)))?
+            {
+                return Err(Error::CouldNotSign);
+            }
+            wallet_with_db
+                .persist()
+                .map_err(|err| Error::Payjoin(format!("Could not persist wallet: {}", err)))?;
+            // Capture the broadcastable fallback transaction before the PSBT is
+            // consumed by the sender builder. This is the same signed original
+            // we share with the receiver, so broadcasting it later can never
+            // conflict with a Payjoin proposal derived from it.
+            let original_tx = original_psbt.clone().extract_tx().map_err(|err| {
+                Error::Payjoin(format!("Could not extract original Payjoin tx: {}", err))
+            })?;
+            (original_psbt, original_fee_sat, original_tx)
+        };
+
+        let pj_uri = build_payjoin_uri(address, amount_sat, payjoin)?;
+        let pj_uri = ::payjoin::Uri::try_from(pj_uri.as_str())
+            .map_err(|err| Error::Payjoin(format!("Invalid Payjoin URI: {}", err)))?
+            .assume_checked()
+            .check_pj_supported()
+            .map_err(|_| {
+                Error::Payjoin("Payjoin URI did not contain supported pj params".to_string())
+            })?;
+        let persister = RecordingSessionPersister::new(Vec::new(), false);
+        // Save the sender into the event log; the poller replays it from there.
+        let _sender = ::payjoin::send::v2::SenderBuilder::new(original_psbt, pj_uri)
+            .build_recommended(fee_rate)
+            .map_err(|err| Error::Payjoin(err.to_string()))?
+            .save(&persister)
+            .map_err(|err| Error::Payjoin(err.to_string()))?;
+
+        Ok(PreparedPayjoinSend {
+            original_tx,
+            original_fee_sat,
+            persister,
+        })
+    }
+
+    /// Background poller that drives every open Payjoin send session to
+    /// completion, mirroring [`Self::run_payjoin_receive_poller`]. It posts the
+    /// original PSBT, polls for the proposal, and broadcasts either the Payjoin
+    /// transaction or the signed original fallback. Because it lists persisted
+    /// sessions each tick, it transparently resumes in-flight sends after a
+    /// restart.
+    pub(crate) async fn run_payjoin_send_poller(
+        &self,
+        cancel_token: CancellationToken,
+    ) -> Result<(), Error> {
+        let mut tick = tokio::time::interval(Duration::from_secs(15));
+        tracing::info!("Starting Payjoin send poller");
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => break,
+                _ = tick.tick() => {
+                    let intents = self.payjoin_send_intents().await?;
+                    tracing::debug!(
+                        intent_count = intents.len(),
+                        active_count = intents.len(),
+                        "Polling Payjoin send intents"
+                    );
+                    for intent in intents {
+                        if let Err(err) = self.process_payjoin_send_intent(intent).await {
+                            tracing::warn!("Payjoin send intent processing failed: {}", err);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn recover_payjoin_sessions_once(&self) -> Result<(), Error> {
+        self.recover_payjoin_receive_sessions_once().await?;
+        self.recover_cut_through_settlements_once().await?;
+        self.recover_payjoin_send_intents_once().await
+    }
+
+    /// Startup-only recovery. A settlement still `Reserved` here means the
+    /// process died between reserving the melt intent and exposing the
+    /// proposal, so the reservation can be released safely. While the service
+    /// is running, `Reserved` is a live transient state owned by an active
+    /// receive session and must not be reaped; periodic driving goes through
+    /// [`Self::advance_cut_through_settlements_once`] instead.
+    async fn recover_cut_through_settlements_once(&self) -> Result<(), Error> {
+        let settlements = self.storage.get_all_cut_through_settlements().await?;
+        let now = crate::util::unix_now();
+
+        for mut settlement in settlements {
+            if matches!(
+                settlement.state,
+                crate::storage::CutThroughSettlementState::Reserved
+            ) {
+                self.storage
+                    .release_cut_through_reserved_intent(
+                        &settlement.send_intent_id,
+                        settlement.settlement_id,
+                    )
+                    .await?;
+                settlement.state =
+                    crate::storage::CutThroughSettlementState::Abandoned { abandoned_at: now };
+                self.storage.put_cut_through_settlement(&settlement).await?;
+            }
+        }
+
+        self.advance_cut_through_settlements_once().await
+    }
+
+    async fn advance_cut_through_settlements_once(&self) -> Result<(), Error> {
+        let settlements = self.storage.get_all_cut_through_settlements().await?;
+        let now = crate::util::unix_now();
+
+        for mut settlement in settlements {
+            match settlement.state.clone() {
+                crate::storage::CutThroughSettlementState::Reserved => {}
+                crate::storage::CutThroughSettlementState::ProposalExposed {
+                    proposal_txid,
+                    original_txid,
+                    original_tx_bytes,
+                    receive_payment_id,
+                    receive_outpoint,
+                    melt_outpoint,
+                    fee_contribution_sat,
+                    ..
+                } => {
+                    let (proposal_confirmed, original_confirmed) = {
+                        let wallet_with_db = self.wallet_with_db.lock().await;
+                        (
+                            self.txid_has_required_confirmations(
+                                &wallet_with_db.wallet,
+                                &proposal_txid,
+                                "cut_through_proposal",
+                                &settlement.settlement_id.to_string(),
+                            ),
+                            self.txid_has_required_confirmations(
+                                &wallet_with_db.wallet,
+                                &original_txid,
+                                "cut_through_original",
+                                &settlement.settlement_id.to_string(),
+                            ),
+                        )
+                    };
+
+                    if proposal_confirmed {
+                        self.finalize_confirmed_cut_through(
+                            &mut settlement,
+                            receive_payment_id,
+                            receive_outpoint,
+                            melt_outpoint,
+                            fee_contribution_sat,
+                        )
+                        .await?;
+                    } else if original_confirmed
+                        || self
+                            .cut_through_original_inputs_confirmed_spent(&original_tx_bytes)
+                            .await?
+                    {
+                        self.abandon_exposed_cut_through(&mut settlement, &proposal_txid, now)
+                            .await?;
+                    }
+                }
+                crate::storage::CutThroughSettlementState::Confirmed { finalized_at }
+                | crate::storage::CutThroughSettlementState::Abandoned {
+                    abandoned_at: finalized_at,
+                } => {
+                    if now.saturating_sub(finalized_at) > PAYJOIN_RECEIVE_SESSION_RETENTION_SECS {
+                        self.storage
+                            .delete_cut_through_settlement(&settlement.settlement_id)
+                            .await?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn abandon_exposed_cut_through(
+        &self,
+        settlement: &mut crate::storage::CutThroughSettlementRecord,
+        proposal_txid: &str,
+        now: u64,
+    ) -> Result<(), Error> {
+        if let Ok(txid) = bdk_wallet::bitcoin::Txid::from_str(proposal_txid) {
+            self.evict_unstaged_payjoin_tx(txid).await?;
+        }
+        self.storage
+            .release_cut_through_reserved_intent(
+                &settlement.send_intent_id,
+                settlement.settlement_id,
+            )
+            .await?;
+        settlement.state =
+            crate::storage::CutThroughSettlementState::Abandoned { abandoned_at: now };
+        self.storage.put_cut_through_settlement(settlement).await
+    }
+
+    async fn cut_through_original_inputs_confirmed_spent(
+        &self,
+        original_tx_bytes: &[u8],
+    ) -> Result<bool, Error> {
+        let original_tx =
+            consensus::deserialize::<Transaction>(original_tx_bytes).map_err(|err| {
+                Error::Payjoin(format!(
+                    "Could not deserialize cut-through original tx: {}",
+                    err
+                ))
+            })?;
+        let outpoints = original_tx
+            .input
+            .iter()
+            .map(|input| input.previous_output)
+            .collect::<Vec<_>>();
+        self.chain_source.any_confirmed_spend(&outpoints).await
+    }
+
+    async fn finalize_confirmed_cut_through(
+        &self,
+        settlement: &mut crate::storage::CutThroughSettlementRecord,
+        receive_payment_id: String,
+        receive_outpoint: String,
+        melt_outpoint: String,
+        fee_contribution_sat: u64,
+    ) -> Result<(), Error> {
+        let finalized_at = crate::util::unix_now();
+        let receive_intent_id = Uuid::new_v4();
+        let receive_record = crate::storage::FinalizedReceiveIntentRecord {
+            intent_id: receive_intent_id,
+            quote_id: settlement.receive_quote_id.clone(),
+            address: String::new(),
+            txid: receive_outpoint
+                .split_once(':')
+                .map(|(txid, _)| txid.to_string())
+                .unwrap_or_else(|| receive_outpoint.clone()),
+            outpoint: receive_outpoint.clone(),
+            payment_id: Some(receive_payment_id.clone()),
+            amount_sat: settlement.original_receive_amount_sat,
+            finalized_at,
+        };
+        let send_record = crate::storage::FinalizedSendIntentRecord {
+            intent_id: settlement.send_intent_id,
+            quote_id: settlement.send_quote_id.clone(),
+            total_spent_sat: settlement
+                .melt_amount_sat
+                .saturating_add(fee_contribution_sat),
+            outpoint: melt_outpoint.clone(),
+            finalized_at,
+        };
+        settlement.state = crate::storage::CutThroughSettlementState::Confirmed { finalized_at };
+        self.storage
+            .finalize_cut_through_pair(&receive_record, &send_record, settlement)
+            .await?;
+
+        if let Ok(quote_id) = cdk_common::QuoteId::from_str(&settlement.receive_quote_id) {
+            let response = WaitPaymentResponse {
+                payment_identifier: PaymentIdentifier::QuoteId(quote_id),
+                payment_amount: Amount::new(
+                    settlement.original_receive_amount_sat,
+                    CurrencyUnit::Sat,
+                ),
+                payment_id: receive_payment_id,
+            };
+            if let Err(err) = self.payment_sender.send(Event::PaymentReceived(response)) {
+                tracing::error!(
+                    settlement_id = %settlement.settlement_id,
+                    "Could not send cut-through receive event: {}",
+                    err
+                );
+            }
+        }
+        if let Ok(quote_id) = cdk_common::QuoteId::from_str(&settlement.send_quote_id) {
+            let details = MakePaymentResponse {
+                payment_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
+                payment_proof: Some(melt_outpoint),
+                status: MeltQuoteState::Paid,
+                total_spent: Amount::new(
+                    settlement
+                        .melt_amount_sat
+                        .saturating_add(fee_contribution_sat),
+                    CurrencyUnit::Sat,
+                ),
+            };
+            if let Err(err) = self
+                .payment_sender
+                .send(Event::PaymentSuccessful { quote_id, details })
+            {
+                tracing::error!(
+                    settlement_id = %settlement.settlement_id,
+                    "Could not send cut-through send event: {}",
+                    err
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn recover_payjoin_send_intents_once(&self) -> Result<(), Error> {
+        for intent in self.payjoin_send_intents().await? {
+            if let Err(err) = self.process_payjoin_send_intent(intent).await {
+                tracing::warn!("Payjoin send intent recovery failed: {}", err);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn payjoin_send_intents(
+        &self,
+    ) -> Result<Vec<SendIntent<intent_state::PayjoinNegotiating>>, Error> {
+        let records = self.storage.get_all_send_intents().await?;
+        Ok(records
+            .iter()
+            .filter_map(
+                |record| match crate::send::payment_intent::from_record(record) {
+                    crate::send::payment_intent::SendIntentAny::PayjoinNegotiating(intent) => {
+                        Some(intent)
+                    }
+                    _ => None,
+                },
+            )
+            .collect())
+    }
+
+    pub(crate) async fn process_payjoin_send_intent(
+        &self,
+        mut intent: SendIntent<intent_state::PayjoinNegotiating>,
+    ) -> Result<(), Error> {
+        use ::payjoin::persist::OptionalTransitionOutcome;
+        use ::payjoin::send::v2::{SendSession, SessionOutcome};
+
+        // Idempotency: if this quote already has a staged or finalized send,
+        // the negotiation has completed on another path.
+        let active_done = self
+            .storage
+            .get_send_intent_by_quote_id(&intent.quote_id)
+            .await?
+            .is_some_and(|active| {
+                !matches!(
+                    active.state,
+                    crate::send::payment_intent::record::SendIntentState::PayjoinNegotiating { .. }
+                )
+            });
+        if active_done
+            || self
+                .storage
+                .get_finalized_intent_by_quote_id(&intent.quote_id)
+                .await?
+                .is_some()
+        {
+            return Ok(());
+        }
+
+        let Some(config) = self.payjoin_config() else {
+            tracing::debug!(
+                quote_id = %intent.quote_id,
+                "Payjoin send config unavailable; broadcasting original fallback"
+            );
+            return self.broadcast_payjoin_send_fallback(intent).await;
+        };
+
+        let persister = RecordingSessionPersister::new(intent.state.events.clone(), false);
+        let session = match ::payjoin::send::v2::replay_event_log(&persister) {
+            Ok((session, _history)) => session,
+            Err(err) => {
+                // The session can no longer be replayed (most commonly because
+                // the Payjoin parameters have expired). Broadcast the signed
+                // original fallback so the melt still settles.
+                tracing::debug!(
+                    quote_id = %intent.quote_id,
+                    error = %err,
+                    "Payjoin send session not replayable (expired?); broadcasting original fallback"
+                );
+                return self.broadcast_payjoin_send_fallback(intent).await;
+            }
+        };
+
+        match session {
+            SendSession::WithReplyKey(sender) => {
+                tracing::debug!(
+                    quote_id = %intent.quote_id,
+                    "Posting original PSBT to Payjoin directory"
+                );
+                let (request, context) = sender
+                    .create_v2_post_request(&config.ohttp_relay_url)
+                    .map_err(|err| Error::Payjoin(err.to_string()))?;
+                let response = payjoin_http_request(request).await?;
+                sender
+                    .process_response(&response, context)
+                    .save(&persister)
+                    .map_err(|err| Error::Payjoin(err.to_string()))?;
+                self.persist_payjoin_send_progress(&mut intent, &persister)
+                    .await?;
+            }
+            SendSession::PollingForProposal(sender) => {
+                let (request, context) = sender
+                    .create_poll_request(&config.ohttp_relay_url)
+                    .map_err(|err| Error::Payjoin(err.to_string()))?;
+                let response = payjoin_http_request(request).await?;
+                match sender
+                    .process_response(&response, context)
+                    .save(&persister)
+                    .map_err(|err| Error::Payjoin(err.to_string()))?
+                {
+                    OptionalTransitionOutcome::Progress(proposal_psbt) => {
+                        tracing::debug!(
+                            quote_id = %intent.quote_id,
+                            "Received Payjoin proposal PSBT"
+                        );
+                        self.persist_payjoin_send_progress(&mut intent, &persister)
+                            .await?;
+                        self.finalize_and_stage_payjoin_send(intent, proposal_psbt)
+                            .await?;
+                    }
+                    OptionalTransitionOutcome::Stasis(_) => {
+                        tracing::debug!(
+                            quote_id = %intent.quote_id,
+                            "No Payjoin proposal available yet"
+                        );
+                        self.persist_payjoin_send_progress(&mut intent, &persister)
+                            .await?;
+                    }
+                }
+            }
+            SendSession::Closed(outcome) => match outcome {
+                SessionOutcome::Success(proposal_psbt) => {
+                    // Crash/resume: the proposal was received before staging.
+                    self.finalize_and_stage_payjoin_send(intent, proposal_psbt)
+                        .await?;
+                }
+                SessionOutcome::Failure | SessionOutcome::Cancel => {
+                    tracing::debug!(
+                        quote_id = %intent.quote_id,
+                        "Payjoin send session closed without success; broadcasting original fallback"
+                    );
+                    self.broadcast_payjoin_send_fallback(intent).await?;
+                }
+            },
+        }
+
+        Ok(())
+    }
+
+    /// Sign the Payjoin proposal, evict the locally-reserved original, then
+    /// stage and broadcast the Payjoin transaction. If the proposal would make
+    /// the mint spend more than the quote amount plus max fee, broadcast the
+    /// original fallback instead (it is already within budget).
+    async fn finalize_and_stage_payjoin_send(
+        &self,
+        intent: SendIntent<intent_state::PayjoinNegotiating>,
+        proposal_psbt: bdk_wallet::bitcoin::Psbt,
+    ) -> Result<(), Error> {
+        let fallback_address =
+            parse_checked_address(&intent.address, self.network, Error::Payjoin)?;
+
+        let mut final_psbt = proposal_psbt;
+        let (tx, validation) = {
+            let wallet_with_db = self.wallet_with_db.lock().await;
+            if !wallet_with_db
+                .wallet
+                .sign(&mut final_psbt, Default::default())
+                .map_err(|err| Error::Payjoin(format!("Could not sign Payjoin PSBT: {}", err)))?
+            {
+                return Err(Error::CouldNotSign);
+            }
+            let tx = final_psbt
+                .extract_tx()
+                .map_err(|err| Error::Payjoin(format!("Could not extract Payjoin tx: {}", err)))?;
+            let (sent, received) = wallet_with_db.wallet.sent_and_received(&tx);
+            let validation = validate_payjoin_send_transaction(
+                &tx,
+                fallback_address.script_pubkey().as_script(),
+                intent.amount,
+                intent.max_fee_amount,
+                sent.to_sat(),
+                received.to_sat(),
+            );
+            (tx, validation)
+        };
+        let validation = match validation {
+            Ok(validation) => validation,
+            Err(err) => {
+                tracing::warn!(
+                    quote_id = %intent.quote_id,
+                    error = %err,
+                    "Payjoin proposal exceeds local spend limits or altered the payment output; \
+                     broadcasting original fallback instead"
+                );
+                return self.broadcast_payjoin_send_fallback(intent).await;
+            }
+        };
+
+        // The Payjoin tx spends the original's inputs plus the receiver's, so
+        // evict the locally-reserved original before applying the Payjoin tx to
+        // avoid a conflicting double-application in the wallet graph.
+        if let Ok(original_tx) =
+            consensus::deserialize::<Transaction>(&intent.state.original_tx_bytes)
+        {
+            let original_txid = original_tx.compute_txid();
+            if original_txid != tx.compute_txid() {
+                self.evict_unstaged_payjoin_tx(original_txid).await?;
+            }
+        }
+
+        self.stage_and_broadcast_payjoin_send(tx, validation, intent)
+            .await?;
+        Ok(())
+    }
+
+    /// Stage and broadcast the signed original transaction as the Payjoin
+    /// fallback, then close the session.
+    async fn broadcast_payjoin_send_fallback(
+        &self,
+        intent: SendIntent<intent_state::PayjoinNegotiating>,
+    ) -> Result<(), Error> {
+        let original_tx = consensus::deserialize::<Transaction>(&intent.state.original_tx_bytes)
+            .map_err(|err| {
+                Error::Payjoin(format!(
+                    "Could not deserialize original Payjoin tx: {}",
+                    err
+                ))
+            })?;
+        let fallback_address =
+            parse_checked_address(&intent.address, self.network, Error::Payjoin)?;
+        let validation = PayjoinSendValidation {
+            payment_outpoint: require_payjoin_send_payment_output(
+                &original_tx,
+                fallback_address.script_pubkey().as_script(),
+                intent.amount,
+            )?,
+            fee_contribution_sat: intent.state.original_fee_sat,
+        };
+
+        self.stage_and_broadcast_payjoin_send(original_tx, validation, intent)
+            .await?;
+        Ok(())
+    }
+
+    /// Durably stage and broadcast a chosen Payjoin send transaction (either the
+    /// Payjoin proposal or the original fallback), creating a send intent keyed
+    /// by `quote_id` so `check_outgoing_payment` can track it.
+    #[allow(clippy::too_many_arguments)]
+    async fn stage_and_broadcast_payjoin_send(
+        &self,
+        tx: Transaction,
+        validation: PayjoinSendValidation,
+        payjoin_intent: SendIntent<intent_state::PayjoinNegotiating>,
+    ) -> Result<(), Error> {
+        let quote_id = payjoin_intent.quote_id.clone();
+        let txid = tx.compute_txid();
+        let outpoint = validation.payment_outpoint;
+        let fee_contribution_sat = validation.fee_contribution_sat;
+        {
+            let mut wallet_with_db = self.wallet_with_db.lock().await;
+            wallet_with_db
+                .wallet
+                .apply_unconfirmed_txs([(tx.clone(), crate::util::unix_now())]);
+            wallet_with_db.persist().map_err(Error::Database)?;
+        }
+
+        let batch_id = Uuid::new_v4();
+        let intent_id = payjoin_intent.intent_id;
+        let tx_bytes = consensus::serialize(&tx);
+        let assignment = BatchOutputAssignment {
+            intent_id,
+            vout: outpoint.vout,
+            fee_contribution_sat,
+        };
+        if let Err(err) = self
+            .storage
+            .store_send_batch(&SendBatchRecord {
+                batch_id,
+                state: SendBatchState::Signed {
+                    tx_bytes: tx_bytes.clone(),
+                    assignments: vec![assignment.clone()],
+                    fee_sat: fee_contribution_sat,
+                },
+            })
+            .await
+        {
+            // By the time a transaction reaches staging the fully-signed
+            // original has already been posted to the payjoin directory, so
+            // the receiver can broadcast it regardless of local state. Do NOT
+            // mark the intent Failed here — that would release the melt's
+            // proofs while the payment may still confirm on-chain. Leave it in
+            // PayjoinNegotiating so the poller retries staging.
+            let reason = format!("Payjoin staging failed after exposure, will retry: {}", err);
+            if let Err(evict_err) = self.evict_unstaged_payjoin_tx(txid).await {
+                return Err(Error::Payjoin(format!(
+                    "{}; additionally could not persist eviction of unstaged tx {}: {}",
+                    reason, txid, evict_err
+                )));
+            }
+            tracing::warn!(quote_id, error = %err, "{}", reason);
+            return Err(err);
+        }
+
+        let batched = payjoin_intent
+            .assign_to_batch(&self.storage, batch_id)
+            .await?;
+
+        if let Err(err) = self
+            .storage
+            .update_send_batch(
+                &batch_id,
+                &SendBatchState::Broadcast {
+                    txid: txid.to_string(),
+                    tx_bytes,
+                    assignments: vec![assignment],
+                    fee_sat: fee_contribution_sat,
+                },
+            )
+            .await
+        {
+            tracing::warn!(
+                quote_id,
+                batch_id = %batch_id,
+                error = %err,
+                "Payjoin signed batch is durable but could not be marked broadcast"
+            );
+            return Ok(());
+        }
+        if let Err(err) = batched
+            .mark_broadcast(
+                &self.storage,
+                txid.to_string(),
+                outpoint.to_string(),
+                fee_contribution_sat,
+            )
+            .await
+        {
+            tracing::warn!(
+                quote_id,
+                batch_id = %batch_id,
+                txid = %txid,
+                error = %err,
+                "Payjoin batch is durable but send intent could not be marked awaiting confirmation"
+            );
+            return Ok(());
+        }
+
+        match self.broadcast_transaction_internal(tx.clone()).await {
+            Ok(crate::chain::BroadcastOutcome::Accepted)
+            | Ok(crate::chain::BroadcastOutcome::AlreadyKnown) => {}
+            Err(failure) => {
+                tracing::warn!(
+                    quote_id,
+                    txid = %txid,
+                    error = %failure.message,
+                    "Payjoin transaction is durably staged but broadcast failed"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Persist the current Payjoin send session event log without changing the
+    /// poller's terminal `closed` flag (which is set only after the resulting
+    /// transaction is staged).
+    async fn persist_payjoin_send_progress(
+        &self,
+        intent: &mut SendIntent<intent_state::PayjoinNegotiating>,
+        persister: &RecordingSessionPersister<::payjoin::send::v2::SessionEvent>,
+    ) -> Result<(), Error> {
+        intent
+            .update_payjoin_events(&self.storage, persister.events()?)
+            .await
+    }
+
+    async fn evict_unstaged_payjoin_tx(
+        &self,
+        txid: bdk_wallet::bitcoin::Txid,
+    ) -> Result<(), Error> {
+        let evict_time = crate::util::unix_now().saturating_add(1);
+        let mut wallet_with_db = self.wallet_with_db.lock().await;
+        wallet_with_db
+            .wallet
+            .apply_evicted_txs([(txid, evict_time)]);
+        wallet_with_db.persist().map_err(Error::Database)?;
+        Ok(())
+    }
+
+    pub(crate) fn payjoin_config(&self) -> Option<&PayjoinConfig> {
+        self.payjoin_config.as_ref()
+    }
+
+    async fn cached_ohttp_keys(
+        &self,
+        config: &PayjoinConfig,
+    ) -> Result<::payjoin::OhttpKeys, Error> {
+        let now = crate::util::unix_now();
+        let cached_keys = {
+            let cache = self.payjoin_ohttp_keys_cache.lock().await;
+            cache.as_ref().and_then(|cached| {
+                let config_matches = cached.directory_url == config.directory_url
+                    && cached.ohttp_relay_url == config.ohttp_relay_url;
+                if !config_matches {
+                    return None;
+                }
+
+                if now.saturating_sub(cached.fetched_at) <= PAYJOIN_OHTTP_KEYS_CACHE_TTL_SECS {
+                    return Some(Ok(cached.keys.clone()));
+                }
+
+                Some(Err(cached.keys.clone()))
+            })
+        };
+
+        match cached_keys {
+            Some(Ok(keys)) => Ok(keys),
+            Some(Err(stale_keys)) => {
+                let _fetch_guard = self.payjoin_ohttp_keys_fetch_lock.lock().await;
+                if let Some(keys) = self.fresh_cached_ohttp_keys(config).await {
+                    return Ok(keys);
+                }
+
+                match fetch_ohttp_keys_with_timeout(config).await {
+                    Ok(refreshed_keys) => {
+                        self.store_ohttp_keys(
+                            config,
+                            refreshed_keys.clone(),
+                            crate::util::unix_now(),
+                        )
+                        .await;
+                        Ok(refreshed_keys)
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            "Could not refresh Payjoin OHTTP keys; using stale cached keys"
+                        );
+                        Ok(stale_keys)
+                    }
+                }
+            }
+            None => {
+                let _fetch_guard = self.payjoin_ohttp_keys_fetch_lock.lock().await;
+                if let Some(keys) = self.fresh_cached_ohttp_keys(config).await {
+                    return Ok(keys);
+                }
+
+                let keys = fetch_ohttp_keys_with_timeout(config).await?;
+                self.store_ohttp_keys(config, keys.clone(), crate::util::unix_now())
+                    .await;
+                Ok(keys)
+            }
+        }
+    }
+
+    async fn fresh_cached_ohttp_keys(
+        &self,
+        config: &PayjoinConfig,
+    ) -> Option<::payjoin::OhttpKeys> {
+        let now = crate::util::unix_now();
+        let cache = self.payjoin_ohttp_keys_cache.lock().await;
+        cache.as_ref().and_then(|cached| {
+            let config_matches = cached.directory_url == config.directory_url
+                && cached.ohttp_relay_url == config.ohttp_relay_url;
+            if config_matches
+                && now.saturating_sub(cached.fetched_at) <= PAYJOIN_OHTTP_KEYS_CACHE_TTL_SECS
+            {
+                Some(cached.keys.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    async fn store_ohttp_keys(
+        &self,
+        config: &PayjoinConfig,
+        keys: ::payjoin::OhttpKeys,
+        fetched_at: u64,
+    ) {
+        let mut cache = self.payjoin_ohttp_keys_cache.lock().await;
+        *cache = Some(crate::PayjoinOhttpKeysCache {
+            keys,
+            fetched_at,
+            directory_url: config.directory_url.clone(),
+            ohttp_relay_url: config.ohttp_relay_url.clone(),
+        });
+    }
+}
+
+async fn fetch_ohttp_keys_with_timeout(
+    config: &PayjoinConfig,
+) -> Result<::payjoin::OhttpKeys, Error> {
+    tokio::time::timeout(PAYJOIN_OHTTP_KEYS_FETCH_TIMEOUT, fetch_ohttp_keys(config))
+        .await
+        .map_err(|_| {
+            Error::Payjoin(format!(
+                "Payjoin OHTTP key fetch timed out after {} seconds",
+                PAYJOIN_OHTTP_KEYS_FETCH_TIMEOUT.as_secs()
+            ))
+        })?
+}
+
+async fn fetch_ohttp_keys(config: &PayjoinConfig) -> Result<::payjoin::OhttpKeys, Error> {
+    #[cfg(test)]
+    if let Some(result) = test_fetch_ohttp_keys(config).await {
+        return result;
+    }
+
+    #[cfg(feature = "payjoin-local-https")]
+    {
+        if let Some(cert_der) = config.local_tls_cert_der.clone() {
+            return ::payjoin::io::fetch_ohttp_keys_with_cert(
+                &config.ohttp_relay_url,
+                &config.directory_url,
+                &cert_der,
+            )
+            .await
+            .map_err(|err| Error::Payjoin(err.to_string()));
+        }
+    }
+
+    ::payjoin::io::fetch_ohttp_keys(&config.ohttp_relay_url, &config.directory_url)
+        .await
+        .map_err(|err| Error::Payjoin(err.to_string()))
+}
+
+#[cfg(test)]
+async fn test_fetch_ohttp_keys(
+    _config: &PayjoinConfig,
+) -> Option<Result<::payjoin::OhttpKeys, Error>> {
+    if !TEST_OHTTP_FETCH_ENABLED.load(Ordering::SeqCst) {
+        return None;
+    }
+
+    TEST_OHTTP_FETCH_CALLS.fetch_add(1, Ordering::SeqCst);
+    let delay_ms = TEST_OHTTP_FETCH_DELAY_MS.load(Ordering::SeqCst);
+    if delay_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+    }
+
+    if TEST_OHTTP_FETCH_FAIL.load(Ordering::SeqCst) {
+        return Some(Err(Error::Payjoin(
+            "test OHTTP key fetch failure".to_string(),
+        )));
+    }
+
+    let keys = TEST_OHTTP_KEYS
+        .parse::<cdk_common::nuts::nut31::PayjoinOhttpKeys>()
+        .map_err(|err| Error::Payjoin(err.to_string()))
+        .and_then(|keys| {
+            ::payjoin::OhttpKeys::try_from(keys.as_bytes().as_slice())
+                .map_err(|err| Error::Payjoin(err.to_string()))
+        });
+    Some(keys)
+}
+
+fn extract_bip21_payjoin_endpoint(uri: &str) -> Result<String, Error> {
+    let query = uri.split_once('?').map(|(_, query)| query).ok_or_else(|| {
+        Error::Payjoin("Payjoin URI did not include query parameters".to_string())
+    })?;
+
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        if key == "pj" {
+            return Ok(value.into_owned());
+        }
+    }
+
+    Err(Error::Payjoin(
+        "Payjoin URI did not include a pj endpoint".to_string(),
+    ))
+}
+
+fn payjoin_receive_session_state_name(
+    session: &::payjoin::receive::v2::ReceiveSession,
+) -> &'static str {
+    match session {
+        ::payjoin::receive::v2::ReceiveSession::Initialized(_) => "initialized",
+        ::payjoin::receive::v2::ReceiveSession::UncheckedOriginalPayload(_) => {
+            "unchecked_original_payload"
+        }
+        ::payjoin::receive::v2::ReceiveSession::MaybeInputsOwned(_) => "maybe_inputs_owned",
+        ::payjoin::receive::v2::ReceiveSession::MaybeInputsSeen(_) => "maybe_inputs_seen",
+        ::payjoin::receive::v2::ReceiveSession::OutputsUnknown(_) => "outputs_unknown",
+        ::payjoin::receive::v2::ReceiveSession::WantsOutputs(_) => "wants_outputs",
+        ::payjoin::receive::v2::ReceiveSession::WantsInputs(_) => "wants_inputs",
+        ::payjoin::receive::v2::ReceiveSession::WantsFeeRange(_) => "wants_fee_range",
+        ::payjoin::receive::v2::ReceiveSession::ProvisionalProposal(_) => "provisional_proposal",
+        ::payjoin::receive::v2::ReceiveSession::PayjoinProposal(_) => "payjoin_proposal",
+        ::payjoin::receive::v2::ReceiveSession::HasReplyableError(_) => "has_replyable_error",
+        ::payjoin::receive::v2::ReceiveSession::Closed(_) => "closed",
+        _ => "unknown",
+    }
+}
+
+fn latest_payjoin_receive_replyable_error(
+    events: &[::payjoin::receive::v2::SessionEvent],
+) -> Option<serde_json::Value> {
+    events.iter().rev().find_map(|event| match event {
+        ::payjoin::receive::v2::SessionEvent::GotReplyableError(error) => Some(error.to_json()),
+        _ => None,
+    })
+}
+
+fn build_payjoin_uri(address: &str, amount_sat: u64, payjoin: &PayjoinV2) -> Result<String, Error> {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("amount", &format_bip21_amount_from_sats(amount_sat));
+    serializer.append_pair("pj", &build_payjoin_endpoint(payjoin)?);
+    Ok(format!("bitcoin:{}?{}", address, serializer.finish()))
+}
+
+fn build_payjoin_endpoint(payjoin: &PayjoinV2) -> Result<String, Error> {
+    // The payjoin sender expects a BIP21/BIP77 `pj` URI. Cashu uses Unix
+    // timestamp; BIP77 URI fragments use encoded `EX1`, so rebuild it only at
+    // this library boundary.
+    payjoin_v2_to_bip77_endpoint(payjoin).map_err(|err| Error::Payjoin(err.to_string()))
+}
+
+fn update_payjoin_receive_credit_cap(record: &mut crate::storage::PayjoinReceiveSessionRecord) {
+    if let Some(amount_sat) = payjoin_original_receiver_output_amount_from_events(&record.events) {
+        if record.amount_sat == 0 {
+            tracing::debug!(
+                quote_id = %record.quote_id,
+                fallback_address = %record.fallback_address,
+                previous_amount_sat = record.amount_sat,
+                credit_cap_amount_sat = amount_sat,
+                "Updated Payjoin receive credit cap from original PSBT receiver outputs"
+            );
+            record.amount_sat = amount_sat;
+        } else if record.amount_sat != amount_sat {
+            tracing::debug!(
+                quote_id = %record.quote_id,
+                fallback_address = %record.fallback_address,
+                quoted_amount_sat = record.amount_sat,
+                original_receiver_output_sat = amount_sat,
+                "Keeping existing Payjoin receive credit cap"
+            );
+        }
+    }
+}
+
+fn update_payjoin_receive_proposal_receiver_outpoints(
+    record: &mut crate::storage::PayjoinReceiveSessionRecord,
+    psbt: &bdk_wallet::bitcoin::Psbt,
+    fallback_script: &Script,
+) {
+    let txid = psbt.unsigned_tx.compute_txid();
+    let outpoints = psbt
+        .unsigned_tx
+        .output
+        .iter()
+        .enumerate()
+        .filter(|(_, output)| output.script_pubkey.as_script() == fallback_script)
+        .map(|(vout, _)| OutPoint::new(txid, vout as u32).to_string())
+        .collect::<Vec<_>>();
+
+    if outpoints.is_empty() {
+        tracing::warn!(
+            quote_id = %record.quote_id,
+            fallback_address = %record.fallback_address,
+            "Payjoin proposal has no receiver-script outpoints to record"
+        );
+        return;
+    }
+
+    if record.proposal_receiver_outpoints != outpoints {
+        tracing::debug!(
+            quote_id = %record.quote_id,
+            fallback_address = %record.fallback_address,
+            proposal_receiver_outpoint_count = outpoints.len(),
+            "Updated Payjoin receive proposal receiver outpoints"
+        );
+        record.proposal_receiver_outpoints = outpoints;
+    }
+}
+
+fn zero_receiver_fee_range() -> (Option<FeeRate>, Option<FeeRate>) {
+    (None, Some(PAYJOIN_RECEIVER_MAX_EFFECTIVE_FEE_RATE))
+}
+
+fn apply_zero_receiver_fee_range(
+    receiver: ::payjoin::receive::v2::Receiver<::payjoin::receive::v2::WantsFeeRange>,
+    persister: &RecordingSessionPersister<::payjoin::receive::v2::SessionEvent>,
+) -> Result<::payjoin::receive::v2::Receiver<::payjoin::receive::v2::ProvisionalProposal>, Error> {
+    let (min_fee_rate, max_effective_fee_rate) = zero_receiver_fee_range();
+    receiver
+        .apply_fee_range(min_fee_rate, max_effective_fee_rate)
+        .save(persister)
+        .map_err(|err| Error::Payjoin(err.to_string()))
+}
+
+fn ensure_payjoin_receiver_credit(
+    psbt: &bdk_wallet::bitcoin::Psbt,
+    fallback_script: &Script,
+    minimum_amount_sat: u64,
+) -> Result<(), Error> {
+    let credited_amount_sat = payjoin_receiver_output_amount(psbt, fallback_script)?;
+    if credited_amount_sat < minimum_amount_sat {
+        return Err(Error::Payjoin(format!(
+            "Payjoin proposal receiver output amount {} is below original amount {}",
+            credited_amount_sat, minimum_amount_sat
+        )));
+    }
+
+    Ok(())
+}
+
+fn payjoin_receiver_output_amount(
+    psbt: &bdk_wallet::bitcoin::Psbt,
+    fallback_script: &Script,
+) -> Result<u64, Error> {
+    psbt.unsigned_tx
+        .output
+        .iter()
+        .filter(|output| output.script_pubkey.as_script() == fallback_script)
+        .try_fold(0_u64, |amount_sat, output| {
+            amount_sat
+                .checked_add(output.value.to_sat())
+                .ok_or_else(|| {
+                    Error::Payjoin("Payjoin receiver output amount overflow".to_string())
+                })
+        })
+}
+
+fn payjoin_receiver_output_count_from_events(
+    events: &[::payjoin::receive::v2::SessionEvent],
+) -> Option<usize> {
+    events.iter().rev().find_map(|event| match event {
+        ::payjoin::receive::v2::SessionEvent::IdentifiedReceiverOutputs(vouts) => Some(vouts.len()),
+        _ => None,
+    })
+}
+
+fn payjoin_original_input_outpoints_from_events(
+    events: &[::payjoin::receive::v2::SessionEvent],
+) -> Result<Vec<OutPoint>, Error> {
+    let original = events.iter().rev().find_map(|event| match event {
+        ::payjoin::receive::v2::SessionEvent::RetrievedOriginalPayload { original, .. } => {
+            Some(original)
+        }
+        _ => None,
+    });
+    let Some(original) = original else {
+        return Err(Error::Payjoin(
+            "Payjoin original payload event missing".to_string(),
+        ));
+    };
+
+    let mut outpoints = Vec::new();
+    let mut collect_outpoint = |outpoint: &OutPoint| {
+        outpoints.push(*outpoint);
+        Ok(false)
+    };
+    original
+        .check_no_inputs_seen_before(&mut collect_outpoint)
+        .map_err(|err| Error::Payjoin(err.to_string()))?;
+
+    Ok(outpoints)
+}
+
+/// Whether it is safe to drop a closed receive session's persisted credit cap.
+///
+/// A receiver-signed proposal never expires on-chain, and its receiver output
+/// includes the mint's own contributed input value, so the cap in
+/// `proposal_receiver_outpoints` must outlive any still-broadcastable proposal
+/// — time alone is not sufficient. The cap is resolved once one of the
+/// proposal outpoints was detected (the cap was applied when the receive
+/// intent was created), or once an original receiver output was detected
+/// instead: the proposal spends the same sender inputs as the original, so a
+/// settled original means the proposal can never confirm.
+async fn payjoin_receive_credit_cap_resolved(
+    storage: &crate::storage::BdkStorage,
+    network: bdk_wallet::bitcoin::Network,
+    record: &crate::storage::PayjoinReceiveSessionRecord,
+) -> Result<bool, Error> {
+    if record.proposal_receiver_outpoints.is_empty() {
+        return Ok(true);
+    }
+    for outpoint in &record.proposal_receiver_outpoints {
+        if storage.has_receive_intent_for_outpoint(outpoint).await? {
+            return Ok(true);
+        }
+    }
+
+    let Ok(original_tx) = payjoin_original_tx_from_events(&record.events) else {
+        return Ok(false);
+    };
+    let Ok(fallback_address) =
+        parse_checked_address(&record.fallback_address, network, Error::Payjoin)
+    else {
+        return Ok(false);
+    };
+    let fallback_script = fallback_address.script_pubkey();
+    let original_txid = original_tx.compute_txid();
+    for (vout, output) in original_tx.output.iter().enumerate() {
+        if output.script_pubkey != fallback_script {
+            continue;
+        }
+        let outpoint = OutPoint::new(original_txid, vout as u32).to_string();
+        if storage.has_receive_intent_for_outpoint(&outpoint).await? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn payjoin_original_tx_from_events(
+    events: &[::payjoin::receive::v2::SessionEvent],
+) -> Result<Transaction, Error> {
+    let original = events.iter().rev().find_map(|event| match event {
+        ::payjoin::receive::v2::SessionEvent::RetrievedOriginalPayload { original, .. } => {
+            Some(original)
+        }
+        _ => None,
+    });
+    let Some(original) = original else {
+        return Err(Error::Payjoin(
+            "Payjoin original payload event missing".to_string(),
+        ));
+    };
+
+    let original_tx = StdMutex::new(None);
+    original
+        .check_broadcast_suitability(None, |tx| {
+            *original_tx.lock().map_err(|err| {
+                ::payjoin::ImplementationError::new(std::io::Error::other(err.to_string()))
+            })? = Some(tx.clone());
+            Ok(true)
+        })
+        .map_err(|err| Error::Payjoin(err.to_string()))?;
+
+    original_tx
+        .into_inner()
+        .map_err(|err| Error::Payjoin(format!("Payjoin original tx lock poisoned: {}", err)))?
+        .ok_or_else(|| Error::Payjoin("Payjoin original tx missing".to_string()))
+}
+
+fn payjoin_original_receiver_output_amount_from_events(
+    events: &[::payjoin::receive::v2::SessionEvent],
+) -> Option<u64> {
+    let mut receiver_vouts = None;
+    let mut committed_outputs = None;
+
+    for event in events {
+        match event {
+            ::payjoin::receive::v2::SessionEvent::IdentifiedReceiverOutputs(vouts) => {
+                receiver_vouts = Some(vouts.as_slice());
+            }
+            ::payjoin::receive::v2::SessionEvent::CommittedOutputs(outputs) => {
+                committed_outputs = Some(outputs.as_slice());
+            }
+            _ => {}
+        }
+    }
+
+    let receiver_vouts = receiver_vouts?;
+    let committed_outputs = committed_outputs?;
+
+    receiver_vouts.iter().try_fold(0_u64, |amount_sat, vout| {
+        let output = committed_outputs.get(*vout)?;
+        amount_sat.checked_add(output.value.to_sat())
+    })
+}
+
+async fn payjoin_http_request(request: ::payjoin::Request) -> Result<Vec<u8>, Error> {
+    let response = tokio::time::timeout(PAYJOIN_HTTP_REQUEST_TIMEOUT, async {
+        reqwest::Client::new()
+            .post(request.url)
+            .header(reqwest::header::CONTENT_TYPE, request.content_type)
+            .body(request.body)
+            .send()
+            .await
+            .map_err(|err| Error::Payjoin(err.to_string()))
+    })
+    .await
+    .map_err(|_| {
+        Error::Payjoin(format!(
+            "Payjoin HTTP request timed out after {} seconds",
+            PAYJOIN_HTTP_REQUEST_TIMEOUT.as_secs()
+        ))
+    })??;
+    if !response.status().is_success() {
+        return Err(Error::Payjoin(format!(
+            "Payjoin HTTP request failed with status {}",
+            response.status()
+        )));
+    }
+    tokio::time::timeout(PAYJOIN_HTTP_REQUEST_TIMEOUT, response.bytes())
+        .await
+        .map_err(|_| {
+            Error::Payjoin(format!(
+                "Payjoin HTTP response body timed out after {} seconds",
+                PAYJOIN_HTTP_REQUEST_TIMEOUT.as_secs()
+            ))
+        })?
+        .map(|bytes| bytes.to_vec())
+        .map_err(|err| Error::Payjoin(err.to_string()))
+}
+
+fn find_payment_outpoint(
+    tx: &Transaction,
+    payment_script: &Script,
+    amount_sat: u64,
+) -> Option<OutPoint> {
+    // The payment proof records one outpoint, so require one receiver-script
+    // output to cover the full quote. A proposal that only pays the quote via
+    // multiple smaller outputs is valid-looking value-wise but not representable
+    // by the current proof model.
+    tx.output
+        .iter()
+        .enumerate()
+        .find(|(_, output)| {
+            output.script_pubkey.as_script() == payment_script
+                && output.value.to_sat() >= amount_sat
+        })
+        .map(|(vout, _)| OutPoint::new(tx.compute_txid(), vout as u32))
+}
+
+fn find_output_outpoint(tx: &Transaction, script: &Script, amount_sat: u64) -> Option<OutPoint> {
+    find_payment_outpoint(tx, script, amount_sat)
+}
+
+fn require_payjoin_send_payment_output(
+    tx: &Transaction,
+    payment_script: &Script,
+    amount_sat: u64,
+) -> Result<OutPoint, Error> {
+    find_payment_outpoint(tx, payment_script, amount_sat).ok_or_else(|| {
+        Error::Payjoin(format!(
+            "Payjoin transaction missing payment output for {} sats",
+            amount_sat
+        ))
+    })
+}
+
+/// Validate a signed Payjoin send by local wallet accounting.
+///
+/// A receiver may contribute inputs and increase the receiver output, so the
+/// proposal's total transaction fee is not the mint's fee contribution. The
+/// relevant budget is the mint wallet's net spend (`sent - received`), which
+/// must stay within `amount_sat + max_fee_sat`. The recorded fee contribution is
+/// therefore `mint_net_spend_sat - amount_sat`.
+fn validate_payjoin_send_transaction(
+    tx: &Transaction,
+    payment_script: &Script,
+    amount_sat: u64,
+    max_fee_sat: u64,
+    sent_sat: u64,
+    received_sat: u64,
+) -> Result<PayjoinSendValidation, Error> {
+    let payment_outpoint = require_payjoin_send_payment_output(tx, payment_script, amount_sat)?;
+    let mint_net_spend_sat = sent_sat.checked_sub(received_sat).ok_or_else(|| {
+        Error::Payjoin(format!(
+            "Payjoin transaction wallet receive amount {} exceeds sent amount {}",
+            received_sat, sent_sat
+        ))
+    })?;
+    let max_net_spend_sat = amount_sat.checked_add(max_fee_sat).ok_or_else(|| {
+        Error::Payjoin(format!(
+            "Payjoin spend cap overflow for amount {} and max fee {}",
+            amount_sat, max_fee_sat
+        ))
+    })?;
+    if mint_net_spend_sat > max_net_spend_sat {
+        return Err(Error::Payjoin(format!(
+            "Payjoin transaction spends {} sats from mint wallet, exceeding cap {}",
+            mint_net_spend_sat, max_net_spend_sat
+        )));
+    }
+    let fee_contribution_sat = mint_net_spend_sat.checked_sub(amount_sat).ok_or_else(|| {
+        Error::Payjoin(format!(
+            "Payjoin transaction mint net spend {} is below payment amount {}",
+            mint_net_spend_sat, amount_sat
+        ))
+    })?;
+
+    Ok(PayjoinSendValidation {
+        payment_outpoint,
+        fee_contribution_sat,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use bdk_wallet::bitcoin::absolute::LockTime;
+    use bdk_wallet::bitcoin::{transaction, Amount as BitcoinAmount, Psbt, ScriptBuf, TxOut, Txid};
+
+    use super::*;
+
+    fn test_psbt_with_outputs(outputs: Vec<TxOut>) -> Psbt {
+        let tx = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(
+                    Txid::from_str(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .expect("valid txid"),
+                    0,
+                ),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Default::default(),
+            }],
+            output: outputs,
+        };
+        Psbt::from_unsigned_tx(tx).expect("valid test psbt")
+    }
+
+    #[test]
+    fn amountless_payjoin_receive_session_cap_comes_from_original_receiver_outputs() {
+        let events = vec![
+            ::payjoin::receive::v2::SessionEvent::IdentifiedReceiverOutputs(vec![1]),
+            ::payjoin::receive::v2::SessionEvent::CommittedOutputs(vec![
+                TxOut {
+                    value: BitcoinAmount::from_sat(8_000),
+                    script_pubkey: ScriptBuf::new(),
+                },
+                TxOut {
+                    value: BitcoinAmount::from_sat(3_000),
+                    script_pubkey: ScriptBuf::new(),
+                },
+            ]),
+        ];
+        let mut record = crate::storage::PayjoinReceiveSessionRecord {
+            quote_id: "quote-1".to_string(),
+            fallback_address: "bcrt1qfallback".to_string(),
+            amount_sat: 0,
+            proposal_receiver_outpoints: Vec::new(),
+            expires_at: 1_700_000_000,
+            events,
+            closed: false,
+        };
+
+        update_payjoin_receive_credit_cap(&mut record);
+
+        assert_eq!(record.amount_sat, 3_000);
+    }
+
+    #[test]
+    fn payjoin_receive_session_records_proposal_receiver_outpoints() {
+        let fallback_script = ScriptBuf::from_bytes(vec![0x51]);
+        let other_script = ScriptBuf::from_bytes(vec![0x6a]);
+        let psbt = test_psbt_with_outputs(vec![
+            TxOut {
+                value: BitcoinAmount::from_sat(8_000),
+                script_pubkey: other_script,
+            },
+            TxOut {
+                value: BitcoinAmount::from_sat(3_000),
+                script_pubkey: fallback_script.clone(),
+            },
+        ]);
+        let expected_outpoint = OutPoint::new(psbt.unsigned_tx.compute_txid(), 1).to_string();
+        let mut record = crate::storage::PayjoinReceiveSessionRecord {
+            quote_id: "quote-1".to_string(),
+            fallback_address: "bcrt1qfallback".to_string(),
+            amount_sat: 3_000,
+            proposal_receiver_outpoints: Vec::new(),
+            expires_at: 1_700_000_000,
+            events: Vec::new(),
+            closed: false,
+        };
+
+        update_payjoin_receive_proposal_receiver_outpoints(&mut record, &psbt, &fallback_script);
+
+        assert_eq!(record.proposal_receiver_outpoints, vec![expected_outpoint]);
+    }
+
+    #[test]
+    fn payjoin_receive_fee_range_keeps_sender_min_and_zeroes_receiver_fee_cap() {
+        let (min_fee_rate, max_effective_fee_rate) = zero_receiver_fee_range();
+
+        assert_eq!(min_fee_rate, None);
+        assert_eq!(max_effective_fee_rate, Some(FeeRate::ZERO));
+    }
+
+    #[test]
+    fn payjoin_receiver_credit_sums_final_receiver_outputs() {
+        let fallback_script = ScriptBuf::from_bytes(vec![0x51]);
+        let other_script = ScriptBuf::from_bytes(vec![0x6a]);
+        let psbt = test_psbt_with_outputs(vec![
+            TxOut {
+                value: BitcoinAmount::from_sat(2_000),
+                script_pubkey: fallback_script.clone(),
+            },
+            TxOut {
+                value: BitcoinAmount::from_sat(9_000),
+                script_pubkey: other_script,
+            },
+            TxOut {
+                value: BitcoinAmount::from_sat(3_000),
+                script_pubkey: fallback_script.clone(),
+            },
+        ]);
+
+        assert_eq!(
+            payjoin_receiver_output_amount(&psbt, &fallback_script).expect("sum outputs"),
+            5_000
+        );
+    }
+
+    #[test]
+    fn payjoin_receiver_credit_accepts_unreduced_receiver_output() {
+        let fallback_script = ScriptBuf::from_bytes(vec![0x51]);
+        let psbt = test_psbt_with_outputs(vec![TxOut {
+            value: BitcoinAmount::from_sat(5_000),
+            script_pubkey: fallback_script.clone(),
+        }]);
+
+        ensure_payjoin_receiver_credit(&psbt, &fallback_script, 5_000)
+            .expect("sender-funded payjoin keeps receiver output whole");
+    }
+
+    #[test]
+    fn payjoin_receiver_credit_rejects_reduced_receiver_output() {
+        let fallback_script = ScriptBuf::from_bytes(vec![0x51]);
+        let psbt = test_psbt_with_outputs(vec![TxOut {
+            value: BitcoinAmount::from_sat(4_999),
+            script_pubkey: fallback_script.clone(),
+        }]);
+
+        let err = ensure_payjoin_receiver_credit(&psbt, &fallback_script, 5_000)
+            .expect_err("receiver output below original amount must be rejected");
+
+        assert!(err.to_string().contains("below original amount"));
+    }
+
+    #[test]
+    fn payjoin_send_payment_output_accepts_exact_output() {
+        let payment_script = ScriptBuf::from_bytes(vec![0x51]);
+        let other_script = ScriptBuf::from_bytes(vec![0x6a]);
+        let psbt = test_psbt_with_outputs(vec![
+            TxOut {
+                value: BitcoinAmount::from_sat(9_000),
+                script_pubkey: other_script,
+            },
+            TxOut {
+                value: BitcoinAmount::from_sat(10_000),
+                script_pubkey: payment_script.clone(),
+            },
+        ]);
+
+        let outpoint =
+            require_payjoin_send_payment_output(&psbt.unsigned_tx, &payment_script, 10_000)
+                .expect("payment output is present");
+
+        assert_eq!(outpoint.vout, 1);
+    }
+
+    #[test]
+    fn payjoin_send_payment_output_accepts_larger_output() {
+        let payment_script = ScriptBuf::from_bytes(vec![0x51]);
+        let psbt = test_psbt_with_outputs(vec![TxOut {
+            value: BitcoinAmount::from_sat(12_000),
+            script_pubkey: payment_script.clone(),
+        }]);
+
+        let outpoint =
+            require_payjoin_send_payment_output(&psbt.unsigned_tx, &payment_script, 10_000)
+                .expect("larger payment output is present");
+
+        assert_eq!(outpoint.vout, 0);
+    }
+
+    #[test]
+    fn payjoin_send_payment_output_rejects_smaller_single_output() {
+        let payment_script = ScriptBuf::from_bytes(vec![0x51]);
+        let other_script = ScriptBuf::from_bytes(vec![0x6a]);
+        let psbt = test_psbt_with_outputs(vec![
+            TxOut {
+                value: BitcoinAmount::from_sat(9_999),
+                script_pubkey: payment_script.clone(),
+            },
+            TxOut {
+                value: BitcoinAmount::from_sat(10_000),
+                script_pubkey: other_script,
+            },
+        ]);
+
+        let err = require_payjoin_send_payment_output(&psbt.unsigned_tx, &payment_script, 10_000)
+            .expect_err("altered payment output must be rejected");
+
+        assert!(err.to_string().contains("missing payment output"));
+    }
+
+    #[test]
+    fn payjoin_send_payment_output_rejects_split_only_outputs() {
+        let payment_script = ScriptBuf::from_bytes(vec![0x51]);
+        let psbt = test_psbt_with_outputs(vec![
+            TxOut {
+                value: BitcoinAmount::from_sat(6_000),
+                script_pubkey: payment_script.clone(),
+            },
+            TxOut {
+                value: BitcoinAmount::from_sat(4_000),
+                script_pubkey: payment_script.clone(),
+            },
+        ]);
+
+        let err = require_payjoin_send_payment_output(&psbt.unsigned_tx, &payment_script, 10_000)
+            .expect_err("split-only receiver outputs are unsupported");
+
+        assert!(err.to_string().contains("missing payment output"));
+    }
+
+    #[test]
+    fn payjoin_send_validation_accepts_net_spend_within_cap() {
+        let payment_script = ScriptBuf::from_bytes(vec![0x51]);
+        let psbt = test_psbt_with_outputs(vec![TxOut {
+            value: BitcoinAmount::from_sat(10_000),
+            script_pubkey: payment_script.clone(),
+        }]);
+
+        let validation = validate_payjoin_send_transaction(
+            &psbt.unsigned_tx,
+            &payment_script,
+            10_000,
+            1_000,
+            12_000,
+            1_000,
+        )
+        .expect("net spend at cap is accepted");
+
+        assert_eq!(validation.fee_contribution_sat, 1_000);
+    }
+
+    #[test]
+    fn payjoin_send_validation_accepts_larger_receiver_output_with_local_fee_cap() {
+        let payment_script = ScriptBuf::from_bytes(vec![0x51]);
+        let psbt = test_psbt_with_outputs(vec![TxOut {
+            value: BitcoinAmount::from_sat(12_000),
+            script_pubkey: payment_script.clone(),
+        }]);
+
+        let validation = validate_payjoin_send_transaction(
+            &psbt.unsigned_tx,
+            &payment_script,
+            10_000,
+            1_000,
+            20_000,
+            9_500,
+        )
+        .expect("receiver-funded larger output is accepted when mint spend is capped");
+
+        assert_eq!(validation.fee_contribution_sat, 500);
+    }
+
+    #[test]
+    fn payjoin_send_validation_rejects_net_spend_above_cap() {
+        let payment_script = ScriptBuf::from_bytes(vec![0x51]);
+        let psbt = test_psbt_with_outputs(vec![TxOut {
+            value: BitcoinAmount::from_sat(10_000),
+            script_pubkey: payment_script.clone(),
+        }]);
+
+        let err = validate_payjoin_send_transaction(
+            &psbt.unsigned_tx,
+            &payment_script,
+            10_000,
+            1_000,
+            12_001,
+            1_000,
+        )
+        .expect_err("net spend above amount plus max fee is rejected");
+
+        assert!(err.to_string().contains("exceeding cap"));
+    }
+
+    #[test]
+    fn payjoin_send_validation_rejects_net_spend_below_payment_amount() {
+        let payment_script = ScriptBuf::from_bytes(vec![0x51]);
+        let psbt = test_psbt_with_outputs(vec![TxOut {
+            value: BitcoinAmount::from_sat(10_000),
+            script_pubkey: payment_script.clone(),
+        }]);
+
+        let err = validate_payjoin_send_transaction(
+            &psbt.unsigned_tx,
+            &payment_script,
+            10_000,
+            1_000,
+            9_999,
+            0,
+        )
+        .expect_err("mint net spend below quote cannot produce fee contribution");
+
+        assert!(err.to_string().contains("below payment amount"));
+    }
+
+    #[test]
+    fn payjoin_original_receiver_output_amount_sums_all_receiver_outputs() {
+        let events = vec![
+            ::payjoin::receive::v2::SessionEvent::IdentifiedReceiverOutputs(vec![0, 2]),
+            ::payjoin::receive::v2::SessionEvent::CommittedOutputs(vec![
+                TxOut {
+                    value: BitcoinAmount::from_sat(21_000),
+                    script_pubkey: ScriptBuf::new(),
+                },
+                TxOut {
+                    value: BitcoinAmount::from_sat(99_000),
+                    script_pubkey: ScriptBuf::new(),
+                },
+                TxOut {
+                    value: BitcoinAmount::from_sat(34_000),
+                    script_pubkey: ScriptBuf::new(),
+                },
+            ]),
+        ];
+
+        assert_eq!(
+            payjoin_original_receiver_output_amount_from_events(&events),
+            Some(55_000)
+        );
+    }
+
+    #[test]
+    fn payjoin_receive_amount_missing_events_returns_none() {
+        let events = vec![::payjoin::receive::v2::SessionEvent::IdentifiedReceiverOutputs(vec![0])];
+
+        assert_eq!(
+            payjoin_original_receiver_output_amount_from_events(&events),
+            None
+        );
+    }
+
+    #[test]
+    fn payjoin_original_input_outpoints_come_from_retrieved_payload_event() {
+        let first_outpoint = OutPoint::new(
+            Txid::from_str("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .expect("valid txid"),
+            0,
+        );
+        let second_outpoint = OutPoint::new(
+            Txid::from_str("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+                .expect("valid txid"),
+            1,
+        );
+        let tx = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![
+                TxIn {
+                    previous_output: first_outpoint,
+                    script_sig: ScriptBuf::new(),
+                    sequence: Sequence::MAX,
+                    witness: Default::default(),
+                },
+                TxIn {
+                    previous_output: second_outpoint,
+                    script_sig: ScriptBuf::new(),
+                    sequence: Sequence::MAX,
+                    witness: Default::default(),
+                },
+            ],
+            output: vec![TxOut {
+                value: BitcoinAmount::from_sat(1_000),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        };
+        let psbt = Psbt::from_unsigned_tx(tx).expect("valid unsigned psbt");
+        let event = serde_json::json!({
+            "RetrievedOriginalPayload": {
+                "original": {
+                    "psbt": psbt,
+                    "params": {
+                        "v": 2,
+                        "output_substitution": "Enabled",
+                        "additional_fee_contribution": null,
+                        "min_fee_rate": 250
+                    }
+                },
+                "reply_key": null
+            }
+        });
+        let event = serde_json::from_value(event).expect("deserialize Payjoin session event");
+
+        assert_eq!(
+            payjoin_original_input_outpoints_from_events(&[event])
+                .expect("extract original input outpoints"),
+            vec![first_outpoint, second_outpoint]
+        );
+    }
+
+    #[test]
+    fn payjoin_receive_session_expiry_is_strictly_in_the_past() {
+        let record = crate::storage::PayjoinReceiveSessionRecord {
+            quote_id: "quote-1".to_string(),
+            fallback_address: "bcrt1qfallback".to_string(),
+            amount_sat: 1_000,
+            proposal_receiver_outpoints: Vec::new(),
+            expires_at: 100,
+            events: Vec::new(),
+            closed: false,
+        };
+
+        let PayjoinReceiveSessionAny::Open(session) = payjoin_session::from_record(record) else {
+            panic!("expected open session");
+        };
+
+        assert!(!session.is_expired(100));
+        assert!(session.is_expired(101));
+    }
+
+    #[test]
+    fn payjoin_receive_session_prunes_closed_records_after_retention() {
+        let record = crate::storage::PayjoinReceiveSessionRecord {
+            quote_id: "quote-1".to_string(),
+            fallback_address: "bcrt1qfallback".to_string(),
+            amount_sat: 1_000,
+            proposal_receiver_outpoints: Vec::new(),
+            expires_at: 100,
+            events: Vec::new(),
+            closed: true,
+        };
+        let retention_edge = 100 + PAYJOIN_RECEIVE_SESSION_RETENTION_SECS;
+
+        let PayjoinReceiveSessionAny::Closed(session) = payjoin_session::from_record(record) else {
+            panic!("expected closed session");
+        };
+
+        assert!(!session.should_prune(retention_edge, PAYJOIN_RECEIVE_SESSION_RETENTION_SECS));
+        assert!(session.should_prune(retention_edge + 1, PAYJOIN_RECEIVE_SESSION_RETENTION_SECS));
+
+        let mut open_record = session.record().clone();
+        open_record.closed = false;
+        assert!(matches!(
+            payjoin_session::from_record(open_record),
+            PayjoinReceiveSessionAny::Open(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn payjoin_receive_credit_cap_outlives_unresolved_proposal() {
+        use bdk_wallet::bitcoin::hashes::Hash;
+        use bdk_wallet::bitcoin::{Address, Network, WPubkeyHash};
+
+        use crate::receive::receive_intent::record::{ReceiveIntentRecord, ReceiveIntentState};
+
+        let db = cdk_sqlite::mint::memory::empty().await.expect("in-memory db");
+        let storage = crate::storage::BdkStorage::new(Arc::new(db));
+
+        let fallback_script = ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array([7u8; 20]));
+        let fallback_address = Address::from_script(&fallback_script, Network::Regtest)
+            .expect("valid script")
+            .to_string();
+
+        let original_tx = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(
+                    Txid::from_str(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .expect("valid txid"),
+                    0,
+                ),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Default::default(),
+            }],
+            output: vec![TxOut {
+                value: BitcoinAmount::from_sat(1_000),
+                script_pubkey: fallback_script,
+            }],
+        };
+        let original_txid = original_tx.compute_txid();
+        let mut psbt = Psbt::from_unsigned_tx(original_tx).expect("valid unsigned psbt");
+        // check_broadcast_suitability computes the psbt fee rate, which needs
+        // input UTXO data.
+        psbt.inputs[0].witness_utxo = Some(TxOut {
+            value: BitcoinAmount::from_sat(2_000),
+            script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array([9u8; 20])),
+        });
+        let event = serde_json::json!({
+            "RetrievedOriginalPayload": {
+                "original": {
+                    "psbt": psbt,
+                    "params": {
+                        "v": 2,
+                        "output_substitution": "Enabled",
+                        "additional_fee_contribution": null,
+                        "min_fee_rate": 250
+                    }
+                },
+                "reply_key": null
+            }
+        });
+        let events = vec![serde_json::from_value(event).expect("deserialize session event")];
+
+        let proposal_outpoint =
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:0".to_string();
+        let record = crate::storage::PayjoinReceiveSessionRecord {
+            quote_id: "quote-1".to_string(),
+            fallback_address,
+            amount_sat: 1_000,
+            proposal_receiver_outpoints: vec![proposal_outpoint.clone()],
+            expires_at: 100,
+            events,
+            closed: true,
+        };
+
+        // A session that never signed a proposal has no cap worth keeping.
+        let mut no_proposal = record.clone();
+        no_proposal.proposal_receiver_outpoints.clear();
+        assert!(
+            payjoin_receive_credit_cap_resolved(&storage, Network::Regtest, &no_proposal)
+                .await
+                .expect("resolve")
+        );
+
+        // The signed proposal is still broadcastable: keep the cap.
+        assert!(
+            !payjoin_receive_credit_cap_resolved(&storage, Network::Regtest, &record)
+                .await
+                .expect("resolve")
+        );
+
+        // Once a proposal receiver outpoint was detected the cap was applied.
+        let detect = |outpoint: String, txid: String| ReceiveIntentRecord {
+            intent_id: Uuid::new_v4(),
+            quote_id: "quote-1".to_string(),
+            state: ReceiveIntentState::Detected {
+                address: record.fallback_address.clone(),
+                txid,
+                outpoint,
+                amount_sat: 1_000,
+                block_height: 1,
+                created_at: 0,
+            },
+        };
+        let proposal_txid = proposal_outpoint
+            .split_once(':')
+            .expect("outpoint format")
+            .0
+            .to_string();
+        storage
+            .create_receive_intent_if_absent(&detect(proposal_outpoint.clone(), proposal_txid))
+            .await
+            .expect("create intent");
+        assert!(
+            payjoin_receive_credit_cap_resolved(&storage, Network::Regtest, &record)
+                .await
+                .expect("resolve")
+        );
+
+        // A settled original also resolves the cap: the proposal conflicts
+        // with it on the sender inputs and can never confirm.
+        let db = cdk_sqlite::mint::memory::empty().await.expect("in-memory db");
+        let storage = crate::storage::BdkStorage::new(Arc::new(db));
+        storage
+            .create_receive_intent_if_absent(&detect(
+                OutPoint::new(original_txid, 0).to_string(),
+                original_txid.to_string(),
+            ))
+            .await
+            .expect("create intent");
+        assert!(
+            payjoin_receive_credit_cap_resolved(&storage, Network::Regtest, &record)
+                .await
+                .expect("resolve")
+        );
+    }
+
+    #[test]
+    fn builds_payjoin_endpoint_from_normalized_fields() {
+        let payjoin = PayjoinV2::new(
+            "https://payjoin.example/pj".to_string(),
+            "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
+            "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG",
+            1_720_547_781,
+        )
+        .expect("valid Payjoin keys");
+
+        assert_eq!(
+            build_payjoin_endpoint(&payjoin).expect("endpoint builds"),
+            "https://payjoin.example/pj#EX1C4UC6ES-OH1QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ-RK1QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG"
+        );
+    }
+}

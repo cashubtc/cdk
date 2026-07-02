@@ -178,6 +178,7 @@ mod tests {
                 amount_issued: Amount::from(0),
                 amount_paid: Amount::from(0),
                 estimated_blocks: None,
+                payjoin: None,
                 used_by_operation: None,
                 version: 0,
             };
@@ -323,6 +324,7 @@ mod tests {
             amount_issued: Amount::from(100),
             amount_paid: Amount::from(100),
             estimated_blocks: None,
+            payjoin: None,
             used_by_operation: None,
             version: 0,
         };
@@ -341,6 +343,7 @@ mod tests {
             amount_issued: Amount::from(0),
             amount_paid: Amount::from(100),
             estimated_blocks: None,
+            payjoin: None,
             used_by_operation: None,
             version: 0,
         };
@@ -359,6 +362,7 @@ mod tests {
             amount_issued: Amount::from(0),
             amount_paid: Amount::from(0),
             estimated_blocks: None,
+            payjoin: None,
             used_by_operation: None,
             version: 0,
         };
@@ -377,6 +381,7 @@ mod tests {
             amount_issued: Amount::from(0),
             amount_paid: Amount::from(0),
             estimated_blocks: None,
+            payjoin: None,
             used_by_operation: None,
             version: 0,
         };

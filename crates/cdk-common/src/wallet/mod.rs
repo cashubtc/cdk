@@ -10,6 +10,7 @@ use bitcoin::hashes::{sha256, Hash, HashEngine};
 use cashu::amount::{FeeAndAmounts, KeysetFeeAndAmounts, SplitTarget};
 use cashu::nuts::nut07::ProofState;
 use cashu::nuts::nut18::PaymentRequest;
+use cashu::nuts::nut31::PayjoinV2;
 use cashu::nuts::AuthProof;
 use cashu::util::hex;
 use cashu::{nut00, PaymentMethod, Proof, Proofs, PublicKey};
@@ -201,7 +202,11 @@ pub struct MintQuote {
     #[serde(default)]
     pub amount_paid: Amount,
     /// Estimated confirmation target in blocks for onchain quotes
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_blocks: Option<u32>,
+    /// Optional onchain Payjoin instructions returned by the mint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payjoin: Option<PayjoinV2>,
     /// Operation ID that has reserved this quote (for saga pattern)
     #[serde(default)]
     pub used_by_operation: Option<String>,
@@ -238,6 +243,9 @@ pub struct MeltQuote {
     /// Selected fee option index for onchain quotes
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fee_index: Option<u32>,
+    /// Optional onchain Payjoin acceptance returned by the mint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payjoin: Option<PayjoinV2>,
     /// Payment method
     pub payment_method: PaymentMethod,
     /// Operation ID that has reserved this quote (for saga pattern)
@@ -274,6 +282,7 @@ impl MintQuote {
             amount_issued: Amount::ZERO,
             amount_paid: Amount::ZERO,
             estimated_blocks: None,
+            payjoin: None,
             used_by_operation: None,
             version: 0,
         }

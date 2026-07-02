@@ -10,11 +10,11 @@ use cdk_common::{
     MintQuoteBolt12Response, MintQuoteOnchainResponse, NotificationPayload, ProofState,
 };
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 /// Simple wrapper over `NotificationPayload<QuoteId>` which is a foreign type
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(bound = "T: Serialize + DeserializeOwned")]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(bound(serialize = "T: Serialize + DeserializeOwned"))]
 pub struct MintEvent<T>(NotificationPayload<T>)
 where
     T: Clone + Eq + PartialEq;

@@ -41,6 +41,7 @@ fn apply_mint_quote_response(quote: &mut MintQuote, response: &MintQuoteResponse
         MintQuoteResponse::Onchain(response) => {
             quote.amount_paid = response.amount_paid;
             quote.amount_issued = response.amount_issued;
+            quote.payjoin = response.payjoin.clone();
             quote.update_state_from_amounts();
         }
         MintQuoteResponse::Custom { response, .. } => {
@@ -636,6 +637,7 @@ mod tests {
                 pubkey: SecretKey::generate().public_key(),
                 amount_paid: Amount::from(1_000),
                 amount_issued: Amount::from(250),
+                payjoin: None,
             });
 
         assert_eq!(mint_quote_response_amount(&response), None);

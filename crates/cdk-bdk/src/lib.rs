@@ -22,6 +22,7 @@ use bdk_wallet::{KeychainKind, PersistedWallet, Wallet};
 use cdk_common::common::FeeReserve;
 use cdk_common::database::KVStore;
 use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
+use cdk_common::payjoin::payjoin_v2_is_expired_at;
 use cdk_common::payment::{
     CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse, MintPayment,
     OnchainSettings, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse,
@@ -38,13 +39,14 @@ pub use crate::chain::{BitcoinRpcConfig, ChainSource, EsploraConfig};
 pub use crate::error::Error;
 pub use crate::storage::{BdkStorage, FinalizedReceiveIntentRecord, FinalizedSendIntentRecord};
 pub use crate::types::{
-    BatchConfig, FeeEstimationConfig, PaymentMetadata, PaymentTier, SyncConfig,
-    DEFAULT_TARGET_BLOCK_TIME_SECS,
+    BatchConfig, FeeEstimationConfig, PayjoinConfig, PaymentMetadata, PaymentTier, SyncConfig,
+    DEFAULT_PAYJOIN_EXPIRY_SECS, DEFAULT_TARGET_BLOCK_TIME_SECS,
 };
 
 pub mod chain;
 pub mod error;
 pub(crate) mod fee;
+pub(crate) mod payjoin;
 pub mod receive;
 pub(crate) mod recovery;
 pub mod send;
@@ -63,6 +65,16 @@ pub(crate) struct BackgroundTasks {
     pub(crate) cancel: CancellationToken,
     pub(crate) sync: JoinHandle<()>,
     pub(crate) batch: JoinHandle<()>,
+    pub(crate) payjoin_receive: Option<JoinHandle<()>>,
+    pub(crate) payjoin_send: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct PayjoinOhttpKeysCache {
+    pub(crate) keys: ::payjoin::OhttpKeys,
+    pub(crate) fetched_at: u64,
+    pub(crate) directory_url: String,
+    pub(crate) ohttp_relay_url: String,
 }
 
 struct PaymentEventStream {
@@ -146,6 +158,12 @@ pub struct CdkBdk {
     pub(crate) sync_config: SyncConfig,
     /// Cache for fee rate estimation: Tier -> (sat_per_vb, timestamp)
     pub(crate) fee_rate_cache: Arc<Mutex<std::collections::HashMap<PaymentTier, (f64, u64)>>>,
+    /// Payjoin v2 configuration, when enabled by operator settings.
+    pub(crate) payjoin_config: Option<PayjoinConfig>,
+    /// Cache for Payjoin OHTTP keys fetched from the configured directory.
+    pub(crate) payjoin_ohttp_keys_cache: Arc<Mutex<Option<PayjoinOhttpKeysCache>>>,
+    /// Single-flight lock for OHTTP key fetches when the cache is empty or stale.
+    pub(crate) payjoin_ohttp_keys_fetch_lock: Arc<Mutex<()>>,
 }
 
 impl CdkBdk {
@@ -154,10 +172,7 @@ impl CdkBdk {
         address: &str,
         amount_sat: u64,
     ) -> Result<(), Error> {
-        let address = bdk_wallet::bitcoin::Address::from_str(address)
-            .map_err(|e| Error::Wallet(e.to_string()))?
-            .require_network(self.network)
-            .map_err(|e| Error::Wallet(e.to_string()))?;
+        let address = crate::util::parse_checked_address(address, self.network, Error::Wallet)?;
 
         let dust_limit = bdk_wallet::bitcoin::TxOut::minimal_non_dust(address.script_pubkey())
             .value
@@ -246,6 +261,7 @@ impl CdkBdk {
         sync_interval_secs: u64,
         shutdown_timeout_secs: Option<u64>,
         sync_config: Option<SyncConfig>,
+        payjoin_config: Option<PayjoinConfig>,
     ) -> Result<Self, Error> {
         let storage_dir_path = PathBuf::from(storage_dir_path);
         let storage_dir_path = storage_dir_path.join("bdk_wallet");
@@ -315,6 +331,86 @@ impl CdkBdk {
             sync_interval_secs,
             sync_config: sync_config.unwrap_or_default(),
             fee_rate_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            payjoin_config,
+            payjoin_ohttp_keys_cache: Arc::new(Mutex::new(None)),
+            payjoin_ohttp_keys_fetch_lock: Arc::new(Mutex::new(())),
+        })
+    }
+
+    async fn check_outgoing_payment_status_local(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<MakePaymentResponse, Error> {
+        let quote_id = match payment_identifier {
+            PaymentIdentifier::QuoteId(id) => id.to_string(),
+            _ => return Err(Error::UnsupportedOnchain),
+        };
+
+        if let Some(record) = self.storage.get_send_intent_by_quote_id(&quote_id).await? {
+            let total_spent = match &record.state {
+                crate::send::payment_intent::record::SendIntentState::Pending { .. }
+                | crate::send::payment_intent::record::SendIntentState::BatchClaimed { .. }
+                | crate::send::payment_intent::record::SendIntentState::CutThroughReserved {
+                    ..
+                }
+                | crate::send::payment_intent::record::SendIntentState::PayjoinNegotiating {
+                    ..
+                }
+                | crate::send::payment_intent::record::SendIntentState::Batched { .. } => {
+                    Amount::new(0, CurrencyUnit::Sat)
+                }
+                crate::send::payment_intent::record::SendIntentState::AwaitingConfirmation {
+                    fee_contribution_sat,
+                    ..
+                } => Amount::new(record.amount_sat + fee_contribution_sat, CurrencyUnit::Sat),
+                crate::send::payment_intent::record::SendIntentState::Failed { .. } => {
+                    Amount::new(0, CurrencyUnit::Sat)
+                }
+            };
+            let status = match record.state {
+                crate::send::payment_intent::record::SendIntentState::Pending { .. }
+                | crate::send::payment_intent::record::SendIntentState::BatchClaimed { .. }
+                | crate::send::payment_intent::record::SendIntentState::CutThroughReserved {
+                    ..
+                }
+                | crate::send::payment_intent::record::SendIntentState::PayjoinNegotiating {
+                    ..
+                }
+                | crate::send::payment_intent::record::SendIntentState::Batched { .. }
+                | crate::send::payment_intent::record::SendIntentState::AwaitingConfirmation {
+                    ..
+                } => MeltQuoteState::Pending,
+                crate::send::payment_intent::record::SendIntentState::Failed { .. } => {
+                    MeltQuoteState::Failed
+                }
+            };
+
+            return Ok(MakePaymentResponse {
+                payment_lookup_id: payment_identifier.clone(),
+                payment_proof: None,
+                status,
+                total_spent,
+            });
+        }
+
+        if let Some(record) = self
+            .storage
+            .get_finalized_intent_by_quote_id(&quote_id)
+            .await?
+        {
+            return Ok(MakePaymentResponse {
+                payment_lookup_id: payment_identifier.clone(),
+                payment_proof: Some(record.outpoint),
+                status: MeltQuoteState::Paid,
+                total_spent: Amount::new(record.total_spent_sat, CurrencyUnit::Sat),
+            });
+        }
+
+        Ok(MakePaymentResponse {
+            payment_lookup_id: payment_identifier.clone(),
+            payment_proof: None,
+            status: MeltQuoteState::Unknown,
+            total_spent: Amount::new(0, CurrencyUnit::Sat),
         })
     }
 }
@@ -400,6 +496,7 @@ impl MintPayment for CdkBdk {
 
         self.recover_receive_saga().await?;
         self.recover_send_saga().await?;
+        self.recover_payjoin_sessions_once().await?;
 
         let cancel = CancellationToken::new();
 
@@ -422,11 +519,39 @@ impl MintPayment for CdkBdk {
             })
             .await;
         });
+        let payjoin_receive_handle = if self.payjoin_config().is_some() {
+            let payjoin_self = self.clone();
+            let payjoin_cancel = cancel.clone();
+            Some(tokio::spawn(async move {
+                supervise("payjoin receive poller", payjoin_cancel, move |cancel| {
+                    let me = payjoin_self.clone();
+                    async move { me.run_payjoin_receive_poller(cancel).await }
+                })
+                .await;
+            }))
+        } else {
+            None
+        };
+        let payjoin_send_handle = if self.payjoin_config().is_some() {
+            let payjoin_self = self.clone();
+            let payjoin_cancel = cancel.clone();
+            Some(tokio::spawn(async move {
+                supervise("payjoin send poller", payjoin_cancel, move |cancel| {
+                    let me = payjoin_self.clone();
+                    async move { me.run_payjoin_send_poller(cancel).await }
+                })
+                .await;
+            }))
+        } else {
+            None
+        };
 
         *tasks_lock = Some(BackgroundTasks {
             cancel,
             sync: sync_handle,
             batch: batch_handle,
+            payjoin_receive: payjoin_receive_handle,
+            payjoin_send: payjoin_send_handle,
         });
 
         Ok(())
@@ -445,16 +570,31 @@ impl MintPayment for CdkBdk {
 
             let sync_aborter = bg.sync.abort_handle();
             let batch_aborter = bg.batch.abort_handle();
+            let payjoin_receive_aborter =
+                bg.payjoin_receive.as_ref().map(|task| task.abort_handle());
+            let payjoin_send_aborter = bg.payjoin_send.as_ref().map(|task| task.abort_handle());
 
             let joined = tokio::time::timeout(self.shutdown_timeout, async move {
                 let _ = bg.sync.await;
                 let _ = bg.batch.await;
+                if let Some(task) = bg.payjoin_receive {
+                    let _ = task.await;
+                }
+                if let Some(task) = bg.payjoin_send {
+                    let _ = task.await;
+                }
             })
             .await;
 
             if joined.is_err() {
                 sync_aborter.abort();
                 batch_aborter.abort();
+                if let Some(aborter) = payjoin_receive_aborter {
+                    aborter.abort();
+                }
+                if let Some(aborter) = payjoin_send_aborter {
+                    aborter.abort();
+                }
                 tracing::error!(
                     "cdk-bdk background tasks did not exit within {:?}; forced abort",
                     self.shutdown_timeout
@@ -494,6 +634,20 @@ impl MintPayment for CdkBdk {
             onchain_options.amount.clone().to_u64(),
         )?;
         let amount_sat = onchain_options.amount.clone().to_u64();
+        let requested_payjoin = Self::requested_payjoin(onchain_options.metadata.as_deref());
+        let payjoin_extra = match requested_payjoin {
+            Some(payjoin) => {
+                if payjoin_v2_is_expired_at(&payjoin, crate::util::unix_now()) {
+                    return Err(cdk_common::payment::Error::InvalidExpiry);
+                }
+                if self.payjoin_config().is_some() {
+                    Some(Self::accepted_payjoin_extra(&payjoin))
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
 
         // Estimate fee_reserve for each configured tier so the mint presents
         // only the operator-enabled options. The configured order owns the
@@ -528,7 +682,7 @@ impl MintPayment for CdkBdk {
             amount: onchain_options.amount,
             fee: Amount::new(cheapest.fee_reserve.into(), CurrencyUnit::Sat),
             state: MeltQuoteState::Unpaid,
-            extra_json: None,
+            extra_json: payjoin_extra,
             estimated_blocks: Some(cheapest.estimated_blocks),
             fee_options: Some(fee_options),
         })
@@ -547,6 +701,13 @@ impl MintPayment for CdkBdk {
         let address = onchain_options.address;
         let amount = onchain_options.amount;
         let quote_id = onchain_options.quote_id;
+        let requested_payjoin = Self::requested_payjoin(onchain_options.metadata.as_deref());
+        if requested_payjoin
+            .as_ref()
+            .is_some_and(|payjoin| payjoin_v2_is_expired_at(payjoin, crate::util::unix_now()))
+        {
+            return Err(cdk_common::payment::Error::InvalidExpiry);
+        }
 
         self.validate_send_amount(&address, amount.clone().to_u64())?;
 
@@ -563,6 +724,49 @@ impl MintPayment for CdkBdk {
             .tier_for_fee_index(onchain_options.fee_index)
             .map_err(Error::UnknownFeeIndex)?;
         let metadata = PaymentMetadata::from_optional_json(onchain_options.metadata.as_deref());
+        if let Some(payjoin) = requested_payjoin {
+            if self.payjoin_config().is_some() {
+                match self
+                    .start_payjoin_send(
+                        &quote_id,
+                        &address,
+                        amount_sat,
+                        max_fee_sat,
+                        tier,
+                        metadata.clone(),
+                        &payjoin,
+                    )
+                    .await
+                {
+                    // The send was prepared and persisted; the background poller
+                    // drives the negotiation and broadcasts the Payjoin tx or
+                    // the original fallback.
+                    Ok(response) => return Ok(response),
+                    // Only safe to fall back to a direct onchain send when the
+                    // Payjoin attempt failed *before* the signed original PSBT
+                    // was shared with the receiver. `start_payjoin_send` only
+                    // posts via the poller, so all of its failures are
+                    // pre-exposure and reported as `PayjoinSendNotStarted`.
+                    Err(Error::PayjoinSendNotStarted(err)) => {
+                        tracing::warn!(
+                            quote_id = %quote_id,
+                            error = %err,
+                            "Optional Payjoin send could not be started; falling back to direct onchain send"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            quote_id = %quote_id,
+                            error = %err,
+                            "Payjoin send failed after the original PSBT was shared; not \
+                             falling back to a direct send to avoid double-spending"
+                        );
+                        return Err(err.into());
+                    }
+                }
+            }
+        }
+
         let fee_estimate = self
             .estimate_onchain_fee_reserve(&address, amount_sat, tier)
             .await?;
@@ -617,14 +821,40 @@ impl MintPayment for CdkBdk {
             .wallet
             .reveal_next_address(KeychainKind::External);
         let address_str = address.address.to_string();
+        let quote_id = onchain_options.quote_id;
 
         wallet_with_db.persist().map_err(|err| {
             tracing::error!("Could not persist to bdk db: {}", err);
 
             Error::BdkPersist
         })?;
+        drop(wallet_with_db);
 
-        let quote_id = onchain_options.quote_id;
+        let extra_json = match tokio::time::timeout(
+            Duration::from_secs(3),
+            self.create_payjoin_receive_extra(&quote_id, &address.address, 0),
+        )
+        .await
+        {
+            Ok(Ok(extra_json)) => extra_json,
+            Ok(Err(err)) => {
+                tracing::warn!(
+                    quote_id = %quote_id,
+                    address = %address.address,
+                    "Could not create optional Payjoin receive session: {}",
+                    err
+                );
+                None
+            }
+            Err(_) => {
+                tracing::warn!(
+                    quote_id = %quote_id,
+                    address = %address.address,
+                    "Timed out creating optional Payjoin receive session"
+                );
+                None
+            }
+        };
 
         self.storage
             .track_receive_address(&address_str, &quote_id.to_string())
@@ -634,7 +864,7 @@ impl MintPayment for CdkBdk {
             request_lookup_id: PaymentIdentifier::QuoteId(quote_id),
             request: address_str,
             expiry: None,
-            extra_json: None,
+            extra_json,
         })
     }
 
@@ -675,7 +905,7 @@ impl MintPayment for CdkBdk {
             results.push(WaitPaymentResponse {
                 payment_identifier: payment_identifier.clone(),
                 payment_amount: Amount::new(record.amount_sat, CurrencyUnit::Sat),
-                payment_id: record.outpoint,
+                payment_id: record.payment_id.unwrap_or(record.outpoint),
             });
         }
 
@@ -691,65 +921,31 @@ impl MintPayment for CdkBdk {
             _ => return Err(Error::UnsupportedOnchain.into()),
         };
 
-        // 1. Check active intents
+        // 1. Drive active Payjoin intents. Normal runtime/background checks are
+        // allowed to advance negotiation or fall back to the original tx.
         if let Some(record) = self.storage.get_send_intent_by_quote_id(&quote_id).await? {
-            // `total_spent` is the actual amount spent (amount + fee) and is
-            // only reported once the payment has been made. Before the batch
-            // transaction has been built, the per-intent fee contribution is
-            // unknown, so we return `0` as a sentinel. This matches the
-            // convention used by other backends for non-terminal states.
-            let total_spent = match &record.state {
-                crate::send::payment_intent::record::SendIntentState::Pending { .. }
-                | crate::send::payment_intent::record::SendIntentState::Batched { .. } => {
-                    Amount::new(0, CurrencyUnit::Sat)
-                }
-                crate::send::payment_intent::record::SendIntentState::AwaitingConfirmation {
-                    fee_contribution_sat,
-                    ..
-                } => Amount::new(record.amount_sat + fee_contribution_sat, CurrencyUnit::Sat),
-                crate::send::payment_intent::record::SendIntentState::Failed { .. } => {
-                    Amount::new(0, CurrencyUnit::Sat)
-                }
-            };
-            let status = match record.state {
-                crate::send::payment_intent::record::SendIntentState::Pending { .. }
-                | crate::send::payment_intent::record::SendIntentState::Batched { .. }
-                | crate::send::payment_intent::record::SendIntentState::AwaitingConfirmation {
-                    ..
-                } => MeltQuoteState::Pending,
-                crate::send::payment_intent::record::SendIntentState::Failed { .. } => {
-                    MeltQuoteState::Failed
-                }
-            };
-
-            return Ok(MakePaymentResponse {
-                payment_lookup_id: payment_identifier.clone(),
-                payment_proof: None,
-                status,
-                total_spent,
-            });
+            if let crate::send::payment_intent::SendIntentAny::PayjoinNegotiating(intent) =
+                crate::send::payment_intent::from_record(&record)
+            {
+                self.process_payjoin_send_intent(intent).await?;
+            }
+            return Ok(self
+                .check_outgoing_payment_status_local(payment_identifier)
+                .await?);
         }
 
-        // 2. Check finalized tombstones
-        if let Some(record) = self
-            .storage
-            .get_finalized_intent_by_quote_id(&quote_id)
-            .await?
-        {
-            return Ok(MakePaymentResponse {
-                payment_lookup_id: payment_identifier.clone(),
-                payment_proof: Some(record.outpoint),
-                status: MeltQuoteState::Paid,
-                total_spent: Amount::new(record.total_spent_sat, CurrencyUnit::Sat),
-            });
-        }
+        Ok(self
+            .check_outgoing_payment_status_local(payment_identifier)
+            .await?)
+    }
 
-        Ok(MakePaymentResponse {
-            payment_lookup_id: payment_identifier.clone(),
-            payment_proof: None,
-            status: MeltQuoteState::Unknown,
-            total_spent: Amount::new(0, CurrencyUnit::Sat),
-        })
+    async fn check_outgoing_payment_status_only(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        Ok(self
+            .check_outgoing_payment_status_local(payment_identifier)
+            .await?)
     }
 
     fn is_payment_event_stream_active(&self) -> bool {
@@ -772,6 +968,7 @@ mod tests {
     use bdk_wallet::keys::bip39::Mnemonic;
     use cdk_common::common::FeeReserve;
     use cdk_common::payment::MintPayment;
+    use futures::future::join_all;
     use futures::StreamExt;
 
     use super::*;
@@ -833,9 +1030,61 @@ mod tests {
             sync_interval_secs,
             Some(shutdown_timeout_secs),
             None,
+            None,
         )?;
 
         Ok((backend, tmp))
+    }
+
+    /// Build a test instance with a Payjoin config so the send poller paths are
+    /// active. The directory/relay URLs are unreachable, which is fine: the
+    /// fallback/idempotency paths under test never reach the network (broadcast
+    /// goes to the bogus Esplora URL and is tolerated).
+    async fn build_test_instance_with_payjoin(
+        shutdown_timeout_secs: u64,
+    ) -> (CdkBdk, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mnemonic = Mnemonic::from_str(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .expect("mnemonic");
+        let kv = cdk_sqlite::mint::memory::empty()
+            .await
+            .expect("in-memory kv store");
+        let chain_source = ChainSource::Esplora(EsploraConfig {
+            url: "http://127.0.0.1:1".to_string(),
+            parallel_requests: 1,
+        });
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: Amount::new(1, CurrencyUnit::Sat).into(),
+            percent_fee_reserve: 0.02,
+        };
+        let payjoin_config = PayjoinConfig::new(
+            "http://127.0.0.1:1".to_string(),
+            "http://127.0.0.1:1".to_string(),
+            Some(3600),
+        )
+        .expect("valid payjoin config");
+
+        let backend = CdkBdk::new(
+            mnemonic,
+            Network::Regtest,
+            chain_source,
+            tmp.path().to_string_lossy().into_owned(),
+            fee_reserve,
+            Arc::new(kv),
+            None,
+            1,
+            0,
+            546,
+            60,
+            Some(shutdown_timeout_secs),
+            None,
+            Some(payjoin_config),
+        )
+        .expect("build payjoin CdkBdk test instance");
+
+        (backend, tmp)
     }
 
     async fn fund_backend_wallet(backend: &CdkBdk, amount_sat: u64) {
@@ -1259,6 +1508,460 @@ mod tests {
     use cdk_common::payment::OnchainOutgoingPaymentOptions;
     use cdk_common::QuoteId;
     use uuid::Uuid;
+
+    #[tokio::test]
+    async fn test_start_payjoin_send_pre_exposure_failure_is_recoverable() {
+        // A Payjoin send that fails before the original PSBT is shared with the
+        // receiver (here, because no Payjoin directory is configured) must be
+        // reported as `PayjoinSendNotStarted`. That is the only failure where
+        // `make_payment` may safely fall back to a direct onchain send; any
+        // other error means the original was already exposed and a second
+        // transaction could double-spend.
+        let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
+        fund_backend_wallet(&backend, 100_000).await;
+        let quote_id = QuoteId::UUID(Uuid::new_v4());
+        let payjoin = cdk_common::nuts::nut31::PayjoinV2::new(
+            "https://payjoin.example/pj".to_string(),
+            "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
+            "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG",
+            crate::util::unix_now() + 3600,
+        )
+        .expect("valid Payjoin keys");
+
+        let err = backend
+            .start_payjoin_send(
+                &quote_id,
+                "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
+                10_000,
+                1_000,
+                PaymentTier::Immediate,
+                PaymentMetadata::default(),
+                &payjoin,
+            )
+            .await
+            .expect_err("payjoin send without a configured directory must fail");
+
+        assert!(
+            matches!(err, Error::PayjoinSendNotStarted(_)),
+            "pre-exposure failures must be recoverable, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_check_outgoing_payment_recovers_payjoin_intent_without_config() {
+        use crate::send::payment_intent::record::SendIntentState;
+        use crate::send::payment_intent::{state as intent_state, SendIntent};
+
+        let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
+        let quote_id = QuoteId::UUID(Uuid::new_v4());
+        let address = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string();
+        let fallback_script = bdk_wallet::bitcoin::Address::from_str(&address)
+            .expect("valid fallback address")
+            .require_network(Network::Regtest)
+            .expect("regtest fallback address")
+            .script_pubkey();
+
+        let original_tx = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::all_zeros(), 0),
+                script_sig: Default::default(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: bdk_wallet::bitcoin::Amount::from_sat(10_000),
+                script_pubkey: fallback_script,
+            }],
+        };
+
+        SendIntent::<intent_state::PayjoinNegotiating>::new_payjoin(
+            &backend.storage,
+            quote_id.to_string(),
+            address,
+            10_000,
+            1_000,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+            bdk_wallet::bitcoin::consensus::serialize(&original_tx),
+            500,
+            Vec::new(),
+        )
+        .await
+        .expect("persist Payjoin negotiating intent");
+
+        let response = backend
+            .check_outgoing_payment(&PaymentIdentifier::QuoteId(quote_id.clone()))
+            .await
+            .expect("check outgoing payment");
+
+        assert_eq!(response.status, MeltQuoteState::Pending);
+        assert_eq!(response.total_spent, Amount::new(10_500, CurrencyUnit::Sat));
+
+        let stored = backend
+            .storage
+            .get_send_intent_by_quote_id(&quote_id.to_string())
+            .await
+            .expect("lookup send intent")
+            .expect("send intent remains active");
+        assert!(
+            matches!(stored.state, SendIntentState::AwaitingConfirmation { .. }),
+            "fallback recovery must move Payjoin intent into AwaitingConfirmation, got {:?}",
+            stored.state
+        );
+    }
+
+    #[tokio::test]
+    async fn test_status_only_payjoin_negotiating_intent_is_pending_without_progress() {
+        use crate::send::payment_intent::record::SendIntentState;
+        use crate::send::payment_intent::{state as intent_state, SendIntent};
+
+        let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
+        let quote_id = QuoteId::UUID(Uuid::new_v4());
+        let address = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string();
+        let fallback_script = bdk_wallet::bitcoin::Address::from_str(&address)
+            .expect("valid fallback address")
+            .require_network(Network::Regtest)
+            .expect("regtest fallback address")
+            .script_pubkey();
+        let original_tx = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::all_zeros(), 0),
+                script_sig: Default::default(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: bdk_wallet::bitcoin::Amount::from_sat(10_000),
+                script_pubkey: fallback_script,
+            }],
+        };
+
+        SendIntent::<intent_state::PayjoinNegotiating>::new_payjoin(
+            &backend.storage,
+            quote_id.to_string(),
+            address,
+            10_000,
+            1_000,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+            bdk_wallet::bitcoin::consensus::serialize(&original_tx),
+            500,
+            Vec::new(),
+        )
+        .await
+        .expect("persist Payjoin negotiating intent");
+
+        let response = backend
+            .check_outgoing_payment_status_only(&PaymentIdentifier::QuoteId(quote_id.clone()))
+            .await
+            .expect("status-only check");
+
+        assert_eq!(response.status, MeltQuoteState::Pending);
+        assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Sat));
+
+        let stored = backend
+            .storage
+            .get_send_intent_by_quote_id(&quote_id.to_string())
+            .await
+            .expect("lookup send intent")
+            .expect("send intent remains active");
+        assert!(
+            matches!(stored.state, SendIntentState::PayjoinNegotiating { .. }),
+            "status-only recovery must not progress Payjoin intent, got {:?}",
+            stored.state
+        );
+    }
+
+    #[tokio::test]
+    async fn test_status_only_terminal_and_unknown_intents() {
+        use crate::send::payment_intent::SendIntent;
+
+        let backend = build_test_instance(5).await;
+        let failed_quote_id = QuoteId::UUID(Uuid::new_v4());
+        let pending = SendIntent::new(
+            &backend.storage,
+            failed_quote_id.to_string(),
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            30_000,
+            2_000,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await
+        .expect("create Pending send intent");
+        pending
+            .fail(&backend.storage, "fee too high".to_string())
+            .await
+            .expect("transition Pending to Failed");
+
+        let failed = backend
+            .check_outgoing_payment_status_only(&PaymentIdentifier::QuoteId(
+                failed_quote_id.clone(),
+            ))
+            .await
+            .expect("status-only failed");
+        assert_eq!(failed.status, MeltQuoteState::Failed);
+        assert_eq!(failed.total_spent, Amount::new(0, CurrencyUnit::Sat));
+
+        let paid_quote_id = QuoteId::UUID(Uuid::new_v4());
+        let pending = SendIntent::new(
+            &backend.storage,
+            paid_quote_id.to_string(),
+            "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            40_000,
+            2_000,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+        )
+        .await
+        .expect("create Pending send intent");
+        let awaiting = pending
+            .assign_to_batch(&backend.storage, Uuid::new_v4())
+            .await
+            .expect("transition Pending to Batched")
+            .mark_broadcast(
+                &backend.storage,
+                "deadbeef".to_string(),
+                "deadbeef:1".to_string(),
+                321,
+            )
+            .await
+            .expect("transition Batched to AwaitingConfirmation");
+        awaiting
+            .finalize(&backend.storage)
+            .await
+            .expect("finalize send intent");
+
+        let paid = backend
+            .check_outgoing_payment_status_only(&PaymentIdentifier::QuoteId(paid_quote_id))
+            .await
+            .expect("status-only paid");
+        assert_eq!(paid.status, MeltQuoteState::Paid);
+        assert_eq!(paid.payment_proof.as_deref(), Some("deadbeef:1"));
+        assert_eq!(paid.total_spent, Amount::new(40_321, CurrencyUnit::Sat));
+
+        let unknown = backend
+            .check_outgoing_payment_status_only(&PaymentIdentifier::QuoteId(QuoteId::UUID(
+                Uuid::new_v4(),
+            )))
+            .await
+            .expect("status-only unknown");
+        assert_eq!(unknown.status, MeltQuoteState::Unknown);
+        assert_eq!(unknown.total_spent, Amount::new(0, CurrencyUnit::Sat));
+    }
+
+    #[tokio::test]
+    async fn test_ohttp_key_fetch_is_single_flight() {
+        let _guard = crate::payjoin::lock_test_ohttp_fetch().await;
+        crate::payjoin::configure_test_ohttp_fetch(Duration::from_millis(100), false);
+        let (backend, _tmp) = build_test_instance_with_payjoin(5).await;
+        let address =
+            bdk_wallet::bitcoin::Address::from_str("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080")
+                .expect("valid fallback address")
+                .require_network(Network::Regtest)
+                .expect("regtest fallback address");
+
+        let futures = (0..8).map(|_| {
+            let backend = backend.clone();
+            let address = address.clone();
+            let quote_id = QuoteId::UUID(Uuid::new_v4());
+            async move {
+                backend
+                    .create_payjoin_receive_extra(&quote_id, &address, 0)
+                    .await
+            }
+        });
+
+        let results = join_all(futures).await;
+        let fetch_calls = crate::payjoin::test_ohttp_fetch_calls();
+        crate::payjoin::disable_test_ohttp_fetch();
+
+        assert!(results.iter().all(Result::is_ok));
+        assert_eq!(
+            fetch_calls, 1,
+            "concurrent cache misses must collapse to one OHTTP key fetch"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_incoming_payment_request_falls_back_on_ohttp_timeout() {
+        let _guard = crate::payjoin::lock_test_ohttp_fetch().await;
+        crate::payjoin::configure_test_ohttp_fetch(Duration::from_secs(5), false);
+        let (backend, _tmp) = build_test_instance_with_payjoin(5).await;
+        let quote_id = QuoteId::UUID(Uuid::new_v4());
+        let started = std::time::Instant::now();
+
+        let response = backend
+            .create_incoming_payment_request(IncomingPaymentOptions::Onchain(
+                cdk_common::payment::OnchainIncomingPaymentOptions { quote_id },
+            ))
+            .await
+            .expect("plain onchain quote should be returned");
+        crate::payjoin::disable_test_ohttp_fetch();
+
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "quote creation should be bounded by the Payjoin metadata timeout"
+        );
+        assert!(response.extra_json.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_recover_payjoin_receive_sessions_without_config() {
+        use crate::storage::PayjoinReceiveSessionRecord;
+
+        let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
+        let now = crate::util::unix_now();
+        let expired_quote = QuoteId::UUID(Uuid::new_v4()).to_string();
+        let old_closed_quote = QuoteId::UUID(Uuid::new_v4()).to_string();
+        let open_quote = QuoteId::UUID(Uuid::new_v4()).to_string();
+
+        backend
+            .storage
+            .put_payjoin_receive_session(&PayjoinReceiveSessionRecord {
+                quote_id: expired_quote.clone(),
+                fallback_address: "bcrt1qexpired".to_string(),
+                amount_sat: 1_000,
+                proposal_receiver_outpoints: Vec::new(),
+                expires_at: now.saturating_sub(1),
+                events: Vec::new(),
+                closed: false,
+            })
+            .await
+            .expect("store expired session");
+
+        backend
+            .storage
+            .put_payjoin_receive_session(&PayjoinReceiveSessionRecord {
+                quote_id: old_closed_quote.clone(),
+                fallback_address: "bcrt1qclosed".to_string(),
+                amount_sat: 1_000,
+                proposal_receiver_outpoints: Vec::new(),
+                expires_at: now.saturating_sub(7 * 24 * 60 * 60).saturating_sub(1),
+                events: Vec::new(),
+                closed: true,
+            })
+            .await
+            .expect("store old closed session");
+
+        backend
+            .storage
+            .put_payjoin_receive_session(&PayjoinReceiveSessionRecord {
+                quote_id: open_quote.clone(),
+                fallback_address: "bcrt1qopen".to_string(),
+                amount_sat: 1_000,
+                proposal_receiver_outpoints: Vec::new(),
+                expires_at: now + 60,
+                events: Vec::new(),
+                closed: false,
+            })
+            .await
+            .expect("store open session");
+
+        backend
+            .recover_payjoin_sessions_once()
+            .await
+            .expect("recover payjoin sessions");
+
+        let expired = backend
+            .storage
+            .get_payjoin_receive_session(&expired_quote)
+            .await
+            .expect("lookup expired")
+            .expect("expired session remains");
+        assert!(expired.closed, "expired session should be closed");
+
+        assert!(
+            backend
+                .storage
+                .get_payjoin_receive_session(&old_closed_quote)
+                .await
+                .expect("lookup old closed")
+                .is_none(),
+            "old closed session should be pruned"
+        );
+
+        let open = backend
+            .storage
+            .get_payjoin_receive_session(&open_quote)
+            .await
+            .expect("lookup open")
+            .expect("open session remains");
+        assert!(!open.closed, "unexpired open session should stay open");
+    }
+
+    #[tokio::test]
+    async fn test_process_payjoin_send_intent_unreplayable_broadcasts_original_fallback() {
+        // An empty/unreplayable event log (e.g. an expired session) must cause
+        // the poller to broadcast the stored signed original as the fallback,
+        // and stage the existing intent for the quote.
+        use crate::send::payment_intent::record::SendIntentState;
+        use crate::send::payment_intent::{state as intent_state, SendIntent};
+
+        let (backend, _tmp) = build_test_instance_with_payjoin(5).await;
+        let quote_id = QuoteId::UUID(Uuid::new_v4());
+        let address = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string();
+        let fallback_script = bdk_wallet::bitcoin::Address::from_str(&address)
+            .expect("valid fallback address")
+            .require_network(Network::Regtest)
+            .expect("regtest fallback address")
+            .script_pubkey();
+
+        let original_tx = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::all_zeros(), 0),
+                script_sig: Default::default(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: bdk_wallet::bitcoin::Amount::from_sat(10_000),
+                script_pubkey: fallback_script,
+            }],
+        };
+        let original_tx_bytes = bdk_wallet::bitcoin::consensus::serialize(&original_tx);
+
+        let intent = SendIntent::<intent_state::PayjoinNegotiating>::new_payjoin(
+            &backend.storage,
+            quote_id.to_string(),
+            address,
+            10_000,
+            1_000,
+            PaymentTier::Immediate,
+            PaymentMetadata::default(),
+            original_tx_bytes,
+            500,
+            // Empty event log: `replay_event_log` returns an error, so the
+            // poller takes the original-fallback path.
+            Vec::new(),
+        )
+        .await
+        .expect("persist payjoin intent");
+
+        backend
+            .process_payjoin_send_intent(intent)
+            .await
+            .expect("process intent");
+
+        let intent = backend
+            .storage
+            .get_send_intent_by_quote_id(&quote_id.to_string())
+            .await
+            .expect("lookup send intent")
+            .expect("fallback must keep the send intent");
+        assert_eq!(intent.amount_sat, 10_000);
+        assert!(
+            matches!(intent.state, SendIntentState::AwaitingConfirmation { .. }),
+            "fallback must move Payjoin intent into AwaitingConfirmation, got {:?}",
+            intent.state
+        );
+    }
 
     /// Build an onchain outgoing payment option with a fresh quote id.
     fn onchain_options_for(amount_sat: u64) -> (QuoteId, OutgoingPaymentOptions) {
