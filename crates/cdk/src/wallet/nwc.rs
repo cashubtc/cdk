@@ -10,7 +10,7 @@
 //! | `get_balance`       | [`Wallet::total_balance`]                           |
 //! | `make_invoice`      | [`Wallet::mint_quote`] (bolt11)                     |
 //! | `pay_invoice`       | [`Wallet::melt_quote`] + [`Wallet::prepare_melt`]   |
-//! | `lookup_invoice`    | transaction history + active mint quotes           |
+//! | `lookup_invoice`    | transaction history + active mint/melt quotes      |
 //! | `list_transactions` | [`Wallet::list_transactions`]                       |
 //!
 //! ## Units
@@ -28,7 +28,7 @@ use async_trait::async_trait;
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::Network;
 use cdk_common::nut00::KnownMethod;
-use cdk_common::wallet::{Transaction, TransactionDirection};
+use cdk_common::wallet::{MeltQuote, Transaction, TransactionDirection};
 use cdk_common::{PaymentMethod, SECP256K1};
 use cdk_nwc::nip47::{
     ErrorCode, GetBalanceResponse, GetInfoResponse, ListTransactionsRequest, LookupInvoiceRequest,
@@ -234,6 +234,31 @@ fn transaction_to_nip47(
         created_at: Timestamp::from(tx.timestamp),
         expires_at: None,
         settled_at: Some(Timestamp::from(tx.timestamp)),
+        metadata: None,
+    })
+}
+
+/// Convert an active wallet melt quote into a pending outgoing NIP-47 transaction.
+fn pending_melt_quote_to_nip47(
+    quote: &MeltQuote,
+    unit: &CurrencyUnit,
+    payment_hash: String,
+) -> Result<LookupInvoiceResponse, NIP47Error> {
+    let created_at = invoice_created_at(&quote.request).unwrap_or_else(|| Timestamp::from(0));
+
+    Ok(LookupInvoiceResponse {
+        transaction_type: Some(TransactionType::Outgoing),
+        state: Some(cdk_nwc::nip47::TransactionState::Pending),
+        invoice: Some(quote.request.clone()),
+        description: None,
+        description_hash: None,
+        preimage: None,
+        payment_hash,
+        amount: amount_to_msat(quote.amount, unit)?,
+        fees_paid: amount_to_msat(quote.fee_reserve, unit)?,
+        created_at,
+        expires_at: Some(Timestamp::from(quote.expiry)),
+        settled_at: None,
         metadata: None,
     })
 }
@@ -449,6 +474,19 @@ impl cdk_nwc::NwcRequestHandler for WalletNwcHandler {
             }
         }
 
+        // Outgoing payments that are quoted or in progress but not yet in history.
+        let quotes = self
+            .wallet
+            .get_active_melt_quotes()
+            .await
+            .map_err(|e| nip47_err(ErrorCode::Internal, e.to_string()))?;
+
+        for quote in quotes {
+            if payment_hash_of(&quote.request).as_deref() == Some(target_hash.as_str()) {
+                return pending_melt_quote_to_nip47(&quote, unit, target_hash);
+            }
+        }
+
         Err(nip47_err(ErrorCode::NotFound, "invoice not found"))
     }
 
@@ -500,7 +538,8 @@ mod tests {
 
     use cdk_common::database::WalletDatabase;
     use cdk_common::mint_url::MintUrl;
-    use cdk_common::wallet::MintQuote;
+    use cdk_common::wallet::{MeltQuote, MintQuote};
+    use cdk_common::MeltQuoteState;
 
     use crate::nuts::{MintInfo, MintMethodSettings, NUT04Settings, Nuts};
     use crate::wallet::test_utils::MockMintConnector;
@@ -673,6 +712,70 @@ mod tests {
         );
         assert_eq!(transaction.created_at, invoice_created_at);
         assert_eq!(transaction.expires_at, Some(Timestamp::from(expiry)));
+    }
+
+    #[tokio::test]
+    async fn lookup_active_melt_quote_returns_pending_outgoing_invoice() {
+        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("mint url");
+        let wallet = Wallet::new(
+            "https://mint.example.com",
+            CurrencyUnit::Sat,
+            localstore.clone(),
+            [0x42; 64],
+            None,
+        )
+        .expect("wallet");
+        let expiry = 9_999_999_999;
+
+        localstore
+            .add_melt_quote(MeltQuote {
+                id: "melt-quote-id".to_string(),
+                mint_url: Some(mint_url),
+                unit: CurrencyUnit::Sat,
+                amount: Amount::from(10u64),
+                request: TEST_BOLT11.to_string(),
+                fee_reserve: Amount::from(2u64),
+                state: MeltQuoteState::Unpaid,
+                expiry,
+                payment_proof: None,
+                estimated_blocks: None,
+                fee_index: None,
+                payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
+                used_by_operation: None,
+                version: 0,
+            })
+            .await
+            .expect("add melt quote");
+
+        let handler = WalletNwcHandler::new(Arc::new(wallet), None);
+        let payment_hash = payment_hash_of(TEST_BOLT11).expect("payment hash");
+        let invoice_created_at = invoice_created_at(TEST_BOLT11).expect("invoice created at");
+        let transaction = cdk_nwc::NwcRequestHandler::lookup_invoice(
+            &handler,
+            LookupInvoiceRequest {
+                payment_hash: Some(payment_hash.clone()),
+                invoice: None,
+            },
+        )
+        .await
+        .expect("lookup invoice");
+
+        assert_eq!(
+            transaction.transaction_type,
+            Some(TransactionType::Outgoing)
+        );
+        assert_eq!(
+            transaction.state,
+            Some(cdk_nwc::nip47::TransactionState::Pending)
+        );
+        assert_eq!(transaction.invoice.as_deref(), Some(TEST_BOLT11));
+        assert_eq!(transaction.payment_hash, payment_hash);
+        assert_eq!(transaction.amount, 10_000);
+        assert_eq!(transaction.fees_paid, 2_000);
+        assert_eq!(transaction.created_at, invoice_created_at);
+        assert_eq!(transaction.expires_at, Some(Timestamp::from(expiry)));
+        assert_eq!(transaction.settled_at, None);
     }
 
     #[tokio::test]
