@@ -685,7 +685,7 @@ async fn test_fake_mint_with_wrong_witness() {
     let secret_key = SecretKey::generate();
 
     request
-        .sign(secret_key)
+        .sign(&secret_key)
         .expect("failed to sign the mint request");
 
     let response = http_client
@@ -750,7 +750,7 @@ async fn test_fake_mint_inflated() {
 
     if let Some(secret_key) = quote_info.secret_key {
         mint_request
-            .sign(secret_key)
+            .sign(&secret_key)
             .expect("failed to sign the mint request");
     }
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
@@ -823,7 +823,7 @@ async fn test_fake_mint_inflated_does_not_consume_quote() {
         signature: None,
     };
     inflated_request
-        .sign(secret_key.clone())
+        .sign(&secret_key)
         .expect("failed to sign inflated mint request");
 
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
@@ -852,7 +852,7 @@ async fn test_fake_mint_inflated_does_not_consume_quote() {
         signature: None,
     };
     valid_request
-        .sign(secret_key.clone())
+        .sign(&secret_key)
         .expect("failed to sign valid mint request");
 
     let valid_response = http_client
@@ -882,7 +882,7 @@ async fn test_fake_mint_inflated_does_not_consume_quote() {
         signature: None,
     };
     second_valid_request
-        .sign(secret_key)
+        .sign(&secret_key)
         .expect("failed to sign second valid mint request");
 
     let second_response = http_client
@@ -953,7 +953,7 @@ async fn test_fake_mint_concurrent_same_quote_different_outputs() {
         signature: None,
     };
     request_one
-        .sign(secret_key.clone())
+        .sign(&secret_key)
         .expect("failed to sign first request");
 
     let mut request_two = MintRequest {
@@ -962,7 +962,7 @@ async fn test_fake_mint_concurrent_same_quote_different_outputs() {
         signature: None,
     };
     request_two
-        .sign(secret_key)
+        .sign(&secret_key)
         .expect("failed to sign second request");
 
     let (result_one, result_two) = tokio::join!(
@@ -1071,7 +1071,7 @@ async fn test_fake_mint_multiple_units() {
 
     if let Some(secret_key) = quote_info.secret_key {
         mint_request
-            .sign(secret_key)
+            .sign(&secret_key)
             .expect("failed to sign the mint request");
     }
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
