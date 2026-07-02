@@ -246,8 +246,8 @@ async fn nwc_e2e_full_flow() {
             invoice: fake_invoice.to_string(),
             amount: None,
         })
-    .await
-    .expect("pay_invoice");
+        .await
+        .expect("pay_invoice");
     // Fake wallet may not return a preimage; the key assertion is that the
     // full NWC round-trip (client → relay → service → wallet → mint) succeeded.
     assert!(pay_resp.fees_paid.is_some());
