@@ -31,6 +31,15 @@ pub struct NwcService {
 }
 
 impl NwcService {
+    fn clear_finished_task(task: &mut Option<(JoinHandle<()>, CancellationToken)>) {
+        if task
+            .as_ref()
+            .is_some_and(|(handle, _)| handle.is_finished())
+        {
+            drop(task.take());
+        }
+    }
+
     /// Shared construction logic for [`Self::create`] and [`Self::restore`].
     fn build(
         wallet: &Arc<Wallet>,
@@ -188,6 +197,8 @@ impl NwcService {
             .lock()
             .map_err(|_| FfiError::internal("nwc service lock poisoned"))?;
 
+        Self::clear_finished_task(&mut guard);
+
         if guard.is_some() {
             return Err(FfiError::internal("nwc service is already running"));
         }
@@ -228,7 +239,12 @@ impl NwcService {
 
     /// Whether the background service is currently running.
     pub fn is_running(&self) -> bool {
-        self.task.lock().map(|g| g.is_some()).unwrap_or(false)
+        let Ok(mut guard) = self.task.lock() else {
+            return false;
+        };
+
+        Self::clear_finished_task(&mut guard);
+        guard.is_some()
     }
 }
 
