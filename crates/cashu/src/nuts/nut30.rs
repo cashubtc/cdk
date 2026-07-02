@@ -27,14 +27,10 @@ pub struct MintQuoteOnchainRequest {
 ///
 /// Response containing the onchain quote details.
 ///
-/// `deny_unknown_fields` is intentional: the `NotificationPayload` enum is
-/// `#[serde(untagged)]` and several quote-response variants share a large
-/// overlap of field names. Rejecting unknown fields ensures an onchain payload
-/// cannot silently deserialize as another method (for example `MintQuoteBolt12Response`
-/// which carries an `amount` field Onchain does not have).
+/// Unknown fields are accepted to preserve forward compatibility when mints
+/// add optional onchain extensions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "Q: Serialize + DeserializeOwned")]
-#[serde(deny_unknown_fields)]
 pub struct MintQuoteOnchainResponse<Q> {
     /// Quote Id
     pub quote: Q,
@@ -152,14 +148,10 @@ pub struct MeltQuoteOnchainFeeOption {
 /// The `POST /v1/melt/quote/onchain` endpoint returns one quote with one or
 /// more `fee_options`. The wallet chooses one option when executing the quote.
 ///
-/// `deny_unknown_fields` is intentional: the `NotificationPayload` enum is
-/// `#[serde(untagged)]` and melt-quote responses for different methods share
-/// many field names. Rejecting unknown fields ensures an onchain payload cannot
-/// silently deserialize as `MeltQuoteBolt11Response` (which carries `fee_reserve`
-/// at the top level, while onchain carries it inside `fee_options`).
+/// Unknown fields are accepted to preserve forward compatibility when mints
+/// add optional onchain extensions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "Q: Serialize + DeserializeOwned")]
-#[serde(deny_unknown_fields)]
 pub struct MeltQuoteOnchainResponse<Q> {
     /// Quote Id
     pub quote: Q,
@@ -327,6 +319,46 @@ mod tests {
         let deserialized: MeltQuoteOnchainResponse<String> =
             serde_json::from_str(&serialized).unwrap();
         assert_eq!(deserialized.outpoint, None);
+    }
+
+    #[test]
+    fn test_mint_quote_onchain_response_tolerates_unknown_fields() {
+        // Responses from newer mints may carry additional optional fields
+        // (e.g. payjoin instructions); released wallets must not reject them.
+        let encoded = r#"{
+            "quote": "DSGLX9kevM...",
+            "request": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            "unit": "sat",
+            "expiry": 1701704757,
+            "pubkey": "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+            "amount_paid": 100000,
+            "amount_issued": 0,
+            "payjoin": {"endpoint": "https://payjoin.example/pj"}
+        }"#;
+
+        let deserialized: MintQuoteOnchainResponse<String> = serde_json::from_str(encoded).unwrap();
+        assert_eq!(deserialized.quote, "DSGLX9kevM...");
+        assert_eq!(deserialized.amount_paid, Amount::from(100000));
+    }
+
+    #[test]
+    fn test_melt_quote_onchain_response_tolerates_unknown_fields() {
+        let encoded = r#"{
+            "quote": "TRmjduhIsPxd...",
+            "amount": 100000,
+            "unit": "sat",
+            "state": "PENDING",
+            "expiry": 1701704757,
+            "request": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            "fee_options": [{"fee_index": 0, "fee_reserve": 5000, "estimated_blocks": 1}],
+            "selected_fee_index": null,
+            "outpoint": null,
+            "payjoin": {"endpoint": "https://payjoin.example/pj"}
+        }"#;
+
+        let deserialized: MeltQuoteOnchainResponse<String> = serde_json::from_str(encoded).unwrap();
+        assert_eq!(deserialized.quote, "TRmjduhIsPxd...");
+        assert_eq!(deserialized.state, MeltQuoteState::Pending);
     }
 
     #[test]
