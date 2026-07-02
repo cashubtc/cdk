@@ -302,6 +302,15 @@ mod tests {
     }
 
     #[test]
+    fn test_mint_backup_with_timestamp_preserves_fields() {
+        let mints = vec![MintUrl::from_str("https://mint.example.com").unwrap()];
+        let backup = MintBackup::with_timestamp(mints.clone(), 42);
+
+        assert_eq!(backup.mints, mints);
+        assert_eq!(backup.timestamp, 42);
+    }
+
+    #[test]
     fn test_mint_backup_serialization() {
         let mints = vec![
             MintUrl::from_str("https://mint.example.com").unwrap(),
@@ -330,6 +339,8 @@ mod tests {
         // Verify event properties
         assert_eq!(event.kind, Kind::Custom(KIND_APPLICATION_SPECIFIC_DATA));
         assert_eq!(event.pubkey, keys.public_key());
+        assert!(!event.content.is_empty());
+        assert_ne!(event.content, serde_json::to_string(&backup).unwrap());
 
         // Verify tags
         let has_d_tag = event
@@ -392,6 +403,45 @@ mod tests {
 
         let result = decrypt_backup_event(&keys, &event);
         assert!(matches!(result, Err(Error::MissingIdentifierTag(_))));
+    }
+
+    #[test]
+    fn test_decrypt_requires_d_tag_with_exact_mint_list_identifier() {
+        let keys = test_keys();
+        let backup = MintBackup::with_timestamp(vec![], 1703721600);
+        let plaintext = serde_json::to_string(&backup).unwrap();
+        let encrypted = nip44::encrypt(
+            keys.secret_key(),
+            &keys.public_key(),
+            plaintext.clone(),
+            Version::V2,
+        )
+        .unwrap();
+
+        let wrong_identifier = EventBuilder::new(
+            Kind::Custom(KIND_APPLICATION_SPECIFIC_DATA),
+            encrypted.clone(),
+        )
+        .tag(Tag::identifier("not-mint-list"))
+        .sign_with_keys(&keys)
+        .unwrap();
+        assert!(matches!(
+            decrypt_backup_event(&keys, &wrong_identifier),
+            Err(Error::MissingIdentifierTag(_))
+        ));
+
+        let mint_list_content_on_wrong_tag =
+            EventBuilder::new(Kind::Custom(KIND_APPLICATION_SPECIFIC_DATA), encrypted)
+                .tag(Tag::custom(
+                    nostr_sdk::TagKind::Custom(std::borrow::Cow::Borrowed("client")),
+                    [MINT_LIST_IDENTIFIER],
+                ))
+                .sign_with_keys(&keys)
+                .unwrap();
+        assert!(matches!(
+            decrypt_backup_event(&keys, &mint_list_content_on_wrong_tag),
+            Err(Error::MissingIdentifierTag(_))
+        ));
     }
 
     #[test]

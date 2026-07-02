@@ -602,6 +602,19 @@ mod tests {
     }
 
     #[test]
+    fn test_route_path_specificity_rejects_nonmatching_wildcard_and_accepts_static_exact() {
+        assert_eq!(
+            RoutePath::Wildcard("/v1/mint/".to_string())
+                .match_specificity(&RoutePath::Melt("bolt11".to_string())),
+            None
+        );
+        assert_eq!(
+            RoutePath::Swap.match_specificity(&RoutePath::Swap),
+            Some(usize::MAX)
+        );
+    }
+
+    #[test]
     fn test_payment_method_routes_match_case_insensitively() {
         let cases = [
             (
@@ -624,6 +637,36 @@ mod tests {
 
         for (configured, request) in cases {
             assert_eq!(configured.match_specificity(&request), Some(usize::MAX));
+        }
+    }
+
+    #[test]
+    fn test_payment_method_routes_reject_wrong_route_or_method() {
+        let cases = [
+            (
+                RoutePath::MintQuote("bolt11".to_string()),
+                RoutePath::MintQuote("bolt12".to_string()),
+            ),
+            (
+                RoutePath::Mint("bolt11".to_string()),
+                RoutePath::Mint("bolt12".to_string()),
+            ),
+            (
+                RoutePath::MeltQuote("bolt11".to_string()),
+                RoutePath::MeltQuote("bolt12".to_string()),
+            ),
+            (
+                RoutePath::Melt("bolt11".to_string()),
+                RoutePath::Melt("bolt12".to_string()),
+            ),
+            (
+                RoutePath::Mint("bolt11".to_string()),
+                RoutePath::Melt("bolt11".to_string()),
+            ),
+        ];
+
+        for (configured, request) in cases {
+            assert_eq!(configured.match_specificity(&request), None);
         }
     }
 

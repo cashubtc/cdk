@@ -514,6 +514,7 @@ mod tests {
     use super::*;
     use crate::nut00::KnownMethod;
     use crate::nut04::MintMethodOptions;
+    use crate::{Amount, Method, PaymentMethod, RoutePath};
 
     #[test]
     fn test_des_mint_into() {
@@ -720,5 +721,165 @@ mod tests {
         assert!(!parsed["nuts"]["15"].is_null());
         assert!(parsed["nuts"]["15"]["methods"].is_array());
         assert_eq!(parsed["nuts"]["15"]["methods"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn mint_version_display_uses_name_and_version() {
+        let version = MintVersion::new("cdk".to_string(), "1.2.3".to_string());
+
+        assert_eq!(version.to_string(), "cdk/1.2.3");
+    }
+
+    #[test]
+    fn mint_info_builder_preserves_all_fields() {
+        let pubkey = PublicKey::from_hex(
+            "0283bf290884eed3a7ca2663fc0260de2e2064d6b355ea13f98dec004b7a7ead99",
+        )
+        .unwrap();
+        let contact = vec![ContactInfo::new(
+            "email".to_string(),
+            "mint@example.com".to_string(),
+        )];
+        let nuts = Nuts::new().nut07(true).nut08(true);
+
+        let info = MintInfo::new()
+            .name("Test mint")
+            .pubkey(pubkey)
+            .version(MintVersion::new("cdk".to_string(), "1.2.3".to_string()))
+            .description("short")
+            .long_description("long")
+            .contact_info(contact.clone())
+            .nuts(nuts.clone())
+            .icon_url("https://example.com/icon.png")
+            .motd("hello")
+            .time(123_u64)
+            .tos_url("https://example.com/tos");
+
+        assert_eq!(info.name.as_deref(), Some("Test mint"));
+        assert_eq!(info.pubkey, Some(pubkey));
+        assert_eq!(
+            info.version.as_ref().map(ToString::to_string).as_deref(),
+            Some("cdk/1.2.3")
+        );
+        assert_eq!(info.description.as_deref(), Some("short"));
+        assert_eq!(info.description_long.as_deref(), Some("long"));
+        assert_eq!(info.contact, Some(contact));
+        assert_eq!(info.nuts, nuts);
+        assert_eq!(
+            info.icon_url.as_deref(),
+            Some("https://example.com/icon.png")
+        );
+        assert_eq!(info.motd.as_deref(), Some("hello"));
+        assert_eq!(info.time, Some(123));
+        assert_eq!(info.tos_url.as_deref(), Some("https://example.com/tos"));
+    }
+
+    #[test]
+    fn mint_info_auth_helpers_return_configured_values() {
+        let clear_endpoint = ProtectedEndpoint::new(Method::Get, RoutePath::Swap);
+        let blind_endpoint = ProtectedEndpoint::new(
+            Method::Post,
+            RoutePath::Mint(PaymentMethod::Known(KnownMethod::Bolt11).to_string()),
+        );
+        let info = MintInfo {
+            nuts: Nuts {
+                nut21: Some(ClearAuthSettings::new(
+                    "https://issuer.example/.well-known/openid-configuration".to_string(),
+                    "wallet-client".to_string(),
+                    vec![clear_endpoint.clone()],
+                )),
+                nut22: Some(BlindAuthSettings::new(42, vec![blind_endpoint.clone()])),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let protected = info.protected_endpoints();
+
+        assert_eq!(
+            info.openid_discovery().as_deref(),
+            Some("https://issuer.example/.well-known/openid-configuration")
+        );
+        assert_eq!(info.client_id().as_deref(), Some("wallet-client"));
+        assert_eq!(info.bat_max_mint(), Some(42));
+        assert_eq!(protected.get(&clear_endpoint), Some(&AuthRequired::Clear));
+        assert_eq!(protected.get(&blind_endpoint), Some(&AuthRequired::Blind));
+    }
+
+    #[test]
+    fn nuts_builder_preserves_capabilities_and_supported_units() {
+        let bolt11 = PaymentMethod::Known(KnownMethod::Bolt11);
+        let bolt12 = PaymentMethod::Known(KnownMethod::Bolt12);
+        let mint_settings = nut04::Settings::new(
+            vec![nut04::MintMethodSettings {
+                method: bolt11.clone(),
+                unit: CurrencyUnit::Eur,
+                method_name: Some("Lightning".to_string()),
+                min_amount: Some(Amount::from(1)),
+                max_amount: Some(Amount::from(10)),
+                options: Some(MintMethodOptions::Bolt11 { description: true }),
+            }],
+            false,
+        );
+        let melt_settings = nut05::Settings::new(
+            vec![nut05::MeltMethodSettings {
+                method: bolt12,
+                unit: CurrencyUnit::Usd,
+                method_name: None,
+                min_amount: Some(Amount::from(2)),
+                max_amount: Some(Amount::from(20)),
+                options: None,
+            }],
+            false,
+        );
+        let mpp = vec![MppMethodSettings {
+            method: bolt11.clone(),
+            unit: CurrencyUnit::Sat,
+        }];
+        let supported_ws = vec![SupportedMethods::default_bolt11(CurrencyUnit::Sat)];
+        let cached = vec![CachedEndpoint::new(nut19::Method::Get, nut19::Path::Swap)];
+        let nut29 = nut29::Settings::new(Some(3), Some(vec!["bolt11".to_string()]));
+
+        let nuts = Nuts::new()
+            .nut04(mint_settings.clone())
+            .nut05(melt_settings.clone())
+            .nut07(true)
+            .nut08(true)
+            .nut09(true)
+            .nut10(true)
+            .nut11(true)
+            .nut12(true)
+            .nut14(true)
+            .nut15(mpp.clone())
+            .nut17(supported_ws.clone())
+            .nut19(Some(60), cached.clone())
+            .nut20(true)
+            .nut29(nut29.clone());
+
+        assert_eq!(nuts.nut04, mint_settings);
+        assert_eq!(nuts.nut05, melt_settings);
+        assert!(nuts.nut07.supported);
+        assert!(nuts.nut08.supported);
+        assert!(nuts.nut09.supported);
+        assert!(nuts.nut10.supported);
+        assert!(nuts.nut11.supported);
+        assert!(nuts.nut12.supported);
+        assert!(nuts.nut14.supported);
+        assert_eq!(nuts.nut15.methods, mpp);
+        assert_eq!(nuts.nut17.supported, supported_ws);
+        assert_eq!(nuts.nut19.ttl, Some(60));
+        assert_eq!(nuts.nut19.cached_endpoints, cached);
+        assert!(nuts.nut20.supported);
+        assert_eq!(nuts.nut29, nut29);
+        assert!(nuts.supported_mint_units().contains(&&CurrencyUnit::Eur));
+        assert!(nuts.supported_melt_units().contains(&&CurrencyUnit::Usd));
+
+        let info = MintInfo {
+            nuts,
+            ..Default::default()
+        };
+        let supported_units = info.supported_units();
+        assert!(supported_units.contains(&&CurrencyUnit::Eur));
+        assert!(supported_units.contains(&&CurrencyUnit::Usd));
     }
 }

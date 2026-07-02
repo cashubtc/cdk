@@ -32,3 +32,59 @@ impl<Q> MeltQuoteCustomResponse<Q> {
             .and_then(|o| Amount::try_sum(o.iter().map(|proof| proof.amount)).ok())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+    use crate::nuts::{BlindSignature, Id, MeltQuoteState, PublicKey};
+    use crate::CurrencyUnit;
+
+    fn blind_signature(amount: u64) -> BlindSignature {
+        BlindSignature {
+            amount: Amount::from(amount),
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            c: PublicKey::from_hex(
+                "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+            )
+            .unwrap(),
+            dleq: None,
+        }
+    }
+
+    #[test]
+    fn bolt11_change_amount_sums_change_outputs() {
+        let response = MeltQuoteBolt11Response {
+            quote: "quote-id",
+            amount: Amount::from(10),
+            fee_reserve: Amount::from(1),
+            state: MeltQuoteState::Paid,
+            expiry: 123,
+            payment_preimage: None,
+            change: Some(vec![blind_signature(2), blind_signature(3)]),
+            request: Some("invoice".to_string()),
+            unit: Some(CurrencyUnit::Sat),
+        };
+
+        assert_eq!(response.change_amount(), Some(Amount::from(5)));
+    }
+
+    #[test]
+    fn custom_change_amount_sums_change_outputs() {
+        let response = MeltQuoteCustomResponse {
+            quote: "quote-id",
+            amount: Amount::from(10),
+            fee_reserve: Some(Amount::from(1)),
+            state: MeltQuoteState::Paid,
+            expiry: 123,
+            payment_preimage: None,
+            change: Some(vec![blind_signature(4), blind_signature(6)]),
+            request: None,
+            unit: Some(CurrencyUnit::Sat),
+            extra: serde_json::Value::Null,
+        };
+
+        assert_eq!(response.change_amount(), Some(Amount::from(10)));
+    }
+}

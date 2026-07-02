@@ -286,4 +286,34 @@ mod tests {
             "signatures for different quote IDs should differ"
         );
     }
+
+    #[test]
+    fn settings_is_empty_requires_both_optional_fields_to_be_absent() {
+        assert!(Settings::new(None, None).is_empty());
+        assert!(!Settings::new(Some(10), None).is_empty());
+        assert!(!Settings::new(None, Some(vec!["bolt11".to_string()])).is_empty());
+        assert!(!Settings::new(Some(10), Some(vec!["bolt11".to_string()])).is_empty());
+    }
+
+    #[test]
+    fn msg_to_sign_concatenates_quote_and_each_output_secret() {
+        let quote_id = "quote-id".to_string();
+        let output_1 = dummy_blinded_message();
+        let output_2 = dummy_blinded_message();
+        let expected = format!(
+            "{}{}{}",
+            quote_id,
+            output_1.blinded_secret.to_hex(),
+            output_2.blinded_secret.to_hex()
+        )
+        .into_bytes();
+        let request = BatchMintRequest {
+            quotes: vec![quote_id.clone()],
+            quote_amounts: None,
+            outputs: vec![output_1, output_2],
+            signatures: None,
+        };
+
+        assert_eq!(request.msg_to_sign(&quote_id), expected);
+    }
 }

@@ -779,6 +779,132 @@ mod tests {
     use crate::util::hex;
     use crate::TransportType;
 
+    fn nprofile_from_bytes(bytes: &[u8]) -> String {
+        let hrp = bitcoin::bech32::Hrp::parse("nprofile").unwrap();
+        bitcoin::bech32::encode::<bitcoin::bech32::Bech32>(hrp, bytes).unwrap()
+    }
+
+    #[test]
+    fn test_tlv_unit_preserves_protocol_units() {
+        assert_eq!(
+            CurrencyUnit::from(TlvUnit::from(CurrencyUnit::Eur)),
+            CurrencyUnit::Eur
+        );
+        assert_eq!(
+            CurrencyUnit::from(TlvUnit::from(CurrencyUnit::Auth)),
+            CurrencyUnit::Auth
+        );
+    }
+
+    #[test]
+    fn test_tlv_reader_accepts_exact_empty_value_and_rejects_truncation() {
+        let mut reader = TlvReader::new(&[0x01, 0x00, 0x00]);
+        assert_eq!(reader.read_tlv().unwrap(), Some((0x01, vec![])));
+        assert_eq!(reader.read_tlv().unwrap(), None);
+
+        let mut reader = TlvReader::new(&[0x01, 0x00]);
+        assert_eq!(reader.read_tlv().unwrap(), None);
+
+        let mut reader = TlvReader::new(&[0x01, 0x00, 0x02, b'a']);
+        assert!(matches!(reader.read_tlv(), Err(Error::InvalidLength)));
+    }
+
+    #[test]
+    fn test_one_byte_nonzero_unit_decodes_as_custom_unit() {
+        let decoded = PaymentRequest::from_bech32_bytes(&[0x03, 0x00, 0x01, b'x']).unwrap();
+
+        assert_eq!(decoded.unit, Some(CurrencyUnit::Custom("x".to_string())));
+    }
+
+    #[test]
+    fn test_transport_target_without_kind_is_invalid() {
+        let bytes = [0x02, 0x00, 0x03, b'f', b'o', b'o'];
+
+        assert!(matches!(
+            PaymentRequest::decode_transport(&bytes),
+            Err(Error::InvalidStructure)
+        ));
+    }
+
+    #[test]
+    fn test_tag_tuple_rejects_truncated_key_and_value() {
+        assert_eq!(
+            PaymentRequest::decode_tag_tuple(&[1, b'a']).unwrap(),
+            ("a".to_string(), vec![])
+        );
+        assert!(matches!(
+            PaymentRequest::decode_tag_tuple(&[2, b'a']),
+            Err(Error::InvalidLength)
+        ));
+        assert!(matches!(
+            PaymentRequest::decode_tag_tuple(&[1, b'a', 2, b'b']),
+            Err(Error::InvalidLength)
+        ));
+    }
+
+    #[test]
+    fn test_nostr_transport_tag_encoding_preserves_nips_relays_and_generic_tags() {
+        let target = PaymentRequest::encode_nprofile(&[7u8; 32], &[]).unwrap();
+        let transport = Transport {
+            _type: TransportType::Nostr,
+            target,
+            tags: vec![
+                vec!["n".to_string(), "17".to_string()],
+                vec!["relay".to_string(), "wss://relay.example".to_string()],
+                vec!["other".to_string(), "value".to_string()],
+            ],
+        };
+        let payment_request = PaymentRequest {
+            payment_id: Some("nostr-tags".to_string()),
+            amount: None,
+            unit: Some(CurrencyUnit::Sat),
+            single_use: None,
+            mints: vec![],
+            description: None,
+            transports: vec![transport],
+            nut10: None,
+        };
+
+        let encoded = payment_request.to_bech32_string().unwrap();
+        let decoded = PaymentRequest::from_bech32_string(&encoded).unwrap();
+        let tags = &decoded.transports[0].tags;
+
+        assert!(tags.contains(&vec!["n".to_string(), "17".to_string()]));
+        assert!(tags.contains(&vec!["r".to_string(), "wss://relay.example".to_string()]));
+        assert!(tags.contains(&vec!["other".to_string(), "value".to_string()]));
+    }
+
+    #[test]
+    fn test_nprofile_boundaries() {
+        let pubkey = [42u8; 32];
+        let valid = PaymentRequest::encode_nprofile(&pubkey, &[String::new()]).unwrap();
+        let (decoded_pubkey, relays) = PaymentRequest::decode_nprofile(&valid).unwrap();
+        assert_eq!(decoded_pubkey, pubkey);
+        assert_eq!(relays, vec![String::new()]);
+
+        let missing_length = nprofile_from_bytes(&[0]);
+        assert!(matches!(
+            PaymentRequest::decode_nprofile(&missing_length),
+            Err(Error::InvalidStructure)
+        ));
+
+        let mut oversized_pubkey = vec![0, 33];
+        oversized_pubkey.extend([42u8; 33]);
+        let oversized_pubkey = nprofile_from_bytes(&oversized_pubkey);
+        assert!(matches!(
+            PaymentRequest::decode_nprofile(&oversized_pubkey),
+            Err(Error::InvalidLength)
+        ));
+
+        let max_relay = "a".repeat(255);
+        assert!(PaymentRequest::encode_nprofile(&pubkey, &[max_relay]).is_ok());
+        let oversized_relay = "a".repeat(256);
+        assert!(matches!(
+            PaymentRequest::encode_nprofile(&pubkey, &[oversized_relay]),
+            Err(Error::TagTooLong)
+        ));
+    }
+
     #[test]
     fn test_bech32_basic_round_trip() {
         let transport = Transport {

@@ -296,3 +296,77 @@ impl From<MeltQuoteBolt11Response<QuoteId>> for MeltQuoteBolt11Response<String> 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    const INVOICE_10_SATS: &str = "lnbc100n1p5z3a63pp56854ytysg7e5z9fl3w5mgvrlqjfcytnjv8ff5hm5qt6gl6alxesqdqqcqzzsxqyz5vqsp5p0x0dlhn27s63j4emxnk26p7f94u0lyarnfp5yqmac9gzy4ngdss9qxpqysgqne3v0hnzt2lp0hc69xpzckk0cdcar7glvjhq60lsrfe8gejdm8c564prrnsft6ctxxyrewp4jtezrq3gxxqnfjj0f9tw2qs9y0lslmqpfu7et9";
+
+    fn request_with_options(options: Option<MeltOptions>) -> MeltQuoteBolt11Request {
+        MeltQuoteBolt11Request {
+            request: Bolt11Invoice::from_str(INVOICE_10_SATS).expect("valid bolt11 invoice"),
+            unit: CurrencyUnit::Sat,
+            options,
+        }
+    }
+
+    #[test]
+    fn quote_state_display_and_parse_cover_wire_values() {
+        assert_eq!(QuoteState::Unpaid.to_string(), "UNPAID");
+        assert_eq!(QuoteState::Paid.to_string(), "PAID");
+        assert_eq!(QuoteState::Issued.to_string(), "ISSUED");
+
+        assert_eq!(QuoteState::from_str("UNPAID").unwrap(), QuoteState::Unpaid);
+        assert_eq!(QuoteState::from_str("PAID").unwrap(), QuoteState::Paid);
+        assert_eq!(QuoteState::from_str("ISSUED").unwrap(), QuoteState::Issued);
+        assert!(matches!(
+            QuoteState::from_str("paid"),
+            Err(Error::UnknownState)
+        ));
+    }
+
+    #[test]
+    fn melt_options_report_configured_amounts() {
+        assert_eq!(
+            MeltOptions::new_mpp(Amount::from(21)).amount_msat(),
+            21.into()
+        );
+        assert_eq!(
+            MeltOptions::new_amountless(Amount::from(34)).amount_msat(),
+            34.into()
+        );
+    }
+
+    #[test]
+    fn melt_quote_amount_uses_invoice_or_options() {
+        assert_eq!(
+            request_with_options(None).amount_msat().unwrap(),
+            10_000.into()
+        );
+
+        assert_eq!(
+            request_with_options(Some(MeltOptions::new_mpp(Amount::from(7))))
+                .amount_msat()
+                .unwrap(),
+            7.into()
+        );
+
+        assert_eq!(
+            request_with_options(Some(MeltOptions::new_amountless(Amount::from(10_000))))
+                .amount_msat()
+                .unwrap(),
+            10_000.into()
+        );
+    }
+
+    #[test]
+    fn amountless_quote_rejects_invoice_amount_mismatch() {
+        let result = request_with_options(Some(MeltOptions::new_amountless(Amount::from(9_999))))
+            .amount_msat();
+
+        assert!(matches!(result, Err(Error::InvalidAmountRequest)));
+    }
+}

@@ -140,17 +140,31 @@ mod tests {
     #[test]
     fn test_public_key_from_hex() {
         // Compressed
-        assert!(PublicKey::from_hex(
-            "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104"
+        let key = PublicKey::from_hex(
+            "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104",
         )
-        .is_ok());
+        .unwrap();
+
+        assert_eq!(
+            format!("{key:?}"),
+            "PublicKey(02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104)"
+        );
     }
 
     #[test]
     fn test_invalid_public_key_from_hex() {
         // Uncompressed (is valid but is cashu must be compressed?)
         assert!(PublicKey::from_hex("04fd4ce5a16b65576145949e6f99f445f8249fee17c606b688b504a849cdc452de3625246cb2c27dac965cb7200a5986467eee92eb7d496bbf1453b074e223e481")
-            .is_err())
+            .is_err());
+        assert!(matches!(
+            PublicKey::from_hex(
+                "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e10400"
+            ),
+            Err(Error::InvalidPublicKeySize {
+                expected: 33,
+                found: 34
+            })
+        ));
     }
 }
 

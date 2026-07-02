@@ -731,4 +731,32 @@ mod tests {
             PaymentRequest::from_str(&bech32_uppercase).expect("Should decode uppercase bech32");
         assert_eq!(decoded_uppercase.payment_id, payment_request.payment_id);
     }
+
+    #[test]
+    fn builder_preserves_optional_fields_and_as_ref_targets_payment_id() {
+        let mint = MintUrl::from_str("https://mint.example.com").unwrap();
+        let transport = Transport::builder()
+            .transport_type(TransportType::HttpPost)
+            .target("https://wallet.example.com/callback")
+            .build()
+            .unwrap();
+
+        let request = PaymentRequest::builder()
+            .payment_id("payment-123")
+            .amount(Amount::from(21))
+            .unit(CurrencyUnit::Sat)
+            .single_use(true)
+            .mints(vec![mint.clone()])
+            .description("coffee")
+            .transports(vec![transport.clone()])
+            .build();
+
+        assert_eq!(request.as_ref().as_deref(), Some("payment-123"));
+        assert_eq!(request.amount, Some(Amount::from(21)));
+        assert_eq!(request.unit, Some(CurrencyUnit::Sat));
+        assert_eq!(request.single_use, Some(true));
+        assert_eq!(request.mints, vec![mint]);
+        assert_eq!(request.description.as_deref(), Some("coffee"));
+        assert_eq!(request.transports, vec![transport]);
+    }
 }

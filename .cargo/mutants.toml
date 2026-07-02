@@ -61,6 +61,20 @@ exclude_re = [
     # Secret::drop zeroizes memory for security. Testing this properly requires unsafe memory
     # inspection. The security guarantee comes from using the zeroize crate correctly.
     "crates/cashu/src/secret.rs.*impl Drop for Secret.*drop",
+    "crates/cashu/src/nuts/nut01/secret_key.rs:.*impl Drop for SecretKey.*drop",
+
+    # SecretKeyVisitor/SecretVisitor::expecting are serde diagnostics only.
+    "crates/cashu/src/nuts/nut01/secret_key.rs:.*SecretKeyVisitor.*expecting",
+    "crates/cashu/src/nuts/nut10/secret.rs:.*SecretVisitor.*expecting",
+
+    # Inline benchmark harness is not runtime behavior.
+    "crates/cashu/src/nuts/nut01/public_key.rs:.*benches::public_key_from_hex",
+
+    # TlvReader constant-success mutations with type 0 never advance through unknown TLVs
+    # and cause non-progress in decode loops.
+    "crates/cashu/src/nuts/nut26/encoding.rs:.*TlvReader.*read_tlv.*Ok\\(Some\\(\\(0, vec!",
+    "crates/cashu/src/nuts/nut26/encoding.rs:.*TlvReader.*read_tlv.*replace \\+= with -=",
+    "crates/cashu/src/nuts/nut26/encoding.rs:.*replace \\+= with -= in TlvReader.*read_tlv",
 
     # serialize_to_cbor_diag is only used for CLI diagnostic output (decode_token, decode_request).
     # Not part of any critical path - purely human-readable debugging output.
@@ -98,6 +112,48 @@ exclude_re = [
     # PreMintSecrets trivial methods - standard delegation patterns
     "crates/cashu/src/nuts/nut00/mod.rs:.*PreMintSecrets::iter",
     "crates/cashu/src/nuts/nut00/mod.rs:.*PreMintSecrets::is_empty",
+
+    # msg_to_sign preallocation capacity does not affect the signed bytes.
+    "crates/cashu/src/nuts/nut20.rs:39:.*MintRequest<.*>::msg_to_sign",
+    "crates/cashu/src/nuts/nut29.rs:88:.*BatchMintRequest<.*>::msg_to_sign",
+
+    # Equivalent max update: assigning the same value when sigs == sigs_required
+    # leaves enforce_sig_flag unchanged.
+    "crates/cashu/src/nuts/nut11/mod.rs:.*replace > with >= in enforce_sig_flag",
+
+    # Feature-gated behind wallet+nostr; the default cashu mutation profile does
+    # not compile or run these tests. The weekly NUT-27 Nostr job and
+    # `just mutants-cashu-nut27-nostr` cover this file with --no-config so this
+    # default-profile exclude does not apply there.
+    "crates/cashu/src/nuts/nut27.rs:.*",
+
+    # Equivalent bit operation in hex decoding: high << 4 and low nibble never
+    # overlap, so OR and XOR produce identical bytes.
+    "crates/cashu/src/util/hex.rs:.*replace \\| with \\^ in decode",
+
+    # These builder constructors intentionally return Default::default().
+    "crates/cashu/src/nuts/nut18/payment_request.rs:.*PaymentRequest::builder",
+    "crates/cashu/src/nuts/nut18/transport.rs:.*Transport::builder",
+
+    # Length guard forced true is equivalent: non-2 array lengths still fail
+    # either missing response lookup or tuple deserialization.
+    "crates/cashu/src/nuts/nut17/mod.rs:.*items\\.len\\(\\) == 2 with true",
+
+    # Target-before-kind transport data is ignored and remains invalid later
+    # because no valid target is available for the decoded kind.
+    "crates/cashu/src/nuts/nut26/encoding.rs:.*delete match arm None in PaymentRequest::decode_transport",
+
+    # Equivalent Nostr NIP tag encoding: the specialized "n" branch and the
+    # generic tag branch both encode the full tag tuple identically.
+    "crates/cashu/src/nuts/nut26/encoding.rs:499:.*replace >= with < in PaymentRequest::encode_transport",
+
+    # Equivalent loop boundary: pos == data.len() enters then immediately breaks
+    # on the inner type+length guard, same as exiting the loop.
+    "crates/cashu/src/nuts/nut26/encoding.rs:.*replace < with <= in PaymentRequest::decode_nprofile",
+
+    # get_pubkeys_and_required_sigs does not currently surface reachable NUT14
+    # errors through verify_htlc; malformed preimages are checked later.
+    "crates/cashu/src/nuts/nut14/mod.rs:139:.*delete match arm super::nut10::Error::NUT14",
 
     # Keys/MintKeys trivial delegation - Deref/DerefMut/keys() just return &self.0
     "crates/cashu/src/nuts/nut01/mod.rs:.*impl Deref for Keys.*deref",

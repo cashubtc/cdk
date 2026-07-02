@@ -31,7 +31,7 @@ jobs:
         run: cargo mutants --package cashu --in-place --no-shuffle
         continue-on-error: true
 
-      - name: Upload mutation results
+      - name: Upload cashu mutation results
         uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -39,14 +39,47 @@ jobs:
           path: mutants.out
           retention-days: 90
 
+      - name: Run mutation tests on cashu NUT-27 with Nostr features
+        run: cargo mutants --package cashu --no-config --file crates/cashu/src/nuts/nut27.rs --features wallet,nostr --in-place --no-shuffle --output mutants-nut27-nostr.out
+        continue-on-error: true
+
+      - name: Upload cashu NUT-27 Nostr mutation results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: mutants-nut27-nostr.out
+          path: mutants-nut27-nostr.out
+          retention-days: 90
+
       - name: Check for missed mutants and create issue
         if: always()
         run: |
-          if [ -s mutants.out/missed.txt ]; then
+          DEFAULT_MISSED_COUNT=0
+          DEFAULT_CAUGHT_COUNT=0
+          NUT27_MISSED_COUNT=0
+          NUT27_CAUGHT_COUNT=0
+
+          if [ -f mutants.out/missed.txt ]; then
+            DEFAULT_MISSED_COUNT=$(wc -l < mutants.out/missed.txt)
+          fi
+
+          if [ -f mutants.out/caught.txt ]; then
+            DEFAULT_CAUGHT_COUNT=$(wc -l < mutants.out/caught.txt)
+          fi
+
+          if [ -f mutants-nut27-nostr.out/missed.txt ]; then
+            NUT27_MISSED_COUNT=$(wc -l < mutants-nut27-nostr.out/missed.txt)
+          fi
+
+          if [ -f mutants-nut27-nostr.out/caught.txt ]; then
+            NUT27_CAUGHT_COUNT=$(wc -l < mutants-nut27-nostr.out/caught.txt)
+          fi
+
+          TOTAL_MISSED=$((DEFAULT_MISSED_COUNT + NUT27_MISSED_COUNT))
+
+          if [ "$TOTAL_MISSED" -gt 0 ]; then
             echo "Missed mutants found"
             MUTANTS_VERSION=$(cargo mutants --version)
-            MISSED_COUNT=$(wc -l < mutants.out/missed.txt)
-            CAUGHT_COUNT=$(wc -l < mutants.out/caught.txt 2>/dev/null || echo "0")
 
             gh issue create \
               --title "🧬 Weekly Mutation Testing Report - $(date +%Y-%m-%d)" \
@@ -54,26 +87,39 @@ jobs:
               --body "$(cat <<EOF
           ## Mutation Testing Results
 
-          - ✅ Caught: ${CAUGHT_COUNT}
-          - ❌ Missed: ${MISSED_COUNT}
+          ### Default cashu profile
 
-          ### Top 10 Missed Mutations
+          - ✅ Caught: ${DEFAULT_CAUGHT_COUNT}
+          - ❌ Missed: ${DEFAULT_MISSED_COUNT}
+
+          ### NUT-27 Nostr profile
+
+          - ✅ Caught: ${NUT27_CAUGHT_COUNT}
+          - ❌ Missed: ${NUT27_MISSED_COUNT}
+
+          ### Top 10 Missed Mutations - Default cashu profile
 
           \`\`\`
-          $(head -n 10 mutants.out/missed.txt)
+          $(if [ -s mutants.out/missed.txt ]; then head -n 10 mutants.out/missed.txt; else echo "No missed mutants"; fi)
+          \`\`\`
+
+          ### Top 10 Missed Mutations - NUT-27 Nostr profile
+
+          \`\`\`
+          $(if [ -s mutants-nut27-nostr.out/missed.txt ]; then head -n 10 mutants-nut27-nostr.out/missed.txt; else echo "No missed mutants"; fi)
           \`\`\`
 
           ### Action Items
 
           1. Review the missed mutations above
           2. Add tests to catch these mutations
-          3. For the complete list, check the [mutants.out artifact](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          3. For the complete list, check the [mutants.out artifact](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) and [mutants-nut27-nostr.out artifact](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
           **cargo-mutants version:** ${MUTANTS_VERSION}
 
           ---
 
-          💡 **Tip:** Use \`just mutants-quick\` to test only your changes before pushing!
+          💡 **Tip:** Use \`just mutants-quick\` to test only your changes before pushing, or \`just mutants-cashu-nut27-nostr\` for the NUT-27 Nostr profile.
           EOF
           )"
           else

@@ -178,6 +178,13 @@ mutants-cashu:
   echo "Running mutation tests on cashu crate..."
   cargo mutants --package cashu -vV
 
+# Run mutation tests on NUT-27 with wallet+nostr features enabled
+mutants-cashu-nut27-nostr:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Running mutation tests on cashu NUT-27 with Nostr features..."
+  cargo mutants --package cashu --no-config --file crates/cashu/src/nuts/nut27.rs --features wallet,nostr -vV
+
 # Run mutation tests on the cdk crate
 mutants-cdk:
   #!/usr/bin/env bash

@@ -578,6 +578,31 @@ mod tests {
     use crate::secret::Secret;
     use crate::{Amount, BlindedMessage};
 
+    fn proof_for_enforce_sig_flag(num_sigs: u64) -> Proof {
+        let primary = SecretKey::generate().public_key();
+        let signer_two = SecretKey::generate().public_key();
+        let signer_three = SecretKey::generate().public_key();
+        let conditions = Conditions {
+            pubkeys: Some(vec![signer_two, signer_three]),
+            num_sigs: Some(num_sigs),
+            sig_flag: SigFlag::SigAll,
+            ..Default::default()
+        };
+        let secret: Secret = SpendingConditions::new_p2pk(primary, Some(conditions))
+            .try_into()
+            .unwrap();
+
+        Proof {
+            amount: Amount::ONE,
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            secret,
+            c: primary,
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        }
+    }
+
     #[test]
     fn test_secret_ser() {
         let data = PublicKey::from_str(
@@ -665,6 +690,28 @@ mod tests {
     }
 
     #[test]
+    fn test_p2pk_witness_is_empty_tracks_signatures() {
+        assert!(P2PKWitness::default().is_empty());
+        assert!(!P2PKWitness {
+            signatures: vec!["signature".to_string()],
+        }
+        .is_empty());
+    }
+
+    #[test]
+    fn test_enforce_sig_flag_keeps_highest_required_signature_count() {
+        let proofs = vec![proof_for_enforce_sig_flag(2), proof_for_enforce_sig_flag(3)]
+            .into_iter()
+            .collect();
+
+        let enforced = enforce_sig_flag(proofs);
+
+        assert_eq!(enforced.sig_flag, SigFlag::SigAll);
+        assert_eq!(enforced.sigs_required, 3);
+        assert_eq!(enforced.pubkeys.len(), 6);
+    }
+
+    #[test]
     fn test_verify() {
         // Proof with a valid signature
         let json: &str = r#"{
@@ -749,6 +796,23 @@ mod tests {
             matches!(res.unwrap_err(), Error::DuplicateSignature),
             "Expected DuplicateSignature error"
         );
+    }
+
+    #[test]
+    fn test_blinded_message_verify_p2pk_accepts_single_valid_signature() {
+        let secret_key = SecretKey::generate();
+        let pubkey = secret_key.public_key();
+
+        let mut blinded_message = BlindedMessage {
+            amount: Amount::ZERO,
+            blinded_secret: pubkey,
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            witness: None,
+        };
+
+        blinded_message.sign_p2pk(secret_key).unwrap();
+
+        assert!(blinded_message.verify_p2pk(&vec![pubkey], 1).is_ok());
     }
 
     #[test]

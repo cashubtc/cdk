@@ -392,7 +392,31 @@ mod tests {
     use crate::nuts::nut10::Kind;
     use crate::nuts::Nut10Secret;
     use crate::secret::Secret as SecretString;
-    use crate::SecretData;
+    use crate::{SecretData, SecretKey};
+
+    fn htlc_proof(
+        preimage_bytes: [u8; 32],
+        conditions: Option<Conditions>,
+        witness: Option<Witness>,
+    ) -> Proof {
+        let hash = Sha256Hash::hash(&preimage_bytes);
+        let nut10_secret =
+            Nut10Secret::new(Kind::HTLC, SecretData::new(hash.to_string(), conditions));
+        let secret: SecretString = nut10_secret.try_into().unwrap();
+
+        Proof {
+            amount: crate::Amount::ONE,
+            keyset_id: crate::nuts::nut02::Id::from_str("00deadbeef123456").unwrap(),
+            secret,
+            c: crate::nuts::nut01::PublicKey::from_hex(
+                "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
+            )
+            .unwrap(),
+            witness,
+            dleq: None,
+            p2pk_e: None,
+        }
+    }
 
     /// Tests that verify_htlc correctly accepts a valid HTLC with the correct preimage.
     ///
@@ -434,6 +458,46 @@ mod tests {
 
         // Valid HTLC should verify successfully
         assert!(proof.verify_htlc().is_ok());
+    }
+
+    #[test]
+    fn test_htlc_preimage_size_boundaries() {
+        let valid_preimage = hex::encode([42u8; 32]);
+        let short_preimage = hex::encode([42u8; 31]);
+        let long_preimage = hex::encode([42u8; 33]);
+
+        assert!(SpendingConditions::new_htlc(valid_preimage.clone(), None).is_ok());
+        assert!(matches!(
+            SpendingConditions::new_htlc(short_preimage.clone(), None),
+            Err(Error::PreimageInvalidSize)
+        ));
+        assert!(matches!(
+            SpendingConditions::new_htlc(long_preimage.clone(), None),
+            Err(Error::PreimageInvalidSize)
+        ));
+
+        assert!(HTLCWitness {
+            preimage: valid_preimage,
+            signatures: None,
+        }
+        .preimage_data()
+        .is_ok());
+        assert!(matches!(
+            HTLCWitness {
+                preimage: short_preimage,
+                signatures: None,
+            }
+            .preimage_data(),
+            Err(Error::PreimageInvalidSize)
+        ));
+        assert!(matches!(
+            HTLCWitness {
+                preimage: long_preimage,
+                signatures: None,
+            }
+            .preimage_data(),
+            Err(Error::PreimageInvalidSize)
+        ));
     }
 
     /// Tests that verify_htlc correctly rejects an HTLC with a wrong preimage.
@@ -481,6 +545,99 @@ mod tests {
         let result = proof.verify_htlc();
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::Preimage));
+    }
+
+    #[test]
+    fn test_verify_htlc_requires_refund_signature_when_refund_path_is_not_anyone_can_spend() {
+        let refund_key = SecretKey::generate().public_key();
+        let proof = htlc_proof(
+            [42u8; 32],
+            Some(Conditions {
+                locktime: Some(1),
+                refund_keys: Some(vec![refund_key]),
+                num_sigs_refund: Some(1),
+                ..Default::default()
+            }),
+            None,
+        );
+
+        assert!(matches!(
+            proof.verify_htlc(),
+            Err(Error::IncorrectSecretKind)
+        ));
+    }
+
+    #[test]
+    fn test_verify_htlc_rejects_insufficient_receiver_signatures() {
+        let required_key = SecretKey::generate().public_key();
+        let wrong_key = SecretKey::generate();
+        let mut proof = htlc_proof(
+            [42u8; 32],
+            Some(Conditions {
+                pubkeys: Some(vec![required_key]),
+                num_sigs: Some(1),
+                ..Default::default()
+            }),
+            None,
+        );
+        let signature = wrong_key.sign(proof.secret.as_bytes()).unwrap();
+        proof.witness = Some(Witness::HTLCWitness(HTLCWitness {
+            preimage: hex::encode([42u8; 32]),
+            signatures: Some(vec![signature.to_string()]),
+        }));
+
+        assert!(matches!(
+            proof.verify_htlc(),
+            Err(Error::NUT11(
+                crate::nuts::nut11::Error::SpendConditionsNotMet
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_verify_htlc_rejects_insufficient_refund_signatures() {
+        let refund_key = SecretKey::generate().public_key();
+        let wrong_key = SecretKey::generate();
+        let mut proof = htlc_proof(
+            [42u8; 32],
+            Some(Conditions {
+                locktime: Some(1),
+                refund_keys: Some(vec![refund_key]),
+                num_sigs_refund: Some(1),
+                ..Default::default()
+            }),
+            None,
+        );
+        let signature = wrong_key.sign(proof.secret.as_bytes()).unwrap();
+        proof.witness = Some(Witness::HTLCWitness(HTLCWitness {
+            preimage: hex::encode([99u8; 32]),
+            signatures: Some(vec![signature.to_string()]),
+        }));
+
+        assert!(matches!(
+            proof.verify_htlc(),
+            Err(Error::NUT11(
+                crate::nuts::nut11::Error::SpendConditionsNotMet
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_verify_sig_all_htlc_allows_expired_anyone_can_spend_refund_path() {
+        let proof = htlc_proof(
+            [42u8; 32],
+            Some(Conditions {
+                locktime: Some(1),
+                sig_flag: crate::nuts::SigFlag::SigAll,
+                ..Default::default()
+            }),
+            Some(Witness::HTLCWitness(HTLCWitness {
+                preimage: hex::encode([99u8; 32]),
+                signatures: None,
+            })),
+        );
+
+        assert!(verify_sig_all_htlc(&proof, "sig-all message".to_string()).is_ok());
     }
 
     /// Tests that verify_htlc correctly rejects an HTLC with an invalid hash format.

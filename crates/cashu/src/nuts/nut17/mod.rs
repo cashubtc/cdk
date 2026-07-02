@@ -491,6 +491,57 @@ mod tests {
     }
 
     #[test]
+    fn notification_payload_custom_arrays_require_method_and_object_response() {
+        let custom_mint = r#"[
+            "paypal",
+            {
+                "quote": "abc",
+                "request": "pay://abc",
+                "amount": 10,
+                "amount_paid": 0,
+                "amount_issued": 0,
+                "unit": "sat",
+                "expiry": 1701704757
+            }
+        ]"#;
+        let payload: NotificationPayload<String> = serde_json::from_str(custom_mint).unwrap();
+        match payload {
+            NotificationPayload::CustomMintQuoteResponse(method, response) => {
+                assert_eq!(method, "paypal");
+                assert_eq!(response.quote, "abc");
+            }
+            other => panic!("expected CustomMintQuoteResponse, got {:?}", other),
+        }
+
+        let custom_melt = r#"[
+            "paypal",
+            {
+                "quote": "abc",
+                "amount": 10,
+                "fee_reserve": 1,
+                "state": "PENDING",
+                "expiry": 1701704757,
+                "request": "pay://abc",
+                "unit": "sat"
+            }
+        ]"#;
+        let payload: NotificationPayload<String> = serde_json::from_str(custom_melt).unwrap();
+        match payload {
+            NotificationPayload::CustomMeltQuoteResponse(method, response) => {
+                assert_eq!(method, "paypal");
+                assert_eq!(response.quote, "abc");
+            }
+            other => panic!("expected CustomMeltQuoteResponse, got {:?}", other),
+        }
+
+        assert!(serde_json::from_str::<NotificationPayload<String>>(r#"["paypal"]"#).is_err());
+        assert!(serde_json::from_str::<NotificationPayload<String>>(
+            r#"["paypal", "not an object"]"#
+        )
+        .is_err());
+    }
+
+    #[test]
     fn notification_payload_onchain_mint_tolerates_unknown_fields() {
         // A newer mint may extend the onchain mint quote response with
         // additional fields; classification and decoding must still succeed.

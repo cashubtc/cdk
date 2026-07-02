@@ -63,3 +63,18 @@ impl From<ciborium::de::Error<std::io::Error>> for Error {
         Error::CborError(e)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_outputs_specific_error_messages() {
+        assert_eq!(
+            Error::InvalidPrefix.to_string(),
+            "Invalid bech32m prefix, expected 'creqb'"
+        );
+        assert_eq!(Error::UnknownKind(7).to_string(), "Unknown NUT-10 kind: 7");
+        assert_eq!(Error::TagTooLong.to_string(), "Tag exceeds 255 byte limit");
+    }
+}
