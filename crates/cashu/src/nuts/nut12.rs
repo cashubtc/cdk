@@ -202,7 +202,7 @@ impl BlindSignature {
         blinded_signature: PublicKey,
         keyset_id: Id,
         blinded_message: &PublicKey,
-        mint_secretkey: SecretKey,
+        mint_secretkey: &SecretKey,
     ) -> Result<Self, Error> {
         Ok(Self {
             amount,
@@ -211,7 +211,7 @@ impl BlindSignature {
             dleq: Some(calculate_dleq(
                 blinded_signature,
                 blinded_message,
-                &mint_secretkey,
+                mint_secretkey,
             )?),
         })
     }
@@ -294,7 +294,7 @@ mod tests {
             blinded_signature,
             Id::from_str("00882760bfa2eb41").expect("valid keyset id"),
             &blinded_message,
-            mint_secret_key.clone(),
+            &mint_secret_key,
         )
         .expect("deterministic DLEQ proof");
         let dleq = blind_signature.dleq.expect("DLEQ proof");
