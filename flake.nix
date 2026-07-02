@@ -893,6 +893,7 @@
           ])
           ++ (with pkgs; [
             mprocs
+            nostr-rs-relay
           ]);
 
         commonShellHook = ''
