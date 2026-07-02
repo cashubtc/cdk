@@ -600,6 +600,9 @@ jobs:
       - name: Build native library and generate bindings
         run: nix develop -L .#bindings --command just binding-dart
       - name: Run Dart tests
+        env:
+          CDK_DART_TEST_MINT_URL: https://testnut.cashudevkit.org
+          CDK_DART_MINT_SETTLEMENT_DELAY_SECONDS: "5"
         run: nix develop -L .#bindings --command just test-dart
 
   kotlin-binding-tests:
