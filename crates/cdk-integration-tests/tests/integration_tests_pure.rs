@@ -1758,6 +1758,7 @@ async fn test_direct_connector_custom_melt_enum_roundtrip() {
         method: "paypal".to_string(),
         request: "invoice-123".to_string(),
         unit: CurrencyUnit::Sat,
+        amount: None,
         extra: serde_json::Value::Null,
     });
 
@@ -2481,6 +2482,7 @@ async fn test_custom_melt_quote_status_preserves_extra_json() {
                 method: "test-custom".to_string(),
                 request: "custom-request".to_string(),
                 unit: CurrencyUnit::Sat,
+                amount: None,
                 extra: serde_json::json!({ "request_metadata": true }),
             },
         ))
@@ -2542,6 +2544,7 @@ async fn test_custom_melt_quote_id_propagates_to_payment_processor() {
                 method: "test-custom".to_string(),
                 request: "custom-request".to_string(),
                 unit: CurrencyUnit::Sat,
+                amount: None,
                 extra: serde_json::json!({ "request_metadata": true }),
             },
         ))

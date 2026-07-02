@@ -224,11 +224,13 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
             .ok_or_else(|| Status::invalid_argument("Missing options"))?
         {
             incoming_payment_options::Options::Custom(opts) => {
-                let amount = opts
-                    .amount
-                    .ok_or_else(|| Status::invalid_argument("Missing amount"))?
-                    .try_into()
-                    .map_err(|_| Status::invalid_argument("Invalid amount"))?;
+                let amount: Option<cdk_common::Amount<CurrencyUnit>> = match opts.amount {
+                    Some(a) => Some(
+                        a.try_into()
+                            .map_err(|_| Status::invalid_argument("Invalid amount"))?,
+                    ),
+                    None => None,
+                };
                 IncomingPaymentOptions::Custom(Box::new(
                     cdk_common::payment::CustomIncomingPaymentOptions {
                         method: "".to_string(),
@@ -332,6 +334,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                     cdk_common::payment::CustomOutgoingPaymentOptions {
                         method: String::new(), // Will be set from variant
                         request: request.request.clone(),
+                        amount: None,
                         max_fee_amount: None,
                         timeout_secs: None,
                         melt_options: request.options.map(TryInto::try_into).transpose()?,
@@ -450,11 +453,19 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                     .try_from_proto()
                     .map_err(|_| Status::invalid_argument("Invalid max_fee_amount"))?;
                 let quote_id = parse_quote_id(&opts.quote_id)?;
+                let amount: Option<cdk_common::Amount<CurrencyUnit>> = match opts.amount {
+                    Some(a) => Some(
+                        a.try_into()
+                            .map_err(|_| Status::invalid_argument("Invalid amount"))?,
+                    ),
+                    None => None,
+                };
 
                 cdk_common::payment::OutgoingPaymentOptions::Custom(Box::new(
                     cdk_common::payment::CustomOutgoingPaymentOptions {
                         method: String::new(), // Method will be determined from context
                         request: opts.offer,   // Reusing offer field for custom request string
+                        amount,
                         max_fee_amount,
                         timeout_secs: opts.timeout_secs,
                         melt_options: opts.melt_options.map(TryInto::try_into).transpose()?,

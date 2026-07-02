@@ -381,7 +381,11 @@ impl Settings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintQuoteCustomRequest {
     /// Amount to mint
-    pub amount: Amount,
+    ///
+    /// Optional common field. Method-specific NUTs make it required or ignore
+    /// it as needed (e.g. NUT-23 requires `amount`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<Amount>,
     /// Currency unit
     pub unit: CurrencyUnit,
     /// Optional description

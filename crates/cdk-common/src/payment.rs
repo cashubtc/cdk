@@ -222,8 +222,8 @@ pub struct CustomIncomingPaymentOptions {
     pub method: String,
     /// Optional description for the payment request
     pub description: Option<String>,
-    /// Amount for the payment request
-    pub amount: Amount<CurrencyUnit>,
+    /// Optional amount for the payment request
+    pub amount: Option<Amount<CurrencyUnit>>,
     /// Optional expiry time as Unix timestamp in seconds
     pub unix_expiry: Option<u64>,
     /// Extra payment-method-specific fields as JSON string
@@ -293,6 +293,8 @@ pub struct CustomOutgoingPaymentOptions {
     pub method: String,
     /// Payment request string (method-specific format)
     pub request: String,
+    /// Optional amount the wallet would like to pay (from the melt quote request)
+    pub amount: Option<Amount<CurrencyUnit>>,
     /// Maximum fee amount allowed for the payment
     pub max_fee_amount: Option<Amount<CurrencyUnit>>,
     /// Optional timeout in seconds
@@ -391,6 +393,8 @@ impl OutgoingPaymentOptions {
                 Box::new(CustomOutgoingPaymentOptions {
                     method: method.to_string(),
                     request: request.to_string(),
+                    // Payment is already quoted; correlation is via quote_id.
+                    amount: None,
                     max_fee_amount: Some(fee_reserve),
                     timeout_secs: None,
                     melt_options: melt_quote.options,

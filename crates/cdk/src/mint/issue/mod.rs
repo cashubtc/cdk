@@ -312,7 +312,7 @@ impl Mint {
                     let custom_options = CustomIncomingPaymentOptions {
                         method: payment_method.to_string(),
                         description: request.description,
-                        amount: request.amount.with_unit(unit.clone()),
+                        amount: request.amount.map(|a| a.with_unit(unit.clone())),
                         unix_expiry: Some(quote_expiry),
                         extra_json,
                     };

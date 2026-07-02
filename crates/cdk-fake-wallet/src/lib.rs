@@ -878,7 +878,9 @@ impl MintPayment for FakeWallet {
                 (
                     PaymentIdentifier::CustomId(custom_id),
                     request,
-                    custom_options.amount,
+                    custom_options
+                        .amount
+                        .unwrap_or_else(|| Amount::new(0, self.unit.clone())),
                     custom_options.unix_expiry,
                 )
             }
@@ -1110,7 +1112,7 @@ mod tests {
                 CustomIncomingPaymentOptions {
                     method: "venmo".to_string(),
                     description: None,
-                    amount: Amount::new(10, CurrencyUnit::Sat),
+                    amount: Some(Amount::new(10, CurrencyUnit::Sat)),
                     unix_expiry: None,
                     extra_json: None,
                 },

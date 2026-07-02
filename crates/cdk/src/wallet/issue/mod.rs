@@ -155,7 +155,7 @@ impl Wallet {
                 MintQuoteRequest::Custom {
                     method: method.clone(),
                     request: cdk_common::nuts::MintQuoteCustomRequest {
-                        amount,
+                        amount: Some(amount),
                         unit: unit.clone(),
                         description,
                         pubkey: Some(secret_key.public_key()),
