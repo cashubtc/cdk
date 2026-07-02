@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test native.test.mjs",
+    "test:api": "node --test output-data-creator.test.mjs",
+    "test:all": "node --test native.test.mjs output-data-creator.test.mjs"
+  },
+  "devDependencies": {
+    "koffi": "^2.9.0"
+  }
+}
