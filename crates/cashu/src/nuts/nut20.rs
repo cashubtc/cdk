@@ -99,6 +99,20 @@ where
         Ok(())
     }
 
+    /// Sign [`MintRequest`] using the legacy NUT-20 message format.
+    ///
+    /// This is only for wallet compatibility retries against mints that have
+    /// not yet upgraded to the domain-separated quote signature message.
+    pub fn sign_legacy(&mut self, secret_key: SecretKey) -> Result<(), Error> {
+        let msg = self.legacy_msg_to_sign();
+
+        let signature: Signature = secret_key.sign(&msg)?;
+
+        self.signature = Some(signature.to_string());
+
+        Ok(())
+    }
+
     /// Verify signature on [`MintRequest`]
     pub fn verify_signature(&self, pubkey: PublicKey) -> Result<(), Error> {
         let signature = self.signature.as_ref().ok_or(Error::SignatureMissing)?;

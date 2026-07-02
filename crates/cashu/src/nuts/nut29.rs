@@ -97,6 +97,16 @@ where
         Ok(signature.to_string())
     }
 
+    /// Sign one quote using the legacy NUT-20 message format.
+    ///
+    /// This is only for wallet compatibility retries against mints that have
+    /// not yet upgraded to the domain-separated quote signature message.
+    pub fn sign_quote_legacy(&self, quote: &Q, secret_key: &SecretKey) -> Result<String, Error> {
+        let msg = self.legacy_msg_to_sign(quote);
+        let signature: Signature = secret_key.sign(&msg)?;
+        Ok(signature.to_string())
+    }
+
     /// Verify one quote signature inside a batch mint request.
     pub fn verify_quote_signature(
         &self,
