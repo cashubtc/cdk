@@ -6,7 +6,7 @@
 use std::str::FromStr;
 
 use cdk_common::mint::{OperationKind, Saga};
-use cdk_common::QuoteId;
+use cdk_common::{PublicKey, QuoteId, State};
 
 use super::{Error, Mint};
 use crate::mint::swap::swap_saga::compensation::{CompensatingAction, RemoveSwapSetup};
@@ -237,6 +237,13 @@ impl Mint {
                 .get_blinded_secrets_by_operation_id(&saga.operation_id)
                 .await?;
 
+            if self
+                .cleanup_finalized_swap_saga(&saga, &input_ys, &blinded_secrets)
+                .await?
+            {
+                continue;
+            }
+
             // Use the same compensation logic as in-process failures
             // Saga deletion is included in the compensation transaction
             let compensation = RemoveSwapSetup {
@@ -267,6 +274,51 @@ impl Mint {
         );
 
         Ok(())
+    }
+
+    async fn cleanup_finalized_swap_saga(
+        &self,
+        saga: &Saga,
+        input_ys: &[PublicKey],
+        blinded_secrets: &[PublicKey],
+    ) -> Result<bool, Error> {
+        if input_ys.is_empty() || blinded_secrets.is_empty() {
+            return Ok(false);
+        }
+
+        let proof_states = self.localstore.get_proofs_states(input_ys).await?;
+        let inputs_spent = proof_states
+            .iter()
+            .all(|state| matches!(state, Some(State::Spent)));
+
+        if !inputs_spent {
+            return Ok(false);
+        }
+
+        let output_signatures = self
+            .localstore
+            .get_blind_signatures(blinded_secrets)
+            .await?;
+        let outputs_signed = output_signatures.iter().all(Option::is_some);
+
+        if !outputs_signed {
+            tracing::error!(
+                "Swap saga {} has spent inputs but missing output signatures; manual intervention required",
+                saga.operation_id
+            );
+            return Ok(false);
+        }
+
+        tracing::info!(
+            "Swap saga {} already finalized; deleting orphaned saga record",
+            saga.operation_id
+        );
+
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.delete_saga(&saga.operation_id).await?;
+        tx.commit().await?;
+
+        Ok(true)
     }
 
     /// Recover from incomplete melt sagas
