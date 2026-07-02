@@ -60,6 +60,13 @@ pub struct Witness {
     name: String,
     signing_key: SigningKey,
     trusted: Vec<TrustedLog>,
+    /// Serializes the read-check-persist path of `handle_add_checkpoint`.
+    /// Without it, two concurrent submissions for the same origin could
+    /// both read the same last-cosigned state and each get a cosignature
+    /// on a *different* root at the same size — the exact equivocation a
+    /// witness exists to prevent (tlog-witness spec calls this race out
+    /// explicitly; persistence must happen atomically before responding).
+    submission_lock: tokio::sync::Mutex<()>,
 }
 
 impl fmt::Debug for Witness {
@@ -89,12 +96,22 @@ impl Witness {
             name,
             signing_key,
             trusted,
+            submission_lock: tokio::sync::Mutex::new(()),
         })
     }
 
     /// This witness's name, as it will appear in cosignature lines.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// This witness's Ed25519 public key, base64-encoded — what another
+    /// mint puts in its `[[transparency_log.witnesses]]` config to have
+    /// its checkpoints cosigned here.
+    pub fn public_key_base64(&self) -> String {
+        use base64::engine::general_purpose::STANDARD as BASE64;
+        use base64::Engine;
+        BASE64.encode(self.signing_key.verifying_key().as_bytes())
     }
 
     /// Handles one `add-checkpoint` submission: parses it, checks it
@@ -114,6 +131,7 @@ impl Witness {
             .find(|log| log.origin == origin)
             .ok_or(WitnessError::UnknownOrigin)?;
 
+        let _guard = self.submission_lock.lock().await;
         let last_cosigned = self.read_last_cosigned(&origin).await?;
         let now = cdk_common::util::unix_time();
 

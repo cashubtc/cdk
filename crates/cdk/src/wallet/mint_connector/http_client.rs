@@ -792,6 +792,37 @@ where
         *self.auth_wallet.write().await = wallet;
     }
 
+    /// Get transparency log public key [NUT-XX]
+    #[cfg(feature = "transparency-log")]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_audit_pubkey(&self) -> Result<super::AuditPubkeyResponse, Error> {
+        let url = self.mint_url.join_paths(&["v1", "audit", "pubkey"])?;
+        self.transport.http_get(url, None).await
+    }
+
+    /// Get latest transparency log checkpoint [NUT-XX]
+    #[cfg(feature = "transparency-log")]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_audit_checkpoint(&self) -> Result<super::AuditCheckpointResponse, Error> {
+        let url = self.mint_url.join_paths(&["v1", "audit", "checkpoint"])?;
+        self.transport.http_get(url, None).await
+    }
+
+    /// Get transparency log consistency proof [NUT-XX]
+    #[cfg(feature = "transparency-log")]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_audit_consistency_proof(
+        &self,
+        first: u64,
+        second: u64,
+    ) -> Result<super::AuditConsistencyResponse, Error> {
+        let mut url = self
+            .mint_url
+            .join_paths(&["v1", "audit", "proof", "consistency"])?;
+        url.set_query(Some(&format!("first={first}&second={second}")));
+        self.transport.http_get(url, None).await
+    }
+
     /// Spendable check [NUT-07]
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_check_state(

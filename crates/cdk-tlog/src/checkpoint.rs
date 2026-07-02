@@ -289,6 +289,11 @@ pub fn verify_checkpoint_signature(
 /// `checkpoint`, asserting that as of `timestamp` (seconds since the Unix
 /// epoch) this is the largest consistent tree the cosigner has observed
 /// for `checkpoint.origin`.
+///
+/// Per tlog-cosignature, the signature line's payload is
+/// `key_id(4) || timestamp(8, big-endian) || ed25519_signature(64)` — the
+/// timestamp travels inside the line itself, so any verifier can check the
+/// cosignature from the note alone.
 pub fn cosign(
     checkpoint: &Checkpoint,
     timestamp: u64,
@@ -296,7 +301,9 @@ pub fn cosign(
     key: &SigningKey,
 ) -> SignatureLine {
     let message = cosignature_message(checkpoint, timestamp);
-    let signature = key.sign(&message).to_bytes().to_vec();
+    let mut signature = Vec::with_capacity(8 + 64);
+    signature.extend_from_slice(&timestamp.to_be_bytes());
+    signature.extend_from_slice(&key.sign(&message).to_bytes());
     SignatureLine {
         name: name.to_string(),
         key_id: key_id(
@@ -308,31 +315,37 @@ pub fn cosign(
     }
 }
 
-/// Verifies an Ed25519 cosignature line against `checkpoint`, given the
-/// `timestamp` the caller believes was used (e.g. because it was just
-/// returned in response to a request the caller made with that
-/// timestamp, or extracted out-of-band).
-pub fn verify_cosignature_with_timestamp(
+/// Verifies an Ed25519 cosignature line against `checkpoint`, reading the
+/// timestamp embedded in the line per tlog-cosignature. Returns that
+/// timestamp on success, so callers can apply their own freshness policy.
+///
+/// # Panics
+///
+/// Never panics: the `expect` on the timestamp slice is only reached after
+/// the payload length has been checked to be exactly `8 + 64` bytes.
+pub fn verify_cosignature(
     checkpoint: &Checkpoint,
-    timestamp: u64,
     name: &str,
     key: &VerifyingKey,
     line: &SignatureLine,
-) -> Result<(), Error> {
+) -> Result<u64, Error> {
     if line.name != name
         || line.key_id != key_id(name, SIG_TYPE_ED25519_COSIGNATURE, key.as_bytes())
     {
         return Err(Error::NoMatchingSignature);
     }
-    let message = cosignature_message(checkpoint, timestamp);
-    let signature_bytes: [u8; 64] = line
-        .signature
-        .as_slice()
+    if line.signature.len() != 8 + 64 {
+        return Err(Error::InvalidSignature);
+    }
+    let timestamp = u64::from_be_bytes(line.signature[..8].try_into().expect("checked len"));
+    let signature_bytes: [u8; 64] = line.signature[8..]
         .try_into()
         .map_err(|_| Error::InvalidSignature)?;
+    let message = cosignature_message(checkpoint, timestamp);
     let signature = ed25519_dalek::Signature::from_bytes(&signature_bytes);
     key.verify_strict(&message, &signature)
-        .map_err(|_| Error::InvalidSignature)
+        .map_err(|_| Error::InvalidSignature)?;
+    Ok(timestamp)
 }
 
 fn cosignature_message(checkpoint: &Checkpoint, timestamp: u64) -> Vec<u8> {
@@ -441,14 +454,19 @@ mod tests {
         let timestamp = 1_679_315_147;
 
         let cosig = cosign(&checkpoint, timestamp, "witness.example/w1", &witness_key);
-        verify_cosignature_with_timestamp(
+        let recovered = verify_cosignature(
             &checkpoint,
-            timestamp,
             "witness.example/w1",
             &witness_key.verifying_key(),
             &cosig,
         )
         .expect("cosignature should verify");
+        assert_eq!(recovered, timestamp, "timestamp travels inside the line");
+        assert_eq!(
+            cosig.signature.len(),
+            8 + 64,
+            "payload is timestamp || ed25519 signature per tlog-cosignature"
+        );
     }
 
     #[test]
@@ -467,20 +485,23 @@ mod tests {
     }
 
     #[test]
-    fn cosignature_with_wrong_timestamp_fails() {
+    fn cosignature_with_tampered_timestamp_fails() {
         let witness_key = SigningKey::generate(&mut OsRng);
         let checkpoint = sample_checkpoint();
-        let cosig = cosign(
+        let mut cosig = cosign(
             &checkpoint,
             1_679_315_147,
             "witness.example/w1",
             &witness_key,
         );
 
+        // Flip a bit in the embedded timestamp: the signed message no
+        // longer matches, so verification must fail rather than silently
+        // accepting a shifted timestamp.
+        cosig.signature[7] ^= 0x01;
         assert_eq!(
-            verify_cosignature_with_timestamp(
+            verify_cosignature(
                 &checkpoint,
-                1_679_315_148,
                 "witness.example/w1",
                 &witness_key.verifying_key(),
                 &cosig,

@@ -22,7 +22,14 @@ wallet = [
 nostr = ["wallet", "dep:nostr-sdk", "cdk-common/nostr"]
 npubcash = ["wallet", "nostr", "dep:cdk-npubcash"]
 mint = ["dep:futures", "cdk-common/mint", "cdk-common/http", "cdk-signatory", "transparency-log"]
-transparency-log = ["dep:cdk-tlog", "dep:ed25519-dalek", "dep:base64", "dep:rand_core", "dep:hex"]
+transparency-log = [
+    "dep:cdk-tlog",
+    "dep:ed25519-dalek",
+    "dep:base64",
+    "dep:rand_core",
+    "dep:hex",
+    "dep:reqwest",
+]
 sigsum-anchor = ["transparency-log", "dep:cdk-sigsum"]
 bip353 = ["wallet", "cdk-common/bip353", "cdk-http-client?/bip353"]
 bench = []
@@ -47,6 +54,7 @@ ciborium.workspace = true
 ed25519-dalek = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 rand_core = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
 lightning.workspace = true
 lightning-invoice.workspace = true
 regex.workspace = true

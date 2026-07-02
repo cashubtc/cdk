@@ -1709,6 +1709,33 @@ pub async fn run_mintd(
     result
 }
 
+/// Strips the URL scheme (and any path/trailing slash) from `info.url`,
+/// leaving `host[:port]` — NUT-XX checkpoint origins are schema-less
+/// *names*, not fetchable URLs, and whatever is chosen here is baked into
+/// every checkpoint signature forever.
+fn schemeless_host(info_url: &str) -> String {
+    let trimmed = info_url.trim_end_matches('/');
+    let without_scheme = trimmed
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed);
+    without_scheme.trim_end_matches('/').to_string()
+}
+
+/// Parses a 32-byte Ed25519 public key from hex or (standard) base64 —
+/// operators copy these from another mint's `/v1/audit/pubkey` (base64) or
+/// from Sigsum-style tooling (hex), so accept both.
+fn parse_ed25519_pubkey(s: &str) -> Option<ed25519_dalek::VerifyingKey> {
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine;
+
+    let bytes = hex::decode(s.trim())
+        .ok()
+        .or_else(|| BASE64.decode(s.trim()).ok())?;
+    let arr: [u8; 32] = bytes.try_into().ok()?;
+    ed25519_dalek::VerifyingKey::from_bytes(&arr).ok()
+}
+
 #[cfg(feature = "sigsum-anchor")]
 const SIGSUM_KV_NAMESPACE: &str = "cdk_sigsum";
 #[cfg(feature = "sigsum-anchor")]
@@ -1868,15 +1895,18 @@ pub async fn run_mintd_with_shutdown(
 
     let mint = Arc::new(mint);
 
-    // Attach the transparency log publisher (see
-    // docs/adr/0001-append-only-transparency-log.md). The checkpoint
-    // origin is derived from the mint's own advertised URL, so no
-    // additional configuration is required to enable it.
-    {
-        let origin = format!(
-            "{}/transparency-log",
-            settings.info.url.trim_end_matches('/')
-        );
+    // Attach the transparency log publisher and (optionally) the built-in
+    // witness, per `[transparency_log]` / `[witness]` in config.toml (see
+    // docs/adr/0001-append-only-transparency-log.md). The log defaults to
+    // enabled; the witness defaults to off.
+    let tlog_settings = settings.transparency_log.clone().unwrap_or_default();
+    if tlog_settings.enabled {
+        // NUT-XX origins are schema-less names, not URLs: default to
+        // `<host[:port]>/transparency-log` derived from info.url.
+        let origin = match &tlog_settings.origin {
+            Some(origin) => origin.clone(),
+            None => format!("{}/transparency-log", schemeless_host(&settings.info.url)),
+        };
         match cdk::mint::transparency::TransparencyLogService::load_or_create(
             log_db,
             mint.localstore(),
@@ -1885,6 +1915,29 @@ pub async fn run_mintd_with_shutdown(
         .await
         {
             Ok(service) => {
+                let mut service = service.with_publish_interval(std::time::Duration::from_secs(
+                    tlog_settings.checkpoint_interval_secs.max(1),
+                ));
+
+                let mut witnesses = Vec::new();
+                for w in &tlog_settings.witnesses {
+                    match parse_ed25519_pubkey(&w.public_key) {
+                        Some(public_key) => {
+                            witnesses.push(cdk::mint::transparency::CheckpointWitness {
+                                url: w.url.clone(),
+                                name: w.name.clone(),
+                                public_key,
+                            })
+                        }
+                        None => {
+                            tracing::warn!("invalid public_key for witness {}, skipping it", w.name)
+                        }
+                    }
+                }
+                if !witnesses.is_empty() {
+                    service = service.with_witnesses(witnesses);
+                }
+
                 #[cfg(feature = "sigsum-anchor")]
                 let service = attach_sigsum_anchor(service, settings, mint.localstore()).await;
                 mint.set_transparency_log(std::sync::Arc::new(service));
@@ -1893,6 +1946,46 @@ pub async fn run_mintd_with_shutdown(
                 tracing::warn!(
                     "Failed to initialize transparency log, continuing without it: {err}"
                 );
+            }
+        }
+    }
+
+    if let Some(witness_settings) = settings.witness.as_ref().filter(|w| w.enabled) {
+        let name = match &witness_settings.name {
+            Some(name) => name.clone(),
+            None => format!("{}/witness", schemeless_host(&settings.info.url)),
+        };
+        let mut trusted = Vec::new();
+        for log in &witness_settings.trusted_logs {
+            match parse_ed25519_pubkey(&log.public_key) {
+                Some(public_key) => trusted.push(cdk::mint::witness::TrustedLog {
+                    origin: log.origin.clone(),
+                    public_key,
+                }),
+                None => tracing::warn!(
+                    "invalid public_key for trusted log {}, skipping it",
+                    log.origin
+                ),
+            }
+        }
+        if trusted.is_empty() {
+            tracing::warn!("[witness] enabled but no valid trusted_logs; witness not started");
+        } else {
+            match cdk::mint::witness::Witness::load_or_create(mint.localstore(), name, trusted)
+                .await
+            {
+                Ok(witness) => {
+                    tracing::info!(
+                        name = witness.name(),
+                        public_key = witness.public_key_base64(),
+                        "built-in witness enabled (other mints need this name + public_key \
+                         in their [[transparency_log.witnesses]] to be cosigned here)"
+                    );
+                    mint.set_witness(std::sync::Arc::new(witness));
+                }
+                Err(err) => {
+                    tracing::warn!("Failed to initialize witness, continuing without it: {err}");
+                }
             }
         }
     }

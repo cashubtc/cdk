@@ -40,13 +40,37 @@ use crate::error::Error;
 
 const KV_NAMESPACE: &str = "cdk_transparency";
 const KV_SIGNING_KEY: &str = "signing_key";
-const KV_NEXT_SEQ: &str = "next_seq";
 const KV_TREE_STATE: &str = "tree_state";
 const KV_LATEST_CHECKPOINT_SIZE: &str = "latest_checkpoint_size";
 
 /// How many `mint_event_log` rows the publisher folds into the tree per
-/// tick, at most.
+/// batch, at most.
 const BATCH_SIZE: u64 = 1_000;
+
+/// Upper bound on one external Sigsum anchoring attempt. `cdk_sigsum::anchor`
+/// polls the log until the leaf is committed and covered by a published tree
+/// head, which can take arbitrarily long against a slow or wedged log; the
+/// publisher tick (and, transitively, mint shutdown) must not be held hostage
+/// by that.
+#[cfg(feature = "sigsum-anchor")]
+const SIGSUM_ANCHOR_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Upper bound on one outbound witness `add-checkpoint` HTTP exchange.
+const WITNESS_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A witness (speaking C2SP tlog-witness) this mint asks to cosign every
+/// checkpoint it publishes — e.g. another cdk mint's
+/// `/witness/add-checkpoint` endpoint, or a standalone witness.
+#[derive(Debug, Clone)]
+pub struct CheckpointWitness {
+    /// Full URL of the witness's `add-checkpoint` endpoint.
+    pub url: String,
+    /// The name the witness signs cosignature lines with.
+    pub name: String,
+    /// The witness's Ed25519 public key, used to verify returned
+    /// cosignatures before attaching them to the stored checkpoint.
+    pub public_key: ed25519_dalek::VerifyingKey,
+}
 
 /// Configuration for anchoring checkpoints to an external Sigsum log.
 #[cfg(feature = "sigsum-anchor")]
@@ -71,6 +95,10 @@ pub struct TransparencyLogService {
     signing_key: SigningKey,
     #[cfg(feature = "sigsum-anchor")]
     sigsum: Option<SigsumAnchorConfig>,
+    /// Witnesses asked to cosign every published checkpoint.
+    witnesses: Vec<CheckpointWitness>,
+    /// How often the background publisher ticks (see [`Self::spawn`]).
+    publish_interval: Duration,
     /// Serializes `run_once` so a slow tick can't overlap the next one.
     run_lock: Mutex<()>,
 }
@@ -101,8 +129,31 @@ impl TransparencyLogService {
             signing_key,
             #[cfg(feature = "sigsum-anchor")]
             sigsum: None,
+            witnesses: Vec::new(),
+            publish_interval: Duration::from_secs(30),
             run_lock: Mutex::new(()),
         })
+    }
+
+    /// Configures witnesses this service asks to cosign each published
+    /// checkpoint. Best-effort, like external anchoring: an unreachable or
+    /// declining witness costs that checkpoint its cosignature line, never
+    /// the publishing tick.
+    pub fn with_witnesses(mut self, witnesses: Vec<CheckpointWitness>) -> Self {
+        self.witnesses = witnesses;
+        self
+    }
+
+    /// Overrides how often the background publisher ticks (default 30s).
+    pub fn with_publish_interval(mut self, interval: Duration) -> Self {
+        self.publish_interval = interval;
+        self
+    }
+
+    /// The configured publishing interval, used by [`crate::mint::Mint::start`]
+    /// when spawning the background task.
+    pub fn publish_interval(&self) -> Duration {
+        self.publish_interval
     }
 
     /// Configures external anchoring of every future checkpoint to a
@@ -132,44 +183,41 @@ impl TransparencyLogService {
     pub async fn run_once(&self) -> Result<Option<SignedCheckpoint>, Error> {
         let _guard = self.run_lock.lock().await;
 
-        let mut next_seq = read_u64(&self.kv_db, KV_NEXT_SEQ).await?.unwrap_or(1);
         let mut tree = read_tree_state(&self.kv_db).await?;
 
         let mut advanced = false;
         loop {
-            let rows = self
+            // First drain any rows already assigned a leaf index but not
+            // yet folded — this is the crash-recovery path: leaf indices
+            // are durable in the event log table itself, so a crash
+            // between assignment and the tree-state write below just
+            // replays the same leaves into the same positions.
+            let mut rows = self
                 .log_db
-                .get_event_log_range(next_seq, next_seq + BATCH_SIZE)
+                .get_event_log_range(tree.size, tree.size + BATCH_SIZE)
                 .await?;
+            if rows.is_empty() {
+                // Then have the DB assign indices to newly committed rows.
+                // Row-id gaps (permanent on Postgres after a rollback)
+                // don't exist in leaf-index space: the appender numbers
+                // exactly the committed rows it observes, densely.
+                rows = self.log_db.assign_leaf_indices(BATCH_SIZE).await?;
+                rows.retain(|row| row.seq >= tree.size);
+            }
             if rows.is_empty() {
                 break;
             }
 
-            let mut progressed_this_batch = false;
             for row in rows {
-                // `seq` is a stable DB ordering key but is not guaranteed
-                // gap-free (an aborted insert's seq is never reused and
-                // never appears). We only ever advance over a strictly
-                // contiguous prefix, so a genuine gap pauses the tree at
-                // that point rather than silently reordering leaves —
-                // see docs/adr/0001-append-only-transparency-log.md §4.
-                if row.seq != next_seq {
-                    break;
+                if row.seq != tree.size {
+                    return Err(Error::Custom(format!(
+                        "transparency log leaf indices are not contiguous: expected {}, got {}",
+                        tree.size, row.seq
+                    )));
                 }
                 tree.append(row.leaf_hash);
-                next_seq += 1;
                 advanced = true;
-                progressed_this_batch = true;
             }
-
-            if !progressed_this_batch {
-                break;
-            }
-        }
-
-        if advanced {
-            write_u64(&self.kv_db, KV_NEXT_SEQ, next_seq).await?;
-            write_tree_state(&self.kv_db, &tree).await?;
         }
 
         if tree.size == 0 {
@@ -186,13 +234,168 @@ impl TransparencyLogService {
         let checkpoint = Checkpoint::new(self.origin.clone(), tree.size, tree.root());
         let signed = sign_checkpoint(checkpoint, &self.origin, &self.signing_key);
 
-        write_checkpoint(&self.kv_db, tree.size, &signed).await?;
-        write_u64(&self.kv_db, KV_LATEST_CHECKPOINT_SIZE, tree.size).await?;
+        // Tree state, the checkpoint note, and the latest-checkpoint
+        // pointer land in one KV transaction: a crash can never leave the
+        // persisted tree ahead of or behind the leaves it was built from,
+        // which would silently skip (or double-fold) leaves forever.
+        persist_tick(&self.kv_db, &tree, &signed).await?;
+
+        // Best-effort extras, after the checkpoint itself is durable.
+        let signed = self.collect_witness_cosignatures(signed).await;
 
         #[cfg(feature = "sigsum-anchor")]
         self.anchor_to_sigsum(&signed).await;
 
         Ok(Some(signed))
+    }
+
+    /// Asks every configured witness to cosign `signed` (C2SP tlog-witness
+    /// `add-checkpoint`), verifies each returned cosignature, appends the
+    /// valid ones to the note, and re-persists it so `/v1/audit/checkpoint`
+    /// serves the cosigned version. Entirely best-effort.
+    async fn collect_witness_cosignatures(&self, mut signed: SignedCheckpoint) -> SignedCheckpoint {
+        if self.witnesses.is_empty() {
+            return signed;
+        }
+
+        let new_size = signed.checkpoint.size;
+        let leaves = match self.leaf_hashes_up_to(new_size).await {
+            Ok(leaves) => leaves,
+            Err(err) => {
+                tracing::warn!("cannot build witness consistency proofs: {err}");
+                return signed;
+            }
+        };
+
+        let client = match reqwest::Client::builder()
+            .timeout(WITNESS_REQUEST_TIMEOUT)
+            .build()
+        {
+            Ok(client) => client,
+            Err(err) => {
+                tracing::warn!("failed to build witness HTTP client: {err}");
+                return signed;
+            }
+        };
+
+        let mut added_any = false;
+        for witness in &self.witnesses {
+            match self
+                .request_cosignature(&client, witness, &signed, &leaves)
+                .await
+            {
+                Ok(line) => {
+                    tracing::info!(
+                        witness = witness.name,
+                        tree_size = new_size,
+                        "checkpoint cosigned by witness"
+                    );
+                    signed.signatures.push(line);
+                    added_any = true;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        witness = witness.name,
+                        "failed to obtain witness cosignature: {err}"
+                    );
+                }
+            }
+        }
+
+        if added_any {
+            if let Err(err) = persist_checkpoint_note(&self.kv_db, new_size, &signed).await {
+                tracing::warn!("failed to persist cosigned checkpoint note: {err}");
+            }
+        }
+        signed
+    }
+
+    /// One witness exchange: submit with our recorded `old_size` for this
+    /// witness, follow the spec's 409 recovery (response body carries the
+    /// witness's actual last-cosigned size) once, verify the returned
+    /// cosignature line before trusting it, and remember the new size.
+    async fn request_cosignature(
+        &self,
+        client: &reqwest::Client,
+        witness: &CheckpointWitness,
+        signed: &SignedCheckpoint,
+        leaves: &[Hash],
+    ) -> Result<cdk_tlog::SignatureLine, Error> {
+        use cdk_tlog::witness::AddCheckpointRequest;
+
+        let ack_key = witness_ack_key(&witness.name);
+        let mut old_size = read_kv_u64(&self.kv_db, "witness_ack", &ack_key)
+            .await?
+            .unwrap_or(0);
+
+        for attempt in 0..2 {
+            let proof = consistency_proof(old_size, leaves)
+                .map_err(|e| Error::Custom(e.to_string()))?;
+            let body = AddCheckpointRequest {
+                old_size,
+                consistency_proof: proof,
+                checkpoint: signed.clone(),
+            }
+            .to_body();
+
+            let response = client
+                .post(&witness.url)
+                .header("content-type", "text/plain")
+                .body(body)
+                .send()
+                .await
+                .map_err(|e| Error::Custom(format!("witness request failed: {e}")))?;
+
+            let status = response.status();
+            let text = response
+                .text()
+                .await
+                .map_err(|e| Error::Custom(format!("witness response unreadable: {e}")))?;
+
+            if status == reqwest::StatusCode::CONFLICT && attempt == 0 {
+                // 409: the witness's last-cosigned size differs from our
+                // record; the body is its actual size. Resync and retry.
+                if let Ok(stored) = text.trim().parse::<u64>() {
+                    old_size = stored;
+                    continue;
+                }
+                return Err(Error::Custom(format!(
+                    "witness 409 with unparseable size: {text:?}"
+                )));
+            }
+            if !status.is_success() {
+                return Err(Error::Custom(format!(
+                    "witness declined ({status}): {}",
+                    text.trim()
+                )));
+            }
+
+            // 200: one or more cosignature lines. Take the first one that
+            // actually verifies against this witness's key.
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                let Ok(parsed) = cdk_tlog::SignatureLine::parse_line(line) else {
+                    continue;
+                };
+                if cdk_tlog::checkpoint::verify_cosignature(
+                    &signed.checkpoint,
+                    &witness.name,
+                    &witness.public_key,
+                    &parsed,
+                )
+                .is_ok()
+                {
+                    write_kv_u64(&self.kv_db, "witness_ack", &ack_key, signed.checkpoint.size)
+                        .await?;
+                    return Ok(parsed);
+                }
+            }
+            return Err(Error::Custom(
+                "witness returned no verifiable cosignature".to_string(),
+            ));
+        }
+        Err(Error::Custom(
+            "witness old-size conflict persisted after resync".to_string(),
+        ))
     }
 
     /// Best-effort external anchor of `checkpoint`'s note text to the
@@ -203,24 +406,46 @@ impl TransparencyLogService {
             return;
         };
         let client = cdk_sigsum::SigsumClient::new(config.log_url.clone());
-        match cdk_sigsum::anchor(
-            &client,
-            &config.log_public_key,
-            &config.submit_key,
-            config.token.as_ref(),
-            checkpoint.to_note().as_bytes(),
+        // Hard deadline: `anchor` polls the log until the leaf is covered
+        // by a published tree head, which is unbounded against a slow or
+        // wedged log. Anchoring is best-effort, so give up and move on —
+        // the next published checkpoint gets its own attempt.
+        let outcome = tokio::time::timeout(
+            SIGSUM_ANCHOR_TIMEOUT,
+            cdk_sigsum::anchor(
+                &client,
+                &config.log_public_key,
+                &config.submit_key,
+                config.token.as_ref(),
+                checkpoint.to_note().as_bytes(),
+            ),
         )
-        .await
-        {
-            Ok(proof) => {
-                tracing::info!(
-                    tree_size = checkpoint.checkpoint.size,
-                    "anchored transparency log checkpoint to Sigsum log ({})",
-                    proof.to_ascii().lines().next().unwrap_or_default()
-                );
+        .await;
+        match outcome {
+            Ok(Ok(proof)) => {
+                let size = checkpoint.checkpoint.size;
+                // Persist the offline-verifiable proof next to the
+                // checkpoint it anchors (ADR §7.1), so `/v1/audit/checkpoint`
+                // can serve it to auditors. Best-effort like the anchoring
+                // itself: a failed write only costs this proof, not the tick.
+                if let Err(err) = persist_sigsum_proof(&self.kv_db, size, &proof.to_ascii()).await
+                {
+                    tracing::warn!("failed to persist Sigsum proof: {err}");
+                } else {
+                    tracing::info!(
+                        tree_size = size,
+                        "anchored transparency log checkpoint to Sigsum log"
+                    );
+                }
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 tracing::warn!("failed to anchor checkpoint to Sigsum log: {err}");
+            }
+            Err(_) => {
+                tracing::warn!(
+                    timeout_secs = SIGSUM_ANCHOR_TIMEOUT.as_secs(),
+                    "timed out anchoring checkpoint to Sigsum log"
+                );
             }
         }
     }
@@ -229,6 +454,13 @@ impl TransparencyLogService {
     /// `interval`, until `shutdown` is notified.
     pub fn spawn(self: Arc<Self>, shutdown: Arc<Notify>, interval: Duration) -> JoinHandle<()> {
         tokio::spawn(async move {
+            // Created once and pinned across iterations: `notify_waiters`
+            // only wakes already-registered waiters, so a fresh
+            // `notified()` per loop iteration would miss a shutdown signal
+            // that fires while a tick is running, leaving this task (and
+            // `Mint::stop`, which joins it) hanging forever.
+            let shutdown_signal = shutdown.notified();
+            tokio::pin!(shutdown_signal);
             loop {
                 tokio::select! {
                     _ = tokio::time::sleep(interval) => {
@@ -236,7 +468,7 @@ impl TransparencyLogService {
                             tracing::error!("transparency log publisher tick failed: {err}");
                         }
                     }
-                    _ = shutdown.notified() => {
+                    _ = &mut shutdown_signal => {
                         tracing::info!("transparency log publisher shutting down");
                         break;
                     }
@@ -265,30 +497,39 @@ impl TransparencyLogService {
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
     }
 
+    /// The ascii Sigsum proof-of-logging for the checkpoint at exactly
+    /// `tree_size`, if that checkpoint was successfully anchored to a
+    /// Sigsum log (see the `sigsum-anchor` feature). External anchors are
+    /// best-effort, so a checkpoint can exist without one.
+    pub async fn sigsum_proof_at(&self, tree_size: u64) -> Result<Option<String>, Error> {
+        Ok(self
+            .kv_db
+            .kv_read(KV_NAMESPACE, "anchor", &sigsum_proof_key(tree_size))
+            .await?
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+    }
+
+    /// The ascii Sigsum proof for the latest published checkpoint, if any.
+    pub async fn latest_sigsum_proof(&self) -> Result<Option<String>, Error> {
+        match read_u64(&self.kv_db, KV_LATEST_CHECKPOINT_SIZE).await? {
+            Some(size) => self.sigsum_proof_at(size).await,
+            None => Ok(None),
+        }
+    }
+
     /// Log entries with zero-based leaf index in `[start, end)`, ordered by
     /// index, for the `/v1/audit/entries` endpoint.
     ///
     /// NUT-XX defines `seq` as a zero-based leaf index (`0 <= seq <
-    /// tree_size`), matching RFC 6962 / Sigsum / CT convention. The
-    /// underlying `mint_event_log` table stores a 1-based `AUTOINCREMENT`/
-    /// `IDENTITY` row id instead (SQL auto-increment columns start at 1),
-    /// so this is the one place that DB-storage numbering is translated to
-    /// the public, spec-facing numbering — callers on both sides of this
-    /// method (the DB and the HTTP layer) never need to think about the
-    /// offset themselves.
+    /// tree_size`), matching RFC 6962 / Sigsum / CT convention — which is
+    /// exactly what the appender assigns as `leaf_index`, so no numbering
+    /// translation is needed anywhere.
     pub async fn entries(
         &self,
         start: u64,
         end: u64,
     ) -> Result<Vec<cdk_common::database::mint::MintEventLogEntry>, Error> {
-        let mut entries = self
-            .log_db
-            .get_event_log_range(start.saturating_add(1), end.saturating_add(1))
-            .await?;
-        for entry in &mut entries {
-            entry.seq -= 1;
-        }
-        Ok(entries)
+        Ok(self.log_db.get_event_log_range(start, end).await?)
     }
 
     /// Builds an RFC 6962 inclusion proof for the zero-based leaf `index`
@@ -320,7 +561,7 @@ impl TransparencyLogService {
     }
 
     async fn leaf_hashes_up_to(&self, tree_size: u64) -> Result<Vec<Hash>, Error> {
-        let rows = self.log_db.get_event_log_range(1, tree_size + 1).await?;
+        let rows = self.log_db.get_event_log_range(0, tree_size).await?;
         if rows.len() as u64 != tree_size {
             return Err(Error::Custom(format!(
                 "expected {tree_size} contiguous log entries, found {}",
@@ -333,6 +574,91 @@ impl TransparencyLogService {
 
 fn checkpoint_key(tree_size: u64) -> String {
     format!("size_{tree_size:020}")
+}
+
+fn sigsum_proof_key(tree_size: u64) -> String {
+    format!("sigsum_{tree_size:020}")
+}
+
+/// Per-witness "largest size this witness has cosigned for us" KV key.
+/// Hashed because witness names (schema-less URLs) can contain characters
+/// outside the KV key alphabet.
+fn witness_ack_key(witness_name: &str) -> String {
+    use bitcoin::hashes::{sha256, Hash as BitcoinHash};
+    hex::encode(sha256::Hash::hash(witness_name.as_bytes()).to_byte_array())
+}
+
+async fn read_kv_u64(
+    db: &DynMintDatabase,
+    secondary: &str,
+    key: &str,
+) -> Result<Option<u64>, Error> {
+    let bytes = db.kv_read(KV_NAMESPACE, secondary, key).await?;
+    Ok(match bytes {
+        Some(bytes) => {
+            let arr: [u8; 8] = bytes
+                .try_into()
+                .map_err(|_| Error::Custom(format!("stored `{secondary}/{key}` was not 8 bytes")))?;
+            Some(u64::from_be_bytes(arr))
+        }
+        None => None,
+    })
+}
+
+async fn write_kv_u64(
+    db: &DynMintDatabase,
+    secondary: &str,
+    key: &str,
+    value: u64,
+) -> Result<(), Error> {
+    let mut tx = db.begin_transaction().await?;
+    tx.kv_write(KV_NAMESPACE, secondary, key, &value.to_be_bytes())
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Overwrites the stored note for `tree_size` — used to re-persist a
+/// checkpoint after witness cosignature lines were appended to it. The
+/// checkpoint body (and the mint's own signature) never change; only
+/// signature lines accumulate.
+async fn persist_checkpoint_note(
+    db: &DynMintDatabase,
+    tree_size: u64,
+    checkpoint: &SignedCheckpoint,
+) -> Result<(), Error> {
+    let mut tx = db.begin_transaction().await?;
+    tx.kv_write(
+        KV_NAMESPACE,
+        "checkpoint",
+        &checkpoint_key(tree_size),
+        checkpoint.to_note().as_bytes(),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Stores the ascii Sigsum proof for the checkpoint at `tree_size`.
+/// Written after (and separately from) the checkpoint's own atomic
+/// persist — anchoring is best-effort and asynchronous relative to
+/// checkpoint publication (ADR §7.1 item 3).
+#[cfg(feature = "sigsum-anchor")]
+async fn persist_sigsum_proof(
+    db: &DynMintDatabase,
+    tree_size: u64,
+    proof_ascii: &str,
+) -> Result<(), Error> {
+    let mut tx = db.begin_transaction().await?;
+    tx.kv_write(
+        KV_NAMESPACE,
+        "anchor",
+        &sigsum_proof_key(tree_size),
+        proof_ascii.as_bytes(),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 async fn load_or_create_signing_key(db: &DynMintDatabase) -> Result<SigningKey, Error> {
@@ -369,14 +695,6 @@ async fn read_u64(db: &DynMintDatabase, key: &str) -> Result<Option<u64>, Error>
     })
 }
 
-async fn write_u64(db: &DynMintDatabase, key: &str, value: u64) -> Result<(), Error> {
-    let mut tx = db.begin_transaction().await?;
-    tx.kv_write(KV_NAMESPACE, "state", key, &value.to_be_bytes())
-        .await?;
-    tx.commit().await?;
-    Ok(())
-}
-
 async fn read_tree_state(db: &DynMintDatabase) -> Result<TreeHead, Error> {
     let bytes = db.kv_read(KV_NAMESPACE, "state", KV_TREE_STATE).await?;
     let Some(bytes) = bytes else {
@@ -393,31 +711,36 @@ async fn read_tree_state(db: &DynMintDatabase) -> Result<TreeHead, Error> {
     Ok(TreeHead::from_parts(size, peaks))
 }
 
-async fn write_tree_state(db: &DynMintDatabase, tree: &TreeHead) -> Result<(), Error> {
-    let mut bytes = Vec::with_capacity(8 + tree.peaks().len() * 32);
-    bytes.extend_from_slice(&tree.size.to_be_bytes());
+/// Persists everything one publishing tick produced — the advanced tree
+/// state, the signed checkpoint note, and the latest-checkpoint pointer —
+/// in a single KV transaction, so a crash can never persist one without
+/// the others.
+async fn persist_tick(
+    db: &DynMintDatabase,
+    tree: &TreeHead,
+    checkpoint: &SignedCheckpoint,
+) -> Result<(), Error> {
+    let mut tree_bytes = Vec::with_capacity(8 + tree.peaks().len() * 32);
+    tree_bytes.extend_from_slice(&tree.size.to_be_bytes());
     for peak in tree.peaks() {
-        bytes.extend_from_slice(peak);
+        tree_bytes.extend_from_slice(peak);
     }
 
     let mut tx = db.begin_transaction().await?;
-    tx.kv_write(KV_NAMESPACE, "state", KV_TREE_STATE, &bytes)
+    tx.kv_write(KV_NAMESPACE, "state", KV_TREE_STATE, &tree_bytes)
         .await?;
-    tx.commit().await?;
-    Ok(())
-}
-
-async fn write_checkpoint(
-    db: &DynMintDatabase,
-    tree_size: u64,
-    checkpoint: &SignedCheckpoint,
-) -> Result<(), Error> {
-    let mut tx = db.begin_transaction().await?;
     tx.kv_write(
         KV_NAMESPACE,
         "checkpoint",
-        &checkpoint_key(tree_size),
+        &checkpoint_key(tree.size),
         checkpoint.to_note().as_bytes(),
+    )
+    .await?;
+    tx.kv_write(
+        KV_NAMESPACE,
+        "state",
+        KV_LATEST_CHECKPOINT_SIZE,
+        &tree.size.to_be_bytes(),
     )
     .await?;
     tx.commit().await?;

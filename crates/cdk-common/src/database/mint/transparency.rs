@@ -100,9 +100,11 @@ impl TryFrom<i16> for EventOp {
 /// checkpoint publisher and the audit HTTP endpoints.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MintEventLogEntry {
-    /// Monotonically increasing sequence number assigned at insert time.
-    /// Stable for querying; the tree's canonical leaf order is this same
-    /// `seq` order (see the ADR's discussion of single-writer sequencing).
+    /// Zero-based Merkle tree leaf index (NUT-XX's public `seq`), assigned
+    /// densely by the single appender via
+    /// [`TransparencyLogDatabase::assign_leaf_indices`] — deliberately not
+    /// the row's auto-increment id, whose gaps (permanent on Postgres after
+    /// a rolled-back transaction) must never affect tree positions.
     pub seq: u64,
     /// Which kind of entity this entry describes.
     pub entity_type: LoggedEntity,
@@ -116,9 +118,10 @@ pub struct MintEventLogEntry {
     /// (replay, audit) must agree on the same one.
     pub payload: Vec<u8>,
     /// RFC 6962 leaf hash of this entry, precomputed at insert time from
-    /// `(seq, entity_type, entity_id, op, payload)` so that neither the
-    /// checkpoint publisher nor an external auditor need to re-derive the
-    /// exact encoding used to hash it.
+    /// `(entity_type, entity_id, op, payload, created_time)` — `seq` is
+    /// deliberately excluded, see [`Self::leaf_preimage`] — so that neither
+    /// the checkpoint publisher nor an external auditor need to re-derive
+    /// the exact encoding used to hash it.
     pub leaf_hash: [u8; 32],
     /// Unix timestamp (seconds) the entry was appended at.
     pub created_time: u64,
@@ -183,16 +186,26 @@ pub trait TransparencyLogDatabase {
     /// Transparency Log Database Error
     type Err: Into<Error> + From<Error>;
 
-    /// The highest `seq` currently stored, or `0` if the log is empty.
-    async fn latest_event_log_seq(&self) -> Result<u64, Self::Err>;
-
-    /// Reads log entries with `seq` in `[start, end)`, ordered by `seq`.
+    /// Assigns dense, zero-based leaf indices to up to `max` not yet
+    /// indexed committed rows, in row-insertion (`seq`) order, continuing
+    /// from the highest index already assigned. Returns the newly indexed
+    /// entries, ordered by leaf index.
     ///
-    /// May return fewer entries than the range implies if some are not
-    /// yet visible (e.g. a concurrent transaction assigned a `seq` in
-    /// range but hasn't committed yet) — callers advancing a Merkle tree
-    /// must only advance over a contiguous prefix they've actually
-    /// received, never skip a gap.
+    /// This is how a committed row becomes part of the Merkle tree's leaf
+    /// order: the row's auto-increment id is *not* its tree position
+    /// (auto-increment gaps are permanent on Postgres after a rollback and
+    /// must never stall or shift the tree). Exactly one appender task per
+    /// mint may call this — see the ADR's single-sequencer discussion.
+    ///
+    /// Crash-safe: assignment is durable in the event log table itself, so
+    /// an appender that crashes between assigning and folding re-reads the
+    /// already-indexed-but-unfolded suffix via
+    /// [`Self::get_event_log_range`] on restart.
+    async fn assign_leaf_indices(&self, max: u64) -> Result<Vec<MintEventLogEntry>, Self::Err>;
+
+    /// Reads indexed log entries with leaf index in `[start, end)`,
+    /// ordered by leaf index. Rows not yet indexed by
+    /// [`Self::assign_leaf_indices`] are not visible here.
     async fn get_event_log_range(
         &self,
         start: u64,

@@ -51,11 +51,11 @@ mod test {
 
         let db = memory::empty().await.unwrap();
 
-        assert_eq!(
-            TransparencyLogDatabase::latest_event_log_seq(&db)
+        assert!(
+            TransparencyLogDatabase::assign_leaf_indices(&db, 1_000)
                 .await
-                .unwrap(),
-            0,
+                .unwrap()
+                .is_empty(),
             "a fresh mint has an empty transparency log"
         );
 
@@ -109,18 +109,26 @@ mod test {
             .unwrap();
         tx.commit().await.unwrap();
 
-        let seq_after = TransparencyLogDatabase::latest_event_log_seq(&db)
+        // Rows only become visible (and get their zero-based leaf index)
+        // once the appender sequences them.
+        let entries = TransparencyLogDatabase::assign_leaf_indices(&db, 1_000)
             .await
             .unwrap();
         assert!(
-            seq_after >= 2,
-            "expected at least the keyset and proof updates to be logged, got seq {seq_after}"
+            entries.len() >= 2,
+            "expected at least the keyset and proof updates to be logged, got {entries:?}"
         );
 
-        let entries = TransparencyLogDatabase::get_event_log_range(&db, 1, seq_after + 1)
+        // Sequencing is idempotent-ish: a second call finds nothing new.
+        assert!(TransparencyLogDatabase::assign_leaf_indices(&db, 1_000)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let ranged = TransparencyLogDatabase::get_event_log_range(&db, 0, entries.len() as u64)
             .await
             .unwrap();
-        assert_eq!(entries.len() as u64, seq_after);
+        assert_eq!(ranged, entries);
 
         assert!(
             entries
@@ -146,9 +154,9 @@ mod test {
             );
         }
 
-        // seq must be strictly increasing in returned order.
-        for pair in entries.windows(2) {
-            assert!(pair[0].seq < pair[1].seq);
+        // Leaf indices must be dense and zero-based in returned order.
+        for (i, entry) in entries.iter().enumerate() {
+            assert_eq!(entry.seq, i as u64);
         }
     }
 

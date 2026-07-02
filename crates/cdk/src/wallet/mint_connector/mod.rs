@@ -130,4 +130,71 @@ pub trait MintConnector: Debug {
 
     /// Set auth wallet on client
     async fn set_auth_wallet(&self, wallet: Option<AuthWallet>);
+
+    /// Get the mint's transparency-log signing key and origin (NUT-XX,
+    /// `GET /v1/audit/pubkey`). Default implementation reports the
+    /// endpoint as unsupported, so custom connectors keep compiling.
+    #[cfg(feature = "transparency-log")]
+    async fn get_audit_pubkey(&self) -> Result<AuditPubkeyResponse, Error> {
+        Err(Error::Custom(
+            "transparency log endpoints not supported by this connector".to_string(),
+        ))
+    }
+
+    /// Get the mint's latest signed checkpoint (NUT-XX,
+    /// `GET /v1/audit/checkpoint`).
+    #[cfg(feature = "transparency-log")]
+    async fn get_audit_checkpoint(&self) -> Result<AuditCheckpointResponse, Error> {
+        Err(Error::Custom(
+            "transparency log endpoints not supported by this connector".to_string(),
+        ))
+    }
+
+    /// Get an RFC 6962 consistency proof between two checkpoint sizes
+    /// (NUT-XX, `GET /v1/audit/proof/consistency`).
+    #[cfg(feature = "transparency-log")]
+    async fn get_audit_consistency_proof(
+        &self,
+        _first: u64,
+        _second: u64,
+    ) -> Result<AuditConsistencyResponse, Error> {
+        Err(Error::Custom(
+            "transparency log endpoints not supported by this connector".to_string(),
+        ))
+    }
+}
+
+/// Response of `GET /v1/audit/pubkey` (NUT-XX).
+#[cfg(feature = "transparency-log")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AuditPubkeyResponse {
+    /// The checkpoint origin line this mint signs (its log's name).
+    pub origin: String,
+    /// Base64-encoded 32-byte Ed25519 log-signing public key.
+    pub pubkey: String,
+    /// Signature scheme identifier; `"ed25519"` for this NUT revision.
+    pub signature_scheme: String,
+}
+
+/// Response of `GET /v1/audit/checkpoint` (NUT-XX).
+#[cfg(feature = "transparency-log")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AuditCheckpointResponse {
+    /// Full C2SP signed note (checkpoint plus signature lines).
+    pub checkpoint: String,
+    /// Ascii Sigsum proof-of-logging for this checkpoint, if anchored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sigsum_proof: Option<String>,
+}
+
+/// Response of `GET /v1/audit/proof/consistency` (NUT-XX).
+#[cfg(feature = "transparency-log")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AuditConsistencyResponse {
+    /// The smaller tree size the proof starts from.
+    pub first: u64,
+    /// The larger tree size the proof extends to.
+    pub second: u64,
+    /// Hex-encoded RFC 6962 consistency proof nodes.
+    pub proof: Vec<String>,
 }

@@ -51,6 +51,11 @@ pub(crate) async fn get_pubkey(State(state): State<MintState>) -> Result<Respons
 #[derive(Serialize)]
 struct CheckpointResponse {
     checkpoint: String,
+    /// Ascii Sigsum proof-of-logging for this checkpoint, if it was
+    /// anchored to a public Sigsum log (external anchors are best-effort,
+    /// so this can lag or be absent entirely).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sigsum_proof: Option<String>,
 }
 
 /// `GET /v1/audit/checkpoint`
@@ -61,7 +66,14 @@ pub(crate) async fn get_latest_checkpoint(
         return Err(not_configured());
     };
     match service.latest_checkpoint().await {
-        Ok(Some(checkpoint)) => Ok(Json(CheckpointResponse { checkpoint }).into_response()),
+        Ok(Some(checkpoint)) => {
+            let sigsum_proof = service.latest_sigsum_proof().await.unwrap_or_default();
+            Ok(Json(CheckpointResponse {
+                checkpoint,
+                sigsum_proof,
+            })
+            .into_response())
+        }
         Ok(None) => Err((StatusCode::NOT_FOUND, "log is empty").into_response()),
         Err(err) => Err(internal_error(err)),
     }
@@ -76,7 +88,14 @@ pub(crate) async fn get_checkpoint_at(
         return Err(not_configured());
     };
     match service.checkpoint_at(tree_size).await {
-        Ok(Some(checkpoint)) => Ok(Json(CheckpointResponse { checkpoint }).into_response()),
+        Ok(Some(checkpoint)) => {
+            let sigsum_proof = service.sigsum_proof_at(tree_size).await.unwrap_or_default();
+            Ok(Json(CheckpointResponse {
+                checkpoint,
+                sigsum_proof,
+            })
+            .into_response())
+        }
         Ok(None) => Err((
             StatusCode::NOT_FOUND,
             format!("no checkpoint at tree_size={tree_size}"),

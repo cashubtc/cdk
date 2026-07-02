@@ -390,7 +390,7 @@ impl Mint {
         // Spawn the transparency log publisher, if one is attached.
         if let Some(service) = self.transparency_log() {
             task_state.transparency_log_handle =
-                Some(service.spawn(shutdown_notify, std::time::Duration::from_secs(30)));
+                Some(service.clone().spawn(shutdown_notify, service.publish_interval()));
         }
 
         // Give the background task a tiny bit of time to start waiting

@@ -358,3 +358,41 @@ max_delay_time = 3
 max_inputs = 1000
 # Maximum number of outputs allowed per transaction (mint/swap/melt)
 max_outputs = 1000
+
+# Append-only transparency log (NUT-XX draft; see
+# docs/adr/0001-append-only-transparency-log.md). Enabled by default; the
+# section is only needed to disable it or override defaults.
+# [transparency_log]
+# enabled = true
+# The checkpoint origin is the log's globally unique NAME (schema-less, not
+# a fetchable URL) and is baked into every checkpoint signature forever.
+# Defaults to "<host[:port]>/transparency-log" derived from info.url.
+# origin = "mint.example.com/transparency-log"
+# checkpoint_interval_secs = 30
+#
+# Witnesses (C2SP tlog-witness) asked to cosign every published checkpoint,
+# e.g. another cdk mint running [witness] below. Its name and public_key
+# are printed in that mint's startup log.
+# [[transparency_log.witnesses]]
+# url = "https://other-mint.example.com/witness/add-checkpoint"
+# name = "other-mint.example.com/witness"
+# public_key = "<base64 or hex ed25519 key>"
+
+# Built-in witness: cosign OTHER mints' transparency logs via
+# POST /witness/add-checkpoint. Off unless enabled.
+# [witness]
+# enabled = true
+# name = "mint.example.com/witness"   # defaults to <host[:port]>/witness
+# [[witness.trusted_logs]]
+# origin = "other-mint.example.com/transparency-log"
+# public_key = "<base64 pubkey from that mint's /v1/audit/pubkey>"
+
+# External checkpoint anchoring to a public Sigsum log (requires building
+# with the `sigsum-anchor` feature).
+# [sigsum_anchor]
+# enabled = true
+# log_url = "https://test.sigsum.org/barreleye/"   # test log, no registration
+# log_public_key = "4644af2abd40f4895a003bca350f9d5912ab301a49c77f13e5b6d905c20a5fe6"
+# For production logs (e.g. https://seasalp.glasklar.is/) also set:
+# domain = "mint.example.com"          # publishes _sigsum_v1.<domain> TXT record
+# rate_limit_key = "<hex ed25519 secret key>"

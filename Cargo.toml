@@ -47,8 +47,12 @@ readme = "README.md"
 anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.8.1", features = ["ws"] }
+base64 = "0.22"
 bitcoin = { version = "0.32.2", features = ["base64", "serde", "rand", "rand-std"] }
 bip39 = { version = "2.0", features = ["rand"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+hex = "0.4"
+rand_core = { version = "0.6", features = ["getrandom"] }
 jsonwebtoken = "9.2.0"
 cashu = { path = "./crates/cashu", default-features = false, version = "=0.17.0" }
 cdk = { path = "./crates/cdk", default-features = false, version = "=0.17.0" }
@@ -73,6 +77,8 @@ cdk-prometheus = { path = "./crates/cdk-prometheus", version = "=0.17.0", defaul
 cdk-supabase = { path = "./crates/cdk-supabase", version = "=0.17.0", default-features = false }
 cdk-npubcash = { path = "./crates/cdk-npubcash", default-features = false, version = "=0.17.0" }
 cdk-bdk = { path = "./crates/cdk-bdk", version = "=0.17.0", default-features = false }
+cdk-tlog = { path = "./crates/cdk-tlog", version = "=0.17.0" }
+cdk-sigsum = { path = "./crates/cdk-sigsum", version = "=0.17.0" }
 clap = { version = "4.5.31", features = ["derive"] }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 cbor-diag = "0.1.12"

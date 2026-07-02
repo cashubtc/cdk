@@ -484,6 +484,18 @@ pub struct MockMintConnector {
     /// Response for DNS TXT resolution calls
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     pub dns_txt_response: Mutex<Option<Result<Vec<String>, Error>>>,
+    /// Response for get_audit_pubkey calls (NUT-XX)
+    #[cfg(feature = "transparency-log")]
+    pub audit_pubkey_response:
+        Mutex<Option<Result<crate::wallet::mint_connector::AuditPubkeyResponse, Error>>>,
+    /// Response for get_audit_checkpoint calls (NUT-XX)
+    #[cfg(feature = "transparency-log")]
+    pub audit_checkpoint_response:
+        Mutex<Option<Result<crate::wallet::mint_connector::AuditCheckpointResponse, Error>>>,
+    /// Response for get_audit_consistency_proof calls (NUT-XX)
+    #[cfg(feature = "transparency-log")]
+    pub audit_consistency_response:
+        Mutex<Option<Result<crate::wallet::mint_connector::AuditConsistencyResponse, Error>>>,
 }
 
 impl Default for MockMintConnector {
@@ -514,6 +526,12 @@ impl MockMintConnector {
             lnurl_invoice_response: Mutex::new(None),
             #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
             dns_txt_response: Mutex::new(None),
+            #[cfg(feature = "transparency-log")]
+            audit_pubkey_response: Mutex::new(None),
+            #[cfg(feature = "transparency-log")]
+            audit_checkpoint_response: Mutex::new(None),
+            #[cfg(feature = "transparency-log")]
+            audit_consistency_response: Mutex::new(None),
         }
     }
 
@@ -809,6 +827,49 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn set_auth_wallet(&self, _wallet: Option<crate::wallet::AuthWallet>) {}
+
+    #[cfg(feature = "transparency-log")]
+    async fn get_audit_pubkey(
+        &self,
+    ) -> Result<crate::wallet::mint_connector::AuditPubkeyResponse, Error> {
+        self.audit_pubkey_response
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| Err(Error::Custom("no audit pubkey response staged".to_string())))
+    }
+
+    #[cfg(feature = "transparency-log")]
+    async fn get_audit_checkpoint(
+        &self,
+    ) -> Result<crate::wallet::mint_connector::AuditCheckpointResponse, Error> {
+        self.audit_checkpoint_response
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| {
+                Err(Error::Custom(
+                    "no audit checkpoint response staged".to_string(),
+                ))
+            })
+    }
+
+    #[cfg(feature = "transparency-log")]
+    async fn get_audit_consistency_proof(
+        &self,
+        _first: u64,
+        _second: u64,
+    ) -> Result<crate::wallet::mint_connector::AuditConsistencyResponse, Error> {
+        self.audit_consistency_response
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or_else(|| {
+                Err(Error::Custom(
+                    "no audit consistency response staged".to_string(),
+                ))
+            })
+    }
 
     async fn post_melt(
         &self,

@@ -66,6 +66,8 @@ pub mod subscription;
 mod swap;
 pub mod test_utils;
 mod transactions;
+#[cfg(feature = "transparency-log")]
+pub mod transparency;
 pub mod util;
 pub mod wallet_repository;
 mod wallet_trait;
@@ -85,6 +87,10 @@ pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
 pub use mint_connector::{
     AuthHttpClient, HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector,
+};
+#[cfg(feature = "transparency-log")]
+pub use mint_connector::{
+    AuditCheckpointResponse, AuditConsistencyResponse, AuditPubkeyResponse,
 };
 pub use mint_metadata_cache::MintMetadata;
 #[cfg(feature = "nostr")]
