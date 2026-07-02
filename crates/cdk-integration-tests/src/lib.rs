@@ -250,13 +250,7 @@ pub async fn attempt_manual_mint(
     };
 
     request
-        .sign(
-            mint_quote
-                .secret_key
-                .as_ref()
-                .expect("Secret key on quote")
-                .clone(),
-        )
+        .sign(mint_quote.secret_key.as_ref().expect("Secret key on quote"))
         .unwrap();
 
     http_client.post_mint(&payment_method, request).await

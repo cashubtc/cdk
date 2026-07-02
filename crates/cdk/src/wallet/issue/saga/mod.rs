@@ -238,7 +238,7 @@ impl<'a> MintSaga<'a, Initial> {
         };
 
         if let Some(secret_key) = self.wallet.mint_quote_signing_key(quote_info).await? {
-            request.sign(secret_key)?;
+            request.sign(&secret_key)?;
         } else if quote_info.payment_method.is_bolt12() {
             // Bolt12 requires signature
             tracing::error!("Signature is required for bolt12.");

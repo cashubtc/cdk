@@ -384,11 +384,9 @@ async fn test_cached_mint() {
         signature: None,
     };
 
-    let secret_key = quote.secret_key;
+    let secret_key = quote.secret_key.expect("Secret key on quote");
 
-    request
-        .sign(secret_key.expect("Secret key on quote"))
-        .unwrap();
+    request.sign(&secret_key).unwrap();
 
     let response = http_client
         .post_mint(&PaymentMethod::Known(KnownMethod::Bolt11), request.clone())
