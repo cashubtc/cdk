@@ -22,12 +22,9 @@ pub async fn update_mint_url(
         new_mint_url,
     } = sub_command_args;
 
-    let mut wallet = wallet_repository
-        .get_wallet(&sub_command_args.old_mint_url, unit)
-        .await?
-        .clone();
-
-    wallet.update_mint_url(new_mint_url.clone()).await?;
+    wallet_repository
+        .update_mint_url(old_mint_url, new_mint_url, unit)
+        .await?;
 
     println!("Mint Url changed from {old_mint_url} to {new_mint_url}");
 

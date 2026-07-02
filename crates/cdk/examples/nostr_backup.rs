@@ -73,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Verify mints were added
-    let wallets: Vec<cdk::Wallet> = wallet.get_wallets().await;
+    let wallets: Vec<Arc<cdk::Wallet>> = wallet.get_wallets().await;
     println!("\n  Wallet now contains {} mint(s):", wallets.len());
     for w in &wallets {
         println!("    - {}", w.mint_url);
@@ -135,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     // Verify the new wallet is empty
-    let new_wallets: Vec<cdk::Wallet> = new_wallet.get_wallets().await;
+    let new_wallets: Vec<Arc<cdk::Wallet>> = new_wallet.get_wallets().await;
     println!("  New wallet starts with {} mint(s)", new_wallets.len());
 
     // Derive keys on the new wallet - should be the same!
@@ -175,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Verify the mints were restored
-    let restored_wallets: Vec<cdk::Wallet> = new_wallet.get_wallets().await;
+    let restored_wallets: Vec<Arc<cdk::Wallet>> = new_wallet.get_wallets().await;
     println!(
         "\n  New wallet now contains {} mint(s):",
         restored_wallets.len()
