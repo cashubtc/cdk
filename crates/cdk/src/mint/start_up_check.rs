@@ -6,12 +6,21 @@
 use std::str::FromStr;
 
 use cdk_common::mint::{OperationKind, Saga};
-use cdk_common::QuoteId;
+use cdk_common::{PublicKey, QuoteId, State};
 
 use super::{Error, Mint};
 use crate::mint::swap::swap_saga::compensation::{CompensatingAction, RemoveSwapSetup};
 use crate::mint::{MeltQuote, MeltQuoteState};
 use crate::types::PaymentProcessorKey;
+
+/// Recovery decision for an incomplete swap saga found during startup.
+#[derive(Debug, PartialEq, Eq)]
+enum SwapSagaRecoveryAction {
+    /// Roll back the pre-finalization setup state with the normal swap compensation.
+    Compensate,
+    /// Leave the saga alone because it was cleaned up or requires manual repair.
+    SkipCompensation,
+}
 
 impl Mint {
     /// Get incomplete melt saga by quote_id
@@ -237,6 +246,14 @@ impl Mint {
                 .get_blinded_secrets_by_operation_id(&saga.operation_id)
                 .await?;
 
+            match self
+                .cleanup_finalized_swap_saga(&saga, &input_ys, &blinded_secrets)
+                .await?
+            {
+                SwapSagaRecoveryAction::SkipCompensation => continue,
+                SwapSagaRecoveryAction::Compensate => {}
+            }
+
             // Use the same compensation logic as in-process failures
             // Saga deletion is included in the compensation transaction
             let compensation = RemoveSwapSetup {
@@ -267,6 +284,79 @@ impl Mint {
         );
 
         Ok(())
+    }
+
+    async fn cleanup_finalized_swap_saga(
+        &self,
+        saga: &Saga,
+        input_ys: &[PublicKey],
+        blinded_secrets: &[PublicKey],
+    ) -> Result<SwapSagaRecoveryAction, Error> {
+        if input_ys.is_empty() || blinded_secrets.is_empty() {
+            return Ok(SwapSagaRecoveryAction::Compensate);
+        }
+
+        let proof_states = self.localstore.get_proofs_states(input_ys).await?;
+        let inputs_spent = proof_states
+            .iter()
+            .all(|state| matches!(state, Some(State::Spent)));
+
+        if !inputs_spent {
+            return Ok(SwapSagaRecoveryAction::Compensate);
+        }
+
+        let output_signatures = self
+            .localstore
+            .get_blind_signatures(blinded_secrets)
+            .await?;
+        let outputs_signed = output_signatures.iter().all(Option::is_some);
+
+        if !outputs_signed {
+            tracing::error!(
+                "Swap saga {} has spent inputs but missing output signatures; manual intervention required",
+                saga.operation_id
+            );
+            return Ok(SwapSagaRecoveryAction::SkipCompensation);
+        }
+
+        tracing::info!(
+            "Swap saga {} already finalized; deleting orphaned saga record",
+            saga.operation_id
+        );
+
+        match self.localstore.begin_transaction().await {
+            Ok(mut tx) => {
+                if let Err(err) = tx.delete_saga(&saga.operation_id).await {
+                    tracing::warn!(
+                        "Failed to delete finalized orphaned swap saga {}: {}",
+                        saga.operation_id,
+                        err
+                    );
+                    if let Err(rollback_err) = tx.rollback().await {
+                        tracing::warn!(
+                            "Failed to roll back finalized orphaned swap saga cleanup {}: {}",
+                            saga.operation_id,
+                            rollback_err
+                        );
+                    }
+                } else if let Err(err) = tx.commit().await {
+                    tracing::warn!(
+                        "Failed to commit finalized orphaned swap saga cleanup {}: {}",
+                        saga.operation_id,
+                        err
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "Failed to start finalized orphaned swap saga cleanup {}: {}",
+                    saga.operation_id,
+                    err
+                );
+            }
+        }
+
+        Ok(SwapSagaRecoveryAction::SkipCompensation)
     }
 
     /// Recover from incomplete melt sagas
@@ -725,5 +815,94 @@ impl Mint {
         .await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk_common::nuts::ProofsMethods;
+    use cdk_common::{Amount, State};
+
+    use super::*;
+    use crate::mint::swap::swap_saga::SwapSaga;
+    use crate::test_helpers::mint::{
+        create_test_blinded_messages, create_test_mint, mint_test_proofs,
+    };
+
+    #[tokio::test]
+    async fn spent_swap_inputs_with_unsigned_outputs_skip_compensation() {
+        let mint = create_test_mint().await.unwrap();
+        let db = mint.localstore();
+
+        let amount = Amount::from(100);
+        let input_proofs = mint_test_proofs(&mint, amount).await.unwrap();
+        let input_ys = input_proofs.ys().unwrap();
+        let input_verification = crate::mint::Verification {
+            amount: amount.with_unit(cdk_common::nuts::CurrencyUnit::Sat),
+        };
+        let (output_blinded_messages, _) =
+            create_test_blinded_messages(&mint, amount).await.unwrap();
+        let blinded_secrets: Vec<_> = output_blinded_messages
+            .iter()
+            .map(|message| message.blinded_secret)
+            .collect();
+
+        let saga = SwapSaga::new(&mint, db.clone(), mint.pubsub_manager())
+            .setup_swap(
+                &input_proofs,
+                &output_blinded_messages,
+                None,
+                input_verification,
+            )
+            .await
+            .expect("setup should succeed");
+        drop(saga);
+
+        let operation_id = db
+            .get_incomplete_sagas(OperationKind::Swap)
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("saga should exist")
+            .operation_id;
+
+        {
+            let mut tx = db.begin_transaction().await.unwrap();
+            let mut proofs = tx.get_proofs(&input_ys).await.unwrap();
+            Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+
+        let saga = {
+            let mut tx = db.begin_transaction().await.unwrap();
+            let saga = tx
+                .get_saga(&operation_id)
+                .await
+                .unwrap()
+                .expect("saga should exist");
+            tx.commit().await.unwrap();
+            saga
+        };
+
+        let action = mint
+            .cleanup_finalized_swap_saga(&saga, &input_ys, &blinded_secrets)
+            .await
+            .unwrap();
+
+        assert_eq!(action, SwapSagaRecoveryAction::SkipCompensation);
+
+        let saga_after = {
+            let mut tx = db.begin_transaction().await.unwrap();
+            let saga = tx.get_saga(&operation_id).await.unwrap();
+            tx.commit().await.unwrap();
+            saga
+        };
+        assert!(
+            saga_after.is_some(),
+            "manual-intervention saga should remain for repair"
+        );
     }
 }
