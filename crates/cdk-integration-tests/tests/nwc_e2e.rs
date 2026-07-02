@@ -29,7 +29,7 @@ use cdk_nwc::nip47::{
     TransactionState,
 };
 use cdk_nwc::{NwcService, NwcServiceConfig};
-use nostr_sdk::{Keys, RelayUrl, SecretKey};
+use nostr_sdk::{Client as NostrClient, Filter, Keys, Kind, PublicKey, RelayUrl, SecretKey};
 use nwc::prelude::{NostrWalletConnectOptions, NostrWalletConnectURI, NWC};
 use tokio_util::sync::CancellationToken;
 
@@ -108,12 +108,55 @@ async fn wait_for_relay(port: u16, timeout: Duration) -> bool {
     }
 }
 
+/// Wait until the service's kind `13194` info event is visible on the relay.
+///
+/// The service subscribes for requests *before* publishing the info event, so
+/// once the info event is fetchable the service is guaranteed to be receiving
+/// requests — no arbitrary sleep needed.
+async fn wait_for_info_event(
+    relay_url: &RelayUrl,
+    service_pubkey: PublicKey,
+    timeout: Duration,
+) -> bool {
+    let client = NostrClient::new(Keys::generate());
+    if client.add_relay(relay_url.clone()).await.is_err() {
+        return false;
+    }
+    client.connect().await;
+
+    let filter = Filter::new()
+        .kind(Kind::WalletConnectInfo)
+        .author(service_pubkey);
+
+    let deadline = tokio::time::Instant::now() + timeout;
+    let found = loop {
+        if tokio::time::Instant::now() >= deadline {
+            break false;
+        }
+        match client
+            .fetch_events(filter.clone(), Duration::from_secs(2))
+            .await
+        {
+            Ok(events) if !events.is_empty() => break true,
+            _ => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    };
+
+    client.disconnect().await;
+    found
+}
+
 /// Full end-to-end NWC flow: client → relay → service → wallet → mint.
 #[tokio::test]
 async fn nwc_e2e_full_flow() {
     let relay = match NostrRelay::start() {
         Some(r) => r,
         None => {
+            // In CI a missing relay means a broken devShell — fail loudly
+            // instead of silently passing.
+            if std::env::var("CI").is_ok() {
+                panic!("nostr-rs-relay not on PATH in CI; the regtest devShell must provide it");
+            }
             eprintln!("skipping NWC e2e test: nostr-rs-relay not on PATH");
             return;
         }
@@ -145,12 +188,13 @@ async fn nwc_e2e_full_flow() {
     let service = NwcService::new(NwcServiceConfig {
         service_keys,
         client_secret: client_secret.clone(),
-        relays: vec![relay_url],
+        relays: vec![relay_url.clone()],
         lud16: None,
     })
     .expect("nwc service");
 
     let connection_uri = service.connection_uri().to_string();
+    let service_pubkey = service.service_pubkey();
 
     let cancel = CancellationToken::new();
     let service_cancel = cancel.clone();
@@ -161,7 +205,12 @@ async fn nwc_e2e_full_flow() {
         }
     });
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // The service publishes its info event only after its request subscription
+    // is live, so seeing the info event means it is ready to serve.
+    assert!(
+        wait_for_info_event(&relay_url, service_pubkey, Duration::from_secs(10)).await,
+        "NWC service did not publish its info event"
+    );
 
     let uri: NostrWalletConnectURI = connection_uri.parse().expect("uri");
     let opts = NostrWalletConnectOptions::new().timeout(Duration::from_secs(30));
@@ -235,7 +284,11 @@ async fn nwc_e2e_full_flow() {
     );
 
     nwc_client.shutdown().await;
+
+    // Cancellation alone must stop the service promptly — no abort.
     cancel.cancel();
-    service_task.abort();
-    let _ = service_task.await;
+    tokio::time::timeout(Duration::from_secs(5), service_task)
+        .await
+        .expect("service should stop on cancellation")
+        .expect("service task should not panic");
 }

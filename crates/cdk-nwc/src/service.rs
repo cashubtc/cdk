@@ -26,7 +26,7 @@ use nostr_sdk::nips::nip47::{
 use nostr_sdk::nips::{nip04, nip44};
 use nostr_sdk::prelude::*;
 use nostr_sdk::{Client as NostrClient, Keys, PublicKey, RelayUrl, SecretKey};
-use tokio::sync::Mutex;
+use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{Error, Result};
@@ -129,14 +129,22 @@ impl NwcService {
     /// Connect to the relays, publish the info event, and service requests
     /// until `cancel` is triggered.
     ///
-    /// This future runs the relay notification loop and only returns when the
-    /// loop ends (cancellation) or a fatal relay/connection error occurs.
+    /// The subscription is established *before* the info event is published,
+    /// so a client that observes the info event is guaranteed the service is
+    /// already receiving requests.
+    ///
+    /// Each request is dispatched on its own task: a slow `pay_invoice` never
+    /// delays other requests. Cancellation is observed promptly even when no
+    /// notifications arrive; in-flight request tasks are left to finish on
+    /// their own.
     ///
     /// # Errors
     ///
     /// Returns an error if relays cannot be added, the info event cannot be
-    /// published, or the subscription cannot be created. Per-request failures
-    /// never bubble up here — they are answered with a NIP-47 error response.
+    /// published, the subscription cannot be created, or the notification
+    /// channel closes unexpectedly. Per-request failures never bubble up
+    /// here — they are answered with a NIP-47 error response. Cancellation
+    /// returns `Ok(())`.
     pub async fn run<H>(&self, handler: Arc<H>, cancel: CancellationToken) -> Result<()>
     where
         H: NwcRequestHandler + 'static,
@@ -152,8 +160,6 @@ impl NwcService {
 
         client.connect().await;
 
-        self.publish_info_event(&client).await?;
-
         // Only consider requests created from now on, addressed to us, authored
         // by the authorized client.
         let filter = Filter::new()
@@ -162,60 +168,72 @@ impl NwcService {
             .pubkey(self.service_keys.public_key())
             .since(Timestamp::now());
 
+        // Take the notification stream before subscribing so no request can
+        // slip between subscription creation and the receive loop.
+        let mut notifications = client.notifications();
+
         client
             .subscribe(filter, None)
             .await
             .map_err(|e| Error::Subscription(e.to_string()))?;
 
-        let dedup: Arc<Mutex<Dedup>> = Arc::new(Mutex::new(Dedup::new(DEDUP_CAPACITY)));
+        self.publish_info_event(&client).await?;
 
-        let service_keys = self.service_keys.clone();
-        let client_pubkey = self.client_pubkey;
-        let client_for_send = client.clone();
+        // The loop is the only consumer, so dedup needs no locking; it must be
+        // checked before spawning so concurrent duplicates cannot race.
+        let mut dedup = Dedup::new(DEDUP_CAPACITY);
 
-        let res = client
-            .handle_notifications(move |notification| {
-                let handler = handler.clone();
-                let dedup = dedup.clone();
-                let service_keys = service_keys.clone();
-                let client = client_for_send.clone();
-                let cancel = cancel.clone();
-                async move {
-                    if cancel.is_cancelled() {
-                        return Ok(true);
-                    }
+        let res = loop {
+            let notification = tokio::select! {
+                _ = cancel.cancelled() => break Ok(()),
+                notification = notifications.recv() => notification,
+            };
 
-                    let RelayPoolNotification::Event { event, .. } = notification else {
-                        return Ok(false);
-                    };
-
-                    // Defense in depth: the filter already constrains the author,
-                    // but never trust a relay to honor it.
-                    if event.pubkey != client_pubkey || event.kind != Kind::WalletConnectRequest {
-                        return Ok(false);
-                    }
-
-                    if event.is_expired() {
-                        tracing::debug!("Dropping expired NWC request {}", event.id);
-                        return Ok(false);
-                    }
-
-                    // Replay protection: process each request id at most once.
-                    if !dedup.lock().await.insert(event.id) {
-                        tracing::debug!("Dropping duplicate NWC request {}", event.id);
-                        return Ok(false);
-                    }
-
-                    handle_request(&service_keys, &client, handler.as_ref(), &event).await;
-
-                    Ok(false)
+            let notification = match notification {
+                Ok(notification) => notification,
+                Err(RecvError::Lagged(skipped)) => {
+                    tracing::warn!("NWC notification stream lagged; skipped {skipped}");
+                    continue;
                 }
-            })
-            .await;
+                Err(RecvError::Closed) => {
+                    break Err(Error::Subscription(
+                        "notification channel closed".to_string(),
+                    ));
+                }
+            };
+
+            let RelayPoolNotification::Event { event, .. } = notification else {
+                continue;
+            };
+
+            // Defense in depth: the filter already constrains the author,
+            // but never trust a relay to honor it.
+            if event.pubkey != self.client_pubkey || event.kind != Kind::WalletConnectRequest {
+                continue;
+            }
+
+            if event.is_expired() {
+                tracing::debug!("Dropping expired NWC request {}", event.id);
+                continue;
+            }
+
+            // Replay protection: process each request id at most once.
+            if !dedup.insert(event.id) {
+                tracing::debug!("Dropping duplicate NWC request {}", event.id);
+                continue;
+            }
+
+            let handler = handler.clone();
+            let service_keys = self.service_keys.clone();
+            let client = client.clone();
+            tokio::spawn(async move {
+                handle_request(&service_keys, &client, handler.as_ref(), &event).await;
+            });
+        };
 
         client.disconnect().await;
 
-        res.map_err(|e| Error::Subscription(e.to_string()))
+        res
     }
 
     /// Publish the kind `13194` info event advertising supported commands and

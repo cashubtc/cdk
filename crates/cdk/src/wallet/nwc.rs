@@ -749,4 +749,181 @@ mod tests {
         assert_eq!(err.code, ErrorCode::Other);
         assert!(err.message.contains("invoice descriptions"));
     }
+
+    #[tokio::test]
+    async fn get_info_advertises_supported_methods() {
+        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let wallet = Wallet::new(
+            "https://mint.example.com",
+            CurrencyUnit::Sat,
+            localstore,
+            [0x42; 64],
+            None,
+        )
+        .expect("wallet");
+
+        let handler = WalletNwcHandler::new(Arc::new(wallet), None);
+        let info = cdk_nwc::NwcRequestHandler::get_info(&handler)
+            .await
+            .expect("get_info");
+
+        assert_eq!(info.alias.as_deref(), Some("CDK Cashu Wallet"));
+        assert!(!info.methods.is_empty());
+        assert!(info.network.as_deref() == Some("mainnet"));
+    }
+
+    #[tokio::test]
+    async fn get_balance_reports_zero_for_empty_wallet() {
+        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let wallet = Wallet::new(
+            "https://mint.example.com",
+            CurrencyUnit::Sat,
+            localstore,
+            [0x42; 64],
+            None,
+        )
+        .expect("wallet");
+
+        let handler = WalletNwcHandler::new(Arc::new(wallet), None);
+        let balance = cdk_nwc::NwcRequestHandler::get_balance(&handler)
+            .await
+            .expect("get_balance");
+
+        assert_eq!(balance.balance, 0);
+    }
+
+    #[tokio::test]
+    async fn pay_invoice_rejects_amountless_invoice() {
+        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let wallet = Wallet::new(
+            "https://mint.example.com",
+            CurrencyUnit::Sat,
+            localstore,
+            [0x42; 64],
+            None,
+        )
+        .expect("wallet");
+
+        let handler = WalletNwcHandler::new(Arc::new(wallet), None);
+        let err = cdk_nwc::NwcRequestHandler::pay_invoice(
+            &handler,
+            PayInvoiceRequest {
+                id: None,
+                invoice: "lnbc1u1p4ydwah".to_string(),
+                amount: None,
+            },
+        )
+        .await
+        .expect_err("invalid invoice should be rejected");
+
+        assert!(matches!(err.code, ErrorCode::Other));
+    }
+
+    #[tokio::test]
+    async fn pay_invoice_rejects_amount_mismatch() {
+        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let wallet = Wallet::new(
+            "https://mint.example.com",
+            CurrencyUnit::Sat,
+            localstore,
+            [0x42; 64],
+            None,
+        )
+        .expect("wallet");
+
+        let handler = WalletNwcHandler::new(Arc::new(wallet), None);
+        let err = cdk_nwc::NwcRequestHandler::pay_invoice(
+            &handler,
+            PayInvoiceRequest {
+                id: None,
+                invoice: TEST_BOLT11.to_string(),
+                amount: Some(999_999),
+            },
+        )
+        .await
+        .expect_err("amount mismatch should be rejected");
+
+        assert_eq!(err.code, ErrorCode::Other);
+        assert!(err.message.contains("does not match"));
+    }
+
+    #[tokio::test]
+    async fn pay_invoice_rejects_over_max_payment_msat() {
+        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let wallet = Wallet::new(
+            "https://mint.example.com",
+            CurrencyUnit::Sat,
+            localstore,
+            [0x42; 64],
+            None,
+        )
+        .expect("wallet");
+
+        let handler = WalletNwcHandler::new(Arc::new(wallet), Some(1_000));
+        let err = cdk_nwc::NwcRequestHandler::pay_invoice(
+            &handler,
+            PayInvoiceRequest {
+                id: None,
+                invoice: TEST_BOLT11.to_string(),
+                amount: None,
+            },
+        )
+        .await
+        .expect_err("over-cap payment should be rejected");
+
+        assert_eq!(err.code, ErrorCode::QuotaExceeded);
+    }
+
+    #[tokio::test]
+    async fn lookup_invoice_returns_not_found_for_unknown_hash() {
+        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let wallet = Wallet::new(
+            "https://mint.example.com",
+            CurrencyUnit::Sat,
+            localstore,
+            [0x42; 64],
+            None,
+        )
+        .expect("wallet");
+
+        let handler = WalletNwcHandler::new(Arc::new(wallet), None);
+        let err = cdk_nwc::NwcRequestHandler::lookup_invoice(
+            &handler,
+            LookupInvoiceRequest {
+                payment_hash: Some("00".repeat(32)),
+                invoice: None,
+            },
+        )
+        .await
+        .expect_err("unknown invoice should return NotFound");
+
+        assert_eq!(err.code, ErrorCode::NotFound);
+    }
+
+    #[tokio::test]
+    async fn lookup_invoice_requires_payment_hash_or_invoice() {
+        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let wallet = Wallet::new(
+            "https://mint.example.com",
+            CurrencyUnit::Sat,
+            localstore,
+            [0x42; 64],
+            None,
+        )
+        .expect("wallet");
+
+        let handler = WalletNwcHandler::new(Arc::new(wallet), None);
+        let err = cdk_nwc::NwcRequestHandler::lookup_invoice(
+            &handler,
+            LookupInvoiceRequest {
+                payment_hash: None,
+                invoice: None,
+            },
+        )
+        .await
+        .expect_err("missing hash/invoice should error");
+
+        assert_eq!(err.code, ErrorCode::Other);
+        assert!(err.message.contains("required"));
+    }
 }
