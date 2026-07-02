@@ -87,6 +87,42 @@ impl WalletRepository {
         })
     }
 
+    /// Create a new WalletRepository that routes all mint connections over Tor
+    ///
+    /// Uses an embedded Tor client (arti). The client bootstraps lazily on the
+    /// first request, so construction is fast but the first mint call may take
+    /// several seconds while the Tor circuit is established.
+    #[cfg(feature = "tor")]
+    #[uniffi::constructor]
+    pub fn new_with_tor(
+        mnemonic: String,
+        store: crate::database::WalletStore,
+    ) -> Result<Self, FfiError> {
+        let db = crate::database::resolve_wallet_store(store)?;
+
+        // Parse mnemonic and generate seed without passphrase
+        let m = Mnemonic::parse(&mnemonic)
+            .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
+        let seed = m.to_seed_normalized("");
+
+        // Convert the FFI database trait to a CDK database implementation
+        let localstore = crate::database::create_cdk_database_from_ffi(db);
+
+        let rt = crate::runtime::RuntimeGuard::new().map_err(FfiError::internal)?;
+        let wallet = rt.block_on(async move {
+            WalletRepositoryBuilder::new()
+                .localstore(localstore)
+                .seed(seed)
+                .tor()
+                .build()
+                .await
+        })?;
+
+        Ok(Self {
+            inner: Arc::new(wallet),
+        })
+    }
+
     /// Set metadata cache TTL (time-to-live) in seconds for a specific mint
     ///
     /// Controls how long cached mint metadata (keysets, keys, mint info) is considered fresh
