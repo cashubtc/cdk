@@ -30,6 +30,7 @@ where
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt12),
         0,
+        0,
         vec![],
         vec![],
         None,
@@ -56,6 +57,7 @@ where
         Amount::new(0, cashu::CurrencyUnit::Sat),
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt12),
+        0,
         0,
         vec![],
         vec![],
@@ -86,6 +88,7 @@ where
         Amount::new(0, cashu::CurrencyUnit::Sat),
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt12),
+        0,
         0,
         vec![],
         vec![],
@@ -157,6 +160,7 @@ where
         Amount::new(0, cashu::CurrencyUnit::Sat),
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt12),
+        0,
         0,
         vec![],
         vec![],
@@ -234,6 +238,7 @@ where
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt12),
         0,
+        0,
         vec![],
         vec![],
         None,
@@ -285,6 +290,7 @@ where
         Amount::new(0, cashu::CurrencyUnit::Sat),
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt12),
+        0,
         0,
         vec![],
         vec![],
@@ -341,6 +347,7 @@ where
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt12),
         0,
+        0,
         vec![],
         vec![],
         None,
@@ -370,6 +377,7 @@ where
         Amount::new(0, cashu::CurrencyUnit::Sat),
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt12),
+        0,
         0,
         vec![],
         vec![],
@@ -409,6 +417,7 @@ where
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt12),
         0,
+        0,
         vec![],
         vec![],
         None,
@@ -447,6 +456,7 @@ where
         Amount::new(0, cashu::CurrencyUnit::Sat),
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt12),
+        0,
         0,
         vec![],
         vec![],
@@ -896,6 +906,7 @@ where
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
+        0,
         vec![],
         vec![],
         None,
@@ -912,6 +923,7 @@ where
         Amount::new(200, cashu::CurrencyUnit::Sat),
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        0,
         0,
         vec![],
         vec![],
@@ -1005,6 +1017,7 @@ where
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
+        0,
         vec![],
         vec![],
         None,
@@ -1042,6 +1055,7 @@ where
         Amount::new(100, cashu::CurrencyUnit::Sat),
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        0,
         0,
         vec![],
         vec![],
@@ -1158,6 +1172,7 @@ where
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
+        0,
         vec![],
         vec![],
         None,
@@ -1179,11 +1194,13 @@ where
         .add_payment(
             Amount::from(300).with_unit(CurrencyUnit::Sat),
             "payment_1".to_string(),
-            None,
+            Some(100),
         )
         .unwrap();
     tx.update_mint_quote(&mut mint_quote).await.unwrap();
     assert_eq!(mint_quote.amount_paid().value(), 300);
+    let first_updated_at = mint_quote.updated_at();
+    assert!(first_updated_at > 0);
     tx.commit().await.unwrap();
 
     // Add payment second time
@@ -1197,16 +1214,45 @@ where
         .add_payment(
             Amount::from(200).with_unit(CurrencyUnit::Sat),
             "payment_2".to_string(),
-            None,
+            Some(100),
         )
         .unwrap();
     tx.update_mint_quote(&mut mint_quote).await.unwrap();
     assert_eq!(mint_quote.amount_paid().value(), 500);
+    let second_updated_at = mint_quote.updated_at();
+    assert!(second_updated_at > first_updated_at);
     tx.commit().await.unwrap();
 
     // Verify final state
     let retrieved = db.get_mint_quote(&mint_quote.id).await.unwrap().unwrap();
     assert_eq!(retrieved.amount_paid().value(), 500);
+    assert_eq!(retrieved.updated_at(), second_updated_at);
+
+    // Even if the in-memory quote carries a stale timestamp, persistence must
+    // bump from the database value instead of regressing.
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut mint_quote = tx
+        .get_mint_quote(&mint_quote.id)
+        .await
+        .expect("valid quote")
+        .expect("valid result");
+    mint_quote.set_updated_at(0);
+    mint_quote
+        .add_payment(
+            Amount::from(100).with_unit(CurrencyUnit::Sat),
+            "payment_3".to_string(),
+            Some(100),
+        )
+        .unwrap();
+    tx.update_mint_quote(&mut mint_quote).await.unwrap();
+    assert_eq!(mint_quote.amount_paid().value(), 600);
+    let stale_update_updated_at = mint_quote.updated_at();
+    assert!(stale_update_updated_at > second_updated_at);
+    tx.commit().await.unwrap();
+
+    let retrieved = db.get_mint_quote(&mint_quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.amount_paid().value(), 600);
+    assert_eq!(retrieved.updated_at(), stale_update_updated_at);
 }
 
 /// Test incrementing mint quote amount issued
@@ -1227,6 +1273,7 @@ where
         Amount::new(1000, cashu::CurrencyUnit::Sat),
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        0,
         0,
         vec![],
         vec![],
@@ -1253,6 +1300,7 @@ where
         )
         .unwrap();
     tx.update_mint_quote(&mut mint_quote).await.unwrap();
+    let paid_updated_at = mint_quote.updated_at();
     tx.commit().await.unwrap();
 
     // Add issuance first time
@@ -1267,6 +1315,8 @@ where
         .unwrap();
     tx.update_mint_quote(&mut mint_quote).await.unwrap();
     assert_eq!(mint_quote.amount_issued().value(), 400);
+    let first_issuance_updated_at = mint_quote.updated_at();
+    assert!(first_issuance_updated_at > paid_updated_at);
     tx.commit().await.unwrap();
 
     // Add issuance second time
@@ -1281,11 +1331,14 @@ where
         .unwrap();
     tx.update_mint_quote(&mut mint_quote).await.unwrap();
     assert_eq!(mint_quote.amount_issued().value(), 700);
+    let second_issuance_updated_at = mint_quote.updated_at();
+    assert!(second_issuance_updated_at > first_issuance_updated_at);
     tx.commit().await.unwrap();
 
     // Verify final state
     let retrieved = db.get_mint_quote(&mint_quote.id).await.unwrap().unwrap();
     assert_eq!(retrieved.amount_issued().value(), 700);
+    assert_eq!(retrieved.updated_at(), second_issuance_updated_at);
 }
 
 /// Test getting mint quote within transaction (with lock)
@@ -1306,6 +1359,7 @@ where
         Amount::new(100, cashu::CurrencyUnit::Sat),
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        0,
         0,
         vec![],
         vec![],
@@ -1384,6 +1438,7 @@ where
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
+        0,
         vec![],
         vec![],
         None,
@@ -1423,6 +1478,7 @@ where
         Amount::new(100, cashu::CurrencyUnit::Sat),
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        0,
         0,
         vec![],
         vec![],
@@ -1648,6 +1704,7 @@ where
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
+        0,
         vec![],
         vec![],
         None,
@@ -1744,6 +1801,7 @@ where
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
+        0,
         vec![],
         vec![],
         None,
@@ -1805,6 +1863,7 @@ where
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt11),
         0,
+        0,
         vec![],
         vec![],
         None,
@@ -1821,6 +1880,7 @@ where
         Amount::new(200, cashu::CurrencyUnit::Sat),
         Amount::new(0, cashu::CurrencyUnit::Sat),
         cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        0,
         0,
         vec![],
         vec![],

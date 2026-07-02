@@ -125,6 +125,7 @@ where
             created_time,
             amount_paid,
             amount_issued,
+            updated_at,
             payment_method,
             request_lookup_id_kind,
             extra_json
@@ -177,6 +178,7 @@ where
             created_time,
             amount_paid,
             amount_issued,
+            updated_at,
             payment_method,
             request_lookup_id_kind,
             extra_json
@@ -226,6 +228,7 @@ where
             created_time,
             amount_paid,
             amount_issued,
+            updated_at,
             payment_method,
             request_lookup_id_kind,
             extra_json
@@ -323,6 +326,7 @@ where
             created_time,
             amount_paid,
             amount_issued,
+            updated_at,
             payment_method,
             request_lookup_id_kind,
             extra_json
@@ -496,8 +500,8 @@ fn sql_row_to_mint_quote(
     unpack_into!(
         let (
             id, amount, unit, request, expiry, request_lookup_id,
-            pubkey, created_time, amount_paid, amount_issued, payment_method, request_lookup_id_kind,
-            extra_json
+            pubkey, created_time, amount_paid, amount_issued, updated_at, payment_method,
+            request_lookup_id_kind, extra_json
         ) = row
     );
 
@@ -517,6 +521,7 @@ fn sql_row_to_mint_quote(
     let amount: Option<u64> = column_as_nullable_number!(amount);
     let amount_paid: u64 = column_as_number!(amount_paid);
     let amount_issued: u64 = column_as_number!(amount_issued);
+    let updated_at: u64 = column_as_number!(updated_at);
     let payment_method = column_as_string!(payment_method, PaymentMethod::from_str);
     let unit = column_as_string!(unit, CurrencyUnit::from_str);
     let extra_json = column_as_nullable_string!(&extra_json)
@@ -535,6 +540,7 @@ fn sql_row_to_mint_quote(
         Amount::from(amount_issued).with_unit(unit),
         payment_method,
         column_as_number!(created_time),
+        updated_at,
         payments,
         issueances,
         extra_json,
@@ -897,7 +903,11 @@ where
                 mint_quote
             SET
                 amount_issued = :amount_issued,
-                amount_paid = :amount_paid
+                amount_paid = :amount_paid,
+                updated_at = CASE
+                    WHEN :current_time > updated_at + 1 THEN :current_time
+                    ELSE updated_at + 1
+                END
             WHERE
                 id = :quote_id
             "#,
@@ -905,11 +915,33 @@ where
         .bind("quote_id", quote.id.to_string())
         .bind("amount_issued", quote.amount_issued().to_i64())
         .bind("amount_paid", quote.amount_paid().to_i64())
+        .bind("current_time", current_time as i64)
         .execute(&self.inner)
         .await
         .inspect_err(|err| {
-            tracing::error!("SQLite could not update mint quote amount_paid: {}", err);
+            tracing::error!("SQL could not update mint quote accounting: {}", err);
         })?;
+
+        let updated_at = query(
+            r#"
+            SELECT updated_at
+            FROM mint_quote
+            WHERE id = :quote_id
+            "#,
+        )?
+        .bind("quote_id", quote.id.to_string())
+        .pluck(&self.inner)
+        .await?
+        .map(|updated_at| Ok::<_, Error>(column_as_number!(updated_at)))
+        .transpose()?
+        .ok_or_else(|| {
+            Error::Internal(format!(
+                "mint quote {} missing after accounting update",
+                quote.id
+            ))
+        })?;
+
+        quote.set_updated_at(updated_at);
 
         Ok(())
     }
@@ -919,10 +951,10 @@ where
         query(
             r#"
                 INSERT INTO mint_quote (
-                id, amount, unit, request, expiry, request_lookup_id, pubkey, created_time, payment_method, request_lookup_id_kind, extra_json
+                id, amount, unit, request, expiry, request_lookup_id, pubkey, created_time, updated_at, payment_method, request_lookup_id_kind, extra_json
                 )
                 VALUES (
-                :id, :amount, :unit, :request, :expiry, :request_lookup_id, :pubkey, :created_time, :payment_method, :request_lookup_id_kind, :extra_json
+                :id, :amount, :unit, :request, :expiry, :request_lookup_id, :pubkey, :created_time, :updated_at, :payment_method, :request_lookup_id_kind, :extra_json
                 )
             "#,
         )?
@@ -937,6 +969,7 @@ where
         )
         .bind("pubkey", quote.pubkey.map(|p| p.to_string()))
         .bind("created_time", quote.created_time as i64)
+        .bind("updated_at", quote.updated_at() as i64)
         .bind("payment_method", quote.payment_method.to_string())
         .bind("request_lookup_id_kind", quote.request_lookup_id.kind())
         .bind(
@@ -1239,6 +1272,7 @@ where
                 created_time,
                 amount_paid,
                 amount_issued,
+                updated_at,
                 payment_method,
                 request_lookup_id_kind,
                 extra_json

@@ -168,6 +168,7 @@ impl From<Quote> for MintQuote {
             } else {
                 Amount::ZERO
             },
+            updated_at: quote.paid_at.unwrap_or_default(),
             estimated_blocks: None,
             used_by_operation: None,
             version: 0,
@@ -197,5 +198,27 @@ mod tests {
         let mint_quote = MintQuote::from(quote);
 
         assert_eq!(mint_quote.expiry, u64::MAX);
+        assert_eq!(mint_quote.updated_at, 0);
+    }
+
+    #[test]
+    fn from_paid_quote_uses_paid_at_as_updated_at() {
+        let quote = Quote {
+            id: "paid-quote".to_string(),
+            amount: 1_000,
+            unit: "sat".to_string(),
+            created_at: 100,
+            paid_at: Some(200),
+            expires_at: None,
+            mint_url: None,
+            request: None,
+            state: Some("PAID".to_string()),
+            locked: None,
+        };
+
+        let mint_quote = MintQuote::from(quote);
+
+        assert_eq!(mint_quote.amount_paid, Amount::from(1_000));
+        assert_eq!(mint_quote.updated_at, 200);
     }
 }

@@ -30,6 +30,9 @@ pub struct MintQuote {
     pub amount_issued: Amount,
     /// Amount paid
     pub amount_paid: Amount,
+    /// Last update timestamp
+    #[serde(default)]
+    pub updated_at: u64,
     /// Estimated confirmation target in blocks for onchain quotes
     pub estimated_blocks: Option<u32>,
     /// Payment method
@@ -55,6 +58,7 @@ impl From<cdk::wallet::MintQuote> for MintQuote {
             mint_url: quote.mint_url.clone().into(),
             amount_issued: quote.amount_issued.into(),
             amount_paid: quote.amount_paid.into(),
+            updated_at: quote.updated_at,
             estimated_blocks: quote.estimated_blocks,
             payment_method: quote.payment_method.into(),
             secret_key: quote.secret_key.map(|sk| sk.to_secret_hex()),
@@ -84,6 +88,7 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
             mint_url: quote.mint_url.try_into()?,
             amount_issued: quote.amount_issued.into(),
             amount_paid: quote.amount_paid.into(),
+            updated_at: quote.updated_at,
             estimated_blocks: quote.estimated_blocks,
             payment_method: quote.payment_method.into(),
             secret_key,
@@ -142,6 +147,12 @@ pub struct MintQuoteBolt11Response {
     pub amount: Option<Amount>,
     /// Unit (optional)
     pub unit: Option<CurrencyUnit>,
+    /// Amount paid
+    pub amount_paid: Amount,
+    /// Amount issued
+    pub amount_issued: Amount,
+    /// Last update timestamp
+    pub updated_at: u64,
     /// Pubkey (optional)
     pub pubkey: Option<String>,
 }
@@ -155,6 +166,9 @@ impl From<cdk::nuts::MintQuoteBolt11Response<String>> for MintQuoteBolt11Respons
             expiry: response.expiry,
             amount: response.amount.map(Into::into),
             unit: response.unit.map(Into::into),
+            amount_paid: response.amount_paid.into(),
+            amount_issued: response.amount_issued.into(),
+            updated_at: response.updated_at,
             pubkey: response.pubkey.map(|p| p.to_string()),
         }
     }
@@ -169,6 +183,9 @@ impl From<cdk::wallet::MintQuote> for MintQuoteBolt11Response {
             expiry: Some(quote.expiry),
             amount: quote.amount.map(Into::into),
             unit: Some(quote.unit.into()),
+            amount_paid: quote.amount_paid.into(),
+            amount_issued: quote.amount_issued.into(),
+            updated_at: quote.updated_at,
             pubkey: quote.secret_key.map(|sk| sk.public_key().to_string()),
         }
     }
@@ -192,6 +209,8 @@ pub struct MintQuoteCustomResponse {
     pub amount_paid: Amount,
     /// Amount issued
     pub amount_issued: Amount,
+    /// Last update timestamp
+    pub updated_at: u64,
     /// Unit (optional)
     pub unit: Option<CurrencyUnit>,
     /// Pubkey (optional)
@@ -218,6 +237,7 @@ impl From<cdk::nuts::MintQuoteCustomResponse<String>> for MintQuoteCustomRespons
             amount: response.amount.map(Into::into),
             amount_paid: response.amount_paid.into(),
             amount_issued: response.amount_issued.into(),
+            updated_at: response.updated_at,
             unit: response.unit.map(Into::into),
             pubkey: response.pubkey.map(|p| p.to_string()),
             extra,
@@ -366,6 +386,8 @@ pub struct MintQuoteOnchainResponse {
     pub amount_paid: Amount,
     /// Amount already issued for this quote
     pub amount_issued: Amount,
+    /// Last update timestamp
+    pub updated_at: u64,
 }
 
 impl From<cdk::nuts::MintQuoteOnchainResponse<String>> for MintQuoteOnchainResponse {
@@ -378,6 +400,7 @@ impl From<cdk::nuts::MintQuoteOnchainResponse<String>> for MintQuoteOnchainRespo
             pubkey: response.pubkey.to_string(),
             amount_paid: response.amount_paid.into(),
             amount_issued: response.amount_issued.into(),
+            updated_at: response.updated_at,
         }
     }
 }

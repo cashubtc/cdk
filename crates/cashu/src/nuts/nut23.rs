@@ -93,7 +93,17 @@ pub struct MintQuoteBolt11Response<Q> {
     /// Unit
     // REVIEW: This is now required in the spec, we should remove the option once all mints update
     pub unit: Option<CurrencyUnit>,
+    /// Amount that has been paid
+    #[serde(default)]
+    pub amount_paid: Amount,
+    /// Amount that has been issued
+    #[serde(default)]
+    pub amount_issued: Amount,
+    /// Unix timestamp indicating when the quote was last updated
+    #[serde(default)]
+    pub updated_at: u64,
     /// Quote State
+    #[serde(default)]
     pub state: QuoteState,
     /// Unix timestamp until the quote is valid
     pub expiry: Option<u64>,
@@ -116,6 +126,9 @@ impl<Q: ToString> MintQuoteBolt11Response<Q> {
             pubkey: self.pubkey,
             amount: self.amount,
             unit: self.unit.clone(),
+            amount_paid: self.amount_paid,
+            amount_issued: self.amount_issued,
+            updated_at: self.updated_at,
         }
     }
 }
@@ -131,6 +144,9 @@ impl From<MintQuoteBolt11Response<QuoteId>> for MintQuoteBolt11Response<String> 
             pubkey: value.pubkey,
             amount: value.amount,
             unit: value.unit.clone(),
+            amount_paid: value.amount_paid,
+            amount_issued: value.amount_issued,
+            updated_at: value.updated_at,
         }
     }
 }

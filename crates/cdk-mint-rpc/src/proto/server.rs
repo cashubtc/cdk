@@ -758,6 +758,7 @@ impl CdkMint for MintRPCServer {
                     mint_quote.amount_paid(),             // amount_paid
                     mint_quote.payment_method.clone(),    // method
                     0,                                    // created_at
+                    0,                                    // updated_at
                     vec![],                               // blinded_messages
                     vec![],                               // payment_ids
                     None,                                 // extra_json

@@ -4,9 +4,11 @@
 //! method it will stay open until the caller stops polling, cancels it, or wraps it in a timeout.
 //!
 //! Bolt11 will emit a single event.
+use std::sync::Arc;
 use std::task::Poll;
 
-use cdk_common::{Amount, Error, MeltQuoteState, MintQuoteState, NotificationPayload};
+use cdk_common::database::wallet::Database as WalletDatabase;
+use cdk_common::{database, Amount, Error, MeltQuoteState, MintQuoteState, NotificationPayload};
 use futures::future::join_all;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, Stream, StreamExt};
@@ -14,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::RecvFuture;
 use crate::event::MintEvent;
+use crate::wallet::issue::{apply_accounting_mint_quote_update, apply_mint_quote_response};
 use crate::wallet::subscription::ActiveSubscription;
 use crate::{Wallet, WalletSubscription};
 
@@ -27,6 +30,83 @@ struct ClassifiedPayment {
 struct NextPayment {
     payment: Option<ClassifiedPayment>,
     subscriptions: Vec<ActiveSubscription>,
+}
+
+async fn apply_mint_quote_notification(
+    localstore: &Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
+    event: &MintEvent<String>,
+) -> bool {
+    match event.inner() {
+        NotificationPayload::MintQuoteBolt11Response(info) => {
+            let quote_id = info.quote.clone();
+            if let Ok(Some(mut quote)) = localstore.get_mint_quote(&quote_id).await {
+                let applied = apply_mint_quote_response(
+                    &mut quote,
+                    &cdk_common::MintQuoteResponse::Bolt11(info.clone()),
+                );
+                if applied {
+                    if let Err(e) = localstore.add_mint_quote(quote).await {
+                        tracing::warn!("Failed to update quote state: {}", e);
+                    }
+                }
+                return applied;
+            }
+        }
+        NotificationPayload::MintQuoteBolt12Response(info) => {
+            let quote_id = info.quote.clone();
+            if let Ok(Some(mut quote)) = localstore.get_mint_quote(&quote_id).await {
+                let applied = apply_accounting_mint_quote_update(
+                    &mut quote,
+                    info.amount_paid,
+                    info.amount_issued,
+                    info.updated_at,
+                );
+                if applied {
+                    if let Err(e) = localstore.add_mint_quote(quote).await {
+                        tracing::warn!("Failed to update quote state: {}", e);
+                    }
+                }
+                return applied;
+            }
+        }
+        NotificationPayload::MintQuoteOnchainResponse(info) => {
+            let quote_id = info.quote.clone();
+            if let Ok(Some(mut quote)) = localstore.get_mint_quote(&quote_id).await {
+                let applied = apply_accounting_mint_quote_update(
+                    &mut quote,
+                    info.amount_paid,
+                    info.amount_issued,
+                    info.updated_at,
+                );
+                if applied {
+                    if let Err(e) = localstore.add_mint_quote(quote).await {
+                        tracing::warn!("Failed to update quote state: {}", e);
+                    }
+                }
+                return applied;
+            }
+        }
+        NotificationPayload::CustomMintQuoteResponse(_, info) => {
+            let quote_id = info.quote.clone();
+            if let Ok(Some(mut quote)) = localstore.get_mint_quote(&quote_id).await {
+                let applied = apply_accounting_mint_quote_update(
+                    &mut quote,
+                    info.amount_paid,
+                    info.amount_issued,
+                    info.updated_at,
+                );
+                if applied {
+                    if let Err(e) = localstore.add_mint_quote(quote).await {
+                        tracing::warn!("Failed to update quote state: {}", e);
+                    }
+                }
+                return applied;
+            }
+        }
+        _ => (),
+    }
+
+    true
 }
 
 /// PaymentWaiter
@@ -235,54 +315,11 @@ async fn handle_payment_notification(
     wallet: &Wallet,
     notification: MintEvent<String>,
 ) -> Option<ClassifiedPayment> {
-    update_mint_quote(wallet, notification.inner()).await;
-    classify_payment_notification(notification.into_inner())
-}
-
-async fn update_mint_quote(wallet: &Wallet, notification: &NotificationPayload<String>) {
-    match notification {
-        NotificationPayload::MintQuoteBolt11Response(info) => {
-            let quote_id = info.quote.clone();
-            if let Ok(Some(mut quote)) = wallet.localstore.get_mint_quote(&quote_id).await {
-                quote.state = info.state;
-                quote.amount_paid = info.amount.unwrap_or(Amount::ZERO);
-                if let Err(e) = wallet.localstore.add_mint_quote(quote).await {
-                    tracing::warn!("Failed to update quote state: {}", e);
-                }
-            }
-        }
-        NotificationPayload::MintQuoteBolt12Response(info) => {
-            let quote_id = info.quote.clone();
-            if let Ok(Some(mut quote)) = wallet.localstore.get_mint_quote(&quote_id).await {
-                quote.amount_paid = info.amount_paid;
-                quote.amount_issued = info.amount_issued;
-                if let Err(e) = wallet.localstore.add_mint_quote(quote).await {
-                    tracing::warn!("Failed to update quote state: {}", e);
-                }
-            }
-        }
-        NotificationPayload::MintQuoteOnchainResponse(info) => {
-            let quote_id = info.quote.clone();
-            if let Ok(Some(mut quote)) = wallet.localstore.get_mint_quote(&quote_id).await {
-                quote.amount_paid = info.amount_paid;
-                quote.amount_issued = info.amount_issued;
-                if let Err(e) = wallet.localstore.add_mint_quote(quote).await {
-                    tracing::warn!("Failed to update quote state: {}", e);
-                }
-            }
-        }
-        NotificationPayload::CustomMintQuoteResponse(_, info) => {
-            let quote_id = info.quote.clone();
-            if let Ok(Some(mut quote)) = wallet.localstore.get_mint_quote(&quote_id).await {
-                quote.amount_paid = info.amount_paid;
-                quote.amount_issued = info.amount_issued;
-                if let Err(e) = wallet.localstore.add_mint_quote(quote).await {
-                    tracing::warn!("Failed to update quote state: {}", e);
-                }
-            }
-        }
-        _ => (),
+    if !apply_mint_quote_notification(&wallet.localstore, &notification).await {
+        return None;
     }
+
+    classify_payment_notification(notification.into_inner())
 }
 
 fn classify_payment_notification(
@@ -361,12 +398,14 @@ fn positive_unissued_amount(
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+    use std::str::FromStr;
 
+    use cdk_common::mint_url::MintUrl;
     use cdk_common::{
         Amount, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteBolt12Response,
         MeltQuoteCustomResponse, MeltQuoteOnchainResponse, MeltQuoteState, MintQuoteBolt11Response,
         MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteOnchainResponse, MintQuoteState,
-        NotificationPayload,
+        NotificationPayload, PaymentMethod,
     };
 
     use super::{classify_payment_notification, handle_payment_notification, ClassifiedPayment};
@@ -374,6 +413,7 @@ mod tests {
     use crate::nuts::nut30::MeltQuoteOnchainFeeOption;
     use crate::nuts::SecretKey;
     use crate::wallet::test_utils::{create_test_db, create_test_wallet};
+    use crate::wallet::MintQuote;
 
     #[test]
     fn mint_bolt11_paid_emits_and_finalizes() {
@@ -413,6 +453,7 @@ mod tests {
                 pubkey,
                 amount_paid: Amount::from(101u64),
                 amount_issued: Amount::from(100u64),
+                updated_at: 0,
             },
         ))
         .expect("positive unissued onchain amount should emit");
@@ -431,6 +472,7 @@ mod tests {
                 amount: None,
                 amount_paid: Amount::from(125u64),
                 amount_issued: Amount::from(100u64),
+                updated_at: 0,
                 unit: Some(CurrencyUnit::Sat),
                 expiry: None,
                 pubkey: Some(pubkey),
@@ -544,6 +586,7 @@ mod tests {
                     pubkey,
                     amount_paid: Amount::from(50u64),
                     amount_issued: Amount::from(100u64),
+                    updated_at: 0,
                 },
             ))
             .is_none()
@@ -557,6 +600,7 @@ mod tests {
                     amount: None,
                     amount_paid: Amount::from(50u64),
                     amount_issued: Amount::from(100u64),
+                    updated_at: 0,
                     unit: Some(CurrencyUnit::Sat),
                     expiry: None,
                     pubkey: Some(pubkey),
@@ -573,6 +617,9 @@ mod tests {
             request: "test_request".to_string(),
             amount: Some(Amount::from(100u64)),
             unit: Some(CurrencyUnit::Sat),
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
             state,
             expiry: None,
             pubkey: None,
@@ -593,6 +640,7 @@ mod tests {
             pubkey: SecretKey::generate().public_key(),
             amount_paid: Amount::from(amount_paid),
             amount_issued: Amount::from(amount_issued),
+            updated_at: 0,
         }
     }
 
@@ -661,5 +709,64 @@ mod tests {
                 return Some(payment);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn stale_mint_quote_notification_is_not_emitted() {
+        let db = create_test_db().await;
+        let wallet = create_test_wallet(db.clone()).await;
+        let pubkey = SecretKey::generate().public_key();
+        let quote_id = "custom_quote".to_string();
+        let mut quote = MintQuote::new(
+            quote_id.clone(),
+            MintUrl::from_str("https://mint.example.com").expect("valid mint URL"),
+            PaymentMethod::Custom("custom".to_string()),
+            Some(Amount::from(200)),
+            CurrencyUnit::Sat,
+            "test_request".to_string(),
+            1_700_000_000,
+            None,
+        );
+        quote.amount_paid = Amount::from(150);
+        quote.amount_issued = Amount::from(100);
+        quote.updated_at = 10;
+        quote.update_state_from_amounts();
+        db.add_mint_quote(quote)
+            .await
+            .expect("mint quote should be stored");
+        assert!(
+            db.get_mint_quote(&quote_id)
+                .await
+                .expect("mint quote lookup should succeed")
+                .is_some(),
+            "mint quote should be readable before polling"
+        );
+
+        let event = MintEvent::new(NotificationPayload::CustomMintQuoteResponse(
+            "custom".to_string(),
+            MintQuoteCustomResponse::<String> {
+                quote: quote_id.clone(),
+                request: "test_request".to_string(),
+                amount: None,
+                amount_paid: Amount::from(120),
+                amount_issued: Amount::from(100),
+                updated_at: 11,
+                unit: Some(CurrencyUnit::Sat),
+                expiry: None,
+                pubkey: Some(pubkey),
+                extra: serde_json::Value::Null,
+            },
+        ));
+
+        assert!(!super::apply_mint_quote_notification(&wallet.localstore, &event).await);
+
+        let stored_quote = db
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("mint quote lookup should succeed")
+            .expect("mint quote should exist");
+        assert_eq!(stored_quote.amount_paid, Amount::from(150));
+        assert_eq!(stored_quote.amount_issued, Amount::from(100));
+        assert_eq!(stored_quote.updated_at, 10);
     }
 }
