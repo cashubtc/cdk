@@ -285,6 +285,9 @@ impl CdkBdk {
                             tracing::warn!("Payjoin receive session processing failed: {}", err);
                         }
                     }
+                    if let Err(err) = self.advance_cut_through_settlements_once().await {
+                        tracing::warn!("Cut-through settlement processing failed: {}", err);
+                    }
                 }
             }
         }
@@ -312,6 +315,16 @@ impl CdkBdk {
         match payjoin_session::from_record(record) {
             PayjoinReceiveSessionAny::Closed(session) => {
                 if session.should_prune(now, PAYJOIN_RECEIVE_SESSION_RETENTION_SECS) {
+                    if !self
+                        .payjoin_receive_credit_cap_resolved(session.record())
+                        .await?
+                    {
+                        tracing::debug!(
+                            quote_id = %session.record().quote_id,
+                            "Retaining aged Payjoin receive session: signed proposal unresolved"
+                        );
+                        return Ok(());
+                    }
                     tracing::debug!(
                         quote_id = %session.record().quote_id,
                         expires_at = session.record().expires_at,
@@ -360,6 +373,13 @@ impl CdkBdk {
         }
 
         Ok(())
+    }
+
+    async fn payjoin_receive_credit_cap_resolved(
+        &self,
+        record: &crate::storage::PayjoinReceiveSessionRecord,
+    ) -> Result<bool, Error> {
+        payjoin_receive_credit_cap_resolved(&self.storage, self.network, record).await
     }
 
     async fn process_payjoin_receive_session(
@@ -1370,23 +1390,43 @@ impl CdkBdk {
         self.recover_payjoin_send_intents_once().await
     }
 
+    /// Startup-only recovery. A settlement still `Reserved` here means the
+    /// process died between reserving the melt intent and exposing the
+    /// proposal, so the reservation can be released safely. While the service
+    /// is running, `Reserved` is a live transient state owned by an active
+    /// receive session and must not be reaped; periodic driving goes through
+    /// [`Self::advance_cut_through_settlements_once`] instead.
     async fn recover_cut_through_settlements_once(&self) -> Result<(), Error> {
         let settlements = self.storage.get_all_cut_through_settlements().await?;
         let now = crate::util::unix_now();
 
         for mut settlement in settlements {
+            if matches!(
+                settlement.state,
+                crate::storage::CutThroughSettlementState::Reserved
+            ) {
+                self.storage
+                    .release_cut_through_reserved_intent(
+                        &settlement.send_intent_id,
+                        settlement.settlement_id,
+                    )
+                    .await?;
+                settlement.state =
+                    crate::storage::CutThroughSettlementState::Abandoned { abandoned_at: now };
+                self.storage.put_cut_through_settlement(&settlement).await?;
+            }
+        }
+
+        self.advance_cut_through_settlements_once().await
+    }
+
+    async fn advance_cut_through_settlements_once(&self) -> Result<(), Error> {
+        let settlements = self.storage.get_all_cut_through_settlements().await?;
+        let now = crate::util::unix_now();
+
+        for mut settlement in settlements {
             match settlement.state.clone() {
-                crate::storage::CutThroughSettlementState::Reserved => {
-                    self.storage
-                        .release_cut_through_reserved_intent(
-                            &settlement.send_intent_id,
-                            settlement.settlement_id,
-                        )
-                        .await?;
-                    settlement.state =
-                        crate::storage::CutThroughSettlementState::Abandoned { abandoned_at: now };
-                    self.storage.put_cut_through_settlement(&settlement).await?;
-                }
+                crate::storage::CutThroughSettlementState::Reserved => {}
                 crate::storage::CutThroughSettlementState::ProposalExposed {
                     proposal_txid,
                     original_txid,
@@ -1852,20 +1892,20 @@ impl CdkBdk {
             })
             .await
         {
-            let reason = format!("Payjoin staging failed before broadcast: {}", err);
+            // By the time a transaction reaches staging the fully-signed
+            // original has already been posted to the payjoin directory, so
+            // the receiver can broadcast it regardless of local state. Do NOT
+            // mark the intent Failed here — that would release the melt's
+            // proofs while the payment may still confirm on-chain. Leave it in
+            // PayjoinNegotiating so the poller retries staging.
+            let reason = format!("Payjoin staging failed after exposure, will retry: {}", err);
             if let Err(evict_err) = self.evict_unstaged_payjoin_tx(txid).await {
                 return Err(Error::Payjoin(format!(
                     "{}; additionally could not persist eviction of unstaged tx {}: {}",
                     reason, txid, evict_err
                 )));
             }
-            if let Err(fail_err) = payjoin_intent.fail(&self.storage, reason.clone()).await {
-                tracing::warn!(
-                    quote_id,
-                    error = %fail_err,
-                    "Could not mark Payjoin send intent failed after staging failure"
-                );
-            }
+            tracing::warn!(quote_id, error = %err, "{}", reason);
             return Err(err);
         }
 
@@ -2325,6 +2365,52 @@ fn payjoin_original_input_outpoints_from_events(
         .map_err(|err| Error::Payjoin(err.to_string()))?;
 
     Ok(outpoints)
+}
+
+/// Whether it is safe to drop a closed receive session's persisted credit cap.
+///
+/// A receiver-signed proposal never expires on-chain, and its receiver output
+/// includes the mint's own contributed input value, so the cap in
+/// `proposal_receiver_outpoints` must outlive any still-broadcastable proposal
+/// — time alone is not sufficient. The cap is resolved once one of the
+/// proposal outpoints was detected (the cap was applied when the receive
+/// intent was created), or once an original receiver output was detected
+/// instead: the proposal spends the same sender inputs as the original, so a
+/// settled original means the proposal can never confirm.
+async fn payjoin_receive_credit_cap_resolved(
+    storage: &crate::storage::BdkStorage,
+    network: bdk_wallet::bitcoin::Network,
+    record: &crate::storage::PayjoinReceiveSessionRecord,
+) -> Result<bool, Error> {
+    if record.proposal_receiver_outpoints.is_empty() {
+        return Ok(true);
+    }
+    for outpoint in &record.proposal_receiver_outpoints {
+        if storage.has_receive_intent_for_outpoint(outpoint).await? {
+            return Ok(true);
+        }
+    }
+
+    let Ok(original_tx) = payjoin_original_tx_from_events(&record.events) else {
+        return Ok(false);
+    };
+    let Ok(fallback_address) =
+        parse_checked_address(&record.fallback_address, network, Error::Payjoin)
+    else {
+        return Ok(false);
+    };
+    let fallback_script = fallback_address.script_pubkey();
+    let original_txid = original_tx.compute_txid();
+    for (vout, output) in original_tx.output.iter().enumerate() {
+        if output.script_pubkey != fallback_script {
+            continue;
+        }
+        let outpoint = OutPoint::new(original_txid, vout as u32).to_string();
+        if storage.has_receive_intent_for_outpoint(&outpoint).await? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn payjoin_original_tx_from_events(
@@ -2954,6 +3040,139 @@ mod tests {
             payjoin_session::from_record(open_record),
             PayjoinReceiveSessionAny::Open(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn payjoin_receive_credit_cap_outlives_unresolved_proposal() {
+        use bdk_wallet::bitcoin::hashes::Hash;
+        use bdk_wallet::bitcoin::{Address, Network, WPubkeyHash};
+
+        use crate::receive::receive_intent::record::{ReceiveIntentRecord, ReceiveIntentState};
+
+        let db = cdk_sqlite::mint::memory::empty().await.expect("in-memory db");
+        let storage = crate::storage::BdkStorage::new(Arc::new(db));
+
+        let fallback_script = ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array([7u8; 20]));
+        let fallback_address = Address::from_script(&fallback_script, Network::Regtest)
+            .expect("valid script")
+            .to_string();
+
+        let original_tx = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(
+                    Txid::from_str(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .expect("valid txid"),
+                    0,
+                ),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Default::default(),
+            }],
+            output: vec![TxOut {
+                value: BitcoinAmount::from_sat(1_000),
+                script_pubkey: fallback_script,
+            }],
+        };
+        let original_txid = original_tx.compute_txid();
+        let mut psbt = Psbt::from_unsigned_tx(original_tx).expect("valid unsigned psbt");
+        // check_broadcast_suitability computes the psbt fee rate, which needs
+        // input UTXO data.
+        psbt.inputs[0].witness_utxo = Some(TxOut {
+            value: BitcoinAmount::from_sat(2_000),
+            script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array([9u8; 20])),
+        });
+        let event = serde_json::json!({
+            "RetrievedOriginalPayload": {
+                "original": {
+                    "psbt": psbt,
+                    "params": {
+                        "v": 2,
+                        "output_substitution": "Enabled",
+                        "additional_fee_contribution": null,
+                        "min_fee_rate": 250
+                    }
+                },
+                "reply_key": null
+            }
+        });
+        let events = vec![serde_json::from_value(event).expect("deserialize session event")];
+
+        let proposal_outpoint =
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:0".to_string();
+        let record = crate::storage::PayjoinReceiveSessionRecord {
+            quote_id: "quote-1".to_string(),
+            fallback_address,
+            amount_sat: 1_000,
+            proposal_receiver_outpoints: vec![proposal_outpoint.clone()],
+            expires_at: 100,
+            events,
+            closed: true,
+        };
+
+        // A session that never signed a proposal has no cap worth keeping.
+        let mut no_proposal = record.clone();
+        no_proposal.proposal_receiver_outpoints.clear();
+        assert!(
+            payjoin_receive_credit_cap_resolved(&storage, Network::Regtest, &no_proposal)
+                .await
+                .expect("resolve")
+        );
+
+        // The signed proposal is still broadcastable: keep the cap.
+        assert!(
+            !payjoin_receive_credit_cap_resolved(&storage, Network::Regtest, &record)
+                .await
+                .expect("resolve")
+        );
+
+        // Once a proposal receiver outpoint was detected the cap was applied.
+        let detect = |outpoint: String, txid: String| ReceiveIntentRecord {
+            intent_id: Uuid::new_v4(),
+            quote_id: "quote-1".to_string(),
+            state: ReceiveIntentState::Detected {
+                address: record.fallback_address.clone(),
+                txid,
+                outpoint,
+                amount_sat: 1_000,
+                block_height: 1,
+                created_at: 0,
+            },
+        };
+        let proposal_txid = proposal_outpoint
+            .split_once(':')
+            .expect("outpoint format")
+            .0
+            .to_string();
+        storage
+            .create_receive_intent_if_absent(&detect(proposal_outpoint.clone(), proposal_txid))
+            .await
+            .expect("create intent");
+        assert!(
+            payjoin_receive_credit_cap_resolved(&storage, Network::Regtest, &record)
+                .await
+                .expect("resolve")
+        );
+
+        // A settled original also resolves the cap: the proposal conflicts
+        // with it on the sender inputs and can never confirm.
+        let db = cdk_sqlite::mint::memory::empty().await.expect("in-memory db");
+        let storage = crate::storage::BdkStorage::new(Arc::new(db));
+        storage
+            .create_receive_intent_if_absent(&detect(
+                OutPoint::new(original_txid, 0).to_string(),
+                original_txid.to_string(),
+            ))
+            .await
+            .expect("create intent");
+        assert!(
+            payjoin_receive_credit_cap_resolved(&storage, Network::Regtest, &record)
+                .await
+                .expect("resolve")
+        );
     }
 
     #[test]
