@@ -430,7 +430,7 @@ async fn test_regtest_bolt12_mint_extra() -> Result<()> {
     };
 
     if let Some(secret_key) = quote_info.secret_key {
-        mint_request.sign(secret_key)?;
+        mint_request.sign(&secret_key)?;
     }
 
     let http_client = HttpClient::new(get_mint_url_from_env().parse().unwrap(), None);
