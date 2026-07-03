@@ -1703,6 +1703,53 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn post_restore_accepts_v3_restore_placeholders() {
+        let state = create_federated_test_state().await;
+        let mut restore_output = outputs_for_amount(&state, 2)
+            .into_iter()
+            .next()
+            .expect("restore output");
+        restore_output.amount = Amount::ZERO;
+
+        let response = crate::router_handlers::post_restore(
+            AuthHeader::None,
+            State(state),
+            Json(cdk::nuts::RestoreRequest {
+                outputs: vec![restore_output],
+            }),
+        )
+        .await
+        .expect("restore response")
+        .0;
+
+        assert!(response.signatures.is_empty());
+        assert!(response.outputs.is_empty());
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn post_restore_rejects_non_v3_outputs() {
+        let state = create_federated_test_state().await;
+
+        let error = crate::router_handlers::post_restore(
+            AuthHeader::None,
+            State(state.clone()),
+            Json(cdk::nuts::RestoreRequest {
+                outputs: vec![non_v3_change_output_for_state(&state)],
+            }),
+        )
+        .await
+        .expect_err("non-v3 restore output should be rejected");
+
+        let body = response_error_detail(error).await;
+        assert!(
+            body.contains("Cashu keyset v3"),
+            "error response should mention the v3 federation keyset requirement: {body}"
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn process_melt_request_records_federation_melt_operation() {
         let state = create_federated_test_state().await;
         let quote_id = create_federated_melt_quote(&state, 1000).await;

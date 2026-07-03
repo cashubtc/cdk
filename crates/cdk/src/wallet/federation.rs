@@ -229,6 +229,78 @@ impl FederatedMintConnector {
         )))
     }
 
+    async fn collect_restore_responses<F, Fut>(
+        &self,
+        mut call_member: F,
+    ) -> Result<Vec<(MemberId, RestoreResponse)>, Error>
+    where
+        F: FnMut(Arc<dyn MintConnector + Send + Sync>) -> Fut,
+        Fut: std::future::Future<Output = Result<RestoreResponse, Error>>,
+    {
+        let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
+        let mut responses = Vec::new();
+        let mut failures = Vec::new();
+
+        for (member_id, connector) in &self.member_connectors {
+            match call_member(connector.clone()).await {
+                Ok(response) => {
+                    responses.push((*member_id, response));
+                    if responses.len() >= threshold {
+                        break;
+                    }
+                }
+                Err(err) => failures.push(format!("member {}: {}", member_id, err)),
+            }
+        }
+
+        if responses.len() >= threshold {
+            return Ok(responses);
+        }
+
+        Err(Error::InvalidMintResponse(format!(
+            "insufficient federation restore responses: required {}, received {}, failures: {}",
+            threshold,
+            responses.len(),
+            failures.join("; ")
+        )))
+    }
+
+    async fn collect_check_state_responses<F, Fut>(
+        &self,
+        mut call_member: F,
+    ) -> Result<Vec<(MemberId, CheckStateResponse)>, Error>
+    where
+        F: FnMut(Arc<dyn MintConnector + Send + Sync>) -> Fut,
+        Fut: std::future::Future<Output = Result<CheckStateResponse, Error>>,
+    {
+        let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
+        let mut responses = Vec::new();
+        let mut failures = Vec::new();
+
+        for (member_id, connector) in &self.member_connectors {
+            match call_member(connector.clone()).await {
+                Ok(response) => {
+                    responses.push((*member_id, response));
+                    if responses.len() >= threshold {
+                        break;
+                    }
+                }
+                Err(err) => failures.push(format!("member {}: {}", member_id, err)),
+            }
+        }
+
+        if responses.len() >= threshold {
+            return Ok(responses);
+        }
+
+        Err(Error::InvalidMintResponse(format!(
+            "insufficient federation check-state responses: required {}, received {}, failures: {}",
+            threshold,
+            responses.len(),
+            failures.join("; ")
+        )))
+    }
+
     fn aggregate_member_responses(
         &self,
         outputs: &[BlindedMessage],
@@ -405,6 +477,75 @@ impl FederatedMintConnector {
         set_melt_response_change(&mut response, Some(aggregate_change.signatures));
 
         Ok(response)
+    }
+
+    fn aggregate_restore_response(
+        &self,
+        requested_outputs: &[BlindedMessage],
+        member_responses: &[(MemberId, RestoreResponse)],
+    ) -> Result<RestoreResponse, Error> {
+        self.public_config
+            .validate_blinded_change_outputs(requested_outputs)?;
+
+        let (first_member_id, first_response) = member_responses.first().ok_or_else(|| {
+            Error::InvalidMintResponse("missing federation restore responses".to_string())
+        })?;
+        validate_restore_response(requested_outputs, first_response, *first_member_id)?;
+
+        for (member_id, response) in member_responses.iter().skip(1) {
+            validate_restore_response(requested_outputs, response, *member_id)?;
+            if response.outputs != first_response.outputs {
+                return Err(Error::InvalidMintResponse(format!(
+                    "member {} returned a mismatched restore output set",
+                    member_id
+                )));
+            }
+        }
+
+        let restore_share_responses = member_responses
+            .iter()
+            .map(|(member_id, response)| {
+                (
+                    *member_id,
+                    MintResponse {
+                        signatures: response.signatures.clone(),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let aggregate = self.aggregate_member_responses(
+            &first_response.outputs,
+            &restore_share_responses,
+            ShareAmountValidation::AllowZeroAmountPlaceholder,
+        )?;
+
+        Ok(RestoreResponse {
+            outputs: first_response.outputs.clone(),
+            signatures: aggregate.signatures,
+        })
+    }
+
+    fn aggregate_check_state_response(
+        &self,
+        request: &CheckStateRequest,
+        member_responses: &[(MemberId, CheckStateResponse)],
+    ) -> Result<CheckStateResponse, Error> {
+        let (first_member_id, first_response) = member_responses.first().ok_or_else(|| {
+            Error::InvalidMintResponse("missing federation check-state responses".to_string())
+        })?;
+        validate_check_state_response(request, first_response, *first_member_id)?;
+
+        for (member_id, response) in member_responses.iter().skip(1) {
+            validate_check_state_response(request, response, *member_id)?;
+            if response.states != first_response.states {
+                return Err(Error::InvalidMintResponse(format!(
+                    "member {} returned a mismatched proof state view",
+                    member_id
+                )));
+            }
+        }
+
+        Ok(first_response.clone())
     }
 }
 
@@ -599,13 +740,31 @@ impl MintConnector for FederatedMintConnector {
         &self,
         request: CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
-        self.primary_connector()?.post_check_state(request).await
+        self.validate_member_active_keysets().await?;
+
+        let member_responses = self
+            .collect_check_state_responses(|connector| {
+                let request = request.clone();
+                async move { connector.post_check_state(request).await }
+            })
+            .await?;
+
+        self.aggregate_check_state_response(&request, &member_responses)
     }
 
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         self.public_config
-            .validate_blinded_outputs(&request.outputs)?;
-        self.primary_connector()?.post_restore(request).await
+            .validate_blinded_change_outputs(&request.outputs)?;
+        self.validate_member_active_keysets().await?;
+
+        let member_responses = self
+            .collect_restore_responses(|connector| {
+                let request = request.clone();
+                async move { connector.post_restore(request).await }
+            })
+            .await?;
+
+        self.aggregate_restore_response(&request.outputs, &member_responses)
     }
 
     async fn get_auth_wallet(&self) -> Option<AuthWallet> {
@@ -696,6 +855,79 @@ fn validate_melt_response_metadata(
             "member {} returned mismatched melt response metadata",
             member_id
         )));
+    }
+
+    Ok(())
+}
+
+fn validate_restore_response(
+    requested_outputs: &[BlindedMessage],
+    response: &RestoreResponse,
+    member_id: MemberId,
+) -> Result<(), Error> {
+    if response.outputs.len() != response.signatures.len() {
+        return Err(Error::InvalidMintResponse(format!(
+            "member {} returned {} restore outputs for {} signatures",
+            member_id,
+            response.outputs.len(),
+            response.signatures.len()
+        )));
+    }
+
+    let positions = requested_outputs
+        .iter()
+        .enumerate()
+        .map(|(index, output)| (output.blinded_secret, (index, output)))
+        .collect::<BTreeMap<_, _>>();
+    let mut last_position = None;
+
+    for output in &response.outputs {
+        let (position, requested_output) =
+            positions.get(&output.blinded_secret).ok_or_else(|| {
+                Error::InvalidMintResponse(format!(
+                    "member {} returned restore output not present in request",
+                    member_id
+                ))
+            })?;
+        if output != *requested_output {
+            return Err(Error::InvalidMintResponse(format!(
+                "member {} returned mismatched restore output metadata",
+                member_id
+            )));
+        }
+        if last_position.is_some_and(|last| *position <= last) {
+            return Err(Error::InvalidMintResponse(format!(
+                "member {} returned restore outputs out of request order",
+                member_id
+            )));
+        }
+        last_position = Some(*position);
+    }
+
+    Ok(())
+}
+
+fn validate_check_state_response(
+    request: &CheckStateRequest,
+    response: &CheckStateResponse,
+    member_id: MemberId,
+) -> Result<(), Error> {
+    if response.states.len() != request.ys.len() {
+        return Err(Error::InvalidMintResponse(format!(
+            "member {} returned {} proof states for {} requested proofs",
+            member_id,
+            response.states.len(),
+            request.ys.len()
+        )));
+    }
+
+    for (proof_state, y) in response.states.iter().zip(&request.ys) {
+        if proof_state.y != *y {
+            return Err(Error::InvalidMintResponse(format!(
+                "member {} returned proof states out of request order",
+                member_id
+            )));
+        }
     }
 
     Ok(())
@@ -828,7 +1060,8 @@ mod tests {
     use crate::nuts::{
         BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse,
         KeysetResponse, MeltQuoteState, MeltRequest, MintInfo, MintQuoteBolt11Request,
-        MintQuoteState, MintRequest, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+        MintQuoteState, MintRequest, ProofState, RestoreRequest, RestoreResponse, State,
+        SwapRequest, SwapResponse,
     };
     use crate::types::{FeeReserve, QuoteTTL};
     use crate::wallet::test_utils::MockMintConnector;
@@ -1082,6 +1315,33 @@ mod tests {
             request: Some("bolt11-invoice".to_string()),
             unit: Some(CurrencyUnit::Sat),
         })
+    }
+
+    fn restore_response(
+        bundle: &TrustedDealerConfigBundle,
+        member_id: MemberId,
+        restore_outputs: &[BlindedMessage],
+    ) -> RestoreResponse {
+        RestoreResponse {
+            outputs: restore_outputs.to_vec(),
+            signatures: share_response(bundle, member_id, &signed_change_outputs(restore_outputs))
+                .signatures,
+        }
+    }
+
+    fn proof_state_response(ys: &[PublicKey], states: &[State]) -> CheckStateResponse {
+        CheckStateResponse {
+            states: ys
+                .iter()
+                .copied()
+                .zip(states.iter().copied())
+                .map(|(y, state)| ProofState {
+                    y,
+                    state,
+                    witness: None,
+                })
+                .collect(),
+        }
     }
 
     fn member_connectors_with_melt_change(
@@ -1820,6 +2080,175 @@ mod tests {
 
         assert_eq!(response.state(), MeltQuoteState::Paid);
         assert!(response.change().is_none());
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_aggregates_restore_signature_shares() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let restore_outputs = blinded_change_outputs(&bundle);
+        let connectors = [member_id(1), member_id(2), member_id(3)]
+            .into_iter()
+            .map(|member_id| {
+                let connector = MockMintConnector::new();
+                connector.set_active_keyset(advertised.clone());
+                connector._set_restore_response(Ok(restore_response(
+                    &bundle,
+                    member_id,
+                    &restore_outputs,
+                )));
+                (
+                    member_id,
+                    Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+                )
+            })
+            .collect();
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let response = connector
+            .post_restore(RestoreRequest {
+                outputs: restore_outputs.clone(),
+            })
+            .await
+            .expect("restore response");
+
+        assert_eq!(response.outputs, restore_outputs);
+        assert_aggregate_response_valid(
+            &bundle,
+            &signed_change_outputs(&restore_outputs),
+            &MintResponse {
+                signatures: response.signatures,
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_rejects_mismatched_restore_views() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let restore_outputs = blinded_change_outputs(&bundle);
+        let mut connectors = BTreeMap::new();
+
+        for member_id in [member_id(1), member_id(2)] {
+            let connector = MockMintConnector::new();
+            connector.set_active_keyset(advertised.clone());
+            let member_outputs = if member_id.get() == 2 {
+                restore_outputs[0..1].to_vec()
+            } else {
+                restore_outputs.clone()
+            };
+            connector._set_restore_response(Ok(restore_response(
+                &bundle,
+                member_id,
+                &member_outputs,
+            )));
+            connectors.insert(
+                member_id,
+                Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+            );
+        }
+
+        let connector = MockMintConnector::new();
+        connector.set_active_keyset(advertised);
+        connector._set_restore_response(Ok(restore_response(
+            &bundle,
+            member_id(3),
+            &restore_outputs,
+        )));
+        connectors.insert(
+            member_id(3),
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let result = connector
+            .post_restore(RestoreRequest {
+                outputs: restore_outputs,
+            })
+            .await;
+
+        assert!(matches!(result, Err(crate::Error::InvalidMintResponse(_))));
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_collects_threshold_check_state_views() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let ys = vec![
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(b"check-state-y-1")),
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(b"check-state-y-2")),
+        ];
+        let expected = proof_state_response(&ys, &[State::Unspent, State::Pending]);
+        let mut connectors = BTreeMap::new();
+
+        let failing_member = MockMintConnector::new();
+        failing_member.set_active_keyset(advertised.clone());
+        failing_member
+            .set_check_state_response(Err(crate::Error::Custom("member unavailable".to_string())));
+        connectors.insert(
+            member_id(1),
+            Arc::new(failing_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        for member_id in [member_id(2), member_id(3)] {
+            let connector = MockMintConnector::new();
+            connector.set_active_keyset(advertised.clone());
+            connector.set_check_state_response(Ok(expected.clone()));
+            connectors.insert(
+                member_id,
+                Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+            );
+        }
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let response = connector
+            .post_check_state(CheckStateRequest { ys })
+            .await
+            .expect("check-state response");
+
+        assert_eq!(response, expected);
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_rejects_mismatched_check_state_views() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let ys = vec![
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(b"check-state-mismatch-y-1")),
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(b"check-state-mismatch-y-2")),
+        ];
+        let first = proof_state_response(&ys, &[State::Unspent, State::Pending]);
+        let second = proof_state_response(&ys, &[State::Spent, State::Pending]);
+        let mut connectors = BTreeMap::new();
+
+        for (member_id, response) in [(member_id(1), first), (member_id(2), second)] {
+            let connector = MockMintConnector::new();
+            connector.set_active_keyset(advertised.clone());
+            connector.set_check_state_response(Ok(response));
+            connectors.insert(
+                member_id,
+                Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+            );
+        }
+
+        let connector = MockMintConnector::new();
+        connector.set_active_keyset(advertised);
+        connector.set_check_state_response(Ok(proof_state_response(
+            &ys,
+            &[State::Unspent, State::Pending],
+        )));
+        connectors.insert(
+            member_id(3),
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let result = connector.post_check_state(CheckStateRequest { ys }).await;
+
+        assert!(matches!(result, Err(crate::Error::InvalidMintResponse(_))));
     }
 
     #[tokio::test]

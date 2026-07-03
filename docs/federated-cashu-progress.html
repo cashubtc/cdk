@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: bridge federated melts and keysets</span>
+          <span class="value">feat: route federated restore checks</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federated melt wallet bridge + keyset guard</span>
+          <span class="value">Restore and check-state routing</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Restore and check-state routing</span>
+          <span class="value">Private REST catch-up and payment observation</span>
         </div>
       </aside>
     </header>
@@ -512,6 +512,10 @@
             <h3>Federated melt wallet bridge ready</h3>
             <p>The wallet federation connector now fans out melts even without change outputs, aggregates real fake-wallet member melt change shares, and member melt sagas persist the federation operation ID for pending recovery.</p>
           </article>
+          <article class="item">
+            <h3>Restore and check-state routing ready</h3>
+            <p>Wallet restore now fans out to federation members, rejects mismatched restore views, and aggregates BLS restore signature shares; proof state checks require a threshold of matching member views.</p>
+          </article>
         </div>
       </section>
 
@@ -593,6 +597,14 @@
           <article class="item">
             <h3>Federated melt change signs as shares</h3>
             <p>Paid fake-wallet melts with overpaid inputs now derive change amounts, persist member-local blind signature shares, and expose those shares through the normal melt response shape for wallet aggregation.</p>
+          </article>
+          <article class="item">
+            <h3>Restore placeholders stay federation-safe</h3>
+            <p>Restore requests can use NUT-09 zero-amount blinded output placeholders, but only against active aggregate v3/BLS federation keysets.</p>
+          </article>
+          <article class="item">
+            <h3>Proof state divergence is visible</h3>
+            <p>The wallet connector no longer accepts a single member's check-state result; it requires threshold agreement and rejects mismatched spent, pending, or unspent views.</p>
           </article>
         </div>
       </section>
@@ -800,10 +812,16 @@
               <td>Route restore and check-state through federation members, then connect catch-up/payment observation over the private member network.</td>
             </tr>
             <tr>
+              <td>Restore and check-state routing</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --lib --features federation wallet::federation` passed 15 tests, including restore share aggregation, mismatched restore rejection, threshold check-state collection, and divergent proof-state rejection. `cargo test -p cdk --lib --features federation mint::federation` passed 15 tests, including restore zero-placeholder validation. `cargo test -p cdk-axum --features federation custom_handlers` passed 26 tests, including v3 restore placeholder acceptance and non-v3 restore rejection.</td>
+              <td>Connect private REST catch-up, payment observation propagation, and offline member replay across multiple federation nodes.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, quote-check, mint-submit, swap, and melt submit handlers are consensus-gated locally; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change; wallets aggregate mint, batch mint, swap, and melt change shares from real fake-wallet member mints. Restore/check-state federation routing, durable catch-up, and networked fake-wallet flows remain open.</td>
-              <td>Add restore/check-state federation routing, then connect private REST catch-up and payment observations across members.</td>
+              <td>Mint quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Durable catch-up and networked fake-wallet payment observation remain open.</td>
+              <td>Connect private REST catch-up and payment observations across members.</td>
             </tr>
           </tbody>
         </table>
@@ -843,8 +861,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Restore and check-state routing</h3>
-            <p>Make wallet restore and proof state checks query federation members without accepting mismatched aggregate keysets or partial member views.</p>
+            <h3>Private REST catch-up and payment observation</h3>
+            <p>Make federation members exchange accepted operations, missed journal entries, and fake-wallet payment observations over the private member API.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>

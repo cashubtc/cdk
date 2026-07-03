@@ -154,7 +154,9 @@ impl FederationRuntimeConfig {
 
     /// Validate outputs from a restore request.
     pub fn validate_restore_outputs(&self, request: &RestoreRequest) -> Result<(), Error> {
-        self.validate_output_keysets(&request.outputs)
+        Ok(self
+            .public_config
+            .validate_blinded_change_outputs(&request.outputs)?)
     }
 
     /// Validate change outputs from a melt request.
@@ -820,8 +822,12 @@ mod tests {
         let mut output = output_for_runtime(&runtime_config, b"zero amount change placeholder");
         output.amount = Amount::ZERO;
         let melt = MeltRequest::new(QuoteId::new(), Vec::new(), Some(vec![output.clone()]));
+        let restore = RestoreRequest {
+            outputs: vec![output.clone()],
+        };
 
         assert!(runtime_config.validate_melt_change_outputs(&melt).is_ok());
+        assert!(runtime_config.validate_restore_outputs(&restore).is_ok());
         assert!(matches!(
             runtime_config.validate_output_keysets(&[output]),
             Err(cdk_common::Error::Federation(
