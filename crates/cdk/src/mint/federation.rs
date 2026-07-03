@@ -7,9 +7,10 @@
 
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederationConfig, FederationId, FederationMintOperation, FederationMintQuoteOperation,
-    FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
-    FederationOperationEnvelope, MemberConfigPrivate, MemberId,
+    FederationBlindSignatureShareSet, FederationConfig, FederationId, FederationMintOperation,
+    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
+    FederationOperation, FederationOperationEnvelope, FederationOperationId, MemberConfigPrivate,
+    MemberId,
 };
 use cdk_common::{
     Amount, BatchMintRequest, MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest,
@@ -144,6 +145,19 @@ impl FederationRuntimeConfig {
             request: mint_request_from_input(input),
         }))
     }
+
+    /// Sign an accepted mint operation into local threshold BLS signature shares.
+    pub fn mint_signature_shares(
+        &self,
+        operation_id: FederationOperationId,
+        input: &MintInput,
+    ) -> Result<FederationBlindSignatureShareSet, Error> {
+        Ok(self.private_config.sign_blinded_messages(
+            &self.public_config,
+            operation_id,
+            input.outputs(),
+        )?)
+    }
 }
 
 fn mint_request_from_input(input: MintInput) -> FederationMintRequest {
@@ -178,7 +192,7 @@ mod tests {
     };
     use cdk_common::mint_url::MintUrl;
     use cdk_common::nuts::nut00::KnownMethod;
-    use cdk_common::nuts::nut01::BlsSecretKey;
+    use cdk_common::nuts::nut01::{verify_blind_signature_share, BlsG1PublicKey, BlsSecretKey};
     use cdk_common::quote_id::QuoteId;
     use cdk_common::{
         Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Id, MintQuoteBolt11Request,
@@ -407,5 +421,44 @@ mod tests {
             consensus.submit_envelope(overlapping_batch),
             Err(FederationError::ConflictingOperation { .. })
         ));
+    }
+
+    #[test]
+    fn runtime_config_signs_accepted_mint_operations() {
+        let runtime_config = runtime_config();
+        let keyset = &runtime_config.public_config().keysets[0];
+        let blinded_message = BlsG1PublicKey::hash_to_curve(b"cdk axum federation mint share");
+        let input = super::MintInput::Single(MintRequest {
+            quote: QuoteId::new(),
+            outputs: vec![BlindedMessage::new(
+                Amount::from(1),
+                keyset.id,
+                PublicKey::from(blinded_message),
+            )],
+            signature: None,
+        });
+        let operation_id = runtime_config
+            .mint_operation(input.clone())
+            .operation_id()
+            .expect("operation id");
+
+        let share_set = runtime_config
+            .mint_signature_shares(operation_id, &input)
+            .expect("signature shares");
+        let share = share_set.shares.first().expect("signature share");
+        let public_share = keyset
+            .public_shares
+            .get(&runtime_config.member_id())
+            .expect("member shares")
+            .get(&Amount::from(1))
+            .expect("amount share");
+
+        assert_eq!(share_set.operation_id, operation_id);
+        assert_eq!(share_set.member_id, runtime_config.member_id());
+        assert_eq!(share.operation_id, operation_id);
+        assert!(
+            verify_blind_signature_share(&share.share, &blinded_message, public_share)
+                .expect("share verification")
+        );
     }
 }
