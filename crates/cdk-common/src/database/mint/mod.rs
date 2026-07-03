@@ -1,5 +1,7 @@
 //! CDK Database
 
+#[cfg(feature = "federation")]
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 
@@ -8,6 +10,10 @@ use cashu::quote_id::QuoteId;
 use cashu::Amount;
 
 use super::{DbTransactionFinalizer, Error};
+#[cfg(feature = "federation")]
+use crate::federation::{
+    FederationJournalEntry, FederationOperationId, FederationOperationStatus, MemberId,
+};
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
 };
@@ -598,6 +604,57 @@ pub trait CompletedOperationsDatabase {
     async fn get_completed_operations(&self) -> Result<Vec<mint::Operation>, Self::Err>;
 }
 
+#[cfg(feature = "federation")]
+#[async_trait]
+/// Federation journal transaction trait
+pub trait FederationJournalTransaction {
+    /// Federation journal database error
+    type Err: Into<Error> + From<Error>;
+
+    /// Persist one accepted federation journal entry.
+    async fn add_federation_journal_entry(
+        &mut self,
+        entry: &FederationJournalEntry,
+    ) -> Result<(), Self::Err>;
+
+    /// Update the local application status for one accepted federation operation.
+    async fn update_federation_operation_status(
+        &mut self,
+        operation_id: FederationOperationId,
+        status: FederationOperationStatus,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist the highest accepted private REST sequence for one federation member.
+    async fn set_federation_member_sequence(
+        &mut self,
+        member_id: MemberId,
+        sequence: u64,
+    ) -> Result<(), Self::Err>;
+}
+
+#[cfg(feature = "federation")]
+#[async_trait]
+/// Federation journal database trait
+pub trait FederationJournalDatabase {
+    /// Federation journal database error
+    type Err: Into<Error> + From<Error>;
+
+    /// Get all accepted federation journal entries in consensus order.
+    async fn get_federation_journal_entries(
+        &self,
+    ) -> Result<Vec<FederationJournalEntry>, Self::Err>;
+
+    /// Get accepted federation journal entries starting at `next_index`.
+    async fn get_federation_journal_entries_from(
+        &self,
+        next_index: u64,
+    ) -> Result<Vec<FederationJournalEntry>, Self::Err>;
+
+    /// Get persisted private REST sequence watermarks by member.
+    async fn get_federation_member_sequences(&self) -> Result<BTreeMap<MemberId, u64>, Self::Err>;
+}
+
+#[cfg(not(feature = "federation"))]
 /// Base database writer
 pub trait Transaction<Error>:
     DbTransactionFinalizer<Err = Error>
@@ -610,6 +667,21 @@ pub trait Transaction<Error>:
 {
 }
 
+#[cfg(feature = "federation")]
+/// Base database writer
+pub trait Transaction<Error>:
+    DbTransactionFinalizer<Err = Error>
+    + QuotesTransaction<Err = Error>
+    + SignaturesTransaction<Err = Error>
+    + ProofsTransaction<Err = Error>
+    + KVStoreTransaction<Error>
+    + SagaTransaction<Err = Error>
+    + CompletedOperationsTransaction<Err = Error>
+    + FederationJournalTransaction<Err = Error>
+{
+}
+
+#[cfg(not(feature = "federation"))]
 /// Mint Database trait
 #[async_trait]
 pub trait Database<Error>:
@@ -619,6 +691,22 @@ pub trait Database<Error>:
     + SignaturesDatabase<Err = Error>
     + SagaDatabase<Err = Error>
     + CompletedOperationsDatabase<Err = Error>
+{
+    /// Begins a transaction
+    async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;
+}
+
+#[cfg(feature = "federation")]
+/// Mint Database trait
+#[async_trait]
+pub trait Database<Error>:
+    KVStoreDatabase<Err = Error>
+    + QuotesDatabase<Err = Error>
+    + ProofsDatabase<Err = Error>
+    + SignaturesDatabase<Err = Error>
+    + SagaDatabase<Err = Error>
+    + CompletedOperationsDatabase<Err = Error>
+    + FederationJournalDatabase<Err = Error>
 {
     /// Begins a transaction
     async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;

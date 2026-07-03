@@ -31,6 +31,15 @@ mod test {
 
     mint_db_test!(provide_db);
 
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn federation_journal_persistence() {
+        cdk_common::database::mint::test::federation_journal_persistence(
+            provide_db("federation_journal_persistence".to_string()).await,
+        )
+        .await;
+    }
+
     #[tokio::test]
     async fn bug_opening_relative_path() {
         let config: Config = "test.db".into();

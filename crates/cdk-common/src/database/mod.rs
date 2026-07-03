@@ -27,6 +27,11 @@ pub use mint::{
 };
 #[cfg(feature = "mint")]
 pub use mint::{DynMintAuthDatabase, MintAuthDatabase, MintAuthTransaction};
+#[cfg(all(feature = "mint", feature = "federation"))]
+pub use mint::{
+    FederationJournalDatabase as MintFederationJournalDatabase,
+    FederationJournalTransaction as MintFederationJournalTransaction,
+};
 #[cfg(feature = "wallet")]
 pub use wallet::Database as WalletDatabase;
 

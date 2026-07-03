@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: require signed federation REST</span>
+          <span class="value">feat: persist federation journal</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Authenticated private REST routes</span>
+          <span class="value">Durable journal storage</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Durable journal storage</span>
+          <span class="value">Runtime journal boot replay</span>
         </div>
       </aside>
     </header>
@@ -528,6 +528,10 @@
             <h3>Signed private REST routes enforced</h3>
             <p>Member status, operation submit, and journal catch-up routes now require signed envelopes, reject stale sequences before consensus mutation, and the private peer client signs every request.</p>
           </article>
+          <article class="item">
+            <h3>Durable journal storage ready</h3>
+            <p>SQL-backed mint databases can now persist accepted federation journal entries, operation statuses, order digests, conflict keys, and per-member private REST sequence watermarks.</p>
+          </article>
         </div>
       </section>
 
@@ -634,6 +638,10 @@
             <h3>Private REST mutation requires roster auth</h3>
             <p>Route tests now prove that tampered operation payloads, unknown senders, wrong message kinds, and stale sequence numbers fail before the local consensus journal changes.</p>
           </article>
+          <article class="item">
+            <h3>Accepted order survives storage</h3>
+            <p>The federation journal row shape now preserves consensus order, digest continuity, local application status, quote conflict metadata, and member sequence watermarks across SQL round trips.</p>
+          </article>
         </div>
       </section>
 
@@ -650,7 +658,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, but durable journal storage, persisted sequence watermarks, and deterministic state-machine replay still need to land before offline recovery is production-safe.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage can persist accepted entries plus sequence watermarks. Runtime boot replay and transactional route persistence still need to land before offline recovery is production-safe.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -864,10 +872,16 @@
               <td>Persist federation journal entries and accepted sequence watermarks so authenticated catch-up survives process restarts.</td>
             </tr>
             <tr>
+              <td>Durable journal storage</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-sqlite --features "mint federation" federation_journal_persistence` passed, proving accepted entries, status updates, catch-up ranges, and member sequence watermarks round-trip through SQL storage. `cargo check -p cdk-sql-common --features "mint federation"`, `cargo check -p cdk-sqlite --features "mint federation"`, `cargo check -p cdk-postgres --features "mint federation"`, `cargo check -p cdk-sqlite --features mint`, and the mintd federation/fakewallet/sqlite check passed.</td>
+              <td>Load persisted entries and sequence watermarks into runtime consensus and the signed-route sequence tracker at mint startup.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. Durable catch-up storage and networked fake-wallet state-machine replay remain open.</td>
-              <td>Persist and replay the federation journal through storage-backed members.</td>
+              <td>Mint quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks; runtime boot replay and networked fake-wallet state-machine replay remain open.</td>
+              <td>Replay persisted federation journal state into storage-backed members at startup.</td>
             </tr>
           </tbody>
         </table>
@@ -907,8 +921,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Durable journal storage</h3>
-            <p>Persist accepted federation operations, local application status, order digests, and member sequence watermarks so nodes can restart and catch up without trusting memory.</p>
+            <h3>Runtime journal boot replay</h3>
+            <p>Load persisted accepted operations and member sequence watermarks into in-memory consensus and the signed-route sequence tracker at startup, then persist private REST route mutations transactionally.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>

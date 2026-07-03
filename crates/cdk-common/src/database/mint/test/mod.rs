@@ -16,12 +16,16 @@ use crate::common::IssuerVersion;
 use crate::database::KVStoreDatabase;
 use crate::mint::MintKeySetInfo;
 
+#[cfg(feature = "federation")]
+mod federation;
 mod keys;
 mod mint;
 mod proofs;
 mod saga;
 mod signatures;
 
+#[cfg(feature = "federation")]
+pub use self::federation::*;
 pub use self::keys::*;
 pub use self::mint::*;
 pub use self::proofs::*;

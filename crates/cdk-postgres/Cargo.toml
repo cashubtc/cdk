@@ -14,6 +14,7 @@ rust-version.workspace = true                            # MSRV
 default = ["mint", "wallet"]
 mint = ["cdk-common/mint", "cdk-sql-common/mint"]
 wallet = ["cdk-common/wallet", "cdk-sql-common/wallet"]
+federation = ["cdk-common/federation", "cdk-sql-common/federation"]
 
 [dependencies]
 async-trait.workspace = true
