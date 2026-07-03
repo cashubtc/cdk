@@ -328,7 +328,7 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">c9c32d2b threshold BLS coverage</span>
+          <span class="value">5f15d9d1 threshold BLS serde</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
@@ -424,6 +424,10 @@
             <h3>Milestone 1 committed</h3>
             <p>Versioned share encodings, aggregate key aliasing, subset permutations, and feature-off checks were committed in c9c32d2b.</p>
           </article>
+          <article class="item">
+            <h3>Threshold BLS serde committed</h3>
+            <p>G1/G2 public points and threshold share types now round-trip through canonical hex JSON encodings for configs and REST payloads.</p>
+          </article>
         </div>
       </section>
 
@@ -512,8 +516,14 @@
             <tr>
               <td>Threshold BLS feature-off compile</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo check -p cashu --lib` passed with federation disabled.</td>
+              <td>`cargo check -p cashu --lib` passed with federation disabled after serde helpers.</td>
               <td>Keep default builds warning-free as threshold APIs expand.</td>
+            </tr>
+            <tr>
+              <td>Threshold BLS serde</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cashu --features federation threshold_bls` passed 6 tests with JSON round-trips.</td>
+              <td>Use these encodings in federation config and REST payloads.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
