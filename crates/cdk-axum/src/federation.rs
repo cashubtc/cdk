@@ -6,14 +6,15 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use cdk::federation::{
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalDigest,
+    FederationError, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
     FederationPeerStatus, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    InMemoryFederationConsensus,
 };
 use tracing::instrument;
 
 use crate::MintState;
 
-const FEDERATION_JOURNAL_NOT_WIRED: &str = "federation consensus journal is not wired yet";
+type ConsensusHandle = std::sync::Arc<tokio::sync::Mutex<InMemoryFederationConsensus>>;
 
 pub(crate) fn create_federation_router() -> Router<MintState> {
     Router::new()
@@ -26,17 +27,9 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
 async fn get_status(
     State(state): State<MintState>,
 ) -> Result<Json<FederationPeerStatus>, Response> {
-    let config = state
-        .mint
-        .federation_config()
-        .ok_or_else(federation_not_configured)?;
-    Ok(Json(FederationPeerStatus::new(
-        config.federation_id(),
-        config.member_id(),
-        0,
-        None,
-        FederationJournalDigest::genesis(),
-    )))
+    let consensus = federation_consensus(&state)?;
+    let consensus = consensus.lock().await;
+    Ok(Json(consensus.peer_status()))
 }
 
 #[instrument(skip_all)]
@@ -44,20 +37,13 @@ async fn post_operation(
     State(state): State<MintState>,
     Json(payload): Json<FederationSubmitOperationRequest>,
 ) -> Result<Json<FederationSubmitOperationResponse>, Response> {
-    let config = state
-        .mint
-        .federation_config()
-        .ok_or_else(federation_not_configured)?;
-    if payload.envelope.federation_id != config.federation_id() {
-        return Err(federation_mismatch());
-    }
-
-    let operation_id = payload.operation_id().map_err(|err| {
-        tracing::warn!("Invalid federation operation payload: {}", err);
-        (StatusCode::BAD_REQUEST, err.to_string()).into_response()
-    })?;
-    tracing::debug!("Received federation operation {}", operation_id);
-    Err(not_implemented())
+    let consensus = federation_consensus(&state)?;
+    let mut consensus = consensus.lock().await;
+    let response = consensus
+        .submit_operation(payload)
+        .map_err(federation_error_response)?;
+    tracing::debug!("Accepted federation operation {}", response.operation_id);
+    Ok(Json(response))
 }
 
 #[instrument(skip_all)]
@@ -65,16 +51,21 @@ async fn post_journal(
     State(state): State<MintState>,
     Json(payload): Json<FederationJournalCatchUpRequest>,
 ) -> Result<Json<FederationJournalCatchUpResponse>, Response> {
-    let _config = state
-        .mint
-        .federation_config()
-        .ok_or_else(federation_not_configured)?;
+    let consensus = federation_consensus(&state)?;
     tracing::debug!(
         next_index = payload.next_index,
         limit = ?payload.limit,
         "Received federation journal catch-up request"
     );
-    Err(not_implemented())
+    let consensus = consensus.lock().await;
+    Ok(Json(consensus.catch_up(&payload)))
+}
+
+fn federation_consensus(state: &MintState) -> Result<ConsensusHandle, Response> {
+    state
+        .federation_consensus
+        .clone()
+        .ok_or_else(federation_not_configured)
 }
 
 fn federation_not_configured() -> Response {
@@ -85,14 +76,12 @@ fn federation_not_configured() -> Response {
         .into_response()
 }
 
-fn federation_mismatch() -> Response {
-    (
-        StatusCode::BAD_REQUEST,
-        "request federation id does not match this member",
-    )
-        .into_response()
-}
-
-fn not_implemented() -> Response {
-    (StatusCode::NOT_IMPLEMENTED, FEDERATION_JOURNAL_NOT_WIRED).into_response()
+fn federation_error_response(err: FederationError) -> Response {
+    let status = match err {
+        FederationError::ConflictingOperation { .. } => StatusCode::CONFLICT,
+        FederationError::OperationFederationMismatch { .. } => StatusCode::BAD_REQUEST,
+        _ => StatusCode::BAD_REQUEST,
+    };
+    tracing::warn!("Federation request failed: {}", err);
+    (status, err.to_string()).into_response()
 }

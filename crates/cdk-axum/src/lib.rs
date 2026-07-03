@@ -31,6 +31,9 @@ mod ws;
 pub struct MintState {
     mint: Arc<Mint>,
     cache: Arc<cache::HttpCache>,
+    #[cfg(feature = "federation")]
+    federation_consensus:
+        Option<Arc<tokio::sync::Mutex<cdk::federation::InMemoryFederationConsensus>>>,
 }
 
 /// Create mint [`Router`] with required endpoints for cashu mint with the default cache
@@ -96,9 +99,20 @@ pub async fn create_mint_router_with_custom_cache(
     custom_methods: Vec<String>,
     enable_info_page: bool,
 ) -> Result<Router> {
+    #[cfg(feature = "federation")]
+    let federation_consensus = mint.federation_config().map(|config| {
+        Arc::new(tokio::sync::Mutex::new(
+            cdk::federation::InMemoryFederationConsensus::new(
+                config.federation_id(),
+                config.member_id(),
+            ),
+        ))
+    });
     let state = MintState {
         mint,
         cache: Arc::new(cache),
+        #[cfg(feature = "federation")]
+        federation_consensus,
     };
 
     let v1_router = Router::new()
@@ -114,7 +128,7 @@ pub async fn create_mint_router_with_custom_cache(
     let mut mint_router = Router::new().nest("/v1", v1_router);
 
     #[cfg(feature = "federation")]
-    if state.mint.federation_config().is_some() {
+    if state.federation_consensus.is_some() {
         mint_router = mint_router.nest("/federation/v1", federation::create_federation_router());
     }
 
