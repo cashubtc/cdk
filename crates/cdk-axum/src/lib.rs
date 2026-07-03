@@ -14,8 +14,8 @@ use cache::HttpCache;
 #[cfg(feature = "federation")]
 use cdk::federation::{
     FederationJournalAppendOutcome, FederationJournalEntry, FederationOperationEnvelope,
-    FederationRestSequenceTracker, FederationSubmitOperationResponse, InMemoryFederationConsensus,
-    MemberId,
+    FederationOperationId, FederationOperationStatus, FederationRestSequenceTracker,
+    FederationSubmitOperationResponse, InMemoryFederationConsensus, MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -69,13 +69,18 @@ impl MintState {
         let mut consensus = consensus.lock().await;
         let mut next_consensus = consensus.clone();
         let response = next_consensus.submit_envelope(envelope)?;
+        let entry = response.outcome.entry().clone();
 
         self.persist_federation_append_outcome(&response.outcome, sequence)
             .await?;
         *consensus = next_consensus;
+        drop(consensus);
+
         if let Some((sender, sequence)) = sequence {
             self.record_federation_sequence(sender, sequence).await;
         }
+        self.apply_federation_journal_entries(std::slice::from_ref(&entry))
+            .await?;
 
         Ok(response)
     }
@@ -94,6 +99,8 @@ impl MintState {
         self.persist_federation_journal_entries(&applied, None)
             .await?;
         *consensus = next_consensus;
+        drop(consensus);
+        self.apply_federation_journal_entries(&applied).await?;
 
         Ok(applied)
     }
@@ -146,6 +153,29 @@ impl MintState {
         if let Some(sequences) = &self.federation_sequences {
             sequences.lock().await.record_sequence(sender, sequence);
         }
+    }
+
+    async fn apply_federation_journal_entries(
+        &self,
+        entries: &[FederationJournalEntry],
+    ) -> Result<Vec<FederationOperationId>, cdk::Error> {
+        let applied = self.mint.apply_federation_journal_entries(entries).await?;
+        self.mark_federation_operations_applied(&applied).await?;
+        Ok(applied)
+    }
+
+    async fn mark_federation_operations_applied(
+        &self,
+        operation_ids: &[FederationOperationId],
+    ) -> Result<(), cdk::Error> {
+        let Some(consensus) = &self.federation_consensus else {
+            return Ok(());
+        };
+        let mut consensus = consensus.lock().await;
+        for operation_id in operation_ids {
+            consensus.update_status(*operation_id, FederationOperationStatus::Applied)?;
+        }
+        Ok(())
     }
 }
 
@@ -296,11 +326,15 @@ async fn create_federation_runtime_state(
     let db = mint.localstore();
     let entries = db.get_federation_journal_entries().await?;
     let sequences = db.get_federation_member_sequences().await?;
-    let consensus = InMemoryFederationConsensus::from_entries(
+    let mut consensus = InMemoryFederationConsensus::from_entries(
         config.federation_id(),
         config.member_id(),
-        entries,
+        entries.clone(),
     )?;
+    let applied = mint.apply_federation_journal_entries(&entries).await?;
+    for operation_id in applied {
+        consensus.update_status(operation_id, FederationOperationStatus::Applied)?;
+    }
     let sequences = FederationRestSequenceTracker::from_sequences(sequences);
 
     Ok((

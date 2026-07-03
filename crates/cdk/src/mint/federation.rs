@@ -5,14 +5,20 @@
 //! mode. Until then, the default standalone mode preserves current mint
 //! behavior.
 
+use std::collections::HashMap;
+use std::str::FromStr;
+
+use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::federation::{
     FederationBlindSignatureShareSet, FederationConfig, FederationError, FederationId,
-    FederationMeltOperation, FederationMintOperation, FederationMintQuoteOperation,
-    FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId, FederationSwapOperation,
-    MemberConfigPrivate, MemberId,
+    FederationJournalEntry, FederationMeltOperation, FederationMintOperation,
+    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
+    FederationOperation, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationSwapOperation, MemberConfigPrivate, MemberId,
 };
+use cdk_common::mint::{MintQuote, Operation};
+use cdk_common::payment::PaymentIdentifier;
 use cdk_common::{
     Amount, BatchMintRequest, BlindSignature, BlindedMessage, CurrencyUnit, MeltRequest,
     MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest, MintResponse, PaymentMethod,
@@ -327,6 +333,229 @@ impl FederationRuntimeConfig {
 }
 
 impl Mint {
+    /// Apply accepted federation journal entries to this member's local mint database.
+    ///
+    /// This is intentionally idempotent so startup replay, duplicate operation
+    /// submission, and private REST catch-up can all use the same path.
+    pub async fn apply_federation_journal_entries(
+        &self,
+        entries: &[FederationJournalEntry],
+    ) -> Result<Vec<FederationOperationId>, Error> {
+        let mut applied = Vec::new();
+
+        for entry in entries {
+            if entry.status == FederationOperationStatus::Applied {
+                continue;
+            }
+
+            if self.apply_federation_journal_entry(entry).await? {
+                applied.push(entry.operation_id);
+            }
+        }
+
+        Ok(applied)
+    }
+
+    async fn apply_federation_journal_entry(
+        &self,
+        entry: &FederationJournalEntry,
+    ) -> Result<bool, Error> {
+        match &entry.envelope.operation {
+            FederationOperation::MintQuote(operation) => {
+                self.apply_federation_mint_quote(entry.operation_id, operation)
+                    .await?;
+                Ok(true)
+            }
+            FederationOperation::MintQuotePayment(observation) => {
+                self.apply_federation_mint_quote_payment(entry.operation_id, observation)
+                    .await?;
+                Ok(true)
+            }
+            FederationOperation::Mint(operation) => {
+                self.apply_federation_mint(entry.operation_id, operation)
+                    .await?;
+                Ok(true)
+            }
+            FederationOperation::MeltQuote(_)
+            | FederationOperation::MeltQuotePayment(_)
+            | FederationOperation::Melt(_)
+            | FederationOperation::Swap(_)
+            | FederationOperation::Restore(_) => Ok(false),
+        }
+    }
+
+    async fn apply_federation_mint_quote(
+        &self,
+        operation_id: FederationOperationId,
+        operation: &FederationMintQuoteOperation,
+    ) -> Result<(), Error> {
+        let quote = mint_quote_from_federation_operation(operation)?;
+        let mut tx = self.localstore.begin_transaction().await?;
+
+        match tx.get_mint_quote(&quote.id).await? {
+            Some(existing) => {
+                ensure_mint_quote_matches(&existing, &quote)?;
+            }
+            None => {
+                tx.add_mint_quote(quote).await?;
+            }
+        }
+
+        tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn apply_federation_mint_quote_payment(
+        &self,
+        operation_id: FederationOperationId,
+        observation: &FederationMintQuotePaymentObservation,
+    ) -> Result<(), Error> {
+        let quote_id = quote_id_from_federation(&observation.quote)?;
+        let mut tx = self.localstore.begin_transaction().await?;
+        let mut quote = tx
+            .get_mint_quote(&quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        if quote.payment_method != observation.method {
+            return Err(Error::InvalidPaymentMethod);
+        }
+
+        let observed_paid = observation.amount_paid.with_unit(quote.unit.clone());
+        if observed_paid < quote.amount_paid() {
+            return Err(Error::Custom(
+                "federation mint quote payment observation would reduce amount_paid".to_string(),
+            ));
+        }
+
+        let additional_amount = observed_paid
+            .checked_sub(&quote.amount_paid())
+            .map_err(|_| Error::AmountOverflow)?;
+        if additional_amount.value() > 0 {
+            let payment_id = observation.payment_proof.clone().unwrap_or_else(|| {
+                format!(
+                    "federation:{}:{}",
+                    operation_id,
+                    mint_quote_state_label(observation.state)
+                )
+            });
+            quote.add_payment(additional_amount, payment_id, None)?;
+            tx.update_mint_quote(&mut quote).await?;
+        }
+
+        tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn apply_federation_mint(
+        &self,
+        operation_id: FederationOperationId,
+        operation: &FederationMintOperation,
+    ) -> Result<(), Error> {
+        let config = self.federation_config().ok_or(Error::Internal)?;
+        let input = mint_input_from_federation_request(&operation.request)?;
+        input.validate()?;
+        config.validate_output_keysets(input.outputs())?;
+
+        let output_verification = self.verify_outputs(input.outputs())?;
+        let outputs_amount = output_verification.amount;
+        let blinded_secrets = input
+            .outputs()
+            .iter()
+            .map(|output| output.blinded_secret)
+            .collect::<Vec<PublicKey>>();
+        let signatures =
+            federation_share_signatures(config.mint_signature_shares(operation_id, &input)?);
+
+        let mut tx = self.localstore.begin_transaction().await?;
+        let quote_ids = input.quote_ids();
+        let mut quotes = Vec::with_capacity(quote_ids.len());
+        for quote_id in &quote_ids {
+            quotes.push(
+                tx.get_mint_quote(quote_id)
+                    .await?
+                    .ok_or(Error::UnknownQuote)?,
+            );
+        }
+
+        let (payment_method, unit) = validate_federation_mint_quotes(&quotes)?;
+        if outputs_amount.unit() != &unit {
+            return Err(Error::UnsupportedUnit);
+        }
+
+        let expected_amounts =
+            expected_federation_mint_amounts(&input, &quotes, outputs_amount.clone())?;
+        let total_expected = expected_amounts.iter().try_fold(0_u64, |total, amount| {
+            total
+                .checked_add(amount.value())
+                .ok_or(Error::AmountOverflow)
+        })?;
+        if outputs_amount.value() != total_expected {
+            return Err(Error::TransactionUnbalanced(
+                total_expected,
+                outputs_amount.value(),
+                0,
+            ));
+        }
+
+        let existing_signatures = tx.get_blind_signatures(&blinded_secrets).await?;
+        let signatures_present = existing_signatures
+            .iter()
+            .filter(|sig| sig.is_some())
+            .count();
+        if signatures_present != 0 && signatures_present != existing_signatures.len() {
+            return Err(Error::Custom(
+                "federation mint replay found partially persisted signatures".to_string(),
+            ));
+        }
+
+        let operation_record = if input.is_batch() {
+            Operation::new_batch_mint(outputs_amount.clone().into(), payment_method.clone())
+        } else {
+            Operation::new_mint(outputs_amount.clone().into(), payment_method.clone())
+        };
+
+        if signatures_present == 0 {
+            let quote_id = match input.is_batch() {
+                true => None,
+                false => quote_ids.first().cloned(),
+            };
+            tx.add_blinded_messages(quote_id.as_ref(), input.outputs(), &operation_record)
+                .await?;
+            tx.add_blind_signatures(&blinded_secrets, &signatures, quote_id)
+                .await?;
+            let fee_by_keyset = HashMap::new();
+            tx.add_completed_operation(&operation_record, &fee_by_keyset)
+                .await?;
+        }
+
+        for (quote, amount_issued) in quotes.iter_mut().zip(expected_amounts) {
+            match quote.state() {
+                MintQuoteState::Paid => {
+                    quote.add_issuance(amount_issued)?;
+                    tx.update_mint_quote(quote).await?;
+                }
+                MintQuoteState::Issued => {
+                    if quote.amount_issued() < amount_issued {
+                        return Err(Error::IssuedQuote);
+                    }
+                }
+                MintQuoteState::Unpaid => {
+                    return Err(Error::UnpaidQuote);
+                }
+            }
+        }
+
+        tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Verify federated melt or swap inputs against aggregate BLS keysets.
     pub(crate) async fn verify_federation_inputs(
         &self,
@@ -408,6 +637,197 @@ fn mint_request_from_input(input: MintInput) -> FederationMintRequest {
             outputs: request.outputs,
             signatures: request.signatures,
         }),
+    }
+}
+
+fn mint_input_from_federation_request(request: &FederationMintRequest) -> Result<MintInput, Error> {
+    match request {
+        FederationMintRequest::Single(request) => Ok(MintInput::Single(MintRequest {
+            quote: quote_id_from_federation(&request.quote)?,
+            outputs: request.outputs.clone(),
+            signature: request.signature.clone(),
+        })),
+        FederationMintRequest::Batch(request) => Ok(MintInput::Batch(BatchMintRequest {
+            quotes: request
+                .quotes
+                .iter()
+                .map(|quote| quote_id_from_federation(quote))
+                .collect::<Result<Vec<_>, _>>()?,
+            quote_amounts: request.quote_amounts.clone(),
+            outputs: request.outputs.clone(),
+            signatures: request.signatures.clone(),
+        })),
+    }
+}
+
+fn quote_id_from_federation(quote: &str) -> Result<QuoteId, Error> {
+    Ok(QuoteId::from_str(quote)?)
+}
+
+fn mint_quote_from_federation_operation(
+    operation: &FederationMintQuoteOperation,
+) -> Result<MintQuote, Error> {
+    let quote_id = quote_id_from_federation(&operation.quote)?;
+    if operation.response.quote() != &operation.quote {
+        return Err(Error::UnknownQuote);
+    }
+
+    let method = operation.request.payment_method();
+    let unit = operation.request.unit();
+    let amount = operation
+        .request
+        .amount()
+        .map(|amount| amount.with_unit(unit.clone()));
+    let (amount_paid, amount_issued, extra_json) =
+        mint_quote_response_amounts(&operation.response, &unit)?;
+
+    Ok(MintQuote::new(
+        Some(quote_id.clone()),
+        operation.response.request().to_string(),
+        unit.clone(),
+        amount,
+        operation.response.expiry().unwrap_or_default(),
+        PaymentIdentifier::QuoteId(quote_id),
+        operation.request.pubkey(),
+        amount_paid,
+        amount_issued,
+        method,
+        cdk_common::util::unix_time(),
+        Vec::new(),
+        Vec::new(),
+        extra_json,
+    ))
+}
+
+fn mint_quote_response_amounts(
+    response: &MintQuoteResponse<String>,
+    unit: &CurrencyUnit,
+) -> Result<
+    (
+        Amount<CurrencyUnit>,
+        Amount<CurrencyUnit>,
+        Option<serde_json::Value>,
+    ),
+    Error,
+> {
+    let zero = Amount::new(0, unit.clone());
+    match response {
+        MintQuoteResponse::Bolt11(response) => {
+            let amount = response
+                .amount
+                .clone()
+                .map(|amount| amount.with_unit(unit.clone()))
+                .unwrap_or_else(|| zero.clone());
+            let (amount_paid, amount_issued) = match response.state {
+                MintQuoteState::Unpaid => (zero.clone(), zero),
+                MintQuoteState::Paid => (amount, zero),
+                MintQuoteState::Issued => (amount.clone(), amount),
+            };
+            Ok((amount_paid, amount_issued, None))
+        }
+        MintQuoteResponse::Bolt12(response) => Ok((
+            response.amount_paid.with_unit(unit.clone()),
+            response.amount_issued.with_unit(unit.clone()),
+            None,
+        )),
+        MintQuoteResponse::Onchain(response) => Ok((
+            response.amount_paid.with_unit(unit.clone()),
+            response.amount_issued.with_unit(unit.clone()),
+            None,
+        )),
+        MintQuoteResponse::Custom { response, .. } => Ok((
+            response.amount_paid.with_unit(unit.clone()),
+            response.amount_issued.with_unit(unit.clone()),
+            Some(response.extra.clone()),
+        )),
+    }
+}
+
+fn ensure_mint_quote_matches(existing: &MintQuote, expected: &MintQuote) -> Result<(), Error> {
+    if existing.id != expected.id
+        || existing.unit != expected.unit
+        || existing.request != expected.request
+        || existing.amount != expected.amount
+        || existing.expiry != expected.expiry
+        || existing.pubkey != expected.pubkey
+        || existing.payment_method != expected.payment_method
+    {
+        return Err(Error::Custom(
+            "federation mint quote replay found mismatched local quote".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn federation_share_signatures(share_set: FederationBlindSignatureShareSet) -> Vec<BlindSignature> {
+    share_set
+        .shares
+        .into_iter()
+        .map(|share| BlindSignature {
+            amount: share.amount,
+            keyset_id: share.keyset_id,
+            c: PublicKey::from(share.share.signature()),
+            dleq: None,
+        })
+        .collect()
+}
+
+fn validate_federation_mint_quotes(
+    quotes: &[database::mint::Acquired<MintQuote>],
+) -> Result<(PaymentMethod, CurrencyUnit), Error> {
+    let first = quotes.first().ok_or(Error::UnknownQuote)?;
+    let payment_method = first.payment_method.clone();
+    let unit = first.unit.clone();
+
+    for quote in quotes {
+        if quote.payment_method != payment_method {
+            return Err(Error::InvalidPaymentMethod);
+        }
+        if quote.unit != unit {
+            return Err(Error::UnitMismatch);
+        }
+    }
+
+    Ok((payment_method, unit))
+}
+
+fn expected_federation_mint_amounts(
+    input: &MintInput,
+    quotes: &[database::mint::Acquired<MintQuote>],
+    outputs_amount: Amount<CurrencyUnit>,
+) -> Result<Vec<Amount<CurrencyUnit>>, Error> {
+    match input {
+        MintInput::Single(_) => Ok(vec![outputs_amount]),
+        MintInput::Batch(request) => quotes
+            .iter()
+            .enumerate()
+            .map(|(index, quote)| {
+                if quote.state() == MintQuoteState::Unpaid {
+                    return Err(Error::UnpaidQuote);
+                }
+                if quote.state() == MintQuoteState::Issued {
+                    return Ok(quote.amount_issued());
+                }
+
+                match &request.quote_amounts {
+                    Some(amounts) => amounts
+                        .get(index)
+                        .cloned()
+                        .map(|amount| amount.with_unit(quote.unit.clone()))
+                        .ok_or(Error::TransactionUnbalanced(0, 0, 0)),
+                    None => Ok(quote.amount_mintable()),
+                }
+            })
+            .collect(),
+    }
+}
+
+fn mint_quote_state_label(state: MintQuoteState) -> &'static str {
+    match state {
+        MintQuoteState::Unpaid => "unpaid",
+        MintQuoteState::Paid => "paid",
+        MintQuoteState::Issued => "issued",
     }
 }
 

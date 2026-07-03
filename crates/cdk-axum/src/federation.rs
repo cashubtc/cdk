@@ -374,16 +374,18 @@ mod tests {
     use bip39::Mnemonic;
     use cdk::federation::{
         generate_trusted_dealer_configs, FederationMintQuotePaymentObservation,
-        FederationOperation, FederationOperationEnvelope, FederationOperationKind, MemberId,
-        ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+        FederationOperation, FederationOperationEnvelope, FederationOperationKind,
+        FederationOperationStatus, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
+        TrustedDealerMember,
     };
-    use cdk::mint::{MintBuilder, MintMeltLimits};
+    use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, QuoteId};
     use cdk::mint_url::MintUrl;
     use cdk::nuts::nut00::KnownMethod;
-    use cdk::nuts::nut01::BlsSecretKey;
+    use cdk::nuts::nut01::{BlsG1PublicKey, BlsSecretKey};
     use cdk::nuts::nut22::AuthToken;
     use cdk::nuts::{
-        CurrencyUnit, MintQuoteState, PaymentMethod, PublicKey, RestoreRequest, SecretKey,
+        BlindedMessage, CurrencyUnit, MintQuoteBolt11Request, MintQuoteBolt11Response,
+        MintQuoteState, MintRequest, PaymentMethod, PublicKey, RestoreRequest, SecretKey,
     };
     use cdk::types::FeeReserve;
     use cdk::Amount;
@@ -706,6 +708,54 @@ mod tests {
         )
     }
 
+    fn mint_quote_envelope(state: &MintState, quote_id: &QuoteId) -> FederationOperationEnvelope {
+        let config = state.mint.federation_config().expect("federation config");
+        config.mint_quote_operation(
+            quote_id.clone(),
+            cdk::mint::MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
+                amount: Amount::from(1),
+                unit: CurrencyUnit::Sat,
+                description: None,
+                pubkey: None,
+            }),
+            cdk::mint::MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
+                quote: quote_id.to_string(),
+                request: format!("invoice-{quote_id}"),
+                amount: Some(Amount::from(1)),
+                unit: Some(CurrencyUnit::Sat),
+                state: MintQuoteState::Unpaid,
+                expiry: Some(10_000),
+                pubkey: None,
+            }),
+        )
+    }
+
+    fn paid_observation_envelope(
+        state: &MintState,
+        quote_id: &QuoteId,
+    ) -> FederationOperationEnvelope {
+        let config = state.mint.federation_config().expect("federation config");
+        config.mint_quote_payment_observation(
+            quote_id.clone(),
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintQuoteState::Paid,
+            Amount::from(1),
+            Amount::ZERO,
+            Some(format!("paid-{quote_id}")),
+        )
+    }
+
+    fn mint_output(state: &MintState, quote_id: &QuoteId) -> BlindedMessage {
+        let config = state.mint.federation_config().expect("federation config");
+        BlindedMessage::new(
+            Amount::from(1),
+            config.public_config().keysets[0].id,
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(
+                format!("federation replay output {quote_id}").as_bytes(),
+            )),
+        )
+    }
+
     fn restore_envelope(
         federation_id: FederationId,
         label: &'static str,
@@ -876,10 +926,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn catch_up_applies_mint_quote_operation_to_local_store() {
+        let (state, public_config, _) = federation_route_state().await;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let quote_id = QuoteId::new();
+        let envelope = mint_quote_envelope(&state, &quote_id);
+        let operation_id = envelope.operation_id().expect("operation id");
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+        peer_consensus
+            .submit_envelope(envelope)
+            .expect("peer accepted quote");
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+        let catch_up_response = peer_consensus
+            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
+            .expect("catch-up response");
+
+        state
+            .apply_federation_catch_up_response(&catch_up_response)
+            .await
+            .expect("apply catch-up");
+
+        let quote = state
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .expect("quote persisted");
+        assert_eq!(quote.request, format!("invoice-{quote_id}"));
+
+        let persisted = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal lookup");
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
+        assert_eq!(
+            local_consensus
+                .lock()
+                .await
+                .journal()
+                .entry_by_operation_id(operation_id)
+                .expect("runtime entry")
+                .status,
+            FederationOperationStatus::Applied
+        );
+    }
+
+    #[tokio::test]
     async fn federation_runtime_state_replays_persisted_journal_and_sequences() {
         let (state, public_config, peer_private) = federation_route_state().await;
         let peer_member = peer_private.member_id;
-        let envelope = payment_observation_envelope(public_config.federation_id);
+        let envelope = restore_envelope(
+            public_config.federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
         let response = state
             .submit_federation_envelope(envelope)
             .await
@@ -911,9 +1015,127 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn submit_mint_quote_operation_applies_quote_to_local_store() {
+        let (state, _, _) = federation_route_state().await;
+        let quote_id = QuoteId::new();
+        let envelope = mint_quote_envelope(&state, &quote_id);
+        let operation_id = envelope.operation_id().expect("operation id");
+
+        state
+            .submit_federation_envelope(envelope)
+            .await
+            .expect("submit mint quote");
+
+        let quote = state
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .expect("quote persisted");
+        assert_eq!(quote.request, format!("invoice-{quote_id}"));
+        assert_eq!(quote.amount, Some(Amount::new(1, CurrencyUnit::Sat)));
+        assert_eq!(quote.state(), MintQuoteState::Unpaid);
+
+        let persisted = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal lookup");
+        assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
+        assert_eq!(
+            state
+                .federation_consensus
+                .as_ref()
+                .expect("consensus")
+                .lock()
+                .await
+                .journal()
+                .entry_by_operation_id(operation_id)
+                .expect("runtime entry")
+                .status,
+            FederationOperationStatus::Applied
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_mint_operation_applies_issuance_and_persists_share() {
+        let (state, _, _) = federation_route_state().await;
+        let config = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .clone();
+        let quote_id = QuoteId::new();
+        state
+            .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
+            .await
+            .expect("submit mint quote");
+        state
+            .submit_federation_envelope(paid_observation_envelope(&state, &quote_id))
+            .await
+            .expect("submit paid observation");
+
+        let output = mint_output(&state, &quote_id);
+        let input = MintInput::Single(MintRequest {
+            quote: quote_id.clone(),
+            outputs: vec![output.clone()],
+            signature: None,
+        });
+        let envelope = config.mint_operation(input.clone()).expect("mint envelope");
+        let operation_id = envelope.operation_id().expect("operation id");
+        state
+            .submit_federation_envelope(envelope)
+            .await
+            .expect("submit mint");
+
+        let quote = state
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .expect("quote persisted");
+        assert_eq!(quote.amount_paid(), Amount::new(1, CurrencyUnit::Sat));
+        assert_eq!(quote.amount_issued(), Amount::new(1, CurrencyUnit::Sat));
+        assert_eq!(quote.state(), MintQuoteState::Issued);
+
+        let signatures = state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[output.blinded_secret])
+            .await
+            .expect("signature lookup");
+        let persisted_signature = signatures[0].clone().expect("signature persisted");
+        let expected_response = config
+            .mint_share_response(operation_id, &input)
+            .expect("expected share response");
+        assert_eq!(persisted_signature, expected_response.signatures[0]);
+
+        let persisted = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal lookup");
+        assert_eq!(
+            persisted
+                .iter()
+                .find(|entry| entry.operation_id == operation_id)
+                .expect("mint entry")
+                .status,
+            FederationOperationStatus::Applied
+        );
+    }
+
+    #[tokio::test]
     async fn private_operation_route_accepts_signed_peer_request() {
         let (state, public_config, peer_private) = federation_route_state().await;
-        let envelope = payment_observation_envelope(public_config.federation_id);
+        let envelope = restore_envelope(
+            public_config.federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
         let request = signed_operation_request(
             &public_config,
             &peer_private,
@@ -951,10 +1173,13 @@ mod tests {
     #[tokio::test]
     async fn private_operation_route_rejects_tampered_payload_before_mutation() {
         let (state, public_config, peer_private) = federation_route_state().await;
-        let first = payment_observation_envelope(public_config.federation_id);
-        let second = restore_envelope(
+        let first = restore_envelope(
             public_config.federation_id,
             "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        let second = restore_envelope(
+            public_config.federation_id,
+            "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
         );
         let mut request = signed_operation_request(
             &public_config,
@@ -977,7 +1202,10 @@ mod tests {
     async fn private_operation_route_rejects_unknown_sender_before_mutation() {
         let (state, public_config, _) = federation_route_state().await;
         let unknown_private = private_member(3);
-        let envelope = payment_observation_envelope(public_config.federation_id);
+        let envelope = restore_envelope(
+            public_config.federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
         let request = signed_operation_request(
             &public_config,
             &unknown_private,
@@ -997,7 +1225,10 @@ mod tests {
     #[tokio::test]
     async fn private_operation_route_rejects_kind_mismatch_before_mutation() {
         let (state, public_config, peer_private) = federation_route_state().await;
-        let envelope = payment_observation_envelope(public_config.federation_id);
+        let envelope = restore_envelope(
+            public_config.federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
         let request = signed_operation_request(
             &public_config,
             &peer_private,
@@ -1017,7 +1248,10 @@ mod tests {
     #[tokio::test]
     async fn private_operation_route_rejects_stale_sequence_before_second_mutation() {
         let (state, public_config, peer_private) = federation_route_state().await;
-        let first = payment_observation_envelope(public_config.federation_id);
+        let first = restore_envelope(
+            public_config.federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
         let second = restore_envelope(
             public_config.federation_id,
             "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",

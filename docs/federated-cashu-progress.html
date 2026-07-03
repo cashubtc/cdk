@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: replay federation journal at startup</span>
+          <span class="value">feat: apply federation mint journal entries</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Runtime journal boot replay</span>
+          <span class="value">Mint state-machine replay</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Deterministic state-machine replay</span>
+          <span class="value">Swap and melt replay</span>
         </div>
       </aside>
     </header>
@@ -536,6 +536,10 @@
             <h3>Runtime journal replay ready</h3>
             <p>Federation-enabled mint state now hydrates its consensus journal and signed-route sequence tracker from SQL at startup, persists accepted public/private route mutations before swapping runtime state, and records catch-up entries durably.</p>
           </article>
+          <article class="item">
+            <h3>Mint journal application ready</h3>
+            <p>Accepted mint quote, mint quote payment, and mint issuance operations now apply idempotently into local mint storage, mark journal entries Applied, and persist member BLS signature shares before returning mint shares.</p>
+          </article>
         </div>
       </section>
 
@@ -650,6 +654,10 @@
             <h3>Restart loses less federation state</h3>
             <p>Storage-backed members now rebuild accepted operation order, digest continuity, operation conflict indexes, and member REST sequence watermarks when the mint runtime starts again.</p>
           </article>
+          <article class="item">
+            <h3>Catch-up creates usable mint state</h3>
+            <p>A member that learns a mint quote through catch-up now persists the quote locally, and accepted mint operations advance paid quotes to issued while storing the member's signature share for later lookup.</p>
+          </article>
         </div>
       </section>
 
@@ -666,7 +674,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Deterministic replay into mint quote, proof state, and saga tables still needs to land before offline recovery is production-safe.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Mint quote and mint issuance entries apply into storage; swap proof state, melt sagas, and outgoing payment observations still need deterministic replay before offline recovery is production-safe.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -892,10 +900,16 @@
               <td>Replay accepted operations into deterministic mint database state so restart recovery reconstructs quotes, proof states, and saga progress.</td>
             </tr>
             <tr>
+              <td>Mint state-machine replay</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation federation` passed 20 tests, including catch-up applying mint quote operations, startup/runtime Applied status updates, mint quote storage replay, and mint issuance replay with persisted BLS member shares. `cargo test -p cdk-axum --features federation custom_handlers`, `cargo test -p cdk --features federation federation`, `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"`, `cargo fmt --all -- --check`, and `git diff --check` passed.</td>
+              <td>Apply accepted swap and melt operations to proof states, blinded output storage, completed operations, and melt saga recovery state.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, and runtime boot replay now restores the consensus layer. Deterministic mint state-machine replay remains open.</td>
-              <td>Replay accepted federation operations into storage-backed mint state and test restart/catch-up around fake-wallet mint, swap, and melt flows.</td>
+              <td>Mint quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint entries now apply into local storage. Swap and melt state-machine replay remains open.</td>
+              <td>Replay accepted swap and melt federation operations into storage-backed proof states and saga state, then test restart/catch-up around fake-wallet swap and melt flows.</td>
             </tr>
           </tbody>
         </table>
@@ -935,8 +949,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Deterministic state-machine replay</h3>
-            <p>Apply accepted journal operations into mint quote, proof state, and saga storage in consensus order so an offline member can catch up and restart into the same observable mint state.</p>
+            <h3>Swap and melt replay</h3>
+            <p>Apply accepted swap and melt journal operations into proof state, blinded output, completed-operation, and saga storage so spent inputs and outgoing payment progress recover after restart or catch-up.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>
