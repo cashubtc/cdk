@@ -2,6 +2,10 @@
 
 This is a working checklist for adding federated Cashu mint support to CDK while keeping the public Cashu wallet-to-mint protocol as close as possible to today's NUT endpoints. The plan assumes BLS blind signatures are the federation signing scheme, with locally generated key shares first and real DKG later.
 
+## Grand vision
+
+The grand vision of this project is to evolve Cashu from a single-operator Chaumian eCash mint into a federated, threshold-secured eCash system where multiple mint members can run on independent servers, coordinate all state transitions through consensus, and jointly issue, swap, and melt Cashu tokens using BLS threshold blind signatures. Federation mode should preserve the existing Cashu wallet-to-mint protocol as much as possible while giving users stronger security and fault tolerance: no single operator should be able to inflate, censor, or unilaterally corrupt mint state, and the federation should continue operating when some members are offline as long as the signing and consensus thresholds are met. Every safety-critical mint operation must be serialized by the federation, stored in a shared consensus journal, replayable after outages, and applied deterministically so all honest members converge on the same database state. Wallets must be able to talk to multiple members, verify and aggregate threshold signature shares into ordinary Cashu proofs, and reject inconsistent federation metadata or bad shares. The system should start with static trusted-dealer key generation, fake-wallet payment backends, private REST networking, and locally testable consensus scaffolding, then grow toward durable storage, catch-up, member authentication, DKG, key rotation, and full mint/swap/melt integration. Federation is explicitly v3/BLS-only, standalone CDK behavior must remain unchanged, and the implementation should favor simple CDK-native designs while borrowing Fedimint's core safety lessons around consensus-before-signing, authenticated peers, deterministic state machines, and robust recovery.
+
 ## Scope
 
 - Federate CDK mint issuance, swap, restore, check-state, and eventually melt flows.
@@ -10,11 +14,23 @@ This is a working checklist for adding federated Cashu mint support to CDK while
 - Keep existing standalone mint and wallet behavior unchanged unless federation mode is explicitly enabled.
 - Start with fake wallet payment backends and trusted-dealer key shares, then add payment observation quorum and real DKG.
 
+## Hard keyset constraint
+
+BLS blind signatures are only supported for Cashu keyset v3, represented in CDK as `KeySetVersion::Version02` and serialized with keyset ID prefix `02`. Federation mode must therefore be v3/BLS-only.
+
+- Federation configs must only create, import, advertise, and validate aggregate v3/BLS keysets.
+- Federation startup must reject any aggregate keyset, member public share, or local secret share that is not tied to a v3/BLS keyset.
+- Federated mint, swap, restore, and change-output signing paths must reject outputs targeting non-v3 keysets before consensus signing.
+- Federation-aware wallets must reject member sets that advertise mismatched aggregate keysets or any non-v3 federation keyset.
+- Standalone non-federated mints remain unaffected and may keep supporting whatever keyset versions CDK otherwise supports.
+
 ## Implementation philosophy
 
 Fedimint should be treated as the main reference implementation for federation design questions, especially around consensus, DKG, peer authentication, catch-up, state-machine boundaries, and threshold signing safety. When there is ambiguity about which library, protocol pattern, or engineering method to use, inspect the Fedimint code and design first.
 
 Cashu/CDK should still value simplicity over copying architecture wholesale. If a simpler design achieves the same safety property, preserves Cashu protocol compatibility, is easier to test, and fits CDK's existing structure better, prefer the simpler design. Copy invariants and lessons from Fedimint; do not blindly copy complexity.
+
+The interface to existing CDK code should be as small and thin as practical. Prefer logically organized federation modules with well-separated concerns over scattering federation conditionals through existing mint, wallet, HTTP, storage, or signatory code. Existing code should expose narrow hooks or adapters where needed, and most federation-specific behavior should live behind explicit feature-gated abstractions so reviews can reason about ownership, invariants, and blast radius.
 
 ## Development workflow
 
@@ -82,6 +98,7 @@ Every implementation phase must preserve these invariants:
 - A quote cannot issue more aggregate output value than its consensus-tracked mintable amount.
 - A proof can transition to spent exactly once in the consensus materialized state.
 - A blinded output can be signed at most once per accepted operation and amount.
+- Federation mode only advertises, accepts, and signs Cashu keyset v3 (`KeySetVersion::Version02`) aggregate BLS keysets.
 - All honest members process the same ordered operation log into the same state digest.
 - External payment status is never read directly inside deterministic consensus apply logic. It enters consensus as signed observations or designated payment events.
 - Standalone CDK behavior remains available and covered by existing tests.
@@ -95,7 +112,7 @@ The public Cashu protocol should stay mostly unchanged:
 - Federation members may return `MintResponse` or `SwapResponse` whose `BlindSignature.c` is a BLS share, not a final signature. This is acceptable only when the caller is the federated connector and knows the member ID.
 - Existing non-federated wallets should learn from mint info that a mint is federated and should refuse unless they support federation.
 - Add an optional mint info extension, for example `nuts.federation` or a CDK-specific metadata field, containing federation ID, threshold, members, aggregate keysets, public key shares, consensus version, and operation-hash version.
-- All members expose the same aggregate public Cashu keysets to clients. Member public key shares are extra federation metadata, not replacement NUT-01 keys.
+- All members expose the same aggregate public Cashu v3/BLS keysets to clients. Member public key shares are extra federation metadata, not replacement NUT-01 keys.
 
 ## Architecture overview
 
@@ -115,7 +132,7 @@ Objective: ensure each mint only accepts federation traffic from configured fede
 Key material:
 
 - Each member has a long-lived federation identity keypair used for mint-to-mint authentication.
-- Each member also has a threshold BLS signing share for each federated Cashu keyset.
+- Each member also has a threshold BLS signing share for each federated Cashu v3 keyset.
 - The federation has aggregate Cashu public keys derived from the DKG or trusted-dealer transcript.
 - The member identity key is separate from the Cashu signing share. Network authentication must not reuse Cashu signing secret material.
 
@@ -323,10 +340,12 @@ Implementation checklist:
 - [ ] Add `FederatedKeyset` with aggregate public keys per amount and public shares per member.
 - [ ] Define deterministic member ordering and reject duplicate member IDs.
 - [ ] Generate Cashu keyset IDs from aggregate public keys, not member share public keys.
+- [ ] Force all generated federation keysets to Cashu keyset v3 (`KeySetVersion::Version02`).
 - [ ] Add `cdk-mintd federation trusted-dealer` to generate N member config files for tests.
 - [ ] Add `cdk-mintd federation inspect` to print non-secret config and keyset IDs.
 - [ ] Add config validation to ensure each local identity private key matches the configured identity public key.
 - [ ] Add config validation to ensure secret shares match declared public shares.
+- [ ] Add config validation that every aggregate federation keyset is v3/BLS and reject v1/v2/non-BLS federation keysets.
 - [ ] Add validation that all members agree on roster, identity public keys, aggregate keysets, thresholds, units, fees, and NUT settings.
 - [ ] Reject startup if a member is missing any federation partner public key.
 
@@ -338,6 +357,7 @@ Tests and success criteria:
 - [ ] Each member's private share verifies against its public share.
 - [ ] A config with mismatched thresholds is rejected.
 - [ ] A config with mismatched aggregate keyset is rejected.
+- [ ] A config with any non-v3 federation aggregate keyset is rejected.
 - [ ] A config with mismatched member identity public key is rejected.
 - [ ] A config missing a federation partner public key is rejected.
 - [ ] A config with duplicate member IDs is rejected.
@@ -477,7 +497,8 @@ Implementation checklist:
 - [ ] `blind_sign_share()` must return member share signatures plus member ID.
 - [ ] Add share verification against local public share before storing or returning a share.
 - [ ] Prevent federated share signer from being used in standalone paths that expect final signatures.
-- [ ] Ensure BLS keyset version 02 responses do not include DLEQ data.
+- [ ] Ensure Cashu keyset v3 (`KeySetVersion::Version02`) BLS responses do not include DLEQ data.
+- [ ] Reject all non-v3 keysets in federation signing paths unless a future protocol explicitly supports them.
 - [ ] Persist signature shares in `federation_signature_share`, keyed by operation hash, output index, member ID, blinded message, amount, and keyset ID.
 - [ ] Return existing share for idempotent repeat requests.
 
@@ -488,6 +509,7 @@ Tests and success criteria:
 - [ ] Aggregate of shares returned by three members verifies as a normal Cashu blind signature when the configured threshold is three.
 - [ ] Existing standalone `DbSignatory` behavior is unchanged.
 - [ ] A federated member rejects non-BLS keysets for federation signing unless explicitly supported later.
+- [ ] A federated member rejects v1/v2 keysets even if they are otherwise valid standalone Cashu keysets.
 
 ## Milestone 8: federated mint quote creation and payment observations
 
@@ -526,7 +548,7 @@ Implementation checklist:
 
 - [ ] In federation mode, `process_mint_request` converts `MintInput` into an `IssueMint` operation and submits it to consensus.
 - [ ] `IssueMint` includes all quote IDs, quote amounts, blinded outputs, NUT-20 signatures, and operation version.
-- [ ] Consensus apply validates quote states, paid amounts, issued amounts, payment methods, units, output keysets, output uniqueness, and NUT-20 signatures.
+- [ ] Consensus apply validates quote states, paid amounts, issued amounts, payment methods, units, v3/BLS output keysets, output uniqueness, and NUT-20 signatures.
 - [ ] Consensus apply records issuance and signature-share rows in the same DB transaction.
 - [ ] The public handler waits for the operation outcome and returns this member's signature shares as `MintResponse`.
 - [ ] If the same operation was already accepted, return cached shares.
@@ -571,7 +593,7 @@ Tests and success criteria:
 - [ ] Connector tolerates one offline member when threshold can still be met.
 - [ ] Connector rejects a bad share from one member and still succeeds if enough good shares remain.
 - [ ] Connector fails if responses have mismatched amounts or keyset IDs.
-- [ ] Connector fails if members advertise different aggregate keysets.
+- [ ] Connector fails if members advertise different aggregate keysets or any non-v3 federation keyset.
 - [ ] Existing wallet issue saga needs minimal changes beyond connector injection.
 
 ## Milestone 11: federated swap
@@ -772,12 +794,31 @@ Implementation checklist:
 - [ ] Add a fixture generator for 4-member and 5-member federations.
 - [ ] Ensure no generated config intended for examples contains private production material.
 
+Local multi-mint federation harness:
+
+- [ ] Generate per-member local configs containing member ID, public wallet API URL, private federation REST URL, DB path, fake-wallet backend settings, federation public config path, and local private member config path.
+- [ ] Assign deterministic localhost ports for every member, with separate public wallet API ports and private federation REST ports.
+- [ ] Create isolated per-member data directories so databases, logs, and configs cannot overlap.
+- [ ] Add `just fed-regtest` to launch 4-member and 5-member fake-wallet federations as separate `cdk-mintd` processes.
+- [ ] Add `just fed-regtest-status` to show public URL, private federation URL, process status, consensus height, last state digest, lag, and member health.
+- [ ] Add `just fed-regtest-stop-member MEMBER_ID` and `just fed-regtest-start-member MEMBER_ID` to test threshold liveness, reconnect, and catch-up.
+- [ ] Add `just fed-regtest-clean` to remove generated local configs, DBs, logs, and process state.
+- [ ] Add a local wallet federation config, invite file, or test connector config that points to the federation roster instead of a single mint URL.
+- [ ] Make local logs identify federation ID, member ID, public port, private federation port, consensus height, operation hash, and DB path.
+- [ ] Document how to run the local federation manually without `just`, including the exact `cdk-mintd` command shape for one member.
+- [ ] Keep generated local private configs out of examples and Git; commit only templates, deterministic non-secret fixtures, and safe documentation.
+
 Tests and success criteria:
 
 - [ ] `just fed-regtest` starts a 5-member fake-wallet federation.
 - [ ] A CDK wallet can mint, swap, restore, and check state against it.
+- [ ] A CDK wallet can melt through the fake-wallet federation and receive aggregated change signatures when change is expected.
 - [ ] Stopping one member still allows operations if threshold and consensus quorum allow.
+- [ ] Restarting the stopped member makes it reconnect, catch up from peers, and reach the same state digest.
 - [ ] State digest comparison reports all members equal after each test.
+- [ ] Local private REST peer authentication rejects unknown members, wrong federation IDs, wrong claimed member IDs, and invalid signatures on localhost.
+- [ ] Local status commands clearly show connected, offline, lagging, catching-up, and healthy members.
+- [ ] `just fed-regtest-clean` leaves no running member processes and removes generated local state.
 
 ## Milestone 18: storage backend coverage
 

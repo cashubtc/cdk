@@ -4,6 +4,10 @@ You are Codex working in the Cashu Development Kit repository. Your goal is to i
 
 Continue autonomously through the implementation plan. Do not stop after analysis or a partial scaffold. Work milestone by milestone, test each checkpoint, commit each coherent unit of progress, update the progress page, report status, and continue. Stop only when the complete federated Cashu system is implemented, tested, documented, and committed, or when you are genuinely blocked by missing information, unavailable dependencies, or a required design decision that cannot be safely inferred.
 
+## Project vision
+
+Federated Cashu should evolve CDK from single-operator mints into threshold-secured eCash federations where independent mint members run on different servers, agree on every safety-critical state transition through consensus, and jointly mint, swap, and melt tokens with BLS threshold blind signatures. The implementation must improve user security and fault tolerance while preserving the public Cashu wallet-to-mint protocol as much as possible: no single member should be able to inflate or corrupt mint state, and the federation should keep operating when some members are offline as long as the configured thresholds are met. Wallets should fan out requests, verify member shares, aggregate valid threshold shares into ordinary Cashu proofs, and reject inconsistent federation metadata or invalid shares. The project should start with trusted-dealer keys, fake-wallet payments, private REST, and testable local consensus, then grow toward durable storage, catch-up, authenticated member networking, DKG, key rotation, and complete mint/swap/melt federation behavior.
+
 ## Recommended `/goal` invocation
 
 For Goal mode, do not paste this entire file into the composer. Use a compact `/goal` command that points Codex at this file and the implementation plan:
@@ -18,6 +22,8 @@ For Goal mode, do not paste this entire file into the composer. Use a compact `/
 - Treat Fedimint as the main reference implementation for federation design questions, especially consensus, DKG, peer authentication, catch-up, state-machine boundaries, and threshold signing safety.
 - Prefer CDK/Cashu simplicity over copying Fedimint complexity when a simpler design preserves the same safety property, is easier to test, and fits the existing CDK architecture.
 - Preserve standalone CDK mint and wallet behavior unless federation mode is explicitly enabled.
+- Enforce the federation keyset constraint: BLS blind signatures are only supported for Cashu keyset v3 (`KeySetVersion::Version02`, keyset ID prefix `02`), so federation mode must only create, advertise, accept, and sign v3/BLS aggregate keysets. Reject v1/v2/non-BLS federation keysets at config load, mint/swap/restore output validation, and wallet federation metadata validation. Standalone non-federated keyset behavior must remain unaffected.
+- Keep the interface to existing CDK code as minimal and thin as practical. Organize federation code into logically separated modules with clear ownership and concerns, using narrow feature-gated hooks or adapters instead of spreading broad federation conditionals through existing mint, wallet, HTTP, storage, or signatory code.
 - Do not leak or commit secrets, generated private member configs, private key shares, machine-specific paths, IP addresses, device names, usernames, or other personally identifiable local environment details.
 - Keep commits small, conventional, and reconstructable.
 - Commit after each coherent milestone, independently testable checkpoint, migration, or documentation update.
@@ -74,7 +80,7 @@ Implement the system in the order defined by `docs/federated-cashu-implementatio
 1. Create or update the progress HTML dashboard.
 2. Add feature gates and RFC stubs without changing standalone behavior.
 3. Implement threshold BLS primitives and tests.
-4. Implement federation configuration, static member roster, identity public keys, partner allowlists, and trusted-dealer test setup.
+4. Implement federation configuration, static member roster, identity public keys, partner allowlists, v3/BLS-only aggregate keyset validation, and trusted-dealer test setup.
 5. Implement canonical operation encoding and operation hashes for mint, swap, melt, restore, and payment observations.
 6. Implement in-memory transport and private REST federation transport behind a common trait.
 7. Implement signed member-to-member envelopes and reject all traffic from unknown or mismatched federation partners.
@@ -101,6 +107,7 @@ The implementation is not complete until these properties are true and tested:
 - Wallets aggregate BLS blind signature shares into ordinary Cashu proofs.
 - Members never return usable signing shares before the relevant operation is accepted by consensus.
 - Members serialize all safety-critical state transitions through consensus.
+- Members only advertise, accept, and sign Cashu keyset v3 (`KeySetVersion::Version02`) aggregate BLS keysets in federation mode.
 - Members reject conflicting output sets for the same mint quote.
 - Members reject swap double spends and overlapping-window quorum-cover attacks.
 - Members handle fake-wallet mint and melt success, failure, pending, delay, duplicate observation, and retry paths.
@@ -117,6 +124,7 @@ When the goal is complete, the repository should contain:
 - Working federation-aware wallet connector.
 - Threshold BLS share generation, verification, aggregation, and tests.
 - Federation config/trusted-dealer tooling with static member rosters and identity public keys.
+- v3/BLS-only federation keyset validation in config loading, mint/swap/restore output validation, and wallet federation metadata checks.
 - Private REST mint-to-mint networking with signed envelopes.
 - Consensus-backed mint, swap, melt, restore, and check-state flows.
 - Durable journal, replay, catch-up, and state digest checks.
