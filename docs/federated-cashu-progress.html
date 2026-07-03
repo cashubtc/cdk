@@ -347,11 +347,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover swap melt state digests</span>
+          <span class="value">test: cover restore state digest</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Swap and melt digest row coverage</span>
+          <span class="value">Restore digest row coverage</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -1031,8 +1031,8 @@
             <p>The generated fake-wallet harness now runs wallet mint, swap, proof-state check, melt, restore, signed private REST convergence, and member restart/catch-up across both 3-member/2-threshold and 5-member/3-threshold local federations.</p>
           </article>
           <article class="item">
-            <h3>Swap and melt digest rows covered</h3>
-            <p>Focused Axum federation tests now prove the materialized state digest changes when catch-up replays swap proof-state/output-share rows and melt quote/proof-state/change-share rows.</p>
+            <h3>Swap, melt, and restore digest rows covered</h3>
+            <p>Focused Axum federation tests now prove the materialized state digest changes when catch-up replays swap proof-state/output-share rows, melt quote/proof-state/change-share rows, and restore output-share rows.</p>
           </article>
           <article class="item">
             <h3>Milestone map expanded</h3>
@@ -1490,10 +1490,10 @@
               <td>Add storage-backed process coverage and failure-injection variants around delayed or failed fake-wallet payment observations.</td>
             </tr>
             <tr>
-              <td>Swap and melt materialized digests</td>
+              <td>Swap, melt, and restore materialized digests</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-axum --features federation materialized_state_digest_tracks -- --test-threads 1` passed the new swap and melt digest-row tests. `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 52 tests, and `cargo check -p cdk-axum --features federation`, `cargo fmt --all -- --check`, and `git diff --check` passed.</td>
-              <td>Add restore-specific digest-row coverage and storage-backend process variants.</td>
+              <td>`cargo test -p cdk-axum --features federation materialized_state_digest -- --test-threads 1` passed five digest tests covering mint metadata normalization, member-local signature normalization, swap rows, melt rows, and restore rows. `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 53 tests, and `cargo check -p cdk-axum --features federation`, `cargo fmt --all -- --check`, and `git diff --check` passed.</td>
+              <td>Add storage-backend process variants and failure-injection coverage for delayed or failed fake-wallet payment observations.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
@@ -1572,7 +1572,7 @@
           </article>
           <article class="item">
             <h3>Broader materialized digest coverage</h3>
-            <p>Add restore-specific digest coverage and storage-backend variants so every consensus-visible table covered by the digest has explicit mutation evidence across replay and restart paths.</p>
+            <p>Add storage-backend variants so every consensus-visible table covered by the digest has explicit mutation evidence across replay and restart paths beyond in-memory Axum fixtures.</p>
           </article>
           <article class="item">
             <h3>BFT backend selection</h3>

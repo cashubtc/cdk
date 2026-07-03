@@ -1203,8 +1203,8 @@ mod tests {
     use cdk::federation::{
         generate_trusted_dealer_configs, FederationMintQuotePaymentObservation,
         FederationOperation, FederationOperationEnvelope, FederationOperationKind,
-        FederationOperationStatus, InMemoryFederationConsensus, MemberId, ThresholdParams,
-        TrustedDealerKeysetSpec, TrustedDealerMember,
+        FederationOperationStatus, FederationRestoreOperation, InMemoryFederationConsensus,
+        MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, QuoteId};
     use cdk::mint_url::MintUrl;
@@ -3720,6 +3720,74 @@ mod tests {
             .mint
             .localstore()
             .get_blind_signatures(&[change_output.blinded_secret])
+            .await
+            .expect("signature lookup");
+        assert!(signatures[0].is_some());
+    }
+
+    #[tokio::test]
+    async fn materialized_state_digest_tracks_restore_output_share_rows() {
+        let (state, public_config, _) = federation_route_state().await;
+        let config = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .clone();
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let quote_id = QuoteId::new();
+        let output = mint_output(&state, &quote_id);
+        let mut restore_output = output.clone();
+        restore_output.amount = Amount::ZERO;
+        let restore_envelope = FederationOperationEnvelope::new(
+            public_config.federation_id,
+            FederationOperation::Restore(FederationRestoreOperation {
+                request: RestoreRequest {
+                    outputs: vec![restore_output],
+                },
+            }),
+        );
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+        peer_consensus
+            .submit_envelope(restore_envelope)
+            .expect("peer accepted restore");
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+        let catch_up_request = local_consensus.lock().await.catch_up_request();
+        let catch_up_response = peer_consensus
+            .catch_up_checked(&catch_up_request)
+            .expect("catch-up response");
+
+        let missing_digest = materialized_state_digest(&state, &catch_up_response.entries)
+            .await
+            .expect("missing digest");
+        state
+            .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
+            .await
+            .expect("submit mint quote");
+        state
+            .submit_federation_envelope(paid_observation_envelope(&state, &quote_id))
+            .await
+            .expect("submit paid observation");
+        let input = MintInput::Single(MintRequest {
+            quote: quote_id,
+            outputs: vec![output.clone()],
+            signature: None,
+        });
+        state
+            .submit_federation_envelope(config.mint_operation(input).expect("mint envelope"))
+            .await
+            .expect("submit mint");
+        let materialized_digest = materialized_state_digest(&state, &catch_up_response.entries)
+            .await
+            .expect("materialized digest");
+
+        assert_ne!(missing_digest, materialized_digest);
+        assert_ne!(materialized_digest, FederationStateDigest::genesis());
+
+        let signatures = state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[output.blinded_secret])
             .await
             .expect("signature lookup");
         assert!(signatures[0].is_some());
