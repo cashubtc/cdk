@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">a84f69ff Federated mint operation prep</span>
+          <span class="value">66f23580 Mint flow consensus gate</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federated mint consensus gate</span>
+          <span class="value">Federated mint signature shares</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Public mint flow consensus wiring</span>
+          <span class="value">Wallet threshold aggregation</span>
         </div>
       </aside>
     </header>
@@ -468,6 +468,10 @@
             <h3>Federated mint operation prep committed</h3>
             <p>Mint quote creation, mint payment observations, and single or batch mint requests can now be converted into canonical federation envelopes from the mint runtime.</p>
           </article>
+          <article class="item">
+            <h3>Public mint flow consensus gate committed</h3>
+            <p>Mint quote creation, quote payment checks, and batch mint requests now submit canonical federation operations into the local consensus journal when federation mode is configured.</p>
+          </article>
         </div>
       </section>
 
@@ -513,6 +517,14 @@
           <article class="item">
             <h3>Member catch-up route works against journal</h3>
             <p>The private REST scaffold can now serve accepted journal entries instead of returning a placeholder response.</p>
+          </article>
+          <article class="item">
+            <h3>Mint quote proposals carry payment requests</h3>
+            <p>Federation mint quote operations now commit to both the wallet's request and the proposing member's quote response, including the payment request peers must persist.</p>
+          </article>
+          <article class="item">
+            <h3>Public mint paths can feed consensus</h3>
+            <p>Axum mint quote, quote-check, and mint-submit handlers now prove consensus submission without changing wallet-facing REST payloads.</p>
           </article>
           <article class="item">
             <h3>Threshold math baseline</h3>
@@ -654,10 +666,16 @@
               <td>Submit prepared mint quote, payment-observation, and mint request envelopes from the public mint flow before signing.</td>
             </tr>
             <tr>
+              <td>Public mint flow consensus gate</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation custom_handlers` passed 15 tests, including mint quote, payment observation, and batch mint journal assertions. `cargo test -p cdk-axum custom_handlers` passed 12 standalone tests. cdk-common federation tests, cdk federation tests, and cdk-common/cdk-axum/cdk-mintd feature checks passed.</td>
+              <td>Return local threshold BLS signature shares from accepted mint operations instead of standalone blind signatures.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status pending">Pending</span></td>
-              <td>Mint runtime operation preparation has started; public handler/database flow wiring is not complete yet.</td>
-              <td>Wire minting first, then swap, restore/check-state, and fake-wallet melt paths.</td>
+              <td>Mint quote, quote-check, and mint-submit handlers are now consensus-gated locally; federated signature-share responses and wallet aggregation are not complete yet.</td>
+              <td>Finish federated mint signing first, then swap, restore/check-state, and fake-wallet melt paths.</td>
             </tr>
           </tbody>
         </table>
@@ -693,12 +711,12 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Public mint flow consensus wiring</h3>
-            <p>Submit mint quote, payment observation, and mint request envelopes into the local consensus handle before mutating quote state or producing signatures.</p>
+            <h3>Federated mint signature shares</h3>
+            <p>Use accepted mint operations to return local BLS signature shares instead of standalone signatures when a mint runs as a federation member.</p>
           </article>
           <article class="item">
-            <h3>Federated mint operation signing</h3>
-            <p>Use accepted mint operations to return local BLS signature shares and prepare wallet-side threshold aggregation.</p>
+            <h3>Wallet threshold aggregation</h3>
+            <p>Teach the wallet to send mint requests to federation members, collect threshold shares, aggregate them, and keep standalone single-mint behavior unchanged.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>
