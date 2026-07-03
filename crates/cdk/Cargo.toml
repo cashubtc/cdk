@@ -30,6 +30,7 @@ tor = [
     "cdk-http-client/tor",
 ]
 prometheus = ["dep:cdk-prometheus"]
+federation = ["cdk-common/federation"]
 
 [dependencies]
 arc-swap = "1.7.1"

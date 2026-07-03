@@ -16,6 +16,7 @@ mint = []
 wallet = []
 nostr = ["dep:nostr-sdk"]
 bench = []
+federation = []
 
 [dependencies]
 uuid.workspace = true

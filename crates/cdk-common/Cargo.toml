@@ -24,6 +24,7 @@ prometheus = ["cdk-prometheus/default"]
 http = ["dep:cdk-http-client", "cdk-http-client/bitreq"]
 grpc = ["dep:tonic"]
 bip353 = []
+federation = ["cashu/federation"]
 
 [dependencies]
 async-trait.workspace = true

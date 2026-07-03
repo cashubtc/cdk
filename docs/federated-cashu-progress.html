@@ -318,24 +318,25 @@
         <div class="links" aria-label="Project documents">
           <a class="link-pill" href="./federated-cashu-implementation-plan.md">Implementation plan</a>
           <a class="link-pill" href="./federated-cashu-codex-goal-prompt.md">Goal prompt</a>
+          <a class="link-pill" href="./federated-cashu-rfc.md">Milestone 0 RFC</a>
         </div>
       </div>
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Bootstrap in progress</span>
+          <span class="value">Milestone 0 ready to commit</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">Pending dashboard commit</span>
+          <span class="value">4d340ed0 dashboard baseline</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Progress page baseline</span>
+          <span class="value">Feature gate and RFC</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Milestone 0 feature gate</span>
+          <span class="value">Threshold BLS primitives</span>
         </div>
       </aside>
     </header>
@@ -349,7 +350,7 @@
               <h3>0. RFC and feature gate</h3>
               <p>Document threat model, add no-op federation gates, keep standalone behavior unchanged.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Ready</span>
           </article>
           <article class="milestone">
             <div>
@@ -411,6 +412,10 @@
             <h3>Progress dashboard started</h3>
             <p>This page will track commits, decisions, tests, solved problems, and next work.</p>
           </article>
+          <article class="item">
+            <h3>Milestone 0 scaffold ready</h3>
+            <p>The inert federation feature chain, mint mode placeholder, and RFC/review checklist are ready to commit.</p>
+          </article>
         </div>
       </section>
 
@@ -464,15 +469,27 @@
           <tbody>
             <tr>
               <td>Docs/dashboard</td>
-              <td><span class="status progress">In progress</span></td>
-              <td>Dashboard created as static HTML.</td>
-              <td>Commit dashboard baseline.</td>
+              <td><span class="status done">Passed</span></td>
+              <td>Dashboard baseline committed as 4d340ed0.</td>
+              <td>Update after each checkpoint.</td>
             </tr>
             <tr>
               <td>Feature-gated standalone behavior</td>
-              <td><span class="status pending">Pending</span></td>
-              <td>No federation code paths added yet.</td>
-              <td>Run focused check after Milestone 0 scaffold.</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo check -p cdk --lib` passed with federation disabled.</td>
+              <td>Run broader workspace tests before behavior-changing federation work.</td>
+            </tr>
+            <tr>
+              <td>Feature-enabled scaffold</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --lib federation_mode_defaults_to_standalone --features federation` passed.</td>
+              <td>Use this as the starting point for threshold BLS work.</td>
+            </tr>
+            <tr>
+              <td>Daemon feature chain</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"` passed.</td>
+              <td>Add federation config parsing in a later checkpoint.</td>
             </tr>
             <tr>
               <td>Threshold BLS</td>
@@ -505,6 +522,10 @@
             <h3>Consensus before signing</h3>
             <p>No member may return a usable blind signature share until the exact operation has been accepted by consensus.</p>
           </article>
+          <article class="item">
+            <h3>Feature-off compatibility</h3>
+            <p>The first Rust scaffold is gated so normal standalone builds do not see federation mint fields or APIs.</p>
+          </article>
         </div>
       </section>
 
@@ -512,12 +533,12 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Milestone 0 scaffold</h3>
-            <p>Add no-op federation feature gates and an RFC stub without changing default standalone behavior.</p>
+            <h3>Threshold BLS primitives</h3>
+            <p>Implement trusted-dealer shares, public shares, share verification, interpolation, and aggregate blind-signature tests.</p>
           </article>
           <article class="item">
             <h3>Focused verification</h3>
-            <p>Run targeted checks showing the new gates compile and existing default behavior remains untouched.</p>
+            <p>Start with 1-of-1 parity against standalone BLS, then 3-of-5 aggregation and invalid-share rejection.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>

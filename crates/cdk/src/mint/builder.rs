@@ -19,6 +19,8 @@ use super::nut19::{self, CachedEndpoint};
 use super::Nuts;
 use crate::amount::Amount;
 use crate::cdk_database;
+#[cfg(feature = "federation")]
+use crate::mint::FederationMode;
 use crate::mint::Mint;
 use crate::nuts::{
     AuthRequired, ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings,
@@ -76,6 +78,8 @@ pub struct MintBuilder {
     max_inputs: usize,
     max_outputs: usize,
     max_batch_size: Option<u64>,
+    #[cfg(feature = "federation")]
+    federation_mode: FederationMode,
 }
 
 impl std::fmt::Debug for MintBuilder {
@@ -119,7 +123,19 @@ impl MintBuilder {
             max_inputs: 1000,
             max_outputs: 1000,
             max_batch_size: None,
+            #[cfg(feature = "federation")]
+            federation_mode: FederationMode::Standalone,
         }
+    }
+
+    /// Set the federation mode placeholder for this mint.
+    ///
+    /// This is intentionally inert until later federation milestones attach
+    /// consensus and threshold-signing behavior to member mode.
+    #[cfg(feature = "federation")]
+    pub fn with_federation_mode(mut self, federation_mode: FederationMode) -> Self {
+        self.federation_mode = federation_mode;
+        self
     }
 
     /// Set use keyset v2
@@ -594,6 +610,9 @@ impl MintBuilder {
         #[allow(unused_mut)] mut self,
         signatory: Arc<dyn Signatory + Send + Sync>,
     ) -> Result<Mint, Error> {
+        #[cfg(feature = "federation")]
+        let federation_mode = self.federation_mode;
+
         // Check active keysets and rotate if necessary
         let active_keysets = signatory.keysets().await?;
 
@@ -708,6 +727,20 @@ impl MintBuilder {
                 tx.commit().await?;
             }
 
+            #[cfg(feature = "federation")]
+            return Mint::new_internal(
+                self.mint_info,
+                signatory,
+                self.localstore,
+                Some(auth_localstore),
+                self.payment_processors,
+                self.max_inputs,
+                self.max_outputs,
+                federation_mode,
+            )
+            .await;
+
+            #[cfg(not(feature = "federation"))]
             return Mint::new_with_auth(
                 self.mint_info,
                 signatory,
@@ -719,6 +752,21 @@ impl MintBuilder {
             )
             .await;
         }
+
+        #[cfg(feature = "federation")]
+        return Mint::new_internal(
+            self.mint_info,
+            signatory,
+            self.localstore,
+            None,
+            self.payment_processors,
+            self.max_inputs,
+            self.max_outputs,
+            federation_mode,
+        )
+        .await;
+
+        #[cfg(not(feature = "federation"))]
         Mint::new(
             self.mint_info,
             signatory,

@@ -29,6 +29,8 @@ use crate::{Amount, OidcClient};
 pub(crate) mod auth;
 mod builder;
 mod check_spendable;
+#[cfg(feature = "federation")]
+mod federation;
 mod issue;
 mod keysets;
 mod ln;
@@ -43,6 +45,8 @@ mod verification;
 pub use builder::{KeysetRotation, MintBuilder, MintMeltLimits, UnitConfig};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
 pub use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
+#[cfg(feature = "federation")]
+pub use federation::FederationMode;
 pub use issue::MintInput;
 pub use melt::PendingMelt;
 pub use verification::Verification;
@@ -77,6 +81,9 @@ pub struct Mint {
     max_inputs: usize,
     /// Maximum number of outputs allowed per transaction
     max_outputs: usize,
+    /// Federation mode selected for this mint.
+    #[cfg(feature = "federation")]
+    federation_mode: FederationMode,
 }
 
 impl std::fmt::Debug for Mint {
@@ -112,6 +119,8 @@ impl Mint {
             payment_processors,
             max_inputs,
             max_outputs,
+            #[cfg(feature = "federation")]
+            FederationMode::Standalone,
         )
         .await
     }
@@ -134,6 +143,8 @@ impl Mint {
             payment_processors,
             max_inputs,
             max_outputs,
+            #[cfg(feature = "federation")]
+            FederationMode::Standalone,
         )
         .await
     }
@@ -148,6 +159,7 @@ impl Mint {
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
         max_inputs: usize,
         max_outputs: usize,
+        #[cfg(feature = "federation")] federation_mode: FederationMode,
     ) -> Result<Self, Error> {
         let keysets = signatory.keysets().await?;
         if !keysets
@@ -248,6 +260,8 @@ impl Mint {
             task_state: Arc::new(Mutex::new(TaskState::default())),
             max_inputs,
             max_outputs,
+            #[cfg(feature = "federation")]
+            federation_mode,
         })
     }
 
@@ -487,6 +501,13 @@ impl Mint {
     #[inline]
     pub fn max_inputs(&self) -> usize {
         self.max_inputs
+    }
+
+    /// Federation mode selected for this mint.
+    #[cfg(feature = "federation")]
+    #[inline]
+    pub fn federation_mode(&self) -> FederationMode {
+        self.federation_mode
     }
 
     /// Pub Sub manager
