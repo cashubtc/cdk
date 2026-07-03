@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">7840b184 Federated mint shares</span>
+          <span class="value">ade29dc7 Wallet aggregation</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federated mint response shape</span>
+          <span class="value">Wallet threshold aggregation</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Wallet threshold aggregation</span>
+          <span class="value">Federated melt/change flow</span>
         </div>
       </aside>
     </header>
@@ -483,6 +483,10 @@
           <article class="item">
             <h3>Federated mint share responses committed</h3>
             <p>Federation members now advertise aggregate v3/BLS keysets and return local BLS signature shares as wallet-facing `MintResponse` values after mint operations are accepted by consensus.</p>
+          </article>
+          <article class="item">
+            <h3>Wallet threshold aggregation committed</h3>
+            <p>The wallet can now use a federation connector that validates member aggregate keyset advertisements, fans out mint, batch mint, and swap requests, verifies BLS shares, and returns aggregate Cashu signatures to the existing wallet flow.</p>
           </article>
         </div>
       </section>
@@ -714,10 +718,16 @@
               <td>Implement the wallet federation connector fan-out and threshold aggregation for returned mint shares.</td>
             </tr>
             <tr>
+              <td>Wallet threshold aggregation</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --lib --features federation wallet::federation` passed 7 tests covering mint, batch mint, swap aggregation, aggregate signature verification, and non-v3 member advertisement rejection. `cargo check -p cdk --lib`, `cargo check -p cdk --lib --features federation`, `cargo test -p cdk-axum --features federation custom_handlers`, `cargo check -p cdk-axum --features federation`, `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"`, and `cargo fmt --all -- --check` passed.</td>
+              <td>Extend federation handling through melt change outputs and fake-wallet end-to-end operation tests.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status pending">Pending</span></td>
-              <td>Mint quote, quote-check, and mint-submit handlers are consensus-gated locally; mint members advertise aggregate keysets and return verified local share responses; wallet aggregation is not complete yet.</td>
-              <td>Finish wallet mint aggregation first, then swap, restore/check-state, and fake-wallet melt paths.</td>
+              <td>Mint quote, quote-check, and mint-submit handlers are consensus-gated locally; mint members advertise aggregate keysets and return verified local share responses; wallets can aggregate mint, batch mint, and swap shares. Melt change, restore/check-state federation routing, and end-to-end fake-wallet flows remain open.</td>
+              <td>Implement melt change aggregation and then wire full fake-wallet mint/swap/melt scenarios.</td>
             </tr>
           </tbody>
         </table>
@@ -757,12 +767,12 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Federated mint response shape</h3>
-            <p>Extend the current share-response shape into a wallet connector contract that can reconstruct signer IDs from member metadata and aggregate threshold shares.</p>
+            <h3>Federated melt change</h3>
+            <p>Fan out melt requests that include change outputs, validate v3/BLS change output targets, aggregate returned change signatures, and preserve fake-wallet failure and pending-payment behavior.</p>
           </article>
           <article class="item">
-            <h3>Wallet threshold aggregation</h3>
-            <p>Teach the wallet to send mint requests to federation members, collect threshold shares, aggregate them, and keep standalone single-mint behavior unchanged.</p>
+            <h3>End-to-end federation flow tests</h3>
+            <p>Build multi-member fake-wallet tests for mint, swap, and melt paths so the connector, public mint handlers, and consensus journal are exercised together.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>
