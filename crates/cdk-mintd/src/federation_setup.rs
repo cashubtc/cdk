@@ -34,11 +34,14 @@ const PRIVATE_CONFIG_FILE: &str = "federation-private.json";
 const MEMBER_CONFIG_FILE: &str = "config.toml";
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 const GENERATED_GITIGNORE_FILE: &str = ".gitignore";
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+const SMOKE_SCRIPT_FILE: &str = "smoke-local-federation.sh";
 
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TrustedDealerArtifacts {
     pub(crate) public_config_path: PathBuf,
+    pub(crate) smoke_script_path: PathBuf,
     pub(crate) member_artifacts: BTreeMap<MemberId, TrustedDealerMemberArtifacts>,
 }
 
@@ -65,7 +68,7 @@ pub(crate) fn run_trusted_dealer_command(args: &FederationTrustedDealerArgs) -> 
             "Wrote federation public config: {}",
             artifacts.public_config_path.display()
         );
-        for (member_id, member) in artifacts.member_artifacts {
+        for (member_id, member) in &artifacts.member_artifacts {
             println!(
                 "Wrote member {} config: {}",
                 member_id,
@@ -77,6 +80,10 @@ pub(crate) fn run_trusted_dealer_command(args: &FederationTrustedDealerArgs) -> 
                 member.work_dir.display()
             );
         }
+        println!(
+            "Run local federation smoke test: {}",
+            artifacts.smoke_script_path.display()
+        );
 
         Ok(())
     }
@@ -151,8 +158,13 @@ pub(crate) fn generate_trusted_dealer_artifacts(
         );
     }
 
+    let smoke_script_path = output_dir.join(SMOKE_SCRIPT_FILE);
+    let smoke_script = local_smoke_script(&public_config_path, &member_artifacts)?;
+    write_executable_text_file(&smoke_script_path, &smoke_script, args.force)?;
+
     Ok(TrustedDealerArtifacts {
         public_config_path,
+        smoke_script_path,
         member_artifacts,
     })
 }
@@ -396,6 +408,174 @@ fn write_text_file(path: &Path, contents: &str, force: bool) -> Result<()> {
     std::fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))
 }
 
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn write_executable_text_file(path: &Path, contents: &str, force: bool) -> Result<()> {
+    write_text_file(path, contents, force)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let permissions = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(path, permissions)
+            .with_context(|| format!("failed to mark {} executable", path.display()))?;
+    }
+
+    Ok(())
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn local_smoke_script(
+    public_config_path: &Path,
+    member_artifacts: &BTreeMap<MemberId, TrustedDealerMemberArtifacts>,
+) -> Result<String> {
+    let members = member_artifacts
+        .keys()
+        .map(|member_id| member_id.get().to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let primary_member = member_artifacts
+        .keys()
+        .next()
+        .ok_or_else(|| anyhow!("local federation smoke script needs at least one member"))?;
+    let restart_member = member_artifacts.keys().nth(1).unwrap_or(primary_member);
+
+    let config_cases = member_path_cases(member_artifacts, |member| &member.config_path)?;
+    let work_dir_cases = member_path_cases(member_artifacts, |member| &member.work_dir)?;
+    let private_config_cases =
+        member_path_cases(member_artifacts, |member| &member.private_config_path)?;
+    let public_config_path = shell_single_quote(&path_to_string(public_config_path));
+
+    Ok(format!(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+
+CDK_MINTD_BIN="${{CDK_MINTD_BIN:-cdk-mintd}}"
+PUBLIC_CONFIG={public_config_path}
+MEMBERS=({members})
+PRIMARY_MEMBER="${{PRIMARY_MEMBER:-{primary_member}}}"
+RESTART_MEMBER="${{RESTART_MEMBER:-{restart_member}}}"
+STATUS_RETRIES="${{STATUS_RETRIES:-60}}"
+STATUS_SLEEP_SECONDS="${{STATUS_SLEEP_SECONDS:-1}}"
+PIDS=()
+
+member_config() {{
+  case "$1" in
+{config_cases}    *) return 1 ;;
+  esac
+}}
+
+member_work_dir() {{
+  case "$1" in
+{work_dir_cases}    *) return 1 ;;
+  esac
+}}
+
+member_private_config() {{
+  case "$1" in
+{private_config_cases}    *) return 1 ;;
+  esac
+}}
+
+start_member() {{
+  local member="$1"
+  local config
+  local work_dir
+  config="$(member_config "$member")"
+  work_dir="$(member_work_dir "$member")"
+  mkdir -p "$work_dir"
+  "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
+  PIDS[$member]=$!
+  printf 'started member %s with pid %s\n' "$member" "${{PIDS[$member]}}"
+}}
+
+stop_member() {{
+  local member="$1"
+  local pid="${{PIDS[$member]:-}}"
+  if [[ -z "$pid" ]]; then
+    return 0
+  fi
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  unset 'PIDS[$member]'
+  printf 'stopped member %s\n' "$member"
+}}
+
+cleanup() {{
+  for member in "${{MEMBERS[@]}}"; do
+    stop_member "$member"
+  done
+}}
+
+wait_for_status() {{
+  local member="$1"
+  local private_config
+  local work_dir
+  private_config="$(member_private_config "$PRIMARY_MEMBER")"
+  work_dir="$(member_work_dir "$member")"
+  for _ in $(seq 1 "$STATUS_RETRIES"); do
+    if "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$STATUS_SLEEP_SECONDS"
+  done
+  printf 'member %s did not answer signed federation status\n' "$member" >&2
+  tail -n 80 "$work_dir/mintd.log" >&2 || true
+  return 1
+}}
+
+trap cleanup EXIT INT TERM
+
+for member in "${{MEMBERS[@]}}"; do
+  start_member "$member"
+done
+
+for member in "${{MEMBERS[@]}}"; do
+  wait_for_status "$member"
+done
+
+"$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$(member_private_config "$PRIMARY_MEMBER")"
+
+stop_member "$RESTART_MEMBER"
+start_member "$RESTART_MEMBER"
+wait_for_status "$RESTART_MEMBER"
+
+"$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$(member_private_config "$PRIMARY_MEMBER")"
+printf 'local federation smoke test passed\n'
+"#,
+        public_config_path = public_config_path,
+        members = members,
+        primary_member = primary_member.get(),
+        restart_member = restart_member.get(),
+        config_cases = config_cases,
+        work_dir_cases = work_dir_cases,
+        private_config_cases = private_config_cases,
+    ))
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn member_path_cases<F>(
+    member_artifacts: &BTreeMap<MemberId, TrustedDealerMemberArtifacts>,
+    path: F,
+) -> Result<String>
+where
+    F: Fn(&TrustedDealerMemberArtifacts) -> &Path,
+{
+    let mut cases = String::new();
+    for (member_id, member) in member_artifacts {
+        cases.push_str(&format!(
+            "    {}) printf '%s\\n' {} ;;\n",
+            member_id.get(),
+            shell_single_quote(&path_to_string(path(member)))
+        ));
+    }
+    Ok(cases)
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
 #[cfg(all(test, feature = "federation", feature = "fakewallet"))]
 mod tests {
     use super::*;
@@ -440,6 +620,24 @@ mod tests {
         assert_eq!(public_config.threshold_params.signature_threshold, 2);
         assert_eq!(public_config.keysets.len(), 1);
 
+        let smoke_script =
+            std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
+        assert!(smoke_script.starts_with("#!/usr/bin/env bash"));
+        assert!(smoke_script.contains("federation status"));
+        assert!(smoke_script.contains("RESTART_MEMBER"));
+        assert!(smoke_script.contains("local federation smoke test passed"));
+        assert!(smoke_script.contains(&artifacts.public_config_path.to_string_lossy().to_string()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode = std::fs::metadata(&artifacts.smoke_script_path)
+                .expect("smoke script metadata")
+                .permissions()
+                .mode();
+            assert_ne!(mode & 0o111, 0);
+        }
+
         for (member_id, member_artifacts) in &artifacts.member_artifacts {
             let private_json = std::fs::read_to_string(&member_artifacts.private_config_path)
                 .expect("private config file");
@@ -460,6 +658,16 @@ mod tests {
                     .enabled
             );
             assert_eq!(settings.info.listen_port, 8084 + member_id.get());
+            assert!(
+                smoke_script.contains(&member_artifacts.config_path.to_string_lossy().to_string())
+            );
+            assert!(smoke_script.contains(
+                &member_artifacts
+                    .private_config_path
+                    .to_string_lossy()
+                    .to_string()
+            ));
+            assert!(smoke_script.contains(&member_artifacts.work_dir.to_string_lossy().to_string()));
         }
 
         let _ = std::fs::remove_dir_all(&output_dir);

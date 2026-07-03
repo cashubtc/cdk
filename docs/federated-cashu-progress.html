@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add federation status cli</span>
+          <span class="value">feat: generate federation smoke script</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federation status CLI</span>
+          <span class="value">Generated local smoke script</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Multi-process member smoke</span>
+          <span class="value">Live multi-process smoke</span>
         </div>
       </aside>
     </header>
@@ -584,6 +584,10 @@
             <h3>Mintd status CLI ready</h3>
             <p>`cdk-mintd federation status` can sign local-status probes from a member private config, target selected federation members or the whole roster, and print each member's sync state, consensus height, latest index, and digest.</p>
           </article>
+          <article class="item">
+            <h3>Generated smoke script ready</h3>
+            <p>The trusted-dealer output now includes an executable local smoke script that starts every generated fake-wallet member, waits for signed status, prints roster status, restarts one member, and checks status again.</p>
+          </article>
         </div>
       </section>
 
@@ -750,6 +754,10 @@
             <h3>Generated rosters have a status probe</h3>
             <p>The trusted-dealer output can be checked without wallet traffic by pointing the status CLI at a generated member config or at explicit public/private federation JSON paths.</p>
           </article>
+          <article class="item">
+            <h3>Process smoke has a reproducible entrypoint</h3>
+            <p>Local federation bundles now carry their own smoke runner, so operators and tests have a single command for startup, signed status checks, and restart probing.</p>
+          </article>
         </div>
       </section>
 
@@ -766,7 +774,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs, restarted private REST clients no longer replay low sequence numbers, and local sync state is queryable from mintd over signed private REST. The remaining work is to exercise the loop with separate member processes.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a local smoke script, restarted private REST clients no longer replay low sequence numbers, and local sync state is queryable from mintd over signed private REST. The remaining work is to run the generated smoke script in an environment that allows loopback listener binding.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -1064,10 +1072,16 @@
               <td>Use the CLI against generated member processes and record restart/catch-up evidence.</td>
             </tr>
             <tr>
+              <td>Generated local federation smoke script</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" trusted_dealer_artifacts -- --test-threads 1` passed, including smoke script path coverage, executable-bit checks, member config/private config/work-dir references, and restart/status flow text. A generated script passed `bash -n`; live execution reached member startup but loopback binding was blocked by the sandbox with `Operation not permitted`.</td>
+              <td>Run the generated script outside the restricted sandbox and capture signed status plus restart evidence.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, and mintd status probes.</td>
-              <td>Run multi-process fake-wallet member scenarios from generated configs.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, and generated smoke-script wiring.</td>
+              <td>Run live multi-process fake-wallet member scenarios from generated configs.</td>
             </tr>
           </tbody>
         </table>
@@ -1107,8 +1121,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Multi-process member smoke</h3>
-            <p>Start generated fake-wallet federation members as separate local mint processes, query private REST status, stop and restart a member, and compare consensus height and state digests after recovery.</p>
+            <h3>Live multi-process smoke</h3>
+            <p>Run the generated fake-wallet federation smoke script in an environment with loopback listener permissions, then capture signed private REST status before and after a member restart.</p>
           </article>
           <article class="item">
             <h3>Operator sync status</h3>
