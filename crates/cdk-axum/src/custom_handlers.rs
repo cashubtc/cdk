@@ -2059,6 +2059,87 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn pending_federated_melt_verified_paid_finalizes_with_change() {
+        let state = create_federated_test_state().await;
+        let fake_description = FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Pending,
+            check_payment_state: MeltQuoteState::Paid,
+            pay_err: false,
+            check_err: false,
+        };
+        let quote_id = create_federated_melt_quote_with_description(
+            &state,
+            1000,
+            serde_json::to_string(&fake_description).expect("fake invoice description"),
+        )
+        .await;
+        let input = proof_for_amount(&state, 4, "pending-later-paid");
+        let input_y = input.y().expect("input y");
+        let mut change_output = outputs_for_amount(&state, 2)
+            .into_iter()
+            .next()
+            .expect("change output");
+        change_output.amount = Amount::ZERO;
+        let request = cdk::nuts::MeltRequest::new(
+            quote_id.clone(),
+            vec![input],
+            Some(vec![change_output.clone()]),
+        );
+
+        let response = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect("pending fake-wallet melt verified as paid should finalize");
+        assert_eq!(response.state(), MeltQuoteState::Paid);
+        assert!(response.change().is_some());
+
+        let quote = state
+            .mint
+            .localstore()
+            .get_melt_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .expect("quote persisted");
+        assert_eq!(quote.state, MeltQuoteState::Paid);
+
+        let proof_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&[input_y])
+            .await
+            .expect("proof state lookup");
+        assert_eq!(proof_states, vec![Some(cdk::nuts::State::Spent)]);
+
+        let change = state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[change_output.blinded_secret])
+            .await
+            .expect("change signature lookup");
+        let change_signature = change[0].clone().expect("change share persisted");
+        assert_eq!(change_signature.amount, Amount::from(2));
+        assert_eq!(change_signature.keyset_id, change_output.keyset_id);
+        assert!(state
+            .mint
+            .localstore()
+            .get_melt_saga_by_quote_id(&quote_id)
+            .await
+            .expect("saga lookup")
+            .is_none());
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn process_failed_melt_request_releases_inputs_without_change_shares() {
         let state = create_federated_test_state().await;
         let fake_description = FakeInvoiceDescription {

@@ -347,11 +347,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover failed federated melts</span>
+          <span class="value">test: cover pending paid federated melts</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Failed melt rollback coverage</span>
+          <span class="value">Pending melt paid verification coverage</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -1039,6 +1039,10 @@
             <p>The federated public melt route now has focused failure coverage proving a failed fake-wallet payment records the accepted melt operation, resets the quote to unpaid, releases the reserved input proof, clears saga state, and returns no change shares.</p>
           </article>
           <article class="item">
+            <h3>Pending fake-wallet melt verification covered</h3>
+            <p>The federated public melt route now covers the race where a fake-wallet payment initially reports pending but verifies as paid before the response returns, finalizing the melt with spent inputs and persisted change shares.</p>
+          </article>
+          <article class="item">
             <h3>Milestone map expanded</h3>
             <p>The dashboard now renders 24 explicit implementation-plan milestone points, each with an objective and test gate, with no grouped shorthand ranges.</p>
           </article>
@@ -1504,6 +1508,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation process_failed_melt_request_releases_inputs_without_change_shares -- --test-threads 1` passed the focused failure path. `cargo test -p cdk-axum --features federation custom_handlers -- --test-threads 1` passed 29 tests, `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 53 tests, and formatting plus diff checks passed.</td>
               <td>Add delayed and offline fake-wallet observation variants, including member catch-up after a pending melt resolves.</td>
+            </tr>
+            <tr>
+              <td>Pending federated fake-wallet melt verified paid</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation pending_federated_melt_verified_paid_finalizes_with_change -- --test-threads 1` passed the focused pending-to-paid verification path. `cargo test -p cdk-axum --features federation custom_handlers -- --test-threads 1` passed 30 tests, and formatting plus diff checks passed.</td>
+              <td>Add delayed quote-check and offline member catch-up variants for long-running pending melts.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
