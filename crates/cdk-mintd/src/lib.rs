@@ -15,6 +15,8 @@ use axum::extract::DefaultBodyLimit;
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, KVStore, MintDatabase, MintKeysDatabase};
+#[cfg(feature = "federation")]
+use cdk::mint::FederationRuntimeConfig;
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::KnownMethod;
 #[cfg(any(
@@ -34,6 +36,8 @@ use cdk::nuts::{
 use cdk_axum::cache::HttpCache;
 use cdk_common::common::QuoteTTL;
 use cdk_common::database::DynMintDatabase;
+#[cfg(feature = "federation")]
+use cdk_common::federation::{FederationConfig, MemberConfigPrivate};
 // internal crate modules
 #[cfg(feature = "prometheus")]
 use cdk_common::payment::MetricsMintPayment;
@@ -47,6 +51,8 @@ use cdk_sqlite::MintSqliteDatabase;
 use cli::CLIArgs;
 use config::{AuthType, DatabaseEngine, LnBackend};
 use env_vars::ENV_WORK_DIR;
+#[cfg(feature = "federation")]
+use serde::de::DeserializeOwned;
 use setup::LnBackendSetup;
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
@@ -420,6 +426,9 @@ async fn configure_mint_builder(
     // Configure basic mint information
     let mint_builder = configure_basic_info(settings, mint_builder);
 
+    #[cfg(feature = "federation")]
+    let mint_builder = configure_federation(settings, mint_builder)?;
+
     // Check that fake wallet is not used on mainnet
     #[cfg(feature = "fakewallet")]
     if settings
@@ -483,6 +492,53 @@ async fn configure_mint_builder(
     }
 
     Ok(mint_builder)
+}
+
+#[cfg(feature = "federation")]
+fn configure_federation(
+    settings: &config::Settings,
+    mint_builder: MintBuilder,
+) -> Result<MintBuilder> {
+    let Some(federation) = settings.federation.as_ref() else {
+        return Ok(mint_builder);
+    };
+
+    if !federation.enabled {
+        return Ok(mint_builder);
+    }
+
+    let public_config_path = federation.public_config_path.as_deref().ok_or_else(|| {
+        anyhow!("federation.public_config_path must be set when federation is enabled")
+    })?;
+    let private_config_path = federation.private_config_path.as_deref().ok_or_else(|| {
+        anyhow!("federation.private_config_path must be set when federation is enabled")
+    })?;
+
+    let public_config: FederationConfig =
+        read_federation_json(public_config_path, "public federation config")?;
+    let private_config: MemberConfigPrivate =
+        read_federation_json(private_config_path, "private federation config")?;
+    let runtime_config = FederationRuntimeConfig::new(public_config, private_config)
+        .context("invalid federation runtime config")?;
+
+    tracing::info!(
+        "Loaded federation {} as member {}",
+        runtime_config.federation_id(),
+        runtime_config.member_id()
+    );
+
+    Ok(mint_builder.with_federation_config(runtime_config))
+}
+
+#[cfg(feature = "federation")]
+fn read_federation_json<T>(path: &Path, label: &str) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {label} from {}", path.display()))?;
+    serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse {label} JSON from {}", path.display()))
 }
 
 /// Configures basic mint information (name, contact info, descriptions, etc.)
@@ -1913,6 +1969,115 @@ mod tests {
         assert_eq!(settings.info.mnemonic, None);
 
         let _ = fs::remove_file(&seed_file);
+    }
+
+    #[cfg(all(feature = "federation", feature = "sqlite"))]
+    #[tokio::test]
+    async fn configure_federation_loads_runtime_config() {
+        use std::collections::BTreeMap;
+        use std::str::FromStr;
+
+        use cdk::mint::{FederationMode, MintBuilder};
+        use cdk_common::federation::{
+            generate_trusted_dealer_configs, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
+            TrustedDealerMember,
+        };
+        use cdk_common::mint_url::MintUrl;
+        use cdk_common::nuts::nut01::BlsSecretKey;
+        use cdk_common::{Amount, CurrencyUnit, SecretKey};
+        use cdk_sqlite::mint::memory;
+
+        let member_id = MemberId::new(1).expect("member id");
+        let member = TrustedDealerMember::new(
+            member_id,
+            MintUrl::from_str("https://mint1.example.com").expect("public mint url"),
+            MintUrl::from_str("https://fed1.example.com").expect("federation api url"),
+            SecretKey::from_slice(&[1; 32]).expect("identity secret"),
+        );
+        let keyset = TrustedDealerKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            BTreeMap::from([(
+                Amount::from(1),
+                vec![BlsSecretKey::from_reduced_bytes(&[2; 32])],
+            )]),
+        );
+        let bundle = generate_trusted_dealer_configs(
+            ThresholdParams::with_bft_consensus(1, 1).expect("params"),
+            vec![member],
+            vec![keyset],
+        )
+        .expect("trusted dealer bundle");
+
+        let public_config_path = temp_seed_file("fed_public_config");
+        let private_config_path = temp_seed_file("fed_private_config");
+        fs::write(
+            &public_config_path,
+            serde_json::to_string(&bundle.public_config).expect("public config json"),
+        )
+        .expect("public config should be written");
+        fs::write(
+            &private_config_path,
+            serde_json::to_string(
+                bundle
+                    .private_configs
+                    .get(&member_id)
+                    .expect("private config"),
+            )
+            .expect("private config json"),
+        )
+        .expect("private config should be written");
+
+        let settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                public_config_path: Some(public_config_path.clone()),
+                private_config_path: Some(private_config_path.clone()),
+            }),
+            ..Default::default()
+        };
+        let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
+        let builder = MintBuilder::new(localstore);
+        let builder = configure_federation(&settings, builder).expect("federation config");
+
+        assert_eq!(builder.federation_mode(), FederationMode::Member);
+        assert_eq!(
+            builder
+                .federation_config()
+                .expect("runtime config")
+                .member_id(),
+            member_id
+        );
+
+        let _ = fs::remove_file(public_config_path);
+        let _ = fs::remove_file(private_config_path);
+    }
+
+    #[cfg(all(feature = "federation", feature = "sqlite"))]
+    #[tokio::test]
+    async fn configure_federation_requires_paths_when_enabled() {
+        use cdk::mint::MintBuilder;
+        use cdk_sqlite::mint::memory;
+
+        let settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                public_config_path: None,
+                private_config_path: None,
+            }),
+            ..Default::default()
+        };
+        let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
+        let builder = MintBuilder::new(localstore);
+        let err = configure_federation(&settings, builder)
+            .expect_err("enabled federation without paths should fail");
+
+        assert!(
+            err.to_string().contains("public_config_path"),
+            "error should mention missing public path: {err}"
+        );
     }
 
     #[cfg(all(feature = "fakewallet", feature = "sqlite"))]

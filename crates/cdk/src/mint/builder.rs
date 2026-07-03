@@ -19,9 +19,9 @@ use super::nut19::{self, CachedEndpoint};
 use super::Nuts;
 use crate::amount::Amount;
 use crate::cdk_database;
-#[cfg(feature = "federation")]
-use crate::mint::FederationMode;
 use crate::mint::Mint;
+#[cfg(feature = "federation")]
+use crate::mint::{FederationMode, FederationRuntimeConfig};
 use crate::nuts::{
     AuthRequired, ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings,
     MintVersion, MppMethodSettings, PaymentMethod, ProtectedEndpoint,
@@ -80,6 +80,8 @@ pub struct MintBuilder {
     max_batch_size: Option<u64>,
     #[cfg(feature = "federation")]
     federation_mode: FederationMode,
+    #[cfg(feature = "federation")]
+    federation_config: Option<FederationRuntimeConfig>,
 }
 
 impl std::fmt::Debug for MintBuilder {
@@ -125,6 +127,8 @@ impl MintBuilder {
             max_batch_size: None,
             #[cfg(feature = "federation")]
             federation_mode: FederationMode::Standalone,
+            #[cfg(feature = "federation")]
+            federation_config: None,
         }
     }
 
@@ -136,6 +140,31 @@ impl MintBuilder {
     pub fn with_federation_mode(mut self, federation_mode: FederationMode) -> Self {
         self.federation_mode = federation_mode;
         self
+    }
+
+    /// Attach a validated federation runtime config to this mint.
+    ///
+    /// This switches the mint to member mode but remains behaviorally inert until
+    /// later milestones wire consensus and threshold signing into the mint.
+    #[cfg(feature = "federation")]
+    pub fn with_federation_config(mut self, federation_config: FederationRuntimeConfig) -> Self {
+        self.federation_mode = FederationMode::Member;
+        self.federation_config = Some(federation_config);
+        self
+    }
+
+    /// Return the federation mode currently selected for this builder.
+    #[cfg(feature = "federation")]
+    #[must_use]
+    pub fn federation_mode(&self) -> FederationMode {
+        self.federation_mode
+    }
+
+    /// Return the attached federation runtime config, if any.
+    #[cfg(feature = "federation")]
+    #[must_use]
+    pub fn federation_config(&self) -> Option<&FederationRuntimeConfig> {
+        self.federation_config.as_ref()
     }
 
     /// Set use keyset v2
@@ -737,6 +766,7 @@ impl MintBuilder {
                 self.max_inputs,
                 self.max_outputs,
                 federation_mode,
+                self.federation_config,
             )
             .await;
 
@@ -763,6 +793,7 @@ impl MintBuilder {
             self.max_inputs,
             self.max_outputs,
             federation_mode,
+            self.federation_config,
         )
         .await;
 

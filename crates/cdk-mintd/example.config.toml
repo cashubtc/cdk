@@ -352,6 +352,13 @@ max_delay_time = 3
 # restore = "blind"
 # check_proof_state = "none"
 
+# [federation]
+# Set to true to run this mint as a federation member.
+# The public/private JSON files are produced by the trusted-dealer setup path.
+# enabled = false
+# public_config_path = "/path/to/federation-public.json"
+# private_config_path = "/path/to/member-private.json"
+
 # Transaction limits for DoS protection (optional, defaults shown)
 [limits]
 # Maximum number of inputs allowed per transaction (swap/melt)

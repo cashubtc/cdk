@@ -1032,6 +1032,9 @@ pub struct Settings {
     #[cfg(feature = "prometheus")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prometheus: Option<Prometheus>,
+    #[cfg(feature = "federation")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub federation: Option<Federation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1040,6 +1043,19 @@ pub struct Prometheus {
     pub enabled: bool,
     pub address: Option<String>,
     pub port: Option<u16>,
+}
+
+/// Federation startup configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[cfg(feature = "federation")]
+pub struct Federation {
+    /// Enable federation member mode for this mint.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to the shared public federation config JSON file.
+    pub public_config_path: Option<PathBuf>,
+    /// Path to this member's private federation config JSON file.
+    pub private_config_path: Option<PathBuf>,
 }
 
 /// Transaction limits configuration

@@ -46,7 +46,7 @@ pub use builder::{KeysetRotation, MintBuilder, MintMeltLimits, UnitConfig};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
 pub use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
 #[cfg(feature = "federation")]
-pub use federation::FederationMode;
+pub use federation::{FederationMode, FederationRuntimeConfig};
 pub use issue::MintInput;
 pub use melt::PendingMelt;
 pub use verification::Verification;
@@ -84,6 +84,9 @@ pub struct Mint {
     /// Federation mode selected for this mint.
     #[cfg(feature = "federation")]
     federation_mode: FederationMode,
+    /// Validated federation config for member mode.
+    #[cfg(feature = "federation")]
+    federation_config: Option<FederationRuntimeConfig>,
 }
 
 impl std::fmt::Debug for Mint {
@@ -121,6 +124,8 @@ impl Mint {
             max_outputs,
             #[cfg(feature = "federation")]
             FederationMode::Standalone,
+            #[cfg(feature = "federation")]
+            None,
         )
         .await
     }
@@ -145,6 +150,8 @@ impl Mint {
             max_outputs,
             #[cfg(feature = "federation")]
             FederationMode::Standalone,
+            #[cfg(feature = "federation")]
+            None,
         )
         .await
     }
@@ -160,6 +167,7 @@ impl Mint {
         max_inputs: usize,
         max_outputs: usize,
         #[cfg(feature = "federation")] federation_mode: FederationMode,
+        #[cfg(feature = "federation")] federation_config: Option<FederationRuntimeConfig>,
     ) -> Result<Self, Error> {
         let keysets = signatory.keysets().await?;
         if !keysets
@@ -262,6 +270,8 @@ impl Mint {
             max_outputs,
             #[cfg(feature = "federation")]
             federation_mode,
+            #[cfg(feature = "federation")]
+            federation_config,
         })
     }
 
@@ -508,6 +518,13 @@ impl Mint {
     #[inline]
     pub fn federation_mode(&self) -> FederationMode {
         self.federation_mode
+    }
+
+    /// Federation runtime config selected for this mint, if any.
+    #[cfg(feature = "federation")]
+    #[inline]
+    pub fn federation_config(&self) -> Option<&FederationRuntimeConfig> {
+        self.federation_config.as_ref()
     }
 
     /// Pub Sub manager
