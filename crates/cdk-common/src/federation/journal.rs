@@ -218,6 +218,24 @@ impl InMemoryFederationJournal {
         self.latest_order_digest
     }
 
+    /// Return the next journal index that would be appended locally.
+    #[must_use]
+    pub fn next_index(&self) -> u64 {
+        self.entries.len() as u64
+    }
+
+    /// Return the digest after the entry immediately before `next_index`.
+    #[must_use]
+    pub fn order_digest_before(&self, next_index: u64) -> Option<FederationJournalDigest> {
+        if next_index == 0 {
+            return Some(FederationJournalDigest::genesis());
+        }
+
+        self.entries
+            .get(next_index.saturating_sub(1) as usize)
+            .map(|entry| entry.order_digest)
+    }
+
     /// Return all entries.
     #[must_use]
     pub fn entries(&self) -> &[FederationJournalEntry] {
@@ -299,6 +317,62 @@ impl InMemoryFederationJournal {
         self.latest_order_digest = order_digest;
 
         Ok(FederationJournalAppendOutcome::Appended(entry))
+    }
+
+    /// Validate and append one catch-up entry from a federation peer.
+    ///
+    /// The peer's local application status is intentionally ignored. Catch-up
+    /// synchronizes accepted consensus order; each member applies that order to
+    /// its own mint state independently.
+    pub fn append_catch_up_entry(
+        &mut self,
+        peer_entry: &FederationJournalEntry,
+    ) -> Result<FederationJournalEntry> {
+        let expected_index = self.next_index();
+        if peer_entry.index != expected_index {
+            return Err(FederationError::CatchUpIndexMismatch {
+                expected: expected_index,
+                found: peer_entry.index,
+            });
+        }
+
+        let expected_operation_id = peer_entry.envelope.operation_id()?;
+        if expected_operation_id != peer_entry.operation_id {
+            return Err(FederationError::CatchUpOperationIdMismatch {
+                index: peer_entry.index,
+                expected: expected_operation_id,
+                found: peer_entry.operation_id,
+            });
+        }
+
+        if peer_entry.previous_order_digest != self.latest_order_digest {
+            return Err(FederationError::CatchUpDigestMismatch {
+                index: peer_entry.index,
+                expected: self.latest_order_digest,
+                found: peer_entry.previous_order_digest,
+            });
+        }
+
+        let expected_order_digest = self
+            .latest_order_digest
+            .append(peer_entry.index, peer_entry.operation_id);
+        if peer_entry.order_digest != expected_order_digest {
+            return Err(FederationError::CatchUpDigestMismatch {
+                index: peer_entry.index.saturating_add(1),
+                expected: expected_order_digest,
+                found: peer_entry.order_digest,
+            });
+        }
+
+        match self.append(peer_entry.envelope.clone())? {
+            FederationJournalAppendOutcome::Appended(entry) => Ok(entry),
+            FederationJournalAppendOutcome::Duplicate(entry) => {
+                Err(FederationError::CatchUpIndexMismatch {
+                    expected: expected_index,
+                    found: entry.index,
+                })
+            }
+        }
     }
 
     /// Update local application status for an accepted operation.

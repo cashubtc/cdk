@@ -358,6 +358,44 @@ pub enum FederationError {
         /// Found federation ID.
         found: FederationId,
     },
+    /// Catch-up response belongs to a different federation.
+    #[error("Federation catch-up mismatch: expected={expected}, found={found}")]
+    CatchUpFederationMismatch {
+        /// Expected federation ID.
+        expected: FederationId,
+        /// Found federation ID.
+        found: FederationId,
+    },
+    /// Catch-up response did not start at the next local journal index.
+    #[error("Federation catch-up index mismatch: expected={expected}, found={found}")]
+    CatchUpIndexMismatch {
+        /// Expected journal index.
+        expected: u64,
+        /// Found journal index.
+        found: u64,
+    },
+    /// Catch-up response did not match the expected journal digest.
+    #[error(
+        "Federation catch-up digest mismatch at index {index}: expected={expected}, found={found}"
+    )]
+    CatchUpDigestMismatch {
+        /// Journal index whose digest did not match.
+        index: u64,
+        /// Expected journal digest.
+        expected: FederationJournalDigest,
+        /// Found journal digest.
+        found: FederationJournalDigest,
+    },
+    /// Catch-up entry operation ID did not match its envelope.
+    #[error("Federation catch-up operation id mismatch at index {index}: expected={expected}, found={found}")]
+    CatchUpOperationIdMismatch {
+        /// Journal index whose operation ID did not match.
+        index: u64,
+        /// Operation ID computed from the entry envelope.
+        expected: FederationOperationId,
+        /// Operation ID carried by the entry.
+        found: FederationOperationId,
+    },
     /// Hex parsing error.
     #[error(transparent)]
     Hex(#[from] crate::util::hex::Error),

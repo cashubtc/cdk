@@ -82,6 +82,13 @@ impl InMemoryFederationConsensus {
         FederationPeerStatus::from_journal(self.federation_id, self.member_id, &self.journal)
     }
 
+    /// Return a catch-up request for the next local missing operation.
+    #[must_use]
+    pub fn catch_up_request(&self) -> FederationJournalCatchUpRequest {
+        FederationJournalCatchUpRequest::new(self.journal.next_index())
+            .with_known_order_digest(self.journal.latest_order_digest())
+    }
+
     /// Return journal entries for a catch-up request.
     #[must_use]
     pub fn catch_up(
@@ -95,6 +102,67 @@ impl InMemoryFederationConsensus {
             DEFAULT_CATCH_UP_LIMIT,
             MAX_CATCH_UP_LIMIT,
         )
+    }
+
+    /// Return journal entries for a catch-up request after checking the caller's digest.
+    pub fn catch_up_checked(
+        &self,
+        request: &FederationJournalCatchUpRequest,
+    ) -> Result<FederationJournalCatchUpResponse> {
+        if let Some(known_order_digest) = request.known_order_digest {
+            if let Some(expected_digest) = self.journal.order_digest_before(request.next_index) {
+                if expected_digest != known_order_digest {
+                    return Err(FederationError::CatchUpDigestMismatch {
+                        index: request.next_index,
+                        expected: expected_digest,
+                        found: known_order_digest,
+                    });
+                }
+            }
+        }
+
+        Ok(self.catch_up(request))
+    }
+
+    /// Apply a peer catch-up response to the local journal.
+    ///
+    /// This only replays the accepted operation order. Local application status
+    /// is not copied from the peer, because each member must apply entries to
+    /// its own mint database and recovery state independently.
+    pub fn apply_catch_up_response(
+        &mut self,
+        response: &FederationJournalCatchUpResponse,
+    ) -> Result<Vec<FederationJournalEntry>> {
+        if response.federation_id != self.federation_id {
+            return Err(FederationError::CatchUpFederationMismatch {
+                expected: self.federation_id,
+                found: response.federation_id,
+            });
+        }
+
+        let expected_from_index = self.journal.next_index();
+        if response.from_index != expected_from_index {
+            return Err(FederationError::CatchUpIndexMismatch {
+                expected: expected_from_index,
+                found: response.from_index,
+            });
+        }
+
+        let mut applied = Vec::with_capacity(response.entries.len());
+        for entry in &response.entries {
+            self.ensure_federation(entry.envelope.federation_id)?;
+            applied.push(self.journal.append_catch_up_entry(entry)?);
+        }
+
+        if response.complete && response.latest_order_digest != self.journal.latest_order_digest() {
+            return Err(FederationError::CatchUpDigestMismatch {
+                index: self.journal.next_index(),
+                expected: self.journal.latest_order_digest(),
+                found: response.latest_order_digest,
+            });
+        }
+
+        Ok(applied)
     }
 
     /// Update local application status for an accepted operation.
@@ -255,6 +323,114 @@ mod tests {
         assert_eq!(response.entries.len(), 1);
         assert!(response.complete);
         assert_eq!(response.latest_order_digest, status.latest_order_digest);
+    }
+
+    #[test]
+    fn dummy_consensus_applies_peer_catch_up_response() {
+        let federation_id = federation_id(13);
+        let mut local = InMemoryFederationConsensus::new(federation_id, member_id());
+        let mut peer = InMemoryFederationConsensus::new(federation_id, member_id());
+        let quote = mint_quote_envelope(federation_id);
+        let mint = mint_envelope(
+            federation_id,
+            "quote-1",
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+
+        local
+            .submit_envelope(quote.clone())
+            .expect("local quote submit");
+        peer.submit_envelope(quote).expect("peer quote submit");
+        let mint_response = peer.submit_envelope(mint).expect("peer mint submit");
+        peer.update_status(
+            mint_response.operation_id,
+            FederationOperationStatus::Applied,
+        )
+        .expect("peer status update");
+
+        let request = local.catch_up_request();
+        let response = peer.catch_up_checked(&request).expect("catch up");
+        let applied = local
+            .apply_catch_up_response(&response)
+            .expect("apply catch up");
+
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0].operation_id, mint_response.operation_id);
+        assert_eq!(applied[0].status, FederationOperationStatus::Accepted);
+        assert_eq!(
+            local.peer_status().latest_order_digest,
+            peer.peer_status().latest_order_digest
+        );
+    }
+
+    #[test]
+    fn dummy_consensus_rejects_known_digest_mismatch() {
+        let federation_id = federation_id(13);
+        let mut peer = InMemoryFederationConsensus::new(federation_id, member_id());
+        peer.submit_envelope(mint_quote_envelope(federation_id))
+            .expect("peer quote submit");
+        let request = FederationJournalCatchUpRequest::new(1)
+            .with_known_order_digest(super::super::FederationJournalDigest::genesis());
+
+        assert!(matches!(
+            peer.catch_up_checked(&request),
+            Err(FederationError::CatchUpDigestMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn dummy_consensus_rejects_wrong_federation_catch_up_response() {
+        let federation_id = federation_id(13);
+        let mut local = InMemoryFederationConsensus::new(federation_id, member_id());
+        let mut peer = InMemoryFederationConsensus::new(federation_id, member_id());
+        peer.submit_envelope(mint_quote_envelope(federation_id))
+            .expect("peer quote submit");
+        let mut response = peer
+            .catch_up_checked(&local.catch_up_request())
+            .expect("catch up");
+        response.federation_id = super::super::FederationId::from_bytes([14; 32]);
+
+        assert!(matches!(
+            local.apply_catch_up_response(&response),
+            Err(FederationError::CatchUpFederationMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn dummy_consensus_rejects_tampered_catch_up_operation_id() {
+        let federation_id = federation_id(13);
+        let mut local = InMemoryFederationConsensus::new(federation_id, member_id());
+        let mut peer = InMemoryFederationConsensus::new(federation_id, member_id());
+        peer.submit_envelope(mint_quote_envelope(federation_id))
+            .expect("peer quote submit");
+        let mut response = peer
+            .catch_up_checked(&local.catch_up_request())
+            .expect("catch up");
+        response.entries[0].operation_id = FederationOperationId::from_bytes([99; 32]);
+
+        assert!(matches!(
+            local.apply_catch_up_response(&response),
+            Err(FederationError::CatchUpOperationIdMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn dummy_consensus_rejects_tampered_catch_up_digest_chain() {
+        let federation_id = federation_id(13);
+        let mut local = InMemoryFederationConsensus::new(federation_id, member_id());
+        let mut peer = InMemoryFederationConsensus::new(federation_id, member_id());
+        peer.submit_envelope(mint_quote_envelope(federation_id))
+            .expect("peer quote submit");
+        let mut response = peer
+            .catch_up_checked(&local.catch_up_request())
+            .expect("catch up");
+        response.entries[0].previous_order_digest =
+            super::super::FederationJournalDigest::from_bytes([88; 32]);
+
+        assert!(matches!(
+            local.apply_catch_up_response(&response),
+            Err(FederationError::CatchUpDigestMismatch { .. })
+        ));
     }
 
     #[test]

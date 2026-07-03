@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: route federated restore checks</span>
+          <span class="value">feat: add federation catch-up client</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Restore and check-state routing</span>
+          <span class="value">Private REST catch-up and payment observation</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Private REST catch-up and payment observation</span>
+          <span class="value">Authenticated member envelopes</span>
         </div>
       </aside>
     </header>
@@ -516,6 +516,10 @@
             <h3>Restore and check-state routing ready</h3>
             <p>Wallet restore now fans out to federation members, rejects mismatched restore views, and aggregates BLS restore signature shares; proof state checks require a threshold of matching member views.</p>
           </article>
+          <article class="item">
+            <h3>Private REST catch-up client ready</h3>
+            <p>Members can now build digest-bound catch-up requests, validate peer catch-up responses, replay missed accepted operations locally, and submit payment-observation envelopes over the private REST client boundary.</p>
+          </article>
         </div>
       </section>
 
@@ -606,6 +610,14 @@
             <h3>Proof state divergence is visible</h3>
             <p>The wallet connector no longer accepts a single member's check-state result; it requires threshold agreement and rejects mismatched spent, pending, or unspent views.</p>
           </article>
+          <article class="item">
+            <h3>Offline replay has a consensus guard</h3>
+            <p>Catch-up replay rejects wrong federation IDs, stale known digests, mismatched operation IDs, and broken journal digest chains before appending anything to the local order.</p>
+          </article>
+          <article class="item">
+            <h3>Payment observations use the peer API</h3>
+            <p>The private REST client can submit canonical mint quote payment observation operations and checks that the peer response belongs to the exact operation sent.</p>
+          </article>
         </div>
       </section>
 
@@ -622,7 +634,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>Local pending melt recovery preserves the federation operation ID, but multi-member payment observations, catch-up replay, and offline member recovery still need the private network consensus path.</p>
+            <p>The private REST client can replay missed journal entries, but authenticated member envelopes, durable journal storage, and deterministic state-machine replay still need to land before offline recovery is production-safe.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -818,10 +830,16 @@
               <td>Connect private REST catch-up, payment observation propagation, and offline member replay across multiple federation nodes.</td>
             </tr>
             <tr>
+              <td>Private REST catch-up client</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federation` passed 43 tests, including catch-up replay, stale digest rejection, wrong-federation rejection, tampered operation ID rejection, and digest-chain rejection. `cargo test -p cdk-axum --features federation federation` passed 11 tests, including peer status validation, payment-observation operation submission, and local catch-up from a mock private REST member.</td>
+              <td>Add signed member-to-member envelopes and reject unknown members, wrong claimed senders, stale sequence numbers, invalid signatures, and body-hash mismatches before private REST mutation.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Durable catch-up and networked fake-wallet payment observation remain open.</td>
-              <td>Connect private REST catch-up and payment observations across members.</td>
+              <td>Mint quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries. Authenticated peer envelopes, durable catch-up storage, and networked fake-wallet state-machine replay remain open.</td>
+              <td>Add authenticated member envelopes, then persist and replay the federation journal through storage-backed members.</td>
             </tr>
           </tbody>
         </table>
@@ -861,8 +879,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Private REST catch-up and payment observation</h3>
-            <p>Make federation members exchange accepted operations, missed journal entries, and fake-wallet payment observations over the private member API.</p>
+            <h3>Authenticated member envelopes</h3>
+            <p>Sign private REST requests with federation identity keys and reject unknown members, wrong claimed senders, stale sequence numbers, invalid signatures, and body-hash mismatches before state mutation.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>
