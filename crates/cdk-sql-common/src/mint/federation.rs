@@ -5,7 +5,7 @@ use cdk_common::database::mint::{FederationJournalDatabase, FederationJournalTra
 use cdk_common::database::Error;
 use cdk_common::federation::{
     FederationJournalEntry, FederationOperationConflictKey, FederationOperationId,
-    FederationOperationStatus, MemberId,
+    FederationOperationStatus, FederationSessionOutcome, MemberId,
 };
 
 use super::{SQLMintDatabase, SQLTransaction};
@@ -184,6 +184,34 @@ where
 
         Ok(())
     }
+
+    async fn add_federation_session_outcome(
+        &mut self,
+        outcome: &FederationSessionOutcome,
+    ) -> Result<(), Self::Err> {
+        query(
+            r#"
+            INSERT INTO federation_session_outcomes
+            (from_index, signer_member_id, latest_index, operation_count, outcome_json)
+            VALUES
+            (:from_index, :signer_member_id, :latest_index, :operation_count, :outcome_json)
+            ON CONFLICT (from_index, signer_member_id)
+            DO UPDATE SET
+                latest_index = EXCLUDED.latest_index,
+                operation_count = EXCLUDED.operation_count,
+                outcome_json = EXCLUDED.outcome_json
+            "#,
+        )?
+        .bind("from_index", outcome.from_index as i64)
+        .bind("signer_member_id", i64::from(outcome.signer.get()))
+        .bind("latest_index", outcome.latest_index as i64)
+        .bind("operation_count", outcome.operation_count as i64)
+        .bind("outcome_json", serde_json::to_string(outcome)?)
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -286,4 +314,59 @@ where
 
         Ok(sequences)
     }
+
+    async fn get_federation_session_outcomes(
+        &self,
+    ) -> Result<Vec<FederationSessionOutcome>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT outcome_json
+            FROM federation_session_outcomes
+            ORDER BY from_index ASC, signer_member_id ASC
+            "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_session_outcome)
+        .collect()
+    }
+
+    async fn get_federation_session_outcomes_from(
+        &self,
+        from_index: u64,
+    ) -> Result<Vec<FederationSessionOutcome>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT outcome_json
+            FROM federation_session_outcomes
+            WHERE from_index >= :from_index
+            ORDER BY from_index ASC, signer_member_id ASC
+            "#,
+        )?
+        .bind("from_index", from_index as i64)
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_session_outcome)
+        .collect()
+    }
+}
+
+fn sql_row_to_federation_session_outcome(
+    row: Vec<Column>,
+) -> Result<FederationSessionOutcome, Error> {
+    unpack_into!(let (outcome_json) = row);
+    serde_json::from_str(&column_as_string!(&outcome_json))
+        .map_err(|e| Error::Internal(format!("Invalid federation session outcome JSON: {e}")))
 }

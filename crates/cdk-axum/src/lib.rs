@@ -15,7 +15,8 @@ use cache::HttpCache;
 use cdk::federation::{
     FederationJournalAppendOutcome, FederationJournalEntry, FederationOperationEnvelope,
     FederationOperationId, FederationOperationStatus, FederationRestSequenceTracker,
-    FederationSubmitOperationResponse, InMemoryFederationConsensus, MemberId,
+    FederationSessionOutcome, FederationSubmitOperationResponse, InMemoryFederationConsensus,
+    MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -196,7 +197,7 @@ impl MintState {
         let mut next_consensus = consensus.clone();
         let applied = next_consensus.apply_catch_up_response(response)?;
 
-        self.persist_federation_journal_entries(&applied, None)
+        self.persist_federation_journal_entries(&applied, response.session_outcome.as_ref(), None)
             .await?;
         *consensus = next_consensus;
         drop(consensus);
@@ -210,7 +211,7 @@ impl MintState {
         sender: MemberId,
         sequence: u64,
     ) -> Result<(), cdk::Error> {
-        self.persist_federation_journal_entries(&[], Some((sender, sequence)))
+        self.persist_federation_journal_entries(&[], None, Some((sender, sequence)))
             .await?;
         self.record_federation_sequence(sender, sequence).await;
         Ok(())
@@ -223,11 +224,12 @@ impl MintState {
     ) -> Result<(), cdk::Error> {
         match outcome {
             FederationJournalAppendOutcome::Appended(entry) => {
-                self.persist_federation_journal_entries(std::slice::from_ref(entry), sequence)
+                self.persist_federation_journal_entries(std::slice::from_ref(entry), None, sequence)
                     .await
             }
             FederationJournalAppendOutcome::Duplicate(_) => {
-                self.persist_federation_journal_entries(&[], sequence).await
+                self.persist_federation_journal_entries(&[], None, sequence)
+                    .await
             }
         }
     }
@@ -235,12 +237,16 @@ impl MintState {
     async fn persist_federation_journal_entries(
         &self,
         entries: &[FederationJournalEntry],
+        session_outcome: Option<&FederationSessionOutcome>,
         sequence: Option<(MemberId, u64)>,
     ) -> Result<(), cdk::Error> {
         let db = self.mint.localstore();
         let mut tx = db.begin_transaction().await?;
         for entry in entries {
             tx.add_federation_journal_entry(entry).await?;
+        }
+        if let Some(session_outcome) = session_outcome {
+            tx.add_federation_session_outcome(session_outcome).await?;
         }
         if let Some((sender, sequence)) = sequence {
             tx.set_federation_member_sequence(sender, sequence).await?;

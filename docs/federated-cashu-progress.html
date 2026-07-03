@@ -331,15 +331,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add signed catch-up session outcomes</span>
+          <span class="value">feat: persist federation session outcomes</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Signed session outcomes</span>
+          <span class="value">Session outcome persistence</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Persist session outcomes</span>
+          <span class="value">Quorum catch-up verification</span>
         </div>
       </aside>
     </header>
@@ -925,6 +925,10 @@
             <p>Private REST catch-up responses now carry member-signed session outcomes over returned accepted-operation ranges, operation IDs, range digests, and latest order/state digests. Peer clients reject non-empty catch-up data without a valid serving-member signature.</p>
           </article>
           <article class="item">
+            <h3>Signed session outcomes are durable</h3>
+            <p>Mint storage now persists signed catch-up session outcomes alongside accepted journal entries, so restart and later quorum verification can inspect which member attested to each replayed range.</p>
+          </article>
+          <article class="item">
             <h3>Milestone map expanded</h3>
             <p>The dashboard now renders 24 explicit implementation-plan milestone points, with no grouped shorthand ranges.</p>
           </article>
@@ -1290,10 +1294,16 @@
               <td>Persist signed session outcomes and verify quorum coverage for catch-up ranges.</td>
             </tr>
             <tr>
+              <td>Session outcome persistence</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-sqlite --features "mint federation" federation_journal_persistence -- --test-threads 1` persisted and reloaded signed outcomes; `cargo test -p cdk-axum --features federation rest_peer_client_catches_up_local_consensus_from_member -- --test-threads 1` proved private REST catch-up stores the serving peer's signed outcome. SQL common, SQLite, Postgres, and Axum federation checks passed.</td>
+              <td>Require quorum or threshold coverage across signed session outcomes before accepting catch-up as fully verified.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, and signed catch-up session outcomes for non-empty private REST journal ranges.</td>
-              <td>Persist signed session outcomes, then run live multi-process fake-wallet member scenarios from generated configs where loopback listeners are permitted.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, and durable session-outcome storage.</td>
+              <td>Add quorum verification over persisted session outcomes, then run live multi-process fake-wallet member scenarios from generated configs where loopback listeners are permitted.</td>
             </tr>
           </tbody>
         </table>
@@ -1333,8 +1343,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Persist session outcomes</h3>
-            <p>Store signed session outcome records with accepted journal ranges so restart and catch-up verification can survive process lifetime boundaries.</p>
+            <h3>Quorum catch-up verification</h3>
+            <p>Use persisted signed session outcomes to require threshold or quorum coverage before treating a recovered catch-up range as fully verified.</p>
           </article>
           <article class="item">
             <h3>Live multi-process smoke</h3>

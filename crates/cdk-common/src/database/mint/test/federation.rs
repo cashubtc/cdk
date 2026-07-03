@@ -1,15 +1,18 @@
 //! Federation journal storage tests.
 
+use std::collections::BTreeMap;
+
 use crate::database::mint::{Database, FederationJournalDatabase};
 use crate::federation::{
-    FederationId, FederationJournalAppendOutcome, FederationJournalEntry,
-    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationOperation,
-    FederationOperationEnvelope, FederationOperationStatus, InMemoryFederationJournal, MemberId,
+    FederationId, FederationJournalAppendOutcome, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationJournalEntry, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
+    FederationOperationStatus, InMemoryFederationJournal, MemberConfigPrivate, MemberId,
 };
 use crate::nuts::nut00::KnownMethod;
 use crate::{
     Amount, CurrencyUnit, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteRequest,
-    MintQuoteResponse, MintQuoteState, PaymentMethod,
+    MintQuoteResponse, MintQuoteState, PaymentMethod, SecretKey,
 };
 
 fn federation_id() -> FederationId {
@@ -58,6 +61,14 @@ fn appended(entry: FederationJournalAppendOutcome) -> FederationJournalEntry {
     entry.entry().clone()
 }
 
+fn private_member(id: u16) -> MemberConfigPrivate {
+    MemberConfigPrivate {
+        member_id: MemberId::new(id).expect("member id"),
+        identity_secret_key: SecretKey::from_slice(&[id as u8; 32]).expect("identity secret"),
+        keyset_secret_shares: BTreeMap::new(),
+    }
+}
+
 /// Assert federation journal entries, operation statuses, and member sequences are persisted.
 pub async fn federation_journal_persistence<DB>(db: DB)
 where
@@ -77,6 +88,29 @@ where
 
     let member_one = MemberId::new(1).expect("member one");
     let member_two = MemberId::new(2).expect("member two");
+    let second_private = private_member(2);
+    let first_session_outcome = FederationJournalCatchUpResponse::from_journal(
+        federation_id(),
+        &journal,
+        &FederationJournalCatchUpRequest::new(0),
+        50,
+        100,
+    )
+    .with_signed_session_outcome(&second_private)
+    .expect("first session outcome")
+    .session_outcome
+    .expect("first session outcome");
+    let second_session_outcome = FederationJournalCatchUpResponse::from_journal(
+        federation_id(),
+        &journal,
+        &FederationJournalCatchUpRequest::new(1),
+        50,
+        100,
+    )
+    .with_signed_session_outcome(&second_private)
+    .expect("second session outcome")
+    .session_outcome
+    .expect("second session outcome");
 
     let mut tx = Database::begin_transaction(&db).await.expect("begin");
     tx.add_federation_journal_entry(&first)
@@ -100,6 +134,12 @@ where
     tx.set_federation_member_sequence(member_one, 5)
         .await
         .expect("sequence one stale update");
+    tx.add_federation_session_outcome(&first_session_outcome)
+        .await
+        .expect("persist first session outcome");
+    tx.add_federation_session_outcome(&second_session_outcome)
+        .await
+        .expect("persist second session outcome");
     tx.commit().await.expect("commit");
 
     let entries = db
@@ -129,4 +169,28 @@ where
         .expect("sequences");
     assert_eq!(sequences.get(&member_one), Some(&9));
     assert_eq!(sequences.get(&member_two), Some(&11));
+
+    let session_outcomes = db
+        .get_federation_session_outcomes()
+        .await
+        .expect("session outcomes");
+    assert_eq!(session_outcomes.len(), 2);
+    assert_eq!(session_outcomes[0].from_index, 0);
+    assert_eq!(session_outcomes[0].signer, member_two);
+    assert_eq!(
+        session_outcomes[0].operation_ids,
+        first_session_outcome.operation_ids
+    );
+    assert_eq!(session_outcomes[1].from_index, 1);
+    assert_eq!(
+        session_outcomes[1].signature,
+        second_session_outcome.signature
+    );
+
+    let session_outcomes_from = db
+        .get_federation_session_outcomes_from(1)
+        .await
+        .expect("session outcomes from");
+    assert_eq!(session_outcomes_from.len(), 1);
+    assert_eq!(session_outcomes_from[0].from_index, 1);
 }

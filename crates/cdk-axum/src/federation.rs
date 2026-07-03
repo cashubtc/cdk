@@ -1345,6 +1345,15 @@ mod tests {
             .expect("persisted journal");
         assert_eq!(persisted.len(), 2);
         assert_eq!(persisted[1].operation_id, applied[0].operation_id);
+        let persisted_outcomes = state
+            .mint
+            .localstore()
+            .get_federation_session_outcomes()
+            .await
+            .expect("persisted session outcomes");
+        assert_eq!(persisted_outcomes.len(), 1);
+        assert_eq!(persisted_outcomes[0].from_index, 1);
+        assert_eq!(persisted_outcomes[0].signer, peer_member.member_id);
         let requests = transport.catch_up_requests();
         assert_eq!(requests.len(), 1);
         requests[0]

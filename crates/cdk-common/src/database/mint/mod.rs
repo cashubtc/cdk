@@ -12,7 +12,8 @@ use cashu::Amount;
 use super::{DbTransactionFinalizer, Error};
 #[cfg(feature = "federation")]
 use crate::federation::{
-    FederationJournalEntry, FederationOperationId, FederationOperationStatus, MemberId,
+    FederationJournalEntry, FederationOperationId, FederationOperationStatus,
+    FederationSessionOutcome, MemberId,
 };
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
@@ -630,6 +631,12 @@ pub trait FederationJournalTransaction {
         member_id: MemberId,
         sequence: u64,
     ) -> Result<(), Self::Err>;
+
+    /// Persist one signed federation session outcome.
+    async fn add_federation_session_outcome(
+        &mut self,
+        outcome: &FederationSessionOutcome,
+    ) -> Result<(), Self::Err>;
 }
 
 #[cfg(feature = "federation")]
@@ -652,6 +659,17 @@ pub trait FederationJournalDatabase {
 
     /// Get persisted private REST sequence watermarks by member.
     async fn get_federation_member_sequences(&self) -> Result<BTreeMap<MemberId, u64>, Self::Err>;
+
+    /// Get all persisted signed federation session outcomes.
+    async fn get_federation_session_outcomes(
+        &self,
+    ) -> Result<Vec<FederationSessionOutcome>, Self::Err>;
+
+    /// Get persisted signed federation session outcomes starting at `from_index`.
+    async fn get_federation_session_outcomes_from(
+        &self,
+        from_index: u64,
+    ) -> Result<Vec<FederationSessionOutcome>, Self::Err>;
 }
 
 #[cfg(not(feature = "federation"))]
