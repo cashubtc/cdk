@@ -246,6 +246,8 @@ mod tests {
             cache: Arc::new(HttpCache::default()),
             #[cfg(feature = "federation")]
             federation_consensus: None,
+            #[cfg(feature = "federation")]
+            federation_sequences: None,
         };
         let (publisher, _receiver) = tokio::sync::mpsc::channel(100);
         WsContext {

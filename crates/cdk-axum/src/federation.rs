@@ -1,35 +1,43 @@
 //! Private federation member REST routes.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
 use axum::extract::{Json, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::post;
 use axum::Router;
-use cdk::federation::MemberConfigPublic;
 use cdk::federation::{
-    FederationError, FederationId, FederationJournalCatchUpRequest,
+    FederationConfig, FederationError, FederationId, FederationJournalCatchUpRequest,
     FederationJournalCatchUpResponse, FederationJournalEntry, FederationPeerStatus,
-    FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    InMemoryFederationConsensus, FEDERATION_REST_API_VERSION,
+    FederationPeerStatusRequest, FederationRestMessageKind, FederationRestSequenceTracker,
+    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    InMemoryFederationConsensus, MemberConfigPrivate, MemberConfigPublic,
+    FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
+use serde::Serialize;
 use tracing::instrument;
 
 use crate::MintState;
 
 type ConsensusHandle = std::sync::Arc<tokio::sync::Mutex<InMemoryFederationConsensus>>;
+type SequenceHandle = std::sync::Arc<tokio::sync::Mutex<FederationRestSequenceTracker>>;
 
 pub(crate) fn create_federation_router() -> Router<MintState> {
     Router::new()
-        .route("/status", get(get_status))
+        .route("/status", post(post_status))
         .route("/operations", post(post_operation))
         .route("/journal", post(post_journal))
 }
 
 #[instrument(skip_all)]
-async fn get_status(
+async fn post_status(
     State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationPeerStatusRequest>>,
 ) -> Result<Json<FederationPeerStatus>, Response> {
+    verify_federation_request(&state, &payload, FederationRestMessageKind::Status).await?;
     let consensus = federation_consensus(&state)?;
     let consensus = consensus.lock().await;
     Ok(Json(consensus.peer_status()))
@@ -38,12 +46,13 @@ async fn get_status(
 #[instrument(skip_all)]
 async fn post_operation(
     State(state): State<MintState>,
-    Json(payload): Json<FederationSubmitOperationRequest>,
+    Json(payload): Json<FederationSignedRequest<FederationSubmitOperationRequest>>,
 ) -> Result<Json<FederationSubmitOperationResponse>, Response> {
+    verify_federation_request(&state, &payload, FederationRestMessageKind::SubmitOperation).await?;
     let consensus = federation_consensus(&state)?;
     let mut consensus = consensus.lock().await;
     let response = consensus
-        .submit_operation(payload)
+        .submit_operation(payload.payload)
         .map_err(federation_error_response)?;
     tracing::debug!("Accepted federation operation {}", response.operation_id);
     Ok(Json(response))
@@ -52,24 +61,70 @@ async fn post_operation(
 #[instrument(skip_all)]
 async fn post_journal(
     State(state): State<MintState>,
-    Json(payload): Json<FederationJournalCatchUpRequest>,
+    Json(payload): Json<FederationSignedRequest<FederationJournalCatchUpRequest>>,
 ) -> Result<Json<FederationJournalCatchUpResponse>, Response> {
+    verify_federation_request(&state, &payload, FederationRestMessageKind::CatchUp).await?;
     let consensus = federation_consensus(&state)?;
     tracing::debug!(
-        next_index = payload.next_index,
-        limit = ?payload.limit,
+        next_index = payload.payload.next_index,
+        limit = ?payload.payload.limit,
         "Received federation journal catch-up request"
     );
     let consensus = consensus.lock().await;
     let response = consensus
-        .catch_up_checked(&payload)
+        .catch_up_checked(&payload.payload)
         .map_err(federation_error_response)?;
     Ok(Json(response))
+}
+
+async fn verify_federation_request<T>(
+    state: &MintState,
+    request: &FederationSignedRequest<T>,
+    expected_kind: FederationRestMessageKind,
+) -> Result<(), Response>
+where
+    T: Serialize,
+{
+    if request.kind != expected_kind {
+        return Err(federation_error_response(
+            FederationError::RestMessageKindMismatch {
+                expected: expected_kind,
+                found: request.kind,
+            },
+        ));
+    }
+
+    let runtime_config = federation_runtime_config(state)?;
+    let sequences = federation_sequences(state)?;
+    let mut sequences = sequences.lock().await;
+    sequences
+        .verify_and_record(
+            request,
+            runtime_config.public_config(),
+            runtime_config.member_id(),
+        )
+        .map_err(federation_error_response)
+}
+
+fn federation_runtime_config(
+    state: &MintState,
+) -> Result<&cdk::mint::FederationRuntimeConfig, Response> {
+    state
+        .mint
+        .federation_config()
+        .ok_or_else(federation_not_configured)
 }
 
 fn federation_consensus(state: &MintState) -> Result<ConsensusHandle, Response> {
     state
         .federation_consensus
+        .clone()
+        .ok_or_else(federation_not_configured)
+}
+
+fn federation_sequences(state: &MintState) -> Result<SequenceHandle, Response> {
+    state
+        .federation_sequences
         .clone()
         .ok_or_else(federation_not_configured)
 }
@@ -100,13 +155,9 @@ fn federation_error_response(err: FederationError) -> Response {
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct FederationRestPeerClient<T = Async> {
     transport: T,
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-impl Default for FederationRestPeerClient<Async> {
-    fn default() -> Self {
-        Self::new(Async::default())
-    }
+    federation_id: FederationId,
+    private_config: MemberConfigPrivate,
+    next_sequence: Arc<AtomicU64>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -114,20 +165,34 @@ impl<T> FederationRestPeerClient<T>
 where
     T: Transport,
 {
-    pub(crate) fn new(transport: T) -> Self {
-        Self { transport }
+    pub(crate) fn new(
+        transport: T,
+        public_config: &FederationConfig,
+        private_config: MemberConfigPrivate,
+    ) -> anyhow::Result<Self> {
+        private_config.validate_against_public(public_config)?;
+        Ok(Self {
+            transport,
+            federation_id: public_config.federation_id,
+            private_config,
+            next_sequence: Arc::new(AtomicU64::new(0)),
+        })
     }
 
     pub(crate) async fn peer_status(
         &self,
-        expected_federation_id: FederationId,
         member: &MemberConfigPublic,
     ) -> anyhow::Result<FederationPeerStatus> {
+        let request = self.signed_request(
+            member,
+            FederationRestMessageKind::Status,
+            FederationPeerStatusRequest::default(),
+        )?;
         let status = self
             .transport
-            .http_get(federation_endpoint(member, "status")?, None)
+            .http_post(federation_endpoint(member, "status")?, None, &request)
             .await?;
-        validate_peer_status(expected_federation_id, member, &status)?;
+        validate_peer_status(self.federation_id, member, &status)?;
         Ok(status)
     }
 
@@ -137,9 +202,14 @@ where
         request: &FederationSubmitOperationRequest,
     ) -> anyhow::Result<FederationSubmitOperationResponse> {
         let expected_operation_id = request.operation_id()?;
+        let request = self.signed_request(
+            member,
+            FederationRestMessageKind::SubmitOperation,
+            request.clone(),
+        )?;
         let response: FederationSubmitOperationResponse = self
             .transport
-            .http_post(federation_endpoint(member, "operations")?, None, request)
+            .http_post(federation_endpoint(member, "operations")?, None, &request)
             .await?;
 
         if response.operation_id != expected_operation_id {
@@ -159,15 +229,25 @@ where
         member: &MemberConfigPublic,
         request: &FederationJournalCatchUpRequest,
     ) -> anyhow::Result<FederationJournalCatchUpResponse> {
+        let request =
+            self.signed_request(member, FederationRestMessageKind::CatchUp, request.clone())?;
         let response: FederationJournalCatchUpResponse = self
             .transport
-            .http_post(federation_endpoint(member, "journal")?, None, request)
+            .http_post(federation_endpoint(member, "journal")?, None, &request)
             .await?;
         if response.version != FEDERATION_REST_API_VERSION {
             anyhow::bail!(
                 "federation peer {} returned unsupported REST version {}",
                 member.member_id,
                 response.version
+            );
+        }
+        if response.federation_id != self.federation_id {
+            anyhow::bail!(
+                "federation peer {} returned catch-up for federation {}, expected {}",
+                member.member_id,
+                response.federation_id,
+                self.federation_id
             );
         }
         Ok(response)
@@ -185,6 +265,25 @@ where
         let response = self.catch_up(member, &request).await?;
         let mut consensus = consensus.lock().await;
         Ok(consensus.apply_catch_up_response(&response)?)
+    }
+
+    fn signed_request<P>(
+        &self,
+        member: &MemberConfigPublic,
+        kind: FederationRestMessageKind,
+        payload: P,
+    ) -> anyhow::Result<FederationSignedRequest<P>>
+    where
+        P: Serialize,
+    {
+        Ok(FederationSignedRequest::new_signed(
+            self.federation_id,
+            member.member_id,
+            self.next_sequence.fetch_add(1, Ordering::Relaxed) + 1,
+            kind,
+            payload,
+            &self.private_config,
+        )?)
     }
 }
 
@@ -228,19 +327,28 @@ fn validate_peer_status(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, HashMap, HashSet};
     use std::str::FromStr;
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
+    use bip39::Mnemonic;
     use cdk::federation::{
-        FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-        FederationOperationKind, MemberId,
+        generate_trusted_dealer_configs, FederationMintQuotePaymentObservation,
+        FederationOperation, FederationOperationEnvelope, FederationOperationKind, MemberId,
+        ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
+    use cdk::mint::{MintBuilder, MintMeltLimits};
     use cdk::mint_url::MintUrl;
     use cdk::nuts::nut00::KnownMethod;
+    use cdk::nuts::nut01::BlsSecretKey;
     use cdk::nuts::nut22::AuthToken;
-    use cdk::nuts::{MintQuoteState, PaymentMethod, PublicKey, RestoreRequest, SecretKey};
+    use cdk::nuts::{
+        CurrencyUnit, MintQuoteState, PaymentMethod, PublicKey, RestoreRequest, SecretKey,
+    };
+    use cdk::types::FeeReserve;
     use cdk::Amount;
+    use cdk_fake_wallet::FakeWallet;
     use cdk_http_client::HttpError;
     use serde::de::DeserializeOwned;
     use serde::Serialize;
@@ -252,8 +360,9 @@ mod tests {
         status_response: Option<FederationPeerStatus>,
         submit_response: Option<FederationSubmitOperationResponse>,
         catch_up_response: Option<FederationJournalCatchUpResponse>,
-        submitted_operations: Vec<FederationSubmitOperationRequest>,
-        catch_up_requests: Vec<FederationJournalCatchUpRequest>,
+        status_requests: Vec<FederationSignedRequest<FederationPeerStatusRequest>>,
+        submitted_operations: Vec<FederationSignedRequest<FederationSubmitOperationRequest>>,
+        catch_up_requests: Vec<FederationSignedRequest<FederationJournalCatchUpRequest>>,
     }
 
     #[derive(Debug, Clone, Default)]
@@ -286,7 +395,17 @@ mod tests {
             self
         }
 
-        fn submitted_operations(&self) -> Vec<FederationSubmitOperationRequest> {
+        fn status_requests(&self) -> Vec<FederationSignedRequest<FederationPeerStatusRequest>> {
+            self.state
+                .lock()
+                .expect("mock transport lock")
+                .status_requests
+                .clone()
+        }
+
+        fn submitted_operations(
+            &self,
+        ) -> Vec<FederationSignedRequest<FederationSubmitOperationRequest>> {
             self.state
                 .lock()
                 .expect("mock transport lock")
@@ -294,7 +413,9 @@ mod tests {
                 .clone()
         }
 
-        fn catch_up_requests(&self) -> Vec<FederationJournalCatchUpRequest> {
+        fn catch_up_requests(
+            &self,
+        ) -> Vec<FederationSignedRequest<FederationJournalCatchUpRequest>> {
             self.state
                 .lock()
                 .expect("mock transport lock")
@@ -318,20 +439,10 @@ mod tests {
         where
             R: DeserializeOwned,
         {
-            if !url.path().ends_with("/federation/v1/status") {
-                return Err(HttpError::Other(format!(
-                    "unexpected GET path {}",
-                    url.path()
-                )));
-            }
-            let response = self
-                .state
-                .lock()
-                .expect("mock transport lock")
-                .status_response
-                .clone()
-                .ok_or_else(|| HttpError::Other("missing status response".to_string()))?;
-            json_response(response)
+            Err(HttpError::Other(format!(
+                "unexpected GET path {}",
+                url.path()
+            )))
         }
 
         async fn http_post<P, R>(
@@ -346,10 +457,21 @@ mod tests {
         {
             let mut state = self.state.lock().expect("mock transport lock");
             match url.path() {
+                path if path.ends_with("/federation/v1/status") => {
+                    let request = serde_json::from_value::<
+                        FederationSignedRequest<FederationPeerStatusRequest>,
+                    >(serde_json::to_value(payload)?)?;
+                    state.status_requests.push(request);
+                    let response = state
+                        .status_response
+                        .clone()
+                        .ok_or_else(|| HttpError::Other("missing status response".to_string()))?;
+                    json_response(response)
+                }
                 path if path.ends_with("/federation/v1/operations") => {
-                    let request = serde_json::from_value::<FederationSubmitOperationRequest>(
-                        serde_json::to_value(payload)?,
-                    )?;
+                    let request = serde_json::from_value::<
+                        FederationSignedRequest<FederationSubmitOperationRequest>,
+                    >(serde_json::to_value(payload)?)?;
                     state.submitted_operations.push(request);
                     let response = state
                         .submit_response
@@ -358,9 +480,9 @@ mod tests {
                     json_response(response)
                 }
                 path if path.ends_with("/federation/v1/journal") => {
-                    let request = serde_json::from_value::<FederationJournalCatchUpRequest>(
-                        serde_json::to_value(payload)?,
-                    )?;
+                    let request = serde_json::from_value::<
+                        FederationSignedRequest<FederationJournalCatchUpRequest>,
+                    >(serde_json::to_value(payload)?)?;
                     state.catch_up_requests.push(request);
                     let response = state
                         .catch_up_response
@@ -381,26 +503,143 @@ mod tests {
         Ok(serde_json::from_value(serde_json::to_value(value)?)?)
     }
 
-    fn federation_id(byte: u8) -> FederationId {
-        FederationId::from_bytes([byte; 32])
-    }
-
     fn member_id(value: u16) -> MemberId {
         MemberId::new(value).expect("member id")
     }
 
-    fn member_config(value: u16) -> MemberConfigPublic {
-        let member_id = member_id(value);
-        MemberConfigPublic {
-            member_id,
-            public_mint_url: MintUrl::from_str(&format!("https://mint{value}.example.com"))
-                .expect("public mint url"),
-            federation_api_url: MintUrl::from_str(&format!("https://fed{value}.example.com/api"))
-                .expect("federation api url"),
-            identity_public_key: SecretKey::from_slice(&[value as u8; 32])
-                .expect("identity secret")
-                .public_key(),
+    fn private_member(value: u16) -> MemberConfigPrivate {
+        MemberConfigPrivate {
+            member_id: member_id(value),
+            identity_secret_key: SecretKey::from_slice(&[value as u8; 32])
+                .expect("identity secret"),
+            keyset_secret_shares: BTreeMap::new(),
         }
+    }
+
+    fn transport_config() -> (FederationConfig, MemberConfigPrivate, MemberConfigPrivate) {
+        let members = vec![
+            TrustedDealerMember::new(
+                member_id(1),
+                MintUrl::from_str("https://mint1.example.com").expect("public mint url"),
+                MintUrl::from_str("https://fed1.example.com/api").expect("federation api url"),
+                SecretKey::from_slice(&[1; 32]).expect("identity secret"),
+            ),
+            TrustedDealerMember::new(
+                member_id(2),
+                MintUrl::from_str("https://mint2.example.com").expect("public mint url"),
+                MintUrl::from_str("https://fed2.example.com/api").expect("federation api url"),
+                SecretKey::from_slice(&[2; 32]).expect("identity secret"),
+            ),
+        ];
+        let keyset = TrustedDealerKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            BTreeMap::from([(
+                Amount::from(1),
+                vec![
+                    BlsSecretKey::from_reduced_bytes(&[11; 32]),
+                    BlsSecretKey::from_reduced_bytes(&[12; 32]),
+                ],
+            )]),
+        );
+        let bundle = generate_trusted_dealer_configs(
+            ThresholdParams::new(2, 2, 2).expect("threshold params"),
+            members,
+            vec![keyset],
+        )
+        .expect("trusted dealer bundle");
+        let first_private = bundle
+            .private_configs
+            .get(&member_id(1))
+            .expect("first private config")
+            .clone();
+        let second_private = bundle
+            .private_configs
+            .get(&member_id(2))
+            .expect("second private config")
+            .clone();
+        (bundle.public_config, first_private, second_private)
+    }
+
+    async fn federation_route_state() -> (MintState, FederationConfig, MemberConfigPrivate) {
+        let (public_config, local_private, peer_private) = transport_config();
+        let runtime_config =
+            cdk::mint::FederationRuntimeConfig::new(public_config.clone(), local_private)
+                .expect("runtime config");
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+        let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        let mut builder = MintBuilder::new(db.clone())
+            .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]))
+            .with_federation_config(runtime_config.clone());
+        let fake = FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 0.0,
+            },
+            HashMap::default(),
+            HashSet::default(),
+            0,
+            CurrencyUnit::Sat,
+        );
+        builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintMeltLimits::new(1, 10_000),
+                Arc::new(fake),
+            )
+            .await
+            .expect("payment processor");
+        let mint = builder
+            .build_with_seed(db, &mnemonic.to_seed_normalized(""))
+            .await
+            .expect("mint");
+        let state = MintState {
+            mint: Arc::new(mint),
+            cache: Arc::new(crate::cache::HttpCache::default()),
+            federation_consensus: Some(Arc::new(tokio::sync::Mutex::new(
+                InMemoryFederationConsensus::new(
+                    runtime_config.federation_id(),
+                    runtime_config.member_id(),
+                ),
+            ))),
+            federation_sequences: Some(Arc::new(tokio::sync::Mutex::new(
+                FederationRestSequenceTracker::new(),
+            ))),
+        };
+
+        (state, public_config, peer_private)
+    }
+
+    fn signed_operation_request(
+        public_config: &FederationConfig,
+        private_config: &MemberConfigPrivate,
+        sequence: u64,
+        kind: FederationRestMessageKind,
+        envelope: FederationOperationEnvelope,
+    ) -> FederationSignedRequest<FederationSubmitOperationRequest> {
+        FederationSignedRequest::new_signed(
+            public_config.federation_id,
+            member_id(1),
+            sequence,
+            kind,
+            FederationSubmitOperationRequest::new(envelope),
+            private_config,
+        )
+        .expect("signed operation request")
+    }
+
+    async fn consensus_operation_count(state: &MintState) -> u64 {
+        state
+            .federation_consensus
+            .as_ref()
+            .expect("consensus")
+            .lock()
+            .await
+            .peer_status()
+            .operation_count
     }
 
     fn payment_observation_envelope(federation_id: FederationId) -> FederationOperationEnvelope {
@@ -437,8 +676,9 @@ mod tests {
 
     #[tokio::test]
     async fn rest_peer_client_validates_peer_status() {
-        let federation_id = federation_id(31);
-        let member = member_config(2);
+        let (public_config, local_private, _) = transport_config();
+        let federation_id = public_config.federation_id;
+        let member = public_config.member(member_id(2)).expect("peer member");
         let status = FederationPeerStatus::new(
             federation_id,
             member.member_id,
@@ -447,20 +687,26 @@ mod tests {
             cdk::federation::FederationJournalDigest::genesis(),
         );
         let transport = MockFederationTransport::default().with_status_response(status.clone());
-        let client = FederationRestPeerClient::new(transport);
+        let client =
+            FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
+                .expect("client");
 
-        let response = client
-            .peer_status(federation_id, &member)
-            .await
-            .expect("peer status");
+        let response = client.peer_status(member).await.expect("peer status");
 
         assert_eq!(response, status);
+        let requests = transport.status_requests();
+        assert_eq!(requests.len(), 1);
+        requests[0]
+            .verify(&public_config, member.member_id)
+            .expect("signed status request");
+        assert_eq!(requests[0].sender, member_id(1));
+        assert_eq!(requests[0].kind, FederationRestMessageKind::Status);
     }
 
     #[tokio::test]
     async fn rest_peer_client_rejects_status_wrong_federation() {
-        let federation_id = federation_id(31);
-        let member = member_config(2);
+        let (public_config, local_private, _) = transport_config();
+        let member = public_config.member(member_id(2)).expect("peer member");
         let status = FederationPeerStatus::new(
             super::FederationId::from_bytes([32; 32]),
             member.member_id,
@@ -469,15 +715,17 @@ mod tests {
             cdk::federation::FederationJournalDigest::genesis(),
         );
         let transport = MockFederationTransport::default().with_status_response(status);
-        let client = FederationRestPeerClient::new(transport);
+        let client = FederationRestPeerClient::new(transport, &public_config, local_private)
+            .expect("client");
 
-        assert!(client.peer_status(federation_id, &member).await.is_err());
+        assert!(client.peer_status(member).await.is_err());
     }
 
     #[tokio::test]
     async fn rest_peer_client_submits_payment_observation_operations() {
-        let federation_id = federation_id(31);
-        let member = member_config(2);
+        let (public_config, local_private, _) = transport_config();
+        let federation_id = public_config.federation_id;
+        let member = public_config.member(member_id(2)).expect("peer member");
         let envelope = payment_observation_envelope(federation_id);
         let request = FederationSubmitOperationRequest::new(envelope.clone());
         let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, member.member_id);
@@ -486,31 +734,37 @@ mod tests {
             .expect("peer submit response");
         let transport =
             MockFederationTransport::default().with_submit_response(submit_response.clone());
-        let client = FederationRestPeerClient::new(transport.clone());
+        let client =
+            FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
+                .expect("client");
 
         let response = client
-            .submit_operation(&member, &request)
+            .submit_operation(member, &request)
             .await
             .expect("submit operation");
 
         assert_eq!(response.operation_id, submit_response.operation_id);
         let submitted = transport.submitted_operations();
         assert_eq!(submitted.len(), 1);
+        submitted[0]
+            .verify(&public_config, member.member_id)
+            .expect("signed submit request");
         assert_eq!(
-            submitted[0].operation_id().expect("operation id"),
+            submitted[0].payload.operation_id().expect("operation id"),
             response.operation_id
         );
         assert_eq!(
-            submitted[0].envelope.operation.kind(),
+            submitted[0].payload.envelope.operation.kind(),
             FederationOperationKind::MintQuotePayment
         );
     }
 
     #[tokio::test]
     async fn rest_peer_client_catches_up_local_consensus_from_member() {
-        let federation_id = federation_id(31);
+        let (public_config, local_private, _) = transport_config();
+        let federation_id = public_config.federation_id;
         let local_member = member_id(1);
-        let peer_member = member_config(2);
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
         let first = restore_envelope(
             federation_id,
             "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
@@ -537,10 +791,12 @@ mod tests {
         let consensus = Arc::new(tokio::sync::Mutex::new(local_consensus));
         let transport =
             MockFederationTransport::default().with_catch_up_response(catch_up_response);
-        let client = FederationRestPeerClient::new(transport.clone());
+        let client =
+            FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
+                .expect("client");
 
         let applied = client
-            .catch_up_local_from_member(consensus.clone(), &peer_member)
+            .catch_up_local_from_member(consensus.clone(), peer_member)
             .await
             .expect("catch up");
 
@@ -551,6 +807,132 @@ mod tests {
         );
         let requests = transport.catch_up_requests();
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].next_index, 1);
+        requests[0]
+            .verify(&public_config, peer_member.member_id)
+            .expect("signed catch-up request");
+        assert_eq!(requests[0].payload.next_index, 1);
+    }
+
+    #[tokio::test]
+    async fn private_operation_route_accepts_signed_peer_request() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let envelope = payment_observation_envelope(public_config.federation_id);
+        let request = signed_operation_request(
+            &public_config,
+            &peer_private,
+            1,
+            FederationRestMessageKind::SubmitOperation,
+            envelope.clone(),
+        );
+
+        let response = post_operation(State(state.clone()), Json(request))
+            .await
+            .expect("operation response");
+
+        assert_eq!(
+            response.0.operation_id,
+            envelope.operation_id().expect("operation id")
+        );
+        assert_eq!(consensus_operation_count(&state).await, 1);
+    }
+
+    #[tokio::test]
+    async fn private_operation_route_rejects_tampered_payload_before_mutation() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let first = payment_observation_envelope(public_config.federation_id);
+        let second = restore_envelope(
+            public_config.federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        let mut request = signed_operation_request(
+            &public_config,
+            &peer_private,
+            1,
+            FederationRestMessageKind::SubmitOperation,
+            first,
+        );
+        request.payload = FederationSubmitOperationRequest::new(second);
+
+        let response = post_operation(State(state.clone()), Json(request))
+            .await
+            .expect_err("tampered request must fail");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(consensus_operation_count(&state).await, 0);
+    }
+
+    #[tokio::test]
+    async fn private_operation_route_rejects_unknown_sender_before_mutation() {
+        let (state, public_config, _) = federation_route_state().await;
+        let unknown_private = private_member(3);
+        let envelope = payment_observation_envelope(public_config.federation_id);
+        let request = signed_operation_request(
+            &public_config,
+            &unknown_private,
+            1,
+            FederationRestMessageKind::SubmitOperation,
+            envelope,
+        );
+
+        let response = post_operation(State(state.clone()), Json(request))
+            .await
+            .expect_err("unknown sender must fail");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(consensus_operation_count(&state).await, 0);
+    }
+
+    #[tokio::test]
+    async fn private_operation_route_rejects_kind_mismatch_before_mutation() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let envelope = payment_observation_envelope(public_config.federation_id);
+        let request = signed_operation_request(
+            &public_config,
+            &peer_private,
+            1,
+            FederationRestMessageKind::Status,
+            envelope,
+        );
+
+        let response = post_operation(State(state.clone()), Json(request))
+            .await
+            .expect_err("wrong message kind must fail");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(consensus_operation_count(&state).await, 0);
+    }
+
+    #[tokio::test]
+    async fn private_operation_route_rejects_stale_sequence_before_second_mutation() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let first = payment_observation_envelope(public_config.federation_id);
+        let second = restore_envelope(
+            public_config.federation_id,
+            "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+        );
+        let first_request = signed_operation_request(
+            &public_config,
+            &peer_private,
+            1,
+            FederationRestMessageKind::SubmitOperation,
+            first,
+        );
+        let second_request = signed_operation_request(
+            &public_config,
+            &peer_private,
+            1,
+            FederationRestMessageKind::SubmitOperation,
+            second,
+        );
+
+        let _ = post_operation(State(state.clone()), Json(first_request))
+            .await
+            .expect("first operation accepted");
+        let response = post_operation(State(state.clone()), Json(second_request))
+            .await
+            .expect_err("stale sequence must fail");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(consensus_operation_count(&state).await, 1);
     }
 }

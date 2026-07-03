@@ -34,6 +34,9 @@ pub struct MintState {
     #[cfg(feature = "federation")]
     federation_consensus:
         Option<Arc<tokio::sync::Mutex<cdk::federation::InMemoryFederationConsensus>>>,
+    #[cfg(feature = "federation")]
+    federation_sequences:
+        Option<Arc<tokio::sync::Mutex<cdk::federation::FederationRestSequenceTracker>>>,
 }
 
 /// Create mint [`Router`] with required endpoints for cashu mint with the default cache
@@ -108,11 +111,19 @@ pub async fn create_mint_router_with_custom_cache(
             ),
         ))
     });
+    #[cfg(feature = "federation")]
+    let federation_sequences = federation_consensus.as_ref().map(|_| {
+        Arc::new(tokio::sync::Mutex::new(
+            cdk::federation::FederationRestSequenceTracker::new(),
+        ))
+    });
     let state = MintState {
         mint,
         cache: Arc::new(cache),
         #[cfg(feature = "federation")]
         federation_consensus,
+        #[cfg(feature = "federation")]
+        federation_sequences,
     };
 
     let v1_router = Router::new()

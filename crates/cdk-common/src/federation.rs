@@ -455,6 +455,14 @@ pub enum FederationError {
         /// Sender whose signature was checked.
         member_id: MemberId,
     },
+    /// Signed REST request was sent to an endpoint for a different message kind.
+    #[error("Federation REST message kind mismatch: expected={expected:?}, found={found:?}")]
+    RestMessageKindMismatch {
+        /// Expected message kind for the endpoint.
+        expected: FederationRestMessageKind,
+        /// Found message kind in the signed envelope.
+        found: FederationRestMessageKind,
+    },
     /// Signed REST request replayed or moved backwards in the member sequence.
     #[error("Federation REST stale sequence from member {member_id}: last={last}, found={found}")]
     RestStaleSequence {

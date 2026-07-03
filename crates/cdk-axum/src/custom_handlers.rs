@@ -1025,6 +1025,8 @@ mod tests {
             cache: Arc::new(HttpCache::default()),
             #[cfg(feature = "federation")]
             federation_consensus: None,
+            #[cfg(feature = "federation")]
+            federation_sequences: None,
         }
     }
 
@@ -1122,6 +1124,9 @@ mod tests {
                     runtime_config.member_id(),
                 ),
             ))),
+            federation_sequences: Some(Arc::new(tokio::sync::Mutex::new(
+                cdk::federation::FederationRestSequenceTracker::new(),
+            ))),
         }
     }
 
@@ -1194,6 +1199,8 @@ mod tests {
             cache: Arc::new(HttpCache::default()),
             #[cfg(feature = "federation")]
             federation_consensus: None,
+            #[cfg(feature = "federation")]
+            federation_sequences: None,
         }
     }
 
