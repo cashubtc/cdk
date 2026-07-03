@@ -1,6 +1,7 @@
 //! Private federation member REST routes.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,11 +14,13 @@ use axum::Router;
 use cdk::federation::{
     FederationConfig, FederationConsensusEngine, FederationConsensusRuntime, FederationError,
     FederationId, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationJournalDigest, FederationJournalEntry, FederationOperationId, FederationPeerStatus,
-    FederationPeerStatusRequest, FederationRestMessageKind, FederationRestSequenceTracker,
-    FederationSessionOutcome, FederationSessionOutcomeQuorum, FederationSignedRequest,
-    FederationStateDigest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    MemberConfigPrivate, MemberConfigPublic, FEDERATION_REST_API_VERSION,
+    FederationJournalDigest, FederationJournalEntry, FederationMaterializedStateRow,
+    FederationMaterializedStateSnapshot, FederationOperation, FederationOperationId,
+    FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
+    FederationRestSequenceTracker, FederationSessionOutcome, FederationSessionOutcomeQuorum,
+    FederationSignedRequest, FederationStateDigest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, MemberConfigPrivate, MemberConfigPublic,
+    FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
 use serde::{Deserialize, Serialize};
@@ -315,9 +318,8 @@ async fn post_status(
         .persist_federation_sequence(verified.sender, verified.sequence)
         .await
         .map_err(cdk_error_response)?;
-    let consensus = federation_consensus(&state)?;
-    let consensus = consensus.lock().await;
-    Ok(Json(consensus.peer_status()))
+    let peer_status = local_peer_status(&state).await.map_err(anyhow_response)?;
+    Ok(Json(peer_status))
 }
 
 #[instrument(skip_all)]
@@ -331,9 +333,7 @@ async fn post_local_status(
         .persist_federation_sequence(verified.sender, verified.sequence)
         .await
         .map_err(cdk_error_response)?;
-    let consensus = federation_consensus(&state)?;
-    let consensus = consensus.lock().await;
-    let peer_status = consensus.peer_status();
+    let peer_status = local_peer_status(&state).await.map_err(anyhow_response)?;
     let sync_status = state.federation_sync_status().await.unwrap_or_default();
     let session_outcome_quorum = session_outcome_quorum_status(&state)
         .await
@@ -382,10 +382,19 @@ async fn post_journal(
         limit = ?payload.payload.limit,
         "Received federation journal catch-up request"
     );
-    let consensus = consensus.lock().await;
-    let response = consensus
-        .catch_up_checked(&payload.payload)
-        .map_err(federation_error_response)?
+    let (mut response, entries) = {
+        let consensus = consensus.lock().await;
+        (
+            consensus
+                .catch_up_checked(&payload.payload)
+                .map_err(federation_error_response)?,
+            consensus.journal().entries().to_vec(),
+        )
+    };
+    response.state_digest = materialized_state_digest(&state, &entries)
+        .await
+        .map_err(anyhow_response)?;
+    let response = response
         .with_signed_session_outcome(&private_config)
         .map_err(federation_error_response)?;
     Ok(Json(response))
@@ -672,6 +681,11 @@ fn cdk_error_response(err: cdk::Error) -> Response {
             (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
         }
     }
+}
+
+fn anyhow_response(err: anyhow::Error) -> Response {
+    tracing::error!("Federation status failed: {}", err);
+    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
 }
 
 #[derive(Debug, Clone)]
@@ -969,7 +983,186 @@ async fn local_peer_status(state: &MintState) -> anyhow::Result<FederationPeerSt
         .federation_consensus
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("mint is not configured as a federation member"))?;
-    Ok(consensus.lock().await.peer_status())
+    let (mut status, entries) = {
+        let consensus = consensus.lock().await;
+        (
+            consensus.peer_status(),
+            consensus.journal().entries().to_vec(),
+        )
+    };
+    status.state_digest = materialized_state_digest(state, &entries).await?;
+    Ok(status)
+}
+
+async fn materialized_state_digest(
+    state: &MintState,
+    entries: &[FederationJournalEntry],
+) -> anyhow::Result<FederationStateDigest> {
+    let db = state.mint.localstore();
+    let mut snapshot = FederationMaterializedStateSnapshot::new();
+    let mut mint_quotes = BTreeSet::new();
+    let mut melt_quotes = BTreeSet::new();
+    let mut proof_ys = BTreeSet::new();
+    let mut blinded_messages = BTreeSet::new();
+
+    for entry in entries {
+        match &entry.envelope.operation {
+            FederationOperation::MintQuote(operation) => {
+                mint_quotes.insert(operation.quote.clone());
+            }
+            FederationOperation::MintQuotePayment(observation) => {
+                mint_quotes.insert(observation.quote.clone());
+            }
+            FederationOperation::Mint(operation) => {
+                mint_quotes.extend(
+                    operation
+                        .request
+                        .quote_ids()
+                        .into_iter()
+                        .map(str::to_string),
+                );
+                match &operation.request {
+                    cdk::federation::FederationMintRequest::Single(request) => {
+                        blinded_messages
+                            .extend(request.outputs.iter().map(|output| output.blinded_secret));
+                    }
+                    cdk::federation::FederationMintRequest::Batch(request) => {
+                        blinded_messages
+                            .extend(request.outputs.iter().map(|output| output.blinded_secret));
+                    }
+                }
+            }
+            FederationOperation::MeltQuote(operation) => {
+                melt_quotes.insert(operation.quote.clone());
+            }
+            FederationOperation::MeltQuotePayment(observation) => {
+                melt_quotes.insert(observation.quote.clone());
+            }
+            FederationOperation::Melt(operation) => {
+                melt_quotes.insert(operation.request.quote().clone());
+                for proof in operation.request.inputs() {
+                    proof_ys.insert(proof.y()?);
+                }
+                if let Some(outputs) = operation.request.outputs() {
+                    blinded_messages.extend(outputs.iter().map(|output| output.blinded_secret));
+                }
+            }
+            FederationOperation::Swap(operation) => {
+                for proof in operation.request.inputs() {
+                    proof_ys.insert(proof.y()?);
+                }
+                blinded_messages.extend(
+                    operation
+                        .request
+                        .outputs()
+                        .iter()
+                        .map(|output| output.blinded_secret),
+                );
+            }
+            FederationOperation::Restore(operation) => {
+                blinded_messages.extend(
+                    operation
+                        .request
+                        .outputs
+                        .iter()
+                        .map(|output| output.blinded_secret),
+                );
+            }
+        }
+    }
+
+    for quote in mint_quotes {
+        let quote_id = cdk::mint::QuoteId::from_str(&quote)?;
+        match db.get_mint_quote(&quote_id).await? {
+            Some(quote) => snapshot.push(
+                FederationMaterializedStateRow::new("mint_quotes", quote.id.to_string())
+                    .with_field("amount", optional_amount_value(quote.amount.as_ref()))
+                    .with_field("unit", quote.unit.to_string())
+                    .with_field("amount_paid", quote.amount_paid().value().to_string())
+                    .with_field("amount_issued", quote.amount_issued().value().to_string())
+                    .with_field("payment_method", quote.payment_method.to_string())
+                    .with_field("request_lookup_id", quote.request_lookup_id.to_string())
+                    .with_field("payment_count", quote.payments.len().to_string())
+                    .with_field("issuance_count", quote.issuance.len().to_string()),
+            ),
+            None => snapshot.push(
+                FederationMaterializedStateRow::new("mint_quotes", quote)
+                    .with_field("missing", "true"),
+            ),
+        }
+    }
+
+    for quote in melt_quotes {
+        let quote_id = cdk::mint::QuoteId::from_str(&quote)?;
+        match db.get_melt_quote(&quote_id).await? {
+            Some(quote) => snapshot.push(
+                FederationMaterializedStateRow::new("melt_quotes", quote.id.to_string())
+                    .with_field("amount", quote.amount().value().to_string())
+                    .with_field("fee_reserve", quote.fee_reserve().value().to_string())
+                    .with_field("unit", quote.unit.to_string())
+                    .with_field("state", quote.state.to_string())
+                    .with_field("payment_method", quote.payment_method.to_string())
+                    .with_field(
+                        "paid_time",
+                        quote
+                            .paid_time
+                            .map(|paid_time| paid_time.to_string())
+                            .unwrap_or_default(),
+                    )
+                    .with_field("payment_proof", quote.payment_proof.unwrap_or_default())
+                    .with_field(
+                        "request_lookup_id",
+                        quote
+                            .request_lookup_id
+                            .map(|lookup| lookup.to_string())
+                            .unwrap_or_default(),
+                    ),
+            ),
+            None => snapshot.push(
+                FederationMaterializedStateRow::new("melt_quotes", quote)
+                    .with_field("missing", "true"),
+            ),
+        }
+    }
+
+    if !proof_ys.is_empty() {
+        let proof_ys = proof_ys.into_iter().collect::<Vec<_>>();
+        let proof_states = db.get_proofs_states(&proof_ys).await?;
+        for (y, state) in proof_ys.into_iter().zip(proof_states) {
+            let mut row = FederationMaterializedStateRow::new("proof_states", y.to_hex());
+            match state {
+                Some(state) => row.insert_field("state", state.to_string()),
+                None => row.insert_field("missing", "true"),
+            }
+            snapshot.push(row);
+        }
+    }
+
+    if !blinded_messages.is_empty() {
+        let blinded_messages = blinded_messages.into_iter().collect::<Vec<_>>();
+        let blind_signatures = db.get_blind_signatures(&blinded_messages).await?;
+        for (blinded_message, signature) in blinded_messages.into_iter().zip(blind_signatures) {
+            let mut row =
+                FederationMaterializedStateRow::new("blind_signatures", blinded_message.to_hex());
+            match signature {
+                Some(signature) => {
+                    row.insert_field("amount", signature.amount.to_string());
+                    row.insert_field("keyset_id", signature.keyset_id.to_string());
+                    row.insert_field("signature", signature.c.to_hex());
+                }
+                None => row.insert_field("missing", "true"),
+            }
+            snapshot.push(row);
+        }
+    }
+
+    Ok(snapshot.digest()?)
+}
+
+fn optional_amount_value(amount: Option<&cdk::Amount<cdk::nuts::CurrencyUnit>>) -> String {
+    amount
+        .map(|amount| amount.value().to_string())
+        .unwrap_or_default()
 }
 
 fn verify_session_outcome_evidence_entries(
@@ -1394,6 +1587,31 @@ mod tests {
             .await
             .peer_status()
             .operation_count
+    }
+
+    async fn peer_status_with_materialized_digest(
+        state: &MintState,
+        consensus: &InMemoryFederationConsensus,
+    ) -> FederationPeerStatus {
+        let mut status = consensus.peer_status();
+        status.state_digest = materialized_state_digest(state, consensus.journal().entries())
+            .await
+            .expect("materialized peer status digest");
+        status
+    }
+
+    async fn catch_up_response_with_materialized_digest(
+        state: &MintState,
+        consensus: &InMemoryFederationConsensus,
+        request: &FederationJournalCatchUpRequest,
+    ) -> FederationJournalCatchUpResponse {
+        let mut response = consensus
+            .catch_up_checked(request)
+            .expect("peer catch-up response");
+        response.state_digest = materialized_state_digest(state, consensus.journal().entries())
+            .await
+            .expect("materialized catch-up state digest");
+        response
     }
 
     fn payment_observation_envelope(federation_id: FederationId) -> FederationOperationEnvelope {
@@ -1906,11 +2124,13 @@ mod tests {
             .submit_envelope(peer_entry)
             .expect("peer accepted operation");
         let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-        let catch_up_response = peer_consensus
-            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-            .expect("peer catch-up response");
+        let catch_up_request = local_consensus.lock().await.catch_up_request();
+        let catch_up_response =
+            catch_up_response_with_materialized_digest(&state, &peer_consensus, &catch_up_request)
+                .await;
+        let peer_status = peer_status_with_materialized_digest(&state, &peer_consensus).await;
         let transport = MockFederationTransport::default()
-            .with_status_response(peer_consensus.peer_status())
+            .with_status_response(peer_status)
             .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private));
         let client = FederationRestPeerClient::new(transport, &public_config, local_private)
             .expect("client");
@@ -1953,11 +2173,13 @@ mod tests {
             .submit_envelope(peer_entry)
             .expect("peer accepted operation");
         let local_consensus = state.federation_consensus.as_ref().expect("consensus");
-        let catch_up_response = peer_consensus
-            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-            .expect("peer catch-up response");
+        let catch_up_request = local_consensus.lock().await.catch_up_request();
+        let catch_up_response =
+            catch_up_response_with_materialized_digest(&state, &peer_consensus, &catch_up_request)
+                .await;
+        let peer_status = peer_status_with_materialized_digest(&state, &peer_consensus).await;
         let transport = MockFederationTransport::default()
-            .with_status_response(peer_consensus.peer_status())
+            .with_status_response(peer_status)
             .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private));
         let client = FederationRestPeerClient::new(transport, &public_config, local_private)
             .expect("client");
@@ -2014,11 +2236,12 @@ mod tests {
         let catch_up_request = FederationJournalCatchUpRequest::new(0)
             .with_limit(1)
             .with_known_order_digest(FederationJournalDigest::genesis());
-        let catch_up_response = peer_consensus
-            .catch_up_checked(&catch_up_request)
-            .expect("peer evidence response");
+        let catch_up_response =
+            catch_up_response_with_materialized_digest(&state, &peer_consensus, &catch_up_request)
+                .await;
+        let peer_status = peer_status_with_materialized_digest(&state, &peer_consensus).await;
         let transport = MockFederationTransport::default()
-            .with_status_response(peer_consensus.peer_status())
+            .with_status_response(peer_status)
             .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private));
         let client =
             FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
@@ -2082,14 +2305,15 @@ mod tests {
         .with_known_order_digest(
             entries[FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT].previous_order_digest,
         );
-        let first_response = peer_consensus
-            .catch_up_checked(&first_request)
-            .expect("first chunk response");
-        let second_response = peer_consensus
-            .catch_up_checked(&second_request)
-            .expect("second chunk response");
+        let first_response =
+            catch_up_response_with_materialized_digest(&state, &peer_consensus, &first_request)
+                .await;
+        let second_response =
+            catch_up_response_with_materialized_digest(&state, &peer_consensus, &second_request)
+                .await;
+        let peer_status = peer_status_with_materialized_digest(&state, &peer_consensus).await;
         let transport = MockFederationTransport::default()
-            .with_status_response(peer_consensus.peer_status())
+            .with_status_response(peer_status)
             .with_catch_up_response(signed_catch_up_response(first_response, &peer_private))
             .with_catch_up_response(signed_catch_up_response(second_response, &peer_private));
         let client =
@@ -3088,6 +3312,27 @@ mod tests {
                 .status,
             FederationOperationStatus::Applied
         );
+    }
+
+    #[tokio::test]
+    async fn local_status_uses_materialized_database_state_digest() {
+        let (state, _, _) = federation_route_state().await;
+        let quote_id = QuoteId::new();
+        state
+            .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
+            .await
+            .expect("submit mint quote");
+
+        let status = local_peer_status(&state).await.expect("local status");
+        let consensus = state.federation_consensus.as_ref().expect("consensus");
+        let journal_only_digest = consensus.lock().await.state_digest();
+
+        assert_eq!(status.operation_count, 1);
+        assert_ne!(
+            status.state_digest, journal_only_digest,
+            "status digest should include applied mint database rows, not only the accepted journal"
+        );
+        assert_ne!(status.state_digest, FederationStateDigest::genesis());
     }
 
     #[tokio::test]
