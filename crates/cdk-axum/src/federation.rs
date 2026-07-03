@@ -31,6 +31,7 @@ type ConsensusHandle = std::sync::Arc<tokio::sync::Mutex<InMemoryFederationConse
 type SequenceHandle = std::sync::Arc<tokio::sync::Mutex<FederationRestSequenceTracker>>;
 
 const FEDERATION_PEER_SYNC_INTERVAL: Duration = Duration::from_secs(5);
+const FEDERATION_SESSION_OUTCOME_EVIDENCE_MAX_RANGE: usize = 1000;
 static FEDERATION_REST_SEQUENCE_SEED: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn create_federation_router() -> Router<MintState> {
@@ -107,7 +108,137 @@ where
             }
         }
     }
+    let collected = collect_session_outcome_evidence_round(state, client, peers).await;
+    if collected > 0 {
+        tracing::debug!(
+            session_outcomes = collected,
+            "Federation peer sync collected session outcome evidence"
+        );
+    }
     synced
+}
+
+async fn collect_session_outcome_evidence_round<T>(
+    state: &MintState,
+    client: &FederationRestPeerClient<T>,
+    peers: &[MemberConfigPublic],
+) -> usize
+where
+    T: Transport,
+{
+    let entries = match state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+    {
+        Ok(entries) => entries,
+        Err(err) => {
+            tracing::warn!(
+                "Could not load local federation journal for evidence: {}",
+                err
+            );
+            return 0;
+        }
+    };
+    if entries.is_empty() || entries.len() > FEDERATION_SESSION_OUTCOME_EVIDENCE_MAX_RANGE {
+        return 0;
+    }
+
+    let Some(runtime_config) = state.mint.federation_config() else {
+        return 0;
+    };
+    let mut collected = match local_peer_status(state).await {
+        Ok(peer_status) => {
+            match FederationSessionOutcome::new_signed(
+                runtime_config.federation_id(),
+                &entries,
+                peer_status.latest_order_digest,
+                peer_status.state_digest,
+                runtime_config.private_config(),
+            ) {
+                Ok(outcome) => match state.persist_federation_session_outcome(&outcome).await {
+                    Ok(()) => 1,
+                    Err(err) => {
+                        tracing::warn!(
+                            "Could not persist local federation session outcome evidence: {}",
+                            err
+                        );
+                        0
+                    }
+                },
+                Err(err) => {
+                    tracing::warn!(
+                        "Could not sign local federation session outcome evidence: {}",
+                        err
+                    );
+                    0
+                }
+            }
+        }
+        Err(err) => {
+            tracing::warn!(
+                "Could not read local federation status for session outcome evidence: {}",
+                err
+            );
+            0
+        }
+    };
+
+    match session_outcome_quorum_status(state).await {
+        Ok(Some(quorum))
+            if quorum.from_index == 0 && quorum.operation_count >= entries.len() as u64 =>
+        {
+            return 0;
+        }
+        Ok(_) => {}
+        Err(err) => {
+            tracing::warn!(
+                "Could not inspect federation session outcome quorum: {}",
+                err
+            );
+        }
+    }
+
+    let request = FederationJournalCatchUpRequest::new(0)
+        .with_limit(entries.len() as u16)
+        .with_known_order_digest(FederationJournalDigest::genesis());
+    for peer in peers {
+        let response = match client.catch_up(peer, &request).await {
+            Ok(response) => response,
+            Err(err) => {
+                tracing::warn!(
+                    member_id = %peer.member_id,
+                    "Federation session outcome evidence request failed: {}",
+                    err
+                );
+                continue;
+            }
+        };
+        if let Err(err) = verify_session_outcome_evidence_entries(&entries, &response) {
+            tracing::warn!(
+                member_id = %peer.member_id,
+                "Federation session outcome evidence did not match local journal: {}",
+                err
+            );
+            continue;
+        }
+        let Some(outcome) = response.session_outcome.as_ref() else {
+            continue;
+        };
+        match state.persist_federation_session_outcome(outcome).await {
+            Ok(()) => collected += 1,
+            Err(err) => {
+                tracing::warn!(
+                    member_id = %peer.member_id,
+                    "Could not persist federation session outcome evidence: {}",
+                    err
+                );
+            }
+        }
+    }
+
+    collected
 }
 
 #[instrument(skip_all)]
@@ -719,6 +850,43 @@ async fn local_peer_status(state: &MintState) -> anyhow::Result<FederationPeerSt
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("mint is not configured as a federation member"))?;
     Ok(consensus.lock().await.peer_status())
+}
+
+fn verify_session_outcome_evidence_entries(
+    local_entries: &[FederationJournalEntry],
+    response: &FederationJournalCatchUpResponse,
+) -> anyhow::Result<()> {
+    if response.from_index != 0 {
+        anyhow::bail!(
+            "evidence response started at {}, expected 0",
+            response.from_index
+        );
+    }
+    if response.entries.len() != local_entries.len() {
+        anyhow::bail!(
+            "evidence response carried {} entries, expected {}",
+            response.entries.len(),
+            local_entries.len()
+        );
+    }
+
+    for (local, peer) in local_entries.iter().zip(&response.entries) {
+        let peer_operation_id = peer.envelope.operation_id()?;
+        if peer.index != local.index
+            || peer.operation_id != local.operation_id
+            || peer_operation_id != local.operation_id
+            || peer.previous_order_digest != local.previous_order_digest
+            || peer.order_digest != local.order_digest
+        {
+            anyhow::bail!(
+                "evidence entry mismatch at local index {} and peer index {}",
+                local.index,
+                peer.index
+            );
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1655,6 +1823,60 @@ mod tests {
             state.federation_sync_status().await,
             Some(crate::FederationSyncStatus::Healthy)
         ));
+    }
+
+    #[tokio::test]
+    async fn peer_sync_round_collects_session_outcome_evidence_from_equal_peer() {
+        let (state, public_config, local_private, peer_private) =
+            federation_route_state_with_local_private().await;
+        let federation_id = public_config.federation_id;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let entry = restore_envelope(
+            federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        state
+            .submit_federation_envelope(entry.clone())
+            .await
+            .expect("local accepted operation");
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
+        peer_consensus
+            .submit_envelope(entry)
+            .expect("peer accepted operation");
+
+        assert!(session_outcome_quorum_status(&state)
+            .await
+            .expect("quorum status")
+            .is_none());
+
+        let catch_up_request = FederationJournalCatchUpRequest::new(0)
+            .with_limit(1)
+            .with_known_order_digest(FederationJournalDigest::genesis());
+        let catch_up_response = peer_consensus
+            .catch_up_checked(&catch_up_request)
+            .expect("peer evidence response");
+        let transport = MockFederationTransport::default()
+            .with_status_response(peer_consensus.peer_status())
+            .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private));
+        let client =
+            FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+                .expect("client");
+
+        let synced =
+            run_federation_peer_sync_round(&state, &client, std::slice::from_ref(peer_member))
+                .await;
+
+        assert_eq!(synced, 1);
+        assert_eq!(transport.catch_up_requests().len(), 1);
+        let quorum = session_outcome_quorum_status(&state)
+            .await
+            .expect("quorum status")
+            .expect("quorum evidence");
+        assert_eq!(quorum.operation_count, 1);
+        assert_eq!(quorum.signers.len(), 2);
+        assert!(quorum.signers.contains(&local_private.member_id));
+        assert!(quorum.signers.contains(&peer_private.member_id));
     }
 
     #[tokio::test]

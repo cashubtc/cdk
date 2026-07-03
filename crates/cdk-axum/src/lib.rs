@@ -217,6 +217,14 @@ impl MintState {
         Ok(())
     }
 
+    pub(crate) async fn persist_federation_session_outcome(
+        &self,
+        outcome: &FederationSessionOutcome,
+    ) -> Result<(), cdk::Error> {
+        self.persist_federation_journal_entries(&[], Some(outcome), None)
+            .await
+    }
+
     async fn persist_federation_append_outcome(
         &self,
         outcome: &FederationJournalAppendOutcome,
