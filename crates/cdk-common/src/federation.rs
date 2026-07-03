@@ -36,6 +36,8 @@ pub use self::operation::{
 pub use self::signing::{FederationBlindSignatureShare, FederationBlindSignatureShareSet};
 pub use self::transport::{
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
+    FederationPeerStatusRequest, FederationRestBodyHash, FederationRestMessageKind,
+    FederationRestSequenceTracker, FederationRestSignature, FederationSignedRequest,
     FederationSubmitOperationRequest, FederationSubmitOperationResponse,
     FEDERATION_REST_API_VERSION,
 };
@@ -395,6 +397,73 @@ pub enum FederationError {
         expected: FederationOperationId,
         /// Operation ID carried by the entry.
         found: FederationOperationId,
+    },
+    /// A federation REST body hash must be exactly 32 bytes.
+    #[error("Invalid federation REST body hash size: expected={expected}, found={found}")]
+    InvalidRestBodyHashSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
+    /// A federation REST signature must be exactly 64 bytes.
+    #[error("Invalid federation REST signature size: expected={expected}, found={found}")]
+    InvalidRestSignatureSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
+    /// A federation REST signature could not be decoded as a Schnorr signature.
+    #[error("Invalid federation REST signature encoding")]
+    InvalidRestSignature,
+    /// Signed REST request used an unsupported payload version.
+    #[error("Federation REST version mismatch: expected={expected}, found={found}")]
+    RestVersionMismatch {
+        /// Expected private REST payload version.
+        expected: u16,
+        /// Found private REST payload version.
+        found: u16,
+    },
+    /// Signed REST request belongs to a different federation.
+    #[error("Federation REST id mismatch: expected={expected}, found={found}")]
+    RestFederationMismatch {
+        /// Expected federation ID.
+        expected: FederationId,
+        /// Found federation ID.
+        found: FederationId,
+    },
+    /// Signed REST request was not addressed to the local member.
+    #[error("Federation REST receiver mismatch: expected={expected}, found={found}")]
+    RestReceiverMismatch {
+        /// Expected receiver member.
+        expected: MemberId,
+        /// Found receiver member.
+        found: MemberId,
+    },
+    /// Signed REST request body did not match its advertised hash.
+    #[error("Federation REST body hash mismatch: expected={expected}, found={found}")]
+    RestBodyHashMismatch {
+        /// Advertised body hash.
+        expected: FederationRestBodyHash,
+        /// Recomputed body hash.
+        found: FederationRestBodyHash,
+    },
+    /// Signed REST request had an invalid member identity signature.
+    #[error("Federation REST signature verification failed for member {member_id}")]
+    RestSignatureVerificationFailed {
+        /// Sender whose signature was checked.
+        member_id: MemberId,
+    },
+    /// Signed REST request replayed or moved backwards in the member sequence.
+    #[error("Federation REST stale sequence from member {member_id}: last={last}, found={found}")]
+    RestStaleSequence {
+        /// Sender whose sequence was checked.
+        member_id: MemberId,
+        /// Highest previously accepted sequence from the sender.
+        last: u64,
+        /// Sequence carried by the request.
+        found: u64,
     },
     /// Hex parsing error.
     #[error(transparent)]

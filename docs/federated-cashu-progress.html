@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add federation catch-up client</span>
+          <span class="value">feat: add federation signed envelopes</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Private REST catch-up and payment observation</span>
+          <span class="value">Authenticated member envelope primitives</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Authenticated member envelopes</span>
+          <span class="value">Authenticated private REST routes</span>
         </div>
       </aside>
     </header>
@@ -520,6 +520,10 @@
             <h3>Private REST catch-up client ready</h3>
             <p>Members can now build digest-bound catch-up requests, validate peer catch-up responses, replay missed accepted operations locally, and submit payment-observation envelopes over the private REST client boundary.</p>
           </article>
+          <article class="item">
+            <h3>Signed envelope primitives ready</h3>
+            <p>Private member messages now have reusable signed request wrappers covering sender, receiver, sequence, message kind, federation ID, canonical payload hash, and Schnorr identity signatures.</p>
+          </article>
         </div>
       </section>
 
@@ -618,6 +622,10 @@
             <h3>Payment observations use the peer API</h3>
             <p>The private REST client can submit canonical mint quote payment observation operations and checks that the peer response belongs to the exact operation sent.</p>
           </article>
+          <article class="item">
+            <h3>Envelope tampering is isolated</h3>
+            <p>Shared transport tests now reject unknown senders, wrong receivers, wrong federation IDs, stale sequences, body-hash mismatches, and signatures that do not match the claimed roster identity.</p>
+          </article>
         </div>
       </section>
 
@@ -634,7 +642,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries, but authenticated member envelopes, durable journal storage, and deterministic state-machine replay still need to land before offline recovery is production-safe.</p>
+            <p>The private REST client can replay missed journal entries and signed envelope primitives exist, but route enforcement, durable journal storage, and deterministic state-machine replay still need to land before offline recovery is production-safe.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -836,10 +844,16 @@
               <td>Add signed member-to-member envelopes and reject unknown members, wrong claimed senders, stale sequence numbers, invalid signatures, and body-hash mismatches before private REST mutation.</td>
             </tr>
             <tr>
+              <td>Authenticated member envelope primitives</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federation` passed 50 tests, including signed request round-trips, tampered payload rejection, wrong-federation rejection, wrong-receiver rejection, unknown-sender rejection, mismatched signer rejection, and stale sequence rejection.</td>
+              <td>Require signed envelopes in the private Axum federation routes and make the private REST peer client sign status, submit, and catch-up requests.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries. Authenticated peer envelopes, durable catch-up storage, and networked fake-wallet state-machine replay remain open.</td>
-              <td>Add authenticated member envelopes, then persist and replay the federation journal through storage-backed members.</td>
+              <td>Mint quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries, and shared signed-envelope primitives are ready for route enforcement. Durable catch-up storage and networked fake-wallet state-machine replay remain open.</td>
+              <td>Wire signed envelopes into private REST routes, then persist and replay the federation journal through storage-backed members.</td>
             </tr>
           </tbody>
         </table>
@@ -879,8 +893,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Authenticated member envelopes</h3>
-            <p>Sign private REST requests with federation identity keys and reject unknown members, wrong claimed senders, stale sequence numbers, invalid signatures, and body-hash mismatches before state mutation.</p>
+            <h3>Authenticated private REST routes</h3>
+            <p>Require signed envelopes on private status, submit, and catch-up routes, and make the peer client sign each request with the local member identity key.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>
