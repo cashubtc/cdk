@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use cdk_common::common::PaymentProcessorKey;
+use cdk_common::database::event_log::Delta;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::MintQuote;
 use cdk_common::payment::DynMintPayment;
@@ -86,6 +87,13 @@ impl Mint {
                 match new_quote.add_payment(amount_paid, payment.payment_id.clone(), None) {
                     Ok(()) => {
                         tx.update_mint_quote(&mut new_quote).await?;
+                        if let Some(incoming) = new_quote.payments.last() {
+                            tx.add_journal(
+                                new_quote.id.to_string(),
+                                Delta::MintQuotePayment(incoming.clone()).into(),
+                            )
+                            .await?;
+                        }
                         should_notify = true;
                     }
                     Err(crate::Error::DuplicatePaymentId) => {

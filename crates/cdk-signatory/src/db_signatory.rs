@@ -6,10 +6,11 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
+use cdk_common::database::{self, Delta};
 use cdk_common::dhke::{sign_message, verify_message};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id, MintKeySet, Proof};
-use cdk_common::{database, Error, PublicKey};
+use cdk_common::{Error, PublicKey};
 use tokio::sync::RwLock;
 use tracing::instrument;
 
@@ -235,10 +236,22 @@ impl Signatory for DbSignatory {
         let keysets = self.keysets().await?;
         check_unit_string_collision(keysets.keysets, &info)?;
 
+        // Capture the keyset being superseded so its deactivation is journaled.
+        let previous_active = self.localstore.get_active_keyset_id(&args.unit).await?;
+
         let id = info.id;
         let mut tx = self.localstore.begin_transaction().await?;
         tx.add_keyset_info(info.clone()).await?;
+        tx.add_journal(id.to_string(), info.clone().into()).await?;
         tx.set_active_keyset(args.unit, id).await?;
+        if let Some(previous) = previous_active {
+            if previous != id {
+                tx.add_journal(previous.to_string(), Delta::KeysetActive(false).into())
+                    .await?;
+            }
+        }
+        tx.add_journal(id.to_string(), Delta::KeysetActive(true).into())
+            .await?;
         tx.commit().await?;
 
         self.reload_keys_from_db().await?;

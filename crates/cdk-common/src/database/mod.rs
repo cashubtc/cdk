@@ -1,5 +1,7 @@
 //! CDK Database
 
+#[cfg(feature = "mint")]
+pub mod event_log;
 mod kvstore;
 
 #[cfg(feature = "mint")]
@@ -16,6 +18,10 @@ pub use kvstore::{
 /// Arc-wrapped KV store for shared ownership
 pub type DynKVStore = std::sync::Arc<dyn KVStore<Err = Error> + Send + Sync>;
 
+#[cfg(feature = "mint")]
+pub use event_log::{generate_id, init_event_id_generator, Delta, Event, Snapshot};
+#[cfg(feature = "mint")]
+pub use mint::JournalTransaction;
 #[cfg(feature = "mint")]
 pub use mint::{
     Database as MintDatabase, DynMintDatabase, DynMintTransaction,

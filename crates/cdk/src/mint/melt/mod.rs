@@ -404,6 +404,8 @@ impl Mint {
 
             let mut tx = self.localstore.begin_transaction().await?;
             tx.add_melt_quote(quote.clone()).await?;
+            tx.add_journal(quote.id.to_string(), quote.clone().into())
+                .await?;
             tx.commit().await?;
 
             Ok(quote.into())
@@ -520,6 +522,8 @@ impl Mint {
 
             let mut tx = self.localstore.begin_transaction().await?;
             tx.add_melt_quote(quote.clone()).await?;
+            tx.add_journal(quote.id.to_string(), quote.clone().into())
+                .await?;
             tx.commit().await?;
 
             Ok(quote.into())
@@ -654,6 +658,8 @@ impl Mint {
 
             let mut tx = self.localstore.begin_transaction().await?;
             tx.add_melt_quote(quote.clone()).await?;
+            tx.add_journal(quote.id.to_string(), quote.clone().into())
+                .await?;
             tx.commit().await?;
 
             Ok(quote.into())
@@ -790,6 +796,8 @@ impl Mint {
 
             let mut tx = self.localstore.begin_transaction().await?;
             tx.add_melt_quote(quote.clone()).await?;
+            tx.add_journal(quote.id.to_string(), quote.clone().into())
+                .await?;
             tx.commit().await?;
 
             Ok(quote.into())

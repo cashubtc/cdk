@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use cdk_common::database::event_log::Delta;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltFinalizationData, MeltSagaState, Operation, Saga, SagaStateEnum};
 use cdk_common::nut00::KnownMethod;
@@ -259,6 +260,11 @@ impl MeltSaga<Initial> {
             });
         }
 
+        for proof in melt_request.inputs() {
+            tx.add_journal(proof.y()?.to_hex(), proof.clone().into())
+                .await?;
+        }
+
         let input_ys = melt_request.inputs().ys()?;
 
         let mut proofs = tx.get_proofs(&input_ys).await?;
@@ -329,6 +335,14 @@ impl MeltSaga<Initial> {
                 return Err(err.into());
             }
         };
+
+        if let Err(err) = tx
+            .add_journal(quote.id.to_string(), MeltQuoteState::Pending.into())
+            .await
+        {
+            tx.rollback().await?;
+            return Err(err.into());
+        }
 
         let inputs_fee_breakdown = self.mint.get_proofs_fee(melt_request.inputs()).await?;
         let inputs_fee = inputs_fee_breakdown.total.with_unit(quote.unit.clone());
@@ -542,6 +556,13 @@ impl MeltSaga<SetupComplete> {
 
         mint_quote.add_payment(amount.clone(), self.state_data.quote.id.to_string(), None)?;
         tx.update_mint_quote(&mut mint_quote).await?;
+        if let Some(incoming) = mint_quote.payments.last() {
+            tx.add_journal(
+                mint_quote.id.to_string(),
+                Delta::MintQuotePayment(incoming.clone()).into(),
+            )
+            .await?;
+        }
 
         tx.commit().await?;
         self.pubsub
@@ -872,6 +893,8 @@ impl MeltSaga<SetupComplete> {
                     payment_lookup_id
                 );
                 tx.update_melt_quote_request_lookup_id(&mut quote, payment_lookup_id)
+                    .await?;
+                tx.add_journal(quote.id.to_string(), payment_lookup_id.clone().into())
                     .await?;
             }
 

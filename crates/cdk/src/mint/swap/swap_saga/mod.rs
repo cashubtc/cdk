@@ -197,6 +197,11 @@ impl<'a> SwapSaga<'a, Initial> {
             }
         };
 
+        for proof in input_proofs {
+            tx.add_journal(proof.y()?.to_hex(), proof.clone().into())
+                .await?;
+        }
+
         let ys = match input_proofs.ys() {
             Ok(ys) => ys,
             Err(err) => return Err(Error::NUT00(err)),
@@ -382,6 +387,20 @@ impl SwapSaga<'_, Signed> {
             tx.rollback().await?;
             self.compensate_all().await?;
             return Err(err.into());
+        }
+
+        for (secret, signature) in blinded_secrets
+            .iter()
+            .zip(self.state_data.signatures.iter())
+        {
+            if let Err(err) = tx
+                .add_journal(secret.to_hex(), signature.clone().into())
+                .await
+            {
+                tx.rollback().await?;
+                self.compensate_all().await?;
+                return Err(err.into());
+            }
         }
 
         // Mark input proofs as spent

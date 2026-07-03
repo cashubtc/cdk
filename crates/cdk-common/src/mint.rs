@@ -539,11 +539,12 @@ pub struct MintQuoteChange {
 }
 
 /// Mint Quote Info
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintQuote {
     /// Quote id
     pub id: QuoteId,
     /// Amount of quote
+    #[serde(with = "amount_currency_serde_opt")]
     pub amount: Option<Amount<CurrencyUnit>>,
     /// Unit of quote
     pub unit: CurrencyUnit,
@@ -558,8 +559,10 @@ pub struct MintQuote {
     /// Unix time quote was created
     pub created_time: u64,
     /// Amount paid (typed for type safety)
+    #[serde(with = "amount_currency_serde")]
     amount_paid: Amount<CurrencyUnit>,
     /// Amount issued (typed for type safety)
+    #[serde(with = "amount_currency_serde")]
     amount_issued: Amount<CurrencyUnit>,
     /// Payment of payment(s) that filled quote
     pub payments: Vec<IncomingPayment>,
@@ -574,6 +577,7 @@ pub struct MintQuote {
     /// This field is not serialized and is used internally to track modifications
     /// that need to be persisted. Use [`Self::take_changes`] to extract pending
     /// changes for persistence.
+    #[serde(skip)]
     changes: Option<MintQuoteChange>,
 }
 
@@ -798,9 +802,10 @@ impl MintQuote {
 }
 
 /// Mint Payments
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IncomingPayment {
     /// Amount
+    #[serde(with = "amount_currency_serde")]
     pub amount: Amount<CurrencyUnit>,
     /// Pyament unix time
     pub time: u64,
@@ -820,9 +825,10 @@ impl IncomingPayment {
 }
 
 /// Information about issued quote
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Issuance {
     /// Amount
+    #[serde(with = "amount_currency_serde")]
     pub amount: Amount<CurrencyUnit>,
     /// Time
     pub time: u64,
@@ -836,7 +842,7 @@ impl Issuance {
 }
 
 /// Melt Quote Info
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeltQuote {
     /// Quote id
     pub id: QuoteId,
@@ -845,8 +851,10 @@ pub struct MeltQuote {
     /// Quote Payment request e.g. bolt11
     pub request: MeltPaymentRequest,
     /// Quote amount (typed for type safety)
+    #[serde(with = "amount_currency_serde")]
     amount: Amount<CurrencyUnit>,
     /// Quote fee reserve (typed for type safety)
+    #[serde(with = "amount_currency_serde")]
     fee_reserve: Amount<CurrencyUnit>,
     /// Quote state
     pub state: MeltQuoteState,
@@ -883,6 +891,10 @@ pub struct MeltQuote {
     /// Selected fee option index once an onchain quote is executed
     pub selected_fee_index: Option<u32>,
 }
+
+mod amount_currency_serde;
+
+mod amount_currency_serde_opt;
 
 impl MeltQuote {
     /// Create new [`MeltQuote`]
@@ -1565,31 +1577,7 @@ impl std::fmt::Display for MeltPaymentRequest {
     }
 }
 
-mod offer_serde {
-    use std::str::FromStr;
-
-    use serde::{self, Deserialize, Deserializer, Serializer};
-
-    use super::Offer;
-
-    pub fn serialize<S>(offer: &Offer, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let s = offer.to_string();
-        serializer.serialize_str(&s)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Box<Offer>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Ok(Box::new(Offer::from_str(&s).map_err(|_| {
-            serde::de::Error::custom("Invalid Bolt12 Offer")
-        })?))
-    }
-}
+mod offer_serde;
 
 #[cfg(test)]
 mod tests {

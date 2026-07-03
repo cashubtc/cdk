@@ -31,10 +31,7 @@ use url::Url;
 
 use crate::Error;
 
-#[rustfmt::skip]
-mod migrations {
-    include!(concat!(env!("OUT_DIR"), "/migrations_supabase.rs"));
-}
+mod migrations;
 
 /// Returns the concatenated SQL of all migration files.
 ///

@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use cashu::quote_id::QuoteId;
 use cashu::Amount;
 
+use super::event_log::Event;
 use super::{DbTransactionFinalizer, Error};
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
@@ -123,9 +124,28 @@ pub struct LockedMeltQuotes {
     pub all_related: Vec<Acquired<MeltQuote>>,
 }
 
+/// Append-only journal writer.
+///
+/// Every mint write transaction can append [`Event`]s (creation snapshots and
+/// field-level deltas) to the append-only journal. The append runs in the same
+/// transaction as the mutation it records, so it commits or rolls back with it.
+/// The mint layer decides which events to emit; this trait only provides the
+/// durable append primitive.
+#[async_trait]
+pub trait JournalTransaction {
+    /// Journal Error
+    type Err: Into<Error> + From<Error>;
+
+    /// Appends one [`Event`] to the journal for `record` (a `"table_name:pk"`
+    /// row id) within the current transaction.
+    async fn add_journal(&mut self, record: String, event: Event) -> Result<(), Self::Err>;
+}
+
 /// KeysDatabaseWriter
 #[async_trait]
-pub trait KeysDatabaseTransaction<'a, Error>: DbTransactionFinalizer<Err = Error> {
+pub trait KeysDatabaseTransaction<'a, Error>:
+    DbTransactionFinalizer<Err = Error> + JournalTransaction<Err = Error>
+{
     /// Add Active Keyset
     async fn set_active_keyset(&mut self, unit: CurrencyUnit, id: Id) -> Result<(), Error>;
 
@@ -601,6 +621,7 @@ pub trait CompletedOperationsDatabase {
 /// Base database writer
 pub trait Transaction<Error>:
     DbTransactionFinalizer<Err = Error>
+    + JournalTransaction<Err = Error>
     + QuotesTransaction<Err = Error>
     + SignaturesTransaction<Err = Error>
     + ProofsTransaction<Err = Error>

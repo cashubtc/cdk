@@ -22,6 +22,7 @@ pub struct RestoreResponse {
     pub signatures: Vec<BlindSignature>,
 }
 
+#[cfg(test)]
 mod test {
 
     #[test]

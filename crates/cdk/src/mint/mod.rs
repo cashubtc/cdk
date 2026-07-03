@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
+use cdk_common::database::event_log::Delta;
 use cdk_common::database::mint::Acquired;
 use cdk_common::database::{self, DynMintAuthDatabase, DynMintDatabase};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id};
@@ -1024,6 +1025,13 @@ impl Mint {
                 ) {
                     Ok(()) => {
                         tx.update_mint_quote(mint_quote).await?;
+                        if let Some(incoming) = mint_quote.payments.last() {
+                            tx.add_journal(
+                                mint_quote.id.to_string(),
+                                Delta::MintQuotePayment(incoming.clone()).into(),
+                            )
+                            .await?;
+                        }
                         return Ok(true);
                     }
                     Err(Error::DuplicatePaymentId) => {
