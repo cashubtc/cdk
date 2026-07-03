@@ -22,8 +22,10 @@ mod transport;
 mod trusted_dealer;
 
 pub use self::consensus::{
-    FederationConsensusEngine, FederationConsensusRuntime, InMemoryFederationConsensus,
-    InMemoryFederationConsensusNetwork,
+    FederationConsensusDefaultItem, FederationConsensusEngine, FederationConsensusItem,
+    FederationConsensusItemAdmission, FederationConsensusItemQueue, FederationConsensusModuleFact,
+    FederationConsensusRuntime, InMemoryFederationConsensus, InMemoryFederationConsensusNetwork,
+    FEDERATION_CONSENSUS_ITEM_VERSION, FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
 };
 pub use self::journal::{
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
@@ -122,6 +124,14 @@ pub enum FederationError {
         reachable: u16,
         /// Required quorum threshold.
         required: u16,
+    },
+    /// A consensus item exceeded the configured canonical size limit.
+    #[error("Federation consensus item too large: actual={actual}, max={max}")]
+    ConsensusItemTooLarge {
+        /// Actual canonical item size.
+        actual: usize,
+        /// Maximum allowed canonical item size.
+        max: usize,
     },
     /// The roster has a different member count than the threshold params.
     #[error("Federation member count mismatch: expected={expected}, found={found}")]

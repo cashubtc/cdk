@@ -11,13 +11,224 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use super::{
     FederationError, FederationId, FederationJournalCatchUpRequest,
     FederationJournalCatchUpResponse, FederationJournalEntry, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationPeerStatus, FederationStateDigest,
-    FederationSubmitOperationRequest, FederationSubmitOperationResponse, InMemoryFederationJournal,
-    MemberId, Result,
+    FederationOperationId, FederationOperationStatus, FederationPeerStatus,
+    FederationSessionOutcome, FederationStateDigest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, InMemoryFederationJournal, MemberId, Result,
+    FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
 };
+use serde::{Deserialize, Serialize};
 
 const DEFAULT_CATCH_UP_LIMIT: u16 = 100;
 const MAX_CATCH_UP_LIMIT: u16 = 1000;
+
+/// Version of consensus item payloads.
+pub const FEDERATION_CONSENSUS_ITEM_VERSION: u16 = 1;
+
+/// Default maximum canonical size for one consensus item.
+pub const FEDERATION_MAX_CONSENSUS_ITEM_BYTES: usize =
+    FEDERATION_MAX_OPERATION_ENVELOPE_BYTES + 4096;
+
+/// One item that can enter the federation consensus pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum FederationConsensusItem {
+    /// A canonical Cashu mint operation envelope.
+    Operation(FederationOperationEnvelope),
+    /// A module-defined fact that must be ordered with operations.
+    ModuleFact(FederationConsensusModuleFact),
+    /// A member-signed session outcome.
+    SessionSignature(FederationSessionOutcome),
+    /// A generic consensus item for future compatibility tests.
+    Default(FederationConsensusDefaultItem),
+}
+
+impl FederationConsensusItem {
+    /// Wrap an operation envelope as a consensus item.
+    #[must_use]
+    pub fn operation(envelope: FederationOperationEnvelope) -> Self {
+        Self::Operation(envelope)
+    }
+
+    /// Return canonical JSON bytes with all object keys sorted.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
+        canonical_json_bytes(self)
+    }
+
+    /// Return this item's canonical size.
+    pub fn canonical_size(&self) -> Result<usize> {
+        Ok(self.canonical_bytes()?.len())
+    }
+
+    /// Reject this item if its canonical encoding exceeds `max_bytes`.
+    pub fn ensure_within_size_limit(&self, max_bytes: usize) -> Result<usize> {
+        if let Self::Operation(envelope) = self {
+            envelope.ensure_admissible_size()?;
+        }
+
+        let actual = self.canonical_size()?;
+        if actual > max_bytes {
+            return Err(FederationError::ConsensusItemTooLarge {
+                actual,
+                max: max_bytes,
+            });
+        }
+
+        Ok(actual)
+    }
+
+    /// Reject this item if its canonical encoding exceeds the default limit.
+    pub fn ensure_admissible_size(&self) -> Result<usize> {
+        self.ensure_within_size_limit(FEDERATION_MAX_CONSENSUS_ITEM_BYTES)
+    }
+
+    /// Return the operation ID when this item wraps an operation envelope.
+    pub fn operation_id(&self) -> Result<Option<FederationOperationId>> {
+        match self {
+            Self::Operation(envelope) => Ok(Some(envelope.operation_id()?)),
+            Self::ModuleFact(_) | Self::SessionSignature(_) | Self::Default(_) => Ok(None),
+        }
+    }
+}
+
+/// Module-defined fact to order through consensus.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationConsensusModuleFact {
+    /// Item format version.
+    pub version: u16,
+    /// Module namespace.
+    pub module: String,
+    /// Fact kind within the module namespace.
+    pub kind: String,
+    /// Canonical JSON payload.
+    pub payload: serde_json::Value,
+}
+
+impl FederationConsensusModuleFact {
+    /// Create a module fact consensus item.
+    #[must_use]
+    pub fn new<M, K>(module: M, kind: K, payload: serde_json::Value) -> Self
+    where
+        M: Into<String>,
+        K: Into<String>,
+    {
+        Self {
+            version: FEDERATION_CONSENSUS_ITEM_VERSION,
+            module: module.into(),
+            kind: kind.into(),
+            payload,
+        }
+    }
+}
+
+/// Generic consensus item placeholder for future item classes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationConsensusDefaultItem {
+    /// Item format version.
+    pub version: u16,
+    /// Item kind.
+    pub kind: String,
+    /// Canonical JSON payload.
+    pub payload: serde_json::Value,
+}
+
+impl FederationConsensusDefaultItem {
+    /// Create a default consensus item.
+    #[must_use]
+    pub fn new<K>(kind: K, payload: serde_json::Value) -> Self
+    where
+        K: Into<String>,
+    {
+        Self {
+            version: FEDERATION_CONSENSUS_ITEM_VERSION,
+            kind: kind.into(),
+            payload,
+        }
+    }
+}
+
+/// Admission result for the pending consensus item queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FederationConsensusItemAdmission {
+    /// The item was queued.
+    Accepted,
+    /// An operation with the same operation ID is already pending.
+    DuplicateOperation,
+}
+
+/// Bounded pending-item queue for consensus data providers.
+#[derive(Debug, Clone)]
+pub struct FederationConsensusItemQueue {
+    max_item_bytes: usize,
+    pending: VecDeque<FederationConsensusItem>,
+    pending_operation_ids: BTreeSet<FederationOperationId>,
+}
+
+impl Default for FederationConsensusItemQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FederationConsensusItemQueue {
+    /// Create an empty queue with the default item size limit.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_max_item_bytes(FEDERATION_MAX_CONSENSUS_ITEM_BYTES)
+    }
+
+    /// Create an empty queue with a custom item size limit.
+    #[must_use]
+    pub fn with_max_item_bytes(max_item_bytes: usize) -> Self {
+        Self {
+            max_item_bytes,
+            pending: VecDeque::new(),
+            pending_operation_ids: BTreeSet::new(),
+        }
+    }
+
+    /// Return the number of queued items.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Return true when the queue has no pending items.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    /// Submit an item to the pending queue after size and duplicate checks.
+    pub fn submit(
+        &mut self,
+        item: FederationConsensusItem,
+    ) -> Result<FederationConsensusItemAdmission> {
+        item.ensure_within_size_limit(self.max_item_bytes)?;
+        if let Some(operation_id) = item.operation_id()? {
+            if !self.pending_operation_ids.insert(operation_id) {
+                return Ok(FederationConsensusItemAdmission::DuplicateOperation);
+            }
+        }
+
+        self.pending.push_back(item);
+        Ok(FederationConsensusItemAdmission::Accepted)
+    }
+
+    /// Drain up to `limit` items in FIFO order.
+    pub fn drain_batch(&mut self, limit: usize) -> Vec<FederationConsensusItem> {
+        let mut batch = Vec::new();
+        for _ in 0..limit {
+            let Some(item) = self.pending.pop_front() else {
+                break;
+            };
+            if let Ok(Some(operation_id)) = item.operation_id() {
+                self.pending_operation_ids.remove(&operation_id);
+            }
+            batch.push(item);
+        }
+        batch
+    }
+}
 
 /// Minimal synchronous consensus engine surface used by federation runtimes.
 ///
@@ -740,9 +951,40 @@ impl FederationConsensusEngine for InMemoryFederationConsensus {
     }
 }
 
+fn canonical_json_bytes<T>(value: &T) -> Result<Vec<u8>>
+where
+    T: Serialize,
+{
+    let mut value = serde_json::to_value(value)?;
+    sort_json_value(&mut value);
+    Ok(serde_json::to_vec(&value)?)
+}
+
+fn sort_json_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            map.sort_keys();
+            for value in map.values_mut() {
+                sort_json_value(value);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                sort_json_value(value);
+            }
+        }
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
+
+    use serde_json::json;
 
     use super::*;
     use crate::{
@@ -937,6 +1179,86 @@ mod tests {
                 .expect("second entry")
                 .status,
             FederationOperationStatus::Applied
+        );
+    }
+
+    #[test]
+    fn consensus_item_queue_batches_and_deduplicates_operations() {
+        let federation_id = federation_id(13);
+        let envelope = mint_envelope(
+            federation_id,
+            "quote-1",
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        let mut queue = FederationConsensusItemQueue::new();
+
+        assert_eq!(
+            queue
+                .submit(FederationConsensusItem::operation(envelope.clone()))
+                .expect("submit operation"),
+            FederationConsensusItemAdmission::Accepted
+        );
+        assert_eq!(
+            queue
+                .submit(FederationConsensusItem::operation(envelope.clone()))
+                .expect("submit duplicate operation"),
+            FederationConsensusItemAdmission::DuplicateOperation
+        );
+        assert_eq!(
+            queue
+                .submit(FederationConsensusItem::ModuleFact(
+                    FederationConsensusModuleFact::new("mint", "fact", json!({"ok": true}))
+                ))
+                .expect("submit module fact"),
+            FederationConsensusItemAdmission::Accepted
+        );
+        assert_eq!(queue.len(), 2);
+
+        let first_batch = queue.drain_batch(1);
+        assert_eq!(first_batch.len(), 1);
+        assert_eq!(
+            queue
+                .submit(FederationConsensusItem::operation(envelope))
+                .expect("resubmit drained operation"),
+            FederationConsensusItemAdmission::Accepted
+        );
+
+        let second_batch = queue.drain_batch(10);
+        assert_eq!(second_batch.len(), 2);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn consensus_item_queue_rejects_oversized_items() {
+        let mut queue = FederationConsensusItemQueue::with_max_item_bytes(128);
+        let item = FederationConsensusItem::Default(FederationConsensusDefaultItem::new(
+            "large",
+            json!({"body": "x".repeat(256)}),
+        ));
+
+        assert!(matches!(
+            queue.submit(item),
+            Err(FederationError::ConsensusItemTooLarge { .. })
+        ));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn consensus_item_canonical_bytes_sort_json_payload_keys() {
+        let first = FederationConsensusItem::ModuleFact(FederationConsensusModuleFact::new(
+            "mint",
+            "fact",
+            json!({"b": 2, "a": {"d": 4, "c": 3}}),
+        ));
+        let second = FederationConsensusItem::ModuleFact(FederationConsensusModuleFact::new(
+            "mint",
+            "fact",
+            json!({"a": {"c": 3, "d": 4}, "b": 2}),
+        ));
+
+        assert_eq!(
+            first.canonical_bytes().expect("first canonical bytes"),
+            second.canonical_bytes().expect("second canonical bytes")
         );
     }
 
