@@ -1032,6 +1032,115 @@ pub struct Settings {
     #[cfg(feature = "prometheus")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prometheus: Option<Prometheus>,
+    #[cfg(feature = "sigsum-anchor")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sigsum_anchor: Option<SigsumAnchor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transparency_log: Option<TransparencyLog>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub witness: Option<WitnessSettings>,
+}
+
+/// The mint's own append-only transparency log
+/// (see `docs/adr/0001-append-only-transparency-log.md` and the NUT-XX
+/// draft). Absent section = enabled with defaults.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransparencyLog {
+    /// Set to `false` to run the mint without a transparency log (no
+    /// checkpoint publisher, `/v1/audit/*` returns 404).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Checkpoint origin line — the log's globally unique *name* (not a
+    /// URL; nothing is served at it). Per NUT-XX it should be schema-less,
+    /// e.g. `mint.example.com/transparency-log`. Baked into every
+    /// checkpoint signature forever, so set it deliberately before going
+    /// to production. Defaults to `<host[:port]>/transparency-log` derived
+    /// from `info.url`, with the scheme stripped.
+    pub origin: Option<String>,
+    /// How often the publisher folds new events and signs a checkpoint.
+    #[serde(default = "default_checkpoint_interval_secs")]
+    pub checkpoint_interval_secs: u64,
+    /// Witnesses (C2SP tlog-witness) asked to cosign every published
+    /// checkpoint — e.g. another cdk mint's `/witness/add-checkpoint`.
+    #[serde(default)]
+    pub witnesses: Vec<CheckpointWitnessSettings>,
+}
+
+impl Default for TransparencyLog {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            origin: None,
+            checkpoint_interval_secs: default_checkpoint_interval_secs(),
+            witnesses: Vec::new(),
+        }
+    }
+}
+
+/// One outbound witness the transparency log requests cosignatures from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointWitnessSettings {
+    /// Full URL of the witness's `add-checkpoint` endpoint.
+    pub url: String,
+    /// The name the witness signs with (its cosignature line name).
+    pub name: String,
+    /// The witness's Ed25519 public key, hex or base64.
+    pub public_key: String,
+}
+
+/// The mint's built-in witness: cosigns *other* transparency logs'
+/// checkpoints via `POST /witness/add-checkpoint`. Off unless configured —
+/// witnessing is an opt-in service to the rest of the ecosystem.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WitnessSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    /// The name this witness signs cosignature lines with. Defaults to
+    /// `<host[:port]>/witness` derived from `info.url`.
+    pub name: Option<String>,
+    /// Logs this witness is willing to cosign for.
+    #[serde(default)]
+    pub trusted_logs: Vec<TrustedLogSettings>,
+}
+
+/// One log origin the built-in witness trusts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustedLogSettings {
+    /// The checkpoint origin line, e.g. `mint-b.example/transparency-log`.
+    pub origin: String,
+    /// The log's Ed25519 public key, hex or base64 (as served by that
+    /// mint's `/v1/audit/pubkey`).
+    pub public_key: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_checkpoint_interval_secs() -> u64 {
+    30
+}
+
+/// External anchoring of transparency-log checkpoints to a public Sigsum
+/// log (see `docs/adr/0001-append-only-transparency-log.md` §7.1).
+#[cfg(feature = "sigsum-anchor")]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SigsumAnchor {
+    pub enabled: bool,
+    /// Base URL of the Sigsum log to submit to, e.g.
+    /// `https://test.sigsum.org/barreleye/` (no rate-limit registration
+    /// required) or `https://seasalp.glasklar.is/` (production, requires
+    /// `domain`/`rate_limit_key` below).
+    pub log_url: String,
+    /// The Sigsum log's own hex-encoded Ed25519 public key.
+    pub log_public_key: String,
+    /// Domain registered via a `_sigsum_v1.<domain>` DNS TXT record, for
+    /// logs that enforce domain-based rate limiting. Leave unset for logs
+    /// (like the `barreleye` test log) that don't require it.
+    pub domain: Option<String>,
+    /// Hex-encoded Ed25519 secret key bytes matching the `domain`'s
+    /// published rate-limit public key.
+    pub rate_limit_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

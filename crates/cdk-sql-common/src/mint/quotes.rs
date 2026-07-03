@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use async_trait::async_trait;
-use cdk_common::database::mint::{Acquired, LockedMeltQuotes};
+use cdk_common::database::mint::{Acquired, EventOp, LockedMeltQuotes, LoggedEntity};
 use cdk_common::database::{
     self, ConversionError, Error, MintQuotesDatabase, MintQuotesTransaction,
 };
@@ -24,7 +24,7 @@ use cdk_prometheus::MintMetricGuard;
 use lightning_invoice::Bolt11Invoice;
 use tracing::instrument;
 
-use super::{SQLMintDatabase, SQLTransaction};
+use super::{event_log, SQLMintDatabase, SQLTransaction};
 use crate::database::DatabaseExecutor;
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
@@ -957,6 +957,21 @@ where
         // enforced by never touching this column on update.
         let fee_options_json = serde_json::to_string(quote.fee_options()).ok();
 
+        // Built before the chained binds below move fields out of `quote`.
+        // `request` (the full payment request — payee, payment hash) is
+        // deliberately excluded from the public log payload.
+        let log_payload = serde_json::to_vec(&serde_json::json!({
+            "amount": quote.amount().value(),
+            "unit": quote.unit.to_string(),
+            "fee_reserve": quote.fee_reserve().value(),
+            "state": quote.state.to_string(),
+            "expiry": quote.expiry,
+            "payment_method": quote.payment_method.to_string(),
+            "request_lookup_id": quote.request_lookup_id.as_ref().map(|id| id.to_string()),
+            "request_lookup_id_kind": quote.request_lookup_id.as_ref().map(|id| id.kind()),
+        }))?;
+        let quote_id = quote.id.to_string();
+
         // Now insert the new quote
         query(
             r#"
@@ -1012,6 +1027,15 @@ where
         .execute(&self.inner)
         .await?;
 
+        event_log::append_event(
+            &self.inner,
+            LoggedEntity::MeltQuote,
+            &quote_id,
+            EventOp::Insert,
+            &log_payload,
+        )
+        .await?;
+
         Ok(())
     }
 
@@ -1027,6 +1051,19 @@ where
             .execute(&self.inner)
             .await?;
         quote.request_lookup_id = Some(new_request_lookup_id.clone());
+
+        event_log::append_event(
+            &self.inner,
+            LoggedEntity::MeltQuote,
+            &quote.id.to_string(),
+            EventOp::Update,
+            &serde_json::to_vec(&serde_json::json!({
+                "request_lookup_id": new_request_lookup_id.to_string(),
+                "request_lookup_id_kind": new_request_lookup_id.kind(),
+            }))?,
+        )
+        .await?;
+
         Ok(())
     }
 
@@ -1080,6 +1117,25 @@ where
         };
 
         quote.state = state;
+
+        let mut log_payload = serde_json::json!({
+            "state": state.to_string(),
+            "fee_reserve": quote.fee_reserve().value(),
+            "estimated_blocks": quote.estimated_blocks,
+            "selected_fee_index": quote.selected_fee_index,
+        });
+        if state == MeltQuoteState::Paid {
+            log_payload["paid_time"] = serde_json::json!(quote.paid_time);
+            log_payload["payment_proof"] = serde_json::json!(quote.payment_proof);
+        }
+        event_log::append_event(
+            &self.inner,
+            LoggedEntity::MeltQuote,
+            &quote.id.to_string(),
+            EventOp::Update,
+            &serde_json::to_vec(&log_payload)?,
+        )
+        .await?;
 
         if state == MeltQuoteState::Unpaid || state == MeltQuoteState::Failed {
             self.delete_melt_request(&quote.id).await?;

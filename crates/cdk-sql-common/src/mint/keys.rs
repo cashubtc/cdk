@@ -6,11 +6,12 @@ use std::str::FromStr;
 use async_trait::async_trait;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::common::IssuerVersion;
+use cdk_common::database::mint::{EventOp, LoggedEntity};
 use cdk_common::database::{Error, MintKeyDatabaseTransaction, MintKeysDatabase};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::{CurrencyUnit, Id};
 
-use super::{SQLMintDatabase, SQLTransaction};
+use super::{event_log, SQLMintDatabase, SQLTransaction};
 use crate::database::ConnectionWithTransaction;
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
@@ -71,6 +72,14 @@ where
     RM: DatabasePool + 'static,
 {
     async fn add_keyset_info(&mut self, keyset: MintKeySetInfo) -> Result<(), Error> {
+        // This is an upsert re-run on every startup for already-known
+        // keysets; only a genuinely new keyset is an Insert event.
+        let is_new = query(r#"SELECT id FROM keyset WHERE id = :id"#)?
+            .bind("id", keyset.id.to_string())
+            .pluck(&self.inner)
+            .await?
+            .is_none();
+
         query(
             r#"
         INSERT INTO
@@ -110,10 +119,36 @@ where
         .execute(&self.inner)
         .await?;
 
+        if is_new {
+            event_log::append_event(
+                &self.inner,
+                LoggedEntity::Keyset,
+                &keyset.id.to_string(),
+                EventOp::Insert,
+                &serde_json::to_vec(&serde_json::json!({
+                    "unit": keyset.unit.to_string(),
+                    "active": keyset.active,
+                    "valid_from": keyset.valid_from,
+                    "valid_to": keyset.final_expiry,
+                    "input_fee_ppk": keyset.input_fee_ppk,
+                }))?,
+            )
+            .await?;
+        }
+
         Ok(())
     }
 
     async fn set_active_keyset(&mut self, unit: CurrencyUnit, id: Id) -> Result<(), Error> {
+        let previously_active =
+            query(r#"SELECT id FROM keyset WHERE unit = :unit AND active = TRUE"#)?
+                .bind("unit", unit.to_string())
+                .fetch_all(&self.inner)
+                .await?
+                .into_iter()
+                .map(|row| -> Result<Id, Error> { Ok(column_as_string!(&row[0], Id::from_str)) })
+                .collect::<Result<Vec<Id>, Error>>()?;
+
         query(r#"UPDATE keyset SET active=FALSE WHERE unit = :unit"#)?
             .bind("unit", unit.to_string())
             .execute(&self.inner)
@@ -124,6 +159,28 @@ where
             .bind("id", id.to_string())
             .execute(&self.inner)
             .await?;
+
+        for old_id in previously_active {
+            if old_id == id {
+                continue;
+            }
+            event_log::append_event(
+                &self.inner,
+                LoggedEntity::Keyset,
+                &old_id.to_string(),
+                EventOp::Update,
+                &serde_json::to_vec(&serde_json::json!({ "active": false }))?,
+            )
+            .await?;
+        }
+        event_log::append_event(
+            &self.inner,
+            LoggedEntity::Keyset,
+            &id.to_string(),
+            EventOp::Update,
+            &serde_json::to_vec(&serde_json::json!({ "active": true }))?,
+        )
+        .await?;
 
         Ok(())
     }

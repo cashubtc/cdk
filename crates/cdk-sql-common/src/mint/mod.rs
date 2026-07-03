@@ -20,6 +20,7 @@ use crate::pool::{DatabasePool, Pool, PooledResource};
 
 mod auth;
 mod completed_operations;
+mod event_log;
 mod keys;
 mod keyvalue;
 mod proofs;

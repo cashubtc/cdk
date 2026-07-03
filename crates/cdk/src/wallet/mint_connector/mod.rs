@@ -130,4 +130,118 @@ pub trait MintConnector: Debug {
 
     /// Set auth wallet on client
     async fn set_auth_wallet(&self, wallet: Option<AuthWallet>);
+
+    /// Get the mint's transparency-log signing key and origin (NUT-XX,
+    /// `GET /v1/audit/pubkey`). Default implementation reports the
+    /// endpoint as unsupported, so custom connectors keep compiling.
+    #[cfg(feature = "transparency-log")]
+    async fn get_audit_pubkey(&self) -> Result<AuditPubkeyResponse, Error> {
+        Err(Error::Custom(
+            "transparency log endpoints not supported by this connector".to_string(),
+        ))
+    }
+
+    /// Get the mint's latest signed checkpoint (NUT-XX,
+    /// `GET /v1/audit/checkpoint`).
+    #[cfg(feature = "transparency-log")]
+    async fn get_audit_checkpoint(&self) -> Result<AuditCheckpointResponse, Error> {
+        Err(Error::Custom(
+            "transparency log endpoints not supported by this connector".to_string(),
+        ))
+    }
+
+    /// Get an RFC 6962 consistency proof between two checkpoint sizes
+    /// (NUT-XX, `GET /v1/audit/proof/consistency`).
+    #[cfg(feature = "transparency-log")]
+    async fn get_audit_consistency_proof(
+        &self,
+        _first: u64,
+        _second: u64,
+    ) -> Result<AuditConsistencyResponse, Error> {
+        Err(Error::Custom(
+            "transparency log endpoints not supported by this connector".to_string(),
+        ))
+    }
+
+    /// Get raw log entries with leaf index in `[start, end)` (NUT-XX,
+    /// `GET /v1/audit/entries`). The mint may return fewer entries than
+    /// requested; callers paginate using the response's `end`.
+    #[cfg(feature = "transparency-log")]
+    async fn get_audit_entries(
+        &self,
+        _start: u64,
+        _end: u64,
+    ) -> Result<AuditEntriesResponse, Error> {
+        Err(Error::Custom(
+            "transparency log endpoints not supported by this connector".to_string(),
+        ))
+    }
+}
+
+/// Response of `GET /v1/audit/pubkey` (NUT-XX).
+#[cfg(feature = "transparency-log")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AuditPubkeyResponse {
+    /// The checkpoint origin line this mint signs (its log's name).
+    pub origin: String,
+    /// Base64-encoded 32-byte Ed25519 log-signing public key.
+    pub pubkey: String,
+    /// Signature scheme identifier; `"ed25519"` for this NUT revision.
+    pub signature_scheme: String,
+}
+
+/// Response of `GET /v1/audit/checkpoint` (NUT-XX).
+#[cfg(feature = "transparency-log")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AuditCheckpointResponse {
+    /// Full C2SP signed note (checkpoint plus signature lines).
+    pub checkpoint: String,
+    /// Ascii Sigsum proof-of-logging for this checkpoint, if anchored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sigsum_proof: Option<String>,
+}
+
+/// Response of `GET /v1/audit/proof/consistency` (NUT-XX).
+#[cfg(feature = "transparency-log")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AuditConsistencyResponse {
+    /// The smaller tree size the proof starts from.
+    pub first: u64,
+    /// The larger tree size the proof extends to.
+    pub second: u64,
+    /// Hex-encoded RFC 6962 consistency proof nodes.
+    pub proof: Vec<String>,
+}
+
+/// One raw log entry from `GET /v1/audit/entries` (NUT-XX).
+#[cfg(feature = "transparency-log")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AuditLogEntry {
+    /// Zero-based leaf index.
+    pub seq: u64,
+    /// Event kind (`proof`, `blind_signature`, `keyset`, `melt_quote`, or
+    /// an implementation-specific kind a verifier must preserve).
+    pub entity_type: String,
+    /// `insert`, `update`, or `delete`.
+    pub op: String,
+    /// The entity's stable identifier.
+    pub entity_id: String,
+    /// The fields the mutation wrote, as a JSON object.
+    pub payload: serde_json::Value,
+    /// Unix timestamp (seconds) the entry was appended at.
+    pub created_time: u64,
+    /// Lowercase hex SHA-256 leaf hash the mint stored for this entry.
+    pub leaf_hash: String,
+}
+
+/// Response of `GET /v1/audit/entries` (NUT-XX).
+#[cfg(feature = "transparency-log")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AuditEntriesResponse {
+    /// Inclusive start of the returned range.
+    pub start: u64,
+    /// Exclusive end of the returned range.
+    pub end: u64,
+    /// The entries, ordered by `seq`.
+    pub entries: Vec<AuditLogEntry>,
 }

@@ -1,0 +1,22 @@
+[package]
+name = "cdk-tlog"
+version.workspace = true
+edition.workspace = true
+authors = ["CDK Developers"]
+license.workspace = true
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
+rust-version.workspace = true # MSRV
+description = "RFC 6962 Merkle tree math and C2SP checkpoint/signed-note/cosignature formats, shared by the mint's transparency log and its built-in witness"
+readme = "README.md"
+
+[dependencies]
+base64.workspace = true
+bitcoin.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
+rand_core.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

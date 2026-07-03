@@ -31,6 +31,203 @@ mod test {
 
     mint_db_test!(provide_db);
 
+    /// End-to-end check that the transparency event log (see
+    /// `docs/adr/0001-append-only-transparency-log.md`) is actually
+    /// populated by real mutations, not just present as an unused table.
+    #[tokio::test]
+    async fn transparency_log_is_populated_by_real_mutations() {
+        use std::str::FromStr;
+
+        use bitcoin::bip32::DerivationPath;
+        use cdk_common::common::IssuerVersion;
+        use cdk_common::database::mint::{
+            Database as MintDatabase, EventOp, KeysDatabase, LoggedEntity, TransparencyLogDatabase,
+        };
+        use cdk_common::mint::{MintKeySetInfo, Operation};
+        use cdk_common::nuts::State;
+        use cdk_common::secret::Secret;
+        use cdk_common::state::check_state_transition;
+        use cdk_common::{Amount, CurrencyUnit, Id, Proof, SecretKey};
+
+        let db = memory::empty().await.unwrap();
+
+        assert!(
+            TransparencyLogDatabase::assign_leaf_indices(&db, 1_000)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a fresh mint has an empty transparency log"
+        );
+
+        // 1. `set_active_keyset` should log a Keyset/Update entry.
+        let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
+        let keyset_info = MintKeySetInfo {
+            id: keyset_id,
+            unit: CurrencyUnit::Sat,
+            active: false,
+            valid_from: 0,
+            final_expiry: None,
+            derivation_path: DerivationPath::from_str("m/0'/0'/0'").unwrap(),
+            derivation_path_index: Some(0),
+            input_fee_ppk: 0,
+            amounts: vec![1, 2, 4, 8],
+            issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
+        };
+        let mut tx = KeysDatabase::begin_transaction(&db).await.unwrap();
+        tx.add_keyset_info(keyset_info).await.unwrap();
+        tx.set_active_keyset(CurrencyUnit::Sat, keyset_id)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        // 2. Add and then update a proof's state -> Proof/Update entry.
+        let proof = Proof {
+            amount: Amount::from(4),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        };
+        let y = proof.y().unwrap();
+        let mut tx = MintDatabase::begin_transaction(&db).await.unwrap();
+        tx.add_proofs(
+            vec![proof],
+            None,
+            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let mut tx = MintDatabase::begin_transaction(&db).await.unwrap();
+        let mut proofs = tx.get_proofs(&[y]).await.unwrap();
+        check_state_transition(proofs.state, State::Pending).unwrap();
+        tx.update_proofs_state(&mut proofs, State::Pending)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        // Rows only become visible (and get their zero-based leaf index)
+        // once the appender sequences them.
+        let entries = TransparencyLogDatabase::assign_leaf_indices(&db, 1_000)
+            .await
+            .unwrap();
+        assert!(
+            entries.len() >= 2,
+            "expected at least the keyset and proof updates to be logged, got {entries:?}"
+        );
+
+        // Sequencing is idempotent-ish: a second call finds nothing new.
+        assert!(TransparencyLogDatabase::assign_leaf_indices(&db, 1_000)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let ranged = TransparencyLogDatabase::get_event_log_range(&db, 0, entries.len() as u64)
+            .await
+            .unwrap();
+        assert_eq!(ranged, entries);
+
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.entity_type == LoggedEntity::Keyset && e.op == EventOp::Insert),
+            "missing keyset creation log entry: {entries:?}"
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.entity_type == LoggedEntity::Keyset && e.op == EventOp::Update),
+            "missing keyset activation log entry: {entries:?}"
+        );
+        assert!(
+            entries.iter().any(|e| e.entity_type == LoggedEntity::Proof
+                && e.entity_id == y.to_string()
+                && e.op == EventOp::Insert),
+            "missing proof receipt log entry: {entries:?}"
+        );
+        assert!(
+            entries.iter().any(|e| e.entity_type == LoggedEntity::Proof
+                && e.entity_id == y.to_string()
+                && e.op == EventOp::Update),
+            "missing proof state-update log entry: {entries:?}"
+        );
+
+        // Every stored leaf_hash must be independently reproducible from
+        // the entry's own fields — this is the property external
+        // playback/verification tooling depends on.
+        for entry in &entries {
+            let expected = cdk_tlog::merkle::leaf_hash(&entry.leaf_preimage());
+            assert_eq!(
+                entry.leaf_hash, expected,
+                "stored leaf_hash must match a fresh computation from the entry's own fields"
+            );
+        }
+
+        // Leaf indices must be dense and zero-based in returned order.
+        for (i, entry) in entries.iter().enumerate() {
+            assert_eq!(entry.seq, i as u64);
+        }
+    }
+
+    /// The append-only invariant on `mint_event_log` (ADR "Invariants"
+    /// item 2) must hold at the database level, not just by code review:
+    /// DELETE always fails, the only allowed UPDATE is the appender's
+    /// one-time `leaf_index` assignment.
+    #[tokio::test]
+    async fn event_log_is_append_only_at_db_level() {
+        let path = std::env::temp_dir().join(format!(
+            "cdk-append-only-trigger-test-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = remove_file(&path);
+
+        // Creating the database applies all migrations, including the
+        // trigger migration under test.
+        let _db = MintSqliteDatabase::new(path.clone()).await.unwrap();
+
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute(
+            "INSERT INTO mint_event_log (entity_type, entity_id, op, payload, leaf_hash, created_time)
+             VALUES ('proof', '02aa', 1, X'7B7D', X'0000000000000000000000000000000000000000000000000000000000000000', 100)",
+            [],
+        )
+        .unwrap();
+
+        // DELETE is never allowed.
+        assert!(conn
+            .execute("DELETE FROM mint_event_log", [])
+            .unwrap_err()
+            .to_string()
+            .contains("append-only"));
+
+        // Rewriting a hash-covered column is not allowed.
+        assert!(conn
+            .execute("UPDATE mint_event_log SET payload = X'7B20207D'", [])
+            .unwrap_err()
+            .to_string()
+            .contains("append-only"));
+
+        // The appender's one-time leaf_index assignment is allowed...
+        conn.execute(
+            "UPDATE mint_event_log SET leaf_index = 0 WHERE leaf_index IS NULL",
+            [],
+        )
+        .unwrap();
+
+        // ...but only once: an assigned index can never change.
+        assert!(conn
+            .execute("UPDATE mint_event_log SET leaf_index = 1", [])
+            .unwrap_err()
+            .to_string()
+            .contains("append-only"));
+
+        drop(conn);
+        let _ = remove_file(&path);
+    }
+
     #[tokio::test]
     async fn bug_opening_relative_path() {
         let config: Config = "test.db".into();

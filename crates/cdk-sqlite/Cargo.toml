@@ -33,6 +33,9 @@ lightning-invoice.workspace = true
 uuid.workspace = true
 paste.workspace = true
 
+[dev-dependencies]
+cdk-tlog.workspace = true
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { workspace = true, features = ["js"] }
 

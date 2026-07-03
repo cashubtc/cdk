@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 use cdk_common::database::mint::Acquired;
 use cdk_common::database::{self, DynMintAuthDatabase, DynMintDatabase};
@@ -38,7 +38,11 @@ mod saga_recovery;
 mod start_up_check;
 mod subscription;
 mod swap;
+#[cfg(feature = "transparency-log")]
+pub mod transparency;
 mod verification;
+#[cfg(feature = "transparency-log")]
+pub mod witness;
 
 pub use builder::{KeysetRotation, MintBuilder, MintMeltLimits, UnitConfig};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
@@ -73,6 +77,13 @@ pub struct Mint {
     keysets: Arc<ArcSwap<Vec<SignatoryKeySet>>>,
     /// Background task management
     task_state: Arc<Mutex<TaskState>>,
+    /// Optional transparency log publisher (see
+    /// `docs/adr/0001-append-only-transparency-log.md`). `None` unless
+    /// explicitly attached via [`Mint::set_transparency_log`].
+    transparency_log: Arc<ArcSwapOption<transparency::TransparencyLogService>>,
+    /// Optional built-in witness for cosigning *other* logs' checkpoints.
+    /// `None` unless explicitly attached via [`Mint::set_witness`].
+    witness: Arc<ArcSwapOption<witness::Witness>>,
     /// Maximum number of inputs allowed per transaction
     max_inputs: usize,
     /// Maximum number of outputs allowed per transaction
@@ -92,6 +103,8 @@ struct TaskState {
     shutdown_notify: Option<Arc<Notify>>,
     /// Handle to the main supervisor task
     supervisor_handle: Option<JoinHandle<Result<(), Error>>>,
+    /// Handle to the transparency log publisher task, if one is attached
+    transparency_log_handle: Option<JoinHandle<()>>,
 }
 
 impl Mint {
@@ -246,9 +259,40 @@ impl Mint {
             auth_localstore,
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
             task_state: Arc::new(Mutex::new(TaskState::default())),
+            transparency_log: Arc::new(ArcSwapOption::empty()),
+            witness: Arc::new(ArcSwapOption::empty()),
             max_inputs,
             max_outputs,
         })
+    }
+
+    /// Attaches a transparency log publisher (see
+    /// `docs/adr/0001-append-only-transparency-log.md`) to this mint.
+    /// Must be called before [`Mint::start`] for the publisher to actually
+    /// be spawned as a background task; the mint works identically, just
+    /// without a transparency log, if this is never called.
+    pub fn set_transparency_log(&self, service: Arc<transparency::TransparencyLogService>) {
+        self.transparency_log.store(Some(service));
+    }
+
+    /// The attached transparency log publisher, if any, for use by e.g.
+    /// the `/v1/audit/*` HTTP handlers.
+    pub fn transparency_log(&self) -> Option<Arc<transparency::TransparencyLogService>> {
+        self.transparency_log.load_full()
+    }
+
+    /// Attaches a built-in witness for cosigning other transparency logs'
+    /// checkpoints. Unlike the transparency log publisher, this has no
+    /// background task of its own — it only reacts to incoming
+    /// `add-checkpoint` HTTP requests.
+    pub fn set_witness(&self, witness: Arc<witness::Witness>) {
+        self.witness.store(Some(witness));
+    }
+
+    /// The attached witness, if any, for use by the `/witness/*` HTTP
+    /// handler.
+    pub fn witness(&self) -> Option<Arc<witness::Witness>> {
+        self.witness.load_full()
     }
 
     /// Start the mint's background services and operations
@@ -340,8 +384,14 @@ impl Mint {
         });
 
         // Store the handles
-        task_state.shutdown_notify = Some(shutdown_notify);
+        task_state.shutdown_notify = Some(shutdown_notify.clone());
         task_state.supervisor_handle = Some(supervisor_handle);
+
+        // Spawn the transparency log publisher, if one is attached.
+        if let Some(service) = self.transparency_log() {
+            task_state.transparency_log_handle =
+                Some(service.clone().spawn(shutdown_notify, service.publish_interval()));
+        }
 
         // Give the background task a tiny bit of time to start waiting
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -365,6 +415,7 @@ impl Mint {
         // Take the handles out of the state
         let shutdown_notify = task_state.shutdown_notify.take();
         let supervisor_handle = task_state.supervisor_handle.take();
+        let transparency_log_handle = task_state.transparency_log_handle.take();
 
         // If nothing to stop, return early
         let (shutdown_notify, supervisor_handle) = match (shutdown_notify, supervisor_handle) {
@@ -381,8 +432,15 @@ impl Mint {
 
         tracing::info!("Stopping mint background services...");
 
-        // Signal shutdown
+        // Signal shutdown (wakes both the supervisor and the
+        // transparency log publisher, which share this same `Notify`)
         shutdown_notify.notify_waiters();
+
+        if let Some(handle) = transparency_log_handle {
+            if let Err(join_error) = handle.await {
+                tracing::error!("Transparency log publisher task panicked: {join_error:?}");
+            }
+        }
 
         // Wait for supervisor to complete
         let result = match supervisor_handle.await {

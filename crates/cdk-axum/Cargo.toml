@@ -23,6 +23,8 @@ cdk = { workspace = true, features = [
     "mint",
 ]}
 cdk-http-client = { workspace = true, features = ["bitreq"] }
+cdk-tlog.workspace = true
+hex.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 futures.workspace = true
