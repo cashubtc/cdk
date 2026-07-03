@@ -62,6 +62,9 @@ pub struct FederationArgs {
 pub enum FederationCommand {
     /// Inspect federation config material without printing member secrets.
     Inspect(FederationInspectArgs),
+    /// Run a local fake-wallet operation smoke through the federation wallet connector.
+    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    SmokeOperations(FederationSmokeOperationsArgs),
     /// Generate local trusted-dealer federation configs for fake-wallet testing.
     TrustedDealer(FederationTrustedDealerArgs),
     /// Query signed local status from federation members.
@@ -112,6 +115,26 @@ pub struct FederationTrustedDealerArgs {
     /// Overwrite files previously generated at the target paths.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub force: bool,
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet", feature = "sqlite"))]
+#[derive(Debug, Clone, Args)]
+pub struct FederationSmokeOperationsArgs {
+    /// Shared public federation config JSON path.
+    #[arg(long)]
+    pub public_config: PathBuf,
+    /// Currency unit to use for the operation smoke.
+    #[arg(long, default_value = "sat")]
+    pub unit: String,
+    /// Amount to mint before swap and melt checks.
+    #[arg(long, default_value_t = 4)]
+    pub mint_amount: u64,
+    /// Number of mint quote status attempts before failing.
+    #[arg(long, default_value_t = 100)]
+    pub quote_retries: u16,
+    /// Delay between quote status attempts.
+    #[arg(long, default_value_t = 50)]
+    pub quote_sleep_ms: u64,
 }
 
 #[cfg(feature = "federation")]
@@ -193,6 +216,30 @@ mod tests {
             inspect.private_config,
             Some(PathBuf::from("member-1/federation-private.json"))
         );
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[test]
+    fn parses_federation_smoke_operations_subcommand() {
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "smoke-operations",
+            "--public-config",
+            "federation-public.json",
+            "--mint-amount",
+            "8",
+        ])
+        .expect("smoke operations command parses");
+
+        let Some(CliCommand::Federation(federation)) = args.command else {
+            panic!("expected federation command");
+        };
+        let FederationCommand::SmokeOperations(smoke) = federation.command else {
+            panic!("expected federation smoke-operations command");
+        };
+        assert_eq!(smoke.public_config, PathBuf::from("federation-public.json"));
+        assert_eq!(smoke.mint_amount, 8);
     }
 
     #[test]

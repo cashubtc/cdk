@@ -69,6 +69,8 @@ pub mod env_vars;
 mod federation_inspect;
 #[cfg(feature = "federation")]
 mod federation_setup;
+#[cfg(all(feature = "federation", feature = "fakewallet", feature = "sqlite"))]
+mod federation_smoke;
 #[cfg(feature = "federation")]
 mod federation_status;
 pub mod setup;
@@ -88,6 +90,10 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                 }
                 cli::FederationCommand::TrustedDealer(args) => {
                     federation_setup::run_trusted_dealer_command(args)?;
+                }
+                #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+                cli::FederationCommand::SmokeOperations(smoke) => {
+                    federation_smoke::run_smoke_operations_command(smoke).await?;
                 }
                 cli::FederationCommand::Status(status) => {
                     federation_status::run_status_command(args, status).await?;

@@ -347,15 +347,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: use materialized digest in status</span>
+          <span class="value">feat: add operation federation smoke</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Database-backed state digest</span>
+          <span class="value">Operation-bearing process smoke</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Operation-bearing process smoke</span>
+          <span class="value">Broader storage and BFT backend coverage</span>
         </div>
       </aside>
     </header>
@@ -1027,6 +1027,10 @@
             <p>Private REST status and signed catch-up evidence now use a digest derived from applied mint database rows referenced by the accepted federation journal, so convergence checks cover materialized quotes, proof states, and signature rows.</p>
           </article>
           <article class="item">
+            <h3>Operation process smoke verified</h3>
+            <p>The generated fake-wallet harness now runs wallet mint, swap, proof-state check, melt, restore, signed private REST convergence, and member restart/catch-up across a 3-member/2-threshold federation.</p>
+          </article>
+          <article class="item">
             <h3>Milestone map expanded</h3>
             <p>The dashboard now renders 24 explicit implementation-plan milestone points, each with an objective and test gate, with no grouped shorthand ranges.</p>
           </article>
@@ -1046,7 +1050,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, and local sync plus materialized state-digest health is queryable from mintd over signed private REST. The remaining work is to add operation-bearing live traffic to the generated process smoke.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, local sync plus materialized state-digest health is queryable from mintd over signed private REST, and the generated process smoke now drives live wallet mint, swap, proof-state check, melt, restore, convergence, restart, and catch-up. The remaining work is broader storage backend coverage, stronger BFT ordering, and real payment-backend policy.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -1476,10 +1480,16 @@
               <td>Add operation-bearing process smoke traffic for mint, swap, melt, restore, and check-state using the generated local federation harness.</td>
             </tr>
             <tr>
+              <td>Operation-bearing process smoke</td>
+              <td><span class="status done">Passed</span></td>
+              <td>The generated fake-wallet federation smoke ran against live local mintd processes with the checked-in mintd binary selected through `CDK_MINTD_BIN`. It minted 4 sats, refreshed 4 sats through swap, marked the pre-swap proofs spent, melted 1 sat with 1 sat fee, restored wallet state with 2 unspent proofs, 6 spent proofs, and 0 pending proofs, then restarted member 2 and reported `local federation smoke test passed` after convergence.</td>
+              <td>Run the same operation smoke with five members and three-threshold, then add Postgres-backed process coverage.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, a replaceable consensus runtime boundary, a multi-node simulator for delayed, duplicated, reordered, and quorum-limited proposal delivery, explicit consensus item admission with bounded pending batches, operation acceptance notifications back to public handlers, a finalization loop for accepted-entry apply/notify delivery, an exported backend adapter for queued operation dispatch plus finalized responses, a live generated 5-member process smoke that verifies signed status, readiness, convergence, restart, and cleanup, a materialized-state digest scaffold for consensus-visible mint rows, and database-backed private status plus catch-up evidence digests derived from applied mint rows.</td>
-              <td>Add operation-bearing live smoke coverage, then replace the simulator ordering source with a real BFT backend.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, a replaceable consensus runtime boundary, a multi-node simulator for delayed, duplicated, reordered, and quorum-limited proposal delivery, explicit consensus item admission with bounded pending batches, operation acceptance notifications back to public handlers, a finalization loop for accepted-entry apply/notify delivery, an exported backend adapter for queued operation dispatch plus finalized responses, a live generated 5-member process smoke that verifies signed status, readiness, convergence, restart, and cleanup, a materialized-state digest scaffold for consensus-visible mint rows, database-backed private status plus catch-up evidence digests derived from applied mint rows, and a live operation-bearing process smoke that drives wallet mint, swap, check-state, melt, restore, convergence, restart, and catch-up.</td>
+              <td>Broaden operation smoke to more federation sizes and storage backends, then replace the simulator ordering source with a real BFT backend.</td>
             </tr>
           </tbody>
         </table>
@@ -1547,8 +1557,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Operation-bearing process smoke</h3>
-            <p>Extend the local fake-wallet smoke harness so a federation-aware wallet mints, swaps, melts, restores, and checks state through the generated member roster before and after a restart.</p>
+            <h3>Broader process smoke matrix</h3>
+            <p>Run operation-bearing local smoke with five members and three-threshold, then add storage-backed variants so restart and catch-up behavior is exercised beyond the current SQLite fake-wallet harness.</p>
           </article>
           <article class="item">
             <h3>Broader materialized digest coverage</h3>

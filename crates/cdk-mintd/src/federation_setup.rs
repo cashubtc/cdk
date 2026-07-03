@@ -452,7 +452,6 @@ set -euo pipefail
 CDK_MINTD_BIN="${{CDK_MINTD_BIN:-cdk-mintd}}"
 PUBLIC_CONFIG={public_config_path}
 MEMBERS=({members})
-PRIMARY_MEMBER="${{PRIMARY_MEMBER:-{primary_member}}}"
 RESTART_MEMBER="${{RESTART_MEMBER:-{restart_member}}}"
 STATUS_RETRIES="${{STATUS_RETRIES:-60}}"
 STATUS_SLEEP_SECONDS="${{STATUS_SLEEP_SECONDS:-1}}"
@@ -506,14 +505,22 @@ cleanup() {{
   done
 }}
 
+reset_member_work_dirs() {{
+  local member
+  for member in "${{MEMBERS[@]}}"; do
+    local work_dir
+    work_dir="$(member_work_dir "$member")"
+    rm -rf "$work_dir"
+    mkdir -p "$work_dir"
+  done
+}}
+
 wait_for_status() {{
   local member="$1"
-  local private_config
   local work_dir
-  private_config="$(member_private_config "$PRIMARY_MEMBER")"
   work_dir="$(member_work_dir "$member")"
   for _ in $(seq 1 "$STATUS_RETRIES"); do
-    if "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready >/dev/null 2>&1; then
+    if member_status_line "$member" >/dev/null 2>&1; then
       return 0
     fi
     sleep "$STATUS_SLEEP_SECONDS"
@@ -523,7 +530,82 @@ wait_for_status() {{
   return 1
 }}
 
+member_status_line() {{
+  local member="$1"
+  local private_config
+  private_config="$(member_private_config "$member")"
+  "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready | awk '/^member / {{ print; exit }}'
+}}
+
+status_field() {{
+  local line="$1"
+  local key="$2"
+  local field
+  for field in $line; do
+    case "$field" in
+      "$key"=*)
+        printf '%s\n' "${{field#*=}}"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}}
+
+wait_for_converged() {{
+  for _ in $(seq 1 "$STATUS_RETRIES"); do
+    local baseline_operations=""
+    local baseline_order_digest=""
+    local baseline_state_digest=""
+    local converged=1
+    local member
+    for member in "${{MEMBERS[@]}}"; do
+      local line
+      local operations
+      local order_digest
+      local state_digest
+      if ! line="$(member_status_line "$member" 2>/dev/null)"; then
+        converged=0
+        break
+      fi
+      if ! operations="$(status_field "$line" operations)"; then
+        converged=0
+        break
+      fi
+      if ! order_digest="$(status_field "$line" order_digest)"; then
+        converged=0
+        break
+      fi
+      if ! state_digest="$(status_field "$line" state_digest)"; then
+        converged=0
+        break
+      fi
+      if [[ -z "$baseline_operations" ]]; then
+        baseline_operations="$operations"
+        baseline_order_digest="$order_digest"
+        baseline_state_digest="$state_digest"
+        continue
+      fi
+      if [[ "$operations" != "$baseline_operations" || "$order_digest" != "$baseline_order_digest" || "$state_digest" != "$baseline_state_digest" ]]; then
+        converged=0
+        break
+      fi
+    done
+    if [[ "$converged" == "1" ]]; then
+      return 0
+    fi
+    sleep "$STATUS_SLEEP_SECONDS"
+  done
+  printf 'federation did not converge\n' >&2
+  for member in "${{MEMBERS[@]}}"; do
+    member_status_line "$member" >&2 || true
+  done
+  return 1
+}}
+
 trap cleanup EXIT INT TERM
+
+reset_member_work_dirs
 
 for member in "${{MEMBERS[@]}}"; do
   start_member "$member"
@@ -533,18 +615,19 @@ for member in "${{MEMBERS[@]}}"; do
   wait_for_status "$member"
 done
 
-"$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$(member_private_config "$PRIMARY_MEMBER")" --require-ready --require-converged
+wait_for_converged
+"$CDK_MINTD_BIN" federation smoke-operations --public-config "$PUBLIC_CONFIG"
+wait_for_converged
 
 stop_member "$RESTART_MEMBER"
 start_member "$RESTART_MEMBER"
 wait_for_status "$RESTART_MEMBER"
 
-"$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$(member_private_config "$PRIMARY_MEMBER")" --require-ready --require-converged
+wait_for_converged
 printf 'local federation smoke test passed\n'
 "#,
         public_config_path = public_config_path,
         members = members,
-        primary_member = primary_member.get(),
         restart_member = restart_member.get(),
         config_cases = config_cases,
         work_dir_cases = work_dir_cases,
@@ -624,8 +707,14 @@ mod tests {
             std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
         assert!(smoke_script.starts_with("#!/usr/bin/env bash"));
         assert!(smoke_script.contains("federation status"));
+        assert!(smoke_script.contains("federation smoke-operations"));
         assert!(smoke_script.contains("--require-ready"));
-        assert!(smoke_script.contains("--require-converged"));
+        assert!(smoke_script.contains("member_status_line()"));
+        assert!(smoke_script.contains("private_config=\"$(member_private_config \"$member\")\""));
+        assert!(!smoke_script
+            .contains("private_config=\"$(member_private_config \"$PRIMARY_MEMBER\")\""));
+        assert!(smoke_script.contains("reset_member_work_dirs"));
+        assert!(smoke_script.contains("rm -rf \"$work_dir\""));
         assert!(smoke_script.contains("RESTART_MEMBER"));
         assert!(smoke_script.contains("local federation smoke test passed"));
         assert!(smoke_script.contains(&artifacts.public_config_path.to_string_lossy().to_string()));

@@ -1078,12 +1078,12 @@ async fn materialized_state_digest(
                 FederationMaterializedStateRow::new("mint_quotes", quote.id.to_string())
                     .with_field("amount", optional_amount_value(quote.amount.as_ref()))
                     .with_field("unit", quote.unit.to_string())
+                    .with_field("request", quote.request.clone())
+                    .with_field("expiry", quote.expiry.to_string())
                     .with_field("amount_paid", quote.amount_paid().value().to_string())
                     .with_field("amount_issued", quote.amount_issued().value().to_string())
-                    .with_field("payment_method", quote.payment_method.to_string())
-                    .with_field("request_lookup_id", quote.request_lookup_id.to_string())
-                    .with_field("payment_count", quote.payments.len().to_string())
-                    .with_field("issuance_count", quote.issuance.len().to_string()),
+                    .with_field("state", quote.state().to_string())
+                    .with_field("payment_method", quote.payment_method.to_string()),
             ),
             None => snapshot.push(
                 FederationMaterializedStateRow::new("mint_quotes", quote)
@@ -1100,23 +1100,10 @@ async fn materialized_state_digest(
                     .with_field("amount", quote.amount().value().to_string())
                     .with_field("fee_reserve", quote.fee_reserve().value().to_string())
                     .with_field("unit", quote.unit.to_string())
+                    .with_field("request", quote.request.to_string())
                     .with_field("state", quote.state.to_string())
                     .with_field("payment_method", quote.payment_method.to_string())
-                    .with_field(
-                        "paid_time",
-                        quote
-                            .paid_time
-                            .map(|paid_time| paid_time.to_string())
-                            .unwrap_or_default(),
-                    )
-                    .with_field("payment_proof", quote.payment_proof.unwrap_or_default())
-                    .with_field(
-                        "request_lookup_id",
-                        quote
-                            .request_lookup_id
-                            .map(|lookup| lookup.to_string())
-                            .unwrap_or_default(),
-                    ),
+                    .with_field("payment_proof", quote.payment_proof.unwrap_or_default()),
             ),
             None => snapshot.push(
                 FederationMaterializedStateRow::new("melt_quotes", quote)
@@ -1148,7 +1135,6 @@ async fn materialized_state_digest(
                 Some(signature) => {
                     row.insert_field("amount", signature.amount.to_string());
                     row.insert_field("keyset_id", signature.keyset_id.to_string());
-                    row.insert_field("signature", signature.c.to_hex());
                 }
                 None => row.insert_field("missing", "true"),
             }
@@ -1455,6 +1441,16 @@ mod tests {
         MemberConfigPrivate,
     ) {
         let (public_config, local_private, peer_private) = transport_config();
+        let state =
+            federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
+
+        (state, public_config, local_private, peer_private)
+    }
+
+    async fn federation_route_state_for_private(
+        public_config: FederationConfig,
+        local_private: MemberConfigPrivate,
+    ) -> MintState {
         let runtime_config =
             cdk::mint::FederationRuntimeConfig::new(public_config.clone(), local_private.clone())
                 .expect("runtime config");
@@ -1486,7 +1482,7 @@ mod tests {
             .build_with_seed(db, &mnemonic.to_seed_normalized(""))
             .await
             .expect("mint");
-        let state = MintState {
+        MintState {
             mint: Arc::new(mint),
             cache: Arc::new(crate::cache::HttpCache::default()),
             federation_consensus: Some(Arc::new(tokio::sync::Mutex::new(
@@ -1505,9 +1501,7 @@ mod tests {
                 crate::FederationOperationNotifications::default(),
             )),
             federation_finalizer: None,
-        };
-
-        (state, public_config, local_private, peer_private)
+        }
     }
 
     async fn federation_route_state() -> (MintState, FederationConfig, MemberConfigPrivate) {
@@ -3336,6 +3330,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn materialized_state_digest_ignores_local_mint_payment_metadata() {
+        let (first_state, _, _) = federation_route_state().await;
+        let (second_state, _, _) = federation_route_state().await;
+        let quote_id = QuoteId::new();
+        let quote_envelope = mint_quote_envelope(&first_state, &quote_id);
+        let paid_envelope = paid_observation_envelope(&first_state, &quote_id);
+
+        for state in [&first_state, &second_state] {
+            state
+                .submit_federation_envelope(quote_envelope.clone())
+                .await
+                .expect("submit mint quote");
+            state
+                .submit_federation_envelope(paid_envelope.clone())
+                .await
+                .expect("submit paid observation");
+        }
+
+        let mut tx = second_state
+            .mint
+            .localstore()
+            .begin_transaction()
+            .await
+            .expect("begin tx");
+        let mut quote = tx
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("load quote")
+            .expect("mint quote");
+        quote
+            .add_payment(
+                Amount::from(0).with_unit(CurrencyUnit::Sat),
+                "local-backend-zero-payment".to_string(),
+                Some(42),
+            )
+            .expect("add local payment metadata");
+        tx.update_mint_quote(&mut quote)
+            .await
+            .expect("persist local payment metadata");
+        tx.commit().await.expect("commit tx");
+
+        let first_entries = first_state
+            .federation_consensus
+            .as_ref()
+            .expect("consensus")
+            .lock()
+            .await
+            .journal()
+            .entries()
+            .to_vec();
+        let second_entries = second_state
+            .federation_consensus
+            .as_ref()
+            .expect("consensus")
+            .lock()
+            .await
+            .journal()
+            .entries()
+            .to_vec();
+
+        let first_digest = materialized_state_digest(&first_state, &first_entries)
+            .await
+            .expect("first digest");
+        let second_digest = materialized_state_digest(&second_state, &second_entries)
+            .await
+            .expect("second digest");
+
+        assert_eq!(first_digest, second_digest);
+    }
+
+    #[tokio::test]
     async fn submit_federation_envelope_notifies_operation_acceptance() {
         let (mut state, _, _) = federation_route_state().await;
         state.start_federation_finalization_loop();
@@ -3433,6 +3498,90 @@ mod tests {
                 .status,
             FederationOperationStatus::Applied
         );
+    }
+
+    #[tokio::test]
+    async fn materialized_state_digest_ignores_member_local_signature_share_bytes() {
+        let (public_config, first_private, second_private) = transport_config();
+        let first_state =
+            federation_route_state_for_private(public_config.clone(), first_private).await;
+        let second_state =
+            federation_route_state_for_private(public_config.clone(), second_private).await;
+        let quote_id = QuoteId::new();
+        let quote_envelope = mint_quote_envelope(&first_state, &quote_id);
+        let paid_envelope = paid_observation_envelope(&first_state, &quote_id);
+        let output = mint_output(&first_state, &quote_id);
+        let input = MintInput::Single(MintRequest {
+            quote: quote_id.clone(),
+            outputs: vec![output.clone()],
+            signature: None,
+        });
+        let mint_envelope = first_state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .mint_operation(input)
+            .expect("mint envelope");
+
+        for state in [&first_state, &second_state] {
+            state
+                .submit_federation_envelope(quote_envelope.clone())
+                .await
+                .expect("submit mint quote");
+            state
+                .submit_federation_envelope(paid_envelope.clone())
+                .await
+                .expect("submit paid observation");
+            state
+                .submit_federation_envelope(mint_envelope.clone())
+                .await
+                .expect("submit mint");
+        }
+
+        let first_signature = first_state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[output.blinded_secret])
+            .await
+            .expect("first signature lookup")
+            .remove(0)
+            .expect("first signature");
+        let second_signature = second_state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[output.blinded_secret])
+            .await
+            .expect("second signature lookup")
+            .remove(0)
+            .expect("second signature");
+        assert_ne!(first_signature.c, second_signature.c);
+
+        let first_entries = first_state
+            .federation_consensus
+            .as_ref()
+            .expect("consensus")
+            .lock()
+            .await
+            .journal()
+            .entries()
+            .to_vec();
+        let second_entries = second_state
+            .federation_consensus
+            .as_ref()
+            .expect("consensus")
+            .lock()
+            .await
+            .journal()
+            .entries()
+            .to_vec();
+        let first_digest = materialized_state_digest(&first_state, &first_entries)
+            .await
+            .expect("first digest");
+        let second_digest = materialized_state_digest(&second_state, &second_entries)
+            .await
+            .expect("second digest");
+
+        assert_eq!(first_digest, second_digest);
     }
 
     #[tokio::test]
