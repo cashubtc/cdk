@@ -22,6 +22,7 @@ use cashu::{MeltRequest, PreMintSecrets};
 use cdk::amount::{Amount, SplitTarget};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
+use cdk::nuts::nut17::{deserialize_payload_for_kind, Kind};
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, NotificationPayload, PaymentMethod, State};
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletRepositoryBuilder};
 use cdk_integration_tests::{create_invoice_for_env, get_mint_url_from_env, pay_if_regtest};
@@ -43,6 +44,7 @@ fn get_test_temp_dir() -> PathBuf {
 
 async fn get_notifications<T: StreamExt<Item = Result<Message, E>> + Unpin, E: Debug>(
     reader: &mut T,
+    kind: &Kind,
     timeout_to_wait: Duration,
     total: usize,
 ) -> Vec<(String, NotificationPayload<String>)> {
@@ -72,7 +74,11 @@ async fn get_notifications<T: StreamExt<Item = Result<Message, E>> + Unpin, E: D
                 .as_str()
                 .unwrap()
                 .to_string(),
-            serde_json::from_value(params_map.remove("payload").unwrap()).unwrap(),
+            deserialize_payload_for_kind::<String, serde_json::Error>(
+                kind,
+                params_map.remove("payload").unwrap(),
+            )
+            .unwrap(),
         ))
     }
     results
@@ -180,8 +186,13 @@ async fn test_happy_mint_melt_round_trip() {
     assert_eq!(response_json, expected_json);
 
     // Read the initial state notification before starting the melt to ensure we capture Unpaid
-    let initial_notification =
-        get_notifications(&mut reader, Duration::from_millis(15000), 1).await;
+    let initial_notification = get_notifications(
+        &mut reader,
+        &Kind::Bolt11MeltQuote,
+        Duration::from_millis(15000),
+        1,
+    )
+    .await;
     let (sub_id, payload) = &initial_notification[0];
     assert_eq!("test-sub", sub_id);
     let initial_melt = match payload {
@@ -212,7 +223,13 @@ async fn test_happy_mint_melt_round_trip() {
     assert_eq!(tx.metadata, metadata);
 
     // Read remaining notifications (Pending -> Paid)
-    let notifications = get_notifications(&mut reader, Duration::from_millis(15000), 2).await;
+    let notifications = get_notifications(
+        &mut reader,
+        &Kind::Bolt11MeltQuote,
+        Duration::from_millis(15000),
+        2,
+    )
+    .await;
 
     let (sub_id, payload) = &notifications[0];
     assert_eq!("test-sub", sub_id);

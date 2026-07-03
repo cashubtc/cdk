@@ -14,7 +14,7 @@ use cdk_common::nut00::KnownMethod;
 use cdk_common::nut17::ws::{
     WsErrorResponse, WsMethodRequest, WsNotification, WsRequest, WsResponse, WsUnsubscribeRequest,
 };
-use cdk_common::nut17::{Kind, NotificationId};
+use cdk_common::nut17::{deserialize_payload_for_kind, Kind, NotificationId};
 use cdk_common::parking_lot::RwLock;
 use cdk_common::pub_sub::remote_consumer::{
     Consumer, InternalRelay, RemoteActiveConsumer, StreamCtrl, SubscribeMessage, Transport,
@@ -22,11 +22,7 @@ use cdk_common::pub_sub::remote_consumer::{
 use cdk_common::pub_sub::{Error as PubsubError, Spec, Subscriber};
 use cdk_common::subscription::WalletParams;
 use cdk_common::ws_client::{connect as ws_connect, WsError};
-use cdk_common::{
-    CheckStateRequest, MeltQuoteBolt11Response, MeltQuoteBolt12Response, MeltQuoteCustomResponse,
-    MeltQuoteOnchainResponse, Method, MintQuoteBolt11Response, MintQuoteBolt12Response,
-    MintQuoteCustomResponse, MintQuoteOnchainResponse, PaymentMethod, ProofState, RoutePath,
-};
+use cdk_common::{CheckStateRequest, Method, PaymentMethod, RoutePath};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -244,46 +240,8 @@ fn decode_notification_payload(
     kind: &Kind,
     payload: serde_json::Value,
 ) -> Result<NotificationPayload, PubsubError> {
-    match kind {
-        Kind::ProofState => serde_json::from_value::<ProofState>(payload)
-            .map(NotificationPayload::ProofState)
-            .map_err(|err| PubsubError::ParsingError(err.to_string())),
-        Kind::Bolt11MintQuote => serde_json::from_value::<MintQuoteBolt11Response<String>>(payload)
-            .map(NotificationPayload::MintQuoteBolt11Response)
-            .map_err(|err| PubsubError::ParsingError(err.to_string())),
-        Kind::Bolt11MeltQuote => serde_json::from_value::<MeltQuoteBolt11Response<String>>(payload)
-            .map(NotificationPayload::MeltQuoteBolt11Response)
-            .map_err(|err| PubsubError::ParsingError(err.to_string())),
-        Kind::Bolt12MintQuote => serde_json::from_value::<MintQuoteBolt12Response<String>>(payload)
-            .map(NotificationPayload::MintQuoteBolt12Response)
-            .map_err(|err| PubsubError::ParsingError(err.to_string())),
-        Kind::Bolt12MeltQuote => serde_json::from_value::<MeltQuoteBolt12Response<String>>(payload)
-            .map(NotificationPayload::MeltQuoteBolt12Response)
-            .map_err(|err| PubsubError::ParsingError(err.to_string())),
-        Kind::OnchainMintQuote => {
-            serde_json::from_value::<MintQuoteOnchainResponse<String>>(payload)
-                .map(NotificationPayload::MintQuoteOnchainResponse)
-                .map_err(|err| PubsubError::ParsingError(err.to_string()))
-        }
-        Kind::OnchainMeltQuote => {
-            serde_json::from_value::<MeltQuoteOnchainResponse<String>>(payload)
-                .map(NotificationPayload::MeltQuoteOnchainResponse)
-                .map_err(|err| PubsubError::ParsingError(err.to_string()))
-        }
-        Kind::Custom(method) if method.ends_with("_mint_quote") => serde_json::from_value::<
-            MintQuoteCustomResponse<String>,
-        >(payload)
-        .map(|response| NotificationPayload::CustomMintQuoteResponse(method.clone(), response))
-        .map_err(|err| PubsubError::ParsingError(err.to_string())),
-        Kind::Custom(method) if method.ends_with("_melt_quote") => serde_json::from_value::<
-            MeltQuoteCustomResponse<String>,
-        >(payload)
-        .map(|response| NotificationPayload::CustomMeltQuoteResponse(method.clone(), response))
-        .map_err(|err| PubsubError::ParsingError(err.to_string())),
-        Kind::Custom(method) => Err(PubsubError::ParsingError(format!(
-            "Unsupported custom websocket notification kind: {method}"
-        ))),
-    }
+    deserialize_payload_for_kind::<String, serde_json::Error>(kind, payload)
+        .map_err(|err| PubsubError::ParsingError(err.to_string()))
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -769,9 +727,32 @@ mod tests {
     }
 
     #[test]
+    fn decode_onchain_mint_notification_uses_subscription_kind() {
+        let payload = json!({
+            "quote": "onchain-quote",
+            "request": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            "unit": "sat",
+            "expiry": 1234,
+            "pubkey": "02194603ffa062682c4f10e2dfe8f53e17d5d0329db51c8d3935cc74a4c0e0d4cb",
+            "amount_paid": 0,
+            "amount_issued": 0,
+            "state": "future-extension"
+        });
+
+        let decoded = decode_notification_payload(&Kind::OnchainMintQuote, payload).unwrap();
+
+        assert!(matches!(
+            decoded,
+            NotificationPayload::MintQuoteOnchainResponse(_)
+        ));
+    }
+
+    #[test]
     fn decode_custom_notifications() {
-        let mint_method = "foo_mint_quote".to_string();
-        let melt_method = "foo_melt_quote".to_string();
+        let mint_method = "foo".to_string();
+        let melt_method = "foo".to_string();
+        let mint_kind = Kind::Custom(format!("{}_mint_quote", mint_method));
+        let melt_kind = Kind::Custom(format!("{}_melt_quote", melt_method));
         let mint_payload = json!({
             "quote": "mint-custom",
             "request": "custom-request",
@@ -795,10 +776,8 @@ mod tests {
             "extra_field": "value"
         });
 
-        let mint_decoded =
-            decode_notification_payload(&Kind::Custom(mint_method.clone()), mint_payload).unwrap();
-        let melt_decoded =
-            decode_notification_payload(&Kind::Custom(melt_method.clone()), melt_payload).unwrap();
+        let mint_decoded = decode_notification_payload(&mint_kind, mint_payload).unwrap();
+        let melt_decoded = decode_notification_payload(&melt_kind, melt_payload).unwrap();
 
         assert!(matches!(
             mint_decoded,

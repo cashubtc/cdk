@@ -212,6 +212,149 @@ where
     CustomMeltQuoteResponse(String, MeltQuoteCustomResponse<T>),
 }
 
+fn fill_response_method<E>(value: &mut serde_json::Value, method: &str) -> Result<(), E>
+where
+    E: DeError,
+{
+    if let serde_json::Value::Object(object) = value {
+        match object.get("method") {
+            Some(serde_json::Value::String(existing))
+                if PaymentMethod::new(existing.to_string())
+                    == PaymentMethod::new(method.to_string()) => {}
+            Some(serde_json::Value::String(existing)) => {
+                return Err(E::custom(format!(
+                    "notification payload method {existing} does not match kind method {method}"
+                )));
+            }
+            Some(_) => {
+                return Err(E::custom("notification payload method must be a string"));
+            }
+            None => {
+                object.insert(
+                    "method".to_string(),
+                    serde_json::Value::String(method.to_string()),
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn fill_kind_response_method<E>(
+    mut value: serde_json::Value,
+    method: &str,
+) -> Result<serde_json::Value, E>
+where
+    E: DeError,
+{
+    fill_response_method::<E>(&mut value, method)?;
+    Ok(value)
+}
+
+/// Deserialize a notification payload using the subscription kind that produced
+/// it.
+///
+/// NUT-17 notification payloads are not self-describing. Quote responses share
+/// many fields and tolerate unknown fields, so deserializing the payload without
+/// the subscription kind can silently select the wrong variant.
+pub fn deserialize_payload_for_kind<T, E>(
+    kind: &Kind,
+    value: serde_json::Value,
+) -> Result<NotificationPayload<T>, E>
+where
+    T: Clone + Serialize + DeserializeOwned,
+    E: DeError,
+{
+    fn from_value<V, E>(value: serde_json::Value) -> Result<V, E>
+    where
+        V: DeserializeOwned,
+        E: DeError,
+    {
+        serde_json::from_value(value).map_err(E::custom)
+    }
+
+    fn custom_response<V, E>(
+        kind: &str,
+        expected_method: &str,
+        mut value: serde_json::Value,
+    ) -> Result<(String, V), E>
+    where
+        V: DeserializeOwned,
+        E: DeError,
+    {
+        match &mut value {
+            serde_json::Value::Array(items) if items.len() == 2 => {
+                let payload_method = items
+                    .first()
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| E::custom("custom notification method must be a string"))?
+                    .to_string();
+                if payload_method != expected_method {
+                    return Err(E::custom(format!(
+                        "custom notification method {payload_method} does not match kind {kind}"
+                    )));
+                }
+
+                let response = items
+                    .get_mut(1)
+                    .ok_or_else(|| E::custom("custom notification payload is missing response"))?;
+                if !response.is_object() {
+                    return Err(E::custom("custom notification response must be an object"));
+                }
+                fill_response_method::<E>(response, expected_method)?;
+
+                from_value(value)
+            }
+            serde_json::Value::Array(_) => {
+                Err(E::custom("custom notification payload must have two items"))
+            }
+            serde_json::Value::Object(_) => {
+                fill_response_method::<E>(&mut value, expected_method)?;
+                from_value(value).map(|response| (expected_method.to_string(), response))
+            }
+            _ => Err(E::custom("custom notification response must be an object")),
+        }
+    }
+
+    match kind {
+        Kind::ProofState => from_value(value).map(NotificationPayload::ProofState),
+        Kind::Bolt11MintQuote => fill_kind_response_method::<E>(value, "bolt11")
+            .and_then(from_value)
+            .map(NotificationPayload::MintQuoteBolt11Response),
+        Kind::Bolt11MeltQuote => fill_kind_response_method::<E>(value, "bolt11")
+            .and_then(from_value)
+            .map(NotificationPayload::MeltQuoteBolt11Response),
+        Kind::Bolt12MintQuote => fill_kind_response_method::<E>(value, "bolt12")
+            .and_then(from_value)
+            .map(NotificationPayload::MintQuoteBolt12Response),
+        Kind::Bolt12MeltQuote => fill_kind_response_method::<E>(value, "bolt12")
+            .and_then(from_value)
+            .map(NotificationPayload::MeltQuoteBolt12Response),
+        Kind::OnchainMintQuote => fill_kind_response_method::<E>(value, "onchain")
+            .and_then(from_value)
+            .map(NotificationPayload::MintQuoteOnchainResponse),
+        Kind::OnchainMeltQuote => fill_kind_response_method::<E>(value, "onchain")
+            .and_then(from_value)
+            .map(NotificationPayload::MeltQuoteOnchainResponse),
+        Kind::Custom(method) => {
+            if let Some(expected_method) = method.strip_suffix("_mint_quote") {
+                custom_response(method, expected_method, value).map(|(method, response)| {
+                    NotificationPayload::CustomMintQuoteResponse(method, response)
+                })
+            } else if let Some(expected_method) = method.strip_suffix("_melt_quote") {
+                custom_response(method, expected_method, value).map(|(method, response)| {
+                    NotificationPayload::CustomMeltQuoteResponse(method, response)
+                })
+            } else {
+                Err(E::custom(format!(
+                    "unsupported custom notification kind: {method}"
+                )))
+            }
+        }
+    }
+}
+
 /// Classify a notification payload by its discriminating fields instead of
 /// serde `untagged` variant order. The quote responses for different payment
 /// methods share most field names, and the structs tolerate unknown fields
@@ -241,6 +384,10 @@ where
             }
 
             if fields.contains_key("fee_reserve") {
+                if fields.get("method").and_then(serde_json::Value::as_str) == Some("bolt12") {
+                    return from_value(value).map(NotificationPayload::MeltQuoteBolt12Response);
+                }
+
                 return from_value(value).map(NotificationPayload::MeltQuoteBolt11Response);
             }
 
@@ -255,19 +402,34 @@ where
             from_value(value).map(NotificationPayload::MintQuoteOnchainResponse)
         }
         serde_json::Value::Array(items) if items.len() == 2 => {
+            let method = items
+                .first()
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| E::custom("custom notification method must be a string"))?
+                .to_owned();
             let response = items
                 .get(1)
                 .ok_or_else(|| E::custom("custom notification payload is missing response"))?;
-            match response.as_object() {
-                Some(fields) if fields.contains_key("state") => {
-                    from_value(value).map(|(method, response)| {
-                        NotificationPayload::CustomMeltQuoteResponse(method, response)
-                    })
+            let is_melt_quote = match response.as_object() {
+                Some(fields) => fields.contains_key("state"),
+                None => return Err(E::custom("custom notification response must be an object")),
+            };
+
+            let mut value = value;
+            if let serde_json::Value::Array(items) = &mut value {
+                if let Some(response) = items.get_mut(1) {
+                    fill_response_method::<E>(response, &method)?;
                 }
-                Some(_) => from_value(value).map(|(method, response)| {
+            }
+
+            if is_melt_quote {
+                from_value(value).map(|(method, response)| {
+                    NotificationPayload::CustomMeltQuoteResponse(method, response)
+                })
+            } else {
+                from_value(value).map(|(method, response)| {
                     NotificationPayload::CustomMintQuoteResponse(method, response)
-                }),
-                None => Err(E::custom("custom notification response must be an object")),
+                })
             }
         }
         _ => Err(E::custom("invalid notification payload")),
@@ -417,7 +579,11 @@ mod tests {
             NotificationPayload::MintQuoteOnchainResponse(resp.clone());
 
         let encoded = serde_json::to_string(&payload).unwrap();
-        let decoded: NotificationPayload<String> = serde_json::from_str(&encoded).unwrap();
+        let decoded = deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::OnchainMintQuote,
+            serde_json::from_str(&encoded).unwrap(),
+        )
+        .unwrap();
 
         match decoded {
             NotificationPayload::MintQuoteOnchainResponse(r) => {
@@ -448,7 +614,11 @@ mod tests {
             NotificationPayload::MintQuoteBolt12Response(resp.clone());
 
         let encoded = serde_json::to_string(&payload).unwrap();
-        let decoded: NotificationPayload<String> = serde_json::from_str(&encoded).unwrap();
+        let decoded = deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::Bolt12MintQuote,
+            serde_json::from_str(&encoded).unwrap(),
+        )
+        .unwrap();
 
         match decoded {
             NotificationPayload::MintQuoteBolt12Response(r) => {
@@ -480,7 +650,11 @@ mod tests {
             NotificationPayload::MeltQuoteOnchainResponse(resp.clone());
 
         let encoded = serde_json::to_string(&payload).unwrap();
-        let decoded: NotificationPayload<String> = serde_json::from_str(&encoded).unwrap();
+        let decoded = deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::OnchainMeltQuote,
+            serde_json::from_str(&encoded).unwrap(),
+        )
+        .unwrap();
 
         match decoded {
             NotificationPayload::MeltQuoteOnchainResponse(r) => {
@@ -488,6 +662,108 @@ mod tests {
             }
             other => panic!("expected MeltQuoteOnchainResponse, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn notification_payload_bolt12_melt_roundtrip() {
+        let resp: MeltQuoteBolt12Response<String> = MeltQuoteBolt12Response {
+            quote: "abc".to_string(),
+            amount: Amount::from(100_000),
+            fee_reserve: Amount::from(10),
+            state: MeltQuoteState::Pending,
+            expiry: 1701704757,
+            payment_preimage: None,
+            change: None,
+            request: Some("lno1...".to_string()),
+            unit: Some(CurrencyUnit::Sat),
+        };
+        let payload: NotificationPayload<String> =
+            NotificationPayload::MeltQuoteBolt12Response(resp.clone());
+
+        let encoded = serde_json::to_string(&payload).unwrap();
+        let decoded = deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::Bolt12MeltQuote,
+            serde_json::from_str(&encoded).unwrap(),
+        )
+        .unwrap();
+
+        match decoded {
+            NotificationPayload::MeltQuoteBolt12Response(r) => {
+                assert_eq!(r, resp);
+            }
+            other => panic!("expected MeltQuoteBolt12Response, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn notification_payload_custom_arrays_require_method_and_object_response() {
+        let custom_mint = r#"[
+            "paypal",
+            {
+                "quote": "abc",
+                "request": "pay://abc",
+                "amount": 10,
+                "amount_paid": 0,
+                "amount_issued": 0,
+                "unit": "sat",
+                "expiry": 1701704757
+            }
+        ]"#;
+        let mint_kind = Kind::Custom("paypal_mint_quote".to_string());
+        let payload = deserialize_payload_for_kind::<String, serde_json::Error>(
+            &mint_kind,
+            serde_json::from_str(custom_mint).unwrap(),
+        )
+        .unwrap();
+        match payload {
+            NotificationPayload::CustomMintQuoteResponse(method, response) => {
+                assert_eq!(method, "paypal");
+                assert_eq!(response.quote, "abc");
+            }
+            other => panic!("expected CustomMintQuoteResponse, got {:?}", other),
+        }
+
+        let custom_melt = r#"[
+            "paypal",
+            {
+                "quote": "abc",
+                "amount": 10,
+                "fee_reserve": 1,
+                "state": "PENDING",
+                "expiry": 1701704757,
+                "request": "pay://abc",
+                "unit": "sat"
+            }
+        ]"#;
+        let melt_kind = Kind::Custom("paypal_melt_quote".to_string());
+        let payload = deserialize_payload_for_kind::<String, serde_json::Error>(
+            &melt_kind,
+            serde_json::from_str(custom_melt).unwrap(),
+        )
+        .unwrap();
+        match payload {
+            NotificationPayload::CustomMeltQuoteResponse(method, response) => {
+                assert_eq!(method, "paypal");
+                assert_eq!(response.quote, "abc");
+            }
+            other => panic!("expected CustomMeltQuoteResponse, got {:?}", other),
+        }
+
+        assert!(deserialize_payload_for_kind::<String, serde_json::Error>(
+            &mint_kind,
+            serde_json::json!(["paypal"]),
+        )
+        .is_err());
+        assert!(deserialize_payload_for_kind::<String, serde_json::Error>(
+            &mint_kind,
+            serde_json::json!(["paypal", "not an object"]),
+        )
+        .is_err());
+        assert!(deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::Custom("paypal".to_string()),
+            serde_json::json!({}),
+        )
+        .is_err());
     }
 
     #[test]
@@ -505,7 +781,11 @@ mod tests {
             "some_future_extension": {"nested": true}
         }"#;
 
-        let decoded: NotificationPayload<String> = serde_json::from_str(encoded).unwrap();
+        let decoded = deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::OnchainMintQuote,
+            serde_json::from_str(encoded).unwrap(),
+        )
+        .unwrap();
 
         match decoded {
             NotificationPayload::MintQuoteOnchainResponse(r) => {
@@ -513,5 +793,123 @@ mod tests {
             }
             other => panic!("expected MintQuoteOnchainResponse, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn notification_payload_onchain_mint_future_state_field_uses_kind() {
+        let encoded = r#"{
+            "quote": "abc",
+            "request": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            "unit": "sat",
+            "expiry": 1701704757,
+            "pubkey": "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+            "amount_paid": 0,
+            "amount_issued": 0,
+            "state": "future-extension"
+        }"#;
+
+        let decoded = deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::OnchainMintQuote,
+            serde_json::from_str(encoded).unwrap(),
+        )
+        .unwrap();
+
+        match decoded {
+            NotificationPayload::MintQuoteOnchainResponse(r) => {
+                assert_eq!(r.quote, "abc");
+            }
+            other => panic!("expected MintQuoteOnchainResponse, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn notification_payload_custom_tuple_uses_kind() {
+        let encoded = serde_json::json!([
+            "foo",
+            {
+                "quote": "abc",
+                "request": "custom-request",
+                "amount": 100,
+                "amount_paid": 0,
+                "amount_issued": 0,
+                "unit": "sat",
+                "expiry": 1701704757
+            }
+        ]);
+
+        let decoded = deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::Custom("foo_mint_quote".to_string()),
+            encoded,
+        )
+        .unwrap();
+
+        match decoded {
+            NotificationPayload::CustomMintQuoteResponse(method, r) => {
+                assert_eq!(method, "foo");
+                assert_eq!(r.quote, "abc");
+            }
+            other => panic!("expected CustomMintQuoteResponse, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn notification_payload_kind_decoder_accepts_case_insensitive_method() {
+        let payload = serde_json::json!({
+            "quote": "abc",
+            "request": "lnbc1...",
+            "amount": 100,
+            "unit": "sat",
+            "method": "BOLT11",
+            "state": "UNPAID",
+            "expiry": 1701704757
+        });
+
+        let decoded = deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::Bolt11MintQuote,
+            payload,
+        )
+        .unwrap();
+
+        match decoded {
+            NotificationPayload::MintQuoteBolt11Response(response) => {
+                assert_eq!(response.quote, "abc");
+            }
+            other => panic!("expected MintQuoteBolt11Response, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn notification_payload_rejects_method_that_does_not_match_kind() {
+        let bolt12_payload = serde_json::json!({
+            "quote": "melt-quote",
+            "amount": 21,
+            "fee_reserve": 1,
+            "method": "bolt11",
+            "state": "PAID",
+            "expiry": 1234
+        });
+
+        assert!(deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::Bolt12MeltQuote,
+            bolt12_payload,
+        )
+        .is_err());
+
+        let custom_payload = serde_json::json!({
+            "quote": "custom-quote",
+            "request": "custom-request",
+            "method": "bar",
+            "amount": 100,
+            "amount_paid": 0,
+            "amount_issued": 0,
+            "unit": "sat",
+            "expiry": 1701704757
+        });
+
+        assert!(deserialize_payload_for_kind::<String, serde_json::Error>(
+            &Kind::Custom("foo_mint_quote".to_string()),
+            custom_payload,
+        )
+        .is_err());
     }
 }
