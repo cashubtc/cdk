@@ -23,6 +23,7 @@ mod trusted_dealer;
 
 pub use self::consensus::{
     FederationConsensusEngine, FederationConsensusRuntime, InMemoryFederationConsensus,
+    InMemoryFederationConsensusNetwork,
 };
 pub use self::journal::{
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
@@ -113,6 +114,14 @@ pub enum FederationError {
         signature_threshold: u16,
         /// Configured consensus threshold.
         consensus_threshold: u16,
+    },
+    /// A consensus step requires more reachable members than are currently online.
+    #[error("Federation consensus quorum unavailable: reachable={reachable}, required={required}")]
+    ConsensusQuorumUnavailable {
+        /// Reachable member count.
+        reachable: u16,
+        /// Required quorum threshold.
+        required: u16,
     },
     /// The roster has a different member count than the threshold params.
     #[error("Federation member count mismatch: expected={expected}, found={found}")]
