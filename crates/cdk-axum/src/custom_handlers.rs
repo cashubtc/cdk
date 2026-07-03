@@ -1084,6 +1084,8 @@ mod tests {
             federation_consensus: None,
             #[cfg(feature = "federation")]
             federation_sequences: None,
+            #[cfg(feature = "federation")]
+            federation_sync: None,
         }
     }
 
@@ -1184,6 +1186,9 @@ mod tests {
             federation_sequences: Some(Arc::new(tokio::sync::Mutex::new(
                 cdk::federation::FederationRestSequenceTracker::new(),
             ))),
+            federation_sync: Some(Arc::new(tokio::sync::Mutex::new(
+                crate::FederationSyncState::default(),
+            ))),
         }
     }
 
@@ -1258,6 +1263,8 @@ mod tests {
             federation_consensus: None,
             #[cfg(feature = "federation")]
             federation_sequences: None,
+            #[cfg(feature = "federation")]
+            federation_sync: None,
         }
     }
 

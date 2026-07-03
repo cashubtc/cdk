@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover federation offline catch-up recovery</span>
+          <span class="value">feat: add federation lag-aware sync guard</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Multi-member recovery scenarios</span>
+          <span class="value">Lag-aware peer sync guard</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Lag-aware peer sync loop</span>
+          <span class="value">Automatic peer recovery loop</span>
         </div>
       </aside>
     </header>
@@ -560,6 +560,10 @@
             <h3>Offline catch-up convergence covered</h3>
             <p>A member that misses a full sequence of accepted mint, swap, melt quote, pending melt, and melt payment observation operations can catch up from a peer journal and reconstruct the same local storage state.</p>
           </article>
+          <article class="item">
+            <h3>Lag-aware serving guard ready</h3>
+            <p>Federation-enabled Axum state now tracks healthy, lagging, catching-up, and halted sync states. Public federation submissions refuse to sign while the member is lagging or halted, while private catch-up can still repair state.</p>
+          </article>
         </div>
       </section>
 
@@ -702,6 +706,10 @@
             <h3>Divergent peer history halts catch-up</h3>
             <p>Digest-bound catch-up requests and response validation reject a member history that already diverged, preventing a node from silently blending two accepted operation orders.</p>
           </article>
+          <article class="item">
+            <h3>Lagging members fail closed before signing</h3>
+            <p>Once a peer status reveals that a member is behind, public mint, swap, melt, quote, and observation submissions are blocked until peer catch-up restores a matching accepted-order digest.</p>
+          </article>
         </div>
       </section>
 
@@ -718,7 +726,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up now covers mint, swap, melt, and payment observations, but automatic background peer sync and lag-aware public serving guards are still needed before offline recovery is production-safe.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations, and lagging members now fail closed before public signing. The remaining work is to run the peer sync check continuously and exercise it with separate member processes.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -980,10 +988,16 @@
               <td>Add an automatic peer sync loop and prevent lagging members from serving signing shares before they catch up.</td>
             </tr>
             <tr>
+              <td>Lag-aware peer sync guard</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation lagging_member_refuses_public_federation_submit_until_healthy`, `rest_peer_client_syncs_lagging_member_before_public_submit`, and `rest_peer_client_halts_on_equal_height_digest_mismatch` passed. `cargo test -p cdk-axum --features federation federation` passed 32 tests, `cargo test -p cdk-axum --features federation custom_handlers` passed 28 tests, standalone `cargo test -p cdk-axum custom_handlers` passed 12 tests, `cargo test -p cdk --features federation federation` passed 31 tests, and mintd federation/fakewallet/sqlite check passed.</td>
+              <td>Promote one-shot peer sync into an automatic recovery loop and expose operator-visible lag state.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence and divergent-history rejection.</td>
-              <td>Add lag-aware peer sync before signing and then run multi-process fake-wallet member scenarios.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, and lagging-member fail-closed behavior before signing.</td>
+              <td>Add a continuous peer sync task and then run multi-process fake-wallet member scenarios.</td>
             </tr>
           </tbody>
         </table>
@@ -1023,8 +1037,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Lag-aware peer sync loop</h3>
-            <p>Add a member recovery loop that checks peer status, catches up before serving signing shares, and exposes clear lagging/catching-up/healthy states for operators and tests.</p>
+            <h3>Automatic peer recovery loop</h3>
+            <p>Run the signed peer status and catch-up cycle continuously for every configured member, with bounded retry/backoff and operator-visible lagging/catching-up/healthy states.</p>
           </article>
           <article class="item">
             <h3>Multi-process local federation</h3>

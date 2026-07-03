@@ -35,6 +35,94 @@ mod ws;
 type FederationConsensusHandle = Arc<tokio::sync::Mutex<InMemoryFederationConsensus>>;
 #[cfg(feature = "federation")]
 type FederationSequenceHandle = Arc<tokio::sync::Mutex<FederationRestSequenceTracker>>;
+#[cfg(feature = "federation")]
+type FederationSyncHandle = Arc<tokio::sync::Mutex<FederationSyncState>>;
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FederationSyncStatus {
+    Healthy,
+    Lagging {
+        peer: MemberId,
+        local_operation_count: u64,
+        peer_operation_count: u64,
+    },
+    CatchingUp {
+        peer: MemberId,
+    },
+    Halted {
+        reason: String,
+    },
+}
+
+#[cfg(feature = "federation")]
+impl Default for FederationSyncStatus {
+    fn default() -> Self {
+        Self::Healthy
+    }
+}
+
+#[cfg(feature = "federation")]
+impl FederationSyncStatus {
+    fn is_ready(&self) -> bool {
+        matches!(self, Self::Healthy)
+    }
+
+    fn not_ready_message(&self) -> String {
+        match self {
+            Self::Healthy => "federation member is healthy".to_string(),
+            Self::Lagging {
+                peer,
+                local_operation_count,
+                peer_operation_count,
+            } => format!(
+                "federation member is lagging behind peer {peer}: local_operations={local_operation_count}, peer_operations={peer_operation_count}"
+            ),
+            Self::CatchingUp { peer } => {
+                format!("federation member is catching up from peer {peer}")
+            }
+            Self::Halted { reason } => format!("federation member is halted: {reason}"),
+        }
+    }
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FederationSyncState {
+    status: FederationSyncStatus,
+}
+
+#[cfg(feature = "federation")]
+impl FederationSyncState {
+    fn status(&self) -> FederationSyncStatus {
+        self.status.clone()
+    }
+
+    fn mark_lagging(
+        &mut self,
+        peer: MemberId,
+        local_operation_count: u64,
+        peer_operation_count: u64,
+    ) {
+        self.status = FederationSyncStatus::Lagging {
+            peer,
+            local_operation_count,
+            peer_operation_count,
+        };
+    }
+
+    fn mark_catching_up(&mut self, peer: MemberId) {
+        self.status = FederationSyncStatus::CatchingUp { peer };
+    }
+
+    fn mark_healthy(&mut self) {
+        self.status = FederationSyncStatus::Healthy;
+    }
+
+    fn mark_halted(&mut self, reason: String) {
+        self.status = FederationSyncStatus::Halted { reason };
+    }
+}
 
 /// CDK Mint State
 #[derive(Clone)]
@@ -46,6 +134,8 @@ pub struct MintState {
     federation_consensus: Option<FederationConsensusHandle>,
     #[cfg(feature = "federation")]
     federation_sequences: Option<FederationSequenceHandle>,
+    #[cfg(feature = "federation")]
+    federation_sync: Option<FederationSyncHandle>,
 }
 
 #[cfg(feature = "federation")]
@@ -54,6 +144,7 @@ impl MintState {
         &self,
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
+        self.ensure_federation_ready_for_public_submit().await?;
         self.submit_federation_envelope_with_sequence(envelope, None)
             .await
     }
@@ -177,6 +268,58 @@ impl MintState {
         }
         Ok(())
     }
+
+    #[cfg(test)]
+    pub(crate) async fn federation_sync_status(&self) -> Option<FederationSyncStatus> {
+        let sync = self.federation_sync.as_ref()?;
+        Some(sync.lock().await.status())
+    }
+
+    pub(crate) async fn mark_federation_lagging(
+        &self,
+        peer: MemberId,
+        local_operation_count: u64,
+        peer_operation_count: u64,
+    ) {
+        if let Some(sync) = &self.federation_sync {
+            sync.lock()
+                .await
+                .mark_lagging(peer, local_operation_count, peer_operation_count);
+        }
+    }
+
+    pub(crate) async fn mark_federation_catching_up(&self, peer: MemberId) {
+        if let Some(sync) = &self.federation_sync {
+            sync.lock().await.mark_catching_up(peer);
+        }
+    }
+
+    pub(crate) async fn mark_federation_healthy(&self) {
+        if let Some(sync) = &self.federation_sync {
+            sync.lock().await.mark_healthy();
+        }
+    }
+
+    pub(crate) async fn mark_federation_halted<S>(&self, reason: S)
+    where
+        S: Into<String>,
+    {
+        if let Some(sync) = &self.federation_sync {
+            sync.lock().await.mark_halted(reason.into());
+        }
+    }
+
+    async fn ensure_federation_ready_for_public_submit(&self) -> Result<(), cdk::Error> {
+        let Some(sync) = &self.federation_sync else {
+            return Ok(());
+        };
+        let status = sync.lock().await.status();
+        if status.is_ready() {
+            return Ok(());
+        }
+
+        Err(cdk::Error::Custom(status.not_ready_message()))
+    }
 }
 
 /// Create mint [`Router`] with required endpoints for cashu mint with the default cache
@@ -249,9 +392,13 @@ pub async fn create_mint_router_with_custom_cache(
         mint,
         cache: Arc::new(cache),
         #[cfg(feature = "federation")]
-        federation_consensus,
+        federation_consensus: federation_consensus.clone(),
         #[cfg(feature = "federation")]
         federation_sequences,
+        #[cfg(feature = "federation")]
+        federation_sync: federation_consensus
+            .as_ref()
+            .map(|_| Arc::new(tokio::sync::Mutex::new(FederationSyncState::default()))),
     };
 
     let v1_router = Router::new()

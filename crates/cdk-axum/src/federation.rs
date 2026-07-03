@@ -306,6 +306,78 @@ where
         Ok(state.apply_federation_catch_up_response(&response).await?)
     }
 
+    pub(crate) async fn sync_once_from_member(
+        &self,
+        state: &MintState,
+        member: &MemberConfigPublic,
+    ) -> anyhow::Result<FederationPeerStatus> {
+        let peer_status = self.peer_status(member).await?;
+        let mut local_status = local_peer_status(state).await?;
+
+        if peer_status.operation_count > local_status.operation_count {
+            state
+                .mark_federation_lagging(
+                    member.member_id,
+                    local_status.operation_count,
+                    peer_status.operation_count,
+                )
+                .await;
+            state.mark_federation_catching_up(member.member_id).await;
+
+            while local_status.operation_count < peer_status.operation_count {
+                let before = local_status.operation_count;
+                if let Err(err) = self.catch_up_state_from_member(state, member).await {
+                    state
+                        .mark_federation_lagging(
+                            member.member_id,
+                            before,
+                            peer_status.operation_count,
+                        )
+                        .await;
+                    return Err(err);
+                }
+
+                local_status = local_peer_status(state).await?;
+                if local_status.operation_count == before {
+                    state
+                        .mark_federation_halted(format!(
+                            "peer {} returned no catch-up progress from operation {}",
+                            member.member_id, before
+                        ))
+                        .await;
+                    anyhow::bail!(
+                        "federation peer {} returned no catch-up progress from operation {}",
+                        member.member_id,
+                        before
+                    );
+                }
+            }
+        }
+
+        local_status = local_peer_status(state).await?;
+        if local_status.operation_count == peer_status.operation_count
+            && local_status.latest_order_digest != peer_status.latest_order_digest
+        {
+            state
+                .mark_federation_halted(format!(
+                    "peer {} digest mismatch at operation count {}",
+                    member.member_id, peer_status.operation_count
+                ))
+                .await;
+            anyhow::bail!(
+                "federation peer {} digest mismatch at operation count {}",
+                member.member_id,
+                peer_status.operation_count
+            );
+        }
+
+        if local_status.operation_count >= peer_status.operation_count {
+            state.mark_federation_healthy().await;
+        }
+
+        Ok(local_status)
+    }
+
     fn signed_request<P>(
         &self,
         member: &MemberConfigPublic,
@@ -362,6 +434,14 @@ fn validate_peer_status(
     }
 
     Ok(())
+}
+
+async fn local_peer_status(state: &MintState) -> anyhow::Result<FederationPeerStatus> {
+    let consensus = state
+        .federation_consensus
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("mint is not configured as a federation member"))?;
+    Ok(consensus.lock().await.peer_status())
 }
 
 #[cfg(test)]
@@ -654,6 +734,9 @@ mod tests {
             ))),
             federation_sequences: Some(Arc::new(tokio::sync::Mutex::new(
                 FederationRestSequenceTracker::new(),
+            ))),
+            federation_sync: Some(Arc::new(tokio::sync::Mutex::new(
+                crate::FederationSyncState::default(),
             ))),
         };
 
@@ -1000,6 +1083,128 @@ mod tests {
             .verify(&public_config, peer_member.member_id)
             .expect("signed catch-up request");
         assert_eq!(requests[0].payload.next_index, 1);
+    }
+
+    #[tokio::test]
+    async fn lagging_member_refuses_public_federation_submit_until_healthy() {
+        let (state, public_config, _) = federation_route_state().await;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        state
+            .mark_federation_lagging(peer_member.member_id, 0, 1)
+            .await;
+        let envelope = restore_envelope(
+            public_config.federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+
+        let blocked = state.submit_federation_envelope(envelope.clone()).await;
+
+        assert!(matches!(blocked, Err(cdk::Error::Custom(_))));
+        assert!(matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Lagging { .. })
+        ));
+
+        state.mark_federation_healthy().await;
+        state
+            .submit_federation_envelope(envelope)
+            .await
+            .expect("healthy member can submit");
+        assert!(matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Healthy)
+        ));
+    }
+
+    #[tokio::test]
+    async fn rest_peer_client_syncs_lagging_member_before_public_submit() {
+        let (state, public_config, local_private, _) =
+            federation_route_state_with_local_private().await;
+        let federation_id = public_config.federation_id;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let peer_entry = restore_envelope(
+            federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
+        peer_consensus
+            .submit_envelope(peer_entry)
+            .expect("peer accepted operation");
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+        let catch_up_response = peer_consensus
+            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
+            .expect("peer catch-up response");
+        let transport = MockFederationTransport::default()
+            .with_status_response(peer_consensus.peer_status())
+            .with_catch_up_response(catch_up_response);
+        let client = FederationRestPeerClient::new(transport, &public_config, local_private)
+            .expect("client");
+
+        let synced_status = client
+            .sync_once_from_member(&state, peer_member)
+            .await
+            .expect("peer sync");
+
+        assert_eq!(synced_status.operation_count, 1);
+        assert!(matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Healthy)
+        ));
+
+        let next = restore_envelope(
+            federation_id,
+            "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+        );
+        state
+            .submit_federation_envelope(next)
+            .await
+            .expect("synced member can submit");
+    }
+
+    #[tokio::test]
+    async fn rest_peer_client_halts_on_equal_height_digest_mismatch() {
+        let (state, public_config, local_private, _) =
+            federation_route_state_with_local_private().await;
+        let federation_id = public_config.federation_id;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let peer_entry = restore_envelope(
+            federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        let local_entry = restore_envelope(
+            federation_id,
+            "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+        );
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
+        peer_consensus
+            .submit_envelope(peer_entry)
+            .expect("peer accepted operation");
+        state
+            .submit_federation_envelope(local_entry)
+            .await
+            .expect("local accepted operation");
+        let transport =
+            MockFederationTransport::default().with_status_response(peer_consensus.peer_status());
+        let client = FederationRestPeerClient::new(transport, &public_config, local_private)
+            .expect("client");
+
+        let sync = client.sync_once_from_member(&state, peer_member).await;
+
+        assert!(sync.is_err());
+        assert!(matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Halted { .. })
+        ));
+
+        let blocked = state
+            .submit_federation_envelope(restore_envelope(
+                federation_id,
+                "03b45d181a961a91a284e8c64eb72839d43300afaa4e6b3076f5183bb14f50c2cc",
+            ))
+            .await;
+        assert!(matches!(blocked, Err(cdk::Error::Custom(_))));
     }
 
     #[tokio::test]
