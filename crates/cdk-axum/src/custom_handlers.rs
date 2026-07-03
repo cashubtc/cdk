@@ -995,6 +995,8 @@ mod tests {
 
     use axum::http::{HeaderValue, Request, StatusCode};
     use bip39::Mnemonic;
+    #[cfg(feature = "federation")]
+    use cdk::federation::FederationConsensusEngine;
     use cdk::mint::{MintBuilder, MintMeltLimits, MintQuoteResponse};
     use cdk::nuts::nut00::KnownMethod;
     #[cfg(feature = "federation")]
@@ -1178,7 +1180,7 @@ mod tests {
             mint: Arc::new(mint),
             cache: Arc::new(HttpCache::default()),
             federation_consensus: Some(Arc::new(tokio::sync::Mutex::new(
-                cdk::federation::InMemoryFederationConsensus::new(
+                cdk::federation::FederationConsensusRuntime::in_memory(
                     runtime_config.federation_id(),
                     runtime_config.member_id(),
                 ),

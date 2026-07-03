@@ -331,15 +331,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: collect chunked session outcomes</span>
+          <span class="value">feat: abstract federation consensus runtime</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Long-range evidence collection</span>
+          <span class="value">Consensus runtime abstraction</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Live multi-process smoke</span>
+          <span class="value">Multi-node consensus test engine</span>
         </div>
       </aside>
     </header>
@@ -945,6 +945,10 @@
             <p>Session-outcome collection now signs and requests bounded contiguous ranges, composes exact-range quorums into a verified prefix, and can reopen recovered members without oversized full-history REST responses.</p>
           </article>
           <article class="item">
+            <h3>Consensus runtime boundary ready</h3>
+            <p>Axum federation state now stores a runtime-owned consensus engine wrapper instead of the concrete in-memory scaffold, while peer fixtures can still use the deterministic in-memory engine for focused convergence and catch-up tests.</p>
+          </article>
+          <article class="item">
             <h3>Milestone map expanded</h3>
             <p>The dashboard now renders 24 explicit implementation-plan milestone points, with no grouped shorthand ranges.</p>
           </article>
@@ -1340,10 +1344,16 @@
               <td>Run live multi-process fake-wallet member scenarios from generated configs where loopback listeners are permitted.</td>
             </tr>
             <tr>
+              <td>Consensus runtime abstraction</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation consensus_ -- --test-threads 1` passed 12 consensus tests, including trait-based submit ordering and runtime replay from persisted entries. `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 46 tests with Axum state using the runtime wrapper.</td>
+              <td>Add a multi-node in-memory consensus test engine that can model duplicate, delayed, and reordered messages before plugging in a real BFT ordering backend.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, and chunked long-range session evidence.</td>
-              <td>Run live multi-process fake-wallet member scenarios from generated configs where loopback listeners are permitted.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, and a replaceable consensus runtime boundary.</td>
+              <td>Add a multi-node in-memory consensus test engine, then run live multi-process fake-wallet member scenarios where loopback listeners are permitted.</td>
             </tr>
           </tbody>
         </table>
@@ -1363,6 +1373,10 @@
           <article class="item">
             <h3>Consensus before signing</h3>
             <p>No member may return a usable blind signature share until the exact operation has been accepted by consensus.</p>
+          </article>
+          <article class="item">
+            <h3>Runtime-owned consensus engine</h3>
+            <p>Server state depends on a small consensus runtime wrapper and trait surface, so the current in-memory ordering source can be replaced without rewriting public routes, storage replay, or catch-up handlers.</p>
           </article>
           <article class="item">
             <h3>Federation keysets are v3/BLS-only</h3>
@@ -1387,8 +1401,8 @@
             <p>Run the generated fake-wallet federation smoke script in an environment with loopback listener permissions, then capture signed private REST status before and after a member restart.</p>
           </article>
           <article class="item">
-            <h3>Consensus engine replacement path</h3>
-            <p>Start replacing the in-memory/dummy ordering source with a real consensus integration boundary while preserving the deterministic operation journal and recovery tests.</p>
+            <h3>Multi-node consensus test engine</h3>
+            <p>Add an in-memory multi-member engine that can reorder, duplicate, and delay proposed consensus items while proving all reachable members converge on the same accepted sequence.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>

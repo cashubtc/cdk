@@ -13,10 +13,10 @@ use axum::Router;
 use cache::HttpCache;
 #[cfg(feature = "federation")]
 use cdk::federation::{
-    FederationJournalAppendOutcome, FederationJournalEntry, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationRestSequenceTracker,
-    FederationSessionOutcome, FederationSubmitOperationResponse, InMemoryFederationConsensus,
-    MemberId,
+    FederationConsensusEngine, FederationConsensusRuntime, FederationJournalAppendOutcome,
+    FederationJournalEntry, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationRestSequenceTracker, FederationSessionOutcome,
+    FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -33,7 +33,7 @@ mod router_handlers;
 mod ws;
 
 #[cfg(feature = "federation")]
-type FederationConsensusHandle = Arc<tokio::sync::Mutex<InMemoryFederationConsensus>>;
+type FederationConsensusHandle = Arc<tokio::sync::Mutex<FederationConsensusRuntime>>;
 #[cfg(feature = "federation")]
 type FederationSequenceHandle = Arc<tokio::sync::Mutex<FederationRestSequenceTracker>>;
 #[cfg(feature = "federation")]
@@ -576,7 +576,7 @@ async fn create_federation_runtime_state(
     let db = mint.localstore();
     let entries = db.get_federation_journal_entries().await?;
     let sequences = db.get_federation_member_sequences().await?;
-    let mut consensus = InMemoryFederationConsensus::from_entries(
+    let mut consensus = FederationConsensusRuntime::in_memory_from_entries(
         config.federation_id(),
         config.member_id(),
         entries.clone(),

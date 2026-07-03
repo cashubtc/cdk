@@ -5,16 +5,210 @@
 //! the same status/catch-up/submit payloads used by private REST. Real peer
 //! networking can replace the decision source while keeping this API shape.
 
+use core::fmt;
+
 use super::{
     FederationError, FederationId, FederationJournalCatchUpRequest,
     FederationJournalCatchUpResponse, FederationJournalEntry, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationPeerStatus,
+    FederationOperationId, FederationOperationStatus, FederationPeerStatus, FederationStateDigest,
     FederationSubmitOperationRequest, FederationSubmitOperationResponse, InMemoryFederationJournal,
     MemberId, Result,
 };
 
 const DEFAULT_CATCH_UP_LIMIT: u16 = 100;
 const MAX_CATCH_UP_LIMIT: u16 = 1000;
+
+/// Minimal synchronous consensus engine surface used by federation runtimes.
+///
+/// The first implementation is the deterministic in-memory engine below. Real
+/// networking or BFT finalization engines should preserve this state-machine
+/// boundary: submit admissible items, expose accepted order, serve catch-up,
+/// replay peer catch-up, and update only local application status.
+pub trait FederationConsensusEngine: fmt::Debug + Send {
+    /// Return this member's federation ID.
+    fn federation_id(&self) -> FederationId;
+
+    /// Return this member's ID.
+    fn member_id(&self) -> MemberId;
+
+    /// Return the accepted operation journal.
+    fn journal(&self) -> &InMemoryFederationJournal;
+
+    /// Return this member's consensus-visible state digest.
+    fn state_digest(&self) -> FederationStateDigest;
+
+    /// Return a mutable accepted operation journal.
+    fn journal_mut(&mut self) -> &mut InMemoryFederationJournal;
+
+    /// Submit an already-built operation envelope.
+    fn submit_envelope(
+        &mut self,
+        envelope: FederationOperationEnvelope,
+    ) -> Result<FederationSubmitOperationResponse>;
+
+    /// Submit an operation request from a transport boundary.
+    fn submit_operation(
+        &mut self,
+        request: FederationSubmitOperationRequest,
+    ) -> Result<FederationSubmitOperationResponse>;
+
+    /// Return this member's current peer status.
+    fn peer_status(&self) -> FederationPeerStatus;
+
+    /// Return a catch-up request for the next local missing operation.
+    fn catch_up_request(&self) -> FederationJournalCatchUpRequest;
+
+    /// Return journal entries for a catch-up request.
+    fn catch_up(
+        &self,
+        request: &FederationJournalCatchUpRequest,
+    ) -> FederationJournalCatchUpResponse;
+
+    /// Return journal entries for a checked catch-up request.
+    fn catch_up_checked(
+        &self,
+        request: &FederationJournalCatchUpRequest,
+    ) -> Result<FederationJournalCatchUpResponse>;
+
+    /// Apply a peer catch-up response to the local journal.
+    fn apply_catch_up_response(
+        &mut self,
+        response: &FederationJournalCatchUpResponse,
+    ) -> Result<Vec<FederationJournalEntry>>;
+
+    /// Update local application status for an accepted operation.
+    fn update_status(
+        &mut self,
+        operation_id: FederationOperationId,
+        status: FederationOperationStatus,
+    ) -> Result<FederationJournalEntry>;
+}
+
+/// Runtime-owned consensus engine.
+///
+/// CDK keeps this small enum instead of exposing the in-memory scaffold through
+/// server state. That lets Axum and storage code depend on the consensus engine
+/// contract while future engines can be added behind this wrapper.
+#[derive(Debug, Clone)]
+pub struct FederationConsensusRuntime {
+    backend: FederationConsensusBackend,
+}
+
+#[derive(Debug, Clone)]
+enum FederationConsensusBackend {
+    InMemory(InMemoryFederationConsensus),
+}
+
+impl FederationConsensusRuntime {
+    /// Create an in-memory runtime for deterministic tests and local MVP use.
+    #[must_use]
+    pub fn in_memory(federation_id: FederationId, member_id: MemberId) -> Self {
+        Self {
+            backend: FederationConsensusBackend::InMemory(InMemoryFederationConsensus::new(
+                federation_id,
+                member_id,
+            )),
+        }
+    }
+
+    /// Rebuild an in-memory runtime from persisted journal entries.
+    pub fn in_memory_from_entries(
+        federation_id: FederationId,
+        member_id: MemberId,
+        entries: Vec<FederationJournalEntry>,
+    ) -> Result<Self> {
+        Ok(Self {
+            backend: FederationConsensusBackend::InMemory(
+                InMemoryFederationConsensus::from_entries(federation_id, member_id, entries)?,
+            ),
+        })
+    }
+
+    fn engine(&self) -> &dyn FederationConsensusEngine {
+        match &self.backend {
+            FederationConsensusBackend::InMemory(engine) => engine,
+        }
+    }
+
+    fn engine_mut(&mut self) -> &mut dyn FederationConsensusEngine {
+        match &mut self.backend {
+            FederationConsensusBackend::InMemory(engine) => engine,
+        }
+    }
+}
+
+impl FederationConsensusEngine for FederationConsensusRuntime {
+    fn federation_id(&self) -> FederationId {
+        self.engine().federation_id()
+    }
+
+    fn member_id(&self) -> MemberId {
+        self.engine().member_id()
+    }
+
+    fn journal(&self) -> &InMemoryFederationJournal {
+        self.engine().journal()
+    }
+
+    fn state_digest(&self) -> FederationStateDigest {
+        self.engine().state_digest()
+    }
+
+    fn journal_mut(&mut self) -> &mut InMemoryFederationJournal {
+        self.engine_mut().journal_mut()
+    }
+
+    fn submit_envelope(
+        &mut self,
+        envelope: FederationOperationEnvelope,
+    ) -> Result<FederationSubmitOperationResponse> {
+        self.engine_mut().submit_envelope(envelope)
+    }
+
+    fn submit_operation(
+        &mut self,
+        request: FederationSubmitOperationRequest,
+    ) -> Result<FederationSubmitOperationResponse> {
+        self.engine_mut().submit_operation(request)
+    }
+
+    fn peer_status(&self) -> FederationPeerStatus {
+        self.engine().peer_status()
+    }
+
+    fn catch_up_request(&self) -> FederationJournalCatchUpRequest {
+        self.engine().catch_up_request()
+    }
+
+    fn catch_up(
+        &self,
+        request: &FederationJournalCatchUpRequest,
+    ) -> FederationJournalCatchUpResponse {
+        self.engine().catch_up(request)
+    }
+
+    fn catch_up_checked(
+        &self,
+        request: &FederationJournalCatchUpRequest,
+    ) -> Result<FederationJournalCatchUpResponse> {
+        self.engine().catch_up_checked(request)
+    }
+
+    fn apply_catch_up_response(
+        &mut self,
+        response: &FederationJournalCatchUpResponse,
+    ) -> Result<Vec<FederationJournalEntry>> {
+        self.engine_mut().apply_catch_up_response(response)
+    }
+
+    fn update_status(
+        &mut self,
+        operation_id: FederationOperationId,
+        status: FederationOperationStatus,
+    ) -> Result<FederationJournalEntry> {
+        self.engine_mut().update_status(operation_id, status)
+    }
+}
 
 /// Deterministic local consensus driver used before real quorum networking.
 #[derive(Debug, Clone)]
@@ -207,6 +401,79 @@ impl InMemoryFederationConsensus {
     }
 }
 
+impl FederationConsensusEngine for InMemoryFederationConsensus {
+    fn federation_id(&self) -> FederationId {
+        Self::federation_id(self)
+    }
+
+    fn member_id(&self) -> MemberId {
+        Self::member_id(self)
+    }
+
+    fn journal(&self) -> &InMemoryFederationJournal {
+        Self::journal(self)
+    }
+
+    fn state_digest(&self) -> FederationStateDigest {
+        self.journal.state_digest()
+    }
+
+    fn journal_mut(&mut self) -> &mut InMemoryFederationJournal {
+        Self::journal_mut(self)
+    }
+
+    fn submit_envelope(
+        &mut self,
+        envelope: FederationOperationEnvelope,
+    ) -> Result<FederationSubmitOperationResponse> {
+        Self::submit_envelope(self, envelope)
+    }
+
+    fn submit_operation(
+        &mut self,
+        request: FederationSubmitOperationRequest,
+    ) -> Result<FederationSubmitOperationResponse> {
+        Self::submit_operation(self, request)
+    }
+
+    fn peer_status(&self) -> FederationPeerStatus {
+        Self::peer_status(self)
+    }
+
+    fn catch_up_request(&self) -> FederationJournalCatchUpRequest {
+        Self::catch_up_request(self)
+    }
+
+    fn catch_up(
+        &self,
+        request: &FederationJournalCatchUpRequest,
+    ) -> FederationJournalCatchUpResponse {
+        Self::catch_up(self, request)
+    }
+
+    fn catch_up_checked(
+        &self,
+        request: &FederationJournalCatchUpRequest,
+    ) -> Result<FederationJournalCatchUpResponse> {
+        Self::catch_up_checked(self, request)
+    }
+
+    fn apply_catch_up_response(
+        &mut self,
+        response: &FederationJournalCatchUpResponse,
+    ) -> Result<Vec<FederationJournalEntry>> {
+        Self::apply_catch_up_response(self, response)
+    }
+
+    fn update_status(
+        &mut self,
+        operation_id: FederationOperationId,
+        status: FederationOperationStatus,
+    ) -> Result<FederationJournalEntry> {
+        Self::update_status(self, operation_id, status)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -319,6 +586,88 @@ mod tests {
             consensus.submit_envelope(conflict),
             Err(FederationError::ConflictingOperation { .. })
         ));
+    }
+
+    #[test]
+    fn consensus_engine_trait_accepts_operations_in_submit_order() {
+        let federation_id = federation_id(13);
+        let mut consensus = InMemoryFederationConsensus::new(federation_id, member_id());
+        let engine: &mut dyn FederationConsensusEngine = &mut consensus;
+
+        let first = engine
+            .submit_envelope(mint_quote_envelope(federation_id))
+            .expect("submit first");
+        let second = engine
+            .submit_envelope(mint_envelope(
+                federation_id,
+                "quote-1",
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            ))
+            .expect("submit second");
+
+        assert_eq!(engine.federation_id(), federation_id);
+        assert_eq!(engine.member_id(), member_id());
+        assert_eq!(first.outcome.entry().index, 0);
+        assert_eq!(second.outcome.entry().index, 1);
+        assert_eq!(engine.peer_status().operation_count, 2);
+        assert_eq!(engine.state_digest(), engine.peer_status().state_digest);
+        assert_eq!(
+            engine.journal().entries()[0].operation_id,
+            first.operation_id
+        );
+        assert_eq!(
+            engine.journal().entries()[1].operation_id,
+            second.operation_id
+        );
+    }
+
+    #[test]
+    fn consensus_runtime_replays_persisted_in_memory_entries() {
+        let federation_id = federation_id(13);
+        let mut runtime = FederationConsensusRuntime::in_memory(federation_id, member_id());
+        let first = runtime
+            .submit_envelope(mint_quote_envelope(federation_id))
+            .expect("submit first");
+        let second = runtime
+            .submit_envelope(mint_envelope(
+                federation_id,
+                "quote-1",
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            ))
+            .expect("submit second");
+        runtime
+            .update_status(second.operation_id, FederationOperationStatus::Applied)
+            .expect("update status");
+
+        let replayed = FederationConsensusRuntime::in_memory_from_entries(
+            federation_id,
+            member_id(),
+            runtime.journal().entries().to_vec(),
+        )
+        .expect("replay runtime");
+
+        assert_eq!(replayed.peer_status().operation_count, 2);
+        assert_eq!(
+            replayed.peer_status().latest_order_digest,
+            runtime.peer_status().latest_order_digest
+        );
+        assert_eq!(replayed.state_digest(), runtime.state_digest());
+        assert_eq!(
+            replayed
+                .journal()
+                .entry_by_operation_id(first.operation_id)
+                .expect("first entry")
+                .index,
+            0
+        );
+        assert_eq!(
+            replayed
+                .journal()
+                .entry_by_operation_id(second.operation_id)
+                .expect("second entry")
+                .status,
+            FederationOperationStatus::Applied
+        );
     }
 
     #[test]

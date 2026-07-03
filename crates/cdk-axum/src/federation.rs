@@ -11,14 +11,13 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 use cdk::federation::{
-    FederationConfig, FederationError, FederationId, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationJournalDigest, FederationJournalEntry,
-    FederationOperationId, FederationPeerStatus, FederationPeerStatusRequest,
-    FederationRestMessageKind, FederationRestSequenceTracker, FederationSessionOutcome,
-    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationStateDigest,
-    FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    InMemoryFederationConsensus, MemberConfigPrivate, MemberConfigPublic,
-    FEDERATION_REST_API_VERSION,
+    FederationConfig, FederationConsensusEngine, FederationConsensusRuntime, FederationError,
+    FederationId, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationJournalDigest, FederationJournalEntry, FederationOperationId, FederationPeerStatus,
+    FederationPeerStatusRequest, FederationRestMessageKind, FederationRestSequenceTracker,
+    FederationSessionOutcome, FederationSessionOutcomeQuorum, FederationSignedRequest,
+    FederationStateDigest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    MemberConfigPrivate, MemberConfigPublic, FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
 use serde::{Deserialize, Serialize};
@@ -27,7 +26,7 @@ use tracing::instrument;
 
 use crate::MintState;
 
-type ConsensusHandle = std::sync::Arc<tokio::sync::Mutex<InMemoryFederationConsensus>>;
+type ConsensusHandle = std::sync::Arc<tokio::sync::Mutex<FederationConsensusRuntime>>;
 type SequenceHandle = std::sync::Arc<tokio::sync::Mutex<FederationRestSequenceTracker>>;
 
 const FEDERATION_PEER_SYNC_INTERVAL: Duration = Duration::from_secs(5);
@@ -1025,8 +1024,8 @@ mod tests {
     use cdk::federation::{
         generate_trusted_dealer_configs, FederationMintQuotePaymentObservation,
         FederationOperation, FederationOperationEnvelope, FederationOperationKind,
-        FederationOperationStatus, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
-        TrustedDealerMember,
+        FederationOperationStatus, InMemoryFederationConsensus, MemberId, ThresholdParams,
+        TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, QuoteId};
     use cdk::mint_url::MintUrl;
@@ -1298,7 +1297,7 @@ mod tests {
             mint: Arc::new(mint),
             cache: Arc::new(crate::cache::HttpCache::default()),
             federation_consensus: Some(Arc::new(tokio::sync::Mutex::new(
-                InMemoryFederationConsensus::new(
+                FederationConsensusRuntime::in_memory(
                     runtime_config.federation_id(),
                     runtime_config.member_id(),
                 ),

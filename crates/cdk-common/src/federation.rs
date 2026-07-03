@@ -21,7 +21,9 @@ mod signing;
 mod transport;
 mod trusted_dealer;
 
-pub use self::consensus::InMemoryFederationConsensus;
+pub use self::consensus::{
+    FederationConsensusEngine, FederationConsensusRuntime, InMemoryFederationConsensus,
+};
 pub use self::journal::{
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
     FederationOperationStatus, FederationStateDigest, InMemoryFederationJournal,
