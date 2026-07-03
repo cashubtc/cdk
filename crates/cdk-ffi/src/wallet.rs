@@ -136,7 +136,10 @@ impl Wallet {
 
     /// Get mint info from mint
     pub async fn fetch_mint_info(&self) -> Result<Option<MintInfo>, FfiError> {
-        let info = self.inner.fetch_mint_info().await?;
+        let inner = Arc::clone(&self.inner);
+        let info = crate::runtime::run_on_shared(async move { inner.fetch_mint_info().await })
+            .await
+            .map_err(FfiError::internal)??;
         Ok(info.map(Into::into))
     }
 
