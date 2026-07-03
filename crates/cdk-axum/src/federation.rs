@@ -3017,6 +3017,168 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restart_replay_preserves_pending_melt_then_catches_up_paid_observation() {
+        let (mut state, public_config, _) = federation_route_state().await;
+        let config = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .clone();
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let fake_description = FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Pending,
+            check_payment_state: MeltQuoteState::Pending,
+            pay_err: false,
+            check_err: false,
+        };
+        let quote_id = melt_quote_with_description(
+            &state,
+            1000,
+            serde_json::to_string(&fake_description).expect("fake invoice description"),
+        )
+        .await;
+        let inputs = vec![
+            proof_for_amount(&state, 1, "restart-paid-observation-a"),
+            proof_for_amount(&state, 1, "restart-paid-observation-b"),
+            proof_for_amount(&state, 1, "restart-paid-observation-c"),
+        ];
+        let input_ys = inputs
+            .iter()
+            .map(|proof| proof.y().expect("input y"))
+            .collect::<Vec<_>>();
+        let mut change_output = swap_output(&state, "restart-paid-observation-change");
+        change_output.amount = Amount::ZERO;
+        let melt_request = cdk::nuts::MeltRequest::new(
+            quote_id.clone(),
+            inputs,
+            Some(vec![change_output.clone()]),
+        );
+        let melt_envelope = config.melt_operation(melt_request).expect("melt envelope");
+        let paid_envelope = melt_payment_observation_envelope(
+            &state,
+            &quote_id,
+            MeltQuoteState::Paid,
+            Some("restart-paid-observation-preimage".to_string()),
+        );
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+        peer_consensus
+            .submit_envelope(melt_envelope)
+            .expect("peer accepted pending melt");
+
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+        let pending_response = peer_consensus
+            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
+            .expect("pending catch-up response");
+        state
+            .apply_federation_catch_up_response(&pending_response)
+            .await
+            .expect("apply pending catch-up");
+
+        let pending_quote = state
+            .mint
+            .check_melt_quote(&quote_id)
+            .await
+            .expect("pending quote status before replay");
+        assert_eq!(pending_quote.state(), MeltQuoteState::Pending);
+        assert!(pending_quote.change().is_none());
+        assert!(state
+            .mint
+            .localstore()
+            .get_melt_saga_by_quote_id(&quote_id)
+            .await
+            .expect("saga lookup before replay")
+            .is_some());
+
+        let (replayed_consensus, replayed_sequences) =
+            crate::create_federation_runtime_state(&state.mint)
+                .await
+                .expect("recreate federation runtime state");
+        state.federation_consensus = replayed_consensus;
+        state.federation_sequences = replayed_sequences;
+        assert_eq!(
+            state
+                .federation_consensus
+                .as_ref()
+                .expect("replayed consensus")
+                .lock()
+                .await
+                .peer_status()
+                .operation_count,
+            1
+        );
+        let replayed_pending_quote = state
+            .mint
+            .check_melt_quote(&quote_id)
+            .await
+            .expect("pending quote status after replay");
+        assert_eq!(replayed_pending_quote.state(), MeltQuoteState::Pending);
+        assert!(replayed_pending_quote.change().is_none());
+
+        peer_consensus
+            .submit_envelope(paid_envelope)
+            .expect("peer accepted paid observation");
+        let replayed_consensus = state
+            .federation_consensus
+            .as_ref()
+            .expect("replayed consensus");
+        let paid_response = peer_consensus
+            .catch_up_checked(&replayed_consensus.lock().await.catch_up_request())
+            .expect("paid catch-up response after replay");
+        state
+            .apply_federation_catch_up_response(&paid_response)
+            .await
+            .expect("apply paid catch-up after replay");
+
+        let paid_quote = state
+            .mint
+            .check_melt_quote(&quote_id)
+            .await
+            .expect("paid quote status after replay");
+        assert_eq!(paid_quote.state(), MeltQuoteState::Paid);
+        let change = paid_quote.change().expect("paid quote change after replay");
+        assert_eq!(change.len(), 1);
+        assert_eq!(change[0].amount, Amount::from(1));
+        assert_eq!(change[0].keyset_id, change_output.keyset_id);
+
+        let proof_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("proof state lookup after replay");
+        assert_eq!(
+            proof_states,
+            vec![
+                Some(cdk::nuts::State::Spent),
+                Some(cdk::nuts::State::Spent),
+                Some(cdk::nuts::State::Spent),
+            ]
+        );
+        assert!(
+            state
+                .mint
+                .localstore()
+                .get_melt_saga_by_quote_id(&quote_id)
+                .await
+                .expect("saga lookup after paid catch-up")
+                .is_none(),
+            "paid observation after replay should clear pending melt saga metadata"
+        );
+        assert_eq!(
+            state
+                .federation_consensus
+                .as_ref()
+                .expect("final consensus")
+                .lock()
+                .await
+                .peer_status()
+                .operation_count,
+            2
+        );
+    }
+
+    #[tokio::test]
     async fn catch_up_applies_unpaid_melt_payment_observation_to_pending_melt() {
         let (state, public_config, _) = federation_route_state().await;
         let config = state
