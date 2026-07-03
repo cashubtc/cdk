@@ -7,15 +7,15 @@
 
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederationBlindSignatureShareSet, FederationConfig, FederationId, FederationMintOperation,
-    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
-    FederationOperation, FederationOperationEnvelope, FederationOperationId, MemberConfigPrivate,
-    MemberId,
+    FederationBlindSignatureShareSet, FederationConfig, FederationId, FederationMeltOperation,
+    FederationMintOperation, FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
+    FederationMintRequest, FederationOperation, FederationOperationEnvelope, FederationOperationId,
+    FederationSwapOperation, MemberConfigPrivate, MemberId,
 };
 use cdk_common::{
     Amount, BatchMintRequest, BlindSignature, BlindedMessage, MeltRequest, MintQuoteRequest,
     MintQuoteResponse, MintQuoteState, MintRequest, MintResponse, PaymentMethod, PublicKey,
-    QuoteId, RestoreRequest, SwapRequest,
+    QuoteId, RestoreRequest, SwapRequest, SwapResponse,
 };
 
 use super::MintInput;
@@ -198,6 +198,76 @@ impl FederationRuntimeConfig {
     ) -> Result<MintResponse, Error> {
         let share_set = self.mint_signature_shares(operation_id, input)?;
         Ok(MintResponse {
+            signatures: share_set
+                .shares
+                .into_iter()
+                .map(|share| BlindSignature {
+                    amount: share.amount,
+                    keyset_id: share.keyset_id,
+                    c: PublicKey::from(share.share.signature()),
+                    dleq: None,
+                })
+                .collect(),
+        })
+    }
+
+    /// Build the consensus operation for spending proofs against a melt quote.
+    pub fn melt_operation(
+        &self,
+        request: MeltRequest<QuoteId>,
+    ) -> Result<FederationOperationEnvelope, Error> {
+        self.validate_melt_change_outputs(&request)?;
+        let mut consensus_request = MeltRequest::new(
+            request.quote().to_string(),
+            request.inputs().clone(),
+            request.outputs().clone(),
+        )
+        .prefer_async(request.is_prefer_async());
+        if let Some(fee_index) = request.selected_fee_index() {
+            consensus_request = consensus_request.fee_index(fee_index);
+        }
+
+        Ok(
+            self.operation_envelope(FederationOperation::Melt(FederationMeltOperation {
+                request: consensus_request,
+            })),
+        )
+    }
+
+    /// Build the consensus operation for signing swap outputs.
+    pub fn swap_operation(
+        &self,
+        request: SwapRequest,
+    ) -> Result<FederationOperationEnvelope, Error> {
+        self.validate_swap_outputs(&request)?;
+        Ok(
+            self.operation_envelope(FederationOperation::Swap(FederationSwapOperation {
+                request,
+            })),
+        )
+    }
+
+    /// Sign an accepted swap operation into local threshold BLS signature shares.
+    pub fn swap_signature_shares(
+        &self,
+        operation_id: FederationOperationId,
+        request: &SwapRequest,
+    ) -> Result<FederationBlindSignatureShareSet, Error> {
+        Ok(self.private_config.sign_blinded_messages(
+            &self.public_config,
+            operation_id,
+            request.outputs(),
+        )?)
+    }
+
+    /// Convert an accepted swap operation into this member's wallet-facing share response.
+    pub fn swap_share_response(
+        &self,
+        operation_id: FederationOperationId,
+        request: &SwapRequest,
+    ) -> Result<SwapResponse, Error> {
+        let share_set = self.swap_signature_shares(operation_id, request)?;
+        Ok(SwapResponse {
             signatures: share_set
                 .shares
                 .into_iter()
@@ -538,6 +608,49 @@ mod tests {
                 FederationError::InvalidFederatedKeysetVersion { .. }
             ))
         ));
+        assert!(matches!(
+            runtime_config.melt_operation(melt),
+            Err(cdk_common::Error::Federation(
+                FederationError::InvalidFederatedKeysetVersion { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn runtime_config_builds_swap_operations() {
+        let runtime_config = runtime_config();
+        let swap = SwapRequest::new(
+            Vec::new(),
+            vec![output_for_runtime(&runtime_config, b"swap operation")],
+        );
+        let envelope = runtime_config.swap_operation(swap).expect("swap operation");
+
+        assert_eq!(envelope.federation_id, runtime_config.federation_id());
+        assert!(matches!(envelope.operation, FederationOperation::Swap(_)));
+        assert_eq!(envelope.operation.conflict_keys().len(), 0);
+    }
+
+    #[test]
+    fn runtime_config_builds_melt_operations() {
+        let runtime_config = runtime_config();
+        let quote = QuoteId::new();
+        let mut change_output = output_for_runtime(&runtime_config, b"melt operation change");
+        change_output.amount = Amount::ZERO;
+        let melt = MeltRequest::new(quote.clone(), Vec::new(), Some(vec![change_output]))
+            .prefer_async(true)
+            .fee_index(42);
+        let envelope = runtime_config.melt_operation(melt).expect("melt operation");
+
+        assert_eq!(envelope.federation_id, runtime_config.federation_id());
+        assert_eq!(envelope.operation.conflict_keys().len(), 1);
+        match envelope.operation {
+            FederationOperation::Melt(operation) => {
+                assert_eq!(operation.request.quote(), &quote.to_string());
+                assert!(operation.request.is_prefer_async());
+                assert_eq!(operation.request.selected_fee_index(), Some(42));
+            }
+            _ => panic!("expected melt operation"),
+        }
     }
 
     #[test]
@@ -598,6 +711,59 @@ mod tests {
         let response = runtime_config
             .mint_share_response(operation_id, &input)
             .expect("mint share response");
+        let signature = response.signatures.first().expect("signature share");
+
+        assert_eq!(response.signatures.len(), 1);
+        assert_eq!(signature.amount, Amount::from(1));
+        assert_eq!(signature.keyset_id, keyset.id);
+        assert!(signature.dleq.is_none());
+        assert_eq!(
+            signature.c.as_bls_g1().expect("response share point"),
+            share.share.signature()
+        );
+    }
+
+    #[test]
+    fn runtime_config_signs_accepted_swap_operations() {
+        let runtime_config = runtime_config();
+        let keyset = &runtime_config.public_config().keysets[0];
+        let blinded_message = BlsG1PublicKey::hash_to_curve(b"cdk federation swap share");
+        let swap = SwapRequest::new(
+            Vec::new(),
+            vec![BlindedMessage::new(
+                Amount::from(1),
+                keyset.id,
+                PublicKey::from(blinded_message),
+            )],
+        );
+        let operation_id = runtime_config
+            .swap_operation(swap.clone())
+            .expect("swap operation")
+            .operation_id()
+            .expect("operation id");
+
+        let share_set = runtime_config
+            .swap_signature_shares(operation_id, &swap)
+            .expect("signature shares");
+        let share = share_set.shares.first().expect("signature share");
+        let public_share = keyset
+            .public_shares
+            .get(&runtime_config.member_id())
+            .expect("member shares")
+            .get(&Amount::from(1))
+            .expect("amount share");
+
+        assert_eq!(share_set.operation_id, operation_id);
+        assert_eq!(share_set.member_id, runtime_config.member_id());
+        assert_eq!(share.operation_id, operation_id);
+        assert!(
+            verify_blind_signature_share(&share.share, &blinded_message, public_share)
+                .expect("share verification")
+        );
+
+        let response = runtime_config
+            .swap_share_response(operation_id, &swap)
+            .expect("swap share response");
         let signature = response.signatures.first().expect("signature share");
 
         assert_eq!(response.signatures.len(), 1);

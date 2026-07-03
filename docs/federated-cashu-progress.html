@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">b028aa6f Melt change aggregation</span>
+          <span class="value">test: add fake-wallet federation member bridge</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federated melt/change flow</span>
+          <span class="value">Fake-wallet member bridge</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Fake-wallet E2E flows</span>
+          <span class="value">Public swap and melt federation handlers</span>
         </div>
       </aside>
     </header>
@@ -491,6 +491,10 @@
           <article class="item">
             <h3>Federated melt change committed</h3>
             <p>Federation change validation now accepts NUT-08 amount-zero placeholders only for active v3/BLS keysets, and the wallet connector can aggregate returned melt change signature shares while preserving the method-specific melt response metadata.</p>
+          </article>
+          <article class="item">
+            <h3>Fake-wallet member bridge ready</h3>
+            <p>The mint runtime now serializes melt operations and produces swap share responses from accepted operation IDs. Wallet tests wrap real fake-wallet-backed federated member mints, verify fake-wallet mint quotes settle, and aggregate real member-produced mint, batch mint, and swap BLS shares.</p>
           </article>
         </div>
       </section>
@@ -734,10 +738,16 @@
               <td>Exercise mint, swap, and melt across multiple fake-wallet federation members end to end.</td>
             </tr>
             <tr>
+              <td>Fake-wallet member bridge</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --lib --features federation mint::federation` passed 12 tests covering mint, swap, and melt consensus operation builders plus BLS share verification. `cargo test -p cdk --lib --features federation wallet::federation` passed 10 tests, including a real fake-wallet member connector bridge for mint, batch mint, and swap aggregation. `cargo test -p cdk-axum --features federation custom_handlers` passed 17 tests. `cargo check -p cdk --lib`, `cargo check -p cdk --lib --features federation`, `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"`, and `cargo fmt --all -- --check` passed.</td>
+              <td>Wire public swap and melt handlers into federation consensus, including fake-wallet outgoing payment finalization and member catch-up behavior.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status pending">Pending</span></td>
-              <td>Mint quote, quote-check, and mint-submit handlers are consensus-gated locally; mint members advertise aggregate keysets and return verified local share responses; wallets can aggregate mint, batch mint, swap, and melt change shares. Restore/check-state federation routing and end-to-end fake-wallet flows remain open.</td>
-              <td>Wire full fake-wallet mint/swap/melt scenarios across multiple federation members.</td>
+              <td>Mint quote, quote-check, and mint-submit handlers are consensus-gated locally; mint members advertise aggregate keysets and return verified local share responses; wallets can aggregate mint, batch mint, swap, and melt change shares. Local fake-wallet member tests now bridge real member mints to wallet aggregation for mint, batch mint, and swap. Public swap/melt handler integration, restore/check-state federation routing, durable catch-up, and full networked fake-wallet flows remain open.</td>
+              <td>Wire public swap and melt routes through consensus and add multi-member fake-wallet finalization tests.</td>
             </tr>
           </tbody>
         </table>
@@ -777,8 +787,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Fake-wallet federation E2E</h3>
-            <p>Build multi-member fake-wallet tests for mint, swap, and melt paths so consensus-gated public handlers, member share responses, and wallet aggregation are exercised together.</p>
+            <h3>Public swap and melt handlers</h3>
+            <p>Route `/v1/swap` and `/v1/melt/{method}` through federation consensus, including fake-wallet melt reserve, pending, success, failure, retry, and change-signing states.</p>
           </article>
           <article class="item">
             <h3>Restore and check-state routing</h3>
