@@ -324,19 +324,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Milestone 1 ready to commit</span>
+          <span class="value">Milestone 2 in progress</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">a9f6247c threshold serialization progress</span>
+          <span class="value">c9c32d2b threshold BLS coverage</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Threshold BLS completion</span>
+          <span class="value">Federation config and roster</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Federation config and roster</span>
+          <span class="value">Trusted-dealer config generation</span>
         </div>
       </aside>
     </header>
@@ -357,14 +357,14 @@
               <h3>1. Threshold BLS primitives</h3>
               <p>Trusted-dealer shares, share verification, interpolation, and aggregate blind signatures.</p>
             </div>
-            <span class="status done">Ready</span>
+            <span class="status done">Done</span>
           </article>
           <article class="milestone">
             <div>
               <h3>2. Federation config and roster</h3>
               <p>Static member identity keys, partner allowlists, aggregate keysets, and trusted-dealer configs.</p>
             </div>
-            <span class="status pending">Pending</span>
+            <span class="status progress">In progress</span>
           </article>
           <article class="milestone">
             <div>
@@ -417,12 +417,12 @@
             <p>The inert federation feature chain, mint mode placeholder, and RFC/review checklist were committed in e7494bea.</p>
           </article>
           <article class="item">
-            <h3>Threshold BLS first slice ready</h3>
-            <p>Trusted-dealer polynomial shares, public share aggregation, blind signature share verification, Lagrange aggregation, byte round-trips, and unblinding tests are ready to commit.</p>
+            <h3>Threshold BLS primitives committed</h3>
+            <p>Trusted-dealer polynomial shares, public share aggregation, blind signature share verification, Lagrange aggregation, byte round-trips, and unblinding tests were committed in c9c32d2b.</p>
           </article>
           <article class="item">
-            <h3>Milestone 1 ready</h3>
-            <p>Versioned share encodings, aggregate key aliasing, subset permutations, and feature-off checks are ready to commit.</p>
+            <h3>Milestone 1 committed</h3>
+            <p>Versioned share encodings, aggregate key aliasing, subset permutations, and feature-off checks were committed in c9c32d2b.</p>
           </article>
         </div>
       </section>
@@ -555,12 +555,12 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Threshold BLS primitives</h3>
+            <h3>Federation config and roster</h3>
             <p>Start federation config types, static member roster validation, and deterministic trusted-dealer setup using the threshold BLS primitives.</p>
           </article>
           <article class="item">
             <h3>Focused verification</h3>
-            <p>Start with 1-of-1 parity against standalone BLS, then 3-of-5 aggregation and invalid-share rejection.</p>
+            <p>Validate threshold/member counts, roster hashes, identity keys, aggregate keysets, and share ownership before wiring config into mintd.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>
