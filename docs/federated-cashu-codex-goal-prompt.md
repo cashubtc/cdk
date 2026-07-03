@@ -4,6 +4,14 @@ You are Codex working in the Cashu Development Kit repository. Your goal is to i
 
 Continue autonomously through the implementation plan. Do not stop after analysis or a partial scaffold. Work milestone by milestone, test each checkpoint, commit each coherent unit of progress, update the progress page, report status, and continue. Stop only when the complete federated Cashu system is implemented, tested, documented, and committed, or when you are genuinely blocked by missing information, unavailable dependencies, or a required design decision that cannot be safely inferred.
 
+## Recommended `/goal` invocation
+
+For Goal mode, do not paste this entire file into the composer. Use a compact `/goal` command that points Codex at this file and the implementation plan:
+
+```text
+/goal Implement federated Cashu in CDK by following docs/federated-cashu-codex-goal-prompt.md as the complete goal specification and docs/federated-cashu-implementation-plan.md as the implementation checklist. Work milestone by milestone until minting, swapping, melting, wallet aggregation, private REST federation networking, consensus, catch-up, tests, docs, and docs/federated-cashu-progress.html are complete. Commit each coherent checkpoint with tests and status updates. Stop only when complete or genuinely blocked.
+```
+
 ## Non-negotiable working rules
 
 - Follow `docs/federated-cashu-implementation-plan.md` as the source of truth.
