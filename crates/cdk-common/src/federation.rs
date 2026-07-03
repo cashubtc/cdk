@@ -14,6 +14,13 @@ use bitcoin::hashes::Hash;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
+mod trusted_dealer;
+
+pub use self::trusted_dealer::{
+    generate_trusted_dealer_configs, TrustedDealerConfigBundle, TrustedDealerKeysetSpec,
+    TrustedDealerMember,
+};
+
 use crate::nuts::nut01::{
     aggregate_public_key_shares, BlsAggregatePublicKey, BlsPublicKeyShare, BlsSecretKeyShare,
     BlsSignerId,
@@ -79,6 +86,12 @@ pub enum FederationError {
         /// Found member ID.
         found: MemberId,
     },
+    /// Trusted-dealer setup received a duplicate member.
+    #[error("Duplicate federation member {member_id}")]
+    DuplicateMember {
+        /// Duplicated member ID.
+        member_id: MemberId,
+    },
     /// Federation member identity keys must be secp256k1 keys.
     #[error("Federation member {member_id} identity key must be secp256k1")]
     InvalidIdentityKeyKind {
@@ -96,6 +109,24 @@ pub enum FederationError {
     EmptyFederatedKeyset {
         /// Keyset ID being validated.
         keyset_id: Id,
+    },
+    /// Trusted-dealer setup needs at least one amount per keyset.
+    #[error("Trusted-dealer keyset for unit {unit} has no amount coefficients")]
+    EmptyTrustedDealerKeyset {
+        /// Unit of the empty keyset.
+        unit: CurrencyUnit,
+    },
+    /// Trusted-dealer polynomial coefficient count must match the signature threshold.
+    #[error(
+        "Trusted-dealer coefficient count mismatch for amount {amount}: expected={expected}, found={found}"
+    )]
+    InvalidTrustedDealerCoefficientCount {
+        /// Amount being generated.
+        amount: Amount,
+        /// Expected coefficient count.
+        expected: usize,
+        /// Actual coefficient count.
+        found: usize,
     },
     /// The keyset ID does not match its aggregate public keys and metadata.
     #[error("Federated keyset id mismatch: expected={expected}, found={found}")]
