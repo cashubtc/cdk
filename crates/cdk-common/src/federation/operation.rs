@@ -24,6 +24,13 @@ const FEDERATION_OPERATION_HASH_VERSION: &[u8] = b"cdk-federation-operation-v1";
 /// Version of the federation operation envelope format.
 pub const FEDERATION_OPERATION_VERSION: u16 = 1;
 
+/// Maximum canonical operation envelope size admitted into federation consensus.
+///
+/// This is intentionally enforced on the canonical bytes used for operation
+/// IDs so every member evaluates the same payload size independent of local
+/// JSON formatting.
+pub const FEDERATION_MAX_OPERATION_ENVELOPE_BYTES: usize = 1024 * 1024;
+
 /// Stable identifier for a canonical federation operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationOperationId([u8; 32]);
@@ -395,6 +402,29 @@ impl FederationOperationEnvelope {
         canonical_json_bytes(self)
     }
 
+    /// Return the canonical operation envelope size in bytes.
+    pub fn canonical_size(&self) -> Result<usize> {
+        Ok(self.canonical_bytes()?.len())
+    }
+
+    /// Reject this operation if its canonical envelope exceeds `max_bytes`.
+    pub fn ensure_within_size_limit(&self, max_bytes: usize) -> Result<usize> {
+        let actual = self.canonical_size()?;
+        if actual > max_bytes {
+            return Err(FederationError::OperationEnvelopeTooLarge {
+                actual,
+                max: max_bytes,
+            });
+        }
+
+        Ok(actual)
+    }
+
+    /// Reject this operation if its canonical envelope exceeds the default consensus limit.
+    pub fn ensure_admissible_size(&self) -> Result<usize> {
+        self.ensure_within_size_limit(FEDERATION_MAX_OPERATION_ENVELOPE_BYTES)
+    }
+
     /// Compute the domain-separated operation ID.
     pub fn operation_id(&self) -> Result<FederationOperationId> {
         let canonical = self.canonical_bytes()?;
@@ -513,6 +543,26 @@ mod tests {
         FederationOperationEnvelope::new(federation_id(), operation)
     }
 
+    fn oversized_mint_quote_envelope() -> FederationOperationEnvelope {
+        let envelope = envelope(FederationOperation::MintQuote(
+            FederationMintQuoteOperation {
+                quote: "quote-oversized".to_string(),
+                request: MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
+                    amount: Amount::from(1),
+                    unit: CurrencyUnit::Sat,
+                    description: Some("x".repeat(FEDERATION_MAX_OPERATION_ENVELOPE_BYTES)),
+                    pubkey: None,
+                }),
+                response: bolt11_quote_response("quote-oversized", 1),
+            },
+        ));
+        assert!(
+            envelope.canonical_size().expect("canonical size")
+                > FEDERATION_MAX_OPERATION_ENVELOPE_BYTES
+        );
+        envelope
+    }
+
     #[test]
     fn operation_id_serializes_as_hex() {
         let envelope = envelope(mint_operation(
@@ -535,6 +585,19 @@ mod tests {
                 .expect("operation id from bytes"),
             operation_id
         );
+    }
+
+    #[test]
+    fn envelope_size_limit_uses_canonical_bytes() {
+        let oversized = oversized_mint_quote_envelope();
+        let err = oversized
+            .ensure_admissible_size()
+            .expect_err("oversized operation should fail");
+
+        assert!(matches!(
+            err,
+            FederationError::OperationEnvelopeTooLarge { .. }
+        ));
     }
 
     #[test]

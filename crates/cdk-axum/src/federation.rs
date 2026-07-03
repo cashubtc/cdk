@@ -354,6 +354,7 @@ where
         member: &MemberConfigPublic,
         request: &FederationSubmitOperationRequest,
     ) -> anyhow::Result<FederationSubmitOperationResponse> {
+        request.ensure_admissible_size()?;
         let expected_operation_id = request.operation_id()?;
         let request = self.signed_request(
             member,
@@ -954,6 +955,18 @@ mod tests {
         )
     }
 
+    fn oversized_payment_observation_envelope(
+        federation_id: FederationId,
+    ) -> FederationOperationEnvelope {
+        let mut envelope = payment_observation_envelope(federation_id);
+        let FederationOperation::MintQuotePayment(observation) = &mut envelope.operation else {
+            panic!("mint quote payment observation");
+        };
+        observation.payment_proof =
+            Some("x".repeat(cdk::federation::FEDERATION_MAX_OPERATION_ENVELOPE_BYTES));
+        envelope
+    }
+
     fn mint_quote_envelope(state: &MintState, quote_id: &QuoteId) -> FederationOperationEnvelope {
         let config = state.mint.federation_config().expect("federation config");
         config.mint_quote_operation(
@@ -1220,6 +1233,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rest_peer_client_rejects_oversized_operation_before_broadcast() {
+        let (public_config, local_private, _) = transport_config();
+        let member = public_config.member(member_id(2)).expect("peer member");
+        let request = FederationSubmitOperationRequest::new(
+            oversized_payment_observation_envelope(public_config.federation_id),
+        );
+        let transport = MockFederationTransport::default();
+        let client =
+            FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
+                .expect("client");
+
+        let err = client
+            .submit_operation(member, &request)
+            .await
+            .expect_err("oversized operation should not be broadcast");
+
+        assert!(matches!(
+            err.downcast_ref::<FederationError>(),
+            Some(FederationError::OperationEnvelopeTooLarge { .. })
+        ));
+        assert!(transport.submitted_operations().is_empty());
+    }
+
+    #[tokio::test]
     async fn rest_peer_client_catches_up_local_consensus_from_member() {
         let (state, public_config, local_private, _) =
             federation_route_state_with_local_private().await;
@@ -1411,12 +1448,13 @@ mod tests {
         state
             .mark_federation_lagging(peer_member.member_id, 0, 2)
             .await;
-        let status = FederationPeerStatus::new(
+        let status = FederationPeerStatus::new_with_state_digest(
             federation_id,
             peer_member.member_id,
             0,
             None,
             cdk::federation::FederationJournalDigest::genesis(),
+            cdk::federation::FederationStateDigest::genesis(),
         );
         let transport = MockFederationTransport::default().with_status_response(status);
         let client = FederationRestPeerClient::new(transport, &public_config, local_private)
@@ -2527,6 +2565,32 @@ mod tests {
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].operation_id, response.0.operation_id);
         assert_eq!(sequences.get(&peer_private.member_id), Some(&1));
+    }
+
+    #[tokio::test]
+    async fn private_operation_route_rejects_oversized_request_before_mutation() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let request = signed_operation_request(
+            &public_config,
+            &peer_private,
+            1,
+            FederationRestMessageKind::SubmitOperation,
+            oversized_payment_observation_envelope(public_config.federation_id),
+        );
+
+        let response = post_operation(State(state.clone()), Json(request))
+            .await
+            .expect_err("oversized request must fail");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(consensus_operation_count(&state).await, 0);
+        let sequences = state
+            .mint
+            .localstore()
+            .get_federation_member_sequences()
+            .await
+            .expect("persisted sequences");
+        assert!(sequences.is_empty());
     }
 
     #[tokio::test]

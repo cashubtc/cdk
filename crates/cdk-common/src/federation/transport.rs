@@ -520,6 +520,11 @@ impl FederationSubmitOperationRequest {
     pub fn operation_id(&self) -> super::Result<FederationOperationId> {
         self.envelope.operation_id()
     }
+
+    /// Reject this submit request if its operation envelope exceeds the default consensus limit.
+    pub fn ensure_admissible_size(&self) -> super::Result<usize> {
+        self.envelope.ensure_admissible_size()
+    }
 }
 
 /// Response to an operation submit request.

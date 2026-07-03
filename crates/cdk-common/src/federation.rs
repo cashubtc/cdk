@@ -31,7 +31,8 @@ pub use self::operation::{
     FederationMintOperation, FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
     FederationMintRequest, FederationOperation, FederationOperationConflictKey,
     FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationRestoreOperation, FederationSwapOperation, FEDERATION_OPERATION_VERSION,
+    FederationRestoreOperation, FederationSwapOperation, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
+    FEDERATION_OPERATION_VERSION,
 };
 pub use self::signing::{FederationBlindSignatureShare, FederationBlindSignatureShareSet};
 pub use self::transport::{
@@ -353,6 +354,14 @@ pub enum FederationError {
         existing_operation_id: String,
         /// Attempted conflicting operation ID.
         attempted_operation_id: String,
+    },
+    /// Operation envelope exceeds the configured consensus admission size.
+    #[error("Federation operation envelope too large: actual={actual}, max={max}")]
+    OperationEnvelopeTooLarge {
+        /// Canonical operation envelope bytes.
+        actual: usize,
+        /// Maximum admitted canonical envelope bytes.
+        max: usize,
     },
     /// A requested operation ID was not found in the journal.
     #[error("Unknown federation operation {operation_id}")]

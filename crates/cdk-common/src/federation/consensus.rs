@@ -84,6 +84,7 @@ impl InMemoryFederationConsensus {
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationSubmitOperationResponse> {
         self.ensure_federation(envelope.federation_id)?;
+        envelope.ensure_admissible_size()?;
         let outcome = self.journal.append(envelope)?;
         Ok(FederationSubmitOperationResponse::from_outcome(outcome))
     }
@@ -279,6 +280,20 @@ mod tests {
         )
     }
 
+    fn oversized_mint_quote_envelope(federation_id: FederationId) -> FederationOperationEnvelope {
+        let mut envelope = mint_quote_envelope(federation_id);
+        let super::super::FederationOperation::MintQuote(operation) = &mut envelope.operation
+        else {
+            panic!("mint quote operation");
+        };
+        let crate::MintQuoteRequest::Bolt11(request) = &mut operation.request else {
+            panic!("bolt11 request");
+        };
+        request.description =
+            Some("x".repeat(super::super::FEDERATION_MAX_OPERATION_ENVELOPE_BYTES));
+        envelope
+    }
+
     #[test]
     fn dummy_consensus_accepts_duplicates_and_rejects_conflicts() {
         let federation_id = federation_id(13);
@@ -315,6 +330,19 @@ mod tests {
             consensus.submit_operation(FederationSubmitOperationRequest::new(envelope)),
             Err(FederationError::OperationFederationMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn dummy_consensus_rejects_oversized_operation_before_journal_append() {
+        let federation_id = federation_id(13);
+        let mut consensus = InMemoryFederationConsensus::new(federation_id, member_id());
+        let envelope = oversized_mint_quote_envelope(federation_id);
+
+        assert!(matches!(
+            consensus.submit_envelope(envelope),
+            Err(FederationError::OperationEnvelopeTooLarge { .. })
+        ));
+        assert_eq!(consensus.peer_status().operation_count, 0);
     }
 
     #[test]
