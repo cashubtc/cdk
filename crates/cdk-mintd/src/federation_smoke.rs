@@ -61,6 +61,7 @@ pub(crate) async fn run_smoke_operations_command(
                 connector,
                 seed,
                 wallet_db,
+                MeltQuoteState::Paid,
             )
             .await
         }
@@ -77,6 +78,41 @@ pub(crate) async fn run_smoke_operations_command(
                 connector,
                 seed,
                 wallet_db,
+                MeltQuoteState::Paid,
+            )
+            .await
+        }
+        FederationSmokeScenario::PendingMeltFailStart => {
+            let wallet_db = args
+                .wallet_db
+                .as_deref()
+                .context("--wallet-db is required for pending-melt-fail-start")?;
+            run_pending_melt_start(
+                args,
+                &public_config,
+                unit,
+                &member_connectors,
+                connector,
+                seed,
+                wallet_db,
+                MeltQuoteState::Failed,
+            )
+            .await
+        }
+        FederationSmokeScenario::PendingMeltFailFinish => {
+            let wallet_db = args
+                .wallet_db
+                .as_deref()
+                .context("--wallet-db is required for pending-melt-fail-finish")?;
+            run_pending_melt_finish(
+                args,
+                &public_config,
+                unit,
+                &member_connectors,
+                connector,
+                seed,
+                wallet_db,
+                MeltQuoteState::Failed,
             )
             .await
         }
@@ -192,13 +228,14 @@ async fn run_pending_melt_start(
     connector: Arc<FederatedMintConnector>,
     seed: [u8; 64],
     wallet_db: &Path,
+    terminal_state: MeltQuoteState,
 ) -> Result<()> {
     let wallet = smoke_wallet(public_config, unit, seed, connector, Some(wallet_db)).await?;
     let minted_amount = mint_smoke_funds(&wallet, member_connectors, args).await?;
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Pending,
-        check_payment_state: MeltQuoteState::Paid,
+        check_payment_state: terminal_state,
         pay_err: false,
         check_err: false,
     };
@@ -249,8 +286,8 @@ async fn run_pending_melt_start(
     }
 
     println!(
-        "federation pending melt smoke started: minted={} quote={} operation={}",
-        minted_amount, melt_quote.id, operation_id
+        "federation pending melt smoke started: minted={} quote={} operation={} terminal={}",
+        minted_amount, melt_quote.id, operation_id, terminal_state
     );
 
     Ok(())
@@ -264,6 +301,7 @@ async fn run_pending_melt_finish(
     connector: Arc<FederatedMintConnector>,
     seed: [u8; 64],
     wallet_db: &Path,
+    terminal_state: MeltQuoteState,
 ) -> Result<()> {
     let wallet = smoke_wallet(public_config, unit, seed, connector, Some(wallet_db)).await?;
     let pending_quotes = wallet
@@ -273,32 +311,65 @@ async fn run_pending_melt_finish(
     let quote_id = pending_quotes
         .first()
         .map(|quote| quote.id.clone())
-        .context("pending-melt-finish found no pending melt quotes in wallet db")?;
+        .context("pending melt finish found no pending melt quotes in wallet db")?;
 
     let finalized = wallet
         .finalize_pending_melts()
         .await
         .context("finalize pending federation melt")?;
-    let paid = finalized
+    let terminal = finalized
         .iter()
-        .find(|melt| melt.quote_id() == quote_id && melt.state() == MeltQuoteState::Paid)
-        .context("pending federation melt did not finalize as paid")?;
+        .find(|melt| melt.quote_id() == quote_id && melt.state() == terminal_state)
+        .with_context(|| format!("pending federation melt did not finalize as {terminal_state}"))?;
 
     wait_for_melt_quote_state(
         member_connectors,
         &quote_id,
-        MeltQuoteState::Paid,
+        terminal_state,
         args.quote_retries,
         Duration::from_millis(args.quote_sleep_ms),
     )
     .await?;
 
+    let pending_quotes_after = wallet
+        .get_pending_melt_quotes()
+        .await
+        .context("load pending melt quotes after recovery")?;
+    if pending_quotes_after
+        .iter()
+        .any(|quote| quote.id == quote_id)
+    {
+        bail!(
+            "pending federation melt quote {} remained pending after {} recovery",
+            quote_id,
+            terminal_state
+        );
+    }
+
+    if terminal_state == MeltQuoteState::Failed {
+        let unspent_amount = wallet
+            .get_unspent_proofs()
+            .await
+            .context("load proofs after failed pending melt recovery")?
+            .total_amount()?;
+        let expected_amount = Amount::from(args.mint_amount);
+        if unspent_amount != expected_amount {
+            bail!(
+                "failed pending federation melt left {} unspent, expected restored {}",
+                unspent_amount,
+                expected_amount
+            );
+        }
+    }
+
     println!(
-        "federation pending melt smoke finalized: quote={} amount={} fee={} change={}",
-        paid.quote_id(),
-        paid.amount(),
-        paid.fee_paid(),
-        paid.change()
+        "federation pending melt smoke finalized: quote={} state={} amount={} fee={} change={}",
+        terminal.quote_id(),
+        terminal.state(),
+        terminal.amount(),
+        terminal.fee_paid(),
+        terminal
+            .change()
             .and_then(|proofs| proofs.total_amount().ok())
             .unwrap_or(Amount::ZERO)
     );

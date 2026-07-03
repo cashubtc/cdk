@@ -456,6 +456,7 @@ RESTART_MEMBER="${{RESTART_MEMBER:-{restart_member}}}"
 STATUS_RETRIES="${{STATUS_RETRIES:-60}}"
 STATUS_SLEEP_SECONDS="${{STATUS_SLEEP_SECONDS:-1}}"
 PENDING_WALLET_DB="${{PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/pending-melt-wallet.sqlite}}"
+FAILED_PENDING_WALLET_DB="${{FAILED_PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/failed-pending-melt-wallet.sqlite}}"
 PIDS=()
 
 member_config() {{
@@ -508,6 +509,7 @@ cleanup() {{
 
 reset_member_work_dirs() {{
   rm -f "$PENDING_WALLET_DB" "$PENDING_WALLET_DB-shm" "$PENDING_WALLET_DB-wal"
+  rm -f "$FAILED_PENDING_WALLET_DB" "$FAILED_PENDING_WALLET_DB-shm" "$FAILED_PENDING_WALLET_DB-wal"
   local member
   for member in "${{MEMBERS[@]}}"; do
     local work_dir
@@ -632,6 +634,17 @@ wait_for_converged
 "$CDK_MINTD_BIN" federation smoke-operations --public-config "$PUBLIC_CONFIG" --scenario pending-melt-finish --wallet-db "$PENDING_WALLET_DB"
 wait_for_converged
 
+"$CDK_MINTD_BIN" federation smoke-operations --public-config "$PUBLIC_CONFIG" --scenario pending-melt-fail-start --wallet-db "$FAILED_PENDING_WALLET_DB"
+wait_for_converged
+
+stop_member "$RESTART_MEMBER"
+start_member "$RESTART_MEMBER"
+wait_for_status "$RESTART_MEMBER"
+
+wait_for_converged
+"$CDK_MINTD_BIN" federation smoke-operations --public-config "$PUBLIC_CONFIG" --scenario pending-melt-fail-finish --wallet-db "$FAILED_PENDING_WALLET_DB"
+wait_for_converged
+
 printf 'local federation smoke test passed\n'
 "#,
         public_config_path = public_config_path,
@@ -725,9 +738,13 @@ mod tests {
         assert!(smoke_script.contains("rm -rf \"$work_dir\""));
         assert!(smoke_script.contains("RESTART_MEMBER"));
         assert!(smoke_script.contains("PENDING_WALLET_DB"));
+        assert!(smoke_script.contains("FAILED_PENDING_WALLET_DB"));
         assert!(smoke_script.contains("--scenario pending-melt-start"));
         assert!(smoke_script.contains("--scenario pending-melt-finish"));
+        assert!(smoke_script.contains("--scenario pending-melt-fail-start"));
+        assert!(smoke_script.contains("--scenario pending-melt-fail-finish"));
         assert!(smoke_script.contains("--wallet-db \"$PENDING_WALLET_DB\""));
+        assert!(smoke_script.contains("--wallet-db \"$FAILED_PENDING_WALLET_DB\""));
         assert!(smoke_script.contains("local federation smoke test passed"));
         assert!(smoke_script.contains(&artifacts.public_config_path.to_string_lossy().to_string()));
         #[cfg(unix)]

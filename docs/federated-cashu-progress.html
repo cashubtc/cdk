@@ -347,15 +347,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add pending melt process smoke scenarios</span>
+          <span class="value">feat: add failed pending melt process smoke</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Generated process smoke pending melt restart coverage</span>
+          <span class="value">Generated process smoke pending melt failure coverage</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Unsandboxed live smoke and broader BFT backend work</span>
+          <span class="value">Unsandboxed live paid/failed pending-melt smoke and broader BFT backend work</span>
         </div>
       </aside>
     </header>
@@ -1067,6 +1067,10 @@
             <p>The generated local federation smoke script now runs a resumable pending-melt scenario: it starts a pending fake-wallet melt into a file-backed wallet DB, restarts a federation member while the melt is pending, then resumes the wallet and finalizes the paid observation.</p>
           </article>
           <article class="item">
+            <h3>Failed pending melt process smoke scripted</h3>
+            <p>The generated local federation smoke script now also runs the unhappy path: it starts a pending fake-wallet melt that later resolves as failed, restarts a federation member while the wallet saga is durable, then resumes the wallet and verifies compensation released the proofs.</p>
+          </article>
+          <article class="item">
             <h3>Milestone map expanded</h3>
             <p>The dashboard now renders 24 explicit implementation-plan milestone points, each with an objective and test gate, with no grouped shorthand ranges.</p>
           </article>
@@ -1572,13 +1576,13 @@
             <tr>
               <td>Generated pending melt process smoke</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" -- --test-threads 1` passed 50 tests, including CLI parsing and trusted-dealer smoke script validation for `pending-melt-start` and `pending-melt-finish`. `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"` passed, `cargo run ... federation smoke-operations --help` showed the new scenarios, and `cargo fmt --all` completed successfully. A live generated process run was attempted but local listener startup is blocked in this sandbox by `Operation not permitted`.</td>
-              <td>Run the generated script in an unsandboxed local environment, then broaden process smoke fault injection around delayed and offline fake-wallet observations.</td>
+              <td>`cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" -- --test-threads 1` passed 50 tests, including CLI parsing and trusted-dealer smoke script validation for `pending-melt-start`, `pending-melt-finish`, `pending-melt-fail-start`, and `pending-melt-fail-finish`. `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"` passed, `cargo run ... federation smoke-operations --help` showed all paid and failed pending-melt scenarios, and `cargo fmt --all` completed successfully. A live generated process run was not repeated here because local listener startup is blocked in this sandbox by `Operation not permitted`.</td>
+              <td>Run the generated paid and failed pending-melt script paths in an unsandboxed local environment, then broaden process smoke fault injection around delayed and offline fake-wallet observations.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, a replaceable consensus runtime boundary, a multi-node simulator for delayed, duplicated, reordered, and quorum-limited proposal delivery, explicit consensus item admission with bounded pending batches, operation acceptance notifications back to public handlers, a finalization loop for accepted-entry apply/notify delivery, an exported backend adapter for queued operation dispatch plus finalized responses, a live generated 5-member process smoke that verifies signed status, readiness, convergence, restart, and cleanup, a materialized-state digest scaffold for consensus-visible mint rows, database-backed private status plus catch-up evidence digests derived from applied mint rows, a live operation-bearing process smoke that drives wallet mint, swap, check-state, melt, restore, convergence, restart, and catch-up, focused fake-wallet melt tests for failed payments, pending-to-paid verification, unresolved pending status-check errors, delayed quote-check finalization, staged offline catch-up from pending melt reserve to paid melt observation, restart replay of pending melts before later paid-observation catch-up, fresh SQLite-backed mint restart replay across the same pending-to-paid melt path, and generated process smoke scenarios that restart a member between pending melt start and pending melt finalization.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, a replaceable consensus runtime boundary, a multi-node simulator for delayed, duplicated, reordered, and quorum-limited proposal delivery, explicit consensus item admission with bounded pending batches, operation acceptance notifications back to public handlers, a finalization loop for accepted-entry apply/notify delivery, an exported backend adapter for queued operation dispatch plus finalized responses, a live generated 5-member process smoke that verifies signed status, readiness, convergence, restart, and cleanup, a materialized-state digest scaffold for consensus-visible mint rows, database-backed private status plus catch-up evidence digests derived from applied mint rows, a live operation-bearing process smoke that drives wallet mint, swap, check-state, melt, restore, convergence, restart, and catch-up, focused fake-wallet melt tests for failed payments, pending-to-paid verification, unresolved pending status-check errors, delayed quote-check finalization, staged offline catch-up from pending melt reserve to paid melt observation, restart replay of pending melts before later paid-observation catch-up, fresh SQLite-backed mint restart replay across the same pending-to-paid melt path, and generated process smoke scenarios that restart a member between pending melt start and paid or failed pending melt finalization.</td>
               <td>Broaden operation smoke to more federation sizes and storage backends, then replace the simulator ordering source with a real BFT backend.</td>
             </tr>
           </tbody>
@@ -1648,7 +1652,7 @@
         <div class="stack">
           <article class="item">
             <h3>Broader process smoke matrix</h3>
-            <p>Run the generated pending-melt restart smoke in an environment with local listener permissions, then add delayed and offline fake-wallet observation variants across generated member processes.</p>
+            <p>Run the generated paid and failed pending-melt restart smoke in an environment with local listener permissions, then add delayed and offline fake-wallet observation variants across generated member processes.</p>
           </article>
           <article class="item">
             <h3>Broader materialized digest coverage</h3>

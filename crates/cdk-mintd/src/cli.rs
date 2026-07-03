@@ -152,6 +152,10 @@ pub enum FederationSmokeScenario {
     PendingMeltStart,
     /// Resume and finalize the pending melt stored in the wallet database.
     PendingMeltFinish,
+    /// Mint funds and leave a melt pending that later resolves as failed.
+    PendingMeltFailStart,
+    /// Resume and compensate the failed pending melt stored in the wallet database.
+    PendingMeltFailFinish,
 }
 
 #[cfg(feature = "federation")]
@@ -247,7 +251,7 @@ mod tests {
             "--mint-amount",
             "8",
             "--scenario",
-            "pending-melt-start",
+            "pending-melt-fail-start",
             "--wallet-db",
             "wallet.sqlite",
         ])
@@ -261,7 +265,10 @@ mod tests {
         };
         assert_eq!(smoke.public_config, PathBuf::from("federation-public.json"));
         assert_eq!(smoke.mint_amount, 8);
-        assert_eq!(smoke.scenario, FederationSmokeScenario::PendingMeltStart);
+        assert_eq!(
+            smoke.scenario,
+            FederationSmokeScenario::PendingMeltFailStart
+        );
         assert_eq!(smoke.wallet_db, Some(PathBuf::from("wallet.sqlite")));
     }
 
