@@ -395,6 +395,7 @@ impl MintState {
                     peer_operation_count,
                     ..
                 } if peer_operation_count > local_operation_count => {}
+                FederationSyncStatus::VerifyingSessionOutcome { .. } => {}
                 FederationSyncStatus::Halted { .. } => {}
                 _ => sync.mark_healthy(),
             }

@@ -331,11 +331,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: gate recovery on session outcomes</span>
+          <span class="value">feat: collect chunked session outcomes</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Quorum-gated recovery policy</span>
+          <span class="value">Long-range evidence collection</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -941,6 +941,10 @@
             <p>Catch-up now leaves recovered members in a non-ready session-outcome verification state, and public wallet-facing federation submissions reopen only after threshold session outcome evidence covers the recovered history.</p>
           </article>
           <article class="item">
+            <h3>Long journals collect evidence in chunks</h3>
+            <p>Session-outcome collection now signs and requests bounded contiguous ranges, composes exact-range quorums into a verified prefix, and can reopen recovered members without oversized full-history REST responses.</p>
+          </article>
+          <article class="item">
             <h3>Milestone map expanded</h3>
             <p>The dashboard now renders 24 explicit implementation-plan milestone points, with no grouped shorthand ranges.</p>
           </article>
@@ -1330,9 +1334,15 @@
               <td>Run live multi-process fake-wallet member scenarios from generated configs where loopback listeners are permitted.</td>
             </tr>
             <tr>
+              <td>Long-range evidence collection</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation peer_sync_round_collects_chunked_session_outcome_evidence -- --test-threads 1` passed with 1001 accepted restore entries, proving two bounded evidence chunks compose into a quorum-verified prefix and clear the verifying recovery state.</td>
+              <td>Run live multi-process fake-wallet member scenarios from generated configs where loopback listeners are permitted.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, and quorum-gated recovery readiness.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, and chunked long-range session evidence.</td>
               <td>Run live multi-process fake-wallet member scenarios from generated configs where loopback listeners are permitted.</td>
             </tr>
           </tbody>
@@ -1377,8 +1387,8 @@
             <p>Run the generated fake-wallet federation smoke script in an environment with loopback listener permissions, then capture signed private REST status before and after a member restart.</p>
           </article>
           <article class="item">
-            <h3>Long-range evidence collection</h3>
-            <p>Replace the current bounded full-history evidence request with chunked range collection so large recovered journals can build quorum proof without oversized REST responses.</p>
+            <h3>Consensus engine replacement path</h3>
+            <p>Start replacing the in-memory/dummy ordering source with a real consensus integration boundary while preserving the deterministic operation journal and recovery tests.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>

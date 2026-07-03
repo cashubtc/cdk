@@ -1,6 +1,6 @@
 //! Private federation member REST routes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -31,7 +31,7 @@ type ConsensusHandle = std::sync::Arc<tokio::sync::Mutex<InMemoryFederationConse
 type SequenceHandle = std::sync::Arc<tokio::sync::Mutex<FederationRestSequenceTracker>>;
 
 const FEDERATION_PEER_SYNC_INTERVAL: Duration = Duration::from_secs(5);
-const FEDERATION_SESSION_OUTCOME_EVIDENCE_MAX_RANGE: usize = 1000;
+const FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT: usize = 1000;
 static FEDERATION_REST_SEQUENCE_SEED: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn create_federation_router() -> Router<MintState> {
@@ -141,7 +141,7 @@ where
             return 0;
         }
     };
-    if entries.is_empty() || entries.len() > FEDERATION_SESSION_OUTCOME_EVIDENCE_MAX_RANGE {
+    if entries.is_empty() {
         return 0;
     }
 
@@ -150,31 +150,14 @@ where
     };
     let mut collected = match local_peer_status(state).await {
         Ok(peer_status) => {
-            match FederationSessionOutcome::new_signed(
-                runtime_config.federation_id(),
+            persist_local_session_outcome_evidence_chunks(
+                state,
+                runtime_config,
                 &entries,
                 peer_status.latest_order_digest,
                 peer_status.state_digest,
-                runtime_config.private_config(),
-            ) {
-                Ok(outcome) => match state.persist_federation_session_outcome(&outcome).await {
-                    Ok(()) => 1,
-                    Err(err) => {
-                        tracing::warn!(
-                            "Could not persist local federation session outcome evidence: {}",
-                            err
-                        );
-                        0
-                    }
-                },
-                Err(err) => {
-                    tracing::warn!(
-                        "Could not sign local federation session outcome evidence: {}",
-                        err
-                    );
-                    0
-                }
-            }
+            )
+            .await
         }
         Err(err) => {
             tracing::warn!(
@@ -185,10 +168,9 @@ where
         }
     };
 
+    let operation_count = entries.len() as u64;
     match session_outcome_quorum_status(state).await {
-        Ok(Some(quorum))
-            if quorum.from_index == 0 && quorum.operation_count >= entries.len() as u64 =>
-        {
+        Ok(Some(quorum)) if quorum.from_index == 0 && quorum.operation_count >= operation_count => {
             state
                 .mark_federation_healthy_if_session_outcome_verified(quorum.operation_count)
                 .await;
@@ -203,10 +185,72 @@ where
         }
     }
 
-    let request = FederationJournalCatchUpRequest::new(0)
-        .with_limit(entries.len() as u16)
-        .with_known_order_digest(FederationJournalDigest::genesis());
     for peer in peers {
+        collected +=
+            collect_session_outcome_evidence_from_peer(state, client, peer, &entries).await;
+    }
+
+    mark_healthy_after_session_outcome_quorum(state, operation_count).await;
+
+    collected
+}
+
+async fn persist_local_session_outcome_evidence_chunks(
+    state: &MintState,
+    runtime_config: &cdk::mint::FederationRuntimeConfig,
+    entries: &[FederationJournalEntry],
+    latest_order_digest: FederationJournalDigest,
+    state_digest: FederationStateDigest,
+) -> usize {
+    let mut persisted = 0;
+    for chunk in entries.chunks(FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT) {
+        let outcome = match FederationSessionOutcome::new_signed(
+            runtime_config.federation_id(),
+            chunk,
+            latest_order_digest,
+            state_digest,
+            runtime_config.private_config(),
+        ) {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                tracing::warn!(
+                    "Could not sign local federation session outcome evidence: {}",
+                    err
+                );
+                continue;
+            }
+        };
+        match state.persist_federation_session_outcome(&outcome).await {
+            Ok(()) => persisted += 1,
+            Err(err) => {
+                tracing::warn!(
+                    "Could not persist local federation session outcome evidence: {}",
+                    err
+                );
+            }
+        }
+    }
+
+    persisted
+}
+
+async fn collect_session_outcome_evidence_from_peer<T>(
+    state: &MintState,
+    client: &FederationRestPeerClient<T>,
+    peer: &MemberConfigPublic,
+    entries: &[FederationJournalEntry],
+) -> usize
+where
+    T: Transport,
+{
+    let mut collected = 0;
+    for chunk in entries.chunks(FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT) {
+        let Some(first) = chunk.first() else {
+            continue;
+        };
+        let request = FederationJournalCatchUpRequest::new(first.index)
+            .with_limit(chunk.len() as u16)
+            .with_known_order_digest(first.previous_order_digest);
         let response = match client.catch_up(peer, &request).await {
             Ok(response) => response,
             Err(err) => {
@@ -218,7 +262,7 @@ where
                 continue;
             }
         };
-        if let Err(err) = verify_session_outcome_evidence_entries(&entries, &response) {
+        if let Err(err) = verify_session_outcome_evidence_entries(chunk, &response) {
             tracing::warn!(
                 member_id = %peer.member_id,
                 "Federation session outcome evidence did not match local journal: {}",
@@ -240,8 +284,6 @@ where
             }
         }
     }
-
-    mark_healthy_after_session_outcome_quorum(state, entries.len() as u64).await;
 
     collected
 }
@@ -407,11 +449,11 @@ impl FederationLocalStatusResponse {
     fn new(
         peer_status: FederationPeerStatus,
         sync_status: crate::FederationSyncStatus,
-        session_outcome_quorum: Option<FederationSessionOutcomeQuorum>,
+        session_outcome_quorum: Option<SessionOutcomeQuorumStatus>,
     ) -> Self {
         let session_outcome_quorum_operation_count = session_outcome_quorum
             .as_ref()
-            .map(|quorum| quorum.latest_index.saturating_add(1));
+            .map(|quorum| quorum.operation_count);
         let session_outcome_quorum_signers = session_outcome_quorum
             .map(|quorum| quorum.signers.into_iter().collect())
             .unwrap_or_default();
@@ -424,6 +466,33 @@ impl FederationLocalStatusResponse {
             session_outcome_quorum_operation_count,
             session_outcome_quorum_signers,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionOutcomeQuorumStatus {
+    signers: BTreeSet<cdk::federation::MemberId>,
+    from_index: u64,
+    latest_index: u64,
+    operation_count: u64,
+}
+
+impl From<FederationSessionOutcomeQuorum> for SessionOutcomeQuorumStatus {
+    fn from(quorum: FederationSessionOutcomeQuorum) -> Self {
+        Self {
+            signers: quorum.signers,
+            from_index: quorum.from_index,
+            latest_index: quorum.latest_index,
+            operation_count: quorum.operation_count,
+        }
+    }
+}
+
+impl SessionOutcomeQuorumStatus {
+    fn append(&mut self, quorum: &FederationSessionOutcomeQuorum) {
+        self.signers.extend(quorum.signers.iter().copied());
+        self.latest_index = quorum.latest_index;
+        self.operation_count = self.latest_index.saturating_sub(self.from_index) + 1;
     }
 }
 
@@ -456,7 +525,7 @@ impl From<&FederationSessionOutcome> for SessionOutcomeRangeKey {
 
 async fn session_outcome_quorum_status(
     state: &MintState,
-) -> Result<Option<FederationSessionOutcomeQuorum>, cdk::Error> {
+) -> Result<Option<SessionOutcomeQuorumStatus>, cdk::Error> {
     let Some(runtime_config) = state.mint.federation_config() else {
         return Ok(None);
     };
@@ -480,7 +549,7 @@ async fn session_outcome_quorum_status(
             .push(outcome);
     }
 
-    let mut best_quorum: Option<FederationSessionOutcomeQuorum> = None;
+    let mut quorums_by_start: BTreeMap<u64, Vec<FederationSessionOutcomeQuorum>> = BTreeMap::new();
     for (range, outcomes) in grouped_outcomes {
         let Some(entries) = entries_for_session_outcome_range(&entries_by_index, &range) else {
             continue;
@@ -504,13 +573,32 @@ async fn session_outcome_quorum_status(
             Err(FederationError::SessionOutcomeQuorumNotReached { .. }) => continue,
             Err(_) => continue,
         };
-        match &best_quorum {
-            Some(best) if best.latest_index >= quorum.latest_index => {}
-            _ => best_quorum = Some(quorum),
-        }
+        quorums_by_start
+            .entry(quorum.from_index)
+            .or_default()
+            .push(quorum);
     }
 
-    Ok(best_quorum)
+    Ok(contiguous_session_outcome_quorum_prefix(&quorums_by_start))
+}
+
+fn contiguous_session_outcome_quorum_prefix(
+    quorums_by_start: &BTreeMap<u64, Vec<FederationSessionOutcomeQuorum>>,
+) -> Option<SessionOutcomeQuorumStatus> {
+    let mut next_index = 0;
+    let mut status: Option<SessionOutcomeQuorumStatus> = None;
+    while let Some(quorums) = quorums_by_start.get(&next_index) {
+        let Some(best) = quorums.iter().max_by_key(|quorum| quorum.latest_index) else {
+            break;
+        };
+        match &mut status {
+            Some(status) => status.append(best),
+            None => status = Some(best.clone().into()),
+        }
+        next_index = best.latest_index.saturating_add(1);
+    }
+
+    status
 }
 
 fn entries_for_session_outcome_range(
@@ -889,10 +977,14 @@ fn verify_session_outcome_evidence_entries(
     local_entries: &[FederationJournalEntry],
     response: &FederationJournalCatchUpResponse,
 ) -> anyhow::Result<()> {
-    if response.from_index != 0 {
+    let first = local_entries
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("missing local entries for evidence response"))?;
+    if response.from_index != first.index {
         anyhow::bail!(
-            "evidence response started at {}, expected 0",
-            response.from_index
+            "evidence response started at {}, expected {}",
+            response.from_index,
+            first.index
         );
     }
     if response.entries.len() != local_entries.len() {
@@ -924,7 +1016,7 @@ fn verify_session_outcome_evidence_entries(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashMap, HashSet};
+    use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
     use std::str::FromStr;
     use std::sync::{Arc, Mutex};
 
@@ -959,7 +1051,7 @@ mod tests {
     struct MockFederationTransportState {
         status_response: Option<FederationPeerStatus>,
         submit_response: Option<FederationSubmitOperationResponse>,
-        catch_up_response: Option<FederationJournalCatchUpResponse>,
+        catch_up_responses: VecDeque<FederationJournalCatchUpResponse>,
         status_requests: Vec<FederationSignedRequest<FederationPeerStatusRequest>>,
         submitted_operations: Vec<FederationSignedRequest<FederationSubmitOperationRequest>>,
         catch_up_requests: Vec<FederationSignedRequest<FederationJournalCatchUpRequest>>,
@@ -991,7 +1083,8 @@ mod tests {
             self.state
                 .lock()
                 .expect("mock transport lock")
-                .catch_up_response = Some(response);
+                .catch_up_responses
+                .push_back(response);
             self
         }
 
@@ -1085,8 +1178,8 @@ mod tests {
                     >(serde_json::to_value(payload)?)?;
                     state.catch_up_requests.push(request);
                     let response = state
-                        .catch_up_response
-                        .clone()
+                        .catch_up_responses
+                        .pop_front()
                         .ok_or_else(|| HttpError::Other("missing catch-up response".to_string()))?;
                     json_response(response)
                 }
@@ -1454,6 +1547,28 @@ mod tests {
         federation_id: FederationId,
         label: &'static str,
     ) -> FederationOperationEnvelope {
+        restore_envelope_with_output(
+            federation_id,
+            PublicKey::from_hex(label).expect("public key"),
+        )
+    }
+
+    fn indexed_restore_envelope(
+        federation_id: FederationId,
+        index: u64,
+    ) -> FederationOperationEnvelope {
+        restore_envelope_with_output(
+            federation_id,
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(
+                format!("federation evidence restore {index}").as_bytes(),
+            )),
+        )
+    }
+
+    fn restore_envelope_with_output(
+        federation_id: FederationId,
+        blinded_secret: PublicKey,
+    ) -> FederationOperationEnvelope {
         FederationOperationEnvelope::new(
             federation_id,
             FederationOperation::Restore(cdk::federation::FederationRestoreOperation {
@@ -1461,7 +1576,7 @@ mod tests {
                     outputs: vec![cdk::nuts::BlindedMessage::new(
                         Amount::from(1),
                         cdk::nuts::Id::from_str("00bfa73302d12ffd").expect("keyset id"),
-                        PublicKey::from_hex(label).expect("public key"),
+                        blinded_secret,
                     )],
                 },
             }),
@@ -1920,6 +2035,94 @@ mod tests {
         assert_eq!(quorum.signers.len(), 2);
         assert!(quorum.signers.contains(&local_private.member_id));
         assert!(quorum.signers.contains(&peer_private.member_id));
+    }
+
+    #[tokio::test]
+    async fn peer_sync_round_collects_chunked_session_outcome_evidence() {
+        let (state, public_config, local_private, peer_private) =
+            federation_route_state_with_local_private().await;
+        let federation_id = public_config.federation_id;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
+        for index in 0..=FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT as u64 {
+            let entry = indexed_restore_envelope(federation_id, index);
+            state
+                .submit_federation_envelope(entry.clone())
+                .await
+                .expect("local accepted operation");
+            peer_consensus
+                .submit_envelope(entry)
+                .expect("peer accepted operation");
+        }
+        state
+            .mark_federation_verifying_session_outcome(peer_member.member_id, 1001)
+            .await;
+
+        let entries = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal entries");
+        assert_eq!(
+            entries.len(),
+            FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT + 1
+        );
+        let first_request = FederationJournalCatchUpRequest::new(0)
+            .with_limit(FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT as u16)
+            .with_known_order_digest(FederationJournalDigest::genesis());
+        let second_request = FederationJournalCatchUpRequest::new(
+            FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT as u64,
+        )
+        .with_limit(1)
+        .with_known_order_digest(
+            entries[FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT].previous_order_digest,
+        );
+        let first_response = peer_consensus
+            .catch_up_checked(&first_request)
+            .expect("first chunk response");
+        let second_response = peer_consensus
+            .catch_up_checked(&second_request)
+            .expect("second chunk response");
+        let transport = MockFederationTransport::default()
+            .with_status_response(peer_consensus.peer_status())
+            .with_catch_up_response(signed_catch_up_response(first_response, &peer_private))
+            .with_catch_up_response(signed_catch_up_response(second_response, &peer_private));
+        let client =
+            FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+                .expect("client");
+
+        let synced =
+            run_federation_peer_sync_round(&state, &client, std::slice::from_ref(peer_member))
+                .await;
+
+        assert_eq!(synced, 1);
+        let requests = transport.catch_up_requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].payload.next_index, 0);
+        assert_eq!(
+            requests[0].payload.limit,
+            Some(FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT as u16)
+        );
+        assert_eq!(
+            requests[1].payload.next_index,
+            FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT as u64
+        );
+        assert_eq!(requests[1].payload.limit, Some(1));
+        let quorum = session_outcome_quorum_status(&state)
+            .await
+            .expect("quorum status")
+            .expect("chunked quorum evidence");
+        assert_eq!(quorum.from_index, 0);
+        assert_eq!(quorum.operation_count, 1001);
+        assert_eq!(quorum.latest_index, 1000);
+        assert!(quorum.signers.contains(&local_private.member_id));
+        assert!(quorum.signers.contains(&peer_private.member_id));
+        assert!(matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Healthy)
+        ));
     }
 
     #[tokio::test]
