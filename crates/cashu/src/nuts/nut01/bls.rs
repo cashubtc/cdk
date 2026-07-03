@@ -14,6 +14,8 @@ use super::Error;
 
 const BLS_DST: &[u8] = b"CASHU_BLS12_381_G1_XMD:SHA-256_SSWU_RO_";
 const BLS_BATCH_DST: &[u8] = b"Cashu_BLS_Batch_v1";
+#[cfg(feature = "federation")]
+const BLS_THRESHOLD_SHARE_VERSION: u8 = 1;
 
 /// BLS12-381 scalar/private key.
 #[derive(Clone, PartialEq, Eq)]
@@ -169,6 +171,10 @@ impl BlsG2PublicKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BlsSignerId(u16);
 
+/// Aggregate BLS public key produced from a threshold keyset.
+#[cfg(feature = "federation")]
+pub type BlsAggregatePublicKey = BlsG2PublicKey;
+
 #[cfg(feature = "federation")]
 impl BlsSignerId {
     /// Create a non-zero signer ID.
@@ -259,31 +265,27 @@ impl BlsSecretKeyShare {
         self.secret_key.to_bytes()
     }
 
-    /// Serialize this secret share as `signer_id || scalar`.
+    /// Serialize this secret share as `version || signer_id || scalar`.
     ///
     /// The returned bytes contain secret key material and must only be written to
     /// private member configuration or secret storage.
     #[must_use]
-    pub fn to_bytes(&self) -> [u8; 34] {
-        let mut bytes = [0u8; 34];
-        bytes[..2].copy_from_slice(&self.signer_id.to_bytes());
-        bytes[2..].copy_from_slice(&self.secret_key.to_bytes());
+    pub fn to_bytes(&self) -> [u8; 35] {
+        let mut bytes = [0u8; 35];
+        bytes[0] = BLS_THRESHOLD_SHARE_VERSION;
+        bytes[1..3].copy_from_slice(&self.signer_id.to_bytes());
+        bytes[3..].copy_from_slice(&self.secret_key.to_bytes());
         bytes
     }
 
-    /// Parse a secret share from `signer_id || scalar` bytes.
+    /// Parse a secret share from `version || signer_id || scalar` bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        if bytes.len() != 34 {
-            return Err(Error::InvalidThresholdShareSize {
-                expected: 34,
-                found: bytes.len(),
-            });
-        }
+        validate_threshold_share_bytes(bytes, 35)?;
 
         let mut signer_id = [0u8; 2];
-        signer_id.copy_from_slice(&bytes[..2]);
+        signer_id.copy_from_slice(&bytes[1..3]);
         let signer_id = BlsSignerId::from_bytes(signer_id)?;
-        let secret_key = BlsSecretKey::from_bytes(&bytes[2..])?;
+        let secret_key = BlsSecretKey::from_bytes(&bytes[3..])?;
 
         Ok(Self {
             signer_id,
@@ -322,28 +324,24 @@ impl BlsPublicKeyShare {
         self.public_key
     }
 
-    /// Serialize this public share as `signer_id || compressed_g2`.
+    /// Serialize this public share as `version || signer_id || compressed_g2`.
     #[must_use]
-    pub fn to_bytes(&self) -> [u8; 98] {
-        let mut bytes = [0u8; 98];
-        bytes[..2].copy_from_slice(&self.signer_id.to_bytes());
-        bytes[2..].copy_from_slice(&self.public_key.to_bytes());
+    pub fn to_bytes(&self) -> [u8; 99] {
+        let mut bytes = [0u8; 99];
+        bytes[0] = BLS_THRESHOLD_SHARE_VERSION;
+        bytes[1..3].copy_from_slice(&self.signer_id.to_bytes());
+        bytes[3..].copy_from_slice(&self.public_key.to_bytes());
         bytes
     }
 
-    /// Parse a public share from `signer_id || compressed_g2` bytes.
+    /// Parse a public share from `version || signer_id || compressed_g2` bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        if bytes.len() != 98 {
-            return Err(Error::InvalidThresholdShareSize {
-                expected: 98,
-                found: bytes.len(),
-            });
-        }
+        validate_threshold_share_bytes(bytes, 99)?;
 
         let mut signer_id = [0u8; 2];
-        signer_id.copy_from_slice(&bytes[..2]);
+        signer_id.copy_from_slice(&bytes[1..3]);
         let signer_id = BlsSignerId::from_bytes(signer_id)?;
-        let public_key = BlsG2PublicKey::from_bytes(&bytes[2..])?;
+        let public_key = BlsG2PublicKey::from_bytes(&bytes[3..])?;
 
         Ok(Self {
             signer_id,
@@ -382,28 +380,24 @@ impl BlsBlindSignatureShare {
         self.signature
     }
 
-    /// Serialize this blind signature share as `signer_id || compressed_g1`.
+    /// Serialize this blind signature share as `version || signer_id || compressed_g1`.
     #[must_use]
-    pub fn to_bytes(&self) -> [u8; 50] {
-        let mut bytes = [0u8; 50];
-        bytes[..2].copy_from_slice(&self.signer_id.to_bytes());
-        bytes[2..].copy_from_slice(&self.signature.to_bytes());
+    pub fn to_bytes(&self) -> [u8; 51] {
+        let mut bytes = [0u8; 51];
+        bytes[0] = BLS_THRESHOLD_SHARE_VERSION;
+        bytes[1..3].copy_from_slice(&self.signer_id.to_bytes());
+        bytes[3..].copy_from_slice(&self.signature.to_bytes());
         bytes
     }
 
-    /// Parse a blind signature share from `signer_id || compressed_g1` bytes.
+    /// Parse a blind signature share from `version || signer_id || compressed_g1` bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        if bytes.len() != 50 {
-            return Err(Error::InvalidThresholdShareSize {
-                expected: 50,
-                found: bytes.len(),
-            });
-        }
+        validate_threshold_share_bytes(bytes, 51)?;
 
         let mut signer_id = [0u8; 2];
-        signer_id.copy_from_slice(&bytes[..2]);
+        signer_id.copy_from_slice(&bytes[1..3]);
         let signer_id = BlsSignerId::from_bytes(signer_id)?;
-        let signature = BlsG1PublicKey::from_bytes(&bytes[2..])?;
+        let signature = BlsG1PublicKey::from_bytes(&bytes[3..])?;
 
         Ok(Self {
             signer_id,
@@ -417,7 +411,7 @@ impl BlsBlindSignatureShare {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlsThresholdKeySet {
     threshold: usize,
-    aggregate_public_key: BlsG2PublicKey,
+    aggregate_public_key: BlsAggregatePublicKey,
     secret_shares: Vec<BlsSecretKeyShare>,
     public_shares: Vec<BlsPublicKeyShare>,
 }
@@ -432,7 +426,7 @@ impl BlsThresholdKeySet {
 
     /// Return the aggregate public key.
     #[must_use]
-    pub fn aggregate_public_key(&self) -> BlsG2PublicKey {
+    pub fn aggregate_public_key(&self) -> BlsAggregatePublicKey {
         self.aggregate_public_key
     }
 
@@ -569,6 +563,25 @@ where
     }
 
     validate_threshold_inputs(threshold, &signer_ids)
+}
+
+#[cfg(feature = "federation")]
+fn validate_threshold_share_bytes(bytes: &[u8], expected_len: usize) -> Result<(), Error> {
+    if bytes.len() != expected_len {
+        return Err(Error::InvalidThresholdShareSize {
+            expected: expected_len,
+            found: bytes.len(),
+        });
+    }
+
+    if bytes[0] != BLS_THRESHOLD_SHARE_VERSION {
+        return Err(Error::InvalidThresholdShareVersion {
+            expected: BLS_THRESHOLD_SHARE_VERSION,
+            found: bytes[0],
+        });
+    }
+
+    Ok(())
 }
 
 #[cfg(feature = "federation")]
@@ -903,6 +916,69 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[test]
+    fn test_threshold_bls_subsets_and_order_permutations_match() {
+        let cases = [
+            (1usize, vec![bls_key(2)], vec![1u16, 2, 3]),
+            (2usize, vec![bls_key(3), bls_key(5)], vec![1u16, 2, 3, 4]),
+            (
+                3usize,
+                vec![bls_key(7), bls_key(11), bls_key(13)],
+                vec![1u16, 2, 3, 4, 5],
+            ),
+            (
+                4usize,
+                vec![bls_key(17), bls_key(19), bls_key(23), bls_key(29)],
+                vec![1u16, 2, 3, 4, 5, 6],
+            ),
+        ];
+
+        for (threshold, coefficients, ids) in cases {
+            let keyset = trusted_dealer_keygen(&coefficients, &signer_ids(&ids)).expect("keyset");
+            assert_eq!(keyset.threshold(), threshold);
+
+            let blinded_message =
+                BlsG1PublicKey::hash_to_curve(format!("subset threshold {threshold}").as_bytes());
+            let shares = keyset
+                .secret_shares()
+                .iter()
+                .map(|share| share.blind_sign_share(&blinded_message))
+                .collect::<Vec<_>>();
+            let direct_signature = blinded_message.mul(&coefficients[0]);
+
+            for start in 0..=(shares.len() - threshold) {
+                let subset = shares[start..start + threshold].to_vec();
+                let mut reversed_subset = subset.clone();
+                reversed_subset.reverse();
+
+                let aggregate =
+                    aggregate_blind_signature_shares(threshold, &subset).expect("signature");
+                let reversed_aggregate =
+                    aggregate_blind_signature_shares(threshold, &reversed_subset)
+                        .expect("signature");
+
+                assert_eq!(aggregate, direct_signature);
+                assert_eq!(reversed_aggregate, direct_signature);
+                assert_eq!(aggregate, reversed_aggregate);
+            }
+
+            let public_subset = keyset.public_shares()[..threshold].to_vec();
+            let mut reversed_public_subset = public_subset.clone();
+            reversed_public_subset.reverse();
+            assert_eq!(
+                aggregate_public_key_shares(threshold, &public_subset)
+                    .expect("aggregate public key"),
+                keyset.aggregate_public_key()
+            );
+            assert_eq!(
+                aggregate_public_key_shares(threshold, &reversed_public_subset)
+                    .expect("aggregate public key"),
+                keyset.aggregate_public_key()
+            );
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
     fn test_threshold_bls_rejects_bad_share_sets() {
         let coefficients = vec![bls_key(11), bls_key(13), bls_key(17)];
         let keyset =
@@ -962,10 +1038,19 @@ mod tests {
             signature_share
         );
         assert!(matches!(
-            BlsBlindSignatureShare::from_bytes(&signature_share.to_bytes()[..49]),
+            BlsBlindSignatureShare::from_bytes(&signature_share.to_bytes()[..50]),
             Err(Error::InvalidThresholdShareSize {
-                expected: 50,
-                found: 49
+                expected: 51,
+                found: 50
+            })
+        ));
+        let mut bad_version = signature_share.to_bytes();
+        bad_version[0] = 2;
+        assert!(matches!(
+            BlsBlindSignatureShare::from_bytes(&bad_version),
+            Err(Error::InvalidThresholdShareVersion {
+                expected: 1,
+                found: 2
             })
         ));
     }

@@ -324,19 +324,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Milestone 1 in progress</span>
+          <span class="value">Milestone 1 ready to commit</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">d9c715b8 threshold share serialization</span>
+          <span class="value">a9f6247c threshold serialization progress</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Threshold serialization and unblinding</span>
+          <span class="value">Threshold BLS completion</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Threshold BLS primitives</span>
+          <span class="value">Federation config and roster</span>
         </div>
       </aside>
     </header>
@@ -357,7 +357,7 @@
               <h3>1. Threshold BLS primitives</h3>
               <p>Trusted-dealer shares, share verification, interpolation, and aggregate blind signatures.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Ready</span>
           </article>
           <article class="milestone">
             <div>
@@ -419,6 +419,10 @@
           <article class="item">
             <h3>Threshold BLS first slice ready</h3>
             <p>Trusted-dealer polynomial shares, public share aggregation, blind signature share verification, Lagrange aggregation, byte round-trips, and unblinding tests are ready to commit.</p>
+          </article>
+          <article class="item">
+            <h3>Milestone 1 ready</h3>
+            <p>Versioned share encodings, aggregate key aliasing, subset permutations, and feature-off checks are ready to commit.</p>
           </article>
         </div>
       </section>
@@ -502,8 +506,8 @@
             <tr>
               <td>Threshold BLS</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cashu --features federation threshold_bls` passed 5 tests.</td>
-              <td>Add randomized/property coverage and broader subset permutation tests.</td>
+              <td>`cargo test -p cashu --features federation threshold_bls` passed 6 tests.</td>
+              <td>Use threshold primitives from Milestone 2 trusted-dealer config generation.</td>
             </tr>
             <tr>
               <td>Threshold BLS feature-off compile</td>
@@ -552,7 +556,7 @@
         <div class="stack">
           <article class="item">
             <h3>Threshold BLS primitives</h3>
-            <p>Add serialization for share types, broader subset coverage, and final unblind-and-verify tests using existing Cashu BLS proof verification.</p>
+            <p>Start federation config types, static member roster validation, and deterministic trusted-dealer setup using the threshold BLS primitives.</p>
           </article>
           <article class="item">
             <h3>Focused verification</h3>

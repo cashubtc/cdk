@@ -18,8 +18,8 @@ mod secret_key;
 #[cfg(feature = "federation")]
 pub use self::bls::{
     aggregate_blind_signature_shares, aggregate_public_key_shares, trusted_dealer_keygen,
-    verify_blind_signature_share, BlsBlindSignatureShare, BlsPublicKeyShare, BlsSecretKeyShare,
-    BlsSignerId, BlsThresholdKeySet,
+    verify_blind_signature_share, BlsAggregatePublicKey, BlsBlindSignatureShare, BlsPublicKeyShare,
+    BlsSecretKeyShare, BlsSignerId, BlsThresholdKeySet,
 };
 pub use self::bls::{BlsG1PublicKey, BlsG2PublicKey, BlsSecretKey};
 pub use self::public_key::PublicKey;
@@ -84,6 +84,14 @@ pub enum Error {
         expected: usize,
         /// Actual size.
         found: usize,
+    },
+    /// Invalid threshold share encoding version.
+    #[error("Invalid threshold share version: expected={expected}, found={found}")]
+    InvalidThresholdShareVersion {
+        /// Expected version.
+        expected: u8,
+        /// Actual version.
+        found: u8,
     },
     /// Duplicate BLS threshold signer ID.
     #[error("Duplicate threshold signer id: {id}")]
