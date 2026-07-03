@@ -13,8 +13,9 @@ use cdk_common::federation::{
     MemberId,
 };
 use cdk_common::{
-    Amount, BatchMintRequest, BlindedMessage, MeltRequest, MintQuoteRequest, MintQuoteResponse,
-    MintQuoteState, MintRequest, PaymentMethod, QuoteId, RestoreRequest, SwapRequest,
+    Amount, BatchMintRequest, BlindSignature, BlindedMessage, MeltRequest, MintQuoteRequest,
+    MintQuoteResponse, MintQuoteState, MintRequest, MintResponse, PaymentMethod, PublicKey,
+    QuoteId, RestoreRequest, SwapRequest,
 };
 
 use super::MintInput;
@@ -185,6 +186,27 @@ impl FederationRuntimeConfig {
             operation_id,
             input.outputs(),
         )?)
+    }
+
+    /// Convert an accepted mint operation into this member's wallet-facing share response.
+    pub fn mint_share_response(
+        &self,
+        operation_id: FederationOperationId,
+        input: &MintInput,
+    ) -> Result<MintResponse, Error> {
+        let share_set = self.mint_signature_shares(operation_id, input)?;
+        Ok(MintResponse {
+            signatures: share_set
+                .shares
+                .into_iter()
+                .map(|share| BlindSignature {
+                    amount: share.amount,
+                    keyset_id: share.keyset_id,
+                    c: PublicKey::from(share.share.signature()),
+                    dleq: None,
+                })
+                .collect(),
+        })
     }
 }
 
@@ -553,6 +575,20 @@ mod tests {
         assert!(
             verify_blind_signature_share(&share.share, &blinded_message, public_share)
                 .expect("share verification")
+        );
+
+        let response = runtime_config
+            .mint_share_response(operation_id, &input)
+            .expect("mint share response");
+        let signature = response.signatures.first().expect("signature share");
+
+        assert_eq!(response.signatures.len(), 1);
+        assert_eq!(signature.amount, Amount::from(1));
+        assert_eq!(signature.keyset_id, keyset.id);
+        assert!(signature.dleq.is_none());
+        assert_eq!(
+            signature.c.as_bls_g1().expect("response share point"),
+            share.share.signature()
         );
     }
 }

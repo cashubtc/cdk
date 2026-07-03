@@ -148,9 +148,26 @@ async fn process_mint_input(
     input: cdk::mint::MintInput,
 ) -> Result<MintResponse, cdk::Error> {
     #[cfg(feature = "federation")]
-    submit_federation_mint_operation(state, input.clone()).await?;
+    if let Some(response) = process_federation_mint_input(state, &input).await? {
+        return Ok(response);
+    }
 
     state.mint.process_mint_request(input).await
+}
+
+#[cfg(feature = "federation")]
+async fn process_federation_mint_input(
+    state: &MintState,
+    input: &cdk::mint::MintInput,
+) -> Result<Option<MintResponse>, cdk::Error> {
+    let Some(operation_id) = submit_federation_mint_operation(state, input.clone()).await? else {
+        return Ok(None);
+    };
+    let Some(config) = state.mint.federation_config() else {
+        return Ok(None);
+    };
+
+    Ok(Some(config.mint_share_response(operation_id, input)?))
 }
 
 #[cfg(feature = "federation")]
@@ -206,17 +223,17 @@ async fn submit_federation_mint_quote_payment_observation(
 async fn submit_federation_mint_operation(
     state: &MintState,
     input: cdk::mint::MintInput,
-) -> Result<(), cdk::Error> {
+) -> Result<Option<cdk::federation::FederationOperationId>, cdk::Error> {
     let Some(config) = state.mint.federation_config() else {
-        return Ok(());
+        return Ok(None);
     };
     let Some(consensus) = state.federation_consensus.clone() else {
-        return Ok(());
+        return Ok(None);
     };
     let envelope = config.mint_operation(input)?;
     let mut consensus = consensus.lock().await;
-    consensus.submit_envelope(envelope)?;
-    Ok(())
+    let response = consensus.submit_envelope(envelope)?;
+    Ok(Some(response.operation_id))
 }
 
 #[cfg(feature = "federation")]
@@ -892,6 +909,8 @@ mod tests {
     use cdk::mint::{MintBuilder, MintMeltLimits, MintQuoteResponse};
     use cdk::nuts::nut00::KnownMethod;
     #[cfg(feature = "federation")]
+    use cdk::nuts::nut01::{verify_blind_signature_share, BlsBlindSignatureShare};
+    #[cfg(feature = "federation")]
     use cdk::nuts::SecretKey;
     use cdk::nuts::{BlindedMessage, CurrencyUnit, MintQuoteState, PaymentMethod};
     use cdk::types::{FeeReserve, QuoteTTL};
@@ -1351,6 +1370,33 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federated_mint_advertises_aggregate_keysets() {
+        let state = create_federated_test_state().await;
+        let config = state.mint.federation_config().expect("federation config");
+        let keyset = &config.public_config().keysets[0];
+        let active = state.mint.get_active_keysets();
+        let pubkeys = state.mint.pubkeys();
+        let keysets = state.mint.keysets();
+        let specific = state
+            .mint
+            .keyset_pubkeys(&keyset.id)
+            .expect("federation keyset pubkeys");
+
+        assert_eq!(active.get(&CurrencyUnit::Sat), Some(&keyset.id));
+        assert_eq!(pubkeys.keysets.len(), 1);
+        assert_eq!(pubkeys.keysets[0].id, keyset.id);
+        assert_eq!(pubkeys.keysets[0].keys, keyset.keys());
+        assert_eq!(
+            pubkeys.keysets[0].id.get_version(),
+            cdk::nuts::KeySetVersion::Version02
+        );
+        assert_eq!(keysets.keysets.len(), 1);
+        assert_eq!(keysets.keysets[0].id, keyset.id);
+        assert_eq!(specific.keysets[0], pubkeys.keysets[0]);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn submit_batch_mint_records_federation_mint_operation() {
         let state = create_federated_test_state().await;
         let quote_id = create_paid_bolt11_quote(&state).await;
@@ -1364,6 +1410,61 @@ mod tests {
         submit_federation_mint_operation(&state, cdk::mint::MintInput::Batch(batch_request))
             .await
             .expect("federation mint operation should be accepted");
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Mint]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn cache_post_batch_mint_returns_federation_signature_shares() {
+        let state = create_federated_test_state().await;
+        let quote_id = create_paid_bolt11_quote(&state).await;
+        let outputs = outputs_for_amount(&state, 2);
+        let blinded_secret = outputs[0]
+            .blinded_secret
+            .as_bls_g1()
+            .expect("blinded output should be BLS");
+        let batch_request = BatchMintRequest {
+            quotes: vec![quote_id],
+            quote_amounts: None,
+            outputs: outputs.clone(),
+            signatures: None,
+        };
+
+        let response = cache_post_batch_mint(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(batch_request),
+        )
+        .await
+        .expect("federation batch mint should return share response");
+        let signature = response
+            .signatures
+            .first()
+            .expect("one federation signature share");
+        let signature_share = signature.c.as_bls_g1().expect("share should be BLS G1");
+        let config = state.mint.federation_config().expect("federation config");
+        let keyset = &config.public_config().keysets[0];
+        let public_share = keyset
+            .public_shares
+            .get(&config.member_id())
+            .expect("member public shares")
+            .get(&Amount::from(2))
+            .expect("amount public share");
+        let share =
+            BlsBlindSignatureShare::new(config.member_id().to_bls_signer_id(), signature_share);
+
+        assert_eq!(response.signatures.len(), 1);
+        assert_eq!(signature.amount, Amount::from(2));
+        assert_eq!(signature.keyset_id, outputs[0].keyset_id);
+        assert!(signature.dleq.is_none());
+        assert!(
+            verify_blind_signature_share(&share, &blinded_secret, public_share)
+                .expect("share verification")
+        );
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::Mint]

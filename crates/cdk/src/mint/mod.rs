@@ -1113,6 +1113,22 @@ impl Mint {
 
     /// Get active keysets
     pub fn get_active_keysets(&self) -> HashMap<CurrencyUnit, Id> {
+        #[cfg(feature = "federation")]
+        if let Some(config) = self.federation_config() {
+            return config
+                .public_config()
+                .keysets
+                .iter()
+                .filter_map(|keyset| {
+                    if keyset.active {
+                        Some((keyset.unit.clone(), keyset.id))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        }
+
         self.keysets
             .load()
             .iter()
@@ -1128,6 +1144,16 @@ impl Mint {
 
     /// Get keyset info
     pub fn get_keyset_info(&self, id: &Id) -> Option<MintKeySetInfo> {
+        #[cfg(feature = "federation")]
+        if let Some(config) = self.federation_config() {
+            return config
+                .public_config()
+                .keysets
+                .iter()
+                .find(|keyset| keyset.id == *id)
+                .map(keysets::federated_keyset_to_mint_keyset_info);
+        }
+
         self.keysets
             .load()
             .iter()

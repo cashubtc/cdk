@@ -1,3 +1,7 @@
+#[cfg(feature = "federation")]
+use bitcoin::bip32::DerivationPath;
+#[cfg(feature = "federation")]
+use cdk_common::federation::FederatedKeyset;
 use cdk_signatory::signatory::RotateKeyArguments;
 use tracing::instrument;
 
@@ -13,6 +17,19 @@ impl Mint {
     /// clients
     #[instrument(skip(self))]
     pub fn keyset_pubkeys(&self, keyset_id: &Id) -> Result<KeysResponse, Error> {
+        #[cfg(feature = "federation")]
+        if let Some(config) = self.federation_config() {
+            return config
+                .public_config()
+                .keysets
+                .iter()
+                .find(|keyset| &keyset.id == keyset_id)
+                .ok_or(Error::UnknownKeySet)
+                .map(|keyset| KeysResponse {
+                    keysets: vec![federated_keyset_to_keyset(keyset)],
+                });
+        }
+
         self.keysets
             .load()
             .iter()
@@ -27,6 +44,19 @@ impl Mint {
     /// clients
     #[instrument(skip_all)]
     pub fn pubkeys(&self) -> KeysResponse {
+        #[cfg(feature = "federation")]
+        if let Some(config) = self.federation_config() {
+            return KeysResponse {
+                keysets: config
+                    .public_config()
+                    .keysets
+                    .iter()
+                    .filter(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
+                    .map(federated_keyset_to_keyset)
+                    .collect(),
+            };
+        }
+
         KeysResponse {
             keysets: self
                 .keysets
@@ -41,6 +71,19 @@ impl Mint {
     /// Return a list of all supported keysets
     #[instrument(skip_all)]
     pub fn keysets(&self) -> KeysetResponse {
+        #[cfg(feature = "federation")]
+        if let Some(config) = self.federation_config() {
+            return KeysetResponse {
+                keysets: config
+                    .public_config()
+                    .keysets
+                    .iter()
+                    .filter(|keyset| keyset.unit != CurrencyUnit::Auth)
+                    .map(federated_keyset_to_keyset_info)
+                    .collect(),
+            };
+        }
+
         KeysetResponse {
             keysets: self
                 .keysets
@@ -61,6 +104,16 @@ impl Mint {
     /// Get keysets
     #[instrument(skip(self))]
     pub fn keyset(&self, id: &Id) -> Option<KeySet> {
+        #[cfg(feature = "federation")]
+        if let Some(config) = self.federation_config() {
+            return config
+                .public_config()
+                .keysets
+                .iter()
+                .find(|keyset| &keyset.id == id)
+                .map(federated_keyset_to_keyset);
+        }
+
         self.keysets
             .load()
             .iter()
@@ -114,5 +167,48 @@ impl Mint {
         self.keysets.store(new_keyset.keysets.into());
 
         Ok(result.into())
+    }
+}
+
+#[cfg(feature = "federation")]
+fn federated_keyset_to_keyset(keyset: &FederatedKeyset) -> KeySet {
+    KeySet {
+        id: keyset.id,
+        unit: keyset.unit.clone(),
+        active: Some(keyset.active),
+        keys: keyset.keys(),
+        input_fee_ppk: keyset.input_fee_ppk,
+        final_expiry: keyset.final_expiry,
+    }
+}
+
+#[cfg(feature = "federation")]
+fn federated_keyset_to_keyset_info(keyset: &FederatedKeyset) -> KeySetInfo {
+    KeySetInfo {
+        id: keyset.id,
+        unit: keyset.unit.clone(),
+        active: keyset.active,
+        input_fee_ppk: keyset.input_fee_ppk,
+        final_expiry: keyset.final_expiry,
+    }
+}
+
+#[cfg(feature = "federation")]
+pub(crate) fn federated_keyset_to_mint_keyset_info(keyset: &FederatedKeyset) -> MintKeySetInfo {
+    MintKeySetInfo {
+        id: keyset.id,
+        unit: keyset.unit.clone(),
+        active: keyset.active,
+        valid_from: 0,
+        derivation_path: DerivationPath::master(),
+        derivation_path_index: None,
+        amounts: keyset
+            .aggregate_keys
+            .keys()
+            .map(|amount| amount.to_u64())
+            .collect(),
+        input_fee_ppk: keyset.input_fee_ppk,
+        final_expiry: keyset.final_expiry,
+        issuer_version: None,
     }
 }
