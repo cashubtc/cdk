@@ -1308,6 +1308,9 @@ mod tests {
             federation_sync: Some(Arc::new(tokio::sync::Mutex::new(
                 crate::FederationSyncState::default(),
             ))),
+            federation_notifications: Some(Arc::new(
+                crate::FederationOperationNotifications::default(),
+            )),
         };
 
         (state, public_config, local_private, peer_private)
@@ -3084,6 +3087,35 @@ mod tests {
                 .status,
             FederationOperationStatus::Applied
         );
+    }
+
+    #[tokio::test]
+    async fn submit_federation_envelope_notifies_operation_acceptance() {
+        let (state, _, _) = federation_route_state().await;
+        let quote_id = QuoteId::new();
+        let envelope = mint_quote_envelope(&state, &quote_id);
+        let operation_id = envelope.operation_id().expect("operation id");
+        let waiter_state = state.clone();
+        let waiter = tokio::spawn(async move {
+            waiter_state
+                .wait_for_federation_operation_acceptance(operation_id)
+                .await
+                .expect("notified response")
+        });
+        tokio::task::yield_now().await;
+
+        let response = state
+            .submit_federation_envelope(envelope)
+            .await
+            .expect("submit mint quote");
+        let notified = tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("notification waiter")
+            .expect("notification task");
+
+        assert_eq!(response.operation_id, operation_id);
+        assert_eq!(notified.operation_id, operation_id);
+        assert_eq!(notified.outcome.entry().operation_id, operation_id);
     }
 
     #[tokio::test]

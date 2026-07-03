@@ -250,6 +250,8 @@ mod tests {
             federation_sequences: None,
             #[cfg(feature = "federation")]
             federation_sync: None,
+            #[cfg(feature = "federation")]
+            federation_notifications: None,
         };
         let (publisher, _receiver) = tokio::sync::mpsc::channel(100);
         WsContext {

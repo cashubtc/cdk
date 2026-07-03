@@ -1088,6 +1088,8 @@ mod tests {
             federation_sequences: None,
             #[cfg(feature = "federation")]
             federation_sync: None,
+            #[cfg(feature = "federation")]
+            federation_notifications: None,
         }
     }
 
@@ -1191,6 +1193,9 @@ mod tests {
             federation_sync: Some(Arc::new(tokio::sync::Mutex::new(
                 crate::FederationSyncState::default(),
             ))),
+            federation_notifications: Some(Arc::new(
+                crate::FederationOperationNotifications::default(),
+            )),
         }
     }
 
@@ -1267,6 +1272,8 @@ mod tests {
             federation_sequences: None,
             #[cfg(feature = "federation")]
             federation_sync: None,
+            #[cfg(feature = "federation")]
+            federation_notifications: None,
         }
     }
 

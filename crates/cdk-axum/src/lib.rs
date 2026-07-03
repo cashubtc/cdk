@@ -2,6 +2,8 @@
 
 #![doc = include_str!("../README.md")]
 
+#[cfg(feature = "federation")]
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -38,6 +40,54 @@ type FederationConsensusHandle = Arc<tokio::sync::Mutex<FederationConsensusRunti
 type FederationSequenceHandle = Arc<tokio::sync::Mutex<FederationRestSequenceTracker>>;
 #[cfg(feature = "federation")]
 type FederationSyncHandle = Arc<tokio::sync::Mutex<FederationSyncState>>;
+#[cfg(feature = "federation")]
+type FederationNotificationHandle = Arc<FederationOperationNotifications>;
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Default)]
+struct FederationOperationNotifications {
+    inner: tokio::sync::Mutex<FederationOperationNotificationState>,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Default)]
+struct FederationOperationNotificationState {
+    outcomes: HashMap<FederationOperationId, FederationSubmitOperationResponse>,
+    notifiers: HashMap<FederationOperationId, Arc<tokio::sync::Notify>>,
+}
+
+#[cfg(feature = "federation")]
+impl FederationOperationNotifications {
+    async fn notify(&self, response: FederationSubmitOperationResponse) {
+        let operation_id = response.operation_id;
+        let mut inner = self.inner.lock().await;
+        inner.outcomes.insert(operation_id, response);
+        if let Some(notifier) = inner.notifiers.remove(&operation_id) {
+            notifier.notify_waiters();
+        }
+    }
+
+    async fn wait_for(
+        &self,
+        operation_id: FederationOperationId,
+    ) -> FederationSubmitOperationResponse {
+        loop {
+            let notified = {
+                let mut inner = self.inner.lock().await;
+                if let Some(response) = inner.outcomes.get(&operation_id) {
+                    return response.clone();
+                }
+                inner
+                    .notifiers
+                    .entry(operation_id)
+                    .or_default()
+                    .clone()
+                    .notified_owned()
+            };
+            notified.await;
+        }
+    }
+}
 
 #[cfg(feature = "federation")]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,6 +237,8 @@ pub struct MintState {
     federation_sequences: Option<FederationSequenceHandle>,
     #[cfg(feature = "federation")]
     federation_sync: Option<FederationSyncHandle>,
+    #[cfg(feature = "federation")]
+    federation_notifications: Option<FederationNotificationHandle>,
 }
 
 #[cfg(feature = "federation")]
@@ -223,8 +275,26 @@ impl MintState {
         }
         self.apply_federation_journal_entries(std::slice::from_ref(&entry))
             .await?;
+        self.notify_federation_operation(response.clone()).await;
 
-        Ok(response)
+        Ok(self
+            .wait_for_federation_operation_acceptance(response.operation_id)
+            .await
+            .unwrap_or(response))
+    }
+
+    pub(crate) async fn wait_for_federation_operation_acceptance(
+        &self,
+        operation_id: FederationOperationId,
+    ) -> Option<FederationSubmitOperationResponse> {
+        let notifications = self.federation_notifications.as_ref()?;
+        Some(notifications.wait_for(operation_id).await)
+    }
+
+    async fn notify_federation_operation(&self, response: FederationSubmitOperationResponse) {
+        if let Some(notifications) = &self.federation_notifications {
+            notifications.notify(response).await;
+        }
     }
 
     pub(crate) async fn apply_federation_catch_up_response(
@@ -501,6 +571,10 @@ pub async fn create_mint_router_with_custom_cache(
         federation_sync: federation_consensus
             .as_ref()
             .map(|_| Arc::new(tokio::sync::Mutex::new(FederationSyncState::default()))),
+        #[cfg(feature = "federation")]
+        federation_notifications: federation_consensus
+            .as_ref()
+            .map(|_| Arc::new(FederationOperationNotifications::default())),
     };
 
     let v1_router = Router::new()
