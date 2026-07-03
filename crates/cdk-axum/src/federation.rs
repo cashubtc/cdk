@@ -1311,6 +1311,7 @@ mod tests {
             federation_notifications: Some(Arc::new(
                 crate::FederationOperationNotifications::default(),
             )),
+            federation_finalizer: None,
         };
 
         (state, public_config, local_private, peer_private)
@@ -3091,7 +3092,8 @@ mod tests {
 
     #[tokio::test]
     async fn submit_federation_envelope_notifies_operation_acceptance() {
-        let (state, _, _) = federation_route_state().await;
+        let (mut state, _, _) = federation_route_state().await;
+        state.start_federation_finalization_loop();
         let quote_id = QuoteId::new();
         let envelope = mint_quote_envelope(&state, &quote_id);
         let operation_id = envelope.operation_id().expect("operation id");

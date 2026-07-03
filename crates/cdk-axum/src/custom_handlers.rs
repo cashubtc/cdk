@@ -1090,6 +1090,8 @@ mod tests {
             federation_sync: None,
             #[cfg(feature = "federation")]
             federation_notifications: None,
+            #[cfg(feature = "federation")]
+            federation_finalizer: None,
         }
     }
 
@@ -1196,6 +1198,7 @@ mod tests {
             federation_notifications: Some(Arc::new(
                 crate::FederationOperationNotifications::default(),
             )),
+            federation_finalizer: None,
         }
     }
 
@@ -1274,6 +1277,8 @@ mod tests {
             federation_sync: None,
             #[cfg(feature = "federation")]
             federation_notifications: None,
+            #[cfg(feature = "federation")]
+            federation_finalizer: None,
         }
     }
 

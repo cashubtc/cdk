@@ -42,6 +42,16 @@ type FederationSequenceHandle = Arc<tokio::sync::Mutex<FederationRestSequenceTra
 type FederationSyncHandle = Arc<tokio::sync::Mutex<FederationSyncState>>;
 #[cfg(feature = "federation")]
 type FederationNotificationHandle = Arc<FederationOperationNotifications>;
+#[cfg(feature = "federation")]
+type FederationFinalizationHandle = tokio::sync::mpsc::Sender<FederationFinalizationRequest>;
+
+#[cfg(feature = "federation")]
+struct FederationFinalizationRequest {
+    response: FederationSubmitOperationResponse,
+    entry: FederationJournalEntry,
+    sequence: Option<(MemberId, u64)>,
+    result: tokio::sync::oneshot::Sender<Result<FederationSubmitOperationResponse, cdk::Error>>,
+}
 
 #[cfg(feature = "federation")]
 #[derive(Debug, Default)]
@@ -239,10 +249,44 @@ pub struct MintState {
     federation_sync: Option<FederationSyncHandle>,
     #[cfg(feature = "federation")]
     federation_notifications: Option<FederationNotificationHandle>,
+    #[cfg(feature = "federation")]
+    federation_finalizer: Option<FederationFinalizationHandle>,
 }
 
 #[cfg(feature = "federation")]
 impl MintState {
+    fn start_federation_finalization_loop(&mut self) {
+        if self.federation_consensus.is_none() || self.federation_finalizer.is_some() {
+            return;
+        }
+
+        let (sender, receiver) = tokio::sync::mpsc::channel(128);
+        self.federation_finalizer = Some(sender);
+        let mut finalizer_state = self.clone();
+        finalizer_state.federation_finalizer = None;
+        tokio::spawn(async move {
+            finalizer_state
+                .run_federation_finalization_loop(receiver)
+                .await;
+        });
+    }
+
+    async fn run_federation_finalization_loop(
+        &self,
+        mut receiver: tokio::sync::mpsc::Receiver<FederationFinalizationRequest>,
+    ) {
+        while let Some(request) = receiver.recv().await {
+            let result = self
+                .finalize_federation_operation_acceptance_inline(
+                    request.response,
+                    request.entry,
+                    request.sequence,
+                )
+                .await;
+            let _ = request.result.send(result);
+        }
+    }
+
     pub(crate) async fn submit_federation_envelope(
         &self,
         envelope: FederationOperationEnvelope,
@@ -270,6 +314,54 @@ impl MintState {
         *consensus = next_consensus;
         drop(consensus);
 
+        let operation_id = response.operation_id;
+        self.finalize_federation_operation_acceptance(response.clone(), entry, sequence)
+            .await?;
+
+        Ok(self
+            .wait_for_federation_operation_acceptance(operation_id)
+            .await
+            .unwrap_or(response))
+    }
+
+    async fn finalize_federation_operation_acceptance(
+        &self,
+        response: FederationSubmitOperationResponse,
+        entry: FederationJournalEntry,
+        sequence: Option<(MemberId, u64)>,
+    ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
+        let Some(finalizer) = &self.federation_finalizer else {
+            return self
+                .finalize_federation_operation_acceptance_inline(response, entry, sequence)
+                .await;
+        };
+        let (result, receiver) = tokio::sync::oneshot::channel();
+        finalizer
+            .send(FederationFinalizationRequest {
+                response,
+                entry,
+                sequence,
+                result,
+            })
+            .await
+            .map_err(|_| {
+                cdk::Error::Custom(
+                    "federation finalization loop stopped before accepting operation".to_string(),
+                )
+            })?;
+        receiver.await.map_err(|_| {
+            cdk::Error::Custom(
+                "federation finalization loop stopped before completing operation".to_string(),
+            )
+        })?
+    }
+
+    async fn finalize_federation_operation_acceptance_inline(
+        &self,
+        response: FederationSubmitOperationResponse,
+        entry: FederationJournalEntry,
+        sequence: Option<(MemberId, u64)>,
+    ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
         if let Some((sender, sequence)) = sequence {
             self.record_federation_sequence(sender, sequence).await;
         }
@@ -277,10 +369,7 @@ impl MintState {
             .await?;
         self.notify_federation_operation(response.clone()).await;
 
-        Ok(self
-            .wait_for_federation_operation_acceptance(response.operation_id)
-            .await
-            .unwrap_or(response))
+        Ok(response)
     }
 
     pub(crate) async fn wait_for_federation_operation_acceptance(
@@ -560,7 +649,7 @@ pub async fn create_mint_router_with_custom_cache(
     #[cfg(feature = "federation")]
     let (federation_consensus, federation_sequences) =
         create_federation_runtime_state(&mint).await?;
-    let state = MintState {
+    let mut state = MintState {
         mint,
         cache: Arc::new(cache),
         #[cfg(feature = "federation")]
@@ -575,7 +664,11 @@ pub async fn create_mint_router_with_custom_cache(
         federation_notifications: federation_consensus
             .as_ref()
             .map(|_| Arc::new(FederationOperationNotifications::default())),
+        #[cfg(feature = "federation")]
+        federation_finalizer: None,
     };
+    #[cfg(feature = "federation")]
+    state.start_federation_finalization_loop();
 
     let v1_router = Router::new()
         .route("/keys", get(get_keys))

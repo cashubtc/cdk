@@ -337,15 +337,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add operation acceptance notifications</span>
+          <span class="value">feat: add consensus finalization loop</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Operation acceptance notifications</span>
+          <span class="value">Consensus finalization loop</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Consensus finalization loop</span>
+          <span class="value">Consensus backend adapter</span>
         </div>
       </aside>
     </header>
@@ -971,6 +971,10 @@
             <p>Public federation submissions now publish accepted operation responses into a shared notification table after local journal application, so handlers have a stable wait point for future asynchronous consensus backends.</p>
           </article>
           <article class="item">
+            <h3>Consensus finalization loop ready</h3>
+            <p>Router-created federation state now starts a backend-owned finalization task that applies accepted entries and wakes operation waiters through the same path a future BFT backend can use.</p>
+          </article>
+          <article class="item">
             <h3>Milestone map expanded</h3>
             <p>The dashboard now renders 24 explicit implementation-plan milestone points, with no grouped shorthand ranges.</p>
           </article>
@@ -1390,10 +1394,16 @@
               <td>Promote the notification hook into a consensus finalization loop that can deliver accepted entries from a non-local ordering backend.</td>
             </tr>
             <tr>
+              <td>Consensus finalization loop</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation submit_federation_envelope_notifies_operation_acceptance -- --test-threads 1` passed with the finalization loop enabled. `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 47 tests, and the Axum federation, mintd federation/fakewallet/sqlite, default Axum, formatting, and diff checks passed.</td>
+              <td>Connect accepted-entry delivery to the multi-node simulator or a first real consensus backend adapter.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, a replaceable consensus runtime boundary, a multi-node simulator for delayed, duplicated, reordered, and quorum-limited proposal delivery, explicit consensus item admission with bounded pending batches, and operation acceptance notifications back to public handlers.</td>
-              <td>Wire a backend-driven finalization loop, then run live multi-process fake-wallet member scenarios where loopback listeners are permitted.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, a replaceable consensus runtime boundary, a multi-node simulator for delayed, duplicated, reordered, and quorum-limited proposal delivery, explicit consensus item admission with bounded pending batches, operation acceptance notifications back to public handlers, and a finalization loop for accepted-entry apply/notify delivery.</td>
+              <td>Connect accepted-entry delivery to a consensus backend adapter, then run live multi-process fake-wallet member scenarios where loopback listeners are permitted.</td>
             </tr>
           </tbody>
         </table>
@@ -1427,8 +1437,8 @@
             <p>Consensus items are canonicalized and size-checked before batching, and duplicate operation hashes are collapsed while they are still pending.</p>
           </article>
           <article class="item">
-            <h3>Notify after local apply</h3>
-            <p>Federation submissions publish acceptance notifications only after the accepted entry has been journaled and applied locally, preserving the consensus-before-signing boundary while preparing for asynchronous finalization.</p>
+            <h3>Backend-owned finalization delivery</h3>
+            <p>Federation submissions now deliver accepted entries through a queue-backed finalization task; the inline path remains for focused fixtures, while router-created state uses the same apply-and-notify boundary future consensus engines can target.</p>
           </article>
           <article class="item">
             <h3>Federation keysets are v3/BLS-only</h3>
@@ -1453,8 +1463,8 @@
             <p>Run the generated fake-wallet federation smoke script in an environment with loopback listener permissions, then capture signed private REST status before and after a member restart.</p>
           </article>
           <article class="item">
-            <h3>Consensus finalization loop</h3>
-            <p>Move accepted-entry delivery behind a backend-owned loop so the in-memory runtime, simulator, and future BFT engine can all notify public handlers through the same path.</p>
+            <h3>Consensus backend adapter</h3>
+            <p>Connect the pending-item queue and accepted-entry finalizer to a backend adapter that can consume ordered consensus items from the simulator first, then a real BFT engine.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>
