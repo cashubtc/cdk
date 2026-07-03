@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: require federation status convergence</span>
+          <span class="value">test: harden federation keyset guards</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Status readiness and convergence guards</span>
+          <span class="value">V3/BLS keyset guard regression</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Live multi-process smoke</span>
+          <span class="value">Non-secret federation inspect CLI</span>
         </div>
       </aside>
     </header>
@@ -479,6 +479,10 @@
           <article class="item">
             <h3>Federation keyset constraint committed</h3>
             <p>Federation configs now derive v3 aggregate keyset IDs, mintd startup rejects v1/v2 or non-BLS aggregate keysets, mint/swap/restore/change validators reject non-v3 outputs before consensus signing, and wallet-side member keyset checks reject mismatched advertisements.</p>
+          </article>
+          <article class="item">
+            <h3>Wallet keyset advertisement regression locked</h3>
+            <p>The high-level federation wallet connector now has direct coverage proving a mint call fails if any member advertises aggregate keys that differ from the federation roster.</p>
           </article>
           <article class="item">
             <h3>Federated mint share responses committed</h3>
@@ -1092,9 +1096,15 @@
               <td>Run the guarded script against live generated members where loopback binding is permitted.</td>
             </tr>
             <tr>
+              <td>Federation v3/BLS keyset guard regression</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federation_config_rejects -- --test-threads 1` passed v1/v2/non-BLS config rejection; `cargo test -p cdk-axum --features federation non_v3 -- --test-threads 1` passed mint/swap/restore/melt-change pre-consensus rejection; `cargo test -p cdk-mintd --no-default-features --features "federation sqlite fakewallet" configure_federation_rejects_non_v3_keysets -- --test-threads 1` passed startup rejection; cdk wallet tests passed non-v3 and mismatched member advertisement rejection, including the high-level mint-call regression; standalone legacy keyset builder coverage still passes.</td>
+              <td>Add the non-secret federation inspect CLI, then resume live smoke where loopback listeners are permitted.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, and status convergence guards.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, and v3/BLS-only aggregate keyset enforcement.</td>
               <td>Run live multi-process fake-wallet member scenarios from generated configs.</td>
             </tr>
           </tbody>
@@ -1134,6 +1144,10 @@
       <section class="panel span-6">
         <h2>Next Work</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Federation inspect CLI</h3>
+            <p>Add a non-secret `cdk-mintd federation inspect` command that validates public/private config compatibility and prints federation roster plus aggregate keyset summaries without exposing member secrets.</p>
+          </article>
           <article class="item">
             <h3>Live multi-process smoke</h3>
             <p>Run the generated fake-wallet federation smoke script in an environment with loopback listener permissions, then capture signed private REST status before and after a member restart.</p>

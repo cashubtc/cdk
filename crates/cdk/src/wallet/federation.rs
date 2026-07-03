@@ -2327,4 +2327,39 @@ mod tests {
             ))
         ));
     }
+
+    #[tokio::test]
+    async fn federated_mint_connector_rejects_mismatched_member_advertisement() {
+        let bundle = threshold_bundle();
+        let outputs = blinded_outputs(&bundle);
+        let mut connectors = member_connectors(&bundle, &outputs);
+        let mut advertised = advertised_keyset(&bundle);
+        advertised.keys = cdk_common::Keys::new(BTreeMap::new());
+        let bad_member = MockMintConnector::new();
+        bad_member.set_active_keyset(advertised);
+        connectors.insert(
+            member_id(1),
+            Arc::new(bad_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let result = connector
+            .post_mint(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                MintRequest {
+                    quote: "paid-quote".to_string(),
+                    outputs,
+                    signature: None,
+                },
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(crate::Error::Federation(
+                FederationError::AdvertisedFederatedKeysetMismatch { .. }
+            ))
+        ));
+    }
 }
