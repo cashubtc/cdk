@@ -1471,6 +1471,53 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn post_swap_returns_federation_signature_shares() {
+        let state = create_federated_test_state().await;
+        let outputs = outputs_for_amount(&state, 2);
+        let blinded_secret = outputs[0]
+            .blinded_secret
+            .as_bls_g1()
+            .expect("blinded output should be BLS");
+
+        let response = crate::router_handlers::post_swap(
+            AuthHeader::None,
+            State(state.clone()),
+            Json(cdk::nuts::SwapRequest::new(Vec::new(), outputs.clone())),
+        )
+        .await
+        .expect("federation swap should return share response");
+        let signature = response
+            .signatures
+            .first()
+            .expect("one federation signature share");
+        let signature_share = signature.c.as_bls_g1().expect("share should be BLS G1");
+        let config = state.mint.federation_config().expect("federation config");
+        let keyset = &config.public_config().keysets[0];
+        let public_share = keyset
+            .public_shares
+            .get(&config.member_id())
+            .expect("member public shares")
+            .get(&Amount::from(2))
+            .expect("amount public share");
+        let share =
+            BlsBlindSignatureShare::new(config.member_id().to_bls_signer_id(), signature_share);
+
+        assert_eq!(response.signatures.len(), 1);
+        assert_eq!(signature.amount, Amount::from(2));
+        assert_eq!(signature.keyset_id, outputs[0].keyset_id);
+        assert!(signature.dleq.is_none());
+        assert!(
+            verify_blind_signature_share(&share, &blinded_secret, public_share)
+                .expect("share verification")
+        );
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Swap]
+        );
+    }
+
     #[tokio::test]
     async fn cache_post_mint_custom_rejects_cached_url_method_quote_method_mismatch() {
         let state = create_test_state().await;

@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: add fake-wallet federation member bridge</span>
+          <span class="value">feat: return federated swap shares</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Fake-wallet member bridge</span>
+          <span class="value">Public swap federation route</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Public swap and melt federation handlers</span>
+          <span class="value">Federated melt public handler</span>
         </div>
       </aside>
     </header>
@@ -495,6 +495,10 @@
           <article class="item">
             <h3>Fake-wallet member bridge ready</h3>
             <p>The mint runtime now serializes melt operations and produces swap share responses from accepted operation IDs. Wallet tests wrap real fake-wallet-backed federated member mints, verify fake-wallet mint quotes settle, and aggregate real member-produced mint, batch mint, and swap BLS shares.</p>
+          </article>
+          <article class="item">
+            <h3>Public swap share route ready</h3>
+            <p>The public `/v1/swap` route now submits canonical swap operations to the federation consensus journal in member mode and returns local BLS threshold signature shares instead of standalone signatures. Server tests verify the returned share against the member public share.</p>
           </article>
         </div>
       </section>
@@ -744,10 +748,16 @@
               <td>Wire public swap and melt handlers into federation consensus, including fake-wallet outgoing payment finalization and member catch-up behavior.</td>
             </tr>
             <tr>
+              <td>Public swap federation route</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation custom_handlers` passed 18 tests, including public swap route share verification and local consensus journal assertion. `cargo check -p cdk-axum --features federation`, `cargo check -p cdk --lib --features federation`, `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"`, and `cargo fmt --all -- --check` passed.</td>
+              <td>Route public melt requests through federation consensus and model fake-wallet outgoing payment finalization.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status pending">Pending</span></td>
-              <td>Mint quote, quote-check, and mint-submit handlers are consensus-gated locally; mint members advertise aggregate keysets and return verified local share responses; wallets can aggregate mint, batch mint, swap, and melt change shares. Local fake-wallet member tests now bridge real member mints to wallet aggregation for mint, batch mint, and swap. Public swap/melt handler integration, restore/check-state federation routing, durable catch-up, and full networked fake-wallet flows remain open.</td>
-              <td>Wire public swap and melt routes through consensus and add multi-member fake-wallet finalization tests.</td>
+              <td>Mint quote, quote-check, mint-submit, and swap handlers are consensus-gated locally; mint members advertise aggregate keysets and return verified local share responses; wallets can aggregate mint, batch mint, swap, and melt change shares. Local fake-wallet member tests now bridge real member mints to wallet aggregation for mint, batch mint, and swap. Public melt handler integration, restore/check-state federation routing, durable catch-up, and full networked fake-wallet flows remain open.</td>
+              <td>Wire public melt routes through consensus and add multi-member fake-wallet finalization tests.</td>
             </tr>
           </tbody>
         </table>
@@ -787,8 +797,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Public swap and melt handlers</h3>
-            <p>Route `/v1/swap` and `/v1/melt/{method}` through federation consensus, including fake-wallet melt reserve, pending, success, failure, retry, and change-signing states.</p>
+            <h3>Federated melt public handler</h3>
+            <p>Route `/v1/melt/{method}` through federation consensus, including fake-wallet melt reserve, pending, success, failure, retry, and change-signing states.</p>
           </article>
           <article class="item">
             <h3>Restore and check-state routing</h3>

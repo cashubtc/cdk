@@ -206,6 +206,14 @@ pub(crate) async fn post_swap(
         .await
         .map_err(into_response)?;
 
+    #[cfg(feature = "federation")]
+    if let Some(swap_response) = process_federation_swap(&state, &payload)
+        .await
+        .map_err(into_response)?
+    {
+        return Ok(Json(swap_response));
+    }
+
     let swap_response = state
         .mint
         .process_swap_request(payload)
@@ -216,6 +224,25 @@ pub(crate) async fn post_swap(
         })?;
 
     Ok(Json(swap_response))
+}
+
+#[cfg(feature = "federation")]
+async fn process_federation_swap(
+    state: &MintState,
+    payload: &SwapRequest,
+) -> Result<Option<SwapResponse>, cdk::Error> {
+    let Some(config) = state.mint.federation_config() else {
+        return Ok(None);
+    };
+    let Some(consensus) = state.federation_consensus.clone() else {
+        return Ok(None);
+    };
+    let envelope = config.swap_operation(payload.clone())?;
+    let mut consensus = consensus.lock().await;
+    let response = consensus.submit_envelope(envelope)?;
+    Ok(Some(
+        config.swap_share_response(response.operation_id, payload)?,
+    ))
 }
 
 /// Restores blind signature for a set of outputs.
