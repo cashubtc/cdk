@@ -328,11 +328,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add federation inspect cli</span>
+          <span class="value">test: add sliding-window mint regression</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Non-secret federation inspect CLI</span>
+          <span class="value">Sliding-window mint attack regression</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -774,6 +774,10 @@
             <h3>Federation inspect CLI ready</h3>
             <p>`cdk-mintd federation inspect` validates public federation material, optionally checks a local member config against it, and prints roster plus v3/BLS aggregate keyset summaries without exposing private member material.</p>
           </article>
+          <article class="item">
+            <h3>Sliding-window mint attack covered</h3>
+            <p>A focused consensus regression now submits ABC, BCD, CDA, and DAB output sets for the same mint quote. The first accepted operation is replay-idempotent, all overlapping variants conflict on the quote key, and the journal keeps one canonical mint entry.</p>
+          </article>
         </div>
       </section>
 
@@ -1112,9 +1116,15 @@
               <td>Run the generated live smoke script in an environment where member HTTP listeners can bind to loopback.</td>
             </tr>
             <tr>
+              <td>Sliding-window mint attack regression</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --features federation sliding_window -- --test-threads 1` passed the ABC/BCD/CDA/DAB overlapping-output regression. Adjacent mint and non-v3 federation tests passed, `cargo check -p cdk --features federation` passed, and formatting plus diff checks passed.</td>
+              <td>Run the generated live smoke script in an environment where member HTTP listeners can bind to loopback.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, v3/BLS-only aggregate keyset enforcement, and non-secret config inspection.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, and the mint-side sliding-window quorum-cover regression.</td>
               <td>Run live multi-process fake-wallet member scenarios from generated configs.</td>
             </tr>
           </tbody>

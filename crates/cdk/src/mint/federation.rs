@@ -1523,6 +1523,76 @@ mod tests {
     }
 
     #[test]
+    fn runtime_config_rejects_sliding_window_mint_output_attack() {
+        let runtime_config = runtime_config();
+        let quote = QuoteId::new();
+        let output_a = output_for_runtime(&runtime_config, b"sliding-window-output-a");
+        let output_b = output_for_runtime(&runtime_config, b"sliding-window-output-b");
+        let output_c = output_for_runtime(&runtime_config, b"sliding-window-output-c");
+        let output_d = output_for_runtime(&runtime_config, b"sliding-window-output-d");
+
+        let envelope_for_outputs = |outputs| {
+            runtime_config
+                .mint_operation(super::MintInput::Single(MintRequest {
+                    quote: quote.clone(),
+                    outputs,
+                    signature: None,
+                }))
+                .expect("mint operation")
+        };
+
+        let first =
+            envelope_for_outputs(vec![output_a.clone(), output_b.clone(), output_c.clone()]);
+        let overlapping_one =
+            envelope_for_outputs(vec![output_b.clone(), output_c.clone(), output_d.clone()]);
+        let overlapping_two =
+            envelope_for_outputs(vec![output_c.clone(), output_d.clone(), output_a.clone()]);
+        let overlapping_three = envelope_for_outputs(vec![output_d, output_a, output_b]);
+
+        let first_operation_id = first.operation_id().expect("first operation id");
+        let attempted_operation_ids = [
+            overlapping_one
+                .operation_id()
+                .expect("overlap one operation id"),
+            overlapping_two
+                .operation_id()
+                .expect("overlap two operation id"),
+            overlapping_three
+                .operation_id()
+                .expect("overlap three operation id"),
+        ];
+        for attempted_operation_id in attempted_operation_ids {
+            assert_ne!(first_operation_id, attempted_operation_id);
+        }
+
+        let mut consensus = InMemoryFederationConsensus::new(
+            runtime_config.federation_id(),
+            runtime_config.member_id(),
+        );
+        let first_response = consensus
+            .submit_envelope(first.clone())
+            .expect("submit first sliding-window mint");
+        let duplicate_response = consensus
+            .submit_envelope(first)
+            .expect("duplicate sliding-window mint");
+
+        assert_eq!(first_response.operation_id, first_operation_id);
+        assert_eq!(duplicate_response.operation_id, first_operation_id);
+
+        for envelope in [overlapping_one, overlapping_two, overlapping_three] {
+            assert!(matches!(
+                consensus.submit_envelope(envelope),
+                Err(FederationError::ConflictingOperation { .. })
+            ));
+        }
+
+        let entries = consensus.journal().entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].operation_id, first_operation_id);
+        assert_eq!(entries[0].envelope.operation.conflict_keys().len(), 1);
+    }
+
+    #[test]
     fn runtime_config_rejects_non_v3_mint_outputs_before_consensus() {
         let runtime_config = runtime_config();
         let input = super::MintInput::Single(MintRequest {
