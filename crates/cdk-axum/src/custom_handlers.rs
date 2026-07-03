@@ -2059,6 +2059,82 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn process_failed_melt_request_releases_inputs_without_change_shares() {
+        let state = create_federated_test_state().await;
+        let fake_description = FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Failed,
+            check_payment_state: MeltQuoteState::Failed,
+            pay_err: false,
+            check_err: false,
+        };
+        let quote_id = create_federated_melt_quote_with_description(
+            &state,
+            1000,
+            serde_json::to_string(&fake_description).expect("fake invoice description"),
+        )
+        .await;
+        let input = proof_for_amount(&state, 2, "failed-melt");
+        let input_y = input.y().expect("input y");
+        let request = cdk::nuts::MeltRequest::new(quote_id.clone(), vec![input], None);
+
+        let error = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect_err("federated fake-wallet melt should fail and compensate");
+
+        assert!(matches!(error, cdk::Error::PaymentFailed));
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+
+        let quote = state
+            .mint
+            .localstore()
+            .get_melt_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .expect("quote persisted");
+        assert_eq!(quote.state, MeltQuoteState::Unpaid);
+
+        let proof_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&[input_y])
+            .await
+            .expect("proof state lookup");
+        assert!(
+            matches!(
+                proof_states.as_slice(),
+                [None | Some(cdk::nuts::State::Unspent)]
+            ),
+            "failed federated melt should release its reserved input proof: {proof_states:?}"
+        );
+
+        assert!(state
+            .mint
+            .localstore()
+            .get_melt_saga_by_quote_id(&quote_id)
+            .await
+            .expect("saga lookup")
+            .is_none());
+        assert!(state
+            .mint
+            .localstore()
+            .get_blind_signatures_for_quote(&quote_id)
+            .await
+            .expect("change signature lookup")
+            .is_empty());
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn process_melt_request_rejects_non_v3_change_before_consensus() {
         let state = create_federated_test_state().await;
         let request = cdk::nuts::MeltRequest::new(

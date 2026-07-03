@@ -347,11 +347,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover restore state digest</span>
+          <span class="value">test: cover failed federated melts</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Restore digest row coverage</span>
+          <span class="value">Failed melt rollback coverage</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -1035,6 +1035,10 @@
             <p>Focused Axum federation tests now prove the materialized state digest changes when catch-up replays swap proof-state/output-share rows, melt quote/proof-state/change-share rows, and restore output-share rows.</p>
           </article>
           <article class="item">
+            <h3>Failed fake-wallet melt rollback covered</h3>
+            <p>The federated public melt route now has focused failure coverage proving a failed fake-wallet payment records the accepted melt operation, resets the quote to unpaid, releases the reserved input proof, clears saga state, and returns no change shares.</p>
+          </article>
+          <article class="item">
             <h3>Milestone map expanded</h3>
             <p>The dashboard now renders 24 explicit implementation-plan milestone points, each with an objective and test gate, with no grouped shorthand ranges.</p>
           </article>
@@ -1496,6 +1500,12 @@
               <td>Add storage-backend process variants and failure-injection coverage for delayed or failed fake-wallet payment observations.</td>
             </tr>
             <tr>
+              <td>Failed federated fake-wallet melt</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation process_failed_melt_request_releases_inputs_without_change_shares -- --test-threads 1` passed the focused failure path. `cargo test -p cdk-axum --features federation custom_handlers -- --test-threads 1` passed 29 tests, `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 53 tests, and formatting plus diff checks passed.</td>
+              <td>Add delayed and offline fake-wallet observation variants, including member catch-up after a pending melt resolves.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
               <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, a replaceable consensus runtime boundary, a multi-node simulator for delayed, duplicated, reordered, and quorum-limited proposal delivery, explicit consensus item admission with bounded pending batches, operation acceptance notifications back to public handlers, a finalization loop for accepted-entry apply/notify delivery, an exported backend adapter for queued operation dispatch plus finalized responses, a live generated 5-member process smoke that verifies signed status, readiness, convergence, restart, and cleanup, a materialized-state digest scaffold for consensus-visible mint rows, database-backed private status plus catch-up evidence digests derived from applied mint rows, and a live operation-bearing process smoke that drives wallet mint, swap, check-state, melt, restore, convergence, restart, and catch-up.</td>
@@ -1568,7 +1578,7 @@
         <div class="stack">
           <article class="item">
             <h3>Broader process smoke matrix</h3>
-            <p>Add storage-backed and failure-injection variants so restart, catch-up, and delayed fake-wallet payment behavior are exercised beyond the current local SQLite happy-path smoke.</p>
+            <p>Add delayed and offline fake-wallet observation variants so restart, catch-up, and pending-payment behavior are exercised beyond the current local SQLite happy path and focused failure rollback tests.</p>
           </article>
           <article class="item">
             <h3>Broader materialized digest coverage</h3>
