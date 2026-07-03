@@ -15,8 +15,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{FederationError, FederationId, Result};
 use crate::{
-    Amount, MeltQuoteRequest, MeltQuoteState, MeltRequest, MintQuoteRequest, MintQuoteState,
-    MintRequest, PaymentMethod, RestoreRequest, SwapRequest,
+    Amount, BatchMintRequest, MeltQuoteRequest, MeltQuoteState, MeltRequest, MintQuoteRequest,
+    MintQuoteState, MintRequest, PaymentMethod, RestoreRequest, SwapRequest,
 };
 
 const FEDERATION_OPERATION_HASH_VERSION: &[u8] = b"cdk-federation-operation-v1";
@@ -195,7 +195,28 @@ pub struct FederationMintQuotePaymentObservation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederationMintOperation {
     /// Original wallet mint request.
-    pub request: MintRequest<String>,
+    pub request: FederationMintRequest,
+}
+
+/// Wallet mint request variants represented in federation consensus.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum FederationMintRequest {
+    /// Legacy NUT-04 single-quote mint request.
+    Single(MintRequest<String>),
+    /// NUT-29 batch mint request where multiple quotes share one output set.
+    Batch(BatchMintRequest<String>),
+}
+
+impl FederationMintRequest {
+    /// Return every quote ID touched by this mint request.
+    #[must_use]
+    pub fn quote_ids(&self) -> Vec<&str> {
+        match self {
+            Self::Single(request) => vec![request.quote.as_str()],
+            Self::Batch(request) => request.quotes.iter().map(String::as_str).collect(),
+        }
+    }
 }
 
 /// Proposed melt quote creation.
@@ -290,32 +311,43 @@ impl FederationOperation {
     /// Return the conflict key that must be unique for this operation.
     #[must_use]
     pub fn conflict_key(&self) -> Option<FederationOperationConflictKey> {
+        self.conflict_keys().into_iter().next()
+    }
+
+    /// Return all conflict keys that must be unique for this operation.
+    #[must_use]
+    pub fn conflict_keys(&self) -> Vec<FederationOperationConflictKey> {
         match self {
-            Self::MintQuote(operation) => Some(FederationOperationConflictKey::MintQuote {
+            Self::MintQuote(operation) => vec![FederationOperationConflictKey::MintQuote {
                 quote: operation.quote.clone(),
-            }),
+            }],
             Self::MintQuotePayment(observation) => {
-                Some(FederationOperationConflictKey::MintQuotePayment {
+                vec![FederationOperationConflictKey::MintQuotePayment {
                     quote: observation.quote.clone(),
                     state: observation.state,
-                })
+                }]
             }
-            Self::Mint(operation) => Some(FederationOperationConflictKey::Mint {
-                quote: operation.request.quote.clone(),
-            }),
-            Self::MeltQuote(operation) => Some(FederationOperationConflictKey::MeltQuote {
+            Self::Mint(operation) => operation
+                .request
+                .quote_ids()
+                .into_iter()
+                .map(|quote| FederationOperationConflictKey::Mint {
+                    quote: quote.to_string(),
+                })
+                .collect(),
+            Self::MeltQuote(operation) => vec![FederationOperationConflictKey::MeltQuote {
                 quote: operation.quote.clone(),
-            }),
+            }],
             Self::MeltQuotePayment(observation) => {
-                Some(FederationOperationConflictKey::MeltQuotePayment {
+                vec![FederationOperationConflictKey::MeltQuotePayment {
                     quote: observation.quote.clone(),
                     state: observation.state,
-                })
+                }]
             }
-            Self::Melt(operation) => Some(FederationOperationConflictKey::Melt {
+            Self::Melt(operation) => vec![FederationOperationConflictKey::Melt {
                 quote: operation.request.quote().clone(),
-            }),
-            Self::Swap(_) | Self::Restore(_) => None,
+            }],
+            Self::Swap(_) | Self::Restore(_) => Vec::new(),
         }
     }
 
@@ -325,7 +357,7 @@ impl FederationOperation {
         match self {
             Self::MintQuote(operation) => Some(operation.quote.as_str()),
             Self::MintQuotePayment(observation) => Some(observation.quote.as_str()),
-            Self::Mint(operation) => Some(operation.request.quote.as_str()),
+            Self::Mint(operation) => operation.request.quote_ids().into_iter().next(),
             Self::MeltQuote(operation) => Some(operation.quote.as_str()),
             Self::MeltQuotePayment(observation) => Some(observation.quote.as_str()),
             Self::Melt(operation) => Some(operation.request.quote().as_str()),
@@ -374,15 +406,16 @@ impl FederationOperationEnvelope {
 
     /// Return true when another envelope has the same conflict key but different contents.
     pub fn conflicts_with(&self, other: &Self) -> Result<bool> {
-        match (
-            self.operation.conflict_key(),
-            other.operation.conflict_key(),
-        ) {
-            (Some(left), Some(right)) if left == right => {
-                Ok(self.operation_id()? != other.operation_id()?)
+        let left_keys = self.operation.conflict_keys();
+        let right_keys = other.operation.conflict_keys();
+
+        for left in &left_keys {
+            if right_keys.iter().any(|right| right == left) {
+                return Ok(self.operation_id()? != other.operation_id()?);
             }
-            _ => Ok(false),
         }
+
+        Ok(false)
     }
 }
 
@@ -408,8 +441,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        BlindedMessage, CurrencyUnit, Id, MeltQuoteCustomRequest, MintQuoteBolt11Request, Proof,
-        PublicKey,
+        BatchMintRequest, BlindedMessage, CurrencyUnit, Id, MeltQuoteCustomRequest,
+        MintQuoteBolt11Request, Proof, PublicKey,
     };
 
     fn federation_id() -> FederationId {
@@ -439,11 +472,25 @@ mod tests {
 
     fn mint_operation(quote: &str, outputs: Vec<BlindedMessage>) -> FederationOperation {
         FederationOperation::Mint(FederationMintOperation {
-            request: MintRequest {
+            request: FederationMintRequest::Single(MintRequest {
                 quote: quote.to_string(),
                 outputs,
                 signature: None,
-            },
+            }),
+        })
+    }
+
+    fn batch_mint_operation(
+        quotes: Vec<&str>,
+        outputs: Vec<BlindedMessage>,
+    ) -> FederationOperation {
+        FederationOperation::Mint(FederationMintOperation {
+            request: FederationMintRequest::Batch(BatchMintRequest {
+                quotes: quotes.into_iter().map(str::to_string).collect(),
+                quote_amounts: None,
+                outputs,
+                signatures: None,
+            }),
         })
     }
 
@@ -506,6 +553,37 @@ mod tests {
         assert!(!first.conflicts_with(&duplicate).expect("conflict check"));
         assert!(first
             .conflicts_with(&different_outputs)
+            .expect("conflict check"));
+    }
+
+    #[test]
+    fn batch_mint_conflicts_by_each_quote_id() {
+        let first = envelope(batch_mint_operation(
+            vec!["quote-1", "quote-2"],
+            vec![output(
+                1,
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            )],
+        ));
+        let duplicate = envelope(batch_mint_operation(
+            vec!["quote-1", "quote-2"],
+            vec![output(
+                1,
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            )],
+        ));
+        let overlapping_conflict = envelope(batch_mint_operation(
+            vec!["quote-2", "quote-3"],
+            vec![output(
+                1,
+                "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+            )],
+        ));
+
+        assert_eq!(first.operation.conflict_keys().len(), 2);
+        assert!(!first.conflicts_with(&duplicate).expect("conflict check"));
+        assert!(first
+            .conflicts_with(&overlapping_conflict)
             .expect("conflict check"));
     }
 

@@ -29,9 +29,9 @@ pub use self::journal::{
 pub use self::operation::{
     FederationMeltOperation, FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation,
     FederationMintOperation, FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
-    FederationOperation, FederationOperationConflictKey, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationKind, FederationRestoreOperation,
-    FederationSwapOperation, FEDERATION_OPERATION_VERSION,
+    FederationMintRequest, FederationOperation, FederationOperationConflictKey,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
+    FederationRestoreOperation, FederationSwapOperation, FEDERATION_OPERATION_VERSION,
 };
 pub use self::signing::{FederationBlindSignatureShare, FederationBlindSignatureShareSet};
 pub use self::transport::{

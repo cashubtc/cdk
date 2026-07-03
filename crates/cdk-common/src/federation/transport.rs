@@ -236,11 +236,11 @@ mod tests {
         FederationOperationEnvelope::new(
             federation_id(),
             super::super::FederationOperation::Mint(super::super::FederationMintOperation {
-                request: MintRequest {
+                request: super::super::FederationMintRequest::Single(MintRequest {
                     quote: quote.to_string(),
                     outputs: vec![output(hex)],
                     signature: None,
-                },
+                }),
             }),
         )
     }

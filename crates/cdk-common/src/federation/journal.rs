@@ -142,6 +142,9 @@ pub struct FederationJournalEntry {
     /// Quote-scoped conflict key when the operation has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflict_key: Option<FederationOperationConflictKey>,
+    /// All quote-scoped conflict keys touched by the operation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conflict_keys: Vec<FederationOperationConflictKey>,
     /// Digest before this operation was appended.
     pub previous_order_digest: FederationJournalDigest,
     /// Digest after this operation was appended.
@@ -257,13 +260,14 @@ impl InMemoryFederationJournal {
             return Ok(FederationJournalAppendOutcome::Duplicate(entry));
         }
 
-        let conflict_key = envelope.operation.conflict_key();
-        let conflict_key_label = match conflict_key.as_ref() {
-            Some(conflict_key) => Some(canonical_json_string(conflict_key)?),
-            None => None,
-        };
+        let conflict_keys = envelope.operation.conflict_keys();
+        let conflict_key = conflict_keys.first().cloned();
+        let conflict_key_labels = conflict_keys
+            .iter()
+            .map(canonical_json_string)
+            .collect::<Result<Vec<_>>>()?;
 
-        if let Some(conflict_key_label) = conflict_key_label.as_ref() {
+        for conflict_key_label in &conflict_key_labels {
             if let Some(existing_operation_id) = self.conflict_keys.get(conflict_key_label) {
                 return Err(FederationError::ConflictingOperation {
                     conflict_key: conflict_key_label.clone(),
@@ -281,6 +285,7 @@ impl InMemoryFederationJournal {
             operation_id,
             envelope,
             conflict_key,
+            conflict_keys,
             previous_order_digest,
             order_digest,
             status: FederationOperationStatus::Accepted,
@@ -288,7 +293,7 @@ impl InMemoryFederationJournal {
 
         self.entries.push(entry.clone());
         self.operation_indices.insert(operation_id, index as usize);
-        if let Some(conflict_key_label) = conflict_key_label {
+        for conflict_key_label in conflict_key_labels {
             self.conflict_keys.insert(conflict_key_label, operation_id);
         }
         self.latest_order_digest = order_digest;
@@ -360,11 +365,11 @@ mod tests {
         FederationOperationEnvelope::new(
             federation_id(),
             super::super::FederationOperation::Mint(super::super::FederationMintOperation {
-                request: MintRequest {
+                request: super::super::FederationMintRequest::Single(MintRequest {
                     quote: quote.to_string(),
                     outputs: vec![output(1, output_hex)],
                     signature: None,
-                },
+                }),
             }),
         )
     }
