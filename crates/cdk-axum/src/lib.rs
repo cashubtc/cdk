@@ -51,6 +51,10 @@ pub(crate) enum FederationSyncStatus {
     CatchingUp {
         peer: MemberId,
     },
+    VerifyingSessionOutcome {
+        peer: MemberId,
+        operation_count: u64,
+    },
     Halted {
         reason: String,
     },
@@ -74,6 +78,7 @@ impl FederationSyncStatus {
             Self::Healthy => "healthy",
             Self::Lagging { .. } => "lagging",
             Self::CatchingUp { .. } => "catching_up",
+            Self::VerifyingSessionOutcome { .. } => "verifying_session_outcome",
             Self::Halted { .. } => "halted",
         }
     }
@@ -91,6 +96,12 @@ impl FederationSyncStatus {
             Self::CatchingUp { peer } => {
                 format!("federation member is catching up from peer {peer}")
             }
+            Self::VerifyingSessionOutcome {
+                peer,
+                operation_count,
+            } => format!(
+                "federation member is verifying quorum session outcome evidence after catch-up from peer {peer}: operation_count={operation_count}"
+            ),
             Self::Halted { reason } => format!("federation member is halted: {reason}"),
         }
     }
@@ -123,6 +134,36 @@ impl FederationSyncState {
 
     fn mark_catching_up(&mut self, peer: MemberId) {
         self.status = FederationSyncStatus::CatchingUp { peer };
+    }
+
+    fn mark_verifying_session_outcome(&mut self, peer: MemberId, operation_count: u64) {
+        match self.status {
+            FederationSyncStatus::Halted { .. } => {}
+            FederationSyncStatus::Lagging {
+                peer_operation_count,
+                ..
+            } if peer_operation_count > operation_count => {}
+            _ => {
+                self.status = FederationSyncStatus::VerifyingSessionOutcome {
+                    peer,
+                    operation_count,
+                };
+            }
+        }
+    }
+
+    fn mark_healthy_if_session_outcome_verified(&mut self, verified_operation_count: u64) {
+        match self.status {
+            FederationSyncStatus::Halted { .. } => {}
+            FederationSyncStatus::Lagging {
+                peer_operation_count,
+                ..
+            } if peer_operation_count > verified_operation_count => {}
+            FederationSyncStatus::VerifyingSessionOutcome {
+                operation_count, ..
+            } if operation_count > verified_operation_count => {}
+            _ => self.mark_healthy(),
+        }
     }
 
     fn mark_healthy(&mut self) {
@@ -313,6 +354,29 @@ impl MintState {
     pub(crate) async fn mark_federation_catching_up(&self, peer: MemberId) {
         if let Some(sync) = &self.federation_sync {
             sync.lock().await.mark_catching_up(peer);
+        }
+    }
+
+    pub(crate) async fn mark_federation_verifying_session_outcome(
+        &self,
+        peer: MemberId,
+        operation_count: u64,
+    ) {
+        if let Some(sync) = &self.federation_sync {
+            sync.lock()
+                .await
+                .mark_verifying_session_outcome(peer, operation_count);
+        }
+    }
+
+    pub(crate) async fn mark_federation_healthy_if_session_outcome_verified(
+        &self,
+        verified_operation_count: u64,
+    ) {
+        if let Some(sync) = &self.federation_sync {
+            sync.lock()
+                .await
+                .mark_healthy_if_session_outcome_verified(verified_operation_count);
         }
     }
 

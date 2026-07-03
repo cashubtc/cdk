@@ -189,6 +189,9 @@ where
         Ok(Some(quorum))
             if quorum.from_index == 0 && quorum.operation_count >= entries.len() as u64 =>
         {
+            state
+                .mark_federation_healthy_if_session_outcome_verified(quorum.operation_count)
+                .await;
             return 0;
         }
         Ok(_) => {}
@@ -238,7 +241,26 @@ where
         }
     }
 
+    mark_healthy_after_session_outcome_quorum(state, entries.len() as u64).await;
+
     collected
+}
+
+async fn mark_healthy_after_session_outcome_quorum(state: &MintState, operation_count: u64) {
+    match session_outcome_quorum_status(state).await {
+        Ok(Some(quorum)) if quorum.from_index == 0 && quorum.operation_count >= operation_count => {
+            state
+                .mark_federation_healthy_if_session_outcome_verified(quorum.operation_count)
+                .await;
+        }
+        Ok(_) => {}
+        Err(err) => {
+            tracing::warn!(
+                "Could not verify federation session outcome quorum after collection: {}",
+                err
+            );
+        }
+    }
 }
 
 #[instrument(skip_all)]
@@ -693,6 +715,7 @@ where
     ) -> anyhow::Result<FederationPeerStatus> {
         let peer_status = self.peer_status(member).await?;
         let mut local_status = local_peer_status(state).await?;
+        let mut recovered_from_peer = false;
 
         if peer_status.operation_count > local_status.operation_count {
             state
@@ -718,6 +741,7 @@ where
                 }
 
                 local_status = local_peer_status(state).await?;
+                recovered_from_peer = true;
                 if local_status.operation_count == before {
                     state
                         .mark_federation_halted(format!(
@@ -752,9 +776,18 @@ where
         }
 
         if local_status.operation_count >= peer_status.operation_count {
-            state
-                .mark_federation_healthy_if_caught_up(local_status.operation_count)
-                .await;
+            if recovered_from_peer && local_status.operation_count > 0 {
+                state
+                    .mark_federation_verifying_session_outcome(
+                        member.member_id,
+                        local_status.operation_count,
+                    )
+                    .await;
+            } else {
+                state
+                    .mark_federation_healthy_if_caught_up(local_status.operation_count)
+                    .await;
+            }
         }
 
         Ok(local_status)
@@ -1740,7 +1773,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rest_peer_client_syncs_lagging_member_before_public_submit() {
+    async fn rest_peer_client_sync_requires_quorum_evidence_before_public_submit() {
         let (state, public_config, local_private, peer_private) =
             federation_route_state_with_local_private().await;
         let federation_id = public_config.federation_id;
@@ -1772,17 +1805,18 @@ mod tests {
         assert_eq!(synced_status.operation_count, 1);
         assert!(matches!(
             state.federation_sync_status().await,
-            Some(crate::FederationSyncStatus::Healthy)
+            Some(crate::FederationSyncStatus::VerifyingSessionOutcome {
+                operation_count: 1,
+                ..
+            })
         ));
 
         let next = restore_envelope(
             federation_id,
             "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
         );
-        state
-            .submit_federation_envelope(next)
-            .await
-            .expect("synced member can submit");
+        let blocked = state.submit_federation_envelope(next).await;
+        assert!(matches!(blocked, Err(cdk::Error::Custom(_))));
     }
 
     #[tokio::test]
@@ -1823,6 +1857,15 @@ mod tests {
             state.federation_sync_status().await,
             Some(crate::FederationSyncStatus::Healthy)
         ));
+
+        let next = restore_envelope(
+            federation_id,
+            "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+        );
+        state
+            .submit_federation_envelope(next)
+            .await
+            .expect("quorum-verified member can submit");
     }
 
     #[tokio::test]
@@ -3032,6 +3075,33 @@ mod tests {
         assert!(response
             .sync_message
             .contains("federation member is lagging behind peer"));
+    }
+
+    #[tokio::test]
+    async fn private_local_status_route_reports_verifying_session_outcome_state() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let local_member = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .member_id();
+        let peer_member = peer_private.member_id;
+        state
+            .mark_federation_verifying_session_outcome(peer_member, 3)
+            .await;
+
+        let request = signed_status_request(&public_config, &peer_private, local_member, 1);
+        let response = post_local_status(State(state), Json(request))
+            .await
+            .expect("local status response")
+            .0;
+
+        assert_eq!(response.peer_status.operation_count, 0);
+        assert_eq!(response.sync_state, "verifying_session_outcome");
+        assert!(!response.sync_ready);
+        assert!(response
+            .sync_message
+            .contains("verifying quorum session outcome evidence"));
     }
 
     #[tokio::test]

@@ -331,15 +331,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: collect session outcome evidence</span>
+          <span class="value">feat: gate recovery on session outcomes</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Multi-peer outcome collection</span>
+          <span class="value">Quorum-gated recovery policy</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Quorum-gated recovery policy</span>
+          <span class="value">Live multi-process smoke</span>
         </div>
       </aside>
     </header>
@@ -937,6 +937,10 @@
             <p>After normal peer sync, members can ask equal-height peers for the already-applied range, compare it against local journal history, and persist only matching signed session outcomes.</p>
           </article>
           <article class="item">
+            <h3>Recovered members wait for quorum proof</h3>
+            <p>Catch-up now leaves recovered members in a non-ready session-outcome verification state, and public wallet-facing federation submissions reopen only after threshold session outcome evidence covers the recovered history.</p>
+          </article>
+          <article class="item">
             <h3>Milestone map expanded</h3>
             <p>The dashboard now renders 24 explicit implementation-plan milestone points, with no grouped shorthand ranges.</p>
           </article>
@@ -1320,10 +1324,16 @@
               <td>Promote quorum outcome evidence from operator-visible status into explicit recovery/signing policy.</td>
             </tr>
             <tr>
+              <td>Quorum-gated recovery policy</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation rest_peer_client_sync_requires_quorum_evidence_before_public_submit -- --test-threads 1`, `peer_sync_round_catches_up_from_configured_peer`, and `private_local_status_route_reports_verifying_session_outcome_state` passed, proving direct catch-up blocks public submits until the full sync round verifies quorum session evidence and exposes the verifying state.</td>
+              <td>Run live multi-process fake-wallet member scenarios from generated configs where loopback listeners are permitted.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, and equal-height peer evidence collection.</td>
-              <td>Promote quorum outcome evidence into recovery/signing policy, then run live multi-process fake-wallet member scenarios from generated configs where loopback listeners are permitted.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, and quorum-gated recovery readiness.</td>
+              <td>Run live multi-process fake-wallet member scenarios from generated configs where loopback listeners are permitted.</td>
             </tr>
           </tbody>
         </table>
@@ -1363,12 +1373,12 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Quorum-gated recovery policy</h3>
-            <p>Decide which recovery and signing states require consensus-threshold session outcome evidence, then fail closed only after active collection has had a fair chance to satisfy the policy.</p>
-          </article>
-          <article class="item">
             <h3>Live multi-process smoke</h3>
             <p>Run the generated fake-wallet federation smoke script in an environment with loopback listener permissions, then capture signed private REST status before and after a member restart.</p>
+          </article>
+          <article class="item">
+            <h3>Long-range evidence collection</h3>
+            <p>Replace the current bounded full-history evidence request with chunked range collection so large recovered journals can build quorum proof without oversized REST responses.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>
