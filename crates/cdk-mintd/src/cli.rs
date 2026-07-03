@@ -60,10 +60,23 @@ pub struct FederationArgs {
 #[cfg(feature = "federation")]
 #[derive(Debug, Subcommand)]
 pub enum FederationCommand {
+    /// Inspect federation config material without printing member secrets.
+    Inspect(FederationInspectArgs),
     /// Generate local trusted-dealer federation configs for fake-wallet testing.
     TrustedDealer(FederationTrustedDealerArgs),
     /// Query signed local status from federation members.
     Status(FederationStatusArgs),
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationInspectArgs {
+    /// Shared public federation config JSON path.
+    #[arg(long)]
+    pub public_config: Option<PathBuf>,
+    /// Optional private member config JSON path to validate against the public config.
+    #[arg(long)]
+    pub private_config: Option<PathBuf>,
 }
 
 #[cfg(feature = "federation")]
@@ -151,6 +164,35 @@ mod tests {
         assert_eq!(trusted_dealer.members, 5);
         assert_eq!(trusted_dealer.threshold, 3);
         assert_eq!(trusted_dealer.amounts, vec![1, 2, 4]);
+    }
+
+    #[test]
+    fn parses_federation_inspect_subcommand() {
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "inspect",
+            "--public-config",
+            "federation-public.json",
+            "--private-config",
+            "member-1/federation-private.json",
+        ])
+        .expect("inspect command parses");
+
+        let Some(CliCommand::Federation(federation)) = args.command else {
+            panic!("expected federation command");
+        };
+        let FederationCommand::Inspect(inspect) = federation.command else {
+            panic!("expected federation inspect command");
+        };
+        assert_eq!(
+            inspect.public_config,
+            Some(PathBuf::from("federation-public.json"))
+        );
+        assert_eq!(
+            inspect.private_config,
+            Some(PathBuf::from("member-1/federation-private.json"))
+        );
     }
 
     #[test]
