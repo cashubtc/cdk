@@ -124,7 +124,8 @@ fn derive_deterministic_nonce(
         message.extend_from_slice(&blinded_signature.to_uncompressed_bytes());
         message.push(counter);
 
-        let mut engine = HmacEngine::<sha256::Hash>::new(mint_secret_key.as_secret_bytes());
+        let secret_bytes = mint_secret_key.to_secret_bytes();
+        let mut engine = HmacEngine::<sha256::Hash>::new(&secret_bytes);
         engine.input(&message);
         let hmac_result = hmac::Hmac::<sha256::Hash>::from_engine(engine);
         let result_bytes = hmac_result.to_byte_array();
