@@ -390,7 +390,7 @@ mod tests {
     };
     use cdk::types::FeeReserve;
     use cdk::Amount;
-    use cdk_fake_wallet::{create_fake_invoice, FakeWallet};
+    use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription, FakeWallet};
     use cdk_http_client::HttpError;
     use serde::de::DeserializeOwned;
     use serde::Serialize;
@@ -791,10 +791,18 @@ mod tests {
     }
 
     async fn melt_quote(state: &MintState, amount_msat: u64) -> QuoteId {
+        melt_quote_with_description(state, amount_msat, "".to_string()).await
+    }
+
+    async fn melt_quote_with_description(
+        state: &MintState,
+        amount_msat: u64,
+        description: String,
+    ) -> QuoteId {
         let response = state
             .mint
             .get_melt_quote(cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
-                request: create_fake_invoice(amount_msat, "".to_string()),
+                request: create_fake_invoice(amount_msat, description),
                 unit: CurrencyUnit::Sat,
                 options: None,
             }))
@@ -805,6 +813,24 @@ mod tests {
             cdk::MeltQuoteCreateResponse::Bolt11(response) => response.quote,
             _ => panic!("expected bolt11 melt quote"),
         }
+    }
+
+    fn melt_payment_observation_envelope(
+        state: &MintState,
+        quote_id: &QuoteId,
+        state_observed: MeltQuoteState,
+        payment_proof: Option<String>,
+    ) -> FederationOperationEnvelope {
+        let config = state.mint.federation_config().expect("federation config");
+        config.melt_quote_payment_observation(
+            quote_id.clone(),
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            state_observed,
+            Amount::from(1),
+            Amount::from(1),
+            payment_proof,
+            None,
+        )
     }
 
     fn restore_envelope(
@@ -1266,6 +1292,228 @@ mod tests {
                 .status,
             FederationOperationStatus::Applied
         );
+    }
+
+    #[tokio::test]
+    async fn catch_up_applies_paid_melt_payment_observation_to_pending_melt() {
+        let (state, public_config, _) = federation_route_state().await;
+        let config = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .clone();
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let fake_description = FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Pending,
+            check_payment_state: MeltQuoteState::Pending,
+            pay_err: false,
+            check_err: false,
+        };
+        let quote_id = melt_quote_with_description(
+            &state,
+            1000,
+            serde_json::to_string(&fake_description).expect("fake invoice description"),
+        )
+        .await;
+        let inputs = vec![
+            proof_for_amount(&state, 1, "paid-observation-a"),
+            proof_for_amount(&state, 1, "paid-observation-b"),
+            proof_for_amount(&state, 1, "paid-observation-c"),
+        ];
+        let input_ys = inputs
+            .iter()
+            .map(|proof| proof.y().expect("input y"))
+            .collect::<Vec<_>>();
+        let mut change_output = swap_output(&state, "paid-observation-change");
+        change_output.amount = Amount::ZERO;
+        let melt_request = cdk::nuts::MeltRequest::new(
+            quote_id.clone(),
+            inputs,
+            Some(vec![change_output.clone()]),
+        );
+        let melt_envelope = config.melt_operation(melt_request).expect("melt envelope");
+        let melt_operation_id = melt_envelope.operation_id().expect("melt operation id");
+        let paid_envelope = melt_payment_observation_envelope(
+            &state,
+            &quote_id,
+            MeltQuoteState::Paid,
+            Some("federation-paid-preimage".to_string()),
+        );
+        let paid_operation_id = paid_envelope.operation_id().expect("paid operation id");
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+        peer_consensus
+            .submit_envelope(melt_envelope)
+            .expect("peer accepted pending melt");
+        peer_consensus
+            .submit_envelope(paid_envelope)
+            .expect("peer accepted paid observation");
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+        let catch_up_response = peer_consensus
+            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
+            .expect("catch-up response");
+
+        state
+            .apply_federation_catch_up_response(&catch_up_response)
+            .await
+            .expect("apply catch-up");
+
+        let quote = state
+            .mint
+            .localstore()
+            .get_melt_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .expect("quote persisted");
+        assert_eq!(quote.state, MeltQuoteState::Paid);
+        assert_eq!(
+            quote.payment_proof.as_deref(),
+            Some("federation-paid-preimage")
+        );
+
+        let proof_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("proof state lookup");
+        assert_eq!(
+            proof_states,
+            vec![
+                Some(cdk::nuts::State::Spent),
+                Some(cdk::nuts::State::Spent),
+                Some(cdk::nuts::State::Spent),
+            ]
+        );
+
+        let signatures = state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[change_output.blinded_secret])
+            .await
+            .expect("signature lookup");
+        let signature = signatures[0].clone().expect("change share persisted");
+        assert_eq!(signature.amount, Amount::from(1));
+        assert_eq!(signature.keyset_id, change_output.keyset_id);
+
+        let persisted = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal lookup");
+        assert_eq!(persisted.len(), 2);
+        assert!(persisted
+            .iter()
+            .all(|entry| entry.status == FederationOperationStatus::Applied));
+        let runtime = local_consensus.lock().await;
+        assert_eq!(
+            runtime
+                .journal()
+                .entry_by_operation_id(melt_operation_id)
+                .expect("melt runtime entry")
+                .status,
+            FederationOperationStatus::Applied
+        );
+        assert_eq!(
+            runtime
+                .journal()
+                .entry_by_operation_id(paid_operation_id)
+                .expect("paid runtime entry")
+                .status,
+            FederationOperationStatus::Applied
+        );
+    }
+
+    #[tokio::test]
+    async fn catch_up_applies_unpaid_melt_payment_observation_to_pending_melt() {
+        let (state, public_config, _) = federation_route_state().await;
+        let config = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .clone();
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let fake_description = FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Pending,
+            check_payment_state: MeltQuoteState::Pending,
+            pay_err: false,
+            check_err: false,
+        };
+        let quote_id = melt_quote_with_description(
+            &state,
+            1000,
+            serde_json::to_string(&fake_description).expect("fake invoice description"),
+        )
+        .await;
+        let inputs = vec![
+            proof_for_amount(&state, 1, "unpaid-observation-a"),
+            proof_for_amount(&state, 1, "unpaid-observation-b"),
+        ];
+        let input_ys = inputs
+            .iter()
+            .map(|proof| proof.y().expect("input y"))
+            .collect::<Vec<_>>();
+        let melt_request = cdk::nuts::MeltRequest::new(quote_id.clone(), inputs, None);
+        let melt_envelope = config.melt_operation(melt_request).expect("melt envelope");
+        let unpaid_envelope =
+            melt_payment_observation_envelope(&state, &quote_id, MeltQuoteState::Unpaid, None);
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+        peer_consensus
+            .submit_envelope(melt_envelope)
+            .expect("peer accepted pending melt");
+        peer_consensus
+            .submit_envelope(unpaid_envelope)
+            .expect("peer accepted unpaid observation");
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+        let catch_up_response = peer_consensus
+            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
+            .expect("catch-up response");
+
+        state
+            .apply_federation_catch_up_response(&catch_up_response)
+            .await
+            .expect("apply catch-up");
+
+        let quote = state
+            .mint
+            .localstore()
+            .get_melt_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .expect("quote persisted");
+        assert_eq!(quote.state, MeltQuoteState::Unpaid);
+        assert!(quote.payment_proof.is_none());
+        assert!(
+            state
+                .mint
+                .localstore()
+                .get_melt_saga_by_quote_id(&quote_id)
+                .await
+                .expect("saga lookup")
+                .is_none(),
+            "rollback should remove pending melt saga metadata"
+        );
+
+        let proof_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("proof state lookup");
+        assert_eq!(proof_states, vec![None, None]);
+
+        let persisted = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal lookup");
+        assert_eq!(persisted.len(), 2);
+        assert!(persisted
+            .iter()
+            .all(|entry| entry.status == FederationOperationStatus::Applied));
     }
 
     #[tokio::test]

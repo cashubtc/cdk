@@ -13,12 +13,13 @@ use cdk_common::error::Error;
 use cdk_common::federation::{
     FederationBlindSignatureShareSet, FederationConfig, FederationError, FederationId,
     FederationJournalEntry, FederationMeltOperation, FederationMeltQuoteOperation,
-    FederationMintOperation, FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
-    FederationMintRequest, FederationOperation, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, FederationSwapOperation, MemberConfigPrivate, MemberId,
+    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationSwapOperation, MemberConfigPrivate, MemberId,
 };
 use cdk_common::mint::{MeltQuote, MintQuote, Operation, OperationKind};
-use cdk_common::payment::PaymentIdentifier;
+use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
 use cdk_common::{
     Amount, BatchMintRequest, BlindSignature, BlindedMessage, CurrencyUnit, MeltQuoteRequest,
     MeltRequest, MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest, MintResponse,
@@ -163,6 +164,34 @@ impl FederationRuntimeConfig {
             FederationMeltQuoteOperation {
                 quote: quote.to_string(),
                 request,
+            },
+        ))
+    }
+
+    /// Build the consensus operation for observing an outgoing melt payment state.
+    #[must_use]
+    pub fn melt_quote_payment_observation<Q>(
+        &self,
+        quote: Q,
+        method: PaymentMethod,
+        state: cdk_common::MeltQuoteState,
+        amount: Amount,
+        fee_reserve: Amount,
+        payment_proof: Option<String>,
+        failure_reason: Option<String>,
+    ) -> FederationOperationEnvelope
+    where
+        Q: ToString,
+    {
+        self.operation_envelope(FederationOperation::MeltQuotePayment(
+            FederationMeltQuotePaymentObservation {
+                quote: quote.to_string(),
+                method,
+                state,
+                amount,
+                fee_reserve,
+                payment_proof,
+                failure_reason,
             },
         ))
     }
@@ -400,6 +429,11 @@ impl Mint {
                     .await?;
                 Ok(true)
             }
+            FederationOperation::MeltQuotePayment(observation) => {
+                self.apply_federation_melt_quote_payment(entry.operation_id, observation)
+                    .await?;
+                Ok(true)
+            }
             FederationOperation::Swap(operation) => {
                 self.apply_federation_swap(entry.operation_id, operation)
                     .await?;
@@ -410,7 +444,7 @@ impl Mint {
                     .await?;
                 Ok(true)
             }
-            FederationOperation::MeltQuotePayment(_) | FederationOperation::Restore(_) => Ok(false),
+            FederationOperation::Restore(_) => Ok(false),
         }
     }
 
@@ -721,6 +755,117 @@ impl Mint {
         Ok(())
     }
 
+    async fn apply_federation_melt_quote_payment(
+        &self,
+        operation_id: FederationOperationId,
+        observation: &FederationMeltQuotePaymentObservation,
+    ) -> Result<(), Error> {
+        let quote_id = quote_id_from_federation(&observation.quote)?;
+        let mut quote = self
+            .localstore
+            .get_melt_quote(&quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        ensure_melt_quote_matches_payment_observation(&quote, observation)?;
+
+        if quote.state != observation.state {
+            match observation.state {
+                cdk_common::MeltQuoteState::Paid => {
+                    self.apply_paid_melt_quote_payment_observation(
+                        operation_id,
+                        &mut quote,
+                        observation,
+                    )
+                    .await?;
+                }
+                cdk_common::MeltQuoteState::Unpaid | cdk_common::MeltQuoteState::Failed => {
+                    if let Some(saga) = self.localstore.get_melt_saga_by_quote_id(&quote_id).await?
+                    {
+                        let payment_response =
+                            melt_quote_payment_response(operation_id, &quote, observation)?;
+                        super::saga_recovery::process_melt_saga_outcome(
+                            &saga,
+                            &mut quote,
+                            &payment_response,
+                            &self.localstore,
+                            &self.pubsub_manager,
+                            self,
+                        )
+                        .await?;
+                    } else {
+                        self.update_melt_quote_payment_observation_state(&quote_id, observation)
+                            .await?;
+                    }
+                }
+                _ => {
+                    self.update_melt_quote_payment_observation_state(&quote_id, observation)
+                        .await?;
+                }
+            }
+        } else {
+            ensure_melt_quote_payment_proof_matches(&quote, observation)?;
+        }
+
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn apply_paid_melt_quote_payment_observation(
+        &self,
+        operation_id: FederationOperationId,
+        quote: &mut MeltQuote,
+        observation: &FederationMeltQuotePaymentObservation,
+    ) -> Result<(), Error> {
+        let saga = self
+            .localstore
+            .get_melt_saga_by_quote_id(&quote.id)
+            .await?
+            .ok_or_else(|| {
+                Error::Custom(
+                    "federation paid melt observation found no pending melt saga".to_string(),
+                )
+            })?;
+        let payment_response = melt_quote_payment_response(operation_id, quote, observation)?;
+        super::saga_recovery::process_melt_saga_outcome(
+            &saga,
+            quote,
+            &payment_response,
+            &self.localstore,
+            &self.pubsub_manager,
+            self,
+        )
+        .await
+    }
+
+    async fn update_melt_quote_payment_observation_state(
+        &self,
+        quote_id: &QuoteId,
+        observation: &FederationMeltQuotePaymentObservation,
+    ) -> Result<(), Error> {
+        let mut tx = self.localstore.begin_transaction().await?;
+        let mut quote = tx
+            .get_melt_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+        ensure_melt_quote_matches_payment_observation(&quote, observation)?;
+        if quote.state != observation.state {
+            tx.update_melt_quote_state(
+                &mut quote,
+                observation.state,
+                observation.payment_proof.clone(),
+            )
+            .await?;
+        } else {
+            ensure_melt_quote_payment_proof_matches(&quote, observation)?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn apply_federation_melt(
         &self,
         operation_id: FederationOperationId,
@@ -962,6 +1107,63 @@ fn ensure_melt_quote_matches_request(
     }
 
     Ok(())
+}
+
+fn ensure_melt_quote_matches_payment_observation(
+    quote: &MeltQuote,
+    observation: &FederationMeltQuotePaymentObservation,
+) -> Result<(), Error> {
+    if quote.payment_method != observation.method {
+        return Err(Error::InvalidPaymentMethod);
+    }
+
+    if quote.amount() != observation.amount.with_unit(quote.unit.clone())
+        || quote.fee_reserve() != observation.fee_reserve.with_unit(quote.unit.clone())
+    {
+        return Err(Error::Custom(
+            "federation melt payment observation does not match local quote amounts".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn ensure_melt_quote_payment_proof_matches(
+    quote: &MeltQuote,
+    observation: &FederationMeltQuotePaymentObservation,
+) -> Result<(), Error> {
+    if observation.state == cdk_common::MeltQuoteState::Paid
+        && observation.payment_proof.is_some()
+        && quote.payment_proof != observation.payment_proof
+    {
+        return Err(Error::Custom(
+            "federation melt payment observation found mismatched payment proof".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn melt_quote_payment_response(
+    operation_id: FederationOperationId,
+    quote: &MeltQuote,
+    observation: &FederationMeltQuotePaymentObservation,
+) -> Result<MakePaymentResponse, Error> {
+    let payment_lookup_id = quote.request_lookup_id.clone().unwrap_or_else(|| {
+        PaymentIdentifier::CustomId(format!("federation-melt-observation-{operation_id}"))
+    });
+    let amount = observation.amount.with_unit(quote.unit.clone());
+    let fee_reserve = observation.fee_reserve.with_unit(quote.unit.clone());
+    let total_spent = amount
+        .checked_add(&fee_reserve)
+        .map_err(|_| Error::AmountOverflow)?;
+
+    Ok(MakePaymentResponse {
+        payment_lookup_id,
+        payment_proof: observation.payment_proof.clone(),
+        status: observation.state,
+        total_spent,
+    })
 }
 
 fn melt_quote_request_string(request: &MeltQuoteRequest) -> String {

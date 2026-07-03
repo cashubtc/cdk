@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: propagate federation melt quotes</span>
+          <span class="value">feat: propagate federation melt payment observations</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Melt quote propagation</span>
+          <span class="value">Melt payment observations</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Melt payment observations and recovery</span>
+          <span class="value">Multi-member recovery scenarios</span>
         </div>
       </aside>
     </header>
@@ -552,6 +552,10 @@
             <h3>Melt quote propagation ready</h3>
             <p>Public melt quote creation now submits canonical melt quote operations to consensus, and catch-up replay can recreate consensus-assigned fake-wallet melt quotes before any melt spend is signed.</p>
           </article>
+          <article class="item">
+            <h3>Melt payment observation replay ready</h3>
+            <p>Public melt quote status checks now submit outgoing payment observations to consensus, and catch-up replay can finalize paid pending melts or roll back unpaid pending melts through the existing saga recovery path.</p>
+          </article>
         </div>
       </section>
 
@@ -682,6 +686,14 @@
             <h3>Catch-up creates usable melt quotes</h3>
             <p>A member that learns a melt quote through catch-up now stores the consensus quote ID, payment method, invoice, amount, fee reserve, unpaid state, and Applied journal status without needing the original public REST request.</p>
           </article>
+          <article class="item">
+            <h3>Delayed melt settlement is reconstructable</h3>
+            <p>A member that learns a paid outgoing melt observation after a pending melt now finalizes the quote, spends proofs, stores change shares, records the payment proof, and marks both journal entries Applied.</p>
+          </article>
+          <article class="item">
+            <h3>Failed melt settlement rolls back cleanly</h3>
+            <p>A member that learns an unpaid outgoing melt observation after a pending melt now removes saga metadata, releases pending proofs, returns the quote to Unpaid, and keeps the consensus journal applied.</p>
+          </article>
         </div>
       </section>
 
@@ -698,7 +710,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Mint quote, melt quote, mint issuance, swap, and melt entries apply into storage; outgoing payment observations and multi-member restart scenarios still need broader coverage before offline recovery is production-safe.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Mint quote, melt quote, mint issuance, swap, melt, and melt payment observation entries apply into storage; multi-member restart scenarios still need broader coverage before offline recovery is production-safe.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -948,10 +960,16 @@
               <td>Propagate melt payment observations and add restart/catch-up scenarios across multiple fake-wallet members.</td>
             </tr>
             <tr>
+              <td>Melt payment observations</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation get_check_melt_custom_quote_records_federation_payment_observation`, `catch_up_applies_paid_melt_payment_observation_to_pending_melt`, and `catch_up_applies_unpaid_melt_payment_observation_to_pending_melt` passed. `cargo test -p cdk-axum --features federation federation` passed 27 tests, `cargo test -p cdk-axum --features federation custom_handlers` passed 28 tests, and `cargo test -p cdk --features federation federation` passed 31 tests.</td>
+              <td>Run restart and catch-up scenarios across multiple fake-wallet federation members for mint, swap, and melt flows.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt entries now apply into local storage. Melt payment observations and broader multi-member recovery remain open.</td>
-              <td>Propagate melt payment observations across members, then test restart/catch-up around fake-wallet mint, swap, and melt flows with multiple local members.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Broader multi-member recovery remains open.</td>
+              <td>Test restart/catch-up around fake-wallet mint, swap, and melt flows with multiple local members.</td>
             </tr>
           </tbody>
         </table>
@@ -991,8 +1009,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Melt payment observations and recovery</h3>
-            <p>Propagate outgoing payment observations through consensus, then run restart and catch-up scenarios across multiple fake-wallet members for mint, swap, and melt flows.</p>
+            <h3>Multi-member recovery scenarios</h3>
+            <p>Run restart and catch-up scenarios across multiple fake-wallet members for mint, swap, and melt flows, including members that miss quote, payment, and spend operations before reconnecting.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>

@@ -227,6 +227,27 @@ async fn submit_federation_melt_quote_operation(
 }
 
 #[cfg(feature = "federation")]
+async fn submit_federation_melt_quote_payment_observation(
+    state: &MintState,
+    response: &MeltQuoteResponse<QuoteId>,
+) -> Result<(), cdk::Error> {
+    let Some(config) = state.mint.federation_config() else {
+        return Ok(());
+    };
+    let envelope = config.melt_quote_payment_observation(
+        response.quote().clone(),
+        response.method(),
+        response.state(),
+        response.amount(),
+        response.fee_reserve(),
+        response.payment_proof().map(str::to_string),
+        None,
+    );
+    state.submit_federation_envelope(envelope).await?;
+    Ok(())
+}
+
+#[cfg(feature = "federation")]
 async fn submit_federation_mint_operation(
     state: &MintState,
     input: cdk::mint::MintInput,
@@ -700,6 +721,11 @@ pub async fn get_check_melt_custom_quote(
     let quote = state
         .mint
         .check_melt_quote(&quote_id)
+        .await
+        .map_err(into_response)?;
+
+    #[cfg(feature = "federation")]
+    submit_federation_melt_quote_payment_observation(&state, &quote)
         .await
         .map_err(into_response)?;
 
@@ -1550,6 +1576,26 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::MintQuotePayment]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn get_check_melt_custom_quote_records_federation_payment_observation() {
+        let state = create_federated_test_state().await;
+        let quote_id = create_federated_melt_quote(&state, 1000).await;
+
+        let result = get_check_melt_custom_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path(("bolt11".to_string(), quote_id)),
+        )
+        .await;
+
+        assert!(result.is_ok(), "melt quote check should succeed");
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::MeltQuotePayment]
         );
     }
 
