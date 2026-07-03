@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">4a92d826 federation config types</span>
+          <span class="value">61d0e0e9 trusted-dealer configs</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federation config and roster</span>
+          <span class="value">Mintd federation config wiring</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Trusted-dealer config generation</span>
+          <span class="value">Mintd federation config wiring</span>
         </div>
       </aside>
     </header>
@@ -431,6 +431,10 @@
           <article class="item">
             <h3>Federation config types committed</h3>
             <p>Shared roster IDs, member identity keys, aggregate keysets, public-share validation, and private-share checks were committed in 4a92d826.</p>
+          </article>
+          <article class="item">
+            <h3>Trusted-dealer config generation committed</h3>
+            <p>A mocked DKG path now emits one shared public federation config plus validated private member configs from operator-supplied identity keys and BLS polynomial coefficients.</p>
           </article>
         </div>
       </section>
@@ -536,6 +540,12 @@
               <td>Generate these configs from a trusted-dealer setup helper.</td>
             </tr>
             <tr>
+              <td>Trusted-dealer config generation</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federation` now passes 10 tests, including duplicate-member, bad-coefficient, and BLS-identity rejection.</td>
+              <td>Wire generated public/private configs into mint startup.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status pending">Pending</span></td>
               <td>Implementation not started.</td>
@@ -575,8 +585,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Federation config and roster</h3>
-            <p>Start federation config types, static member roster validation, and deterministic trusted-dealer setup using the threshold BLS primitives.</p>
+            <h3>Mintd federation config wiring</h3>
+            <p>Add config-file/env loading for public federation config and local member private config, then expose it through the mint builder without changing standalone mode.</p>
           </article>
           <article class="item">
             <h3>Focused verification</h3>
