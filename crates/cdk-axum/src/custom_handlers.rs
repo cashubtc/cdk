@@ -990,11 +990,23 @@ pub async fn cache_post_batch_mint(
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
+    #[cfg(feature = "federation")]
+    use std::pin::Pin;
+    #[cfg(feature = "federation")]
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
 
+    #[cfg(feature = "federation")]
+    use async_trait::async_trait;
     use axum::http::{HeaderValue, Request, StatusCode};
     use bip39::Mnemonic;
+    #[cfg(feature = "federation")]
+    use cdk::cdk_payment::{
+        self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
+        MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse,
+        SettingsResponse, WaitPaymentResponse,
+    };
     #[cfg(feature = "federation")]
     use cdk::federation::FederationConsensusEngine;
     use cdk::mint::{MintBuilder, MintMeltLimits, MintQuoteResponse};
@@ -1011,6 +1023,8 @@ mod tests {
     use cdk_fake_wallet::FakeWallet;
     #[cfg(feature = "federation")]
     use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
+    #[cfg(feature = "federation")]
+    use futures::Stream;
 
     use super::*;
     use crate::cache::HttpCache;
@@ -1096,6 +1110,125 @@ mod tests {
     }
 
     #[cfg(feature = "federation")]
+    struct DelayedStatusFakeWallet {
+        inner: FakeWallet,
+        status_checks: AtomicUsize,
+        settle_after_checks: usize,
+        final_status: Option<MeltQuoteState>,
+    }
+
+    #[cfg(feature = "federation")]
+    impl DelayedStatusFakeWallet {
+        fn new(settle_after_checks: usize, final_status: Option<MeltQuoteState>) -> Self {
+            let fee_reserve = FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 0.0,
+            };
+
+            Self {
+                inner: FakeWallet::new(
+                    fee_reserve,
+                    HashMap::default(),
+                    HashSet::default(),
+                    0,
+                    CurrencyUnit::Sat,
+                ),
+                status_checks: AtomicUsize::new(0),
+                settle_after_checks,
+                final_status,
+            }
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    #[async_trait]
+    impl MintPayment for DelayedStatusFakeWallet {
+        type Err = cdk_payment::Error;
+
+        async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+            self.inner.get_settings().await
+        }
+
+        async fn create_incoming_payment_request(
+            &self,
+            options: IncomingPaymentOptions,
+        ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+            self.inner.create_incoming_payment_request(options).await
+        }
+
+        async fn get_payment_quote(
+            &self,
+            unit: &CurrencyUnit,
+            options: OutgoingPaymentOptions,
+        ) -> Result<PaymentQuoteResponse, Self::Err> {
+            self.inner.get_payment_quote(unit, options).await
+        }
+
+        async fn make_payment(
+            &self,
+            unit: &CurrencyUnit,
+            options: OutgoingPaymentOptions,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            let mut response = self.inner.make_payment(unit, options).await?;
+            response.status = MeltQuoteState::Pending;
+            response.payment_proof = None;
+            Ok(response)
+        }
+
+        async fn wait_payment_event(
+            &self,
+        ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
+            Ok(Box::pin(futures::stream::pending()))
+        }
+
+        fn is_payment_event_stream_active(&self) -> bool {
+            false
+        }
+
+        fn cancel_payment_event_stream(&self) {}
+
+        async fn check_incoming_payment_status(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+            self.inner
+                .check_incoming_payment_status(payment_identifier)
+                .await
+        }
+
+        async fn check_outgoing_payment(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            let mut response = self
+                .inner
+                .check_outgoing_payment(payment_identifier)
+                .await?;
+            let attempts = self.status_checks.fetch_add(1, Ordering::SeqCst) + 1;
+            if attempts < self.settle_after_checks {
+                response.status = MeltQuoteState::Pending;
+                response.payment_proof = None;
+                response.total_spent = Amount::new(0, CurrencyUnit::Sat);
+                return Ok(response);
+            }
+
+            let Some(final_status) = self.final_status else {
+                response.status = MeltQuoteState::Pending;
+                response.payment_proof = None;
+                response.total_spent = Amount::new(0, CurrencyUnit::Sat);
+                return Ok(response);
+            };
+
+            response.status = final_status;
+            if final_status != MeltQuoteState::Paid {
+                response.payment_proof = None;
+                response.total_spent = Amount::new(0, CurrencyUnit::Sat);
+            }
+            Ok(response)
+        }
+    }
+
+    #[cfg(feature = "federation")]
     fn test_federation_runtime_config() -> cdk::mint::FederationRuntimeConfig {
         let member = cdk::federation::TrustedDealerMember::new(
             cdk::federation::MemberId::new(1).expect("member id"),
@@ -1145,11 +1278,6 @@ mod tests {
 
     #[cfg(feature = "federation")]
     async fn create_federated_test_state() -> MintState {
-        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
-        let runtime_config = test_federation_runtime_config();
-        let mut builder = MintBuilder::new(db.clone())
-            .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]))
-            .with_federation_config(runtime_config.clone());
         let fake = FakeWallet::new(
             FeeReserve {
                 min_fee_reserve: 1.into(),
@@ -1160,12 +1288,24 @@ mod tests {
             0,
             CurrencyUnit::Sat,
         );
+        create_federated_test_state_with_backend(Arc::new(fake)).await
+    }
+
+    #[cfg(feature = "federation")]
+    async fn create_federated_test_state_with_backend(
+        payment_processor: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync + 'static>,
+    ) -> MintState {
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let runtime_config = test_federation_runtime_config();
+        let mut builder = MintBuilder::new(db.clone())
+            .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]))
+            .with_federation_config(runtime_config.clone());
         builder
             .add_payment_processor(
                 CurrencyUnit::Sat,
                 PaymentMethod::Known(KnownMethod::Bolt11),
                 MintMeltLimits::new(1, 10_000),
-                Arc::new(fake),
+                payment_processor,
             )
             .await
             .unwrap();
@@ -2055,6 +2195,61 @@ mod tests {
 
         assert_eq!(still_pending.state(), MeltQuoteState::Pending);
         assert!(still_pending.change().is_none());
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn pending_federated_melt_quote_check_later_finalizes_with_change() {
+        let backend = Arc::new(DelayedStatusFakeWallet::new(2, Some(MeltQuoteState::Paid)));
+        let state = create_federated_test_state_with_backend(backend).await;
+        let quote_id = create_federated_melt_quote(&state, 1000).await;
+        let input = proof_for_amount(&state, 4, "pending-quote-check-paid");
+        let input_y = input.y().expect("input y");
+        let mut change_output = outputs_for_amount(&state, 2)
+            .into_iter()
+            .next()
+            .expect("change output");
+        change_output.amount = Amount::ZERO;
+        let request =
+            cdk::nuts::MeltRequest::new(quote_id.clone(), vec![input], Some(vec![change_output]));
+
+        let pending = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect("federated fake-wallet melt should initially remain pending");
+        assert_eq!(pending.state(), MeltQuoteState::Pending);
+        assert!(pending.change().is_none());
+
+        let settled = state
+            .mint
+            .check_melt_quote(&quote_id)
+            .await
+            .expect("later quote check should reconcile pending melt");
+        assert_eq!(settled.state(), MeltQuoteState::Paid);
+        let change = settled.change().expect("settled melt change");
+        assert_eq!(change.len(), 1);
+        assert_eq!(change[0].amount, Amount::from(2));
+
+        let proof_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&[input_y])
+            .await
+            .expect("proof state lookup");
+        assert_eq!(proof_states, vec![Some(cdk::nuts::State::Spent)]);
+        assert!(state
+            .mint
+            .localstore()
+            .get_melt_saga_by_quote_id(&quote_id)
+            .await
+            .expect("saga lookup")
+            .is_none());
     }
 
     #[cfg(feature = "federation")]

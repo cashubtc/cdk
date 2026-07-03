@@ -758,6 +758,10 @@ impl Mint {
         )
         .await?;
 
+        if let Some(updated_quote) = self.localstore.get_melt_quote(&quote.id).await? {
+            *quote = updated_quote;
+        }
+
         Ok(())
     }
 }
