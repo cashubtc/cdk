@@ -160,7 +160,9 @@ impl FederationRuntimeConfig {
         request: &MeltRequest<QuoteId>,
     ) -> Result<(), Error> {
         match request.outputs() {
-            Some(outputs) => self.validate_output_keysets(outputs),
+            Some(outputs) => Ok(self
+                .public_config
+                .validate_blinded_change_outputs(outputs)?),
             None => Ok(()),
         }
     }
@@ -534,6 +536,22 @@ mod tests {
             runtime_config.validate_melt_change_outputs(&melt),
             Err(cdk_common::Error::Federation(
                 FederationError::InvalidFederatedKeysetVersion { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn runtime_config_accepts_zero_amount_melt_change_placeholders() {
+        let runtime_config = runtime_config();
+        let mut output = output_for_runtime(&runtime_config, b"zero amount change placeholder");
+        output.amount = Amount::ZERO;
+        let melt = MeltRequest::new(QuoteId::new(), Vec::new(), Some(vec![output.clone()]));
+
+        assert!(runtime_config.validate_melt_change_outputs(&melt).is_ok());
+        assert!(matches!(
+            runtime_config.validate_output_keysets(&[output]),
+            Err(cdk_common::Error::Federation(
+                FederationError::UnknownFederatedKeysetAmount { .. }
             ))
         ));
     }

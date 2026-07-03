@@ -21,7 +21,7 @@ use crate::nuts::{
     MintInfo, MintRequest, MintResponse, PaymentMethod, RestoreRequest, RestoreResponse,
     SwapRequest, SwapResponse,
 };
-use crate::Error;
+use crate::{Amount, Error};
 
 /// Minimal wallet federation connector validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -49,6 +49,12 @@ pub struct FederatedMintConnector {
     public_config: FederationConfig,
     member_connectors: BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
     primary_member_id: MemberId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShareAmountValidation {
+    Exact,
+    AllowZeroAmountPlaceholder,
 }
 
 impl fmt::Debug for FederatedMintConnector {
@@ -187,12 +193,54 @@ impl FederatedMintConnector {
         )))
     }
 
+    async fn collect_melt_responses<F, Fut>(
+        &self,
+        mut call_member: F,
+    ) -> Result<Vec<(MemberId, MeltQuoteResponse<String>)>, Error>
+    where
+        F: FnMut(Arc<dyn MintConnector + Send + Sync>) -> Fut,
+        Fut: std::future::Future<Output = Result<MeltQuoteResponse<String>, Error>>,
+    {
+        let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
+        let mut responses = Vec::new();
+        let mut failures = Vec::new();
+
+        for (member_id, connector) in &self.member_connectors {
+            match call_member(connector.clone()).await {
+                Ok(response) => {
+                    responses.push((*member_id, response));
+                    if responses.len() >= threshold {
+                        break;
+                    }
+                }
+                Err(err) => failures.push(format!("member {}: {}", member_id, err)),
+            }
+        }
+
+        if responses.len() >= threshold {
+            return Ok(responses);
+        }
+
+        Err(Error::InvalidMintResponse(format!(
+            "insufficient federation melt responses: required {}, received {}, failures: {}",
+            threshold,
+            responses.len(),
+            failures.join("; ")
+        )))
+    }
+
     fn aggregate_member_responses(
         &self,
         outputs: &[BlindedMessage],
         member_responses: &[(MemberId, MintResponse)],
+        amount_validation: ShareAmountValidation,
     ) -> Result<MintResponse, Error> {
-        self.public_config.validate_blinded_outputs(outputs)?;
+        match amount_validation {
+            ShareAmountValidation::Exact => self.public_config.validate_blinded_outputs(outputs)?,
+            ShareAmountValidation::AllowZeroAmountPlaceholder => self
+                .public_config
+                .validate_blinded_change_outputs(outputs)?,
+        }
 
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
         if member_responses.len() < threshold {
@@ -205,7 +253,18 @@ impl FederatedMintConnector {
 
         let mut aggregate_signatures = Vec::with_capacity(outputs.len());
         for (index, output) in outputs.iter().enumerate() {
-            let keyset = self.public_config.validate_blinded_output(output)?;
+            let first_signature = member_responses
+                .first()
+                .and_then(|(_, response)| response.signatures.get(index))
+                .ok_or_else(|| {
+                    Error::InvalidMintResponse(
+                        "missing federation signature share for output".to_string(),
+                    )
+                })?;
+            let mut signed_output = output.clone();
+            signed_output.amount = first_signature.amount;
+            signed_output.keyset_id = first_signature.keyset_id;
+            let keyset = self.public_config.validate_blinded_output(&signed_output)?;
             let blinded_message = output.blinded_secret.as_bls_g1()?;
             let mut shares = Vec::with_capacity(member_responses.len());
 
@@ -216,7 +275,15 @@ impl FederatedMintConnector {
                         member_id
                     ))
                 })?;
-                validate_signature_metadata(signature, output, *member_id)?;
+                validate_signature_metadata(signature, output, *member_id, amount_validation)?;
+                if signature.amount != signed_output.amount
+                    || signature.keyset_id != signed_output.keyset_id
+                {
+                    return Err(Error::InvalidMintResponse(format!(
+                        "member {} returned a share that does not match the threshold set",
+                        member_id
+                    )));
+                }
 
                 let public_share = keyset
                     .public_shares
@@ -225,11 +292,11 @@ impl FederatedMintConnector {
                         keyset_id: keyset.id,
                         member_id: *member_id,
                     })?
-                    .get(&output.amount)
+                    .get(&signed_output.amount)
                     .ok_or(FederationError::MissingPublicShareAmount {
                         keyset_id: keyset.id,
                         member_id: *member_id,
-                        amount: output.amount,
+                        amount: signed_output.amount,
                     })?;
                 let share = BlsBlindSignatureShare::new(
                     member_id.to_bls_signer_id(),
@@ -247,8 +314,8 @@ impl FederatedMintConnector {
 
             let aggregate_signature = aggregate_blind_signature_shares(threshold, &shares)?;
             aggregate_signatures.push(BlindSignature {
-                amount: output.amount,
-                keyset_id: output.keyset_id,
+                amount: signed_output.amount,
+                keyset_id: signed_output.keyset_id,
                 c: aggregate_signature.into(),
                 dleq: None,
             });
@@ -268,6 +335,70 @@ impl FederatedMintConnector {
         Ok(MintResponse {
             signatures: aggregate_signatures,
         })
+    }
+
+    fn aggregate_melt_response(
+        &self,
+        outputs: &[BlindedMessage],
+        member_responses: &[(MemberId, MeltQuoteResponse<String>)],
+    ) -> Result<MeltQuoteResponse<String>, Error> {
+        self.public_config
+            .validate_blinded_change_outputs(outputs)?;
+
+        let (_, first_response) = member_responses.first().ok_or_else(|| {
+            Error::InvalidMintResponse("missing federation melt responses".to_string())
+        })?;
+        for (member_id, response) in member_responses.iter().skip(1) {
+            validate_melt_response_metadata(first_response, response, *member_id)?;
+        }
+
+        let Some(first_change) = first_response.change() else {
+            for (member_id, response) in member_responses {
+                if response.change().is_some() {
+                    return Err(Error::InvalidMintResponse(format!(
+                        "member {} returned melt change when the threshold set did not",
+                        member_id
+                    )));
+                }
+            }
+            return Ok(first_response.clone());
+        };
+
+        if first_change.is_empty() {
+            for (member_id, response) in member_responses {
+                match response.change() {
+                    Some(change) if change.is_empty() => (),
+                    _ => {
+                        return Err(Error::InvalidMintResponse(format!(
+                            "member {} returned mismatched empty melt change",
+                            member_id
+                        )))
+                    }
+                }
+            }
+            return Ok(first_response.clone());
+        }
+
+        let mut change_responses = Vec::with_capacity(member_responses.len());
+        for (member_id, response) in member_responses {
+            let change = response.change().cloned().ok_or_else(|| {
+                Error::InvalidMintResponse(format!(
+                    "member {} did not return melt change signatures",
+                    member_id
+                ))
+            })?;
+            change_responses.push((*member_id, MintResponse { signatures: change }));
+        }
+
+        let aggregate_change = self.aggregate_member_responses(
+            outputs,
+            &change_responses,
+            ShareAmountValidation::AllowZeroAmountPlaceholder,
+        )?;
+        let mut response = first_response.clone();
+        set_melt_response_change(&mut response, Some(aggregate_change.signatures));
+
+        Ok(response)
     }
 }
 
@@ -336,7 +467,11 @@ impl MintConnector for FederatedMintConnector {
                 async move { connector.post_mint(&method, request).await }
             })
             .await?;
-        self.aggregate_member_responses(&request.outputs, &member_responses)
+        self.aggregate_member_responses(
+            &request.outputs,
+            &member_responses,
+            ShareAmountValidation::Exact,
+        )
     }
 
     async fn post_batch_check_mint_quote_status(
@@ -365,7 +500,11 @@ impl MintConnector for FederatedMintConnector {
                 async move { connector.post_batch_mint(&method, request).await }
             })
             .await?;
-        self.aggregate_member_responses(&request.outputs, &member_responses)
+        self.aggregate_member_responses(
+            &request.outputs,
+            &member_responses,
+            ShareAmountValidation::Exact,
+        )
     }
 
     async fn post_melt_quote(
@@ -400,11 +539,21 @@ impl MintConnector for FederatedMintConnector {
         method: &PaymentMethod,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteResponse<String>, Error> {
-        if let Some(outputs) = request.outputs() {
-            self.public_config.validate_blinded_outputs(outputs)?;
-        }
+        let Some(outputs) = request.outputs().clone() else {
+            return self.primary_connector()?.post_melt(method, request).await;
+        };
+        self.public_config
+            .validate_blinded_change_outputs(&outputs)?;
+        self.validate_member_active_keysets().await?;
 
-        self.primary_connector()?.post_melt(method, request).await
+        let member_responses = self
+            .collect_melt_responses(|connector| {
+                let method = method.clone();
+                let request = request.clone();
+                async move { connector.post_melt(&method, request).await }
+            })
+            .await?;
+        self.aggregate_melt_response(&outputs, &member_responses)
     }
 
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error> {
@@ -425,7 +574,11 @@ impl MintConnector for FederatedMintConnector {
                 }
             })
             .await?;
-        let response = self.aggregate_member_responses(request.outputs(), &member_responses)?;
+        let response = self.aggregate_member_responses(
+            request.outputs(),
+            &member_responses,
+            ShareAmountValidation::Exact,
+        )?;
 
         Ok(SwapResponse {
             signatures: response.signatures,
@@ -488,8 +641,15 @@ fn validate_signature_metadata(
     signature: &BlindSignature,
     output: &BlindedMessage,
     member_id: MemberId,
+    amount_validation: ShareAmountValidation,
 ) -> Result<(), Error> {
-    if signature.amount != output.amount {
+    let amount_matches = match amount_validation {
+        ShareAmountValidation::Exact => signature.amount == output.amount,
+        ShareAmountValidation::AllowZeroAmountPlaceholder => {
+            output.amount == Amount::ZERO || signature.amount == output.amount
+        }
+    };
+    if !amount_matches {
         return Err(Error::InvalidMintResponse(format!(
             "member {} signature amount ({}) does not match requested amount ({})",
             member_id, signature.amount, output.amount
@@ -509,6 +669,47 @@ fn validate_signature_metadata(
     }
 
     Ok(())
+}
+
+fn validate_melt_response_metadata(
+    expected: &MeltQuoteResponse<String>,
+    response: &MeltQuoteResponse<String>,
+    member_id: MemberId,
+) -> Result<(), Error> {
+    if expected.method() != response.method()
+        || expected.quote() != response.quote()
+        || expected.amount() != response.amount()
+        || expected.fee_reserve() != response.fee_reserve()
+        || expected.state() != response.state()
+        || expected.expiry() != response.expiry()
+        || expected.payment_proof() != response.payment_proof()
+        || expected.request() != response.request()
+        || expected.unit() != response.unit()
+    {
+        return Err(Error::InvalidMintResponse(format!(
+            "member {} returned mismatched melt response metadata",
+            member_id
+        )));
+    }
+
+    Ok(())
+}
+
+fn set_melt_response_change(
+    response: &mut MeltQuoteResponse<String>,
+    change: Option<Vec<BlindSignature>>,
+) {
+    match response {
+        MeltQuoteResponse::Bolt11(response) | MeltQuoteResponse::Bolt12(response) => {
+            response.change = change;
+        }
+        MeltQuoteResponse::Onchain(response) => {
+            response.change = change;
+        }
+        MeltQuoteResponse::Custom((_, response)) => {
+            response.change = change;
+        }
+    }
 }
 
 fn validate_member_active_keysets(
@@ -600,13 +801,18 @@ mod tests {
     use cdk_common::mint_url::MintUrl;
     use cdk_common::nuts::nut01::{BlsG1PublicKey, BlsSecretKey};
     use cdk_common::nuts::nut02::KeySet;
-    use cdk_common::{Amount, BlindSignature, BlindedMessage, CurrencyUnit, Id, PublicKey};
+    use cdk_common::{
+        Amount, BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteBolt11Response,
+        MeltQuoteResponse, PublicKey,
+    };
     use cdk_common::{MintResponse, SecretKey};
 
     use super::{FederatedMintConnector, FederationWalletConnector};
     use crate::dhke::verify_bls_blind_signature;
     use crate::nuts::nut00::{KnownMethod, PaymentMethod};
-    use crate::nuts::{BatchMintRequest, MintRequest, SwapRequest, SwapResponse};
+    use crate::nuts::{
+        BatchMintRequest, MeltQuoteState, MeltRequest, MintRequest, SwapRequest, SwapResponse,
+    };
     use crate::wallet::test_utils::MockMintConnector;
     use crate::wallet::MintConnector;
 
@@ -715,6 +921,27 @@ mod tests {
         ]
     }
 
+    fn blinded_change_outputs(bundle: &TrustedDealerConfigBundle) -> Vec<BlindedMessage> {
+        blinded_outputs(bundle)
+            .into_iter()
+            .map(|mut output| {
+                output.amount = Amount::ZERO;
+                output
+            })
+            .collect()
+    }
+
+    fn signed_change_outputs(change_outputs: &[BlindedMessage]) -> Vec<BlindedMessage> {
+        [Amount::from(1), Amount::from(2)]
+            .into_iter()
+            .zip(change_outputs.iter().cloned())
+            .map(|(amount, mut output)| {
+                output.amount = amount;
+                output
+            })
+            .collect()
+    }
+
     fn share_response(
         bundle: &TrustedDealerConfigBundle,
         member_id: MemberId,
@@ -762,6 +989,48 @@ mod tests {
                 connector.set_post_swap_response(Ok(SwapResponse {
                     signatures: share_response(bundle, member_id, outputs).signatures,
                 }));
+                (
+                    member_id,
+                    Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+                )
+            })
+            .collect()
+    }
+
+    fn melt_response(
+        bundle: &TrustedDealerConfigBundle,
+        member_id: MemberId,
+        change_outputs: &[BlindedMessage],
+    ) -> MeltQuoteResponse<String> {
+        let signed_outputs = signed_change_outputs(change_outputs);
+        MeltQuoteResponse::Bolt11(MeltQuoteBolt11Response {
+            quote: "melt-quote".to_string(),
+            amount: Amount::from(3),
+            fee_reserve: Amount::ZERO,
+            state: MeltQuoteState::Paid,
+            expiry: 42,
+            payment_preimage: Some("payment-preimage".to_string()),
+            change: Some(share_response(bundle, member_id, &signed_outputs).signatures),
+            request: Some("bolt11-invoice".to_string()),
+            unit: Some(CurrencyUnit::Sat),
+        })
+    }
+
+    fn member_connectors_with_melt_change(
+        bundle: &TrustedDealerConfigBundle,
+        change_outputs: &[BlindedMessage],
+    ) -> BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>> {
+        let advertised = advertised_keyset(bundle);
+        [member_id(1), member_id(2), member_id(3)]
+            .into_iter()
+            .map(|member_id| {
+                let connector = MockMintConnector::new();
+                connector.set_active_keyset(advertised.clone());
+                connector.set_post_melt_response(Ok(melt_response(
+                    bundle,
+                    member_id,
+                    change_outputs,
+                )));
                 (
                     member_id,
                     Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
@@ -912,6 +1181,71 @@ mod tests {
                 signatures: response.signatures,
             },
         );
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_aggregates_melt_change_signature_shares() {
+        let bundle = threshold_bundle();
+        let change_outputs = blinded_change_outputs(&bundle);
+        let connector = FederatedMintConnector::new(
+            bundle.public_config.clone(),
+            member_connectors_with_melt_change(&bundle, &change_outputs),
+        )
+        .expect("federated mint connector");
+        let response = connector
+            .post_melt(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                MeltRequest::new(
+                    "melt-quote".to_string(),
+                    Vec::new(),
+                    Some(change_outputs.clone()),
+                ),
+            )
+            .await
+            .expect("melt response");
+        let change = response.change().cloned().expect("change signatures");
+
+        assert_aggregate_response_valid(
+            &bundle,
+            &signed_change_outputs(&change_outputs),
+            &MintResponse { signatures: change },
+        );
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_rejects_non_v3_melt_change_outputs() {
+        let bundle = threshold_bundle();
+        let change_outputs = blinded_change_outputs(&bundle);
+        let mut bad_change_outputs = change_outputs.clone();
+        let keyset = &bundle.public_config.keysets[0];
+        bad_change_outputs[0].keyset_id = Id::v2_from_data(
+            &keyset.keys(),
+            &keyset.unit,
+            keyset.input_fee_ppk,
+            keyset.final_expiry,
+        );
+        let connector = FederatedMintConnector::new(
+            bundle.public_config.clone(),
+            member_connectors_with_melt_change(&bundle, &change_outputs),
+        )
+        .expect("federated mint connector");
+        let result = connector
+            .post_melt(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                MeltRequest::new(
+                    "melt-quote".to_string(),
+                    Vec::new(),
+                    Some(bad_change_outputs),
+                ),
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(crate::Error::Federation(
+                FederationError::InvalidFederatedKeysetVersion { .. }
+            ))
+        ));
     }
 
     #[tokio::test]

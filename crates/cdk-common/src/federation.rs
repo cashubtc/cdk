@@ -885,8 +885,33 @@ impl FederationConfig {
         Ok(())
     }
 
+    /// Validate melt change outputs, allowing amount-zero placeholders.
+    pub fn validate_blinded_change_outputs(&self, outputs: &[BlindedMessage]) -> Result<()> {
+        for output in outputs {
+            self.validate_blinded_change_output(output)?;
+        }
+
+        Ok(())
+    }
+
     /// Validate one blinded output and return the aggregate keyset it targets.
     pub fn validate_blinded_output(&self, output: &BlindedMessage) -> Result<&FederatedKeyset> {
+        self.validate_blinded_output_with_amount_policy(output, false)
+    }
+
+    /// Validate one melt change output and return the aggregate keyset it targets.
+    pub fn validate_blinded_change_output(
+        &self,
+        output: &BlindedMessage,
+    ) -> Result<&FederatedKeyset> {
+        self.validate_blinded_output_with_amount_policy(output, true)
+    }
+
+    fn validate_blinded_output_with_amount_policy(
+        &self,
+        output: &BlindedMessage,
+        allow_zero_amount_placeholder: bool,
+    ) -> Result<&FederatedKeyset> {
         if output.keyset_id.get_version() != KeySetVersion::Version02 {
             return Err(FederationError::InvalidFederatedKeysetVersion {
                 keyset_id: output.keyset_id,
@@ -905,7 +930,18 @@ impl FederationConfig {
                 keyset_id: keyset.id,
             });
         }
-        if !keyset.aggregate_keys.contains_key(&output.amount) {
+        if output.amount != Amount::ZERO || !allow_zero_amount_placeholder {
+            if !keyset.aggregate_keys.contains_key(&output.amount) {
+                return Err(FederationError::UnknownFederatedKeysetAmount {
+                    keyset_id: keyset.id,
+                    amount: output.amount,
+                });
+            }
+        }
+        if output.amount == Amount::ZERO
+            && allow_zero_amount_placeholder
+            && keyset.aggregate_keys.is_empty()
+        {
             return Err(FederationError::UnknownFederatedKeysetAmount {
                 keyset_id: keyset.id,
                 amount: output.amount,
@@ -1089,7 +1125,7 @@ mod tests {
     use std::str::FromStr;
 
     use crate::nuts::nut02::KeySetVersion;
-    use cashu::nuts::nut01::{trusted_dealer_keygen, BlsSecretKey};
+    use cashu::nuts::nut01::{trusted_dealer_keygen, BlsG1PublicKey, BlsSecretKey};
 
     use super::*;
 
@@ -1310,6 +1346,50 @@ mod tests {
             serde_json::from_value::<FederationConfig>(json).is_err(),
             "secp-style public key must not deserialize as a BLS aggregate key"
         );
+    }
+
+    #[test]
+    fn federation_config_allows_zero_amount_change_placeholders() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let (keyset, _) = test_keyset(&members);
+        let config = FederationConfig::new(params, members, vec![keyset.clone()]).expect("config");
+        let placeholder = BlindedMessage::new(
+            Amount::ZERO,
+            keyset.id,
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(b"change placeholder")),
+        );
+
+        assert!(matches!(
+            config.validate_blinded_outputs(&[placeholder.clone()]),
+            Err(FederationError::UnknownFederatedKeysetAmount { .. })
+        ));
+        config
+            .validate_blinded_change_outputs(&[placeholder])
+            .expect("change placeholder");
+    }
+
+    #[test]
+    fn federation_config_rejects_non_v3_change_placeholders() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let (keyset, _) = test_keyset(&members);
+        let config = FederationConfig::new(params, members, vec![keyset.clone()]).expect("config");
+        let placeholder = BlindedMessage::new(
+            Amount::ZERO,
+            Id::v2_from_data(
+                &keyset.keys(),
+                &keyset.unit,
+                keyset.input_fee_ppk,
+                keyset.final_expiry,
+            ),
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(b"non-v3 change placeholder")),
+        );
+
+        assert!(matches!(
+            config.validate_blinded_change_outputs(&[placeholder]),
+            Err(FederationError::InvalidFederatedKeysetVersion { .. })
+        ));
     }
 
     #[test]
