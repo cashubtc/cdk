@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">ef870667 signature shares</span>
+          <span class="value">c0c6df27 REST consensus wiring</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Wire consensus into private REST</span>
+          <span class="value">Federated mint quote flow</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Federated mint quote flow</span>
+          <span class="value">Federated mint operation signing</span>
         </div>
       </aside>
     </header>
@@ -460,6 +460,10 @@
             <h3>Signature share helper committed</h3>
             <p>Local member private configs can now sign BLS blinded outputs into verifiable threshold signature shares tied to an accepted operation ID.</p>
           </article>
+          <article class="item">
+            <h3>Private REST uses consensus</h3>
+            <p>Federation status, operation submit, and journal catch-up routes now use the local dummy consensus journal when a mint is configured as a federation member.</p>
+          </article>
         </div>
       </section>
 
@@ -501,6 +505,10 @@
           <article class="item">
             <h3>Signing gated by operation IDs</h3>
             <p>Signature-share payloads now carry the operation ID that authorized the share, preparing the mint paths to sign only after consensus acceptance.</p>
+          </article>
+          <article class="item">
+            <h3>Member catch-up route works against journal</h3>
+            <p>The private REST scaffold can now serve accepted journal entries instead of returning a placeholder response.</p>
           </article>
           <article class="item">
             <h3>Threshold math baseline</h3>
@@ -630,6 +638,12 @@
               <td>Attach a runtime consensus handle to private REST so operation submit and catch-up endpoints use the journal instead of returning not-wired-yet.</td>
             </tr>
             <tr>
+              <td>Private REST consensus wiring</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federation` passed 31 tests. `cargo check` passed for cdk-common, cdk-axum with and without federation, and cdk-mintd with federation/fakewallet/sqlite.</td>
+              <td>Use fake-wallet quote creation to propose and accept federated mint quote operations.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status pending">Pending</span></td>
               <td>Implementation not started.</td>
@@ -669,12 +683,12 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Wire consensus into private REST</h3>
-            <p>Attach a runtime consensus handle to federation member state so private REST endpoints can submit operations and serve catch-up from the local journal.</p>
-          </article>
-          <article class="item">
             <h3>Federated mint quote flow</h3>
             <p>Use fake wallet quote creation and payment observations to drive accepted mint operations before producing signature shares.</p>
+          </article>
+          <article class="item">
+            <h3>Federated mint operation signing</h3>
+            <p>Convert paid mint requests into consensus operations and return local BLS signature shares after acceptance.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>
