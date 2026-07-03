@@ -286,25 +286,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arti-hyper"
-version = "0.19.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8fbfdcf58b72f0d80a1b1b6cca0869d267b8ebc46f946bff8fb5692c2cd8e2a"
-dependencies = [
- "anyhow",
- "arti-client",
- "educe",
- "hyper 0.14.32",
- "pin-project",
- "thiserror 1.0.69",
- "tls-api",
- "tls-api-native-tls",
- "tokio",
- "tor-error",
- "tor-rtcompat",
-]
-
-[[package]]
 name = "ascii"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -397,18 +378,6 @@ dependencies = [
  "event-listener",
  "event-listener-strategy",
  "pin-project-lite",
-]
-
-[[package]]
-name = "async-native-tls"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9343dc5acf07e79ff82d0c37899f079db3534d99f189a1837c8e549c99405bec"
-dependencies = [
- "futures-util",
- "native-tls",
- "thiserror 1.0.69",
- "url",
 ]
 
 [[package]]
@@ -1449,8 +1418,8 @@ dependencies = [
 name = "cdk-http-client"
 version = "0.17.0"
 dependencies = [
+ "anyhow",
  "arti-client",
- "arti-hyper",
  "async-trait",
  "bitreq",
  "cashu",
@@ -2105,7 +2074,6 @@ dependencies = [
  "brotli",
  "compression-core",
  "flate2",
- "liblzma",
  "memchr",
  "zstd",
  "zstd-safe",
@@ -4274,26 +4242,6 @@ name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
-
-[[package]]
-name = "liblzma"
-version = "0.4.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45aec2360b3933207e27908049d8e4df4e476b58180afb1e56b2a4fb72efe4ba"
-dependencies = [
- "liblzma-sys",
-]
-
-[[package]]
-name = "liblzma-sys"
-version = "0.4.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a046c7f353ba30f810545151e04f63545833803f5b86ee3ddf1517247fe560a5"
-dependencies = [
- "cc",
- "libc",
- "pkg-config",
-]
 
 [[package]]
 name = "libm"
@@ -8552,7 +8500,6 @@ version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6655852504f1defe01a1c1cd5b681ce5d81af5cfb8c18adb26b9d2155fdd1d7c"
 dependencies = [
- "async-native-tls",
  "async-trait",
  "async_executors",
  "coarsetime",
@@ -8560,7 +8507,6 @@ dependencies = [
  "educe",
  "futures",
  "futures-rustls",
- "native-tls",
  "paste",
  "pin-project",
  "rustls-pki-types",

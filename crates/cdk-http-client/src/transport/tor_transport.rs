@@ -2,9 +2,9 @@
 
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arti_client::{TorClient, TorClientConfig};
-use arti_hyper::ArtiHttpConnector;
 use async_trait::async_trait;
 use cashu::nuts::nut22::AuthToken;
 use http::header::{self, HeaderName, HeaderValue};
@@ -14,13 +14,19 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tls_api::{TlsConnector as _, TlsConnectorBuilder as _};
 use tokio::sync::OnceCell;
+use tokio::time::timeout;
 use url::Url;
 
+use crate::transport::arti_connector::ArtiHttpConnector;
 use crate::transport::Transport;
 use crate::HttpError;
 
 /// Fixed-size pool size.
 pub const DEFAULT_TOR_POOL_SIZE: usize = 5;
+/// Maximum time to wait for the embedded Tor client to bootstrap.
+pub const DEFAULT_TOR_BOOTSTRAP_TIMEOUT_SECS: u64 = 60;
+/// Maximum time to wait for a Tor-backed HTTP request phase.
+pub const DEFAULT_TOR_REQUEST_TIMEOUT_SECS: u64 = 30;
 
 /// Tor transport that maintains a pool of isolated TorClient handles.
 #[derive(Clone)]
@@ -80,9 +86,17 @@ impl TorAsync {
         let pool_ref = self
             .pool
             .get_or_try_init(|| async move {
-                let base = TorClient::create_bootstrapped(TorClientConfig::default())
-                    .await
-                    .map_err(|e| HttpError::Other(e.to_string()))?;
+                let base = timeout(
+                    Duration::from_secs(DEFAULT_TOR_BOOTSTRAP_TIMEOUT_SECS),
+                    TorClient::create_bootstrapped(TorClientConfig::default()),
+                )
+                .await
+                .map_err(|_| {
+                    HttpError::Connection(format!(
+                        "Tor bootstrap timed out after {DEFAULT_TOR_BOOTSTRAP_TIMEOUT_SECS} seconds"
+                    ))
+                })?
+                .map_err(|e| HttpError::Other(e.to_string()))?;
                 let mut clients = Vec::with_capacity(size);
                 for _ in 0..size {
                     clients.push(base.isolated_client());
@@ -151,6 +165,7 @@ impl TorAsync {
     where
         R: DeserializeOwned,
     {
+        let request_label = format!("{method} {url}");
         let tls = tls_api_native_tls::TlsConnector::builder()
             .map_err(|e| HttpError::Other(format!("{e:?}")))?
             .build()
@@ -191,15 +206,30 @@ impl TorAsync {
             );
         }
 
-        let resp = client
-            .request(req)
-            .await
-            .map_err(|e| HttpError::Connection(e.to_string()))?;
+        let resp = timeout(
+            Duration::from_secs(DEFAULT_TOR_REQUEST_TIMEOUT_SECS),
+            client.request(req),
+        )
+        .await
+        .map_err(|_| {
+            HttpError::Connection(format!(
+                "Tor request timed out after {DEFAULT_TOR_REQUEST_TIMEOUT_SECS} seconds: {request_label}"
+            ))
+        })?
+        .map_err(|e| HttpError::Connection(e.to_string()))?;
 
         let status = resp.status().as_u16();
-        let bytes = hyper::body::to_bytes(resp.into_body())
-            .await
-            .map_err(|e| HttpError::Other(e.to_string()))?;
+        let bytes = timeout(
+            Duration::from_secs(DEFAULT_TOR_REQUEST_TIMEOUT_SECS),
+            hyper::body::to_bytes(resp.into_body()),
+        )
+        .await
+        .map_err(|_| {
+            HttpError::Connection(format!(
+                "Tor response body timed out after {DEFAULT_TOR_REQUEST_TIMEOUT_SECS} seconds: {request_label}"
+            ))
+        })?
+        .map_err(|e| HttpError::Other(e.to_string()))?;
 
         if !(200..300).contains(&status) {
             return Err(HttpError::Status {

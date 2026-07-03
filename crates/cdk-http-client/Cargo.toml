@@ -16,8 +16,8 @@ bitreq = ["dep:bitreq"]
 reqwest = ["dep:reqwest"]
 bip353 = ["dep:hickory-resolver", "dep:rustls", "dep:ring"]
 tor = [
+    "dep:anyhow",
     "dep:arti-client",
-    "dep:arti-hyper",
     "dep:getrandom",
     "dep:http",
     "dep:hyper",
@@ -44,15 +44,15 @@ bitreq = { version = "0.3.4", features = ["async", "async-https-rustls", "json-u
 hickory-resolver = { version = "0.25.2", optional = true, features = ["dnssec-ring"] }
 ring = { version = "0.17", optional = true }
 rustls = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
 arti-client = { version = "0.19.0", optional = true, default-features = false, features = ["tokio", "rustls"] }
-arti-hyper = { version = "0.19.0", optional = true }
 getrandom = { version = "0.2", optional = true }
 http = { version = "0.2", optional = true }
-hyper = { version = "0.14", optional = true, features = ["client", "http1", "http2"] }
+hyper = { version = "0.14", optional = true, features = ["client", "http1", "http2", "runtime"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks"], optional = true }
 tls-api = { version = "0.9", optional = true }
 tls-api-native-tls = { version = "0.9", optional = true }
-tokio = { workspace = true, features = ["sync"], optional = true }
+tokio = { workspace = true, features = ["sync", "time", "io-util"], optional = true }
 tor-rtcompat = { version = "0.19.0", optional = true, features = ["tokio", "rustls"] }
 tokio-tungstenite = { workspace = true, features = [
     "rustls", "rustls-tls-native-roots", "connect"
