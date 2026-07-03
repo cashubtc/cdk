@@ -328,11 +328,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: expand federation milestones</span>
+          <span class="value">test: document naive sliding-window risk</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Expanded milestone dashboard</span>
+          <span class="value">Naive sliding-window attack demo</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -898,6 +898,10 @@
             <p>A focused consensus regression now submits ABC, BCD, CDA, and DAB output sets for the same mint quote. The first accepted operation is replay-idempotent, all overlapping variants conflict on the quote key, and the journal keeps one canonical mint entry.</p>
           </article>
           <article class="item">
+            <h3>Naive threshold signing risk documented</h3>
+            <p>A paired cdk-common test now intentionally bypasses consensus, has four members sign ABC, BCD, CDA, and DAB under different operation IDs, and proves the wallet can regroup enough shares for every output. This keeps the consensus-before-signing invariant concrete.</p>
+          </article>
+          <article class="item">
             <h3>Milestone map expanded</h3>
             <p>The dashboard now lists every implementation-plan milestone from 0 through 23 individually, instead of grouping the remaining work into broad ranges.</p>
           </article>
@@ -1241,13 +1245,13 @@
             <tr>
               <td>Sliding-window mint attack regression</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk --features federation sliding_window -- --test-threads 1` passed the ABC/BCD/CDA/DAB overlapping-output regression. Adjacent mint and non-v3 federation tests passed, `cargo check -p cdk --features federation` passed, and formatting plus diff checks passed.</td>
+              <td>`cargo test -p cdk-common --features federation naive_local_signing_allows_sliding_window_quorum_cover -- --test-threads 1` proves a naive local-sign-before-consensus design can regroup 3-of-4 shares for A, B, C, and D. `cargo test -p cdk --features federation sliding_window -- --test-threads 1` proves the actual consensus gate rejects the overlapping mint operations. The signing test group, cdk-common federation check, and formatting check passed.</td>
               <td>Run the generated live smoke script in an environment where member HTTP listeners can bind to loopback.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, and the mint-side sliding-window quorum-cover regression.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, and the paired naive-signing attack demonstration.</td>
               <td>Run live multi-process fake-wallet member scenarios from generated configs.</td>
             </tr>
           </tbody>
