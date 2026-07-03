@@ -275,6 +275,16 @@ impl Wallet {
             .build()
     }
 
+    /// Get the configured target proof count.
+    pub fn target_proof_count(&self) -> usize {
+        self.target_proof_count
+    }
+
+    /// Get the configured metadata cache TTL.
+    pub fn metadata_cache_ttl(&self) -> Option<Duration> {
+        *self.metadata_cache_ttl.read()
+    }
+
     /// Subscribe to events
     pub async fn subscribe<T: Into<WalletParams>>(
         &self,
