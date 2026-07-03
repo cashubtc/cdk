@@ -17,13 +17,15 @@ use cdk_common::federation::{
     FederationOperation, FederationOperationEnvelope, FederationOperationId,
     FederationOperationStatus, FederationSwapOperation, MemberConfigPrivate, MemberId,
 };
-use cdk_common::mint::{MintQuote, Operation};
+use cdk_common::mint::{MintQuote, Operation, OperationKind};
 use cdk_common::payment::PaymentIdentifier;
 use cdk_common::{
     Amount, BatchMintRequest, BlindSignature, BlindedMessage, CurrencyUnit, MeltRequest,
     MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest, MintResponse, PaymentMethod,
-    Proofs, ProofsMethods, PublicKey, QuoteId, RestoreRequest, SwapRequest, SwapResponse,
+    Proofs, ProofsMethods, PublicKey, QuoteId, RestoreRequest, SpendingConditionVerification,
+    State, SwapRequest, SwapResponse,
 };
+use uuid::Uuid;
 
 use super::verification::{Verification, MAX_PROOF_CONTENT_LEN};
 use super::Mint;
@@ -376,10 +378,14 @@ impl Mint {
                     .await?;
                 Ok(true)
             }
+            FederationOperation::Swap(operation) => {
+                self.apply_federation_swap(entry.operation_id, operation)
+                    .await?;
+                Ok(true)
+            }
             FederationOperation::MeltQuote(_)
             | FederationOperation::MeltQuotePayment(_)
             | FederationOperation::Melt(_)
-            | FederationOperation::Swap(_)
             | FederationOperation::Restore(_) => Ok(false),
         }
     }
@@ -508,15 +514,32 @@ impl Mint {
             .filter(|sig| sig.is_some())
             .count();
         if signatures_present != 0 && signatures_present != existing_signatures.len() {
+            tx.rollback().await?;
             return Err(Error::Custom(
                 "federation mint replay found partially persisted signatures".to_string(),
             ));
         }
 
         let operation_record = if input.is_batch() {
-            Operation::new_batch_mint(outputs_amount.clone().into(), payment_method.clone())
+            Operation::new(
+                federation_operation_uuid(operation_id),
+                OperationKind::BatchMint,
+                outputs_amount.clone().into(),
+                Amount::ZERO,
+                Amount::ZERO,
+                None,
+                Some(payment_method.clone()),
+            )
         } else {
-            Operation::new_mint(outputs_amount.clone().into(), payment_method.clone())
+            Operation::new(
+                federation_operation_uuid(operation_id),
+                OperationKind::Mint,
+                outputs_amount.clone().into(),
+                Amount::ZERO,
+                Amount::ZERO,
+                None,
+                Some(payment_method.clone()),
+            )
         };
 
         if signatures_present == 0 {
@@ -553,6 +576,104 @@ impl Mint {
         tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
             .await?;
         tx.commit().await?;
+        Ok(())
+    }
+
+    async fn apply_federation_swap(
+        &self,
+        operation_id: FederationOperationId,
+        operation: &FederationSwapOperation,
+    ) -> Result<(), Error> {
+        let config = self.federation_config().ok_or(Error::Internal)?;
+        config.validate_swap_outputs(&operation.request)?;
+        let input_proofs = operation.request.inputs();
+        if input_proofs.is_empty() {
+            return Err(Error::TransactionUnbalanced(
+                0,
+                operation.request.output_amount()?.to_u64(),
+                0,
+            ));
+        }
+
+        let input_verification = self.verify_federation_inputs(input_proofs).await?;
+        operation.request.verify_spending_conditions()?;
+        let output_verification = self.verify_outputs(operation.request.outputs())?;
+        self.verify_transaction_balanced(
+            input_verification.clone(),
+            output_verification.clone(),
+            input_proofs,
+        )
+        .await?;
+
+        let fee_breakdown = self.get_proofs_fee(input_proofs).await?;
+        let signatures = federation_share_signatures(
+            config.swap_signature_shares(operation_id, &operation.request)?,
+        );
+        let input_ys = input_proofs.ys()?;
+        let blinded_secrets = operation
+            .request
+            .outputs()
+            .iter()
+            .map(|output| output.blinded_secret)
+            .collect::<Vec<PublicKey>>();
+        let operation_record = Operation::new(
+            federation_operation_uuid(operation_id),
+            OperationKind::Swap,
+            output_verification.amount.clone().into(),
+            input_verification.amount.clone().into(),
+            fee_breakdown.total,
+            None,
+            None,
+        );
+
+        let mut tx = self.localstore.begin_transaction().await?;
+        let mut proofs = match tx
+            .add_proofs(input_proofs.clone(), None, &operation_record)
+            .await
+        {
+            Ok(proofs) => proofs,
+            Err(database::Error::Duplicate | database::Error::AttemptUpdateSpentProof) => {
+                tx.get_proofs(&input_ys).await?
+            }
+            Err(err) => {
+                tx.rollback().await?;
+                return Err(err.into());
+            }
+        };
+
+        if proofs.state != State::Spent {
+            Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await?;
+        }
+
+        let existing_signatures = tx.get_blind_signatures(&blinded_secrets).await?;
+        let signatures_present = existing_signatures
+            .iter()
+            .filter(|sig| sig.is_some())
+            .count();
+        if signatures_present != 0 && signatures_present != existing_signatures.len() {
+            tx.rollback().await?;
+            return Err(Error::Custom(
+                "federation swap replay found partially persisted signatures".to_string(),
+            ));
+        }
+
+        if signatures_present == 0 {
+            tx.add_blinded_messages(None, operation.request.outputs(), &operation_record)
+                .await?;
+            tx.add_blind_signatures(&blinded_secrets, &signatures, None)
+                .await?;
+            tx.add_completed_operation(&operation_record, &fee_breakdown.per_keyset)
+                .await?;
+        }
+
+        tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
+            .await?;
+        tx.commit().await?;
+
+        for y in input_ys {
+            self.pubsub_manager.proof_state((y, State::Spent));
+        }
+
         Ok(())
     }
 
@@ -618,6 +739,13 @@ impl Mint {
 
         Ok(Verification { amount })
     }
+}
+
+fn federation_operation_uuid(operation_id: FederationOperationId) -> Uuid {
+    let bytes = operation_id.to_bytes();
+    let mut uuid = [0_u8; 16];
+    uuid.copy_from_slice(&bytes[..16]);
+    Uuid::from_bytes(uuid)
 }
 
 fn mint_request_from_input(input: MintInput) -> FederationMintRequest {

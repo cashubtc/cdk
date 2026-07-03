@@ -1617,6 +1617,8 @@ mod tests {
     async fn post_swap_returns_federation_signature_shares() {
         let state = create_federated_test_state().await;
         let outputs = outputs_for_amount(&state, 2);
+        let inputs = vec![proof_for_amount(&state, 2, "swap-input")];
+        let input_y = inputs[0].y().expect("input y");
         let blinded_secret = outputs[0]
             .blinded_secret
             .as_bls_g1()
@@ -1625,7 +1627,7 @@ mod tests {
         let response = crate::router_handlers::post_swap(
             AuthHeader::None,
             State(state.clone()),
-            Json(cdk::nuts::SwapRequest::new(Vec::new(), outputs.clone())),
+            Json(cdk::nuts::SwapRequest::new(inputs, outputs.clone())),
         )
         .await
         .expect("federation swap should return share response");
@@ -1653,6 +1655,21 @@ mod tests {
             verify_blind_signature_share(&share, &blinded_secret, public_share)
                 .expect("share verification")
         );
+        let proof_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&[input_y])
+            .await
+            .expect("proof state lookup");
+        assert_eq!(proof_states, vec![Some(cdk::nuts::State::Spent)]);
+
+        let stored_signatures = state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[outputs[0].blinded_secret])
+            .await
+            .expect("signature lookup");
+        assert_eq!(stored_signatures, vec![Some(signature.clone())]);
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::Swap]

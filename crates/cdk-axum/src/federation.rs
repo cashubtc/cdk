@@ -756,6 +756,39 @@ mod tests {
         )
     }
 
+    fn aggregate_secret_for_amount(amount: u64) -> BlsSecretKey {
+        match amount {
+            1 => BlsSecretKey::from_reduced_bytes(&[11; 32]),
+            _ => panic!("missing aggregate secret fixture for amount {amount}"),
+        }
+    }
+
+    fn proof_for_amount(state: &MintState, amount: u64, label: &str) -> cdk::nuts::Proof {
+        let config = state.mint.federation_config().expect("federation config");
+        let keyset = &config.public_config().keysets[0];
+        let secret = cdk::secret::Secret::new(format!("federation replay proof {label}"));
+        let signature = BlsG1PublicKey::hash_to_curve(secret.as_bytes())
+            .mul(&aggregate_secret_for_amount(amount));
+
+        cdk::nuts::Proof::new(
+            Amount::from(amount),
+            keyset.id,
+            secret,
+            PublicKey::from(signature),
+        )
+    }
+
+    fn swap_output(state: &MintState, label: &str) -> BlindedMessage {
+        let config = state.mint.federation_config().expect("federation config");
+        BlindedMessage::new(
+            Amount::from(1),
+            config.public_config().keysets[0].id,
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(
+                format!("federation replay swap output {label}").as_bytes(),
+            )),
+        )
+    }
+
     fn restore_envelope(
         federation_id: FederationId,
         label: &'static str,
@@ -955,6 +988,80 @@ mod tests {
             .expect("quote lookup")
             .expect("quote persisted");
         assert_eq!(quote.request, format!("invoice-{quote_id}"));
+
+        let persisted = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal lookup");
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
+        assert_eq!(
+            local_consensus
+                .lock()
+                .await
+                .journal()
+                .entry_by_operation_id(operation_id)
+                .expect("runtime entry")
+                .status,
+            FederationOperationStatus::Applied
+        );
+    }
+
+    #[tokio::test]
+    async fn catch_up_applies_swap_operation_to_local_store() {
+        let (state, public_config, _) = federation_route_state().await;
+        let config = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .clone();
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let input = proof_for_amount(&state, 1, "catch-up");
+        let input_y = input.y().expect("input y");
+        let output = swap_output(&state, "catch-up");
+        let request = cdk::nuts::SwapRequest::new(vec![input], vec![output.clone()]);
+        let envelope = config
+            .swap_operation(request.clone())
+            .expect("swap envelope");
+        let operation_id = envelope.operation_id().expect("operation id");
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+        peer_consensus
+            .submit_envelope(envelope)
+            .expect("peer accepted swap");
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+        let catch_up_response = peer_consensus
+            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
+            .expect("catch-up response");
+
+        state
+            .apply_federation_catch_up_response(&catch_up_response)
+            .await
+            .expect("apply catch-up");
+
+        let proof_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&[input_y])
+            .await
+            .expect("proof state lookup");
+        assert_eq!(proof_states, vec![Some(cdk::nuts::State::Spent)]);
+
+        let signatures = state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[output.blinded_secret])
+            .await
+            .expect("signature lookup");
+        let expected_response = config
+            .swap_share_response(operation_id, &request)
+            .expect("expected share response");
+        assert_eq!(
+            signatures,
+            vec![Some(expected_response.signatures[0].clone())]
+        );
 
         let persisted = state
             .mint
