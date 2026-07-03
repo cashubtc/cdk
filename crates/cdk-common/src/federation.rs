@@ -24,7 +24,7 @@ mod trusted_dealer;
 pub use self::consensus::InMemoryFederationConsensus;
 pub use self::journal::{
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
-    FederationOperationStatus, InMemoryFederationJournal,
+    FederationOperationStatus, FederationStateDigest, InMemoryFederationJournal,
 };
 pub use self::operation::{
     FederationMeltOperation, FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation,
@@ -82,6 +82,14 @@ pub enum FederationError {
     /// A federation journal digest must be exactly 32 bytes.
     #[error("Invalid federation journal digest size: expected={expected}, found={found}")]
     InvalidJournalDigestSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
+    /// A federation state digest must be exactly 32 bytes.
+    #[error("Invalid federation state digest size: expected={expected}, found={found}")]
+    InvalidStateDigestSize {
         /// Expected byte length.
         expected: usize,
         /// Actual byte length.

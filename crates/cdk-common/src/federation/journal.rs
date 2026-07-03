@@ -20,6 +20,8 @@ use super::{
 
 const FEDERATION_JOURNAL_GENESIS_VERSION: &[u8] = b"cdk-federation-journal-genesis-v1";
 const FEDERATION_JOURNAL_ENTRY_VERSION: &[u8] = b"cdk-federation-journal-entry-v1";
+const FEDERATION_STATE_GENESIS_VERSION: &[u8] = b"cdk-federation-state-genesis-v1";
+const FEDERATION_STATE_ENTRY_VERSION: &[u8] = b"cdk-federation-state-entry-v1";
 
 /// Digest of the accepted federation operation order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -105,6 +107,105 @@ impl Serialize for FederationJournalDigest {
 }
 
 impl<'de> Deserialize<'de> for FederationJournalDigest {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::from_hex(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Digest of consensus-visible federation state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FederationStateDigest([u8; 32]);
+
+impl FederationStateDigest {
+    /// Create a state digest from raw bytes.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Create a state digest from an order digest for status fixtures.
+    #[must_use]
+    pub fn from_order_digest(digest: FederationJournalDigest) -> Self {
+        Self(digest.to_bytes())
+    }
+
+    /// Parse a state digest from a byte slice.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
+        let bytes: [u8; 32] =
+            bytes
+                .try_into()
+                .map_err(|_| FederationError::InvalidStateDigestSize {
+                    expected: 32,
+                    found: bytes.len(),
+                })?;
+        Ok(Self(bytes))
+    }
+
+    /// Parse a state digest from hex.
+    pub fn from_hex<S>(hex: S) -> Result<Self>
+    where
+        S: AsRef<str>,
+    {
+        let bytes = crate::util::hex::decode(hex.as_ref())?;
+        Self::from_slice(&bytes)
+    }
+
+    /// Return this state digest as bytes.
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    /// Return this state digest as hex.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        crate::util::hex::encode(self.0)
+    }
+
+    /// Return the empty-state digest.
+    #[must_use]
+    pub fn genesis() -> Self {
+        Self(Sha256Hash::hash(FEDERATION_STATE_GENESIS_VERSION).to_byte_array())
+    }
+
+    fn append(self, index: u64, operation_id: FederationOperationId) -> Self {
+        let mut transcript = Vec::new();
+        append_hash_bytes(&mut transcript, FEDERATION_STATE_ENTRY_VERSION);
+        append_hash_bytes(&mut transcript, &self.to_bytes());
+        transcript.extend_from_slice(&index.to_be_bytes());
+        append_hash_bytes(&mut transcript, &operation_id.to_bytes());
+        Self(Sha256Hash::hash(&transcript).to_byte_array())
+    }
+}
+
+impl fmt::Display for FederationStateDigest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
+
+impl FromStr for FederationStateDigest {
+    type Err = FederationError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Self::from_hex(value)
+    }
+}
+
+impl Serialize for FederationStateDigest {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for FederationStateDigest {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -216,6 +317,20 @@ impl InMemoryFederationJournal {
     #[must_use]
     pub fn latest_order_digest(&self) -> FederationJournalDigest {
         self.latest_order_digest
+    }
+
+    /// Return a deterministic digest for consensus-visible state.
+    ///
+    /// This scaffold is derived from the accepted operation sequence and
+    /// intentionally excludes local application status. Durable DB-state
+    /// digests can extend this API without changing operator status payloads.
+    #[must_use]
+    pub fn state_digest(&self) -> FederationStateDigest {
+        let mut digest = FederationStateDigest::genesis();
+        for entry in &self.entries {
+            digest = digest.append(entry.index, entry.operation_id);
+        }
+        digest
     }
 
     /// Return the next journal index that would be appended locally.
@@ -633,12 +748,14 @@ mod tests {
             .entry()
             .clone();
         let digest = journal.latest_order_digest();
+        let state_digest = journal.state_digest();
         let updated = journal
             .update_status(entry.operation_id, FederationOperationStatus::Applied)
             .expect("status update");
 
         assert_eq!(updated.status, FederationOperationStatus::Applied);
         assert_eq!(journal.latest_order_digest(), digest);
+        assert_eq!(journal.state_digest(), state_digest);
         assert!(matches!(
             journal.update_status(
                 FederationOperationId::from_bytes([42; 32]),
@@ -646,6 +763,29 @@ mod tests {
             ),
             Err(FederationError::UnknownOperation { .. })
         ));
+    }
+
+    #[test]
+    fn journal_state_digest_matches_for_same_accepted_log() {
+        let mut first = InMemoryFederationJournal::new();
+        let mut second = InMemoryFederationJournal::new();
+        first.append(mint_quote_envelope(1)).expect("first quote");
+        first
+            .append(mint_envelope(
+                "quote-1",
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            ))
+            .expect("first mint");
+        second.append(mint_quote_envelope(1)).expect("second quote");
+        second
+            .append(mint_envelope(
+                "quote-1",
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            ))
+            .expect("second mint");
+
+        assert_eq!(first.state_digest(), second.state_digest());
+        assert_ne!(first.state_digest(), FederationStateDigest::genesis());
     }
 
     #[test]
@@ -660,6 +800,22 @@ mod tests {
         );
         assert_eq!(
             FederationJournalDigest::from_slice(&digest.to_bytes()).expect("digest from bytes"),
+            digest
+        );
+    }
+
+    #[test]
+    fn state_digest_serializes_as_hex() {
+        let digest = FederationStateDigest::genesis();
+        let json = serde_json::to_string(&digest).expect("digest json");
+
+        assert_eq!(json.len(), 66);
+        assert_eq!(
+            serde_json::from_str::<FederationStateDigest>(&json).expect("digest from json"),
+            digest
+        );
+        assert_eq!(
+            FederationStateDigest::from_slice(&digest.to_bytes()).expect("digest from bytes"),
             digest
         );
     }

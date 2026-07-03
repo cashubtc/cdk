@@ -328,11 +328,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: document naive sliding-window risk</span>
+          <span class="value">feat: expose federation state digests</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Naive sliding-window attack demo</span>
+          <span class="value">State digest status scaffold</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -902,6 +902,10 @@
             <p>A paired cdk-common test now intentionally bypasses consensus, has four members sign ABC, BCD, CDA, and DAB under different operation IDs, and proves the wallet can regroup enough shares for every output. This keeps the consensus-before-signing invariant concrete.</p>
           </article>
           <article class="item">
+            <h3>State digest scaffold exposed</h3>
+            <p>Federation journals now compute a consensus-visible state digest that is distinct from the order digest and stable across local status updates. Private status and catch-up payloads expose it, Axum peer sync halts on equal-height state-digest mismatch, and mintd convergence checks enforce it.</p>
+          </article>
+          <article class="item">
             <h3>Milestone map expanded</h3>
             <p>The dashboard now lists every implementation-plan milestone from 0 through 23 individually, instead of grouping the remaining work into broad ranges.</p>
           </article>
@@ -921,7 +925,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, and local sync state is queryable from mintd over signed private REST. The remaining work is to run the generated smoke script in an environment that allows loopback listener binding.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, and local sync plus state-digest health is queryable from mintd over signed private REST. The remaining work is to run the generated smoke script in an environment that allows loopback listener binding.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -1215,8 +1219,14 @@
             <tr>
               <td>Federation status CLI</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" federation_status -- --test-threads 1` passed for signed request construction, selected/all-member targeting, and mismatched response rejection. `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"` passed with the async CLI hook.</td>
+              <td>`cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" federation_status -- --test-threads 1` passed for signed request construction, selected/all-member targeting, mismatched response rejection, state-digest convergence rejection, and ready/converged success. `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"` passed with the async CLI hook.</td>
               <td>Use the CLI against generated member processes and record restart/catch-up evidence.</td>
+            </tr>
+            <tr>
+              <td>Federation state digest scaffold</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federation -- --test-threads 1` passed 53 tests, including state digest serialization, same-log equality, and local-status-update exclusion. `cargo test -p cdk-axum --features federation state_digest -- --test-threads 1` passed equal-height mismatch halting, and mintd status tests passed state-digest convergence enforcement.</td>
+              <td>Extend the scaffold into a materialized DB-table audit digest and run it in the live multi-process smoke.</td>
             </tr>
             <tr>
               <td>Generated local federation smoke script</td>
@@ -1251,7 +1261,7 @@
             <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, and the paired naive-signing attack demonstration.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, and the paired naive-signing attack demonstration.</td>
               <td>Run live multi-process fake-wallet member scenarios from generated configs.</td>
             </tr>
           </tbody>

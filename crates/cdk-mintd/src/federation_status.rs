@@ -210,13 +210,14 @@ fn print_statuses(
             .map(|index| index.to_string())
             .unwrap_or_else(|| "none".to_string());
         println!(
-            "member {}: sync={} ready={} operations={} latest_index={} digest={} message={}",
+            "member {}: sync={} ready={} operations={} latest_index={} order_digest={} state_digest={} message={}",
             peer.member_id,
             status.sync_state,
             status.sync_ready,
             peer.operation_count,
             latest_index,
             peer.latest_order_digest,
+            peer.state_digest,
             status.sync_message
         );
     }
@@ -243,14 +244,17 @@ fn ensure_statuses_converged(statuses: &[FederationLocalStatusResponse]) -> Resu
     for status in statuses.iter().skip(1) {
         if status.peer_status.operation_count != first.peer_status.operation_count
             || status.peer_status.latest_order_digest != first.peer_status.latest_order_digest
+            || status.peer_status.state_digest != first.peer_status.state_digest
         {
             bail!(
-                "federation status is not converged: member {} has operations {} digest {}, expected operations {} digest {}",
+                "federation status is not converged: member {} has operations {} order digest {} state digest {}, expected operations {} order digest {} state digest {}",
                 status.peer_status.member_id,
                 status.peer_status.operation_count,
                 status.peer_status.latest_order_digest,
+                status.peer_status.state_digest,
                 first.peer_status.operation_count,
-                first.peer_status.latest_order_digest
+                first.peer_status.latest_order_digest,
+                first.peer_status.state_digest
             );
         }
     }
@@ -277,8 +281,8 @@ mod tests {
 
     use async_trait::async_trait;
     use cdk_common::federation::{
-        generate_trusted_dealer_configs, FederationJournalDigest, ThresholdParams,
-        TrustedDealerKeysetSpec, TrustedDealerMember,
+        generate_trusted_dealer_configs, FederationJournalDigest, FederationStateDigest,
+        ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     use cdk_common::mint_url::MintUrl;
     use cdk_common::nuts::nut22::AuthToken;
@@ -533,6 +537,20 @@ mod tests {
 
         let err = ensure_statuses_converged(&statuses).expect_err("divergent member should fail");
         assert!(err.to_string().contains("not converged"));
+    }
+
+    #[test]
+    fn status_convergence_guard_rejects_state_digest_mismatch() {
+        let (public_config, _) = status_fixture();
+        let first = local_status(&public_config, 1, 0);
+        let mut second = local_status(&public_config, 2, 0);
+        second.peer_status.state_digest = FederationStateDigest::genesis();
+        let statuses = vec![first, second];
+
+        let err =
+            ensure_statuses_converged(&statuses).expect_err("state digest mismatch should fail");
+
+        assert!(err.to_string().contains("state digest"));
     }
 
     #[test]

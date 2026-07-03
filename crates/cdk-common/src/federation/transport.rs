@@ -16,7 +16,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use super::{
     FederationConfig, FederationError, FederationId, FederationJournalAppendOutcome,
     FederationJournalDigest, FederationJournalEntry, FederationOperationEnvelope,
-    FederationOperationId, InMemoryFederationJournal, MemberConfigPrivate, MemberId, Result,
+    FederationOperationId, FederationStateDigest, InMemoryFederationJournal, MemberConfigPrivate,
+    MemberId, Result,
 };
 
 /// Version of the private federation REST payload format.
@@ -435,6 +436,9 @@ pub struct FederationPeerStatus {
     pub latest_index: Option<u64>,
     /// Latest accepted-order digest.
     pub latest_order_digest: FederationJournalDigest,
+    /// Digest of consensus-visible state.
+    #[serde(default = "FederationStateDigest::genesis")]
+    pub state_digest: FederationStateDigest,
 }
 
 impl FederationPeerStatus {
@@ -454,6 +458,28 @@ impl FederationPeerStatus {
             operation_count,
             latest_index,
             latest_order_digest,
+            state_digest: FederationStateDigest::from_order_digest(latest_order_digest),
+        }
+    }
+
+    /// Create a peer status snapshot with an explicit state digest.
+    #[must_use]
+    pub fn new_with_state_digest(
+        federation_id: FederationId,
+        member_id: MemberId,
+        operation_count: u64,
+        latest_index: Option<u64>,
+        latest_order_digest: FederationJournalDigest,
+        state_digest: FederationStateDigest,
+    ) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            federation_id,
+            member_id,
+            operation_count,
+            latest_index,
+            latest_order_digest,
+            state_digest,
         }
     }
 
@@ -465,12 +491,13 @@ impl FederationPeerStatus {
         journal: &InMemoryFederationJournal,
     ) -> Self {
         let latest_index = journal.entries().last().map(|entry| entry.index);
-        Self::new(
+        Self::new_with_state_digest(
             federation_id,
             member_id,
             journal.len() as u64,
             latest_index,
             journal.latest_order_digest(),
+            journal.state_digest(),
         )
     }
 }
@@ -577,6 +604,9 @@ pub struct FederationJournalCatchUpResponse {
     pub latest_index: Option<u64>,
     /// Latest local accepted-order digest.
     pub latest_order_digest: FederationJournalDigest,
+    /// Latest local consensus-visible state digest.
+    #[serde(default = "FederationStateDigest::genesis")]
+    pub state_digest: FederationStateDigest,
     /// Whether the peer returned all entries currently available from `from_index`.
     pub complete: bool,
 }
@@ -602,6 +632,7 @@ impl FederationJournalCatchUpResponse {
             entries,
             latest_index: journal.entries().last().map(|entry| entry.index),
             latest_order_digest: journal.latest_order_digest(),
+            state_digest: journal.state_digest(),
             complete,
         }
     }
@@ -773,6 +804,7 @@ mod tests {
         assert_eq!(decoded.latest_index, Some(entry.index));
         assert_eq!(decoded.operation_count, 1);
         assert_eq!(decoded.latest_order_digest, entry.order_digest);
+        assert_eq!(decoded.state_digest, journal.state_digest());
     }
 
     #[test]
@@ -819,6 +851,7 @@ mod tests {
         assert!(!response.complete);
         assert_eq!(response.latest_index, Some(2));
         assert_eq!(response.latest_order_digest, journal.latest_order_digest());
+        assert_eq!(response.state_digest, journal.state_digest());
     }
 
     #[test]

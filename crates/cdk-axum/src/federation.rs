@@ -472,9 +472,9 @@ where
         }
 
         local_status = local_peer_status(state).await?;
-        if local_status.operation_count == peer_status.operation_count
-            && local_status.latest_order_digest != peer_status.latest_order_digest
-        {
+        let digest_mismatch = local_status.latest_order_digest != peer_status.latest_order_digest
+            || local_status.state_digest != peer_status.state_digest;
+        if local_status.operation_count == peer_status.operation_count && digest_mismatch {
             state
                 .mark_federation_halted(format!(
                     "peer {} digest mismatch at operation count {}",
@@ -1479,6 +1479,33 @@ mod tests {
             ))
             .await;
         assert!(matches!(blocked, Err(cdk::Error::Custom(_))));
+    }
+
+    #[tokio::test]
+    async fn rest_peer_client_halts_on_equal_height_state_digest_mismatch() {
+        let (state, public_config, local_private, _) =
+            federation_route_state_with_local_private().await;
+        let federation_id = public_config.federation_id;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let status = FederationPeerStatus::new_with_state_digest(
+            federation_id,
+            peer_member.member_id,
+            0,
+            None,
+            cdk::federation::FederationJournalDigest::genesis(),
+            cdk::federation::FederationStateDigest::from_bytes([9; 32]),
+        );
+        let transport = MockFederationTransport::default().with_status_response(status);
+        let client = FederationRestPeerClient::new(transport, &public_config, local_private)
+            .expect("client");
+
+        let sync = client.sync_once_from_member(&state, peer_member).await;
+
+        assert!(sync.is_err());
+        assert!(matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Halted { .. })
+        ));
     }
 
     #[tokio::test]
