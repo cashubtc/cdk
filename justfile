@@ -178,6 +178,13 @@ mutants-cashu:
   echo "Running mutation tests on cashu crate..."
   cargo mutants --package cashu -vV
 
+# Run mutation tests on NUT-27 with wallet+nostr features enabled
+mutants-cashu-nut27-nostr:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  echo "Running mutation tests on cashu NUT-27 with Nostr features..."
+  cargo mutants --package cashu --no-config --file crates/cashu/src/nuts/nut27.rs --features wallet,nostr -vV
+
 # Run mutation tests on the cdk crate
 mutants-cdk:
   #!/usr/bin/env bash
@@ -699,10 +706,21 @@ _ffi-lib-ext:
 
 # Build the FFI library
 ffi-build *ARGS="--release":
-  cargo build {{ARGS}} --package cdk-ffi
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  if [[ "{{ARGS}}" == *"--debug"* ]]; then
+    cargo build --package cdk-ffi
+  else
+    cargo build {{ARGS}} --package cdk-ffi
+  fi
+
+# Check the FFI crate
+ffi-check:
+  cargo check --package cdk-ffi --all-targets
 
 # Generate bindings for a specific language
-ffi-generate LANGUAGE *ARGS="--release": ffi-build
+ffi-generate LANGUAGE *ARGS="--release":
   #!/usr/bin/env bash
   set -euo pipefail
   LANG="{{LANGUAGE}}"
@@ -730,8 +748,9 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
     BUILD_TYPE="release"
   else
     BUILD_TYPE="debug"
-    cargo build --package cdk-ffi
   fi
+
+  just ffi-build {{ARGS}}
 
   LIB_EXT=$(just _ffi-lib-ext)
 
@@ -741,7 +760,8 @@ ffi-generate LANGUAGE *ARGS="--release": ffi-build
   cargo run -p cdk-ffi --bin uniffi-bindgen generate \
     --library target/$BUILD_TYPE/libcdk_ffi.$LIB_EXT \
     --language $LANG \
-    --out-dir target/bindings/$LANG
+    --out-dir target/bindings/$LANG \
+    --no-format
 
   echo "✅ $LANG bindings generated in target/bindings/$LANG/"
 
@@ -824,7 +844,7 @@ ffi-generate-kotlin *ARGS="--release":
   just ffi-generate kotlin {{ARGS}}
 
 # Generate bindings for all supported languages
-ffi-generate-all *ARGS="--release": ffi-build
+ffi-generate-all *ARGS="--release":
   @echo "🔧 Generating UniFFI bindings for all languages..."
   just ffi-generate python {{ARGS}}
   just ffi-generate swift {{ARGS}}
@@ -884,6 +904,20 @@ ffi-test-bindings LANGUAGE: (ffi-generate LANGUAGE "--debug")
 # Test Python bindings (shorthand)
 ffi-test-python:
   just ffi-test-bindings python
+
+# Run live Python FFI tests against testnut.cashudevkit.org
+ffi-test-live-python:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  just ffi-generate python --debug
+
+  LIB_EXT=$(just _ffi-lib-ext)
+  echo "📦 Copying debug library to Python bindings directory..."
+  cp target/debug/libcdk_ffi.$LIB_EXT target/bindings/python/
+
+  echo "🧪 Running live Python FFI tests..."
+  python3 crates/cdk-ffi/tests/test_live_async_onchain_melt.py
 
 # Trigger all FFI binding releases (Dart, Kotlin, Swift, Go)
 ffi-release-all VERSION:

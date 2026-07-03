@@ -27,10 +27,15 @@ impl Wallet {
         memo: Option<String>,
         token: Option<String>,
     ) -> Result<Amount, Error> {
-        let saga = ReceiveSaga::new(self);
-        let saga = saga.prepare(proofs, opts, memo, token).await?;
-        let saga = saga.execute().await?;
-        Ok(saga.into_amount())
+        self.retry_on_inactive_keyset(|| async {
+            let saga = ReceiveSaga::new(self);
+            let saga = saga
+                .prepare(proofs.clone(), opts.clone(), memo.clone(), token.clone())
+                .await?;
+            let saga = saga.execute().await?;
+            Ok(saga.into_amount())
+        })
+        .await
     }
 
     /// Receive

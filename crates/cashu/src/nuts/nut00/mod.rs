@@ -855,6 +855,29 @@ impl PaymentMethod {
         }
     }
 
+    /// Derive a human-readable payment method name.
+    ///
+    /// This is the fallback wallets should use when NUT-04 or NUT-05
+    /// `method_name` is omitted or null.
+    pub fn derived_method_name(&self) -> String {
+        self.as_str()
+            .split(['_', '-'])
+            .map(|word| {
+                let mut chars = word.chars();
+                match chars.next() {
+                    Some(first) => {
+                        let mut title = String::new();
+                        title.extend(first.to_uppercase());
+                        title.extend(chars.flat_map(char::to_lowercase));
+                        title
+                    }
+                    None => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     /// Check if this is a known method
     pub fn is_known(&self) -> bool {
         matches!(self, Self::Known(_))
@@ -1605,6 +1628,19 @@ mod tests {
         assert!(PaymentMethod::Known(KnownMethod::Onchain).is_valid_method_name());
         assert!(PaymentMethod::Custom("pay-pal_123".to_string()).is_valid_method_name());
         assert!(!PaymentMethod::Custom("pay/pal".to_string()).is_valid_method_name());
+    }
+
+    #[test]
+    fn test_payment_method_derived_method_name() {
+        assert_eq!(PaymentMethod::BOLT11.derived_method_name(), "Bolt11");
+        assert_eq!(
+            PaymentMethod::Custom("apple-pay".to_string()).derived_method_name(),
+            "Apple Pay"
+        );
+        assert_eq!(
+            PaymentMethod::Custom("pay_pal".to_string()).derived_method_name(),
+            "Pay Pal"
+        );
     }
 
     /// Tests that is_bolt12 correctly identifies BOLT12 payment methods.

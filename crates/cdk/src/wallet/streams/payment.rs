@@ -1,10 +1,9 @@
 //! Payment Stream
 //!
-//! This future Stream will wait events for a Mint Quote be paid. If it is for a Bolt12 it will not stop
-//! but it will eventually error on a Timeout.
+//! This future Stream will wait events for a Mint Quote be paid. If it is for a repeatable payment
+//! method it will stay open until the caller stops polling, cancels it, or wraps it in a timeout.
 //!
 //! Bolt11 will emit a single event.
-use std::sync::Arc;
 use std::task::Poll;
 
 use cdk_common::{Amount, Error, MeltQuoteState, MintQuoteState, NotificationPayload};
@@ -18,8 +17,17 @@ use crate::event::MintEvent;
 use crate::wallet::subscription::ActiveSubscription;
 use crate::{Wallet, WalletSubscription};
 
-type SubscribeReceived = (Option<MintEvent<String>>, Vec<ActiveSubscription>);
 type PaymentValue = (String, Option<Amount>);
+
+struct ClassifiedPayment {
+    value: PaymentValue,
+    finalize: bool,
+}
+
+struct NextPayment {
+    payment: Option<ClassifiedPayment>,
+    subscriptions: Vec<ActiveSubscription>,
+}
 
 /// PaymentWaiter
 #[allow(missing_debug_implementations)]
@@ -27,13 +35,12 @@ pub struct PaymentStream<'a> {
     wallet: &'a Wallet,
     filters: Option<Vec<WalletSubscription>>,
     is_finalized: bool,
-    active_subscription: Option<Vec<ActiveSubscription>>,
+    active_subscriptions: Option<Vec<ActiveSubscription>>,
 
     cancel_token: CancellationToken,
 
-    // Future events
     subscriber_future: Option<RecvFuture<'a, Vec<ActiveSubscription>>>,
-    subscription_receiver_future: Option<RecvFuture<'static, SubscribeReceived>>,
+    payment_future: Option<RecvFuture<'a, NextPayment>>,
     cancellation_future: Option<RecvFuture<'a, ()>>,
 }
 
@@ -44,10 +51,10 @@ impl<'a> PaymentStream<'a> {
             wallet,
             filters: Some(filters),
             is_finalized: false,
-            active_subscription: None,
-            cancel_token: Default::default(),
+            active_subscriptions: None,
+            cancel_token: CancellationToken::new(),
             subscriber_future: None,
-            subscription_receiver_future: None,
+            payment_future: None,
             cancellation_future: None,
         }
     }
@@ -57,15 +64,15 @@ impl<'a> PaymentStream<'a> {
         self.cancel_token.clone()
     }
 
-    /// Creating a wallet subscription is an async event, this may change in the future, but for now,
-    /// creating a new Subscription should be polled, as any other async event. This function will
-    /// return None if the subscription is already active, Some(()) otherwise
-    fn poll_init_subscription(&mut self, cx: &mut std::task::Context<'_>) -> Option<()> {
+    /// Starts or continues async subscription setup.
+    ///
+    /// Returns `Poll::Pending` while subscriptions are being created. Once setup completes,
+    /// stores the active subscriptions and returns `Poll::Ready(())`.
+    fn poll_init_subscription(&mut self, cx: &mut std::task::Context<'_>) -> Poll<()> {
         if let Some(filters) = self.filters.take() {
             let wallet = self.wallet;
             self.subscriber_future = Some(Box::pin(async move {
                 let results = join_all(filters.into_iter().map(|w| wallet.subscribe(w))).await;
-                // Collect successful subscriptions, log errors
                 results
                     .into_iter()
                     .filter_map(|r| match r {
@@ -79,16 +86,18 @@ impl<'a> PaymentStream<'a> {
             }));
         }
 
-        let mut subscriber_future = self.subscriber_future.take()?;
+        let Some(mut subscriber_future) = self.subscriber_future.take() else {
+            return Poll::Ready(());
+        };
 
         match subscriber_future.poll_unpin(cx) {
             Poll::Pending => {
                 self.subscriber_future = Some(subscriber_future);
-                Some(())
+                Poll::Pending
             }
-            Poll::Ready(active_subscription) => {
-                self.active_subscription = Some(active_subscription);
-                None
+            Poll::Ready(active_subscriptions) => {
+                self.active_subscriptions = Some(active_subscriptions);
+                Poll::Ready(())
             }
         }
     }
@@ -101,7 +110,9 @@ impl<'a> PaymentStream<'a> {
         });
 
         if cancellation_future.poll_unpin(cx).is_ready() {
-            self.subscription_receiver_future = None;
+            self.subscriber_future = None;
+            self.payment_future = None;
+            self.active_subscriptions = None;
             true
         } else {
             self.cancellation_future = Some(cancellation_future);
@@ -109,167 +120,49 @@ impl<'a> PaymentStream<'a> {
         }
     }
 
-    /// Polls the subscription for any new event
-    fn poll_event(
+    fn poll_payment(
         &mut self,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Result<PaymentValue, Error>>> {
-        let (subscription_receiver_future, active_subscription) = (
-            self.subscription_receiver_future.take(),
-            self.active_subscription.take(),
-        );
-
-        if subscription_receiver_future.is_none() && active_subscription.is_none() {
-            // Unexpected state, we should have an in-flight future or the active_subscription to
-            // create the future to read an event
-            return Poll::Ready(Some(Err(Error::Internal)));
+        if self.payment_future.is_none() {
+            let Some(active_subscriptions) = self.active_subscriptions.take() else {
+                return Poll::Ready(Some(Err(Error::Internal)));
+            };
+            let wallet = self.wallet;
+            self.payment_future = Some(Box::pin(async move {
+                recv_next_payment(wallet, active_subscriptions).await
+            }));
         }
 
-        let localstore = Arc::clone(&self.wallet.localstore);
-
-        let mut receiver = subscription_receiver_future.unwrap_or_else(|| {
-            let mut subscription_receiver =
-                active_subscription.expect("active subscription object");
-
-            Box::pin(async move {
-                let mut futures: FuturesUnordered<_> = subscription_receiver
-                    .iter_mut()
-                    .map(|sub| sub.recv())
-                    .collect();
-
-                if let Some(res) = futures.next().await {
-                    drop(futures);
-
-                    if let Some(event) = &res {
-                        match event.inner() {
-                            NotificationPayload::MintQuoteBolt11Response(info) => {
-                                let quote_id = info.quote.clone();
-                                if let Ok(Some(mut quote)) =
-                                    localstore.get_mint_quote(&quote_id).await
-                                {
-                                    quote.state = info.state;
-                                    quote.amount_paid = info.amount.unwrap_or(Amount::ZERO);
-                                    if let Err(e) = localstore.add_mint_quote(quote).await {
-                                        tracing::warn!("Failed to update quote state: {}", e);
-                                    }
-                                }
-                            }
-                            NotificationPayload::MintQuoteBolt12Response(info) => {
-                                let quote_id = info.quote.clone();
-                                if let Ok(Some(mut quote)) =
-                                    localstore.get_mint_quote(&quote_id).await
-                                {
-                                    quote.amount_paid = info.amount_paid;
-                                    quote.amount_issued = info.amount_issued;
-                                    if let Err(e) = localstore.add_mint_quote(quote).await {
-                                        tracing::warn!("Failed to update quote state: {}", e);
-                                    }
-                                }
-                            }
-                            NotificationPayload::MintQuoteOnchainResponse(info) => {
-                                let quote_id = info.quote.clone();
-                                if let Ok(Some(mut quote)) =
-                                    localstore.get_mint_quote(&quote_id).await
-                                {
-                                    quote.amount_paid = info.amount_paid;
-                                    quote.amount_issued = info.amount_issued;
-                                    if let Err(e) = localstore.add_mint_quote(quote).await {
-                                        tracing::warn!("Failed to update quote state: {}", e);
-                                    }
-                                }
-                            }
-                            NotificationPayload::CustomMintQuoteResponse(_, info) => {
-                                let quote_id = info.quote.clone();
-                                if let Ok(Some(mut quote)) =
-                                    localstore.get_mint_quote(&quote_id).await
-                                {
-                                    quote.amount_paid = info.amount_paid;
-                                    quote.amount_issued = info.amount_issued;
-                                    if let Err(e) = localstore.add_mint_quote(quote).await {
-                                        tracing::warn!("Failed to update quote state: {}", e);
-                                    }
-                                }
-                            }
-                            _ => (),
-                        }
-                    }
-
-                    return (res, subscription_receiver);
-                }
-
-                drop(futures);
-                (None, subscription_receiver)
-            })
-        });
-
-        match receiver.poll_unpin(cx) {
+        let Some(mut payment_future) = self.payment_future.take() else {
+            return Poll::Ready(Some(Err(Error::Internal)));
+        };
+        match payment_future.poll_unpin(cx) {
             Poll::Pending => {
-                self.subscription_receiver_future = Some(receiver);
+                self.payment_future = Some(payment_future);
                 Poll::Pending
             }
-            Poll::Ready((notification, subscription)) => {
-                tracing::debug!("Receive payment notification {:?}", notification);
-                // This future is now fulfilled, put the active_subscription again back to object. Next time next().await is called,
-                // the future will be created in subscription_receiver_future.
-                self.active_subscription = Some(subscription);
-                self.cancellation_future = None; // resets timeout
-                match notification {
-                    None => {
-                        self.is_finalized = true;
-                        Poll::Ready(None)
-                    }
-                    Some(info) => {
-                        match info.into_inner() {
-                            NotificationPayload::MintQuoteBolt11Response(info)
-                                if info.state == MintQuoteState::Paid =>
-                            {
-                                self.is_finalized = true;
-                                return Poll::Ready(Some(Ok((info.quote, None))));
-                            }
-                            NotificationPayload::MintQuoteBolt12Response(info) => {
-                                let to_be_issued =
-                                    info.amount_paid.saturating_sub(info.amount_issued);
-                                if to_be_issued > Amount::ZERO {
-                                    return Poll::Ready(Some(Ok((info.quote, Some(to_be_issued)))));
-                                }
-                            }
-                            NotificationPayload::MintQuoteOnchainResponse(info) => {
-                                let to_be_issued =
-                                    info.amount_paid.saturating_sub(info.amount_issued);
-                                if to_be_issued > Amount::ZERO {
-                                    return Poll::Ready(Some(Ok((info.quote, Some(to_be_issued)))));
-                                }
-                            }
-                            NotificationPayload::CustomMintQuoteResponse(_, info) => {
-                                let to_be_issued =
-                                    info.amount_paid.saturating_sub(info.amount_issued);
-                                if to_be_issued > Amount::ZERO {
-                                    return Poll::Ready(Some(Ok((info.quote, Some(to_be_issued)))));
-                                }
-                            }
-                            NotificationPayload::MeltQuoteBolt11Response(info)
-                                if info.state == MeltQuoteState::Paid =>
-                            {
-                                self.is_finalized = true;
-                                return Poll::Ready(Some(Ok((info.quote, None))));
-                            }
-                            NotificationPayload::MeltQuoteOnchainResponse(info)
-                                if info.state == MeltQuoteState::Paid =>
-                            {
-                                self.is_finalized = true;
-                                return Poll::Ready(Some(Ok((info.quote, None))));
-                            }
-                            _ => {}
-                        }
+            Poll::Ready(next_payment) => {
+                let Some(payment) = next_payment.payment else {
+                    self.is_finalized = true;
+                    return Poll::Ready(None);
+                };
 
-                        // We got an event but it is not what was expected, we need to call `recv`
-                        // again, and to copy-paste this is a recursive call that should be resolved
-                        // to a Poll::Pending *but* will trigger the future execution
-                        self.poll_event(cx)
-                    }
+                if payment.finalize {
+                    self.is_finalized = true;
+                } else {
+                    self.active_subscriptions = Some(next_payment.subscriptions);
                 }
+
+                Poll::Ready(Some(Ok(payment.value)))
             }
         }
+    }
+}
+
+impl Drop for PaymentStream<'_> {
+    fn drop(&mut self) {
+        self.cancel_token.cancel();
     }
 }
 
@@ -288,54 +181,361 @@ impl Stream for PaymentStream<'_> {
         }
 
         if this.poll_cancel(cx) {
+            this.is_finalized = true;
             return Poll::Ready(None);
         }
 
-        if this.poll_init_subscription(cx).is_some() {
+        if this.poll_init_subscription(cx).is_pending() {
             return Poll::Pending;
         }
 
-        this.poll_event(cx)
+        this.poll_payment(cx)
+    }
+}
+
+async fn recv_next_payment(
+    wallet: &Wallet,
+    mut subscriptions: Vec<ActiveSubscription>,
+) -> NextPayment {
+    loop {
+        let Some(notification) = recv_payment_notification(&mut subscriptions).await else {
+            return NextPayment {
+                payment: None,
+                subscriptions,
+            };
+        };
+
+        tracing::debug!("Receive payment notification {:?}", notification);
+        let Some(payment) = handle_payment_notification(wallet, notification).await else {
+            continue;
+        };
+
+        return NextPayment {
+            payment: Some(payment),
+            subscriptions,
+        };
+    }
+}
+
+async fn recv_payment_notification(
+    subscriptions: &mut [ActiveSubscription],
+) -> Option<MintEvent<String>> {
+    let mut futures: FuturesUnordered<_> = subscriptions.iter_mut().map(|sub| sub.recv()).collect();
+
+    while let Some(res) = futures.next().await {
+        if res.is_some() {
+            return res;
+        }
+    }
+
+    None
+}
+
+async fn handle_payment_notification(
+    wallet: &Wallet,
+    notification: MintEvent<String>,
+) -> Option<ClassifiedPayment> {
+    update_mint_quote(wallet, notification.inner()).await;
+    classify_payment_notification(notification.into_inner())
+}
+
+async fn update_mint_quote(wallet: &Wallet, notification: &NotificationPayload<String>) {
+    match notification {
+        NotificationPayload::MintQuoteBolt11Response(info) => {
+            let quote_id = info.quote.clone();
+            if let Ok(Some(mut quote)) = wallet.localstore.get_mint_quote(&quote_id).await {
+                quote.state = info.state;
+                quote.amount_paid = info.amount.unwrap_or(Amount::ZERO);
+                if let Err(e) = wallet.localstore.add_mint_quote(quote).await {
+                    tracing::warn!("Failed to update quote state: {}", e);
+                }
+            }
+        }
+        NotificationPayload::MintQuoteBolt12Response(info) => {
+            let quote_id = info.quote.clone();
+            if let Ok(Some(mut quote)) = wallet.localstore.get_mint_quote(&quote_id).await {
+                quote.amount_paid = info.amount_paid;
+                quote.amount_issued = info.amount_issued;
+                if let Err(e) = wallet.localstore.add_mint_quote(quote).await {
+                    tracing::warn!("Failed to update quote state: {}", e);
+                }
+            }
+        }
+        NotificationPayload::MintQuoteOnchainResponse(info) => {
+            let quote_id = info.quote.clone();
+            if let Ok(Some(mut quote)) = wallet.localstore.get_mint_quote(&quote_id).await {
+                quote.amount_paid = info.amount_paid;
+                quote.amount_issued = info.amount_issued;
+                if let Err(e) = wallet.localstore.add_mint_quote(quote).await {
+                    tracing::warn!("Failed to update quote state: {}", e);
+                }
+            }
+        }
+        NotificationPayload::CustomMintQuoteResponse(_, info) => {
+            let quote_id = info.quote.clone();
+            if let Ok(Some(mut quote)) = wallet.localstore.get_mint_quote(&quote_id).await {
+                quote.amount_paid = info.amount_paid;
+                quote.amount_issued = info.amount_issued;
+                if let Err(e) = wallet.localstore.add_mint_quote(quote).await {
+                    tracing::warn!("Failed to update quote state: {}", e);
+                }
+            }
+        }
+        _ => (),
+    }
+}
+
+fn classify_payment_notification(
+    notification: NotificationPayload<String>,
+) -> Option<ClassifiedPayment> {
+    match notification {
+        NotificationPayload::MintQuoteBolt11Response(info)
+            if info.state == MintQuoteState::Paid =>
+        {
+            Some(ClassifiedPayment {
+                value: (info.quote, None),
+                finalize: true,
+            })
+        }
+        NotificationPayload::MintQuoteBolt12Response(info) => {
+            positive_unissued_amount(info.quote, info.amount_paid, info.amount_issued)
+        }
+        NotificationPayload::MintQuoteOnchainResponse(info) => {
+            positive_unissued_amount(info.quote, info.amount_paid, info.amount_issued)
+        }
+        NotificationPayload::CustomMintQuoteResponse(_, info) => {
+            positive_unissued_amount(info.quote, info.amount_paid, info.amount_issued)
+        }
+        NotificationPayload::MeltQuoteBolt11Response(info)
+            if info.state == MeltQuoteState::Paid =>
+        {
+            Some(ClassifiedPayment {
+                value: (info.quote, None),
+                finalize: true,
+            })
+        }
+        NotificationPayload::MeltQuoteBolt12Response(info)
+            if info.state == MeltQuoteState::Paid =>
+        {
+            Some(ClassifiedPayment {
+                value: (info.quote, None),
+                finalize: true,
+            })
+        }
+        NotificationPayload::MeltQuoteOnchainResponse(info)
+            if info.state == MeltQuoteState::Paid =>
+        {
+            Some(ClassifiedPayment {
+                value: (info.quote, None),
+                finalize: true,
+            })
+        }
+        NotificationPayload::CustomMeltQuoteResponse(_, info)
+            if info.state == MeltQuoteState::Paid =>
+        {
+            Some(ClassifiedPayment {
+                value: (info.quote, None),
+                finalize: true,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn positive_unissued_amount(
+    quote: String,
+    amount_paid: Amount,
+    amount_issued: Amount,
+) -> Option<ClassifiedPayment> {
+    let to_be_issued = amount_paid.checked_sub(amount_issued)?;
+    if to_be_issued > Amount::ZERO {
+        Some(ClassifiedPayment {
+            value: (quote, Some(to_be_issued)),
+            finalize: false,
+        })
+    } else {
+        None
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::pin::Pin;
-    use std::task::{Context, Poll, Waker};
+    use std::collections::VecDeque;
 
     use cdk_common::{
-        Amount, CurrencyUnit, MintQuoteBolt12Response, MintQuoteCustomResponse,
-        MintQuoteOnchainResponse, NotificationPayload,
+        Amount, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteBolt12Response,
+        MeltQuoteCustomResponse, MeltQuoteOnchainResponse, MeltQuoteState, MintQuoteBolt11Response,
+        MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteOnchainResponse, MintQuoteState,
+        NotificationPayload,
     };
-    use futures::Stream;
 
-    use super::PaymentStream;
+    use super::{classify_payment_notification, handle_payment_notification, ClassifiedPayment};
     use crate::event::MintEvent;
+    use crate::nuts::nut30::MeltQuoteOnchainFeeOption;
     use crate::nuts::SecretKey;
-    use crate::wallet::subscription::ActiveSubscription;
     use crate::wallet::test_utils::{create_test_db, create_test_wallet};
 
-    #[tokio::test]
-    async fn mint_quote_notification_underflow_does_not_panic() {
-        let db = create_test_db().await;
-        let wallet = create_test_wallet(db).await;
+    #[test]
+    fn mint_bolt11_paid_emits_and_finalizes() {
+        let payment = classify_payment_notification(NotificationPayload::MintQuoteBolt11Response(
+            mint_bolt11_response("bolt11_quote", MintQuoteState::Paid),
+        ))
+        .expect("paid bolt11 quote should emit");
+
+        assert_eq!(payment.value, ("bolt11_quote".to_string(), None));
+        assert!(payment.finalize);
+    }
+
+    #[test]
+    fn mint_bolt12_positive_unissued_amount_emits_and_remains_open() {
+        let payment = classify_payment_notification(NotificationPayload::MintQuoteBolt12Response(
+            mint_bolt12_response("bolt12_quote", 150, 100),
+        ))
+        .expect("positive unissued amount should emit");
+
+        assert_eq!(
+            payment.value,
+            ("bolt12_quote".to_string(), Some(Amount::from(50u64)))
+        );
+        assert!(!payment.finalize);
+    }
+
+    #[test]
+    fn mint_onchain_and_custom_positive_unissued_amount_emit_and_remain_open() {
         let pubkey = SecretKey::generate().public_key();
 
-        let events = vec![
-            MintEvent::new(NotificationPayload::MintQuoteBolt12Response(
-                MintQuoteBolt12Response::<String> {
-                    quote: "bolt12_quote".to_string(),
-                    request: "test_request".to_string(),
-                    amount: None,
-                    unit: CurrencyUnit::Sat,
-                    expiry: None,
-                    pubkey,
-                    amount_paid: Amount::from(50u64),
-                    amount_issued: Amount::from(100u64),
-                },
+        let onchain = classify_payment_notification(NotificationPayload::MintQuoteOnchainResponse(
+            MintQuoteOnchainResponse::<String> {
+                quote: "onchain_quote".to_string(),
+                request: "test_request".to_string(),
+                unit: CurrencyUnit::Sat,
+                expiry: None,
+                pubkey,
+                amount_paid: Amount::from(101u64),
+                amount_issued: Amount::from(100u64),
+            },
+        ))
+        .expect("positive unissued onchain amount should emit");
+
+        assert_eq!(
+            onchain.value,
+            ("onchain_quote".to_string(), Some(Amount::from(1u64)))
+        );
+        assert!(!onchain.finalize);
+
+        let custom = classify_payment_notification(NotificationPayload::CustomMintQuoteResponse(
+            "custom".to_string(),
+            MintQuoteCustomResponse::<String> {
+                quote: "custom_quote".to_string(),
+                request: "test_request".to_string(),
+                amount: None,
+                amount_paid: Amount::from(125u64),
+                amount_issued: Amount::from(100u64),
+                unit: Some(CurrencyUnit::Sat),
+                expiry: None,
+                pubkey: Some(pubkey),
+                extra: serde_json::Value::Null,
+            },
+        ))
+        .expect("positive unissued custom amount should emit");
+
+        assert_eq!(
+            custom.value,
+            ("custom_quote".to_string(), Some(Amount::from(25u64)))
+        );
+        assert!(!custom.finalize);
+    }
+
+    #[test]
+    fn melt_paid_notifications_emit_and_finalize() {
+        let bolt11 = classify_payment_notification(NotificationPayload::MeltQuoteBolt11Response(
+            melt_bolt11_response("melt_bolt11", MeltQuoteState::Paid),
+        ))
+        .expect("paid bolt11 melt quote should emit");
+        let bolt12 = classify_payment_notification(NotificationPayload::MeltQuoteBolt12Response(
+            melt_bolt12_response("melt_bolt12", MeltQuoteState::Paid),
+        ))
+        .expect("paid bolt12 melt quote should emit");
+        let onchain = classify_payment_notification(NotificationPayload::MeltQuoteOnchainResponse(
+            melt_onchain_response("melt_onchain", MeltQuoteState::Paid),
+        ))
+        .expect("paid onchain melt quote should emit");
+        let custom = classify_payment_notification(NotificationPayload::CustomMeltQuoteResponse(
+            "custom".to_string(),
+            melt_custom_response("melt_custom", MeltQuoteState::Paid),
+        ))
+        .expect("paid custom melt quote should emit");
+
+        for payment in [bolt11, bolt12, onchain, custom] {
+            assert_eq!(payment.value.1, None);
+            assert!(payment.finalize);
+        }
+    }
+
+    #[test]
+    fn non_terminal_and_unexpected_events_are_ignored() {
+        assert!(
+            classify_payment_notification(NotificationPayload::MintQuoteBolt11Response(
+                mint_bolt11_response("unpaid_mint", MintQuoteState::Unpaid),
+            ))
+            .is_none()
+        );
+        assert!(
+            classify_payment_notification(NotificationPayload::MeltQuoteBolt11Response(
+                melt_bolt11_response("pending_melt", MeltQuoteState::Pending),
+            ))
+            .is_none()
+        );
+        assert!(
+            classify_payment_notification(NotificationPayload::MintQuoteBolt12Response(
+                mint_bolt12_response("issued_bolt12", 100, 100),
+            ))
+            .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn driver_ignores_many_queued_events_before_valid_event_without_recursion() {
+        let db = create_test_db().await;
+        let wallet = create_test_wallet(db).await;
+        let mut notifications = VecDeque::new();
+
+        for _ in 0..10_000 {
+            notifications.push_back(MintEvent::new(
+                NotificationPayload::MintQuoteBolt11Response(mint_bolt11_response(
+                    "ignored",
+                    MintQuoteState::Unpaid,
+                )),
+            ));
+        }
+
+        notifications.push_back(MintEvent::new(
+            NotificationPayload::MintQuoteBolt11Response(mint_bolt11_response(
+                "paid",
+                MintQuoteState::Paid,
             )),
-            MintEvent::new(NotificationPayload::MintQuoteOnchainResponse(
+        ));
+
+        let payment = recv_next_test_payment(&wallet, notifications)
+            .await
+            .expect("valid event should still emit after ignored events");
+
+        assert_eq!(payment.value, ("paid".to_string(), None));
+        assert!(payment.finalize);
+    }
+
+    #[test]
+    fn mint_quote_notification_underflow_does_not_panic() {
+        let pubkey = SecretKey::generate().public_key();
+
+        assert!(
+            classify_payment_notification(NotificationPayload::MintQuoteBolt12Response(
+                mint_bolt12_response("bolt12_quote", 50, 100),
+            ))
+            .is_none()
+        );
+        assert!(
+            classify_payment_notification(NotificationPayload::MintQuoteOnchainResponse(
                 MintQuoteOnchainResponse::<String> {
                     quote: "onchain_quote".to_string(),
                     request: "test_request".to_string(),
@@ -345,8 +545,11 @@ mod tests {
                     amount_paid: Amount::from(50u64),
                     amount_issued: Amount::from(100u64),
                 },
-            )),
-            MintEvent::new(NotificationPayload::CustomMintQuoteResponse(
+            ))
+            .is_none()
+        );
+        assert!(
+            classify_payment_notification(NotificationPayload::CustomMintQuoteResponse(
                 "custom".to_string(),
                 MintQuoteCustomResponse::<String> {
                     quote: "custom_quote".to_string(),
@@ -359,27 +562,104 @@ mod tests {
                     pubkey: Some(pubkey),
                     extra: serde_json::Value::Null,
                 },
-            )),
-        ];
+            ))
+            .is_none()
+        );
+    }
 
-        for event in events {
-            let mut stream = PaymentStream::new(&wallet, Vec::new());
-            stream.filters = None;
-            stream.subscription_receiver_future = Some(Box::pin(async move {
-                let subscriptions: Vec<ActiveSubscription> = Vec::new();
-                (Some(event), subscriptions)
-            }));
+    fn mint_bolt11_response(quote: &str, state: MintQuoteState) -> MintQuoteBolt11Response<String> {
+        MintQuoteBolt11Response {
+            quote: quote.to_string(),
+            request: "test_request".to_string(),
+            amount: Some(Amount::from(100u64)),
+            unit: Some(CurrencyUnit::Sat),
+            state,
+            expiry: None,
+            pubkey: None,
+        }
+    }
 
-            let mut cx = Context::from_waker(Waker::noop());
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Pin::new(&mut stream).poll_next(&mut cx)
-            }));
+    fn mint_bolt12_response(
+        quote: &str,
+        amount_paid: u64,
+        amount_issued: u64,
+    ) -> MintQuoteBolt12Response<String> {
+        MintQuoteBolt12Response {
+            quote: quote.to_string(),
+            request: "test_request".to_string(),
+            amount: None,
+            unit: CurrencyUnit::Sat,
+            expiry: None,
+            pubkey: SecretKey::generate().public_key(),
+            amount_paid: Amount::from(amount_paid),
+            amount_issued: Amount::from(amount_issued),
+        }
+    }
 
-            assert!(result.is_ok());
-            assert!(matches!(
-                result.expect("poll should not panic"),
-                Poll::Ready(None)
-            ));
+    fn melt_bolt11_response(quote: &str, state: MeltQuoteState) -> MeltQuoteBolt11Response<String> {
+        MeltQuoteBolt11Response {
+            quote: quote.to_string(),
+            amount: Amount::from(100u64),
+            fee_reserve: Amount::from(1u64),
+            state,
+            expiry: 1234,
+            payment_preimage: None,
+            change: None,
+            request: Some("test_request".to_string()),
+            unit: Some(CurrencyUnit::Sat),
+        }
+    }
+
+    fn melt_bolt12_response(quote: &str, state: MeltQuoteState) -> MeltQuoteBolt12Response<String> {
+        melt_bolt11_response(quote, state)
+    }
+
+    fn melt_onchain_response(
+        quote: &str,
+        state: MeltQuoteState,
+    ) -> MeltQuoteOnchainResponse<String> {
+        MeltQuoteOnchainResponse {
+            quote: quote.to_string(),
+            amount: Amount::from(100u64),
+            unit: CurrencyUnit::Sat,
+            state,
+            expiry: 1234,
+            request: "test_request".to_string(),
+            fee_options: vec![MeltQuoteOnchainFeeOption {
+                fee_index: 0,
+                fee_reserve: Amount::from(1u64),
+                estimated_blocks: 1,
+            }],
+            selected_fee_index: None,
+            outpoint: None,
+            change: None,
+        }
+    }
+
+    fn melt_custom_response(quote: &str, state: MeltQuoteState) -> MeltQuoteCustomResponse<String> {
+        MeltQuoteCustomResponse {
+            quote: quote.to_string(),
+            amount: Amount::from(100u64),
+            fee_reserve: Some(Amount::from(1u64)),
+            state,
+            expiry: 1234,
+            payment_preimage: None,
+            change: None,
+            request: Some("test_request".to_string()),
+            unit: Some(CurrencyUnit::Sat),
+            extra: serde_json::Value::Null,
+        }
+    }
+
+    async fn recv_next_test_payment(
+        wallet: &crate::Wallet,
+        mut notifications: VecDeque<MintEvent<String>>,
+    ) -> Option<ClassifiedPayment> {
+        loop {
+            let notification = notifications.pop_front()?;
+            if let Some(payment) = handle_payment_notification(wallet, notification).await {
+                return Some(payment);
+            }
         }
     }
 }

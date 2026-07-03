@@ -359,6 +359,39 @@ mod tests {
     }
 
     #[test]
+    fn test_from_seed_blank_zero_amount_returns_empty_batch() {
+        let seed =
+            "half depart obvious quality work element tank gorilla view sugar picture humble";
+        let mnemonic = Mnemonic::from_str(seed).unwrap();
+        let seed: [u8; 64] = mnemonic.to_seed("");
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+
+        let pre_mint = PreMintSecrets::from_seed_blank(keyset_id, 5, &seed, Amount::ZERO).unwrap();
+
+        assert!(pre_mint.is_empty());
+    }
+
+    #[test]
+    fn test_from_seed_blank_uses_expected_counter_range() {
+        let seed =
+            "half depart obvious quality work element tank gorilla view sugar picture humble";
+        let mnemonic = Mnemonic::from_str(seed).unwrap();
+        let seed: [u8; 64] = mnemonic.to_seed("");
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+
+        let pre_mint =
+            PreMintSecrets::from_seed_blank(keyset_id, 5, &seed, Amount::from(3)).unwrap();
+        let restored = PreMintSecrets::restore_batch(keyset_id, &seed, 5, 7).unwrap();
+
+        assert_eq!(pre_mint.len(), 2);
+        assert_eq!(pre_mint.secrets, restored.secrets);
+        assert!(pre_mint
+            .secrets
+            .iter()
+            .all(|secret| secret.amount == Amount::ZERO));
+    }
+
+    #[test]
     fn test_secret_derivation_keyset_v2() {
         let seed =
             "half depart obvious quality work element tank gorilla view sugar picture humble";

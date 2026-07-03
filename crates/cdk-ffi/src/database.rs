@@ -2146,6 +2146,13 @@ pub enum WalletDbBackend {
 /// Unified wallet storage: either a built-in Rust backend or a custom
 /// foreign-language implementation of the `WalletDatabase` callback interface.
 ///
+/// Wallet methods can write to this store from FFI calls that mint, receive,
+/// recover, subscribe, or check quote/proof state. Mobile host apps own platform
+/// lifecycle handling for the chosen backend: use a durable app-owned location,
+/// pause or cancel wallet work when backgrounding unless background storage
+/// activity is intended, and use platform facilities such as iOS
+/// `beginBackgroundTask` when writes must finish after a lifecycle transition.
+///
 /// This is an enum rather than accepting `WalletDatabase` directly because UniFFI
 /// does not support trait objects as constructor parameters — only callback interfaces
 /// wrapped in `Arc<dyn Trait>` inside an enum variant work across the FFI boundary.
@@ -2164,12 +2171,20 @@ pub enum WalletStore {
 }
 
 /// Create a SQLite-backed wallet store.
+///
+/// Wallet operations may later write to this SQLite database. Mobile hosts are
+/// responsible for choosing a durable file path and coordinating background
+/// lifecycle transitions around wallet calls.
 #[uniffi::export]
 pub fn sqlite_wallet_store(path: String) -> WalletStore {
     WalletStore::Sqlite { path }
 }
 
 /// Create a PostgreSQL-backed wallet store.
+///
+/// Wallet operations may later write through this backend. Mobile hosts are
+/// responsible for coordinating background lifecycle transitions around wallet
+/// calls and any network/storage activity they trigger.
 #[cfg(feature = "postgres")]
 #[uniffi::export]
 pub fn postgres_wallet_store(url: String) -> WalletStore {
@@ -2177,6 +2192,10 @@ pub fn postgres_wallet_store(url: String) -> WalletStore {
 }
 
 /// Create a wallet store backed by a custom foreign-language database implementation.
+///
+/// Wallet operations may later call write methods on the supplied database.
+/// Mobile hosts are responsible for making those callbacks lifecycle-safe and
+/// durable across app foreground/background transitions.
 #[uniffi::export]
 pub fn custom_wallet_store(db: Arc<dyn WalletDatabase>) -> WalletStore {
     WalletStore::Custom { db }

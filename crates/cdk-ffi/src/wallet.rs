@@ -13,8 +13,14 @@ use crate::types::bip321::BitcoinNetwork;
 use crate::types::payment_request::PaymentRequest;
 use crate::types::*;
 
-/// FFI-compatible Wallet
-
+/// FFI-compatible wallet.
+///
+/// Wallet methods can write to the configured local store while they perform
+/// mint, receive, recovery, subscription, and status operations. Mobile host
+/// apps own platform lifecycle handling around these calls: pause or cancel work
+/// when moving to the background unless background network and storage activity
+/// is intended, and use platform facilities such as iOS `beginBackgroundTask`
+/// when an operation must finish after a lifecycle transition.
 #[derive(uniffi::Object)]
 pub struct Wallet {
     inner: Arc<CdkWallet>,
@@ -34,7 +40,13 @@ impl Wallet {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl Wallet {
-    /// Create a new Wallet
+    /// Create a new wallet.
+    ///
+    /// The returned wallet uses `store` for local state. FFI wallet methods may
+    /// write to that store later, so mobile host apps are responsible for
+    /// choosing durable storage locations and coordinating lifecycle transitions
+    /// around wallet calls. For example, use iOS `beginBackgroundTask` if a
+    /// write-capable operation must continue after the app backgrounds.
     ///
     /// Accepts a `WalletStore` which can be:
     /// - `Sqlite { path }` — built-in Rust SQLite backend
@@ -136,7 +148,11 @@ impl Wallet {
         Ok(info.into())
     }
 
-    /// Receive tokens
+    /// Receive tokens.
+    ///
+    /// This verifies and persists received proofs in the local store. Mobile
+    /// hosts should avoid starting it during app background transitions unless
+    /// background network and storage activity is intended.
     pub async fn receive(
         &self,
         token: std::sync::Arc<Token>,
@@ -180,7 +196,11 @@ impl Wallet {
         Ok(())
     }
 
-    /// Receive proofs directly
+    /// Receive proofs directly.
+    ///
+    /// This verifies and persists received proofs in the local store. Mobile
+    /// hosts should avoid starting it during app background transitions unless
+    /// background network and storage activity is intended.
     pub async fn receive_proofs(
         &self,
         proofs: Proofs,
@@ -263,6 +283,9 @@ impl Wallet {
     /// Updates local store with current state from mint.
     /// If there was a crashed mid-mint (pending saga), attempts to complete it.
     /// Does NOT mint tokens directly - use mint() for that.
+    /// This may perform network requests and write recovery/status updates to
+    /// the local store, so mobile hosts should coordinate it with app lifecycle
+    /// transitions.
     ///
     /// **Note:** The mint quote must be known to the wallet (stored locally) for this
     /// function to work. If the quote is not stored locally, use `fetch_mint_quote`
@@ -277,6 +300,9 @@ impl Wallet {
     /// Updates local store with current state from mint.
     /// If there was a crashed mid-mint (pending saga), attempts to complete it.
     /// Does NOT mint tokens directly - use mint() for that.
+    /// This may perform network requests and write recovery/status updates to
+    /// the local store, so mobile hosts should coordinate it with app lifecycle
+    /// transitions.
     ///
     /// **Note:** The mint quote must be known to the wallet (stored locally) for this
     /// function to work. If the quote is not stored locally, use `fetch_mint_quote`
@@ -286,7 +312,11 @@ impl Wallet {
         Ok(quote.into())
     }
 
-    /// Fetch a mint quote from the mint and store it locally
+    /// Fetch a mint quote from the mint and store it locally.
+    ///
+    /// This performs network I/O and writes the fetched quote to the local store.
+    /// Mobile hosts should avoid starting it during app background transitions
+    /// unless background network and storage activity is intended.
     ///
     /// Works with all payment methods (Bolt11, Bolt12, and custom payment methods).
     ///
@@ -305,7 +335,12 @@ impl Wallet {
         Ok(quote.into())
     }
 
-    /// Mint tokens
+    /// Mint tokens.
+    ///
+    /// This writes newly issued proofs and saga state to the local store while
+    /// communicating with the mint. Mobile hosts should coordinate it with app
+    /// lifecycle transitions, using platform background-task support when the
+    /// operation must finish after backgrounding.
     pub async fn mint(
         &self,
         quote_id: String,
@@ -388,6 +423,12 @@ impl Wallet {
         Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
     }
 
+    /// Mint tokens using the unified payment-method interface.
+    ///
+    /// This writes newly issued proofs and saga state to the local store while
+    /// communicating with the mint. Mobile hosts should coordinate it with app
+    /// lifecycle transitions, using platform background-task support when the
+    /// operation must finish after backgrounding.
     pub async fn mint_unified(
         &self,
         quote_id: String,
@@ -455,6 +496,18 @@ impl Wallet {
             .select_onchain_melt_quote(quote.try_into()?)
             .await?;
         Ok(quote.into())
+    }
+
+    /// Check melt quote status and attempt to complete any in-progress saga.
+    pub async fn check_melt_quote_status(&self, quote_id: String) -> Result<MeltQuote, FfiError> {
+        let quote = self.inner.check_melt_quote_status(&quote_id).await?;
+        Ok(quote.into())
+    }
+
+    /// Finalize pending melt operations for this wallet.
+    pub async fn finalize_pending_melts(&self) -> Result<Vec<FinalizedMelt>, FfiError> {
+        let finalized = self.inner.finalize_pending_melts().await?;
+        Ok(finalized.into_iter().map(Into::into).collect())
     }
 
     /// Swap proofs
@@ -573,7 +626,12 @@ impl Wallet {
         Ok(())
     }
 
-    /// Subscribe to wallet events
+    /// Subscribe to wallet events.
+    ///
+    /// The returned subscription may keep polling or receiving network events
+    /// until it is dropped or closed. Mobile hosts should cancel, drop, or stop
+    /// waiting on subscriptions during app background transitions when
+    /// background network or storage activity is not desired.
     pub async fn subscribe(
         &self,
         params: SubscribeParams,
@@ -593,6 +651,10 @@ impl Wallet {
     ///
     /// Use `recv()` on the returned `ActiveSubscription` to receive updates as
     /// `NotificationPayload::MintQuoteUpdate`.
+    /// The returned subscription may keep polling or receiving network events
+    /// until it is dropped or closed. Mobile hosts should cancel, drop, or stop
+    /// waiting on subscriptions during app background transitions when
+    /// background network or storage activity is not desired.
     ///
     /// All quote IDs must belong to the same payment method.
     ///
@@ -615,15 +677,26 @@ impl Wallet {
         )))
     }
 
-    /// Refresh keysets from the mint
-    pub async fn refresh_keysets(&self) -> Result<Vec<KeySetInfo>, FfiError> {
-        let keysets = self.inner.refresh_keysets().await?;
+    /// Get all keysets for this wallet's unit
+    pub async fn keysets(
+        &self,
+        policy: Option<crate::types::wallet::KeysetLoadPolicy>,
+    ) -> Result<Vec<KeySet>, FfiError> {
+        let cdk_policy: cdk_common::wallet::KeysetLoadPolicy = policy.unwrap_or_default().into();
+        let keysets = self.inner.keysets(cdk_policy).await?;
         Ok(keysets.into_iter().map(Into::into).collect())
     }
 
-    /// Get the active keyset for the wallet's unit
-    pub async fn get_active_keyset(&self) -> Result<KeySetInfo, FfiError> {
-        let keyset = self.inner.get_active_keyset().await?;
+    /// Get the active keyset with the lowest fees
+    pub async fn active_keyset(&self) -> Result<KeySet, FfiError> {
+        let keyset = self.inner.active_keyset().await?;
+        Ok(keyset.into())
+    }
+
+    /// Get a single keyset by ID
+    pub async fn keyset(&self, keyset_id: String) -> Result<KeySet, FfiError> {
+        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
+        let keyset = self.inner.keyset(id).await?;
         Ok(keyset.into())
     }
 
@@ -631,34 +704,6 @@ impl Wallet {
     pub async fn get_keyset_fees_by_id(&self, keyset_id: String) -> Result<u64, FfiError> {
         let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
         Ok(self.inner.get_keyset_fees_by_id(id).await?)
-    }
-
-    /// Load keys for a specific keyset
-    pub async fn load_keyset_keys(&self, keyset_id: String) -> Result<Keys, FfiError> {
-        let id = cdk::nuts::Id::from_str(&keyset_id).map_err(FfiError::internal)?;
-        let keys = self.inner.load_keyset_keys(id).await?;
-        Ok(keys.into())
-    }
-
-    /// Get keysets for this wallet's unit with filter
-    pub async fn get_mint_keysets(
-        &self,
-        filter: KeysetFilter,
-    ) -> Result<Vec<KeySetInfo>, FfiError> {
-        let keysets = self.inner.get_mint_keysets(filter.into()).await?;
-        Ok(keysets.into_iter().map(Into::into).collect())
-    }
-
-    /// Load active keysets
-    pub async fn load_mint_keysets(&self) -> Result<Vec<KeySetInfo>, FfiError> {
-        let keysets = self.inner.load_mint_keysets().await?;
-        Ok(keysets.into_iter().map(Into::into).collect())
-    }
-
-    /// Fetch active keyset with lowest fees
-    pub async fn fetch_active_keyset(&self) -> Result<KeySetInfo, FfiError> {
-        let keyset = self.inner.fetch_active_keyset().await?;
-        Ok(keyset.into())
     }
 
     /// Get fees and amounts for all keysets
@@ -697,6 +742,9 @@ impl Wallet {
     ///
     /// This function checks orphaned pending proofs (not managed by active sagas)
     /// with the mint and marks spent proofs accordingly.
+    /// It may perform network requests and write proof-state updates to the
+    /// local store, so mobile hosts should coordinate it with app lifecycle
+    /// transitions.
     pub async fn check_all_pending_proofs(&self) -> Result<Amount, FfiError> {
         let amount = self.inner.check_all_pending_proofs().await?;
         Ok(amount.into())
@@ -706,6 +754,10 @@ impl Wallet {
     ///
     /// Handles interrupted swap, send, receive, issue, and melt operations. Requires
     /// network access to the mint for states that need external status checks.
+    /// Recovery writes saga, proof, quote, and transaction updates to the local
+    /// store. Mobile hosts should run it only when background network and storage
+    /// activity is acceptable, or wrap it in platform background-task support
+    /// such as iOS `beginBackgroundTask`.
     pub async fn recover_incomplete_sagas(&self) -> Result<RecoveryReport, FfiError> {
         let report = self.inner.recover_incomplete_sagas().await?;
         Ok(report.into())

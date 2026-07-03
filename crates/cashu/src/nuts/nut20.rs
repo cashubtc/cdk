@@ -47,7 +47,7 @@ where
     }
 
     /// Sign [`MintRequest`]
-    pub fn sign(&mut self, secret_key: SecretKey) -> Result<(), Error> {
+    pub fn sign(&mut self, secret_key: &SecretKey) -> Result<(), Error> {
         let msg = self.msg_to_sign();
 
         let signature: Signature = secret_key.sign(&msg)?;
@@ -132,7 +132,7 @@ mod tests {
             SecretKey::from_hex("50d7fd7aa2b2fe4607f41f4ce6f8794fc184dd47b8cdfbe4b3d1249aa02d35aa")
                 .unwrap();
 
-        request.sign(secret.clone()).unwrap();
+        request.sign(&secret).unwrap();
 
         assert!(request.verify_signature(secret.public_key()).is_ok());
     }

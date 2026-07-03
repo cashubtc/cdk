@@ -65,11 +65,10 @@ use std::collections::{HashMap, HashSet};
 
 use bitcoin::XOnlyPublicKey;
 use cdk_common::amount::KeysetFeeAndAmounts;
-use cdk_common::nut02::KeySetInfosMethods;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
-    OperationData, P2PKLockedProofSendMode, SendOperationData, SendSagaState, Transaction,
-    TransactionDirection, WalletSaga, WalletSagaState,
+    KeysetLoadPolicy, OperationData, P2PKLockedProofSendMode, SendOperationData, SendSagaState,
+    Transaction, TransactionDirection, WalletSaga, WalletSagaState,
 };
 use cdk_common::Id;
 use tracing::instrument;
@@ -81,7 +80,6 @@ use crate::fees::calculate_fee;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut11::{enforce_sig_flag, SigFlag};
 use crate::nuts::{Proofs, State, Token};
-use crate::wallet::keysets::KeysetFilter;
 use crate::wallet::saga::{
     add_compensation, execute_compensations, new_compensations, Compensations,
     RevertProofReservation,
@@ -379,8 +377,17 @@ impl<'a> SendSaga<'a, Initial> {
         Self {
             wallet,
             compensations: new_compensations(),
-            state_data: Initial { operation_id },
+            state_data: Initial {
+                operation_id,
+                keyset_policy: Default::default(),
+            },
         }
+    }
+
+    /// Override the keyset load policy for this saga.
+    pub fn with_keyset_policy(mut self, policy: KeysetLoadPolicy) -> Self {
+        self.state_data.keyset_policy = policy;
+        self
     }
 
     /// Prepare the send operation by selecting and reserving proofs.
@@ -401,13 +408,44 @@ impl<'a> SendSaga<'a, Initial> {
             self.state_data.operation_id
         );
 
-        if opts.send_kind.is_online() {
-            if let Err(e) = self.wallet.refresh_keysets().await {
-                tracing::error!("Error refreshing keysets: {:?}. Using stored keysets", e);
-            }
-        }
+        let keyset_policy = self.state_data.keyset_policy;
 
-        let keyset_fees = self.wallet.get_keyset_fees_and_amounts().await?;
+        let all_keysets = self.wallet.keysets(keyset_policy).await?;
+
+        let keyset_fees: KeysetFeeAndAmounts = all_keysets
+            .iter()
+            .map(|ks| {
+                (
+                    ks.id,
+                    (
+                        ks.input_fee_ppk,
+                        ks.keys
+                            .iter()
+                            .map(|(amount, _)| amount.to_u64())
+                            .collect::<Vec<_>>(),
+                    )
+                        .into(),
+                )
+            })
+            .collect();
+
+        let active_keyset_ids: Vec<Id> = all_keysets
+            .iter()
+            .filter(|k| k.active.unwrap_or(false))
+            .map(|k| k.id)
+            .collect();
+
+        let active_keyset = all_keysets
+            .into_iter()
+            .filter(|k| k.active.unwrap_or(false))
+            .min_by_key(|k| k.input_fee_ppk)
+            .ok_or(Error::NoActiveKeyset)?;
+
+        let active_keyset_id = active_keyset.id;
+        let fee_and_amounts = keyset_fees
+            .get(&active_keyset_id)
+            .cloned()
+            .ok_or(Error::UnknownKeySet)?;
 
         let mut available_proofs = self
             .wallet
@@ -463,20 +501,6 @@ impl<'a> SendSaga<'a, Initial> {
                 }
             }
         }
-
-        let active_keyset_ids = self
-            .wallet
-            .get_mint_keysets(KeysetFilter::Active)
-            .await?
-            .active()
-            .map(|k| k.id)
-            .collect();
-
-        let active_keyset_id = self.wallet.get_active_keyset().await?.id;
-        let fee_and_amounts = self
-            .wallet
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
-            .await?;
 
         let send_amounts = if opts.include_fee {
             let send_split = amount.split_with_fee(&fee_and_amounts)?;
@@ -538,7 +562,7 @@ impl<'a> SendSaga<'a, Initial> {
 
         if selected_total == amount + send_fee {
             return self
-                .internal_prepare(amount, opts, selected_proofs, force_swap)
+                .internal_prepare(amount, opts, selected_proofs, force_swap, keyset_policy)
                 .await;
         } else if opts.send_kind == SendKind::OfflineExact {
             return Err(Error::InsufficientFunds);
@@ -555,7 +579,7 @@ impl<'a> SendSaga<'a, Initial> {
             }
         }
 
-        self.internal_prepare(amount, opts, selected_proofs, force_swap)
+        self.internal_prepare(amount, opts, selected_proofs, force_swap, keyset_policy)
             .await
     }
 
@@ -565,12 +589,20 @@ impl<'a> SendSaga<'a, Initial> {
         opts: SendOptions,
         proofs: Proofs,
         force_swap: bool,
+        keyset_policy: KeysetLoadPolicy,
     ) -> Result<SendSaga<'a, Prepared>, Error> {
-        let active_keyset_id = self.wallet.get_active_keyset().await?.id;
+        let active_keyset_id = self
+            .wallet
+            .active_keyset_with_policy(keyset_policy)
+            .await?
+            .id;
         let fee_and_amounts = self
             .wallet
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
-            .await?;
+            .get_keyset_fees_and_amounts_with_policy(keyset_policy)
+            .await?
+            .get(&active_keyset_id)
+            .cloned()
+            .ok_or(Error::UnknownKeySet)?;
 
         let (send_amounts, send_fee) = if opts.include_fee {
             let send_split = amount.split_with_fee(&fee_and_amounts)?;
@@ -600,7 +632,10 @@ impl<'a> SendSaga<'a, Initial> {
         let is_exact_or_offline =
             exact_proofs || opts.send_kind.is_offline() || opts.send_kind.has_tolerance();
 
-        let keyset_fees_and_amounts = self.wallet.get_keyset_fees_and_amounts().await?;
+        let keyset_fees_and_amounts = self
+            .wallet
+            .get_keyset_fees_and_amounts_with_policy(keyset_policy)
+            .await?;
         let keyset_fees: HashMap<Id, u64> = keyset_fees_and_amounts
             .iter()
             .map(|(key, values)| (*key, values.fee()))
@@ -810,6 +845,10 @@ impl<'a> SendSaga<'a, Prepared> {
             }
 
             if !proofs_to_swap.is_empty() {
+                if options.send_kind.is_offline() {
+                    return Err(Error::InsufficientFunds);
+                }
+
                 let swap_amount = total_send_amount
                     .checked_sub(final_proofs_to_send.total_amount()?)
                     .unwrap_or(Amount::ZERO);
@@ -823,7 +862,7 @@ impl<'a> SendSaga<'a, Prepared> {
                     crate::wallet::util::sign_proofs(&mut proofs_to_swap, &keys)?;
                 }
 
-                let keyset_id = self.wallet.fetch_active_keyset().await?.id;
+                let keyset_id = self.wallet.active_keyset().await?.id;
 
                 // Capture counter start before swap
                 counter_start = Some(
@@ -1141,8 +1180,8 @@ mod tests {
     use cdk_common::amount::KeysetFeeAndAmounts;
     use cdk_common::nuts::State;
     use cdk_common::wallet::{
-        OperationData, ProofInfo, SendKind, SendOperationData, SendSagaState, WalletSaga,
-        WalletSagaState,
+        KeysetLoadPolicy, OperationData, ProofInfo, SendKind, SendOperationData, SendSagaState,
+        WalletSaga, WalletSagaState,
     };
     use cdk_common::{CurrencyUnit, ProofsMethods};
 
@@ -1275,6 +1314,7 @@ mod tests {
                 SendOptions::default(),
                 vec![unused_proof, send_8_proof, send_2_proof],
                 false,
+                KeysetLoadPolicy::default(),
             )
             .await
             .unwrap();
@@ -1362,6 +1402,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_offline_confirm_rejects_prepared_swap_inputs() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let operation_id = uuid::Uuid::new_v4();
+        let proof = test_proof(keyset_id, 8);
+
+        let saga_record = WalletSaga::new(
+            operation_id,
+            WalletSagaState::Send(SendSagaState::ProofsReserved),
+            Amount::from(8),
+            mint_url,
+            CurrencyUnit::Sat,
+            OperationData::Send(SendOperationData {
+                amount: Amount::from(8),
+                memo: None,
+                counter_start: None,
+                counter_end: None,
+                token: None,
+                proofs: None,
+            }),
+        );
+        db.add_saga(saga_record.clone()).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+        let saga = SendSaga::from_prepared(
+            &wallet,
+            operation_id,
+            Amount::from(8),
+            SendOptions {
+                send_kind: SendKind::OfflineExact,
+                ..Default::default()
+            },
+            vec![proof],
+            vec![],
+            Amount::ZERO,
+            Amount::ZERO,
+            saga_record,
+        )
+        .unwrap();
+
+        let err = match saga.confirm(None).await {
+            Ok(_) => panic!("offline confirm must reject swap inputs before contacting mint"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, crate::Error::InsufficientFunds));
+    }
+
+    #[tokio::test]
     async fn test_offline_send_excludes_locked_proofs_without_passthrough() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
@@ -1376,7 +1467,15 @@ mod tests {
         mock_client.reset_default_mint_state();
 
         let wallet = create_test_wallet_with_mock(db, mock_client).await;
-        let saga = SendSaga::new(&wallet);
+
+        // Prime the keyset cache — offline sends use CacheOnly and require
+        // keysets to already be cached.
+        wallet
+            .keysets(cdk_common::wallet::KeysetLoadPolicy::Refresh)
+            .await
+            .unwrap();
+
+        let saga = SendSaga::new(&wallet).with_keyset_policy(KeysetLoadPolicy::CacheOnly);
         let err = saga
             .prepare(
                 Amount::from(8),
@@ -1389,6 +1488,108 @@ mod tests {
             .expect_err("offline send must not prepare a locked-proof swap by default");
 
         assert!(matches!(err, crate::Error::InsufficientFunds));
+    }
+
+    /// Offline send with an empty keyset cache must fail because it uses
+    /// CacheOnly and never contacts the network.
+    #[tokio::test]
+    async fn test_offline_send_fails_without_cached_keysets() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+
+        let proof_info = test_proof_info(keyset_id, 64, mint_url);
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        // Do NOT prime the cache — offline send should fail with UnknownKeySet
+        // because CacheOnly has nothing to return.
+        let saga = SendSaga::new(&wallet).with_keyset_policy(KeysetLoadPolicy::CacheOnly);
+        let err = saga
+            .prepare(
+                Amount::from(64),
+                SendOptions {
+                    send_kind: SendKind::OfflineExact,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect_err("offline send without cached keysets should fail");
+
+        assert!(
+            matches!(err, crate::Error::UnknownKeySet),
+            "expected UnknownKeySet, got: {err:?}"
+        );
+    }
+
+    /// Offline send with a primed keyset cache succeeds without network access.
+    #[tokio::test]
+    async fn test_offline_send_succeeds_with_cached_keysets() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+
+        let proof_info = test_proof_info(keyset_id, 64, mint_url);
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        // Prime the cache so CacheOnly can serve keyset data
+        wallet
+            .keysets(cdk_common::wallet::KeysetLoadPolicy::Refresh)
+            .await
+            .unwrap();
+
+        let saga = SendSaga::new(&wallet).with_keyset_policy(KeysetLoadPolicy::CacheOnly);
+        let prepared = saga
+            .prepare(
+                Amount::from(64),
+                SendOptions {
+                    send_kind: SendKind::OfflineExact,
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        assert!(
+            prepared.is_ok(),
+            "offline send with cached keysets should succeed"
+        );
+    }
+
+    /// Online send loads keysets from network when cache is empty.
+    #[tokio::test]
+    async fn test_online_send_loads_keysets_from_network() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+
+        let proof_info = test_proof_info(keyset_id, 64, mint_url);
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_post_swap_response(Ok(cdk_common::SwapResponse { signatures: vec![] }));
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        // Do NOT prime the cache — online send should fetch from the mock
+        let saga = SendSaga::new(&wallet);
+        let prepared = saga
+            .prepare(
+                Amount::from(64),
+                SendOptions {
+                    send_kind: SendKind::OnlineExact,
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        assert!(
+            prepared.is_ok(),
+            "online send should succeed by fetching keysets from network"
+        );
     }
 
     #[test]

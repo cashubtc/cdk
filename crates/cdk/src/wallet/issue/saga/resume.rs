@@ -378,7 +378,7 @@ impl Wallet {
                 counter_end,
             )?;
 
-            let keys = self.load_keyset_keys(keyset_id).await?;
+            let keys = self.keyset(keyset_id).await?.keys;
 
             validate_mint_response_signatures(
                 self,
@@ -431,7 +431,7 @@ impl Wallet {
 
         // Sign the request if the quote has a signing key (required for bolt12)
         if let Some(secret_key) = self.mint_quote_signing_key(&quote).await? {
-            if let Err(e) = mint_request.sign(secret_key) {
+            if let Err(e) = mint_request.sign(&secret_key) {
                 tracing::warn!(
                     "Issue saga {} - failed to sign mint request: {}, cannot replay",
                     saga_id,
@@ -500,7 +500,7 @@ impl Wallet {
             counter_end,
         )?;
 
-        let keys = self.load_keyset_keys(keyset_id).await?;
+        let keys = self.keyset(keyset_id).await?.keys;
 
         validate_mint_response_signatures(
             self,

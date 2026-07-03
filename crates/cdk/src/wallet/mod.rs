@@ -4,15 +4,13 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::Network;
 use cdk_common::amount::FeeAndAmounts;
 use cdk_common::database::{self, WalletDatabase};
-use cdk_common::parking_lot::RwLock;
 use cdk_common::subscription::WalletParams;
-use cdk_common::wallet::ProofInfo;
+use cdk_common::wallet::{KeysetLoadPolicy, ProofInfo};
 use cdk_common::{PublicKey, SecretKey, SECP256K1};
 use getrandom::getrandom;
 pub use mint_connector::http_client::{
@@ -86,12 +84,12 @@ pub use cdk_common::wallet as types;
 pub use cdk_common::wallet::{
     NUT13Options, P2PKLockedProofSendMode, ReceiveOptions, SendMemo, SendOptions,
 };
-pub use keysets::KeysetFilter;
 pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
 pub use mint_connector::{
     AuthHttpClient, HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector,
 };
+pub use mint_metadata_cache::MintMetadata;
 #[cfg(feature = "nostr")]
 pub use nostr_backup::{BackupOptions, BackupResult, RestoreOptions, RestoreResult};
 #[cfg(feature = "npubcash")]
@@ -134,7 +132,6 @@ pub struct Wallet {
     pub metadata_cache: Arc<MintMetadataCache>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
-    metadata_cache_ttl: Arc<RwLock<Option<Duration>>>,
     auth_wallet: Arc<TokioRwLock<Option<AuthWallet>>>,
     #[cfg(feature = "npubcash")]
     npubcash_client: Arc<TokioRwLock<Option<Arc<cdk_npubcash::NpubCashClient>>>>,
@@ -335,10 +332,7 @@ impl Wallet {
         let mut fee_per_keyset = HashMap::new();
         let metadata = self
             .metadata_cache
-            .load(&self.localstore, &self.client, {
-                let ttl = self.metadata_cache_ttl.read();
-                *ttl
-            })
+            .load(&self.localstore, &self.client)
             .await?;
 
         for keyset_id in proofs_per_keyset.keys() {
@@ -357,17 +351,22 @@ impl Wallet {
     /// Get fee for count of proofs in a keyset
     #[instrument(skip_all)]
     pub async fn get_keyset_count_fee(&self, keyset_id: &Id, count: u64) -> Result<Amount, Error> {
+        self.get_keyset_count_fee_with_policy(keyset_id, count, Default::default())
+            .await
+    }
+
+    /// Calculate fee for a given number of proofs using a specific
+    /// [`KeysetLoadPolicy`].
+    pub async fn get_keyset_count_fee_with_policy(
+        &self,
+        keyset_id: &Id,
+        count: u64,
+        policy: KeysetLoadPolicy,
+    ) -> Result<Amount, Error> {
         let input_fee_ppk = self
-            .metadata_cache
-            .load(&self.localstore, &self.client, {
-                let ttl = self.metadata_cache_ttl.read();
-                *ttl
-            })
+            .get_keyset_fees_and_amounts_by_id_with_policy(*keyset_id, policy)
             .await?
-            .keysets
-            .get(keyset_id)
-            .ok_or(Error::UnknownKeySet)?
-            .input_fee_ppk;
+            .fee();
 
         let fee = (input_fee_ppk * count).div_ceil(1000);
 
@@ -442,7 +441,6 @@ impl Wallet {
                         None,
                         self.localstore.clone(),
                         self.metadata_cache.clone(),
-                        self.metadata_cache_ttl.clone(),
                         mint_info.protected_endpoints(),
                         oidc_client,
                     );
@@ -473,10 +471,7 @@ impl Wallet {
     pub async fn load_mint_info(&self) -> Result<MintInfo, Error> {
         let mint_info = self
             .metadata_cache
-            .load(&self.localstore, &self.client, {
-                let ttl = self.metadata_cache_ttl.read();
-                *ttl
-            })
+            .load(&self.localstore, &self.client)
             .await?
             .mint_info
             .clone();
@@ -577,12 +572,12 @@ impl Wallet {
             self.fetch_mint_info().await?;
         }
 
-        let keysets = self.get_mint_keysets(KeysetFilter::All).await?;
+        let keysets = self.keysets(Default::default()).await?;
 
         let mut restored_result = Restored::default();
 
         for keyset in keysets {
-            let keys = self.load_keyset_keys(keyset.id).await?;
+            let keys = self.keyset(keyset.id).await?.keys;
             let mut empty_batch: u32 = 0;
             let mut start_counter: u32 = 0;
             // Track the highest counter value that had a signature
@@ -898,7 +893,7 @@ impl Wallet {
             let mint_pubkey = match keys_cache.get(&proof.keyset_id) {
                 Some(keys) => keys.amount_key(proof.amount),
                 None => {
-                    let keys = self.load_keyset_keys(proof.keyset_id).await?;
+                    let keys = self.keyset(proof.keyset_id).await?.keys;
 
                     let key = keys.amount_key(proof.amount);
                     keys_cache.insert(proof.keyset_id, keys);

@@ -16,6 +16,7 @@ name = "cdk_ffi"
 async-trait = { workspace = true }
 bip39 = { workspace = true }
 cdk = { workspace = true, default-features = false, features = ["wallet", "nostr"] }
+cdk-http-client = { workspace = true, features = ["bitreq"] }
 cdk-sqlite = { workspace = true }
 cdk-postgres = { workspace = true, optional = true }
 cdk-supabase = { workspace = true, optional = true, features = ["wallet"] }

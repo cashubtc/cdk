@@ -1173,7 +1173,7 @@ async fn test_onchain_attempt_to_mint_unpaid() {
         .await
         .expect("Failed to get mint quote");
 
-    let active_keyset = wallet.get_active_keyset().await.unwrap();
+    let active_keyset = wallet.active_keyset().await.unwrap();
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
     let premint_secrets = cdk::nuts::PreMintSecrets::random(
         active_keyset.id,

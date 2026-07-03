@@ -12,29 +12,28 @@ license.workspace = true
 
 [features]
 default = ["mint", "wallet", "nostr", "bip353"]
-wallet = ["dep:futures", "cdk-common/wallet", "cdk-common/http", "dep:rustls"]
+wallet = [
+    "dep:cdk-http-client",
+    "dep:futures",
+    "cdk-common/wallet",
+    "cdk-common/http",
+    "dep:rustls",
+]
 nostr = ["wallet", "dep:nostr-sdk", "cdk-common/nostr"]
 npubcash = ["wallet", "nostr", "dep:cdk-npubcash"]
 mint = ["dep:futures", "cdk-common/mint", "cdk-common/http", "cdk-signatory"]
-bip353 = ["dep:hickory-resolver", "cdk-common/bip353"]
+bip353 = ["wallet", "cdk-common/bip353", "cdk-http-client?/bip353"]
 bench = []
 http_subscription = []
 tor = [
     "wallet",
-    "dep:arti-client",
-    "dep:arti-hyper",
-    "dep:hyper",
-    "dep:http",
-    "dep:rustls",
-    "dep:tor-rtcompat",
-    "dep:tls-api",
-    "dep:tls-api-native-tls",
+    "cdk-http-client/tor",
 ]
 prometheus = ["dep:cdk-prometheus"]
 
 [dependencies]
 arc-swap = "1.7.1"
-cdk-common.workspace = true
+cdk-common = { workspace = true, default-features = false }
 cbor-diag.workspace = true
 async-trait.workspace = true
 anyhow.workspace = true
@@ -54,7 +53,7 @@ url.workspace = true
 uuid.workspace = true
 jsonwebtoken.workspace = true
 nostr-sdk = { workspace = true, optional = true }
-cdk-npubcash = { workspace = true, optional = true }
+cdk-npubcash = { workspace = true, default-features = false, optional = true }
 cdk-prometheus = {workspace = true, optional = true}
 bitcoin-payment-instructions = { workspace = true }
 web-time.workspace = true
@@ -62,7 +61,7 @@ zeroize = "1"
 tokio-util.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-hickory-resolver = { version = "0.25.2", optional = true, features = ["dnssec-ring"] }
+cdk-http-client = { workspace = true, default-features = false, optional = true }
 tokio = { workspace = true, features = [
     "rt-multi-thread",
     "time",
@@ -72,17 +71,11 @@ tokio = { workspace = true, features = [
 getrandom = { version = "0.2" }
 cdk-signatory = { workspace = true, features = ["grpc"], optional = true }
 # Tor dependencies (optional; enabled by feature "tor")
-hyper = { version = "0.14", optional = true, features = ["client", "http1", "http2"] }
-http = { version = "0.2", optional = true }
-arti-client = { version = "0.19.0", optional = true, default-features = false, features = ["tokio", "rustls"] }
-arti-hyper = { version = "0.19.0", optional = true }
 rustls = { workspace = true, optional = true }
-tor-rtcompat = { version = "0.19.0", optional = true, features = ["tokio", "rustls"] }
-tls-api = { version = "0.9", optional = true }
-tls-api-native-tls = { version = "0.9", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+cdk-http-client = { workspace = true, default-features = false, optional = true }
+tokio = { workspace = true, default-features = false, features = ["rt", "macros", "sync", "time"] }
 cdk-signatory = { workspace = true, default-features = false }
 getrandom = { version = "0.2", features = ["js"] }
 ring = { version = "0.17.14", features = ["wasm32_unknown_unknown_js"] }

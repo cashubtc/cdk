@@ -106,19 +106,21 @@ mod tests {
             decode("666f6f626172"),
             Ok(String::from("foobar").into_bytes())
         );
+        assert_eq!(decode("AF"), Ok(vec![0xaf]));
+        assert_eq!(decode("ff"), Ok(vec![0xff]));
     }
 
     #[test]
     fn test_invalid_length() {
         assert_eq!(decode("1").unwrap_err(), Error::OddLength);
         assert_eq!(decode("666f6f6261721").unwrap_err(), Error::OddLength);
+        assert_eq!(Error::OddLength.to_string(), "Odd number of digits");
     }
 
     #[test]
     fn test_invalid_char() {
-        assert_eq!(
-            decode("66ag").unwrap_err(),
-            Error::InvalidHexCharacter { c: 'g', index: 3 }
-        );
+        let error = decode("66ag").unwrap_err();
+        assert_eq!(error, Error::InvalidHexCharacter { c: 'g', index: 3 });
+        assert_eq!(error.to_string(), "Invalid character g at position 3");
     }
 }

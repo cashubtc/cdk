@@ -28,6 +28,9 @@ pub struct UpdateNut05Command {
     /// Whether this melt method is disabled (true) or enabled (false)
     #[arg(long)]
     disabled: Option<bool>,
+    /// Human-readable name for this payment method
+    #[arg(long)]
+    method_name: Option<String>,
     /// Whether amountless bolt11 invoices are allowed
     #[arg(long)]
     amountless: Option<bool>,
@@ -57,6 +60,7 @@ pub async fn update_nut05(
             min_amount: sub_command_args.min_amount,
             max_amount: sub_command_args.max_amount,
             options,
+            method_name: sub_command_args.method_name.clone(),
         }))
         .await?;
 

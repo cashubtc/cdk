@@ -1,5 +1,5 @@
 //! Specific Subscription for the cdk crate
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, Error as DeError};
 use serde::{Deserialize, Serialize};
 
 use super::PublicKey;
@@ -184,19 +184,10 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(bound = "T: Serialize + DeserializeOwned")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(bound(serialize = "T: Serialize + DeserializeOwned"))]
 #[serde(untagged)]
 /// Subscription response
-///
-/// Note on variant ordering: serde `untagged` deserialization tries variants
-/// in declaration order and selects the first that matches. The Onchain
-/// variants are declared before the Bolt11/Bolt12 variants because the
-/// Onchain response structs use `#[serde(deny_unknown_fields)]`, which makes
-/// them reject Bolt11/Bolt12 payloads cleanly. Placing them first ensures
-/// onchain payloads are classified correctly without being consumed by the
-/// more permissive Bolt12 variant (which carries a superset of Onchain's
-/// field names).
 pub enum NotificationPayload<T>
 where
     T: Clone,
@@ -204,14 +195,8 @@ where
     /// Proof State
     ProofState(ProofState),
     /// Mint Quote Onchain Response
-    ///
-    /// Declared before `MintQuoteBolt12Response` to ensure untagged
-    /// discrimination picks the onchain variant for onchain payloads.
     MintQuoteOnchainResponse(MintQuoteOnchainResponse<T>),
     /// Melt Quote Onchain Response
-    ///
-    /// Declared before `MeltQuoteBolt11Response`/`MeltQuoteBolt12Response`
-    /// for the same reason.
     MeltQuoteOnchainResponse(MeltQuoteOnchainResponse<T>),
     /// Melt Quote Bolt11 Response
     MeltQuoteBolt11Response(MeltQuoteBolt11Response<T>),
@@ -225,6 +210,81 @@ where
     CustomMintQuoteResponse(String, MintQuoteCustomResponse<T>),
     /// Custom Melt Quote Response (method, response)
     CustomMeltQuoteResponse(String, MeltQuoteCustomResponse<T>),
+}
+
+/// Classify a notification payload by its discriminating fields instead of
+/// serde `untagged` variant order. The quote responses for different payment
+/// methods share most field names, and the structs tolerate unknown fields
+/// for forward compatibility, so untagged trial-and-error would pick the
+/// wrong variant.
+fn deserialize_payload<T, E>(value: serde_json::Value) -> Result<NotificationPayload<T>, E>
+where
+    T: Clone + Serialize + DeserializeOwned,
+    E: DeError,
+{
+    fn from_value<V, E>(value: serde_json::Value) -> Result<V, E>
+    where
+        V: DeserializeOwned,
+        E: DeError,
+    {
+        serde_json::from_value(value).map_err(E::custom)
+    }
+
+    match &value {
+        serde_json::Value::Object(fields) => {
+            if fields.contains_key("Y") {
+                return from_value(value).map(NotificationPayload::ProofState);
+            }
+
+            if fields.contains_key("fee_options") {
+                return from_value(value).map(NotificationPayload::MeltQuoteOnchainResponse);
+            }
+
+            if fields.contains_key("fee_reserve") {
+                return from_value(value).map(NotificationPayload::MeltQuoteBolt11Response);
+            }
+
+            if fields.contains_key("state") {
+                return from_value(value).map(NotificationPayload::MintQuoteBolt11Response);
+            }
+
+            if fields.contains_key("amount") {
+                return from_value(value).map(NotificationPayload::MintQuoteBolt12Response);
+            }
+
+            from_value(value).map(NotificationPayload::MintQuoteOnchainResponse)
+        }
+        serde_json::Value::Array(items) if items.len() == 2 => {
+            let response = items
+                .get(1)
+                .ok_or_else(|| E::custom("custom notification payload is missing response"))?;
+            match response.as_object() {
+                Some(fields) if fields.contains_key("state") => {
+                    from_value(value).map(|(method, response)| {
+                        NotificationPayload::CustomMeltQuoteResponse(method, response)
+                    })
+                }
+                Some(_) => from_value(value).map(|(method, response)| {
+                    NotificationPayload::CustomMintQuoteResponse(method, response)
+                }),
+                None => Err(E::custom("custom notification response must be an object")),
+            }
+        }
+        _ => Err(E::custom("invalid notification payload")),
+    }
+}
+
+impl<'de, T> Deserialize<'de> for NotificationPayload<T>
+where
+    T: Clone + Serialize + DeserializeOwned,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        deserialize_payload(value)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Hash, Serialize)]
@@ -369,9 +429,8 @@ mod tests {
 
     #[test]
     fn notification_payload_bolt12_mint_roundtrip() {
-        // Ensure a Bolt12 payload (with `amount`) still decodes as Bolt12 after
-        // the Onchain variant was moved ahead of it and marked
-        // `deny_unknown_fields`.
+        // Ensure a Bolt12 payload (with `amount`) still decodes as Bolt12 and
+        // is not swallowed by the field-name overlap with the Onchain variant.
         let resp: MintQuoteBolt12Response<String> = MintQuoteBolt12Response {
             quote: "abc".to_string(),
             request: "lno1...".to_string(),
@@ -428,6 +487,82 @@ mod tests {
                 assert_eq!(r, resp);
             }
             other => panic!("expected MeltQuoteOnchainResponse, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn notification_payload_custom_arrays_require_method_and_object_response() {
+        let custom_mint = r#"[
+            "paypal",
+            {
+                "quote": "abc",
+                "request": "pay://abc",
+                "amount": 10,
+                "amount_paid": 0,
+                "amount_issued": 0,
+                "unit": "sat",
+                "expiry": 1701704757
+            }
+        ]"#;
+        let payload: NotificationPayload<String> = serde_json::from_str(custom_mint).unwrap();
+        match payload {
+            NotificationPayload::CustomMintQuoteResponse(method, response) => {
+                assert_eq!(method, "paypal");
+                assert_eq!(response.quote, "abc");
+            }
+            other => panic!("expected CustomMintQuoteResponse, got {:?}", other),
+        }
+
+        let custom_melt = r#"[
+            "paypal",
+            {
+                "quote": "abc",
+                "amount": 10,
+                "fee_reserve": 1,
+                "state": "PENDING",
+                "expiry": 1701704757,
+                "request": "pay://abc",
+                "unit": "sat"
+            }
+        ]"#;
+        let payload: NotificationPayload<String> = serde_json::from_str(custom_melt).unwrap();
+        match payload {
+            NotificationPayload::CustomMeltQuoteResponse(method, response) => {
+                assert_eq!(method, "paypal");
+                assert_eq!(response.quote, "abc");
+            }
+            other => panic!("expected CustomMeltQuoteResponse, got {:?}", other),
+        }
+
+        assert!(serde_json::from_str::<NotificationPayload<String>>(r#"["paypal"]"#).is_err());
+        assert!(serde_json::from_str::<NotificationPayload<String>>(
+            r#"["paypal", "not an object"]"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn notification_payload_onchain_mint_tolerates_unknown_fields() {
+        // A newer mint may extend the onchain mint quote response with
+        // additional fields; classification and decoding must still succeed.
+        let encoded = r#"{
+            "quote": "abc",
+            "request": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            "unit": "sat",
+            "expiry": 1701704757,
+            "pubkey": "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+            "amount_paid": 0,
+            "amount_issued": 0,
+            "some_future_extension": {"nested": true}
+        }"#;
+
+        let decoded: NotificationPayload<String> = serde_json::from_str(encoded).unwrap();
+
+        match decoded {
+            NotificationPayload::MintQuoteOnchainResponse(r) => {
+                assert_eq!(r.quote, "abc");
+            }
+            other => panic!("expected MintQuoteOnchainResponse, got {:?}", other),
         }
     }
 }

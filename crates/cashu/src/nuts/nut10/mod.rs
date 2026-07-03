@@ -434,6 +434,46 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
+    use crate::nuts::{Id, Proof, SecretKey, SigFlag};
+    use crate::{Amount, Proofs};
+
+    struct TestSpendRequest {
+        inputs: Proofs,
+    }
+
+    impl SpendingConditionVerification for TestSpendRequest {
+        fn inputs(&self) -> &Proofs {
+            &self.inputs
+        }
+
+        fn sig_all_msg_to_sign(&self) -> String {
+            "test message".to_string()
+        }
+    }
+
+    fn p2pk_proof_with_sig_flag(sig_flag: SigFlag) -> Proof {
+        let secret_key = SecretKey::generate();
+        let pubkey = secret_key.public_key();
+        let secret: crate::secret::Secret = SpendingConditions::new_p2pk(
+            pubkey,
+            Some(Conditions {
+                sig_flag,
+                ..Default::default()
+            }),
+        )
+        .try_into()
+        .unwrap();
+
+        Proof {
+            amount: Amount::ONE,
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            secret,
+            c: pubkey,
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        }
+    }
 
     #[test]
     fn test_secret_serialize() {
@@ -513,5 +553,66 @@ mod tests {
         assert_eq!(original_secret, deserialized_secret);
         assert_eq!(deserialized_secret.kind(), Kind::HTLC);
         assert_eq!(deserialized_secret.secret_data().data, payment_hash);
+    }
+
+    #[test]
+    fn test_locktime_refund_path_starts_after_not_at_locktime() {
+        let recipient = SecretKey::generate().public_key();
+        let refund_key = SecretKey::generate().public_key();
+        let secret: Secret = SpendingConditions::new_p2pk(
+            recipient,
+            Some(Conditions {
+                locktime: Some(100),
+                refund_keys: Some(vec![refund_key]),
+                ..Default::default()
+            }),
+        )
+        .into();
+
+        assert_eq!(
+            get_pubkeys_and_required_sigs(&secret, 100)
+                .unwrap()
+                .refund_path,
+            None
+        );
+
+        let requirements = get_pubkeys_and_required_sigs(&secret, 101).unwrap();
+        assert_eq!(
+            requirements.refund_path.unwrap(),
+            RefundPath {
+                pubkeys: vec![refund_key],
+                required_sigs: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn test_htlc_rejects_duplicate_receiver_pubkeys() {
+        let pubkey = SecretKey::generate().public_key();
+        let secret: Secret = SpendingConditions::new_htlc_hash(
+            "5c23fc3aec9d985bd5fc88ca8bceaccc52cf892715dd94b42b84f1b43350751e",
+            Some(Conditions {
+                pubkeys: Some(vec![pubkey, pubkey]),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .into();
+
+        assert!(matches!(
+            get_pubkeys_and_required_sigs(&secret, 0),
+            Err(Error::NUT11(crate::nuts::nut11::Error::DuplicatePubkey))
+        ));
+    }
+
+    #[test]
+    fn test_has_at_least_one_sig_all_is_false_for_sig_inputs_only() {
+        let request = TestSpendRequest {
+            inputs: vec![p2pk_proof_with_sig_flag(SigFlag::SigInputs)]
+                .into_iter()
+                .collect(),
+        };
+
+        assert!(!request.has_at_least_one_sig_all().unwrap());
     }
 }

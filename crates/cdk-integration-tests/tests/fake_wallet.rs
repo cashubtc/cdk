@@ -512,7 +512,7 @@ async fn test_fake_melt_change_in_quote() {
         .await
         .unwrap();
 
-    let keyset = wallet.fetch_active_keyset().await.unwrap();
+    let keyset = wallet.active_keyset().await.unwrap();
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let premint_secrets = PreMintSecrets::random(
@@ -610,7 +610,7 @@ async fn test_fake_mint_without_witness() {
 
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
-    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let premint_secrets = PreMintSecrets::random(
@@ -665,7 +665,7 @@ async fn test_fake_mint_with_wrong_witness() {
 
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
 
-    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let premint_secrets = PreMintSecrets::random(
@@ -685,7 +685,7 @@ async fn test_fake_mint_with_wrong_witness() {
     let secret_key = SecretKey::generate();
 
     request
-        .sign(secret_key)
+        .sign(&secret_key)
         .expect("failed to sign the mint request");
 
     let response = http_client
@@ -724,7 +724,7 @@ async fn test_fake_mint_inflated() {
         .expect("payment")
         .expect("no error");
 
-    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let pre_mint = PreMintSecrets::random(
@@ -750,7 +750,7 @@ async fn test_fake_mint_inflated() {
 
     if let Some(secret_key) = quote_info.secret_key {
         mint_request
-            .sign(secret_key)
+            .sign(&secret_key)
             .expect("failed to sign the mint request");
     }
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
@@ -799,7 +799,7 @@ async fn test_fake_mint_inflated_does_not_consume_quote() {
         .expect("payment")
         .expect("no error");
 
-    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
     let quote_info = wallet
         .localstore
@@ -823,7 +823,7 @@ async fn test_fake_mint_inflated_does_not_consume_quote() {
         signature: None,
     };
     inflated_request
-        .sign(secret_key.clone())
+        .sign(&secret_key)
         .expect("failed to sign inflated mint request");
 
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
@@ -852,7 +852,7 @@ async fn test_fake_mint_inflated_does_not_consume_quote() {
         signature: None,
     };
     valid_request
-        .sign(secret_key.clone())
+        .sign(&secret_key)
         .expect("failed to sign valid mint request");
 
     let valid_response = http_client
@@ -882,7 +882,7 @@ async fn test_fake_mint_inflated_does_not_consume_quote() {
         signature: None,
     };
     second_valid_request
-        .sign(secret_key)
+        .sign(&secret_key)
         .expect("failed to sign second valid mint request");
 
     let second_response = http_client
@@ -922,7 +922,7 @@ async fn test_fake_mint_concurrent_same_quote_different_outputs() {
         .expect("payment")
         .expect("no error");
 
-    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
     let quote_info = wallet
         .localstore
@@ -953,7 +953,7 @@ async fn test_fake_mint_concurrent_same_quote_different_outputs() {
         signature: None,
     };
     request_one
-        .sign(secret_key.clone())
+        .sign(&secret_key)
         .expect("failed to sign first request");
 
     let mut request_two = MintRequest {
@@ -962,7 +962,7 @@ async fn test_fake_mint_concurrent_same_quote_different_outputs() {
         signature: None,
     };
     request_two
-        .sign(secret_key)
+        .sign(&secret_key)
         .expect("failed to sign second request");
 
     let (result_one, result_two) = tokio::join!(
@@ -1020,7 +1020,7 @@ async fn test_fake_mint_multiple_units() {
         .expect("payment")
         .expect("no error");
 
-    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let pre_mint = PreMintSecrets::random(
@@ -1040,7 +1040,7 @@ async fn test_fake_mint_multiple_units() {
     )
     .expect("failed to create new wallet");
 
-    let active_keyset_id = wallet_usd.fetch_active_keyset().await.unwrap().id;
+    let active_keyset_id = wallet_usd.active_keyset().await.unwrap().id;
 
     let usd_pre_mint = PreMintSecrets::random(
         active_keyset_id,
@@ -1071,7 +1071,7 @@ async fn test_fake_mint_multiple_units() {
 
     if let Some(secret_key) = quote_info.secret_key {
         mint_request
-            .sign(secret_key)
+            .sign(&secret_key)
             .expect("failed to sign the mint request");
     }
     let http_client = HttpClient::new(MINT_URL.parse().unwrap(), None);
@@ -1108,7 +1108,7 @@ async fn test_fake_mint_multiple_unit_swap() {
     )
     .expect("failed to create new wallet");
 
-    wallet.refresh_keysets().await.unwrap();
+    wallet.keysets(Default::default()).await.unwrap();
 
     let mint_quote = wallet
         .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
@@ -1131,7 +1131,7 @@ async fn test_fake_mint_multiple_unit_swap() {
         None,
     )
     .expect("failed to create usd wallet");
-    wallet_usd.refresh_keysets().await.unwrap();
+    wallet_usd.keysets(Default::default()).await.unwrap();
 
     let mint_quote = wallet_usd
         .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
@@ -1148,7 +1148,7 @@ async fn test_fake_mint_multiple_unit_swap() {
         .await
         .unwrap();
 
-    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     {
@@ -1184,7 +1184,7 @@ async fn test_fake_mint_multiple_unit_swap() {
     }
 
     {
-        let usd_active_keyset_id = wallet_usd.fetch_active_keyset().await.unwrap().id;
+        let usd_active_keyset_id = wallet_usd.active_keyset().await.unwrap().id;
         let inputs: Proofs = proofs.into_iter().take(2).collect();
 
         let total_inputs = inputs.total_amount().unwrap();
@@ -1327,8 +1327,8 @@ async fn test_fake_mint_multiple_unit_melt() {
         let input_amount: u64 = inputs.total_amount().unwrap().into();
 
         let invoice = create_fake_invoice((input_amount - 1) * 1000, "".to_string());
-        let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
-        let usd_active_keyset_id = wallet_usd.fetch_active_keyset().await.unwrap().id;
+        let active_keyset_id = wallet.active_keyset().await.unwrap().id;
+        let usd_active_keyset_id = wallet_usd.active_keyset().await.unwrap().id;
 
         let usd_pre_mint = PreMintSecrets::random(
             usd_active_keyset_id,
@@ -1412,7 +1412,7 @@ async fn test_fake_mint_input_output_mismatch() {
         None,
     )
     .expect("failed to create new  usd wallet");
-    let usd_active_keyset_id = wallet_usd.fetch_active_keyset().await.unwrap().id;
+    let usd_active_keyset_id = wallet_usd.active_keyset().await.unwrap().id;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let inputs = proofs;
@@ -1467,7 +1467,7 @@ async fn test_fake_mint_swap_inflated() {
         .expect("payment")
         .expect("no error");
 
-    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
     let pre_mint = PreMintSecrets::random(
         active_keyset_id,
         101.into(),
@@ -1519,7 +1519,7 @@ async fn test_fake_mint_swap_spend_after_fail() {
         .expect("payment")
         .expect("no error");
 
-    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let pre_mint = PreMintSecrets::random(
@@ -1609,7 +1609,7 @@ async fn test_fake_mint_melt_spend_after_fail() {
         .expect("payment")
         .expect("no error");
 
-    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let pre_mint = PreMintSecrets::random(
@@ -1703,7 +1703,7 @@ async fn test_fake_mint_duplicate_proofs_swap() {
         .expect("payment")
         .expect("no error");
 
-    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     let inputs = vec![proofs[0].clone(), proofs[0].clone()];
@@ -2177,7 +2177,7 @@ async fn test_wallet_proof_recovery_after_failed_swap() {
 
     // Create an invalid swap by manually constructing a request that will fail
     // We'll use the wallet's swap with invalid parameters to trigger a failure
-    let active_keyset_id = wallet.fetch_active_keyset().await.unwrap().id;
+    let active_keyset_id = wallet.active_keyset().await.unwrap().id;
     let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
     // Create invalid swap request (requesting more than we have)

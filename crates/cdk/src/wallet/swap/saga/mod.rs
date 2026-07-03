@@ -72,7 +72,10 @@ impl<'a> SwapSaga<'a, Initial> {
         Self {
             wallet,
             compensations: new_compensations(),
-            state_data: Initial { operation_id },
+            state_data: Initial {
+                operation_id,
+                keyset_policy: Default::default(),
+            },
         }
     }
 
@@ -105,10 +108,15 @@ impl<'a> SwapSaga<'a, Initial> {
             self.state_data.operation_id
         );
 
-        let active_keyset_id = self.wallet.fetch_active_keyset().await?.id;
+        let keyset_policy = self.state_data.keyset_policy;
+        let active_keyset_id = self
+            .wallet
+            .active_keyset_with_policy(keyset_policy)
+            .await?
+            .id;
         let fee_and_amounts = self
             .wallet
-            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .get_keyset_fees_and_amounts_by_id_with_policy(active_keyset_id, keyset_policy)
             .await?;
 
         let fee_breakdown = self.wallet.get_proofs_fee(&input_proofs).await?;
@@ -239,7 +247,7 @@ impl<'a> SwapSaga<'a, Prepared> {
         };
 
         let active_keyset_id = self.state_data.pre_swap.pre_mint_secrets.keyset_id;
-        let active_keys = self.wallet.load_keyset_keys(active_keyset_id).await?;
+        let active_keys = self.wallet.keyset(active_keyset_id).await?.keys;
 
         validate_mint_response_signatures(
             self.wallet,

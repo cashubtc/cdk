@@ -24,17 +24,15 @@ use cashu::mint_url::MintUrl;
 use cashu::nuts::nut10::Conditions;
 use cashu::nuts::SigFlag;
 use cashu::{
-    CurrencyUnit, Id, MeltRequest, NotificationPayload, PaymentMethod, PreMintSecrets, ProofState,
-    SecretKey, SpendingConditions, State, SwapRequest,
+    CurrencyUnit, Id, KeySet, KeySetInfo, MeltRequest, NotificationPayload, PaymentMethod,
+    PreMintSecrets, ProofState, SecretKey, SpendingConditions, State, SwapRequest,
 };
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::subscription::Params;
 use cdk::types::QuoteTTL;
 use cdk::wallet::types::{TransactionDirection, TransactionId};
-use cdk::wallet::{
-    KeysetFilter, MintConnector, P2PKLockedProofSendMode, ReceiveOptions, SendMemo, SendOptions,
-};
+use cdk::wallet::{MintConnector, P2PKLockedProofSendMode, ReceiveOptions, SendMemo, SendOptions};
 use cdk::{Amount, StreamExt};
 use cdk_common::mint::OperationKind;
 use cdk_common::payment::{
@@ -46,6 +44,19 @@ use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
 use futures::Stream;
 use tokio::time::sleep;
+
+fn to_keyset_infos(keysets: &[KeySet]) -> Vec<KeySetInfo> {
+    keysets
+        .iter()
+        .map(|ks| KeySetInfo {
+            id: ks.id,
+            unit: ks.unit.clone(),
+            active: ks.active.unwrap_or(true),
+            input_fee_ppk: ks.input_fee_ppk,
+            final_expiry: ks.final_expiry,
+        })
+        .collect()
+}
 
 /// Tests the token swap and send functionality:
 /// 1. Alice gets funded with 64 sats
@@ -94,10 +105,7 @@ async fn test_swap_to_send() {
         .confirm(Some(SendMemo::for_token("test_swapt_to_send")))
         .await
         .expect("Failed to send token");
-    let keysets_info = wallet_alice
-        .get_mint_keysets(KeysetFilter::Active)
-        .await
-        .unwrap();
+    let keysets_info = to_keyset_infos(&wallet_alice.keysets(Default::default()).await.unwrap());
     let token_proofs = token.proofs(&keysets_info).unwrap();
     assert_eq!(
         Amount::from(40),
@@ -1411,7 +1419,7 @@ async fn test_p2pk_send_force_swap_with_fees() {
         .expect("confirm should succeed — swap should produce enough output");
 
     // Verify token contains exactly the requested amount
-    let keysets_info = wallet.get_mint_keysets(KeysetFilter::Active).await.unwrap();
+    let keysets_info = to_keyset_infos(&wallet.keysets(Default::default()).await.unwrap());
     let token_proofs = token.proofs(&keysets_info).unwrap();
     assert_eq!(
         send_amount,
@@ -1490,10 +1498,7 @@ async fn test_p2pk_send_force_swap_with_fees_include_fee() {
         .expect("confirm should succeed");
 
     // Token should include amount + send_fee (so recipient can pay the redemption fee)
-    let keysets_info = wallet_sender
-        .get_mint_keysets(KeysetFilter::Active)
-        .await
-        .unwrap();
+    let keysets_info = to_keyset_infos(&wallet_sender.keysets(Default::default()).await.unwrap());
     let token_proofs = token.proofs(&keysets_info).unwrap();
     assert_eq!(
         send_amount + send_fee,
@@ -2006,7 +2011,7 @@ async fn test_batch_mint_then_spend() {
         "Balance should decrease after send"
     );
 
-    let keysets_info = wallet.get_mint_keysets(KeysetFilter::Active).await.unwrap();
+    let keysets_info = to_keyset_infos(&wallet.keysets(Default::default()).await.unwrap());
     let token_proofs = token.proofs(&keysets_info).unwrap();
     let token_amount = token_proofs
         .total_amount()
@@ -2141,19 +2146,13 @@ async fn test_p2bk_send_and_receive() {
         .expect("Failed to confirm send");
 
     // Check if the proofs have p2pk_e
-    let keysets_info = wallet_sender
-        .get_mint_keysets(KeysetFilter::Active)
-        .await
-        .unwrap();
+    let keysets_info = to_keyset_infos(&wallet_sender.keysets(Default::default()).await.unwrap());
     let token_proofs = token.proofs(&keysets_info).unwrap();
     for proof in &token_proofs {
         assert!(proof.p2pk_e.is_some(), "Proof should have p2pk_e set");
     }
     // Check if the proofs have p2pk_e
-    let keysets_info = wallet_sender
-        .get_mint_keysets(KeysetFilter::Active)
-        .await
-        .unwrap();
+    let keysets_info = to_keyset_infos(&wallet_sender.keysets(Default::default()).await.unwrap());
     let token_proofs = token.proofs(&keysets_info).unwrap();
     for proof in &token_proofs {
         assert!(proof.p2pk_e.is_some(), "Proof should have p2pk_e set");

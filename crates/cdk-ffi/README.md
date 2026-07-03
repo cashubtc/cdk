@@ -39,6 +39,7 @@ just ffi-dev-python    # Generates bindings and opens Python REPL with cdk_ffi l
 
 # Test bindings
 just ffi-test-python   # Test Python bindings import
+just ffi-test-live-python # Run live Python test against testnut.cashudevkit.org
 ```
 
 ## Quick Start
@@ -51,6 +52,13 @@ just ffi-dev-python
 >>> dir(cdk_ffi)  # Explore available functions
 >>> help(cdk_ffi.generate_mnemonic)  # Get help
 ```
+
+## Live Tests
+
+The live Python test in `tests/test_live_async_onchain_melt.py` covers
+`PreparedMelt.confirm_prefer_async()`, immediate and pending melt outcomes,
+`PendingMelt.wait()`, and `Wallet.finalize_pending_melts()` against
+`https://testnut.cashudevkit.org`.
 
 ## Language Packages
 

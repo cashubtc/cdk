@@ -9,6 +9,9 @@
 pub mod task;
 
 /// Authentication related types and utilities
+///
+/// Enabled by the `http` feature because OIDC auth helpers fetch discovery and
+/// JWK documents through `cdk-http-client`.
 #[cfg(feature = "http")]
 pub mod auth;
 
@@ -46,10 +49,19 @@ pub use cashu::nuts::{self, *};
 #[cfg(feature = "mint")]
 pub use cashu::quote_id::{self, *};
 pub use cashu::{dhke, ensure_cdk, mint_url, secret, util, SECP256K1};
-/// Re-export cdk-http-client WebSocket client
+/// Re-export `cdk-http-client` WebSocket client.
+///
+/// The `http` feature enables CDK common's HTTP-facing helpers and re-exports,
+/// and selects the default `bitreq` backend. Add `cdk-http-client/reqwest`
+/// elsewhere in the dependency graph to use `reqwest`; it takes precedence when
+/// both backend features are enabled.
 #[cfg(feature = "http")]
 pub use cdk_http_client::ws as ws_client;
-/// Re-export cdk-http-client types
+/// Re-export `cdk-http-client` types.
+///
+/// The `http` feature exposes these helpers and selects the default `bitreq`
+/// backend. Applications that need SOCKS proxy or invalid-certificate support
+/// can enable `cdk-http-client/reqwest`, which takes precedence over `bitreq`.
 #[cfg(feature = "http")]
 pub use cdk_http_client::{
     fetch, HttpClient, HttpClientBuilder, HttpError, RawResponse, RequestBuilder, Response,

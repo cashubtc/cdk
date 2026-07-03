@@ -146,4 +146,16 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn custom_methods_percent_encode_only_reserved_path_bytes() {
+        assert_eq!(
+            Path::custom_mint("bolt11_USD-1"),
+            Path::Custom("/v1/mint/bolt11_USD-1".to_string())
+        );
+        assert_eq!(
+            Path::custom_melt("pay pal/!"),
+            Path::Custom("/v1/melt/pay%20pal%2F%21".to_string())
+        );
+    }
 }

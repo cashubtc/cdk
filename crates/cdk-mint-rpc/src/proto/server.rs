@@ -524,6 +524,11 @@ impl CdkMint for MintRPCServer {
         let updated_method_settings = MintMethodSettings {
             method: payment_method,
             unit,
+            method_name: request_inner.method_name.or_else(|| {
+                current_nut04_settings
+                    .as_ref()
+                    .and_then(|s| s.method_name.clone())
+            }),
             min_amount: request_inner
                 .min_amount
                 .map(Amount::from)
@@ -595,6 +600,11 @@ impl CdkMint for MintRPCServer {
         let updated_method_settings = MeltMethodSettings {
             method: payment_method,
             unit,
+            method_name: request_inner.method_name.or_else(|| {
+                current_nut05_settings
+                    .as_ref()
+                    .and_then(|s| s.method_name.clone())
+            }),
             min_amount: request_inner
                 .min_amount
                 .map(Amount::from)

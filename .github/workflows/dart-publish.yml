@@ -140,6 +140,9 @@ jobs:
           # Update pubspec.yaml version
           sed -i "s/^version: \".*\"/version: \"${RELEASE_VER}\"/" cdk-dart/pubspec.yaml
 
+          # Update README.md version ref
+          sed -i "s/ref: vX.Y.Z/ref: ${TAG}/" cdk-dart/README.md
+
           # Resolve workspace package fields in rust/Cargo.toml
           sed -i \
             -e "s/^edition\.workspace = true/edition = \"${WS_EDITION}\"/" \

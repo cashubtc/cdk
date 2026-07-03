@@ -1,0 +1,319 @@
+//! reqwest-based backend implementation
+
+use std::sync::Arc;
+
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+
+use crate::error::HttpError;
+use crate::response::{RawResponse, Response};
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProxyConfig {
+    url: url::Url,
+    matcher: Option<regex::Regex>,
+}
+
+#[derive(Clone)]
+/// HTTP client wrapper backed by reqwest.
+pub struct HttpClient {
+    inner: Arc<reqwest::Client>,
+}
+
+impl std::fmt::Debug for HttpClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpClient").finish()
+    }
+}
+
+impl HttpClient {
+    /// Create a new HTTP client with default settings.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the default reqwest client cannot be built.
+    pub fn new() -> Self {
+        Self::builder()
+            .build()
+            .expect("default reqwest client should build")
+    }
+
+    /// Create a new HTTP client builder.
+    pub fn builder() -> HttpClientBuilder {
+        HttpClientBuilder::default()
+    }
+
+    fn from_parts(inner: reqwest::Client) -> Self {
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+
+    fn request(&self, method: reqwest::Method, url: &str) -> reqwest::RequestBuilder {
+        self.inner.request(method, url)
+    }
+
+    async fn send_json_request<R: DeserializeOwned>(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Response<R> {
+        let response = request.send().await.map_err(map_reqwest_error)?;
+        let status = response.status().as_u16();
+        let body = response.bytes().await.map_err(map_reqwest_error)?.to_vec();
+
+        RawResponse::new(status, body).json_or_status_error()
+    }
+
+    /// GET request, returns JSON deserialized to R.
+    pub async fn fetch<R: DeserializeOwned>(&self, url: &str) -> Response<R> {
+        self.send_json_request(self.request(reqwest::Method::GET, url))
+            .await
+    }
+
+    /// POST with JSON body, returns JSON deserialized to R.
+    pub async fn post_json<B: Serialize, R: DeserializeOwned>(
+        &self,
+        url: &str,
+        body: &B,
+    ) -> Response<R> {
+        self.send_json_request(self.request(reqwest::Method::POST, url).json(body))
+            .await
+    }
+
+    /// POST with form data, returns JSON deserialized to R.
+    pub async fn post_form<F: Serialize, R: DeserializeOwned>(
+        &self,
+        url: &str,
+        form: &F,
+    ) -> Response<R> {
+        self.send_json_request(self.request(reqwest::Method::POST, url).form(form))
+            .await
+    }
+
+    /// PATCH with JSON body, returns JSON deserialized to R.
+    pub async fn patch_json<B: Serialize, R: DeserializeOwned>(
+        &self,
+        url: &str,
+        body: &B,
+    ) -> Response<R> {
+        self.send_json_request(self.request(reqwest::Method::PATCH, url).json(body))
+            .await
+    }
+
+    /// GET request returning raw response body.
+    pub async fn get_raw(&self, url: &str) -> Response<RawResponse> {
+        let response = self
+            .request(reqwest::Method::GET, url)
+            .send()
+            .await
+            .map_err(map_reqwest_error)?;
+        let status = response.status().as_u16();
+        let body = response.bytes().await.map_err(map_reqwest_error)?.to_vec();
+        Ok(RawResponse::new(status, body))
+    }
+
+    /// POST request builder for complex cases.
+    pub fn post(&self, url: &str) -> ReqwestRequestBuilder {
+        ReqwestRequestBuilder::new(self.request(reqwest::Method::POST, url), url)
+    }
+
+    /// GET request builder for complex cases.
+    pub fn get(&self, url: &str) -> ReqwestRequestBuilder {
+        ReqwestRequestBuilder::new(self.request(reqwest::Method::GET, url), url)
+    }
+
+    /// PATCH request builder for complex cases.
+    pub fn patch(&self, url: &str) -> ReqwestRequestBuilder {
+        ReqwestRequestBuilder::new(self.request(reqwest::Method::PATCH, url), url)
+    }
+}
+
+fn map_reqwest_error(err: reqwest::Error) -> HttpError {
+    if err.is_timeout() {
+        HttpError::Timeout
+    } else if err.is_connect() {
+        HttpError::Connection(err.to_string())
+    } else {
+        HttpError::Other(err.to_string())
+    }
+}
+
+/// reqwest-based RequestBuilder wrapper.
+pub struct ReqwestRequestBuilder {
+    inner: Option<reqwest::RequestBuilder>,
+    error: Option<HttpError>,
+    url: String,
+}
+
+impl std::fmt::Debug for ReqwestRequestBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReqwestRequestBuilder")
+            .field("url", &self.url)
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ReqwestRequestBuilder {
+    pub(crate) fn new(inner: reqwest::RequestBuilder, url: &str) -> Self {
+        Self {
+            inner: Some(inner),
+            error: None,
+            url: url.to_string(),
+        }
+    }
+
+    fn map_inner<F>(mut self, map: F) -> Self
+    where
+        F: FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
+    {
+        if self.error.is_some() {
+            return self;
+        }
+
+        if let Some(inner) = self.inner.take() {
+            self.inner = Some(map(inner));
+        } else {
+            self.error = Some(HttpError::Other("request builder consumed".to_string()));
+        }
+
+        self
+    }
+    /// Add a header to the request.
+    pub fn header(self, key: impl AsRef<str>, value: impl AsRef<str>) -> Self {
+        let key = key.as_ref().to_string();
+        let value = value.as_ref().to_string();
+        self.map_inner(|inner| inner.header(key, value))
+    }
+
+    /// Set the request body as JSON.
+    pub fn json<T>(self, body: &T) -> Self
+    where
+        T: Serialize + ?Sized,
+    {
+        match serde_json::to_value(body) {
+            Ok(value) => self.map_inner(|inner| inner.json(&value)),
+            Err(e) => Self {
+                inner: self.inner,
+                error: Some(HttpError::Serialization(e.to_string())),
+                url: self.url,
+            },
+        }
+    }
+
+    /// Set the request body as form data.
+    pub fn form<T>(self, body: &T) -> Self
+    where
+        T: Serialize + ?Sized,
+    {
+        match serde_urlencoded::to_string(body) {
+            Ok(form) => self.map_inner(|inner| {
+                inner
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .body(form)
+            }),
+            Err(e) => Self {
+                inner: self.inner,
+                error: Some(HttpError::Serialization(e.to_string())),
+                url: self.url,
+            },
+        }
+    }
+
+    /// Send the request and return a raw response.
+    pub async fn send(self) -> Response<RawResponse> {
+        if let Some(err) = self.error {
+            return Err(err);
+        }
+
+        let Some(inner) = self.inner else {
+            return Err(HttpError::Other("request builder consumed".to_string()));
+        };
+
+        let response = inner.send().await.map_err(map_reqwest_error)?;
+        let status = response.status().as_u16();
+        let body = response.bytes().await.map_err(map_reqwest_error)?.to_vec();
+        Ok(RawResponse::new(status, body))
+    }
+
+    /// Send the request and deserialize the response as JSON.
+    pub async fn send_json<R: DeserializeOwned>(self) -> Response<R> {
+        self.send().await?.json_or_status_error()
+    }
+}
+
+#[derive(Debug, Default)]
+/// HTTP client builder for configuring proxy and TLS settings.
+pub struct HttpClientBuilder {
+    proxy: Option<ProxyConfig>,
+    accept_invalid_certs: bool,
+    no_redirects: bool,
+}
+
+impl HttpClientBuilder {
+    /// Accept invalid TLS certificates.
+    pub fn danger_accept_invalid_certs(mut self, accept: bool) -> Self {
+        self.accept_invalid_certs = accept;
+        self
+    }
+
+    /// Disable automatic HTTP redirect following.
+    pub fn no_redirects(mut self) -> Self {
+        self.no_redirects = true;
+        self
+    }
+
+    /// Set a proxy URL.
+    ///
+    /// The `reqwest` backend supports HTTP and SOCKS proxy schemes, including
+    /// `socks5h`.
+    pub fn proxy(mut self, url: url::Url) -> Self {
+        self.proxy = Some(ProxyConfig { url, matcher: None });
+        self
+    }
+
+    /// Set a proxy URL with a host pattern matcher.
+    ///
+    /// The `reqwest` backend supports HTTP and SOCKS proxy schemes, including
+    /// `socks5h`.
+    pub fn proxy_with_matcher(mut self, url: url::Url, pattern: &str) -> Response<Self> {
+        let matcher = regex::Regex::new(pattern)
+            .map_err(|e| HttpError::Proxy(format!("Invalid proxy pattern: {}", e)))?;
+        self.proxy = Some(ProxyConfig {
+            url,
+            matcher: Some(matcher),
+        });
+        Ok(self)
+    }
+
+    /// Build the HTTP client.
+    pub fn build(self) -> Response<HttpClient> {
+        let mut builder =
+            reqwest::Client::builder().danger_accept_invalid_certs(self.accept_invalid_certs);
+        if self.no_redirects {
+            builder = builder.redirect(reqwest::redirect::Policy::none());
+        }
+
+        if let Some(proxy) = self.proxy {
+            let proxy_url = proxy.url.to_string();
+            let proxy = match proxy.matcher {
+                Some(matcher) => reqwest::Proxy::custom(move |url| {
+                    if matcher.is_match(url.host_str().unwrap_or("")) {
+                        Some(proxy_url.clone())
+                    } else {
+                        None
+                    }
+                }),
+                None => {
+                    reqwest::Proxy::all(&proxy_url).map_err(|e| HttpError::Proxy(e.to_string()))?
+                }
+            };
+            builder = builder.proxy(proxy);
+        }
+
+        let client = builder
+            .build()
+            .map_err(|e| HttpError::Build(e.to_string()))?;
+        Ok(HttpClient::from_parts(client))
+    }
+}

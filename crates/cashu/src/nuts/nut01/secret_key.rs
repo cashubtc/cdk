@@ -277,4 +277,12 @@ mod tests {
             assert_eq!(reparsed.to_secret_bytes(), bytes);
         }
     }
+
+    #[test]
+    fn display_outputs_secret_hex() {
+        let hex = "50d7fd7aa2b2fe4607f41f4ce6f8794fc184dd47b8cdfbe4b3d1249aa02d35aa";
+        let secret_key = SecretKey::from_hex(hex).unwrap();
+
+        assert_eq!(secret_key.to_string(), hex);
+    }
 }

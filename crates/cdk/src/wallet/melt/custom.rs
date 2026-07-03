@@ -21,7 +21,7 @@ impl Wallet {
         _options: Option<MeltOptions>,
         extra: Option<serde_json::Value>,
     ) -> Result<MeltQuote, Error> {
-        self.refresh_keysets().await?;
+        self.keysets(Default::default()).await?;
 
         let quote_request = MeltQuoteCustomRequest {
             method: method.to_string(),

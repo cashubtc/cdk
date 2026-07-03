@@ -8,6 +8,7 @@ use cdk_common::{
     MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse,
     MintQuoteOnchainResponse, MintQuoteRequest, MintQuoteResponse, ProtectedEndpoint, RoutePath,
 };
+use cdk_http_client::HttpError;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tokio::sync::RwLock;
@@ -17,6 +18,7 @@ use web_time::{Duration, Instant};
 
 use super::transport::Transport;
 use super::{Error, MintConnector};
+use crate::error::ErrorResponse;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::{KnownMethod, PaymentMethod};
 use crate::nuts::nut22::MintAuthRequest;
@@ -55,6 +57,49 @@ impl<T> HttpClient<T>
 where
     T: Transport + Send + Sync + 'static,
 {
+    fn map_http_error(err: HttpError) -> Error {
+        match err {
+            HttpError::Status { status, message } => {
+                match serde_json::from_str::<ErrorResponse>(&message) {
+                    Ok(err_response) => err_response.into(),
+                    Err(_) => Error::HttpError(Some(status), message),
+                }
+            }
+            HttpError::Timeout => Error::Timeout,
+            HttpError::Connection(message)
+            | HttpError::Serialization(message)
+            | HttpError::Proxy(message)
+            | HttpError::Build(message)
+            | HttpError::Other(message) => Error::HttpError(None, message),
+        }
+    }
+
+    async fn transport_http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, Error>
+    where
+        R: DeserializeOwned,
+    {
+        self.transport
+            .http_get(url, auth)
+            .await
+            .map_err(Self::map_http_error)
+    }
+
+    async fn transport_http_post<P, R>(
+        &self,
+        url: Url,
+        auth: Option<AuthToken>,
+        payload: &P,
+    ) -> Result<R, Error>
+    where
+        P: Serialize + Send + Sync,
+        R: DeserializeOwned,
+    {
+        self.transport
+            .http_post(url, auth, payload)
+            .await
+            .map_err(Self::map_http_error)
+    }
+
     /// Create new [`HttpClient`] with a provided transport implementation.
     pub fn with_transport(
         mint_url: MintUrl,
@@ -106,7 +151,9 @@ where
         accept_invalid_certs: bool,
     ) -> Result<Self, Error> {
         let mut transport = T::default();
-        transport.with_proxy(proxy, host_matcher, accept_invalid_certs)?;
+        transport
+            .with_proxy(proxy, host_matcher, accept_invalid_certs)
+            .map_err(Self::map_http_error)?;
 
         Ok(Self {
             transport: transport.into(),
@@ -128,7 +175,7 @@ where
         payload: &P,
     ) -> Result<R, Error>
     where
-        P: Serialize + ?Sized + Send + Sync,
+        P: Serialize + Send + Sync,
         R: DeserializeOwned,
     {
         let started = Instant::now();
@@ -160,8 +207,14 @@ where
             };
 
             let result = match method {
-                nut19::Method::Get => transport.http_get(url, auth_token.clone()).await,
-                nut19::Method::Post => transport.http_post(url, auth_token.clone(), payload).await,
+                nut19::Method::Get => transport
+                    .http_get(url, auth_token.clone())
+                    .await
+                    .map_err(Self::map_http_error),
+                nut19::Method::Post => transport
+                    .http_post(url, auth_token.clone(), payload)
+                    .await
+                    .map_err(Self::map_http_error),
             };
 
             if result.is_ok() {
@@ -231,7 +284,11 @@ where
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, Error> {
-        self.transport.resolve_dns_txt(domain).await
+        self.transport
+            .as_ref()
+            .resolve_dns_txt(domain)
+            .await
+            .map_err(Self::map_http_error)
     }
 
     /// Fetch Lightning address pay request data
@@ -242,7 +299,7 @@ where
     ) -> Result<crate::lightning_address::LnurlPayResponse, Error> {
         let parsed_url =
             url::Url::parse(url).map_err(|e| Error::Custom(format!("Invalid URL: {}", e)))?;
-        self.transport.http_get(parsed_url, None).await
+        self.transport_http_get(parsed_url, None).await
     }
 
     /// Fetch invoice from Lightning address callback
@@ -252,16 +309,18 @@ where
         url: &str,
     ) -> Result<crate::lightning_address::LnurlPayInvoiceResponse, Error> {
         let parsed_url = parse_lnurl_callback_url(url)?;
-        self.transport.http_get(parsed_url, None).await
+        self.transport_http_get(parsed_url, None).await
     }
 
     /// Get Active Mint Keys [NUT-01]
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
         let url = self.mint_url.join_paths(&["v1", "keys"])?;
-        let transport = self.transport.clone();
 
-        Ok(transport.http_get::<KeysResponse>(url, None).await?.keysets)
+        Ok(self
+            .transport_http_get::<KeysResponse>(url, None)
+            .await?
+            .keysets)
     }
 
     /// Get Keyset Keys [NUT-01]
@@ -271,8 +330,7 @@ where
             .mint_url
             .join_paths(&["v1", "keys", &keyset_id.to_string()])?;
 
-        let transport = self.transport.clone();
-        let keys_response = transport.http_get::<KeysResponse>(url, None).await?;
+        let keys_response = self.transport_http_get::<KeysResponse>(url, None).await?;
 
         Ok(keys_response
             .keysets
@@ -285,8 +343,7 @@ where
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "keysets"])?;
-        let transport = self.transport.clone();
-        transport.http_get(url, None).await
+        self.transport_http_get(url, None).await
     }
 
     /// Mint Quote [NUT-04, NUT-23, NUT-25]
@@ -309,22 +366,22 @@ where
         match &request {
             MintQuoteRequest::Bolt11(req) => {
                 let response: cdk_common::nut23::MintQuoteBolt11Response<String> =
-                    self.transport.http_post(url, auth_token, req).await?;
+                    self.transport_http_post(url, auth_token, req).await?;
                 Ok(MintQuoteResponse::Bolt11(response))
             }
             MintQuoteRequest::Bolt12(req) => {
                 let response: cdk_common::nut25::MintQuoteBolt12Response<String> =
-                    self.transport.http_post(url, auth_token, req).await?;
+                    self.transport_http_post(url, auth_token, req).await?;
                 Ok(MintQuoteResponse::Bolt12(response))
             }
             MintQuoteRequest::Onchain(req) => {
                 let response: cdk_common::nut30::MintQuoteOnchainResponse<String> =
-                    self.transport.http_post(url, auth_token, req).await?;
+                    self.transport_http_post(url, auth_token, req).await?;
                 Ok(MintQuoteResponse::Onchain(response))
             }
             MintQuoteRequest::Custom { request: req, .. } => {
                 let response: cdk_common::nut04::MintQuoteCustomResponse<String> =
-                    self.transport.http_post(url, auth_token, req).await?;
+                    self.transport_http_post(url, auth_token, req).await?;
                 Ok(MintQuoteResponse::Custom { method, response })
             }
         }
@@ -351,7 +408,7 @@ where
                     .await?;
 
                 let response: MintQuoteBolt11Response<String> =
-                    self.transport.http_get(url, auth_token).await?;
+                    self.transport_http_get(url, auth_token).await?;
 
                 Ok(MintQuoteResponse::Bolt11(response))
             }
@@ -368,7 +425,7 @@ where
                     .await?;
 
                 let response: MintQuoteBolt12Response<String> =
-                    self.transport.http_get(url, auth_token).await?;
+                    self.transport_http_get(url, auth_token).await?;
 
                 Ok(MintQuoteResponse::Bolt12(response))
             }
@@ -387,7 +444,7 @@ where
                     .await?;
 
                 let response: MintQuoteOnchainResponse<String> =
-                    self.transport.http_get(url, auth_token).await?;
+                    self.transport_http_get(url, auth_token).await?;
 
                 Ok(MintQuoteResponse::Onchain(response))
             }
@@ -402,7 +459,7 @@ where
                     .await?;
 
                 let response: MintQuoteCustomResponse<String> =
-                    self.transport.http_get(url, auth_token).await?;
+                    self.transport_http_get(url, auth_token).await?;
 
                 Ok(MintQuoteResponse::Custom { method, response })
             }
@@ -457,7 +514,7 @@ where
         match method {
             PaymentMethod::Known(KnownMethod::Bolt11) => {
                 let responses: Vec<MintQuoteBolt11Response<String>> =
-                    self.transport.http_post(url, auth_token, &request).await?;
+                    self.transport_http_post(url, auth_token, &request).await?;
                 Ok(responses
                     .into_iter()
                     .map(MintQuoteResponse::Bolt11)
@@ -465,7 +522,7 @@ where
             }
             PaymentMethod::Known(KnownMethod::Bolt12) => {
                 let responses: Vec<MintQuoteBolt12Response<String>> =
-                    self.transport.http_post(url, auth_token, &request).await?;
+                    self.transport_http_post(url, auth_token, &request).await?;
                 Ok(responses
                     .into_iter()
                     .map(MintQuoteResponse::Bolt12)
@@ -473,7 +530,7 @@ where
             }
             PaymentMethod::Known(KnownMethod::Onchain) => {
                 let responses: Vec<MintQuoteOnchainResponse<String>> =
-                    self.transport.http_post(url, auth_token, &request).await?;
+                    self.transport_http_post(url, auth_token, &request).await?;
                 Ok(responses
                     .into_iter()
                     .map(MintQuoteResponse::Onchain)
@@ -481,7 +538,7 @@ where
             }
             PaymentMethod::Custom(method_name) => {
                 let responses: Vec<MintQuoteCustomResponse<String>> =
-                    self.transport.http_post(url, auth_token, &request).await?;
+                    self.transport_http_post(url, auth_token, &request).await?;
                 Ok(responses
                     .into_iter()
                     .map(|response| MintQuoteResponse::Custom {
@@ -530,22 +587,22 @@ where
         match &request {
             MeltQuoteRequest::Bolt11(req) => {
                 let response: cdk_common::nut23::MeltQuoteBolt11Response<String> =
-                    self.transport.http_post(url, auth_token, req).await?;
+                    self.transport_http_post(url, auth_token, req).await?;
                 Ok(MeltQuoteCreateResponse::Bolt11(response))
             }
             MeltQuoteRequest::Bolt12(req) => {
                 let response: cdk_common::nut25::MeltQuoteBolt12Response<String> =
-                    self.transport.http_post(url, auth_token, req).await?;
+                    self.transport_http_post(url, auth_token, req).await?;
                 Ok(MeltQuoteCreateResponse::Bolt12(response))
             }
             MeltQuoteRequest::Onchain(req) => {
                 let response: cdk_common::nut30::MeltQuoteOnchainResponse<String> =
-                    self.transport.http_post(url, auth_token, req).await?;
+                    self.transport_http_post(url, auth_token, req).await?;
                 Ok(MeltQuoteCreateResponse::Onchain(response))
             }
             MeltQuoteRequest::Custom(req) => {
                 let response: cdk_common::nut05::MeltQuoteCustomResponse<String> =
-                    self.transport.http_post(url, auth_token, req).await?;
+                    self.transport_http_post(url, auth_token, req).await?;
                 Ok(MeltQuoteCreateResponse::Custom((method, response)))
             }
         }
@@ -572,7 +629,7 @@ where
                     .await?;
 
                 let response: cdk_common::nut23::MeltQuoteBolt11Response<String> =
-                    self.transport.http_get(url, auth_token).await?;
+                    self.transport_http_get(url, auth_token).await?;
 
                 Ok(MeltQuoteResponse::Bolt11(response))
             }
@@ -589,7 +646,7 @@ where
                     .await?;
 
                 let response: cdk_common::nut25::MeltQuoteBolt12Response<String> =
-                    self.transport.http_get(url, auth_token).await?;
+                    self.transport_http_get(url, auth_token).await?;
 
                 Ok(MeltQuoteResponse::Bolt12(response))
             }
@@ -608,7 +665,7 @@ where
                     .await?;
 
                 let response: cdk_common::nut30::MeltQuoteOnchainResponse<String> =
-                    self.transport.http_get(url, auth_token).await?;
+                    self.transport_http_get(url, auth_token).await?;
 
                 Ok(MeltQuoteResponse::Onchain(response))
             }
@@ -623,7 +680,7 @@ where
                     .await?;
 
                 let response: cdk_common::nut05::MeltQuoteCustomResponse<String> =
-                    self.transport.http_get(url, auth_token).await?;
+                    self.transport_http_get(url, auth_token).await?;
 
                 Ok(MeltQuoteResponse::Custom((method.clone(), response)))
             }
@@ -709,8 +766,7 @@ where
     /// Helper to get mint info
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
         let url = self.mint_url.join_paths(&["v1", "info"])?;
-        let transport = self.transport.clone();
-        let info: MintInfo = transport.http_get(url, None).await?;
+        let info: MintInfo = self.transport_http_get(url, None).await?;
 
         if let Ok(mut cache_support) = self.cache_support.write() {
             *cache_support = (
@@ -747,7 +803,7 @@ where
             .get_auth_token(Method::Post, RoutePath::Checkstate)
             .await?;
 
-        self.transport.http_post(url, auth_token, &request).await
+        self.transport_http_post(url, auth_token, &request).await
     }
 
     /// Restore request [NUT-13]
@@ -758,7 +814,7 @@ where
             .get_auth_token(Method::Post, RoutePath::Restore)
             .await?;
 
-        self.transport.http_post(url, auth_token, &request).await
+        self.transport_http_post(url, auth_token, &request).await
     }
 }
 
@@ -778,6 +834,32 @@ impl<T> AuthHttpClient<T>
 where
     T: Transport + Send + Sync + 'static,
 {
+    async fn transport_http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, Error>
+    where
+        R: DeserializeOwned,
+    {
+        self.transport
+            .http_get(url, auth)
+            .await
+            .map_err(HttpClient::<T>::map_http_error)
+    }
+
+    async fn transport_http_post<P, R>(
+        &self,
+        url: Url,
+        auth: Option<AuthToken>,
+        payload: &P,
+    ) -> Result<R, Error>
+    where
+        P: Serialize + Send + Sync,
+        R: DeserializeOwned,
+    {
+        self.transport
+            .http_post(url, auth, payload)
+            .await
+            .map_err(HttpClient::<T>::map_http_error)
+    }
+
     /// Create new [`AuthHttpClient`]
     pub fn new(mint_url: MintUrl, cat: Option<AuthToken>) -> Self {
         Self {
@@ -808,7 +890,7 @@ where
     /// Get Mint Info [NUT-06]
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
         let url = self.mint_url.join_paths(&["v1", "info"])?;
-        let mint_info: MintInfo = self.transport.http_get::<MintInfo>(url, None).await?;
+        let mint_info: MintInfo = self.transport_http_get::<MintInfo>(url, None).await?;
 
         Ok(mint_info)
     }
@@ -820,7 +902,7 @@ where
             self.mint_url
                 .join_paths(&["v1", "auth", "blind", "keys", &keyset_id.to_string()])?;
 
-        let mut keys_response = self.transport.http_get::<KeysResponse>(url, None).await?;
+        let mut keys_response = self.transport_http_get::<KeysResponse>(url, None).await?;
 
         let keyset = keys_response
             .keysets
@@ -838,15 +920,14 @@ where
             .mint_url
             .join_paths(&["v1", "auth", "blind", "keysets"])?;
 
-        self.transport.http_get(url, None).await
+        self.transport_http_get(url, None).await
     }
 
     /// Mint Tokens [NUT-22]
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_mint_blind_auth(&self, request: MintAuthRequest) -> Result<MintResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "auth", "blind", "mint"])?;
-        self.transport
-            .http_post(url, Some(self.cat.read().await.clone()), &request)
+        self.transport_http_post(url, Some(self.cat.read().await.clone()), &request)
             .await
     }
 }
@@ -859,6 +940,7 @@ mod tests {
 
     use async_trait::async_trait;
     use cdk_common::MintQuoteState;
+    use cdk_http_client::HttpError;
     use serde::de::DeserializeOwned;
 
     use super::*;
@@ -891,21 +973,21 @@ mod tests {
     #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
     #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
     impl Transport for MockTransport {
-        #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
-        async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error> {
-            unimplemented!()
-        }
-
         fn with_proxy(
             &mut self,
             _proxy: Url,
             _host_matcher: Option<&str>,
             _accept_invalid_certs: bool,
-        ) -> Result<(), Error> {
+        ) -> Result<(), HttpError> {
             Ok(())
         }
 
-        async fn http_get<R>(&self, _url: Url, _auth: Option<AuthToken>) -> Result<R, Error>
+        #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+        async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, HttpError> {
+            Ok(vec![])
+        }
+
+        async fn http_get<R>(&self, _url: Url, _auth: Option<AuthToken>) -> Result<R, HttpError>
         where
             R: DeserializeOwned,
         {
@@ -916,7 +998,7 @@ mod tests {
                 .expect("lock")
                 .clone()
                 .expect("no mock response set");
-            serde_json::from_str(&json).map_err(|e| Error::Custom(e.to_string()))
+            serde_json::from_str(&json).map_err(|e| HttpError::Serialization(e.to_string()))
         }
 
         async fn http_post<P, R>(
@@ -924,14 +1006,15 @@ mod tests {
             _url: Url,
             _auth_token: Option<AuthToken>,
             payload: &P,
-        ) -> Result<R, Error>
+        ) -> Result<R, HttpError>
         where
-            P: serde::Serialize + ?Sized + Send + Sync,
+            P: serde::Serialize + Send + Sync,
             R: DeserializeOwned,
         {
             self.post_urls.lock().expect("lock").push(_url.to_string());
             // Capture the serialized payload for test assertions
-            let value = serde_json::to_value(payload).map_err(|e| Error::Custom(e.to_string()))?;
+            let value = serde_json::to_value(payload)
+                .map_err(|e| HttpError::Serialization(e.to_string()))?;
             *self.captured_payload.lock().expect("lock") = Some(value);
 
             // Return the canned response
@@ -941,7 +1024,7 @@ mod tests {
                 .expect("lock")
                 .clone()
                 .expect("no mock response set");
-            serde_json::from_str(&json).map_err(|e| Error::Custom(e.to_string()))
+            serde_json::from_str(&json).map_err(|e| HttpError::Serialization(e.to_string()))
         }
     }
 

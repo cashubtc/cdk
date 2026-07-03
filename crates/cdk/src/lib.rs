@@ -80,13 +80,31 @@ pub type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 pub use cdk_common::subscription;
 #[cfg(any(feature = "wallet", feature = "mint"))]
 pub mod http_client {
-    //! Re-export HTTP client types from cdk-http-client (via cdk-common)
+    //! Re-export HTTP client types from `cdk-http-client` via `cdk-common`.
     //!
     //! HTTP client abstraction for making HTTP requests.
+    //!
+    //! Backend selection is owned by `cdk-http-client`. Applications using
+    //! `cdk` defaults get the default `bitreq` backend. `cdk` no-default
+    //! `wallet` and `mint` builds also get `bitreq` through `cdk-common/http`.
+    //! To use `reqwest`, add a direct `cdk-http-client` dependency with the
+    //! `reqwest` feature; if both backends are enabled, `reqwest` takes
+    //! precedence:
+    //!
+    //! ```toml
+    //! [dependencies]
+    //! cdk = { version = "0.17.0", default-features = false, features = [
+    //!     "wallet",
+    //! ] }
+    //! cdk-http-client = { version = "0.17.0", default-features = false, features = [
+    //!     "reqwest",
+    //! ] }
+    //! ```
     pub use cdk_common::{
         fetch, HttpClient, HttpClientBuilder, HttpError, RawResponse, RequestBuilder, Response,
     };
 }
+
 /// Re-export futures::Stream
 #[cfg(any(feature = "wallet", feature = "mint"))]
 pub use futures::{Stream, StreamExt};

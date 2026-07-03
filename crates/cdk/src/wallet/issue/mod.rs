@@ -128,7 +128,7 @@ impl Wallet {
             }
         }
 
-        self.refresh_keysets().await?;
+        self.keysets(Default::default()).await?;
 
         let secret_key = SecretKey::generate();
 
@@ -419,15 +419,19 @@ impl Wallet {
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
-        self.refresh_keysets().await?;
-
-        let saga = MintSaga::new(self);
-        let saga = saga
-            .prepare(quote_id, amount_split_target, spending_conditions)
-            .await?;
-        let saga = saga.execute().await?;
-
-        Ok(saga.into_proofs())
+        self.retry_on_inactive_keyset(|| async {
+            let saga = MintSaga::new(self);
+            let saga = saga
+                .prepare(
+                    quote_id,
+                    amount_split_target.clone(),
+                    spending_conditions.clone(),
+                )
+                .await?;
+            let saga = saga.execute().await?;
+            Ok(saga.into_proofs())
+        })
+        .await
     }
 
     /// Mint tokens for a quote (alias for `mint`)
@@ -586,8 +590,6 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         external_keys: Option<std::collections::HashMap<String, SecretKey>>,
     ) -> Result<Proofs, Error> {
-        self.refresh_keysets().await?;
-
         // Create saga and prepare batch
         let saga = MintSaga::new(self);
 

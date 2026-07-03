@@ -151,7 +151,7 @@ impl Signatory for DbSignatory {
                     c,
                     keyset_id,
                     &blinded_message.blinded_secret,
-                    key_pair.secret_key.clone(),
+                    &key_pair.secret_key,
                 )?;
 
                 Ok(blinded_signature)

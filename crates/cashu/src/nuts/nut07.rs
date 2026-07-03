@@ -104,3 +104,26 @@ pub struct CheckStateResponse {
     /// Proof states
     pub states: Vec<ProofState>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_display_and_from_str_cover_all_protocol_values() {
+        let cases = [
+            (State::Spent, "SPENT"),
+            (State::Unspent, "UNSPENT"),
+            (State::Pending, "PENDING"),
+            (State::Reserved, "RESERVED"),
+            (State::PendingSpent, "PENDING_SPENT"),
+        ];
+
+        for (state, wire) in cases {
+            assert_eq!(state.to_string(), wire);
+            assert_eq!(State::from_str(wire), Ok(state));
+        }
+
+        assert_eq!(State::from_str("UNKNOWN"), Err(Error::UnknownState));
+    }
+}

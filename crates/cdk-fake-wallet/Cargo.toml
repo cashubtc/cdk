@@ -10,10 +10,14 @@ rust-version.workspace = true # MSRV
 description = "CDK fake ln backend"
 readme = "README.md"
 
+[features]
+default = ["cdk-http-client/bitreq"]
+
 [dependencies]
 async-trait.workspace = true
 bitcoin.workspace = true
-cdk-common = { workspace = true, features = ["mint", "http"] }
+cdk-common = { workspace = true, default-features = false, features = ["mint", "http"] }
+cdk-http-client = { workspace = true, default-features = false, optional = true }
 futures.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

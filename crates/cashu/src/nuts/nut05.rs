@@ -226,12 +226,30 @@ pub struct MeltMethodSettings {
     pub method: PaymentMethod,
     /// Currency Unit e.g. sat
     pub unit: CurrencyUnit,
+    /// Human-readable name for the payment method.
+    ///
+    /// If null or omitted on the wire, wallets should derive it from `method`
+    /// by replacing `_` and `-` with spaces and title-casing each word.
+    pub method_name: Option<String>,
     /// Min Amount
     pub min_amount: Option<Amount>,
     /// Max Amount
     pub max_amount: Option<Amount>,
     /// Options
     pub options: Option<MeltMethodOptions>,
+}
+
+impl MeltMethodSettings {
+    /// Human-readable payment method name.
+    ///
+    /// Returns the explicit `method_name` when present. If it is null or omitted,
+    /// derives the name from `method` by replacing `_` and `-` with spaces and
+    /// title-casing each word.
+    pub fn method_name(&self) -> String {
+        self.method_name
+            .clone()
+            .unwrap_or_else(|| self.method.derived_method_name())
+    }
 }
 
 impl Serialize for MeltMethodSettings {
@@ -244,6 +262,9 @@ impl Serialize for MeltMethodSettings {
             num_fields += 1;
         }
         if self.max_amount.is_some() {
+            num_fields += 1;
+        }
+        if self.method_name.is_some() {
             num_fields += 1;
         }
 
@@ -259,6 +280,10 @@ impl Serialize for MeltMethodSettings {
 
         state.serialize_field("method", &self.method)?;
         state.serialize_field("unit", &self.unit)?;
+
+        if let Some(method_name) = &self.method_name {
+            state.serialize_field("method_name", method_name)?;
+        }
 
         if let Some(min_amount) = &self.min_amount {
             state.serialize_field("min_amount", min_amount)?;
@@ -292,6 +317,7 @@ impl<'de> Visitor<'de> for MeltMethodSettingsVisitor {
     {
         let mut method: Option<PaymentMethod> = None;
         let mut unit: Option<CurrencyUnit> = None;
+        let mut method_name: Option<String> = None;
         let mut min_amount: Option<Amount> = None;
         let mut max_amount: Option<Amount> = None;
         let mut amountless: Option<bool> = None;
@@ -309,6 +335,12 @@ impl<'de> Visitor<'de> for MeltMethodSettingsVisitor {
                         return Err(de::Error::duplicate_field("unit"));
                     }
                     unit = Some(map.next_value()?);
+                }
+                "method_name" => {
+                    if method_name.is_some() {
+                        return Err(de::Error::duplicate_field("method_name"));
+                    }
+                    method_name = map.next_value()?;
                 }
                 "min_amount" => {
                     if min_amount.is_some() {
@@ -364,6 +396,7 @@ impl<'de> Visitor<'de> for MeltMethodSettingsVisitor {
         Ok(MeltMethodSettings {
             method,
             unit,
+            method_name,
             min_amount,
             max_amount,
             options,
@@ -663,6 +696,7 @@ mod tests {
             MeltMethodSettings {
                 method: PaymentMethod::Known(KnownMethod::Bolt11),
                 unit: CurrencyUnit::Sat,
+                method_name: None,
                 min_amount: None,
                 max_amount: None,
                 options: None,
@@ -670,6 +704,7 @@ mod tests {
             MeltMethodSettings {
                 method: PaymentMethod::Known(KnownMethod::Bolt11),
                 unit: CurrencyUnit::Sat,
+                method_name: None,
                 min_amount: Some(Amount::from(1)),
                 max_amount: None,
                 options: None,
@@ -677,6 +712,7 @@ mod tests {
             MeltMethodSettings {
                 method: PaymentMethod::Known(KnownMethod::Bolt11),
                 unit: CurrencyUnit::Sat,
+                method_name: None,
                 min_amount: None,
                 max_amount: Some(Amount::from(1000)),
                 options: None,
@@ -684,6 +720,7 @@ mod tests {
             MeltMethodSettings {
                 method: PaymentMethod::Known(KnownMethod::Bolt11),
                 unit: CurrencyUnit::Sat,
+                method_name: Some("Lightning".to_string()),
                 min_amount: None,
                 max_amount: None,
                 options: Some(MeltMethodOptions::Bolt11 { amountless: true }),
@@ -718,6 +755,7 @@ mod tests {
         // Check that amountless was correctly moved to options
         assert_eq!(settings.method, PaymentMethod::Known(KnownMethod::Bolt11));
         assert_eq!(settings.unit, CurrencyUnit::Sat);
+        assert_eq!(settings.method_name, None);
         assert_eq!(settings.min_amount, Some(Amount::from(0)));
         assert_eq!(settings.max_amount, Some(Amount::from(10000)));
 
@@ -798,6 +836,7 @@ mod tests {
         let bolt11_sat = MeltMethodSettings {
             method: PaymentMethod::Known(KnownMethod::Bolt11),
             unit: CurrencyUnit::Sat,
+            method_name: None,
             min_amount: Some(Amount::from(1)),
             max_amount: None,
             options: None,
@@ -805,6 +844,7 @@ mod tests {
         let bolt11_usd = MeltMethodSettings {
             method: PaymentMethod::Known(KnownMethod::Bolt11),
             unit: CurrencyUnit::Usd,
+            method_name: None,
             min_amount: Some(Amount::from(2)),
             max_amount: None,
             options: None,
@@ -812,6 +852,7 @@ mod tests {
         let onchain_sat = MeltMethodSettings {
             method: PaymentMethod::Known(KnownMethod::Onchain),
             unit: CurrencyUnit::Sat,
+            method_name: None,
             min_amount: Some(Amount::from(3)),
             max_amount: None,
             options: None,
@@ -847,6 +888,7 @@ mod tests {
                 MeltMethodSettings {
                     method: PaymentMethod::Known(KnownMethod::Bolt11),
                     unit: CurrencyUnit::Sat,
+                    method_name: None,
                     min_amount: None,
                     max_amount: None,
                     options: None,
@@ -854,6 +896,7 @@ mod tests {
                 MeltMethodSettings {
                     method: PaymentMethod::Known(KnownMethod::Onchain),
                     unit: CurrencyUnit::Usd,
+                    method_name: None,
                     min_amount: None,
                     max_amount: None,
                     options: None,
@@ -873,6 +916,59 @@ mod tests {
             settings.supported_units(),
             vec![&CurrencyUnit::Sat, &CurrencyUnit::Usd]
         );
+    }
+
+    #[test]
+    fn test_melt_method_settings_method_name_round_trip() {
+        let json_str = r#"{
+            "method": "bolt11",
+            "unit": "sat",
+            "method_name": "Lightning",
+            "min_amount": 0,
+            "max_amount": 10000
+        }"#;
+
+        let settings: MeltMethodSettings = from_str(json_str).unwrap();
+
+        assert_eq!(settings.method_name, Some("Lightning".to_string()));
+        assert_eq!(settings.method_name(), "Lightning");
+
+        let serialized = to_string(&settings).unwrap();
+        let parsed: serde_json::Value = from_str(&serialized).unwrap();
+
+        assert_eq!(parsed["method_name"], json!("Lightning"));
+    }
+
+    #[test]
+    fn test_melt_method_settings_null_method_name_deserializes_as_none() {
+        let json_str = r#"{
+            "method": "bolt11",
+            "unit": "sat",
+            "method_name": null
+        }"#;
+
+        let settings: MeltMethodSettings = from_str(json_str).unwrap();
+
+        assert_eq!(settings.method_name, None);
+        assert_eq!(settings.method_name(), "Bolt11");
+
+        let serialized = to_string(&settings).unwrap();
+        let parsed: serde_json::Value = from_str(&serialized).unwrap();
+
+        assert!(parsed.get("method_name").is_none());
+    }
+
+    #[test]
+    fn test_melt_method_settings_omitted_method_name_uses_derived_name() {
+        let json_str = r#"{
+            "method": "apple-pay",
+            "unit": "usd"
+        }"#;
+
+        let settings: MeltMethodSettings = from_str(json_str).unwrap();
+
+        assert_eq!(settings.method_name, None);
+        assert_eq!(settings.method_name(), "Apple Pay");
     }
 
     #[test]

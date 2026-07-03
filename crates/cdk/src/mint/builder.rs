@@ -440,6 +440,7 @@ impl MintBuilder {
                     let mint_method_settings = MintMethodSettings {
                         method: method.clone(),
                         unit: unit.clone(),
+                        method_name: Some("Bolt11".to_string()),
                         min_amount: Some(limits.mint_min),
                         max_amount: Some(limits.mint_max),
                         options: Some(MintMethodOptions::Bolt11 {
@@ -453,6 +454,7 @@ impl MintBuilder {
                     let melt_method_settings = MeltMethodSettings {
                         method: method.clone(),
                         unit: unit.clone(),
+                        method_name: Some("Bolt11".to_string()),
                         min_amount: Some(limits.melt_min),
                         max_amount: Some(limits.melt_max),
                         options: Some(MeltMethodOptions::Bolt11 {
@@ -470,6 +472,7 @@ impl MintBuilder {
                     let mint_method_settings = MintMethodSettings {
                         method: method.clone(),
                         unit: unit.clone(),
+                        method_name: Some("Bolt12".to_string()),
                         min_amount: Some(limits.mint_min),
                         max_amount: Some(limits.mint_max),
                         options: None, // No bolt12-specific options in NUT04 yet
@@ -481,6 +484,7 @@ impl MintBuilder {
                     let melt_method_settings = MeltMethodSettings {
                         method: method.clone(),
                         unit: unit.clone(),
+                        method_name: Some("Bolt12".to_string()),
                         min_amount: Some(limits.melt_min),
                         max_amount: Some(limits.melt_max),
                         options: None, // No bolt12-specific options in NUT05 yet
@@ -497,6 +501,7 @@ impl MintBuilder {
                     let mint_method_settings = MintMethodSettings {
                         method: method.clone(),
                         unit: unit.clone(),
+                        method_name: None,
                         min_amount: Some(limits.mint_min),
                         max_amount: Some(limits.mint_max),
                         options: Some(MintMethodOptions::Custom {}),
@@ -508,6 +513,7 @@ impl MintBuilder {
                     let melt_method_settings = MeltMethodSettings {
                         method: method.clone(),
                         unit: unit.clone(),
+                        method_name: None,
                         min_amount: Some(limits.melt_min),
                         max_amount: Some(limits.melt_max),
                         options: None, // No custom-specific options in NUT05 yet
@@ -536,6 +542,7 @@ impl MintBuilder {
                     let mint_method_settings = MintMethodSettings {
                         method: method.clone(),
                         unit: unit.clone(),
+                        method_name: Some("Onchain".to_string()),
                         min_amount: Some(mint_min),
                         max_amount: Some(limits.mint_max),
                         options: Some(MintMethodOptions::Onchain {
@@ -549,6 +556,7 @@ impl MintBuilder {
                     let melt_method_settings = MeltMethodSettings {
                         method: method.clone(),
                         unit: unit.clone(),
+                        method_name: Some("Onchain".to_string()),
                         min_amount: Some(melt_min),
                         max_amount: Some(limits.melt_max),
                         options: None,
@@ -1096,6 +1104,7 @@ mod tests {
         let mint_method = &mint_info.nuts.nut04.methods[0];
         assert_eq!(mint_method.method, method);
         assert_eq!(mint_method.unit, unit);
+        assert_eq!(mint_method.method_name, Some("Bolt11".to_string()));
         assert_eq!(mint_method.min_amount, Some(limits.mint_min));
         assert_eq!(mint_method.max_amount, Some(limits.mint_max));
         assert!(matches!(
@@ -1109,6 +1118,7 @@ mod tests {
         let melt_method = &mint_info.nuts.nut05.methods[0];
         assert_eq!(melt_method.method, method);
         assert_eq!(melt_method.unit, unit);
+        assert_eq!(melt_method.method_name, Some("Bolt11".to_string()));
         assert_eq!(melt_method.min_amount, Some(limits.melt_min));
         assert_eq!(melt_method.max_amount, Some(limits.melt_max));
         assert!(matches!(
@@ -1265,6 +1275,7 @@ mod tests {
         let mint_method = &mint_info.nuts.nut04.methods[0];
         assert_eq!(mint_method.method, method);
         assert_eq!(mint_method.unit, unit);
+        assert_eq!(mint_method.method_name, Some("Bolt12".to_string()));
         assert_eq!(mint_method.min_amount, Some(limits.mint_min));
         assert_eq!(mint_method.max_amount, Some(limits.mint_max));
         assert!(mint_method.options.is_none());
@@ -1275,6 +1286,7 @@ mod tests {
         let melt_method = &mint_info.nuts.nut05.methods[0];
         assert_eq!(melt_method.method, method);
         assert_eq!(melt_method.unit, unit);
+        assert_eq!(melt_method.method_name, Some("Bolt12".to_string()));
         assert_eq!(melt_method.min_amount, Some(limits.melt_min));
         assert_eq!(melt_method.max_amount, Some(limits.melt_max));
         assert!(melt_method.options.is_none());
@@ -1428,6 +1440,7 @@ mod tests {
         let mint_method = &mint_info.nuts.nut04.methods[0];
         assert_eq!(mint_method.method, method);
         assert_eq!(mint_method.unit, unit);
+        assert_eq!(mint_method.method_name, Some("Onchain".to_string()));
         assert_eq!(mint_method.min_amount, Some(Amount::from(1000)));
         assert_eq!(mint_method.max_amount, Some(limits.mint_max));
         assert!(matches!(
@@ -1437,6 +1450,7 @@ mod tests {
 
         assert_eq!(mint_info.nuts.nut05.methods.len(), 1);
         let melt_method = &mint_info.nuts.nut05.methods[0];
+        assert_eq!(melt_method.method_name, Some("Onchain".to_string()));
         assert_eq!(melt_method.min_amount, Some(Amount::from(546)));
     }
 

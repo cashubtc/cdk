@@ -727,14 +727,25 @@
             "-p cashu --no-default-features"
             "-p cashu --no-default-features --features wallet"
             "-p cashu --no-default-features --features mint"
+            "-p cdk-http-client"
+            "-p cdk-http-client --no-default-features --features reqwest"
             "-p cdk-common"
             "-p cdk-common --no-default-features"
             "-p cdk-common --no-default-features --features wallet"
             "-p cdk-common --no-default-features --features mint"
-            "-p cdk"
+            "-p cdk-common -p cdk-http-client --no-default-features --features cdk-common/wallet,cdk-common/http,cdk-http-client/bitreq"
+            "-p cdk-common -p cdk-http-client --no-default-features --features cdk-common/wallet,cdk-common/http,cdk-http-client/reqwest"
+            "-p cdk-common -p cdk-http-client --no-default-features --features cdk-common/mint,cdk-common/http,cdk-http-client/bitreq"
+            "-p cdk-common -p cdk-http-client --no-default-features --features cdk-common/mint,cdk-common/http,cdk-http-client/reqwest"
+            "-p cdk -p cdk-http-client"
             "-p cdk --no-default-features"
-            "-p cdk --no-default-features --features wallet"
-            "-p cdk --no-default-features --features mint"
+            "-p cdk --no-default-features --features bip353"
+            "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk-http-client/bitreq"
+            "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk-http-client/reqwest"
+            "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk/tor,cdk-http-client/bitreq"
+            "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk/npubcash,cdk-http-client/reqwest"
+            "-p cdk -p cdk-http-client --no-default-features --features cdk/mint,cdk-http-client/bitreq"
+            "-p cdk -p cdk-http-client --no-default-features --features cdk/mint,cdk-http-client/reqwest"
           ];
 
           "storage-and-cli" = [
@@ -750,16 +761,18 @@
           ];
 
           "lightning-and-api" = [
+            "-p cdk-http-client"
             "-p cdk-axum"
             "-p cdk-axum --no-default-features"
             "-p cdk-axum --no-default-features --features redis"
+            "-p cdk-bdk"
             "-p cdk-cln"
             "-p cdk-lnd"
             "-p cdk-lnbits"
-            "-p cdk-fake-wallet"
+            "-p cdk-fake-wallet -p cdk-http-client --no-default-features --features cdk-http-client/bitreq"
             "-p cdk-payment-processor"
             "-p cdk-ldk-node"
-            "-p cdk-npubcash"
+            "-p cdk-npubcash -p cdk-http-client --no-default-features --features cdk-http-client/bitreq"
           ];
 
           "mintd-main" = [
@@ -806,7 +819,7 @@
           "cdk-cli" = "-p cdk-cli";
 
           # Minimal builds to ensure no-default-features works
-          "cdk-wallet-only" = "-p cdk --no-default-features --features wallet";
+          "cdk-wallet-only" = "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk-http-client/bitreq";
         };
 
         # ========================================
@@ -1040,6 +1053,8 @@
               # Nix store paths for openssl, sqlite, zlib, libiconv, etc.
               OPENSSL_STATIC = "1";
               PKG_CONFIG_ALL_STATIC = "1";
+              doNotSign = true;
+              darwinDontCodeSign = true;
 
               installPhaseCommand = ''
                 mkdir -p $out/bin
@@ -1053,22 +1068,32 @@
               # them at runtime even though the individual .dylib files may not be on disk).
               postFixup = ''
                 for f in $out/bin/*; do
-                  otool -L "$f" | tail -n +2 | grep '/nix/store' | awk '{print $1}' | while read -r lib; do
-                    base=$(basename "$lib")
-                    echo "Rewriting Nix store dylib ref: $lib -> /usr/lib/$base"
-                    install_name_tool -change "$lib" "/usr/lib/$base" "$f"
-                  done
+                  nix_store_libs="$(
+                    otool -L "$f" | tail -n +2 | awk '/\/nix\/store/ { print $1 }'
+                  )"
+                  if [ -n "$nix_store_libs" ]; then
+                    echo "$nix_store_libs" | while IFS= read -r lib; do
+                      base=$(basename "$lib")
+                      echo "Rewriting Nix store dylib ref: $lib -> /usr/lib/$base"
+                      install_name_tool -change "$lib" "/usr/lib/$base" "$f"
+                    done
+                  fi
 
-                  otool -l "$f" | awk '
-                    $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
-                    in_rpath && $1 == "path" {
-                      print $2
-                      in_rpath = 0
-                    }
-                  ' | grep '^/nix/store' | while read -r rpath; do
-                    echo "Removing Nix store rpath: $rpath"
-                    install_name_tool -delete_rpath "$rpath" "$f"
-                  done
+                  nix_store_rpaths="$(
+                    otool -l "$f" | awk '
+                      $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }
+                      in_rpath && $1 == "path" {
+                        print $2
+                        in_rpath = 0
+                      }
+                    ' | awk '/^\/nix\/store/ { print }'
+                  )"
+                  if [ -n "$nix_store_rpaths" ]; then
+                    echo "$nix_store_rpaths" | while IFS= read -r rpath; do
+                      echo "Removing Nix store rpath: $rpath"
+                      install_name_tool -delete_rpath "$rpath" "$f"
+                    done
+                  fi
 
                   # Fail the build if any runtime Mach-O references still point into the Nix store.
                   # This prevents silently shipping binaries that depend on Nix-specific loader paths.
@@ -1092,6 +1117,10 @@
                     echo "The binary would fail on systems without Nix installed."
                     exit 1
                   fi
+
+                  # The install_name_tool changes happen after the usual
+                  # signing hooks, so refresh the ad-hoc signature.
+                  signIfRequired "$f"
                 done
               '';
             }

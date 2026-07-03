@@ -1524,7 +1524,7 @@ async fn test_wallet_multi_keyset_counter_updates() {
 
     // Refresh wallet keysets to know about the new keyset
     wallet
-        .refresh_keysets()
+        .keysets(Default::default())
         .await
         .expect("Failed to refresh wallet keysets");
 

@@ -527,4 +527,83 @@ mod tests {
             Err(Error::NUT11(crate::nut11::Error::ZeroSignaturesRequired))
         ));
     }
+
+    #[test]
+    fn test_num_sigs_accessor_preserves_configured_value() {
+        let conditions = SpendingConditions::P2PKConditions {
+            data: PublicKey::from_str(
+                "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198",
+            )
+            .unwrap(),
+            conditions: Some(Conditions {
+                num_sigs: Some(3),
+                ..Default::default()
+            }),
+        };
+
+        assert_eq!(conditions.num_sigs(), Some(3));
+    }
+
+    #[test]
+    fn test_conditions_reject_zero_signature_thresholds() {
+        let pubkey = PublicKey::from_str(
+            "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198",
+        )
+        .unwrap();
+
+        let result = Conditions {
+            pubkeys: Some(vec![pubkey]),
+            num_sigs: Some(0),
+            ..Default::default()
+        }
+        .validate(1);
+
+        assert!(matches!(
+            result,
+            Err(Error::NUT11(crate::nut11::Error::ZeroSignaturesRequired))
+        ));
+
+        let result = Conditions {
+            refund_keys: Some(vec![pubkey]),
+            num_sigs_refund: Some(0),
+            ..Default::default()
+        }
+        .validate(1);
+
+        assert!(matches!(
+            result,
+            Err(Error::NUT11(crate::nut11::Error::ZeroSignaturesRequired))
+        ));
+
+        let result = Conditions {
+            num_sigs_refund: Some(0),
+            ..Default::default()
+        }
+        .validate(1);
+
+        assert!(matches!(
+            result,
+            Err(Error::NUT11(crate::nut11::Error::ZeroSignaturesRequired))
+        ));
+    }
+
+    #[test]
+    fn test_conditions_reject_empty_refund_keys_with_locktime() {
+        let result = Conditions {
+            locktime: Some(100),
+            refund_keys: Some(vec![]),
+            ..Default::default()
+        }
+        .validate(1);
+
+        assert!(matches!(
+            result,
+            Err(Error::NUT11(
+                crate::nut11::Error::ImpossibleRefundMultisigConfiguration {
+                    required: 1,
+                    available: 0
+                }
+            ))
+        ));
+    }
 }

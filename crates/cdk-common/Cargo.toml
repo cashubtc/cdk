@@ -14,16 +14,18 @@ readme = "README.md"
 default = ["mint", "wallet"]
 test = []
 bench = []
-wallet = ["cashu/wallet", "dep:uuid", "http"]
-mint = ["cashu/mint", "dep:uuid", "http"]
+wallet = ["cashu/wallet", "dep:uuid"]
+mint = ["cashu/mint", "dep:uuid"]
 nostr = ["wallet", "cashu/nostr"]
 prometheus = ["cdk-prometheus/default"]
-http = ["dep:cdk-http-client"]
+# `http` selects the default `bitreq` backend so any crate enabling HTTP support
+# gets a working client. Add `cdk-http-client/reqwest` to override (it takes
+# precedence; the backends are additive).
+http = ["dep:cdk-http-client", "cdk-http-client/bitreq"]
 grpc = ["dep:tonic"]
 bip353 = []
 
 [dependencies]
-cdk-http-client = { workspace = true, optional = true }
 async-trait.workspace = true
 bitcoin.workspace = true
 cashu.workspace = true
@@ -46,6 +48,7 @@ parking_lot = "0.12.5"
 paste.workspace = true
 jsonwebtoken.workspace = true
 tonic = { workspace = true, optional = true }
+cdk-http-client = { workspace = true, default-features = false, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "test-util", "sync"] }
@@ -53,7 +56,7 @@ tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-t
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { workspace = true, features = ["js"], optional = true }
 getrandom = { version = "0.2", features = ["js"] }
-tokio.workspace = true
+tokio = { workspace = true, default-features = false }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 

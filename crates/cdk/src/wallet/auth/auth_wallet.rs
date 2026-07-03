@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use cdk_common::database::{self, WalletDatabase};
 use cdk_common::mint_url::MintUrl;
-use cdk_common::parking_lot::RwLock as ParkingRwLock;
 use cdk_common::wallet::ProofInfo;
 use cdk_common::{AuthProof, Id, Keys, MintInfo};
 use serde::{Deserialize, Serialize};
@@ -44,10 +42,6 @@ pub struct AuthWallet {
     pub localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
     /// Mint metadata cache (lock-free cached access to keys, keysets, and mint info)
     pub metadata_cache: Arc<MintMetadataCache>,
-    /// TTL controlling how long cached auth metadata is considered fresh.
-    /// Shared with the parent [`Wallet`](crate::Wallet) so both honor the same
-    /// configured value.
-    metadata_cache_ttl: Arc<ParkingRwLock<Option<Duration>>>,
     /// Protected methods
     pub protected_endpoints: Arc<RwLock<HashMap<ProtectedEndpoint, AuthRequired>>>,
     /// Refresh token for auth
@@ -65,7 +59,6 @@ impl AuthWallet {
         cat: Option<AuthToken>,
         localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         metadata_cache: Arc<MintMetadataCache>,
-        metadata_cache_ttl: Arc<ParkingRwLock<Option<Duration>>>,
         protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
         oidc_client: Option<OidcClient>,
     ) -> Self {
@@ -74,7 +67,6 @@ impl AuthWallet {
             mint_url,
             localstore,
             metadata_cache,
-            metadata_cache_ttl,
             protected_endpoints: Arc::new(RwLock::new(protected_endpoints)),
             refresh_token: Arc::new(RwLock::new(None)),
             auth_client: http_client,
@@ -192,10 +184,7 @@ impl AuthWallet {
     pub async fn load_keyset_keys(&self, keyset_id: Id) -> Result<Keys, Error> {
         let metadata = self
             .metadata_cache
-            .load_auth(&self.localstore, &self.auth_client, {
-                let ttl = self.metadata_cache_ttl.read();
-                *ttl
-            })
+            .load_auth(&self.localstore, &self.auth_client)
             .await?;
 
         match metadata.keysets.get(&keyset_id) {
@@ -220,10 +209,7 @@ impl AuthWallet {
     pub async fn load_mint_keysets(&self) -> Result<Vec<KeySetInfo>, Error> {
         let metadata = self
             .metadata_cache
-            .load_auth(&self.localstore, &self.auth_client, {
-                let ttl = self.metadata_cache_ttl.read();
-                *ttl
-            })
+            .load_auth(&self.localstore, &self.auth_client)
             .await?;
 
         let auth_keysets = metadata
@@ -550,14 +536,12 @@ mod tests {
                 .expect("in-memory wallet database should initialize"),
         );
         let metadata_cache = Arc::new(MintMetadataCache::new(mint_url.clone()));
-        let metadata_cache_ttl = Arc::new(ParkingRwLock::new(Some(Duration::from_secs(3600))));
 
         AuthWallet::new(
             mint_url,
             None,
             localstore,
             metadata_cache,
-            metadata_cache_ttl,
             protected_endpoints,
             None,
         )
@@ -675,13 +659,11 @@ mod tests {
                 .expect("in-memory wallet database should initialize"),
         );
         let metadata_cache = Arc::new(MintMetadataCache::new(mint_url.clone()));
-        let metadata_cache_ttl = Arc::new(ParkingRwLock::new(Some(Duration::from_secs(3600))));
 
         AuthWallet {
             mint_url,
             localstore,
             metadata_cache,
-            metadata_cache_ttl,
             protected_endpoints: Arc::new(RwLock::new(HashMap::new())),
             refresh_token: Arc::new(RwLock::new(None)),
             auth_client: connector,
