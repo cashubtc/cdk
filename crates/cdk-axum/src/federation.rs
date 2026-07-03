@@ -18,6 +18,7 @@ use cdk::federation::{
 };
 use cdk_http_client::{Async, Transport};
 use serde::Serialize;
+use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::instrument;
 
 use crate::MintState;
@@ -25,11 +26,82 @@ use crate::MintState;
 type ConsensusHandle = std::sync::Arc<tokio::sync::Mutex<InMemoryFederationConsensus>>;
 type SequenceHandle = std::sync::Arc<tokio::sync::Mutex<FederationRestSequenceTracker>>;
 
+const FEDERATION_PEER_SYNC_INTERVAL: Duration = Duration::from_secs(5);
+
 pub(crate) fn create_federation_router() -> Router<MintState> {
     Router::new()
         .route("/status", post(post_status))
         .route("/operations", post(post_operation))
         .route("/journal", post(post_journal))
+}
+
+pub(crate) fn spawn_federation_peer_sync_loop(state: MintState) {
+    let Some(config) = state.mint.federation_config().cloned() else {
+        return;
+    };
+    let public_config = config.public_config().clone();
+    let local_member = config.member_id();
+    let peers = public_config
+        .members
+        .values()
+        .filter(|member| member.member_id != local_member)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if peers.is_empty() {
+        return;
+    }
+
+    let private_config = config.private_config().clone();
+    tokio::spawn(async move {
+        let client =
+            match FederationRestPeerClient::new(Async::default(), &public_config, private_config) {
+                Ok(client) => client,
+                Err(err) => {
+                    tracing::error!("Could not start federation peer sync loop: {}", err);
+                    return;
+                }
+            };
+        let mut interval = time::interval(FEDERATION_PEER_SYNC_INTERVAL);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        loop {
+            interval.tick().await;
+            run_federation_peer_sync_round(&state, &client, &peers).await;
+        }
+    });
+}
+
+async fn run_federation_peer_sync_round<T>(
+    state: &MintState,
+    client: &FederationRestPeerClient<T>,
+    peers: &[MemberConfigPublic],
+) -> usize
+where
+    T: Transport,
+{
+    let mut synced = 0;
+    for peer in peers {
+        match client.sync_once_from_member(state, peer).await {
+            Ok(status) => {
+                synced += 1;
+                tracing::debug!(
+                    member_id = %peer.member_id,
+                    operation_count = status.operation_count,
+                    latest_index = ?status.latest_index,
+                    "Federation peer sync completed"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    member_id = %peer.member_id,
+                    "Federation peer sync failed: {}",
+                    err
+                );
+            }
+        }
+    }
+    synced
 }
 
 #[instrument(skip_all)]
@@ -372,7 +444,9 @@ where
         }
 
         if local_status.operation_count >= peer_status.operation_count {
-            state.mark_federation_healthy().await;
+            state
+                .mark_federation_healthy_if_caught_up(local_status.operation_count)
+                .await;
         }
 
         Ok(local_status)
@@ -1160,6 +1234,80 @@ mod tests {
             .submit_federation_envelope(next)
             .await
             .expect("synced member can submit");
+    }
+
+    #[tokio::test]
+    async fn peer_sync_round_catches_up_from_configured_peer() {
+        let (state, public_config, local_private, _) =
+            federation_route_state_with_local_private().await;
+        let federation_id = public_config.federation_id;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let peer_entry = restore_envelope(
+            federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
+        peer_consensus
+            .submit_envelope(peer_entry)
+            .expect("peer accepted operation");
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+        let catch_up_response = peer_consensus
+            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
+            .expect("peer catch-up response");
+        let transport = MockFederationTransport::default()
+            .with_status_response(peer_consensus.peer_status())
+            .with_catch_up_response(catch_up_response);
+        let client = FederationRestPeerClient::new(transport, &public_config, local_private)
+            .expect("client");
+
+        let synced =
+            run_federation_peer_sync_round(&state, &client, std::slice::from_ref(peer_member))
+                .await;
+
+        assert_eq!(synced, 1);
+        assert_eq!(
+            local_consensus.lock().await.peer_status().operation_count,
+            1
+        );
+        assert!(matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Healthy)
+        ));
+    }
+
+    #[tokio::test]
+    async fn peer_sync_round_does_not_clear_higher_known_lag_with_lower_peer() {
+        let (state, public_config, local_private, _) =
+            federation_route_state_with_local_private().await;
+        let federation_id = public_config.federation_id;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        state
+            .mark_federation_lagging(peer_member.member_id, 0, 2)
+            .await;
+        let status = FederationPeerStatus::new(
+            federation_id,
+            peer_member.member_id,
+            0,
+            None,
+            cdk::federation::FederationJournalDigest::genesis(),
+        );
+        let transport = MockFederationTransport::default().with_status_response(status);
+        let client = FederationRestPeerClient::new(transport, &public_config, local_private)
+            .expect("client");
+
+        let synced =
+            run_federation_peer_sync_round(&state, &client, std::slice::from_ref(peer_member))
+                .await;
+
+        assert_eq!(synced, 1);
+        assert!(matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Lagging {
+                peer_operation_count: 2,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]

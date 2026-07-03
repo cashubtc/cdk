@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add federation lag-aware sync guard</span>
+          <span class="value">feat: run federation peer recovery loop</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Lag-aware peer sync guard</span>
+          <span class="value">Automatic peer recovery loop</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Automatic peer recovery loop</span>
+          <span class="value">Multi-process local federation</span>
         </div>
       </aside>
     </header>
@@ -564,6 +564,10 @@
             <h3>Lag-aware serving guard ready</h3>
             <p>Federation-enabled Axum state now tracks healthy, lagging, catching-up, and halted sync states. Public federation submissions refuse to sign while the member is lagging or halted, while private catch-up can still repair state.</p>
           </article>
+          <article class="item">
+            <h3>Automatic peer recovery loop ready</h3>
+            <p>Federation routers now spawn a signed private-REST peer sync loop that polls configured partners, catches up missing journal entries, and preserves fail-closed lag state until the member has reached the known peer height.</p>
+          </article>
         </div>
       </section>
 
@@ -710,6 +714,10 @@
             <h3>Lagging members fail closed before signing</h3>
             <p>Once a peer status reveals that a member is behind, public mint, swap, melt, quote, and observation submissions are blocked until peer catch-up restores a matching accepted-order digest.</p>
           </article>
+          <article class="item">
+            <h3>Peer sync no longer depends on wallet traffic</h3>
+            <p>Member recovery can now run independently of public wallet requests, and tests ensure a lower-height peer cannot clear a higher known lag condition.</p>
+          </article>
         </div>
       </section>
 
@@ -726,7 +734,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations, and lagging members now fail closed before public signing. The remaining work is to run the peer sync check continuously and exercise it with separate member processes.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations. Lagging members now fail closed before public signing, and router startup launches a peer recovery loop. The remaining work is to exercise the loop with separate member processes and operator-facing status commands.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -994,10 +1002,16 @@
               <td>Promote one-shot peer sync into an automatic recovery loop and expose operator-visible lag state.</td>
             </tr>
             <tr>
+              <td>Automatic peer recovery loop</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation peer_sync_round_catches_up_from_configured_peer` and `peer_sync_round_does_not_clear_higher_known_lag_with_lower_peer` passed. `cargo test -p cdk-axum --features federation federation` passed 34 tests, and `cargo check -p cdk-axum --features federation` plus the mintd federation/fakewallet/sqlite check passed after the router startup hook.</td>
+              <td>Run the peer loop against separate fake-wallet member processes and add operator-visible sync status.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, and lagging-member fail-closed behavior before signing.</td>
-              <td>Add a continuous peer sync task and then run multi-process fake-wallet member scenarios.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, and automatic peer sync rounds.</td>
+              <td>Run multi-process fake-wallet member scenarios and expose operator sync status.</td>
             </tr>
           </tbody>
         </table>
@@ -1037,12 +1051,12 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Automatic peer recovery loop</h3>
-            <p>Run the signed peer status and catch-up cycle continuously for every configured member, with bounded retry/backoff and operator-visible lagging/catching-up/healthy states.</p>
-          </article>
-          <article class="item">
             <h3>Multi-process local federation</h3>
             <p>Run fake-wallet federation members as separate local mint processes with private REST endpoints, stop and restart members, and compare consensus height and state digests after recovery.</p>
+          </article>
+          <article class="item">
+            <h3>Operator sync status</h3>
+            <p>Expose current sync state, consensus height, last digest, and known peer lag through an admin endpoint or CLI status command.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>

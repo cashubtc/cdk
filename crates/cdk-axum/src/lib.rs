@@ -294,9 +294,24 @@ impl MintState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn mark_federation_healthy(&self) {
         if let Some(sync) = &self.federation_sync {
             sync.lock().await.mark_healthy();
+        }
+    }
+
+    pub(crate) async fn mark_federation_healthy_if_caught_up(&self, local_operation_count: u64) {
+        if let Some(sync) = &self.federation_sync {
+            let mut sync = sync.lock().await;
+            match sync.status() {
+                FederationSyncStatus::Lagging {
+                    peer_operation_count,
+                    ..
+                } if peer_operation_count > local_operation_count => {}
+                FederationSyncStatus::Halted { .. } => {}
+                _ => sync.mark_healthy(),
+            }
         }
     }
 
@@ -415,6 +430,7 @@ pub async fn create_mint_router_with_custom_cache(
 
     #[cfg(feature = "federation")]
     if state.federation_consensus.is_some() {
+        federation::spawn_federation_peer_sync_loop(state.clone());
         mint_router = mint_router.nest("/federation/v1", federation::create_federation_router());
     }
 
