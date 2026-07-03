@@ -324,19 +324,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Milestone 2 in progress</span>
+          <span class="value">Milestone 3 in progress</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">61d0e0e9 trusted-dealer configs</span>
+          <span class="value">6f856d26 mintd config wiring</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Mintd federation config wiring</span>
+          <span class="value">Canonical operation encoding</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Mintd federation config wiring</span>
+          <span class="value">Consensus journal scaffold</span>
         </div>
       </aside>
     </header>
@@ -364,14 +364,14 @@
               <h3>2. Federation config and roster</h3>
               <p>Static member identity keys, partner allowlists, aggregate keysets, and trusted-dealer configs.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </article>
           <article class="milestone">
             <div>
               <h3>3. Operation encoding</h3>
               <p>Canonical hashes for mint, swap, melt, restore, and payment observations.</p>
             </div>
-            <span class="status pending">Pending</span>
+            <span class="status progress">In progress</span>
           </article>
           <article class="milestone">
             <div>
@@ -436,6 +436,10 @@
             <h3>Trusted-dealer config generation committed</h3>
             <p>A mocked DKG path now emits one shared public federation config plus validated private member configs from operator-supplied identity keys and BLS polynomial coefficients.</p>
           </article>
+          <article class="item">
+            <h3>Mintd federation config wiring committed</h3>
+            <p>Mintd can now load public federation JSON plus local member private JSON, validate them, expose them through the mint builder, and stay unchanged when federation is disabled.</p>
+          </article>
         </div>
       </section>
 
@@ -453,6 +457,10 @@
           <article class="item">
             <h3>Identity split clarified</h3>
             <p>Member identity keys authenticate federation traffic; threshold BLS shares sign Cashu outputs.</p>
+          </article>
+          <article class="item">
+            <h3>Startup validation landed</h3>
+            <p>Federation configs are rejected at startup when public roster data and local private member state do not match.</p>
           </article>
           <article class="item">
             <h3>Threshold math baseline</h3>
@@ -513,7 +521,7 @@
               <td>Daemon feature chain</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"` passed.</td>
-              <td>Add federation config parsing in a later checkpoint.</td>
+              <td>Keep checking both federation-enabled and federation-disabled daemon builds.</td>
             </tr>
             <tr>
               <td>Threshold BLS</td>
@@ -543,7 +551,13 @@
               <td>Trusted-dealer config generation</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation federation` now passes 10 tests, including duplicate-member, bad-coefficient, and BLS-identity rejection.</td>
-              <td>Wire generated public/private configs into mint startup.</td>
+              <td>Use generated configs in multi-member startup tests.</td>
+            </tr>
+            <tr>
+              <td>Mintd federation config wiring</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --lib --features federation federation`, `cargo test -p cdk-mintd --no-default-features --features "federation sqlite fakewallet" configure_federation`, `cargo check -p cdk --lib`, and both mintd feature checks passed.</td>
+              <td>Encode mint, swap, melt, restore, and payment observations as canonical consensus operations.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
@@ -585,12 +599,12 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Mintd federation config wiring</h3>
-            <p>Add config-file/env loading for public federation config and local member private config, then expose it through the mint builder without changing standalone mode.</p>
+            <h3>Canonical operation encoding</h3>
+            <p>Define stable hashes and validation for federated mint, swap, melt, restore, and payment-observation operations before they enter consensus.</p>
           </article>
           <article class="item">
-            <h3>Focused verification</h3>
-            <p>Validate threshold/member counts, roster hashes, identity keys, aggregate keysets, and share ownership before wiring config into mintd.</p>
+            <h3>Consensus journal scaffold</h3>
+            <p>Persist accepted operation order, member observations, operation status, and state digests so offline members can catch up deterministically.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>
