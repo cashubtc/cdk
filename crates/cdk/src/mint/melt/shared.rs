@@ -9,6 +9,8 @@
 use cdk_common::amount::MSAT_IN_SAT;
 use cdk_common::database::mint::Acquired;
 use cdk_common::database::{self, DynMintDatabase};
+#[cfg(feature = "federation")]
+use cdk_common::federation::FederationOperationId;
 use cdk_common::mint::{self as mint_types};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, Proofs, State};
 use cdk_common::{Amount, CurrencyUnit, Error, PublicKey, QuoteId};
@@ -353,6 +355,99 @@ pub async fn process_melt_change(
     Ok((Some(change_sigs), tx))
 }
 
+#[cfg(feature = "federation")]
+pub async fn process_federation_melt_change(
+    mint: &super::super::Mint,
+    db: &DynMintDatabase,
+    quote_id: &QuoteId,
+    federation_operation_id: FederationOperationId,
+    inputs_amount: Amount<CurrencyUnit>,
+    total_spent: Amount<CurrencyUnit>,
+    inputs_fee: Amount<CurrencyUnit>,
+    change_outputs: Vec<BlindedMessage>,
+) -> Result<
+    (
+        Option<Vec<BlindSignature>>,
+        Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
+    ),
+    Error,
+> {
+    let change_target: Amount = match inputs_amount
+        .checked_sub(&total_spent)
+        .ok()
+        .and_then(|rem| rem.checked_sub(&inputs_fee).ok())
+    {
+        Some(amt) if amt.value() > 0 => amt.into(),
+        Some(_) => {
+            let tx = db.begin_transaction().await?;
+            return Ok((None, tx));
+        }
+        None => {
+            tracing::warn!(
+                "Fee was too high for quote {}. inputs_amount: {}, total_spent: {}, inputs_fee: {}",
+                quote_id,
+                inputs_amount,
+                total_spent,
+                inputs_fee
+            );
+            let tx = db.begin_transaction().await?;
+            return Ok((None, tx));
+        }
+    };
+
+    if change_outputs.is_empty() {
+        let tx = db.begin_transaction().await?;
+        return Ok((None, tx));
+    }
+
+    let fee_and_amounts = get_keyset_fee_and_amounts(&mint.keysets, &change_outputs);
+    let mut amounts: Vec<Amount> = change_target.split(&fee_and_amounts)?;
+
+    if change_outputs.len() < amounts.len() {
+        tracing::debug!(
+            "Providing federated change requires {} blinded messages, but only {} provided",
+            amounts.len(),
+            change_outputs.len()
+        );
+        amounts.sort_by(|a, b| b.cmp(a));
+    }
+
+    let mut blinded_messages_to_sign = Vec::with_capacity(amounts.len());
+    for (amount, mut blinded_message) in amounts.iter().zip(change_outputs.iter().cloned()) {
+        blinded_message.amount = *amount;
+        blinded_messages_to_sign.push(blinded_message);
+    }
+
+    let config = mint.federation_config().ok_or(Error::Internal)?;
+    let share_set = config.private_config().sign_blinded_messages(
+        config.public_config(),
+        federation_operation_id,
+        &blinded_messages_to_sign,
+    )?;
+    let change_sigs = share_set
+        .shares
+        .into_iter()
+        .map(|share| BlindSignature {
+            amount: share.amount,
+            keyset_id: share.keyset_id,
+            c: PublicKey::from(share.share.signature()),
+            dleq: None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut tx = db.begin_transaction().await?;
+
+    let blinded_secrets: Vec<_> = blinded_messages_to_sign
+        .iter()
+        .map(|bm| bm.blinded_secret)
+        .collect();
+
+    tx.add_blind_signatures(&blinded_secrets, &change_sigs, Some(quote_id.clone()))
+        .await?;
+
+    Ok((Some(change_sigs), tx))
+}
+
 /// Loads a melt quote and acquires exclusive locks on all related quotes.
 ///
 /// This function combines quote loading with defensive locking to prevent race conditions in BOLT12
@@ -633,6 +728,60 @@ pub async fn finalize_melt_quote(
     payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
     operation_id: Option<uuid::Uuid>,
 ) -> Result<Option<Vec<BlindSignature>>, Error> {
+    finalize_melt_quote_inner(
+        mint,
+        db,
+        pubsub,
+        quote,
+        total_spent,
+        payment_proof,
+        payment_lookup_id,
+        operation_id,
+        #[cfg(feature = "federation")]
+        None,
+    )
+    .await
+}
+
+#[cfg(feature = "federation")]
+#[allow(clippy::too_many_arguments)]
+pub async fn finalize_federation_melt_quote(
+    mint: &super::super::Mint,
+    db: &DynMintDatabase,
+    pubsub: &PubSubManager,
+    quote: &MeltQuote,
+    total_spent: Amount<CurrencyUnit>,
+    payment_proof: Option<String>,
+    payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
+    operation_id: Option<uuid::Uuid>,
+    federation_operation_id: FederationOperationId,
+) -> Result<Option<Vec<BlindSignature>>, Error> {
+    finalize_melt_quote_inner(
+        mint,
+        db,
+        pubsub,
+        quote,
+        total_spent,
+        payment_proof,
+        payment_lookup_id,
+        operation_id,
+        Some(federation_operation_id),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn finalize_melt_quote_inner(
+    mint: &super::super::Mint,
+    db: &DynMintDatabase,
+    pubsub: &PubSubManager,
+    quote: &MeltQuote,
+    total_spent: Amount<CurrencyUnit>,
+    payment_proof: Option<String>,
+    payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
+    operation_id: Option<uuid::Uuid>,
+    #[cfg(feature = "federation")] federation_operation_id: Option<FederationOperationId>,
+) -> Result<Option<Vec<BlindSignature>>, Error> {
     tracing::info!("Finalizing melt quote {}", quote.id);
 
     let total_spent = total_spent_for_quote_unit(&total_spent, &quote.unit)?;
@@ -748,7 +897,33 @@ pub async fn finalize_melt_quote(
         (proofs, quote)
     };
 
-    // Process change (if needed) - opens new transaction
+    // Process change (if needed) - opens new transaction.
+    #[cfg(feature = "federation")]
+    let (change_sigs, mut tx) = if let Some(federation_operation_id) = federation_operation_id {
+        process_federation_melt_change(
+            mint,
+            db,
+            &quote.id,
+            federation_operation_id,
+            melt_request_info.inputs_amount.clone(),
+            total_spent.clone(),
+            melt_request_info.inputs_fee.clone(),
+            melt_request_info.change_outputs.clone(),
+        )
+        .await?
+    } else {
+        process_melt_change(
+            mint,
+            db,
+            &quote.id,
+            melt_request_info.inputs_amount.clone(),
+            total_spent.clone(),
+            melt_request_info.inputs_fee.clone(),
+            melt_request_info.change_outputs.clone(),
+        )
+        .await?
+    };
+    #[cfg(not(feature = "federation"))]
     let (change_sigs, mut tx) = process_melt_change(
         mint,
         db,

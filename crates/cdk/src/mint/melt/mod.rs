@@ -5,6 +5,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cdk_common::database::DynMintDatabase;
+#[cfg(feature = "federation")]
+use cdk_common::federation::FederationOperationId;
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::mint::MeltPaymentRequest;
 use cdk_common::nut00::KnownMethod;
@@ -1148,5 +1150,67 @@ impl Mint {
             response,
             completion,
         })
+    }
+
+    /// Process a federation melt after the exact request has been accepted by consensus.
+    #[cfg(feature = "federation")]
+    #[instrument(skip_all)]
+    pub async fn melt_federation(
+        &self,
+        melt_request: &MeltRequest<QuoteId>,
+        federation_operation_id: FederationOperationId,
+    ) -> Result<MeltQuoteResponse<QuoteId>, Error> {
+        self.federation_config()
+            .ok_or(Error::Internal)?
+            .validate_melt_change_outputs(melt_request)?;
+
+        if let Some(outputs) = melt_request.outputs() {
+            let outputs_count = outputs.len();
+            if outputs_count > self.max_outputs {
+                tracing::warn!(
+                    "Federation melt request exceeds max outputs limit: {} > {}",
+                    outputs_count,
+                    self.max_outputs
+                );
+                return Err(Error::MaxOutputsExceeded {
+                    actual: outputs_count,
+                    max: self.max_outputs,
+                });
+            }
+        }
+
+        let verification = self.verify_federation_inputs(melt_request.inputs()).await?;
+        let quote_id = melt_request.quote().clone();
+        let quote = self
+            .localstore
+            .get_melt_quote(&quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        let init_saga = MeltSaga::new(
+            Arc::new(self.clone()),
+            self.localstore.clone(),
+            Arc::clone(&self.pubsub_manager),
+        );
+        let setup_saga = init_saga
+            .setup_melt(melt_request, verification, quote.payment_method.clone())
+            .await?;
+        let (setup_saga, settlement) = setup_saga.attempt_internal_settlement(melt_request).await?;
+
+        match setup_saga.make_payment(settlement).await? {
+            PaymentOutcome::Confirmed(payment_saga) => {
+                payment_saga
+                    .finalize_federation(federation_operation_id)
+                    .await
+            }
+            PaymentOutcome::Pending {
+                #[cfg(feature = "prometheus")]
+                    metrics: _,
+            } => {
+                let mut quote_clone = quote;
+                quote_clone.state = MeltQuoteState::Pending;
+                Ok(quote_clone.into_response(None))
+            }
+        }
     }
 }

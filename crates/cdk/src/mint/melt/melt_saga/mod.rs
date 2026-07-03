@@ -2,6 +2,8 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use cdk_common::database::DynMintDatabase;
+#[cfg(feature = "federation")]
+use cdk_common::federation::FederationOperationId;
 use cdk_common::mint::{MeltFinalizationData, MeltSagaState, Operation, Saga, SagaStateEnum};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
@@ -915,6 +917,117 @@ impl MeltSaga<SetupComplete> {
 }
 
 impl MeltSaga<PaymentConfirmed> {
+    async fn finalize_with_federation_operation(
+        &mut self,
+        #[cfg(feature = "federation")] federation_operation_id: Option<FederationOperationId>,
+    ) -> Result<MeltQuoteResponse<QuoteId>, Error> {
+        tracing::info!("TX2: Finalizing melt (mark spent + change)");
+
+        let total_spent: Amount<CurrencyUnit> = self.state_data.payment_result.total_spent.clone();
+        let total_spent =
+            shared::total_spent_for_quote_unit(&total_spent, &self.state_data.quote.unit).map_err(
+                |e| {
+                    tracing::error!("Failed to convert total_spent to quote unit: {:?}", e);
+                    Error::UnitMismatch
+                },
+            )?;
+
+        let payment_proof = self.state_data.payment_result.payment_proof.clone();
+        let payment_lookup_id = &self.state_data.payment_result.payment_lookup_id;
+
+        // Persist Finalizing state so crash recovery knows TX1 may have completed.
+        // This must happen before finalization commits TX2 internally.
+        {
+            let mut tx = self.db.begin_transaction().await?;
+            let finalization_data = MeltFinalizationData {
+                total_spent: total_spent.clone(),
+                payment_lookup_id: payment_lookup_id.clone(),
+                payment_proof: payment_proof.clone(),
+            };
+            tx.update_saga_with_finalization_data(
+                &self.operation_id,
+                SagaStateEnum::Melt(MeltSagaState::Finalizing),
+                Some(&finalization_data),
+            )
+            .await?;
+            tx.commit().await?;
+        }
+
+        #[cfg(feature = "federation")]
+        let change = if let Some(federation_operation_id) = federation_operation_id {
+            shared::finalize_federation_melt_quote(
+                &self.mint,
+                &self.db,
+                &self.pubsub,
+                &self.state_data.quote,
+                total_spent,
+                payment_proof.clone(),
+                payment_lookup_id,
+                Some(self.operation_id),
+                federation_operation_id,
+            )
+            .await
+        } else {
+            shared::finalize_melt_quote(
+                &self.mint,
+                &self.db,
+                &self.pubsub,
+                &self.state_data.quote,
+                total_spent,
+                payment_proof.clone(),
+                payment_lookup_id,
+                Some(self.operation_id),
+            )
+            .await
+        }
+        .map_err(|err| {
+            // Do NOT compensate here - payment was already confirmed as Paid
+            // Startup check will retry finalization on next recovery cycle
+            tracing::error!(
+                "Finalize failed for paid melt quote {} - will retry on startup: {}",
+                self.state_data.quote.id,
+                err
+            );
+            err
+        })?;
+
+        #[cfg(not(feature = "federation"))]
+        let change = shared::finalize_melt_quote(
+            &self.mint,
+            &self.db,
+            &self.pubsub,
+            &self.state_data.quote,
+            total_spent,
+            payment_proof.clone(),
+            payment_lookup_id,
+            Some(self.operation_id),
+        )
+        .await
+        .map_err(|err| {
+            // Do NOT compensate here - payment was already confirmed as Paid
+            // Startup check will retry finalization on next recovery cycle
+            tracing::error!(
+                "Finalize failed for paid melt quote {} - will retry on startup: {}",
+                self.state_data.quote.id,
+                err
+            );
+            err
+        })?;
+
+        self.compensations.lock().await.clear();
+
+        #[cfg(feature = "prometheus")]
+        if let Some(metrics) = self.metrics.take() {
+            metrics.record(true);
+        }
+
+        self.state_data.quote.payment_proof = payment_proof;
+        self.state_data.quote.state = MeltQuoteState::Paid;
+        let response = self.state_data.quote.clone().into_response(change);
+
+        Ok(response)
+    }
+
     /// Finalizes the melt by committing signatures and marking inputs as spent.
     ///
     /// This is the second and final transaction (TX2) in the saga and completes the melt.
@@ -959,78 +1072,21 @@ impl MeltSaga<PaymentConfirmed> {
     /// - `UnitMismatch`: Failed to convert payment amount to quote unit
     #[instrument(skip_all)]
     pub async fn finalize(mut self) -> Result<MeltQuoteResponse<QuoteId>, Error> {
-        tracing::info!("TX2: Finalizing melt (mark spent + change)");
-
-        let total_spent: Amount<CurrencyUnit> = self.state_data.payment_result.total_spent;
-        let total_spent =
-            shared::total_spent_for_quote_unit(&total_spent, &self.state_data.quote.unit).map_err(
-                |e| {
-                    tracing::error!("Failed to convert total_spent to quote unit: {:?}", e);
-                    Error::UnitMismatch
-                },
-            )?;
-
-        let payment_proof = self.state_data.payment_result.payment_proof.clone();
-        let payment_lookup_id = &self.state_data.payment_result.payment_lookup_id;
-
-        // Persist Finalizing state so crash recovery knows TX1 may have completed.
-        // This must happen before finalize_melt_quote which will commit TX1 internally.
-        {
-            let mut tx = self.db.begin_transaction().await?;
-            let finalization_data = MeltFinalizationData {
-                total_spent: total_spent.clone(),
-                payment_lookup_id: payment_lookup_id.clone(),
-                payment_proof: payment_proof.clone(),
-            };
-            tx.update_saga_with_finalization_data(
-                &self.operation_id,
-                SagaStateEnum::Melt(MeltSagaState::Finalizing),
-                Some(&finalization_data),
-            )
-            .await?;
-            tx.commit().await?;
-        }
-
-        // Delegate to the single shared finalization path which handles:
-        // - Core finalization (mark proofs spent, update quote to Paid)
-        // - Change signing
-        // - Operation recording (add_completed_operation)
-        // - Saga deletion
-        // - Melt request cleanup
-        let change = shared::finalize_melt_quote(
-            &self.mint,
-            &self.db,
-            &self.pubsub,
-            &self.state_data.quote,
-            total_spent,
-            payment_proof.clone(),
-            payment_lookup_id,
-            Some(self.operation_id),
+        self.finalize_with_federation_operation(
+            #[cfg(feature = "federation")]
+            None,
         )
         .await
-        .map_err(|err| {
-            // Do NOT compensate here - payment was already confirmed as Paid
-            // Startup check will retry finalization on next recovery cycle
-            tracing::error!(
-                "Finalize failed for paid melt quote {} - will retry on startup: {}",
-                self.state_data.quote.id,
-                err
-            );
-            err
-        })?;
+    }
 
-        self.compensations.lock().await.clear();
-
-        #[cfg(feature = "prometheus")]
-        if let Some(metrics) = self.metrics.take() {
-            metrics.record(true);
-        }
-
-        self.state_data.quote.payment_proof = payment_proof;
-        self.state_data.quote.state = MeltQuoteState::Paid;
-        let response = self.state_data.quote.into_response(change);
-
-        Ok(response)
+    #[cfg(feature = "federation")]
+    #[instrument(skip_all)]
+    pub async fn finalize_federation(
+        mut self,
+        federation_operation_id: FederationOperationId,
+    ) -> Result<MeltQuoteResponse<QuoteId>, Error> {
+        self.finalize_with_federation_operation(Some(federation_operation_id))
+            .await
     }
 }
 

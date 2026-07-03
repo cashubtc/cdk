@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: guard federated melt route</span>
+          <span class="value">feat: execute federated fake-wallet melts</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federated melt public gate</span>
+          <span class="value">Federated fake-wallet melt executor</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Consensus-backed melt executor</span>
+          <span class="value">Federated melt recovery and wallet bridge</span>
         </div>
       </aside>
     </header>
@@ -504,6 +504,10 @@
             <h3>Federated melt route gate ready</h3>
             <p>The public melt request path now detects federation member mode before entering the standalone saga, submits canonical melt operations to consensus, rejects non-v3 change outputs before journaling, and refuses to emit standalone change signatures while federation-aware finalization is still pending.</p>
           </article>
+          <article class="item">
+            <h3>Federated fake-wallet melt executor ready</h3>
+            <p>The public melt route now executes accepted federated fake-wallet melts, verifies aggregate BLS input proofs, finalizes paid quotes through the saga, and returns member BLS change shares from the accepted operation ID.</p>
+          </article>
         </div>
       </section>
 
@@ -578,6 +582,14 @@
             <h3>Melt standalone-signature leak blocked</h3>
             <p>Federation melt requests no longer flow silently into the standalone finalization path for change outputs; member mode now fails closed until the consensus-backed spend-table executor owns proof verification, settlement, and change-share generation.</p>
           </article>
+          <article class="item">
+            <h3>Aggregate melt proofs verified</h3>
+            <p>Federated melt inputs now verify against the aggregate v3/BLS federation keyset instead of local standalone keysets before the fake-wallet payment saga is allowed to finalize.</p>
+          </article>
+          <article class="item">
+            <h3>Federated melt change signs as shares</h3>
+            <p>Paid fake-wallet melts with overpaid inputs now derive change amounts, persist member-local blind signature shares, and expose those shares through the normal melt response shape for wallet aggregation.</p>
+          </article>
         </div>
       </section>
 
@@ -593,8 +605,8 @@
             <p>Mint issue, swap, and melt logic must be refactored carefully so standalone behavior remains unchanged.</p>
           </article>
           <article class="item">
-            <h3>Federated melt executor</h3>
-            <p>The melt gate records canonical operations, but full happy-path melting still needs consensus-owned proof verification, spend marking, fake-wallet settlement, pending retry handling, and change BLS share generation.</p>
+            <h3>Federated melt recovery</h3>
+            <p>Paid fake-wallet melts now execute in member mode, but pending and unknown payment recovery still need a federation-aware retry path that preserves the accepted operation ID for eventual change-share generation.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -772,10 +784,16 @@
               <td>Refactor melt proof verification, spend-table apply, fake-wallet settlement, pending retry, and change-share generation into a consensus-backed federated executor.</td>
             </tr>
             <tr>
+              <td>Federated fake-wallet melt executor</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --lib --features federation mint::federation` passed 15 tests, including aggregate BLS proof verification and non-v3 proof rejection. `cargo test -p cdk-axum --features federation custom_handlers` passed 21 tests, including paid fake-wallet melt finalization, no-change responses, change share generation, and non-v3 change rejection before consensus. `cargo test -p cdk --lib --features federation wallet::federation` passed 10 tests. cdk, cdk-axum, and cdk-mintd feature checks passed.</td>
+              <td>Add federation-aware pending recovery and wire the wallet member connector through real fake-wallet melt responses.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, quote-check, mint-submit, swap, and melt submit handlers are consensus-gated locally; mint members advertise aggregate keysets and return verified local share responses for mint/swap; wallets can aggregate mint, batch mint, swap, and melt change shares. Local fake-wallet member tests bridge real member mints to wallet aggregation for mint, batch mint, and swap. Full federated melt execution, restore/check-state federation routing, durable catch-up, and networked fake-wallet flows remain open.</td>
-              <td>Implement the federated melt executor and then add multi-member fake-wallet finalization tests.</td>
+              <td>Mint quote, quote-check, mint-submit, swap, and melt submit handlers are consensus-gated locally; mint members advertise aggregate keysets and return verified local share responses for mint/swap; public member melts can execute paid fake-wallet payments and return change shares. Local fake-wallet member tests bridge real member mints to wallet aggregation for mint, batch mint, and swap. Federated melt wallet fan-out, pending recovery, restore/check-state federation routing, durable catch-up, and networked fake-wallet flows remain open.</td>
+              <td>Add wallet-side real-member melt fan-out, pending recovery, and then restore/check-state federation routing.</td>
             </tr>
           </tbody>
         </table>
@@ -815,8 +833,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Consensus-backed melt executor</h3>
-            <p>Move federated melt proof verification, pending/spent marking, fake-wallet outgoing settlement, retry handling, and change BLS share generation behind the accepted consensus operation.</p>
+            <h3>Federated melt recovery and wallet bridge</h3>
+            <p>Carry accepted operation IDs through pending/unknown fake-wallet melt recovery and add a real-member wallet connector path that aggregates melt change shares from multiple federation members.</p>
           </article>
           <article class="item">
             <h3>Restore and check-state routing</h3>

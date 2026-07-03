@@ -7,17 +7,20 @@
 
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederationBlindSignatureShareSet, FederationConfig, FederationId, FederationMeltOperation,
-    FederationMintOperation, FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
-    FederationMintRequest, FederationOperation, FederationOperationEnvelope, FederationOperationId,
-    FederationSwapOperation, MemberConfigPrivate, MemberId,
+    FederationBlindSignatureShareSet, FederationConfig, FederationError, FederationId,
+    FederationMeltOperation, FederationMintOperation, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
+    FederationOperationEnvelope, FederationOperationId, FederationSwapOperation,
+    MemberConfigPrivate, MemberId,
 };
 use cdk_common::{
-    Amount, BatchMintRequest, BlindSignature, BlindedMessage, MeltRequest, MintQuoteRequest,
-    MintQuoteResponse, MintQuoteState, MintRequest, MintResponse, PaymentMethod, PublicKey,
-    QuoteId, RestoreRequest, SwapRequest, SwapResponse,
+    Amount, BatchMintRequest, BlindSignature, BlindedMessage, CurrencyUnit, MeltRequest,
+    MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest, MintResponse, PaymentMethod,
+    Proofs, ProofsMethods, PublicKey, QuoteId, RestoreRequest, SwapRequest, SwapResponse,
 };
 
+use super::verification::{Verification, MAX_PROOF_CONTENT_LEN};
+use super::Mint;
 use super::MintInput;
 
 /// Defines whether a mint runs as a standalone Cashu mint or as a federation member.
@@ -167,6 +170,45 @@ impl FederationRuntimeConfig {
         }
     }
 
+    /// Verify spent proofs against the federation aggregate BLS keysets.
+    pub fn verify_proofs(&self, proofs: &Proofs) -> Result<(), Error> {
+        for proof in proofs {
+            if proof.keyset_id.get_version() != cdk_common::nuts::KeySetVersion::Version02 {
+                return Err(FederationError::InvalidFederatedKeysetVersion {
+                    keyset_id: proof.keyset_id,
+                }
+                .into());
+            }
+
+            let keyset = self
+                .public_config
+                .keysets
+                .iter()
+                .find(|keyset| keyset.id == proof.keyset_id)
+                .ok_or(FederationError::UnknownFederatedKeyset {
+                    keyset_id: proof.keyset_id,
+                })?;
+            let aggregate_key = keyset.aggregate_keys.get(&proof.amount).ok_or(
+                FederationError::UnknownFederatedKeysetAmount {
+                    keyset_id: keyset.id,
+                    amount: proof.amount,
+                },
+            )?;
+
+            if proof.dleq.is_some() {
+                return Err(cdk_common::dhke::Error::TokenNotVerified.into());
+            }
+
+            cdk_common::dhke::verify_bls_message(
+                PublicKey::from(*aggregate_key),
+                proof.c,
+                proof.secret.as_bytes(),
+            )?;
+        }
+
+        Ok(())
+    }
+
     /// Build the consensus operation for signing mint outputs.
     pub fn mint_operation(&self, input: MintInput) -> Result<FederationOperationEnvelope, Error> {
         self.validate_output_keysets(input.outputs())?;
@@ -282,6 +324,71 @@ impl FederationRuntimeConfig {
     }
 }
 
+impl Mint {
+    /// Verify federated melt or swap inputs against aggregate BLS keysets.
+    pub(crate) async fn verify_federation_inputs(
+        &self,
+        inputs: &Proofs,
+    ) -> Result<Verification, Error> {
+        let inputs_count = inputs.len();
+        if inputs_count > self.max_inputs {
+            tracing::warn!(
+                "Federation request exceeds max inputs limit: {} > {}",
+                inputs_count,
+                self.max_inputs
+            );
+            return Err(Error::MaxInputsExceeded {
+                actual: inputs_count,
+                max: self.max_inputs,
+            });
+        }
+
+        for proof in inputs {
+            let secret_len = proof.secret.len();
+            if secret_len > MAX_PROOF_CONTENT_LEN {
+                tracing::warn!(
+                    "Proof secret exceeds max content length: {} > {}",
+                    secret_len,
+                    MAX_PROOF_CONTENT_LEN
+                );
+                return Err(Error::ProofContentTooLarge {
+                    actual: secret_len,
+                    max: MAX_PROOF_CONTENT_LEN,
+                });
+            }
+
+            if let Some(witness) = &proof.witness {
+                let witness_str = serde_json::to_string(witness)?;
+                let witness_len = witness_str.len();
+                if witness_len > MAX_PROOF_CONTENT_LEN {
+                    tracing::warn!(
+                        "Proof witness exceeds max content length: {} > {}",
+                        witness_len,
+                        MAX_PROOF_CONTENT_LEN
+                    );
+                    return Err(Error::ProofContentTooLarge {
+                        actual: witness_len,
+                        max: MAX_PROOF_CONTENT_LEN,
+                    });
+                }
+            }
+        }
+
+        Self::check_inputs_unique(inputs)?;
+        let unit = self.verify_inputs_keyset(inputs).await?;
+        if unit == CurrencyUnit::Auth {
+            return Err(Error::UnsupportedUnit);
+        }
+
+        let amount = inputs.total_amount()?.with_unit(unit);
+        self.federation_config()
+            .ok_or(Error::Internal)?
+            .verify_proofs(inputs)?;
+
+        Ok(Verification { amount })
+    }
+}
+
 fn mint_request_from_input(input: MintInput) -> FederationMintRequest {
     match input {
         MintInput::Single(request) => FederationMintRequest::Single(MintRequest {
@@ -316,10 +423,11 @@ mod tests {
     use cdk_common::nuts::nut00::KnownMethod;
     use cdk_common::nuts::nut01::{verify_blind_signature_share, BlsG1PublicKey, BlsSecretKey};
     use cdk_common::quote_id::QuoteId;
+    use cdk_common::secret::Secret;
     use cdk_common::{
         Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Id, MeltRequest,
         MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteRequest, MintQuoteResponse,
-        MintQuoteState, MintRequest, PaymentMethod, PublicKey, RestoreRequest, SecretKey,
+        MintQuoteState, MintRequest, PaymentMethod, Proof, PublicKey, RestoreRequest, SecretKey,
         SwapRequest,
     };
 
@@ -367,6 +475,20 @@ mod tests {
             Amount::from(1),
             keyset.id,
             PublicKey::from(BlsG1PublicKey::hash_to_curve(label)),
+        )
+    }
+
+    fn proof_for_runtime(runtime_config: &FederationRuntimeConfig, label: &str) -> Proof {
+        let keyset = &runtime_config.public_config().keysets[0];
+        let secret = Secret::new(format!("federated-proof-{label}"));
+        let aggregate_secret = BlsSecretKey::from_reduced_bytes(&[2; 32]);
+        let signature = BlsG1PublicKey::hash_to_curve(secret.as_bytes()).mul(&aggregate_secret);
+
+        Proof::new(
+            Amount::from(1),
+            keyset.id,
+            secret,
+            PublicKey::from(signature),
         )
     }
 
@@ -610,6 +732,45 @@ mod tests {
         ));
         assert!(matches!(
             runtime_config.melt_operation(melt),
+            Err(cdk_common::Error::Federation(
+                FederationError::InvalidFederatedKeysetVersion { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn runtime_config_verifies_aggregate_bls_proofs() {
+        let runtime_config = runtime_config();
+        let proof = proof_for_runtime(&runtime_config, "valid");
+
+        runtime_config
+            .verify_proofs(&vec![proof])
+            .expect("aggregate BLS proof should verify");
+    }
+
+    #[test]
+    fn runtime_config_rejects_invalid_aggregate_bls_proofs() {
+        let runtime_config = runtime_config();
+        let mut proof = proof_for_runtime(&runtime_config, "invalid");
+        proof.c = PublicKey::from(BlsG1PublicKey::hash_to_curve(b"not a valid signature"));
+
+        assert!(runtime_config.verify_proofs(&vec![proof]).is_err());
+    }
+
+    #[test]
+    fn runtime_config_rejects_non_v3_aggregate_proofs() {
+        let runtime_config = runtime_config();
+        let mut proof = proof_for_runtime(&runtime_config, "non-v3");
+        let keyset = &runtime_config.public_config().keysets[0];
+        proof.keyset_id = Id::v2_from_data(
+            &keyset.keys(),
+            &keyset.unit,
+            keyset.input_fee_ppk,
+            keyset.final_expiry,
+        );
+
+        assert!(matches!(
+            runtime_config.verify_proofs(&vec![proof]),
             Err(cdk_common::Error::Federation(
                 FederationError::InvalidFederatedKeysetVersion { .. }
             ))

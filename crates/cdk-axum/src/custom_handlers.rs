@@ -733,20 +733,14 @@ async fn process_federation_melt_request(
 
     let envelope = config.melt_operation(payload.clone())?;
     let mut consensus = consensus.lock().await;
-    consensus.submit_envelope(envelope)?;
+    let response = consensus.submit_envelope(envelope)?;
+    drop(consensus);
 
-    if payload
-        .outputs()
-        .as_ref()
-        .is_some_and(|outputs| !outputs.is_empty())
-    {
-        return Err(cdk::Error::Custom(
-            "federated melt change signing requires federation-aware finalization".to_string(),
-        ));
-    }
-
-    Err(cdk::Error::Custom(
-        "federated melt execution requires consensus-backed spend-table apply".to_string(),
+    Ok(Some(
+        state
+            .mint
+            .melt_federation(payload, response.operation_id)
+            .await?,
     ))
 }
 
@@ -949,10 +943,14 @@ mod tests {
     #[cfg(feature = "federation")]
     use cdk::nuts::nut01::{verify_blind_signature_share, BlsBlindSignatureShare};
     #[cfg(feature = "federation")]
+    use cdk::nuts::MeltQuoteState;
+    #[cfg(feature = "federation")]
     use cdk::nuts::SecretKey;
     use cdk::nuts::{BlindedMessage, CurrencyUnit, MintQuoteState, PaymentMethod};
     use cdk::types::{FeeReserve, QuoteTTL};
     use cdk::Amount;
+    #[cfg(feature = "federation")]
+    use cdk_fake_wallet::create_fake_invoice;
     use cdk_fake_wallet::FakeWallet;
 
     use super::*;
@@ -1055,6 +1053,10 @@ mod tests {
                 (
                     Amount::from(2),
                     vec![cdk::nuts::nut01::BlsSecretKey::from_reduced_bytes(&[3; 32])],
+                ),
+                (
+                    Amount::from(4),
+                    vec![cdk::nuts::nut01::BlsSecretKey::from_reduced_bytes(&[4; 32])],
                 ),
             ]),
         );
@@ -1293,6 +1295,53 @@ mod tests {
             ));
 
         BlindedMessage::new(Amount::ZERO, non_v3_keyset_id, blinded_secret)
+    }
+
+    #[cfg(feature = "federation")]
+    fn aggregate_secret_for_amount(amount: u64) -> cdk::nuts::nut01::BlsSecretKey {
+        let byte = match amount {
+            1 => 2,
+            2 => 3,
+            4 => 4,
+            _ => panic!("missing aggregate secret fixture for amount {amount}"),
+        };
+
+        cdk::nuts::nut01::BlsSecretKey::from_reduced_bytes(&[byte; 32])
+    }
+
+    #[cfg(feature = "federation")]
+    fn proof_for_amount(state: &MintState, amount: u64, label: &str) -> cdk::nuts::Proof {
+        let config = state.mint.federation_config().expect("federation config");
+        let keyset = &config.public_config().keysets[0];
+        let secret = cdk::secret::Secret::new(format!("federated-axum-proof-{label}"));
+        let signature = cdk::nuts::nut01::BlsG1PublicKey::hash_to_curve(secret.as_bytes())
+            .mul(&aggregate_secret_for_amount(amount));
+
+        cdk::nuts::Proof::new(
+            Amount::from(amount),
+            keyset.id,
+            secret,
+            cdk::nuts::PublicKey::from(signature),
+        )
+    }
+
+    #[cfg(feature = "federation")]
+    async fn create_federated_melt_quote(state: &MintState, amount_msat: u64) -> QuoteId {
+        let invoice = create_fake_invoice(amount_msat, "".to_string());
+        let response = state
+            .mint
+            .get_melt_quote(cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+                request: invoice,
+                unit: CurrencyUnit::Sat,
+                options: None,
+            }))
+            .await
+            .expect("melt quote");
+
+        match response {
+            MeltQuoteCreateResponse::Bolt11(response) => response.quote,
+            _ => panic!("expected bolt11 melt quote"),
+        }
     }
 
     async fn response_error_detail(response: Response) -> String {
@@ -1578,9 +1627,14 @@ mod tests {
     #[tokio::test]
     async fn process_melt_request_records_federation_melt_operation() {
         let state = create_federated_test_state().await;
-        let request = cdk::nuts::MeltRequest::new(QuoteId::new(), Vec::new(), None);
+        let quote_id = create_federated_melt_quote(&state, 1000).await;
+        let request = cdk::nuts::MeltRequest::new(
+            quote_id,
+            vec![proof_for_amount(&state, 2, "no-change")],
+            None,
+        );
 
-        let error = process_melt_request(
+        let response = process_melt_request(
             PreferHeader {
                 respond_async: false,
             },
@@ -1589,14 +1643,10 @@ mod tests {
             &request,
         )
         .await
-        .expect_err("federated melt executor is still a guarded stub");
+        .expect("federated fake-wallet melt should settle");
 
-        assert!(
-            error
-                .to_string()
-                .contains("consensus-backed spend-table apply"),
-            "unexpected error: {error}"
-        );
+        assert_eq!(response.state(), MeltQuoteState::Paid);
+        assert!(response.change().is_none());
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::Melt]
@@ -1605,15 +1655,25 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
-    async fn process_melt_request_rejects_federated_change_before_standalone_signing() {
+    async fn process_melt_request_returns_federated_change_shares() {
         let state = create_federated_test_state().await;
+        let quote_id = create_federated_melt_quote(&state, 1000).await;
+        let mut change_output = outputs_for_amount(&state, 2)
+            .into_iter()
+            .next()
+            .expect("change output");
+        change_output.amount = Amount::ZERO;
+        let blinded_secret = change_output
+            .blinded_secret
+            .as_bls_g1()
+            .expect("change output should be BLS");
         let request = cdk::nuts::MeltRequest::new(
-            QuoteId::new(),
-            Vec::new(),
-            Some(outputs_for_amount(&state, 1)),
+            quote_id,
+            vec![proof_for_amount(&state, 4, "with-change")],
+            Some(vec![change_output.clone()]),
         );
 
-        let error = process_melt_request(
+        let response = process_melt_request(
             PreferHeader {
                 respond_async: false,
             },
@@ -1622,11 +1682,30 @@ mod tests {
             &request,
         )
         .await
-        .expect_err("federated melt change signing is not wired yet");
+        .expect("federated fake-wallet melt should settle with change");
+        let change = response.change().expect("federated change share");
+        let signature = change.first().expect("one change share");
+        let config = state.mint.federation_config().expect("federation config");
+        let keyset = &config.public_config().keysets[0];
+        let public_share = keyset
+            .public_shares
+            .get(&config.member_id())
+            .expect("member public shares")
+            .get(&Amount::from(2))
+            .expect("amount public share");
+        let share = BlsBlindSignatureShare::new(
+            config.member_id().to_bls_signer_id(),
+            signature.c.as_bls_g1().expect("share should be BLS G1"),
+        );
 
+        assert_eq!(response.state(), MeltQuoteState::Paid);
+        assert_eq!(change.len(), 1);
+        assert_eq!(signature.amount, Amount::from(2));
+        assert_eq!(signature.keyset_id, change_output.keyset_id);
+        assert!(signature.dleq.is_none());
         assert!(
-            error.to_string().contains("federation-aware finalization"),
-            "unexpected error: {error}"
+            verify_blind_signature_share(&share, &blinded_secret, public_share)
+                .expect("share verification")
         );
         assert_eq!(
             federation_operation_kinds(&state).await,
