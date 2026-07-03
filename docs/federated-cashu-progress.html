@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fe6679ce private REST scaffold</span>
+          <span class="value">4d079f18 dummy consensus</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Dummy consensus engine</span>
+          <span class="value">Federated signatory share path</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Federated signatory share path</span>
+          <span class="value">Wire consensus into private REST</span>
         </div>
       </aside>
     </header>
@@ -452,6 +452,10 @@
             <h3>Private REST scaffold committed</h3>
             <p>Shared member-to-member REST payloads and a gated Axum router now cover peer status, operation submit, and journal catch-up endpoints without changing public wallet routes.</p>
           </article>
+          <article class="item">
+            <h3>Dummy consensus driver committed</h3>
+            <p>A deterministic local consensus boundary now validates federation IDs, appends accepted operations to the journal, handles duplicates/conflicts, returns peer status, and serves catch-up DTOs.</p>
+          </article>
         </div>
       </section>
 
@@ -485,6 +489,10 @@
           <article class="item">
             <h3>Private API isolated</h3>
             <p>Federation routes mount under a separate private path only when mintd loads a valid federation config.</p>
+          </article>
+          <article class="item">
+            <h3>Consensus boundary testable</h3>
+            <p>Operation ordering can be tested locally before replacing the decision source with peer quorum networking.</p>
           </article>
           <article class="item">
             <h3>Threshold math baseline</h3>
@@ -602,6 +610,12 @@
               <td>Wire these payloads into a deterministic dummy consensus driver backed by the journal.</td>
             </tr>
             <tr>
+              <td>Dummy consensus engine</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federation` passed 27 tests, including dummy consensus submit, duplicate, conflict, wrong-federation, status, status-update, and catch-up behavior. cdk, cdk-axum, and cdk-mintd federation checks passed.</td>
+              <td>Use accepted operations as the gate before requesting threshold BLS signature shares.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status pending">Pending</span></td>
               <td>Implementation not started.</td>
@@ -641,12 +655,12 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Dummy consensus engine</h3>
-            <p>Build a deterministic local consensus driver around the operation journal before introducing real peer quorum networking.</p>
-          </article>
-          <article class="item">
             <h3>Federated signatory share path</h3>
             <p>Use accepted operations to request threshold BLS signature shares only after an operation has entered the journal.</p>
+          </article>
+          <article class="item">
+            <h3>Wire consensus into private REST</h3>
+            <p>Attach a runtime consensus handle to federation member state so private REST endpoints can submit operations and serve catch-up from the local journal.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>
