@@ -687,6 +687,122 @@ impl InMemoryFederationConsensusNetwork {
     }
 }
 
+/// Operation-focused adapter between the pending consensus item queue and the
+/// deterministic multi-member simulator.
+///
+/// This is still an in-memory test/MVP adapter. Its purpose is to keep public
+/// submit paths, pending consensus item admission, and finalized operation
+/// delivery connected through one narrow surface before a real BFT backend is
+/// plugged in.
+#[derive(Debug, Clone)]
+pub struct InMemoryFederationConsensusAdapter {
+    local_member: MemberId,
+    queue: FederationConsensusItemQueue,
+    network: InMemoryFederationConsensusNetwork,
+}
+
+impl InMemoryFederationConsensusAdapter {
+    /// Create an adapter with an empty pending item queue.
+    pub fn new<I>(
+        federation_id: FederationId,
+        member_ids: I,
+        consensus_threshold: u16,
+        local_member: MemberId,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = MemberId>,
+    {
+        let network = InMemoryFederationConsensusNetwork::new(
+            federation_id,
+            member_ids,
+            consensus_threshold,
+        )?;
+        network.ensure_member(local_member)?;
+        Ok(Self {
+            local_member,
+            queue: FederationConsensusItemQueue::new(),
+            network,
+        })
+    }
+
+    /// Return the number of locally queued consensus items.
+    #[must_use]
+    pub fn queued_len(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// Return the number of proposals already dispatched to the simulator.
+    #[must_use]
+    pub fn network_pending_len(&self) -> usize {
+        self.network.pending_len()
+    }
+
+    /// Mark a simulated member online or offline.
+    pub fn set_online(&mut self, member_id: MemberId, online: bool) -> Result<()> {
+        self.network.set_online(member_id, online)
+    }
+
+    /// Queue one operation envelope for later backend dispatch.
+    pub fn submit_operation(
+        &mut self,
+        envelope: FederationOperationEnvelope,
+    ) -> Result<FederationConsensusItemAdmission> {
+        self.network.ensure_federation(envelope.federation_id)?;
+        envelope.ensure_admissible_size()?;
+        self.queue
+            .submit(FederationConsensusItem::operation(envelope))
+    }
+
+    /// Dispatch queued operation items to the simulator without finalizing them.
+    pub fn dispatch_queued_operations(&mut self, limit: usize) -> Result<usize> {
+        self.network.ensure_online(self.local_member)?;
+        let mut dispatched = 0;
+        for item in self.queue.drain_batch(limit) {
+            match item {
+                FederationConsensusItem::Operation(envelope) => {
+                    self.network.submit(self.local_member, envelope)?;
+                    dispatched += 1;
+                }
+                FederationConsensusItem::ModuleFact(_)
+                | FederationConsensusItem::SessionSignature(_)
+                | FederationConsensusItem::Default(_) => {}
+            }
+        }
+
+        Ok(dispatched)
+    }
+
+    /// Deliver every dispatched operation that can be finalized by quorum.
+    pub fn finalize_dispatched_operations(
+        &mut self,
+    ) -> Result<Vec<FederationSubmitOperationResponse>> {
+        self.network.deliver_all()
+    }
+
+    /// Dispatch queued operation items and then deliver every finalized result.
+    pub fn dispatch_and_finalize(
+        &mut self,
+        limit: usize,
+    ) -> Result<Vec<FederationSubmitOperationResponse>> {
+        self.dispatch_queued_operations(limit)?;
+        self.finalize_dispatched_operations()
+    }
+
+    /// Return one member's accepted operation IDs in order.
+    pub fn accepted_operation_ids(
+        &self,
+        member_id: MemberId,
+    ) -> Result<Vec<FederationOperationId>> {
+        self.network.accepted_operation_ids(member_id)
+    }
+
+    /// Return true when all simulated members agree on order and state digest.
+    #[must_use]
+    pub fn all_members_converged(&self) -> bool {
+        self.network.all_members_converged()
+    }
+}
+
 /// Deterministic local consensus driver used before real quorum networking.
 #[derive(Debug, Clone)]
 pub struct InMemoryFederationConsensus {
@@ -1386,6 +1502,121 @@ mod tests {
             .catch_up_member_from_peer(members[2], members[0])
             .expect("catch up member 3");
         assert!(network.all_members_converged());
+    }
+
+    #[test]
+    fn backend_adapter_dispatches_queued_operations_to_finalized_order() {
+        let federation_id = federation_id(13);
+        let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+        let mut adapter =
+            InMemoryFederationConsensusAdapter::new(federation_id, members, 2, members[0])
+                .expect("adapter");
+        let first_envelope = mint_envelope(
+            federation_id,
+            "quote-1",
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        let first = first_envelope.operation_id().expect("first operation id");
+        let second_envelope = mint_envelope(
+            federation_id,
+            "quote-2",
+            "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+        );
+        let second = second_envelope.operation_id().expect("second operation id");
+
+        assert_eq!(
+            adapter
+                .submit_operation(first_envelope.clone())
+                .expect("submit first"),
+            FederationConsensusItemAdmission::Accepted
+        );
+        assert_eq!(
+            adapter
+                .submit_operation(first_envelope)
+                .expect("duplicate first"),
+            FederationConsensusItemAdmission::DuplicateOperation
+        );
+        assert_eq!(
+            adapter
+                .submit_operation(second_envelope)
+                .expect("submit second"),
+            FederationConsensusItemAdmission::Accepted
+        );
+        assert_eq!(adapter.queued_len(), 2);
+
+        let responses = adapter
+            .dispatch_and_finalize(10)
+            .expect("dispatch and finalize");
+
+        assert_eq!(responses.len(), 2);
+        assert_eq!(adapter.queued_len(), 0);
+        assert_eq!(adapter.network_pending_len(), 0);
+        for member in members {
+            assert_eq!(
+                adapter
+                    .accepted_operation_ids(member)
+                    .expect("accepted ids"),
+                vec![first, second]
+            );
+        }
+        assert!(adapter.all_members_converged());
+    }
+
+    #[test]
+    fn backend_adapter_keeps_dispatched_operation_pending_without_quorum() {
+        let federation_id = federation_id(13);
+        let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+        let mut adapter =
+            InMemoryFederationConsensusAdapter::new(federation_id, members, 2, members[0])
+                .expect("adapter");
+        adapter
+            .set_online(members[1], false)
+            .expect("member 2 offline");
+        adapter
+            .set_online(members[2], false)
+            .expect("member 3 offline");
+        adapter
+            .submit_operation(mint_envelope(
+                federation_id,
+                "quote-1",
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            ))
+            .expect("submit");
+
+        assert_eq!(adapter.dispatch_queued_operations(10).expect("dispatch"), 1);
+        assert_eq!(adapter.queued_len(), 0);
+        assert_eq!(adapter.network_pending_len(), 1);
+        assert!(matches!(
+            adapter.finalize_dispatched_operations(),
+            Err(FederationError::ConsensusQuorumUnavailable {
+                reachable: 1,
+                required: 2
+            })
+        ));
+        assert_eq!(adapter.network_pending_len(), 1);
+    }
+
+    #[test]
+    fn backend_adapter_keeps_local_queue_when_proposer_is_offline() {
+        let federation_id = federation_id(13);
+        let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+        let mut adapter =
+            InMemoryFederationConsensusAdapter::new(federation_id, members, 2, members[0])
+                .expect("adapter");
+        adapter
+            .set_online(members[0], false)
+            .expect("local member offline");
+        adapter
+            .submit_operation(mint_envelope(
+                federation_id,
+                "quote-1",
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            ))
+            .expect("submit");
+
+        assert!(adapter.dispatch_queued_operations(10).is_err());
+        assert_eq!(adapter.queued_len(), 1);
+        assert_eq!(adapter.network_pending_len(), 0);
     }
 
     #[test]

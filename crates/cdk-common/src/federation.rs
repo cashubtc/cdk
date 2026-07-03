@@ -24,8 +24,9 @@ mod trusted_dealer;
 pub use self::consensus::{
     FederationConsensusDefaultItem, FederationConsensusEngine, FederationConsensusItem,
     FederationConsensusItemAdmission, FederationConsensusItemQueue, FederationConsensusModuleFact,
-    FederationConsensusRuntime, InMemoryFederationConsensus, InMemoryFederationConsensusNetwork,
-    FEDERATION_CONSENSUS_ITEM_VERSION, FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
+    FederationConsensusRuntime, InMemoryFederationConsensus, InMemoryFederationConsensusAdapter,
+    InMemoryFederationConsensusNetwork, FEDERATION_CONSENSUS_ITEM_VERSION,
+    FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
 };
 pub use self::journal::{
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
