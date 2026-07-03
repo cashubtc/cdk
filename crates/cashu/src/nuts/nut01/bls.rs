@@ -8,6 +8,7 @@ use bitcoin::hashes::Hash;
 use bls12_381::hash_to_curve::{ExpandMsgXmd, HashToCurve};
 use bls12_381::{pairing, G1Affine, G1Projective, G2Affine, G2Projective, Gt, Scalar};
 use group::Curve;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2_09::Sha256;
 
 use super::Error;
@@ -121,6 +122,21 @@ impl BlsG1PublicKey {
         self.point.to_compressed()
     }
 
+    /// Parse compressed G1 bytes from hex.
+    pub fn from_hex<S>(hex: S) -> Result<Self, Error>
+    where
+        S: AsRef<str>,
+    {
+        let bytes = crate::util::hex::decode(hex.as_ref())?;
+        Self::from_bytes(&bytes)
+    }
+
+    /// Return compressed G1 bytes as hex.
+    #[must_use]
+    pub fn to_hex(&self) -> String {
+        crate::util::hex::encode(self.to_bytes())
+    }
+
     /// Multiply this G1 point by a scalar.
     pub fn mul(&self, scalar: &BlsSecretKey) -> Self {
         Self {
@@ -131,6 +147,25 @@ impl BlsG1PublicKey {
     /// Return the affine point.
     pub fn point(&self) -> G1Affine {
         self.point
+    }
+}
+
+impl Serialize for BlsG1PublicKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for BlsG1PublicKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::from_hex(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -160,9 +195,43 @@ impl BlsG2PublicKey {
         self.point.to_compressed()
     }
 
+    /// Parse compressed G2 bytes from hex.
+    pub fn from_hex<S>(hex: S) -> Result<Self, Error>
+    where
+        S: AsRef<str>,
+    {
+        let bytes = crate::util::hex::decode(hex.as_ref())?;
+        Self::from_bytes(&bytes)
+    }
+
+    /// Return compressed G2 bytes as hex.
+    #[must_use]
+    pub fn to_hex(&self) -> String {
+        crate::util::hex::encode(self.to_bytes())
+    }
+
     /// Return the affine point.
     pub fn point(&self) -> G2Affine {
         self.point
+    }
+}
+
+impl Serialize for BlsG2PublicKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for BlsG2PublicKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::from_hex(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -294,6 +363,28 @@ impl BlsSecretKeyShare {
     }
 }
 
+#[cfg(feature = "federation")]
+impl Serialize for BlsSecretKeyShare {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&crate::util::hex::encode(self.to_bytes()))
+    }
+}
+
+#[cfg(feature = "federation")]
+impl<'de> Deserialize<'de> for BlsSecretKeyShare {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        let bytes = crate::util::hex::decode(&value).map_err(serde::de::Error::custom)?;
+        Self::from_bytes(&bytes).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Public threshold BLS key share for one federation member.
 #[cfg(feature = "federation")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -350,6 +441,28 @@ impl BlsPublicKeyShare {
     }
 }
 
+#[cfg(feature = "federation")]
+impl Serialize for BlsPublicKeyShare {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&crate::util::hex::encode(self.to_bytes()))
+    }
+}
+
+#[cfg(feature = "federation")]
+impl<'de> Deserialize<'de> for BlsPublicKeyShare {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        let bytes = crate::util::hex::decode(&value).map_err(serde::de::Error::custom)?;
+        Self::from_bytes(&bytes).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Blind signature share produced by one threshold BLS signer.
 #[cfg(feature = "federation")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -403,6 +516,28 @@ impl BlsBlindSignatureShare {
             signer_id,
             signature,
         })
+    }
+}
+
+#[cfg(feature = "federation")]
+impl Serialize for BlsBlindSignatureShare {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&crate::util::hex::encode(self.to_bytes()))
+    }
+}
+
+#[cfg(feature = "federation")]
+impl<'de> Deserialize<'de> for BlsBlindSignatureShare {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        let bytes = crate::util::hex::decode(&value).map_err(serde::de::Error::custom)?;
+        Self::from_bytes(&bytes).map_err(serde::de::Error::custom)
     }
 }
 
@@ -1035,6 +1170,36 @@ mod tests {
         );
         assert_eq!(
             BlsBlindSignatureShare::from_bytes(&signature_share.to_bytes()).expect("signature"),
+            signature_share
+        );
+        let g1_json = serde_json::to_string(&blinded_message).expect("g1 json");
+        let g2_json =
+            serde_json::to_string(&keyset.aggregate_public_key()).expect("aggregate key json");
+        let secret_share_json = serde_json::to_string(secret_share).expect("secret share json");
+        let public_share_json = serde_json::to_string(&public_share).expect("public share json");
+        let signature_share_json =
+            serde_json::to_string(&signature_share).expect("signature share json");
+        assert_eq!(
+            serde_json::from_str::<BlsG1PublicKey>(&g1_json).expect("g1 from json"),
+            blinded_message
+        );
+        assert_eq!(
+            serde_json::from_str::<BlsG2PublicKey>(&g2_json).expect("g2 from json"),
+            keyset.aggregate_public_key()
+        );
+        assert_eq!(
+            serde_json::from_str::<BlsSecretKeyShare>(&secret_share_json)
+                .expect("secret share from json"),
+            *secret_share
+        );
+        assert_eq!(
+            serde_json::from_str::<BlsPublicKeyShare>(&public_share_json)
+                .expect("public share from json"),
+            public_share
+        );
+        assert_eq!(
+            serde_json::from_str::<BlsBlindSignatureShare>(&signature_share_json)
+                .expect("signature share from json"),
             signature_share
         );
         assert!(matches!(
