@@ -1191,7 +1191,8 @@ impl Mint {
             Arc::new(self.clone()),
             self.localstore.clone(),
             Arc::clone(&self.pubsub_manager),
-        );
+        )
+        .with_federation_operation_id(federation_operation_id);
         let setup_saga = init_saga
             .setup_melt(melt_request, verification, quote.payment_method.clone())
             .await?;

@@ -949,9 +949,9 @@ mod tests {
     use cdk::nuts::{BlindedMessage, CurrencyUnit, MintQuoteState, PaymentMethod};
     use cdk::types::{FeeReserve, QuoteTTL};
     use cdk::Amount;
-    #[cfg(feature = "federation")]
-    use cdk_fake_wallet::create_fake_invoice;
     use cdk_fake_wallet::FakeWallet;
+    #[cfg(feature = "federation")]
+    use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 
     use super::*;
     use crate::cache::HttpCache;
@@ -1280,7 +1280,7 @@ mod tests {
     }
 
     #[cfg(feature = "federation")]
-    fn non_v3_change_output_for_state(state: &MintState) -> BlindedMessage {
+    fn non_v3_output_for_state(state: &MintState, amount: Amount, label: &[u8]) -> BlindedMessage {
         let config = state.mint.federation_config().expect("federation config");
         let keyset = &config.public_config().keysets[0];
         let non_v3_keyset_id = cdk::nuts::Id::v2_from_data(
@@ -1290,11 +1290,18 @@ mod tests {
             keyset.final_expiry,
         );
         let blinded_secret =
-            cdk::nuts::PublicKey::from(cdk::nuts::nut01::BlsG1PublicKey::hash_to_curve(
-                b"axum federated melt non-v3 change output",
-            ));
+            cdk::nuts::PublicKey::from(cdk::nuts::nut01::BlsG1PublicKey::hash_to_curve(label));
 
-        BlindedMessage::new(Amount::ZERO, non_v3_keyset_id, blinded_secret)
+        BlindedMessage::new(amount, non_v3_keyset_id, blinded_secret)
+    }
+
+    #[cfg(feature = "federation")]
+    fn non_v3_change_output_for_state(state: &MintState) -> BlindedMessage {
+        non_v3_output_for_state(
+            state,
+            Amount::ZERO,
+            b"axum federated melt non-v3 change output",
+        )
     }
 
     #[cfg(feature = "federation")]
@@ -1327,7 +1334,16 @@ mod tests {
 
     #[cfg(feature = "federation")]
     async fn create_federated_melt_quote(state: &MintState, amount_msat: u64) -> QuoteId {
-        let invoice = create_fake_invoice(amount_msat, "".to_string());
+        create_federated_melt_quote_with_description(state, amount_msat, "".to_string()).await
+    }
+
+    #[cfg(feature = "federation")]
+    async fn create_federated_melt_quote_with_description(
+        state: &MintState,
+        amount_msat: u64,
+        description: String,
+    ) -> QuoteId {
+        let invoice = create_fake_invoice(amount_msat, description);
         let response = state
             .mint
             .get_melt_quote(cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
@@ -1523,6 +1539,39 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn submit_batch_mint_rejects_non_v3_outputs_before_consensus() {
+        let state = create_federated_test_state().await;
+        let quote_id = create_paid_bolt11_quote(&state).await;
+        let batch_request = BatchMintRequest {
+            quotes: vec![quote_id],
+            quote_amounts: None,
+            outputs: vec![non_v3_output_for_state(
+                &state,
+                Amount::from(2),
+                b"axum federated mint non-v3 output",
+            )],
+            signatures: None,
+        };
+
+        let error =
+            submit_federation_mint_operation(&state, cdk::mint::MintInput::Batch(batch_request))
+                .await
+                .expect_err("non-v3 mint output should be rejected");
+
+        assert!(matches!(
+            error,
+            cdk::Error::Federation(
+                cdk::federation::FederationError::InvalidFederatedKeysetVersion { .. }
+            )
+        ));
+        assert!(
+            federation_operation_kinds(&state).await.is_empty(),
+            "invalid federated mint outputs must fail before consensus"
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn cache_post_batch_mint_returns_federation_signature_shares() {
         let state = create_federated_test_state().await;
         let quote_id = create_paid_bolt11_quote(&state).await;
@@ -1625,6 +1674,35 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn post_swap_rejects_non_v3_outputs_before_consensus() {
+        let state = create_federated_test_state().await;
+        let outputs = vec![non_v3_output_for_state(
+            &state,
+            Amount::from(2),
+            b"axum federated swap non-v3 output",
+        )];
+
+        let error = crate::router_handlers::post_swap(
+            AuthHeader::None,
+            State(state.clone()),
+            Json(cdk::nuts::SwapRequest::new(Vec::new(), outputs)),
+        )
+        .await
+        .expect_err("non-v3 swap output should be rejected");
+
+        let body = response_error_detail(error).await;
+        assert!(
+            body.contains("Cashu keyset v3"),
+            "error response should mention the v3 federation keyset requirement: {body}"
+        );
+        assert!(
+            federation_operation_kinds(&state).await.is_empty(),
+            "invalid federated swap outputs must fail before consensus"
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn process_melt_request_records_federation_melt_operation() {
         let state = create_federated_test_state().await;
         let quote_id = create_federated_melt_quote(&state, 1000).await;
@@ -1711,6 +1789,77 @@ mod tests {
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::Melt]
         );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn process_pending_melt_request_persists_federation_operation_id() {
+        let state = create_federated_test_state().await;
+        let fake_description = FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Pending,
+            check_payment_state: MeltQuoteState::Pending,
+            pay_err: false,
+            check_err: false,
+        };
+        let quote_id = create_federated_melt_quote_with_description(
+            &state,
+            1000,
+            serde_json::to_string(&fake_description).expect("fake invoice description"),
+        )
+        .await;
+        let mut change_output = outputs_for_amount(&state, 2)
+            .into_iter()
+            .next()
+            .expect("change output");
+        change_output.amount = Amount::ZERO;
+        let request = cdk::nuts::MeltRequest::new(
+            quote_id.clone(),
+            vec![proof_for_amount(&state, 4, "pending-with-change")],
+            Some(vec![change_output.clone()]),
+        );
+        let expected_operation_id = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .melt_operation(request.clone())
+            .expect("melt operation")
+            .operation_id()
+            .expect("operation id")
+            .to_string();
+
+        let response = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect("federated fake-wallet melt should remain pending");
+        let saga = state
+            .mint
+            .localstore()
+            .get_melt_saga_by_quote_id(&quote_id)
+            .await
+            .expect("saga query")
+            .expect("pending saga");
+
+        assert_eq!(response.state(), MeltQuoteState::Pending);
+        assert!(response.change().is_none());
+        assert_eq!(
+            saga.federation_operation_id.as_deref(),
+            Some(expected_operation_id.as_str())
+        );
+
+        let still_pending = state
+            .mint
+            .check_melt_quote(&quote_id)
+            .await
+            .expect("pending recovery check");
+
+        assert_eq!(still_pending.state(), MeltQuoteState::Pending);
+        assert!(still_pending.change().is_none());
     }
 
     #[cfg(feature = "federation")]

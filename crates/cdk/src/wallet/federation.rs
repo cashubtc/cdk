@@ -339,12 +339,9 @@ impl FederatedMintConnector {
 
     fn aggregate_melt_response(
         &self,
-        outputs: &[BlindedMessage],
+        outputs: Option<&[BlindedMessage]>,
         member_responses: &[(MemberId, MeltQuoteResponse<String>)],
     ) -> Result<MeltQuoteResponse<String>, Error> {
-        self.public_config
-            .validate_blinded_change_outputs(outputs)?;
-
         let (_, first_response) = member_responses.first().ok_or_else(|| {
             Error::InvalidMintResponse("missing federation melt responses".to_string())
         })?;
@@ -363,6 +360,15 @@ impl FederatedMintConnector {
             }
             return Ok(first_response.clone());
         };
+
+        let outputs = outputs.ok_or_else(|| {
+            Error::InvalidMintResponse(
+                "federation member returned melt change without requested change outputs"
+                    .to_string(),
+            )
+        })?;
+        self.public_config
+            .validate_blinded_change_outputs(outputs)?;
 
         if first_change.is_empty() {
             for (member_id, response) in member_responses {
@@ -539,11 +545,11 @@ impl MintConnector for FederatedMintConnector {
         method: &PaymentMethod,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteResponse<String>, Error> {
-        let Some(outputs) = request.outputs().clone() else {
-            return self.primary_connector()?.post_melt(method, request).await;
-        };
-        self.public_config
-            .validate_blinded_change_outputs(&outputs)?;
+        let outputs = request.outputs().clone();
+        if let Some(outputs) = &outputs {
+            self.public_config
+                .validate_blinded_change_outputs(outputs)?;
+        }
         self.validate_member_active_keysets().await?;
 
         let member_responses = self
@@ -553,7 +559,7 @@ impl MintConnector for FederatedMintConnector {
                 async move { connector.post_melt(&method, request).await }
             })
             .await?;
-        self.aggregate_melt_response(&outputs, &member_responses)
+        self.aggregate_melt_response(outputs.as_deref(), &member_responses)
     }
 
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error> {
@@ -801,18 +807,19 @@ mod tests {
         generate_trusted_dealer_configs, FederationError, FederationOperationId, MemberId,
         ThresholdParams, TrustedDealerConfigBundle, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
-    use cdk_common::mint::MintQuote;
+    use cdk_common::mint::{MeltPaymentRequest, MeltQuote, MintQuote};
     use cdk_common::mint_url::MintUrl;
     use cdk_common::nuts::nut01::{BlsG1PublicKey, BlsSecretKey};
     use cdk_common::nuts::nut02::KeySet;
     use cdk_common::payment::PaymentIdentifier;
     use cdk_common::util::unix_time;
     use cdk_common::{
-        Amount, BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteBolt11Response,
-        MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, PublicKey, QuoteId,
+        Amount, BlindSignature, BlindedMessage, Bolt11Invoice, CurrencyUnit, Id,
+        MeltQuoteBolt11Response, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse,
+        PublicKey, QuoteId,
     };
     use cdk_common::{MintQuoteRequest, MintQuoteResponse, MintResponse, SecretKey};
-    use cdk_fake_wallet::FakeWallet;
+    use cdk_fake_wallet::{create_fake_invoice, FakeWallet};
 
     use super::{FederatedMintConnector, FederationWalletConnector};
     use crate::dhke::verify_bls_blind_signature;
@@ -894,6 +901,13 @@ mod tests {
                             BlsSecretKey::from_reduced_bytes(&[5; 32]),
                         ],
                     ),
+                    (
+                        Amount::from(4),
+                        vec![
+                            BlsSecretKey::from_reduced_bytes(&[6; 32]),
+                            BlsSecretKey::from_reduced_bytes(&[7; 32]),
+                        ],
+                    ),
                 ]),
             )],
         )
@@ -951,6 +965,35 @@ mod tests {
                 output
             })
             .collect()
+    }
+
+    fn aggregate_secret_for_amount(amount: u64) -> BlsSecretKey {
+        let byte = match amount {
+            1 => 2,
+            2 => 4,
+            4 => 6,
+            _ => panic!("missing aggregate secret fixture for amount {amount}"),
+        };
+
+        BlsSecretKey::from_reduced_bytes(&[byte; 32])
+    }
+
+    fn proof_for_amount(
+        bundle: &TrustedDealerConfigBundle,
+        amount: u64,
+        label: &str,
+    ) -> crate::nuts::Proof {
+        let keyset = &bundle.public_config.keysets[0];
+        let secret = crate::secret::Secret::new(format!("federated-wallet-proof-{label}"));
+        let signature = BlsG1PublicKey::hash_to_curve(secret.as_bytes())
+            .mul(&aggregate_secret_for_amount(amount));
+
+        crate::nuts::Proof::new(
+            Amount::from(amount),
+            keyset.id,
+            secret,
+            PublicKey::from(signature),
+        )
     }
 
     fn share_response(
@@ -1027,6 +1070,20 @@ mod tests {
         })
     }
 
+    fn melt_response_without_change() -> MeltQuoteResponse<String> {
+        MeltQuoteResponse::Bolt11(MeltQuoteBolt11Response {
+            quote: "melt-quote".to_string(),
+            amount: Amount::from(1),
+            fee_reserve: Amount::ZERO,
+            state: MeltQuoteState::Paid,
+            expiry: 42,
+            payment_preimage: Some("payment-preimage".to_string()),
+            change: None,
+            request: Some("bolt11-invoice".to_string()),
+            unit: Some(CurrencyUnit::Sat),
+        })
+    }
+
     fn member_connectors_with_melt_change(
         bundle: &TrustedDealerConfigBundle,
         change_outputs: &[BlindedMessage],
@@ -1090,6 +1147,18 @@ mod tests {
             method: &PaymentMethod,
         ) -> Result<(), crate::Error> {
             if self.mint.get_mint_quote_method(quote).await? != *method {
+                return Err(crate::Error::InvalidPaymentMethod);
+            }
+
+            Ok(())
+        }
+
+        async fn validate_melt_quote_method(
+            &self,
+            quote: &QuoteId,
+            method: &PaymentMethod,
+        ) -> Result<(), crate::Error> {
+            if self.mint.get_melt_quote_method(quote).await? != *method {
                 return Err(crate::Error::InvalidPaymentMethod);
             }
 
@@ -1249,10 +1318,20 @@ mod tests {
 
         async fn post_melt(
             &self,
-            _method: &PaymentMethod,
-            _request: MeltRequest<String>,
+            method: &PaymentMethod,
+            request: MeltRequest<String>,
         ) -> Result<MeltQuoteResponse<String>, crate::Error> {
-            Err(Self::unsupported("post_melt"))
+            let request: MeltRequest<QuoteId> = request.try_into()?;
+            self.validate_melt_quote_method(request.quote_id(), method)
+                .await?;
+            let config = self.federation_config()?;
+            let operation_id = config.melt_operation(request.clone())?.operation_id()?;
+
+            Ok(self
+                .mint
+                .melt_federation(&request, operation_id)
+                .await?
+                .into())
         }
 
         async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, crate::Error> {
@@ -1359,15 +1438,58 @@ mod tests {
         tx.commit().await.expect("commit quote");
     }
 
-    async fn fake_wallet_member_connectors(
-        bundle: &TrustedDealerConfigBundle,
+    async fn add_unpaid_bolt11_melt_quote(
+        mint: &Mint,
         quote_id: &QuoteId,
-        quote_amount: u64,
+        invoice: &Bolt11Invoice,
+        amount: u64,
+        expiry: u64,
+    ) {
+        let amount = Amount::new(amount, CurrencyUnit::Sat);
+        let quote = MeltQuote::new(
+            Some(quote_id.clone()),
+            MeltPaymentRequest::Bolt11 {
+                bolt11: invoice.clone(),
+            },
+            CurrencyUnit::Sat,
+            amount,
+            Amount::new(1, CurrencyUnit::Sat),
+            expiry,
+            Some(PaymentIdentifier::PaymentHash(
+                *invoice.payment_hash().as_ref(),
+            )),
+            None,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            None,
+            None,
+        );
+        let localstore = mint.localstore();
+        let mut tx = localstore.begin_transaction().await.expect("begin tx");
+        tx.add_melt_quote(quote).await.expect("add melt quote");
+        tx.commit().await.expect("commit melt quote");
+    }
+
+    async fn fake_wallet_member_connectors_with_melt_quote(
+        bundle: &TrustedDealerConfigBundle,
+        mint_quote_id: &QuoteId,
+        mint_quote_amount: u64,
+        melt_quote_id: &QuoteId,
+        melt_invoice: &Bolt11Invoice,
+        melt_amount: u64,
     ) -> BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>> {
         let mut connectors = BTreeMap::new();
+        let melt_expiry = unix_time() + 10_000;
         for member_id in [member_id(1), member_id(2), member_id(3)] {
             let mint = create_fake_wallet_member_mint(bundle, member_id).await;
-            add_paid_bolt11_quote(&mint, quote_id, quote_amount).await;
+            add_paid_bolt11_quote(&mint, mint_quote_id, mint_quote_amount).await;
+            add_unpaid_bolt11_melt_quote(
+                &mint,
+                melt_quote_id,
+                melt_invoice,
+                melt_amount,
+                melt_expiry,
+            )
+            .await;
             connectors.insert(
                 member_id,
                 Arc::new(LocalFederatedMemberConnector::new(Arc::new(mint)))
@@ -1504,9 +1626,19 @@ mod tests {
         let bundle = threshold_bundle();
         let outputs = blinded_outputs(&bundle);
         let quote_id = QuoteId::new();
+        let melt_quote_id = QuoteId::new();
+        let melt_invoice = create_fake_invoice(1000, "".to_string());
         let connector = FederatedMintConnector::new(
             bundle.public_config.clone(),
-            fake_wallet_member_connectors(&bundle, &quote_id, 3).await,
+            fake_wallet_member_connectors_with_melt_quote(
+                &bundle,
+                &quote_id,
+                3,
+                &melt_quote_id,
+                &melt_invoice,
+                1,
+            )
+            .await,
         )
         .expect("federated mint connector");
 
@@ -1572,6 +1704,31 @@ mod tests {
                 signatures: swap_response.signatures,
             },
         );
+
+        let change_outputs = vec![blinded_change_outputs(&bundle)
+            .into_iter()
+            .next()
+            .expect("change output")];
+        let melt_response = connector
+            .post_melt(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                MeltRequest::new(
+                    melt_quote_id.to_string(),
+                    vec![proof_for_amount(&bundle, 4, "fake-wallet-melt")],
+                    Some(change_outputs.clone()),
+                ),
+            )
+            .await
+            .expect("melt response");
+        let change = melt_response.change().cloned().expect("change signatures");
+        let mut signed_change_output = change_outputs[0].clone();
+        signed_change_output.amount = Amount::from(2);
+        assert_eq!(melt_response.state(), MeltQuoteState::Paid);
+        assert_aggregate_response_valid(
+            &bundle,
+            &[signed_change_output],
+            &MintResponse { signatures: change },
+        );
     }
 
     #[tokio::test]
@@ -1624,6 +1781,45 @@ mod tests {
             &signed_change_outputs(&change_outputs),
             &MintResponse { signatures: change },
         );
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_fans_out_melt_without_change() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let mut connectors = BTreeMap::new();
+
+        let failing_member = MockMintConnector::new();
+        failing_member.set_active_keyset(advertised.clone());
+        failing_member
+            .set_post_melt_response(Err(crate::Error::Custom("member unavailable".to_string())));
+        connectors.insert(
+            member_id(1),
+            Arc::new(failing_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        for member_id in [member_id(2), member_id(3)] {
+            let connector = MockMintConnector::new();
+            connector.set_active_keyset(advertised.clone());
+            connector.set_post_melt_response(Ok(melt_response_without_change()));
+            connectors.insert(
+                member_id,
+                Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+            );
+        }
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let response = connector
+            .post_melt(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                MeltRequest::new("melt-quote".to_string(), Vec::new(), None),
+            )
+            .await
+            .expect("melt response");
+
+        assert_eq!(response.state(), MeltQuoteState::Paid);
+        assert!(response.change().is_none());
     }
 
     #[tokio::test]

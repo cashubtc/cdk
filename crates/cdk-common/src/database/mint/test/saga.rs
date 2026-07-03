@@ -19,6 +19,7 @@ where
         state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
         quote_id: None,
         finalization_data: None,
+        federation_operation_id: None,
         created_at: 1234567890,
         updated_at: 1234567890,
     };
@@ -51,6 +52,7 @@ where
         state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
         quote_id: None,
         finalization_data: None,
+        federation_operation_id: None,
         created_at: 1234567890,
         updated_at: 1234567890,
     };
@@ -77,6 +79,7 @@ where
         state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
         quote_id: None,
         finalization_data: None,
+        federation_operation_id: None,
         created_at: 1234567890,
         updated_at: 1234567890,
     };
@@ -111,6 +114,7 @@ where
         state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
         quote_id: Some("test_quote_id".to_string()),
         finalization_data: None,
+        federation_operation_id: None,
         created_at: 1234567890,
         updated_at: 1234567890,
     };
@@ -157,6 +161,7 @@ where
         state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
         quote_id: Some("test_quote_id".to_string()),
         finalization_data: None,
+        federation_operation_id: None,
         created_at: 1234567890,
         updated_at: 1234567890,
     };
@@ -212,6 +217,7 @@ where
         state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
         quote_id: None,
         finalization_data: None,
+        federation_operation_id: None,
         created_at: 1234567890,
         updated_at: 1234567890,
     };
@@ -246,6 +252,7 @@ where
         state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
         quote_id: None,
         finalization_data: None,
+        federation_operation_id: None,
         created_at: 1234567890,
         updated_at: 1234567890,
     };
@@ -256,6 +263,7 @@ where
         state: SagaStateEnum::Swap(SwapSagaState::Signed),
         quote_id: None,
         finalization_data: None,
+        federation_operation_id: None,
         created_at: 1234567891,
         updated_at: 1234567891,
     };
@@ -266,6 +274,7 @@ where
         state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
         quote_id: Some("test_quote_id".to_string()),
         finalization_data: None,
+        federation_operation_id: None,
         created_at: 1234567892,
         updated_at: 1234567892,
     };
@@ -301,6 +310,7 @@ where
         state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
         quote_id: Some(quote_id.to_string()),
         finalization_data: None,
+        federation_operation_id: None,
         created_at: 1234567890,
         updated_at: 1234567890,
     };
@@ -328,6 +338,7 @@ where
         state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
         quote_id: Some(quote_id.to_string()),
         finalization_data: None,
+        federation_operation_id: None,
         created_at: 1234567890,
         updated_at: 1234567890,
     };
@@ -337,6 +348,7 @@ where
         state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
         quote_id: Some(quote_id.to_string()),
         finalization_data: None,
+        federation_operation_id: None,
         created_at: 1234567891,
         updated_at: 1234567891,
     };
@@ -364,6 +376,7 @@ where
         state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
         quote_id: Some("melt_quote_1".to_string()),
         finalization_data: None,
+        federation_operation_id: None,
         created_at: 1234567890,
         updated_at: 1234567890,
     };
@@ -374,6 +387,7 @@ where
         state: SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
         quote_id: Some("melt_quote_2".to_string()),
         finalization_data: None,
+        federation_operation_id: None,
         created_at: 1234567891,
         updated_at: 1234567891,
     };
@@ -384,6 +398,7 @@ where
         state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
         quote_id: None,
         finalization_data: None,
+        federation_operation_id: None,
         created_at: 1234567892,
         updated_at: 1234567892,
     };
@@ -459,6 +474,7 @@ where
         state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
         quote_id: Some(quote_id.to_string()),
         finalization_data: None,
+        federation_operation_id: None,
         created_at: 1234567890,
         updated_at: 1234567890,
     };
@@ -485,6 +501,7 @@ where
         state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
         quote_id: None,
         finalization_data: None,
+        federation_operation_id: None,
         created_at: 1234567890,
         updated_at: 1234567890,
     };
@@ -511,6 +528,7 @@ where
             state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
             quote_id: None,
             finalization_data: None,
+            federation_operation_id: None,
             created_at: 1234567890,
             updated_at: 1234567890,
         },
@@ -520,6 +538,7 @@ where
             state: SagaStateEnum::Swap(SwapSagaState::Signed),
             quote_id: None,
             finalization_data: None,
+            federation_operation_id: None,
             created_at: 1234567891,
             updated_at: 1234567891,
         },
@@ -529,6 +548,7 @@ where
             state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
             quote_id: Some("quote1".to_string()),
             finalization_data: None,
+            federation_operation_id: None,
             created_at: 1234567892,
             updated_at: 1234567892,
         },
@@ -538,6 +558,7 @@ where
             state: SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
             quote_id: Some("quote2".to_string()),
             finalization_data: None,
+            federation_operation_id: None,
             created_at: 1234567893,
             updated_at: 1234567893,
         },

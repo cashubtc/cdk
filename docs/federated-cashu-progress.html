@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: execute federated fake-wallet melts</span>
+          <span class="value">feat: bridge federated melts and keysets</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federated fake-wallet melt executor</span>
+          <span class="value">Federated melt wallet bridge + keyset guard</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Federated melt recovery and wallet bridge</span>
+          <span class="value">Restore and check-state routing</span>
         </div>
       </aside>
     </header>
@@ -478,7 +478,7 @@
           </article>
           <article class="item">
             <h3>Federation keyset constraint committed</h3>
-            <p>Federation configs now derive v3 aggregate keyset IDs, startup rejects v1/v2 or non-BLS aggregate keysets, mint/swap/restore/change validators reject non-v3 outputs, and wallet-side member keyset checks reject mismatched advertisements.</p>
+            <p>Federation configs now derive v3 aggregate keyset IDs, mintd startup rejects v1/v2 or non-BLS aggregate keysets, mint/swap/restore/change validators reject non-v3 outputs before consensus signing, and wallet-side member keyset checks reject mismatched advertisements.</p>
           </article>
           <article class="item">
             <h3>Federated mint share responses committed</h3>
@@ -507,6 +507,10 @@
           <article class="item">
             <h3>Federated fake-wallet melt executor ready</h3>
             <p>The public melt route now executes accepted federated fake-wallet melts, verifies aggregate BLS input proofs, finalizes paid quotes through the saga, and returns member BLS change shares from the accepted operation ID.</p>
+          </article>
+          <article class="item">
+            <h3>Federated melt wallet bridge ready</h3>
+            <p>The wallet federation connector now fans out melts even without change outputs, aggregates real fake-wallet member melt change shares, and member melt sagas persist the federation operation ID for pending recovery.</p>
           </article>
         </div>
       </section>
@@ -552,7 +556,7 @@
           </article>
           <article class="item">
             <h3>Federation keyset boundary closed</h3>
-            <p>Federation mode now treats Cashu keyset v3, CDK `KeySetVersion::Version02`, as mandatory for aggregate BLS keysets while standalone non-federation keyset behavior remains untouched.</p>
+            <p>Federation mode now treats Cashu keyset v3, CDK `KeySetVersion::Version02`, as mandatory for aggregate BLS keysets. Targeted standalone tests still build and rotate legacy non-federation keysets unchanged.</p>
           </article>
           <article class="item">
             <h3>Standalone signer bypassed for federation minting</h3>
@@ -605,8 +609,8 @@
             <p>Mint issue, swap, and melt logic must be refactored carefully so standalone behavior remains unchanged.</p>
           </article>
           <article class="item">
-            <h3>Federated melt recovery</h3>
-            <p>Paid fake-wallet melts now execute in member mode, but pending and unknown payment recovery still need a federation-aware retry path that preserves the accepted operation ID for eventual change-share generation.</p>
+            <h3>Networked recovery semantics</h3>
+            <p>Local pending melt recovery preserves the federation operation ID, but multi-member payment observations, catch-up replay, and offline member recovery still need the private network consensus path.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -744,7 +748,7 @@
             <tr>
               <td>Federation keyset constraint</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-common --features federation federation` passed 36 tests. `cargo test -p cdk --lib --features federation federation` passed 11 tests. `cargo test -p cdk-axum --features federation custom_handlers` passed 15 tests, `cargo test -p cdk-axum custom_handlers` passed 12 tests, and `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" configure_federation` passed 3 startup tests. cdk-common and mintd feature checks plus `cargo fmt --all -- --check` passed.</td>
+              <td>`cargo test -p cdk-common --features federation federation` passed 38 tests, including v1/v2/non-BLS config rejection. `cargo test -p cdk --lib --features federation mint::federation` passed 15 tests covering mint/swap/restore/change non-v3 rejection. `cargo test -p cdk --lib --features federation wallet::federation` passed 11 wallet aggregation and advertisement checks. `cargo test -p cdk-axum --features federation custom_handlers` passed 24 tests, including mint/swap/change pre-consensus rejection. `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" configure_federation_rejects_non_v3_keysets` passed the startup guard. Standalone checks passed for legacy keyset builder behavior, keyset generation/rotation, and `cargo test -p cdk-axum custom_handlers`.</td>
               <td>Return local threshold BLS shares from accepted federation mint operations without falling back to standalone keysets.</td>
             </tr>
             <tr>
@@ -790,10 +794,16 @@
               <td>Add federation-aware pending recovery and wire the wallet member connector through real fake-wallet melt responses.</td>
             </tr>
             <tr>
+              <td>Federated melt wallet bridge</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --lib --features federation wallet::federation` passed 11 tests, including no-change melt fan-out past a failing primary and real fake-wallet member melt change aggregation. `cargo test -p cdk-axum --features federation custom_handlers` passed 24 tests, including pending melt saga federation operation ID persistence and non-v3 mint/swap/change rejection before consensus. `cargo test -p cdk-sqlite --features mint saga` passed 20 saga storage tests with the new nullable federation operation ID column.</td>
+              <td>Route restore and check-state through federation members, then connect catch-up/payment observation over the private member network.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, quote-check, mint-submit, swap, and melt submit handlers are consensus-gated locally; mint members advertise aggregate keysets and return verified local share responses for mint/swap; public member melts can execute paid fake-wallet payments and return change shares. Local fake-wallet member tests bridge real member mints to wallet aggregation for mint, batch mint, and swap. Federated melt wallet fan-out, pending recovery, restore/check-state federation routing, durable catch-up, and networked fake-wallet flows remain open.</td>
-              <td>Add wallet-side real-member melt fan-out, pending recovery, and then restore/check-state federation routing.</td>
+              <td>Mint quote, quote-check, mint-submit, swap, and melt submit handlers are consensus-gated locally; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change; wallets aggregate mint, batch mint, swap, and melt change shares from real fake-wallet member mints. Restore/check-state federation routing, durable catch-up, and networked fake-wallet flows remain open.</td>
+              <td>Add restore/check-state federation routing, then connect private REST catch-up and payment observations across members.</td>
             </tr>
           </tbody>
         </table>
@@ -833,12 +843,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Federated melt recovery and wallet bridge</h3>
-            <p>Carry accepted operation IDs through pending/unknown fake-wallet melt recovery and add a real-member wallet connector path that aggregates melt change shares from multiple federation members.</p>
-          </article>
-          <article class="item">
             <h3>Restore and check-state routing</h3>
-            <p>Define how federation wallets query state and restore signatures across members without accepting mismatched aggregate keysets or partial member views.</p>
+            <p>Make wallet restore and proof state checks query federation members without accepting mismatched aggregate keysets or partial member views.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>

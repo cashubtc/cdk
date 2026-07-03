@@ -1041,6 +1041,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_standalone_builder_honors_non_federation_keyset_versions() {
+        for (use_keyset_v2, expected_version) in [
+            (Some(false), KeySetVersion::Version00),
+            (Some(true), KeySetVersion::Version01),
+        ] {
+            let (builder, localstore) = builder_with_bolt11_processor().await;
+            let mint = builder
+                .with_keyset_v2(use_keyset_v2)
+                .build_with_seed(localstore, &seed())
+                .await
+                .expect("standalone mint should build with legacy keyset version");
+
+            let keysets = mint.pubkeys().keysets;
+            assert_eq!(keysets.len(), 1);
+            assert_eq!(keysets[0].id.get_version(), expected_version);
+        }
+    }
+
+    #[tokio::test]
     async fn test_with_auth_protected_endpoints_are_enforced_and_advertised() {
         let (builder, localstore) = builder_with_bolt11_processor().await;
         let auth_db = Arc::new(

@@ -2113,13 +2113,26 @@ mod tests {
                 vec![BlsSecretKey::from_reduced_bytes(&[2; 32])],
             )]),
         );
-        let mut bundle = generate_trusted_dealer_configs(
+        let bundle = generate_trusted_dealer_configs(
             ThresholdParams::with_bft_consensus(1, 1).expect("params"),
             vec![member],
             vec![keyset],
         )
         .expect("trusted dealer bundle");
-        let keyset = &mut bundle.public_config.keysets[0];
+        let private_config_json = serde_json::to_string(
+            bundle
+                .private_configs
+                .get(&member_id)
+                .expect("private config"),
+        )
+        .expect("private config json");
+
+        let mut v1_bundle = bundle.clone();
+        let keyset = &mut v1_bundle.public_config.keysets[0];
+        keyset.id = Id::v1_from_keys(&keyset.keys());
+
+        let mut v2_bundle = bundle.clone();
+        let keyset = &mut v2_bundle.public_config.keysets[0];
         keyset.id = Id::v2_from_data(
             &keyset.keys(),
             &keyset.unit,
@@ -2127,46 +2140,71 @@ mod tests {
             keyset.final_expiry,
         );
 
-        let public_config_path = temp_seed_file("fed_public_config_non_v3");
-        let private_config_path = temp_seed_file("fed_private_config_non_v3");
-        fs::write(
-            &public_config_path,
-            serde_json::to_string(&bundle.public_config).expect("public config json"),
-        )
-        .expect("public config should be written");
-        fs::write(
-            &private_config_path,
-            serde_json::to_string(
-                bundle
-                    .private_configs
-                    .get(&member_id)
-                    .expect("private config"),
-            )
-            .expect("private config json"),
-        )
-        .expect("private config should be written");
-
-        let settings = config::Settings {
-            federation: Some(config::Federation {
-                enabled: true,
-                public_config_path: Some(public_config_path.clone()),
-                private_config_path: Some(private_config_path.clone()),
-            }),
-            ..Default::default()
-        };
-        let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
-        let builder = MintBuilder::new(localstore);
-        let err = configure_federation(&settings, builder)
-            .expect_err("non-v3 federation keyset should fail startup");
-
-        assert!(
-            err.chain()
-                .any(|cause| cause.to_string().contains("Cashu keyset v3")),
-            "error chain should mention v3 aggregate keyset requirement: {err:?}"
+        let mut non_bls_json =
+            serde_json::to_value(&bundle.public_config).expect("public config json");
+        let aggregate_keys = non_bls_json
+            .get_mut("keysets")
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|keysets| keysets.get_mut(0))
+            .and_then(|keyset| keyset.get_mut("aggregate_keys"))
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("aggregate key map");
+        let amount_key = aggregate_keys.keys().next().expect("amount key").to_owned();
+        aggregate_keys.insert(
+            amount_key,
+            serde_json::Value::String(
+                "02a8cda4cf448bfce9a9e46e588c06ea1780fcb94e3bbdf3277f42995d403a8b0c".to_string(),
+            ),
         );
 
-        let _ = fs::remove_file(public_config_path);
-        let _ = fs::remove_file(private_config_path);
+        let cases = [
+            (
+                "v1",
+                serde_json::to_string(&v1_bundle.public_config).expect("v1 public config json"),
+                "Cashu keyset v3",
+            ),
+            (
+                "v2",
+                serde_json::to_string(&v2_bundle.public_config).expect("v2 public config json"),
+                "Cashu keyset v3",
+            ),
+            (
+                "non_bls",
+                serde_json::to_string(&non_bls_json).expect("non-bls public config json"),
+                "failed to parse public federation config JSON",
+            ),
+        ];
+
+        for (case, public_config_json, expected_error) in cases {
+            let public_config_path = temp_seed_file(&format!("fed_public_config_{case}"));
+            let private_config_path = temp_seed_file(&format!("fed_private_config_{case}"));
+            fs::write(&public_config_path, public_config_json)
+                .expect("public config should be written");
+            fs::write(&private_config_path, &private_config_json)
+                .expect("private config should be written");
+
+            let settings = config::Settings {
+                federation: Some(config::Federation {
+                    enabled: true,
+                    public_config_path: Some(public_config_path.clone()),
+                    private_config_path: Some(private_config_path.clone()),
+                }),
+                ..Default::default()
+            };
+            let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
+            let builder = MintBuilder::new(localstore);
+            let err = configure_federation(&settings, builder)
+                .expect_err("invalid federation keyset should fail startup");
+
+            assert!(
+                err.chain()
+                    .any(|cause| cause.to_string().contains(expected_error)),
+                "error chain for {case} should mention {expected_error}: {err:?}"
+            );
+
+            let _ = fs::remove_file(public_config_path);
+            let _ = fs::remove_file(private_config_path);
+        }
     }
 
     #[cfg(all(feature = "fakewallet", feature = "sqlite"))]

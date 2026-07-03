@@ -244,6 +244,8 @@ pub struct Saga {
     pub quote_id: Option<String>,
     /// Exact payment result for resuming melt finalization after TX1 commits.
     pub finalization_data: Option<MeltFinalizationData>,
+    /// Federation operation ID that authorized this saga, when running as a federation member.
+    pub federation_operation_id: Option<String>,
     /// Unix timestamp when saga was created
     pub created_at: u64,
     /// Unix timestamp when saga was last updated
@@ -317,6 +319,7 @@ impl Saga {
             state: SagaStateEnum::Swap(state),
             quote_id: None,
             finalization_data: None,
+            federation_operation_id: None,
             created_at: now,
             updated_at: now,
         }
@@ -337,6 +340,7 @@ impl Saga {
             state: SagaStateEnum::Melt(state),
             quote_id: Some(quote_id),
             finalization_data: None,
+            federation_operation_id: None,
             created_at: now,
             updated_at: now,
         }

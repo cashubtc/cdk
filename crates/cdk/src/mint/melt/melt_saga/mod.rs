@@ -139,6 +139,9 @@ pub struct MeltSaga<S> {
     /// Tracks melt metrics through the saga lifecycle.
     #[cfg(feature = "prometheus")]
     metrics: Option<MintMetricGuard>,
+    /// Federation operation ID that authorized this melt, when running as a federation member.
+    #[cfg(feature = "federation")]
+    federation_operation_id: Option<FederationOperationId>,
     /// State-specific data
     state_data: S,
 }
@@ -158,8 +161,20 @@ impl MeltSaga<Initial> {
             operation_id,
             #[cfg(feature = "prometheus")]
             metrics,
+            #[cfg(feature = "federation")]
+            federation_operation_id: None,
             state_data: Initial { operation_id },
         }
+    }
+
+    /// Attach the accepted federation operation ID before setup persists saga state.
+    #[cfg(feature = "federation")]
+    pub fn with_federation_operation_id(
+        mut self,
+        federation_operation_id: FederationOperationId,
+    ) -> Self {
+        self.federation_operation_id = Some(federation_operation_id);
+        self
     }
 
     /// Sets up the melt by atomically verifying and reserving inputs/outputs.
@@ -391,7 +406,19 @@ impl MeltSaga<Initial> {
             MeltSagaState::SetupComplete,
             quote.id.to_string(),
         );
+        #[cfg(feature = "federation")]
+        {
+            let mut saga = saga;
+            saga.federation_operation_id = self
+                .federation_operation_id
+                .map(|operation_id| operation_id.to_string());
+            if let Err(err) = tx.add_saga(&saga).await {
+                tx.rollback().await?;
+                return Err(err.into());
+            }
+        }
 
+        #[cfg(not(feature = "federation"))]
         if let Err(err) = tx.add_saga(&saga).await {
             tx.rollback().await?;
             return Err(err.into());
@@ -430,6 +457,8 @@ impl MeltSaga<Initial> {
             operation_id: self.operation_id,
             #[cfg(feature = "prometheus")]
             metrics: self.metrics,
+            #[cfg(feature = "federation")]
+            federation_operation_id: self.federation_operation_id,
             state_data: SetupComplete {
                 quote: quote.inner(),
             },
@@ -660,6 +689,8 @@ impl MeltSaga<SetupComplete> {
             operation_id: self.operation_id,
             #[cfg(feature = "prometheus")]
             metrics: self.metrics,
+            #[cfg(feature = "federation")]
+            federation_operation_id: self.federation_operation_id,
             state_data: PaymentConfirmed {
                 quote: self.state_data.quote,
                 payment_result,

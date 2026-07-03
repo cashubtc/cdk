@@ -22,6 +22,7 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
             state,
             quote_id,
             finalization_data,
+            federation_operation_id,
             created_at,
             updated_at
         ) = row
@@ -60,6 +61,18 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
             _ => None,
         };
 
+    let federation_operation_id = match &federation_operation_id {
+        Column::Text(s) => {
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.clone())
+            }
+        }
+        Column::Null => None,
+        _ => None,
+    };
+
     let created_at: u64 = column_as_number!(created_at);
     let updated_at: u64 = column_as_number!(updated_at);
 
@@ -69,6 +82,7 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
         state,
         quote_id,
         finalization_data,
+        federation_operation_id,
         created_at,
         updated_at,
     })
@@ -93,6 +107,7 @@ where
                 state,
                 quote_id,
                 finalization_data,
+                federation_operation_id,
                 created_at,
                 updated_at
             FROM
@@ -115,9 +130,9 @@ where
         query(
             r#"
             INSERT INTO saga_state
-            (operation_id, operation_kind, state, quote_id, finalization_data, created_at, updated_at)
+            (operation_id, operation_kind, state, quote_id, finalization_data, federation_operation_id, created_at, updated_at)
             VALUES
-            (:operation_id, :operation_kind, :state, :quote_id, :finalization_data, :created_at, :updated_at)
+            (:operation_id, :operation_kind, :state, :quote_id, :finalization_data, :federation_operation_id, :created_at, :updated_at)
             "#,
         )?
         .bind("operation_id", saga.operation_id.to_string())
@@ -131,6 +146,10 @@ where
                 .map(serde_json::to_string)
                 .transpose()
                 .map_err(|e| Error::Internal(format!("Failed to serialize melt finalization data: {e}")))?,
+        )
+        .bind(
+            "federation_operation_id",
+            saga.federation_operation_id.as_deref(),
         )
         .bind("created_at", saga.created_at as i64)
         .bind("updated_at", current_time as i64)
@@ -235,6 +254,7 @@ where
                 state,
                 quote_id,
                 finalization_data,
+                federation_operation_id,
                 created_at,
                 updated_at
             FROM
@@ -269,6 +289,7 @@ where
                 state,
                 quote_id,
                 finalization_data,
+                federation_operation_id,
                 created_at,
                 updated_at
             FROM

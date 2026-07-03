@@ -3,6 +3,8 @@
 //! This module contains functions used by both startup recovery and on-demand quote checking
 //! to process melt saga outcomes consistently.
 
+#[cfg(feature = "federation")]
+use cdk_common::federation::FederationOperationId;
 use cdk_common::mint::{MeltFinalizationData, MeltQuote, MeltSagaState, Saga, SagaStateEnum};
 use cdk_common::nuts::MeltQuoteState;
 use cdk_common::payment::MakePaymentResponse;
@@ -77,8 +79,43 @@ pub(crate) async fn process_melt_saga_outcome(
             .await?;
             tx.commit().await?;
 
-            // finalize_melt_quote handles the rest of the atomic cleanup:
-            // operation recording, saga deletion, and melt request cleanup.
+            // Finalization handles the rest of the atomic cleanup:
+            // operation recording, saga deletion, melt request cleanup, and
+            // federation share generation when the saga was consensus-authorized.
+            #[cfg(feature = "federation")]
+            if let Some(federation_operation_id) = saga
+                .federation_operation_id
+                .as_deref()
+                .map(str::parse::<FederationOperationId>)
+                .transpose()?
+            {
+                super::melt::shared::finalize_federation_melt_quote(
+                    mint,
+                    db,
+                    pubsub,
+                    quote,
+                    total_spent,
+                    payment_response.payment_proof.clone(),
+                    &payment_response.payment_lookup_id,
+                    Some(saga.operation_id),
+                    federation_operation_id,
+                )
+                .await?;
+            } else {
+                super::melt::shared::finalize_melt_quote(
+                    mint,
+                    db,
+                    pubsub,
+                    quote,
+                    total_spent,
+                    payment_response.payment_proof.clone(),
+                    &payment_response.payment_lookup_id,
+                    Some(saga.operation_id),
+                )
+                .await?;
+            }
+
+            #[cfg(not(feature = "federation"))]
             super::melt::shared::finalize_melt_quote(
                 mint,
                 db,
@@ -330,6 +367,7 @@ mod tests {
             state: SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
             created_at: 0,
             finalization_data: None,
+            federation_operation_id: None,
             updated_at: 0,
         };
         let payment_response = MakePaymentResponse {

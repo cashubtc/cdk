@@ -97,11 +97,43 @@ impl Mint {
         payment_proof: Option<String>,
         payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
         operation_id: uuid::Uuid,
+        federation_operation_id: Option<&str>,
     ) -> Result<(), Error> {
         tracing::info!("Finalizing paid melt quote {} during startup", quote.id);
+        #[cfg(not(feature = "federation"))]
+        let _ = federation_operation_id;
 
         // Use shared finalization — handles operation recording and saga
         // deletion atomically
+        #[cfg(feature = "federation")]
+        if let Some(federation_operation_id) = federation_operation_id {
+            super::melt::shared::finalize_federation_melt_quote(
+                self,
+                &self.localstore,
+                &self.pubsub_manager,
+                quote,
+                total_spent,
+                payment_proof,
+                payment_lookup_id,
+                Some(operation_id),
+                federation_operation_id.parse()?,
+            )
+            .await?;
+        } else {
+            super::melt::shared::finalize_melt_quote(
+                self,
+                &self.localstore,
+                &self.pubsub_manager,
+                quote,
+                total_spent,
+                payment_proof,
+                payment_lookup_id,
+                Some(operation_id),
+            )
+            .await?;
+        }
+
+        #[cfg(not(feature = "federation"))]
         super::melt::shared::finalize_melt_quote(
             self,
             &self.localstore,
@@ -482,6 +514,7 @@ impl Mint {
                                     payment_proof.clone(),
                                     &payment_lookup_id,
                                     saga.operation_id,
+                                    saga.federation_operation_id.as_deref(),
                                 )
                                 .await
                             {
@@ -538,6 +571,7 @@ impl Mint {
                                         None, // No preimage for internal settlement
                                         &payment_lookup_id,
                                         saga.operation_id,
+                                        saga.federation_operation_id.as_deref(),
                                     )
                                     .await
                                 {
