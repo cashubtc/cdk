@@ -20,6 +20,8 @@ mod auth;
 pub mod cache;
 mod custom_handlers;
 mod custom_router;
+#[cfg(feature = "federation")]
+mod federation;
 mod router_handlers;
 mod ws;
 
@@ -110,6 +112,11 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/restore", post(post_restore));
 
     let mut mint_router = Router::new().nest("/v1", v1_router);
+
+    #[cfg(feature = "federation")]
+    if state.mint.federation_config().is_some() {
+        mint_router = mint_router.nest("/federation/v1", federation::create_federation_router());
+    }
 
     #[cfg(feature = "info-page")]
     if enable_info_page {

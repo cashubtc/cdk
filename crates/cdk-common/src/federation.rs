@@ -18,6 +18,7 @@ mod trusted_dealer;
 
 mod journal;
 mod operation;
+mod transport;
 
 pub use self::journal::{
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
@@ -29,6 +30,11 @@ pub use self::operation::{
     FederationOperation, FederationOperationConflictKey, FederationOperationEnvelope,
     FederationOperationId, FederationOperationKind, FederationRestoreOperation,
     FederationSwapOperation, FEDERATION_OPERATION_VERSION,
+};
+pub use self::transport::{
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
+    FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    FEDERATION_REST_API_VERSION,
 };
 pub use self::trusted_dealer::{
     generate_trusted_dealer_configs, TrustedDealerConfigBundle, TrustedDealerKeysetSpec,
