@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">296e2c93 operation encoding</span>
+          <span class="value">0271a1cb journal scaffold</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Consensus journal scaffold</span>
+          <span class="value">Private REST transport scaffold</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Private REST transport scaffold</span>
+          <span class="value">Dummy consensus engine</span>
         </div>
       </aside>
     </header>
@@ -444,6 +444,10 @@
             <h3>Canonical operation encoding committed</h3>
             <p>Mint quote, mint, melt quote, melt, swap, restore, and payment-observation requests now have versioned federation envelopes, deterministic operation IDs, and quote-scoped conflict keys.</p>
           </article>
+          <article class="item">
+            <h3>Consensus journal scaffold committed</h3>
+            <p>An in-memory journal now deduplicates operation retransmits, rejects quote-scoped conflicts, records monotonic order indices, tracks local application status, and exposes catch-up ranges.</p>
+          </article>
         </div>
       </section>
 
@@ -469,6 +473,10 @@
           <article class="item">
             <h3>Mix-and-match guardrail started</h3>
             <p>The same mint quote cannot be paired with different blinded output sets without producing a conflict before any future federation member signs.</p>
+          </article>
+          <article class="item">
+            <h3>Catch-up shape defined</h3>
+            <p>Members can request journal entries from a missed index and verify order continuity through a chained digest.</p>
           </article>
           <article class="item">
             <h3>Threshold math baseline</h3>
@@ -574,6 +582,12 @@
               <td>Persist ordered operation IDs, conflict keys, and state digests in a consensus journal scaffold.</td>
             </tr>
             <tr>
+              <td>Consensus journal scaffold</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federation` passed 20 tests, including duplicate submit, quote conflict rejection, status updates, digest round-trips, and catch-up ranges. Shared crate and cdk federation checks passed.</td>
+              <td>Add private REST request/response types and member-auth transport routes around journal catch-up and operation submission.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status pending">Pending</span></td>
               <td>Implementation not started.</td>
@@ -613,12 +627,12 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Consensus journal scaffold</h3>
-            <p>Add an append-only journal abstraction for accepted operation order, conflict keys, operation status, and state digests.</p>
+            <h3>Private REST transport scaffold</h3>
+            <p>Define member-only request/response payloads for operation submit, journal catch-up, peer status, and order digest checks.</p>
           </article>
           <article class="item">
-            <h3>Private REST transport scaffold</h3>
-            <p>Expose member-only routes for submitting operations, exchanging acknowledgements, and asking peers for missed journal entries.</p>
+            <h3>Dummy consensus engine</h3>
+            <p>Build a deterministic local consensus driver around the operation journal before introducing real peer quorum networking.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>
