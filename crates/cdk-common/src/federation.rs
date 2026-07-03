@@ -16,6 +16,15 @@ use thiserror::Error;
 
 mod trusted_dealer;
 
+mod operation;
+
+pub use self::operation::{
+    FederationMeltOperation, FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation,
+    FederationMintOperation, FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
+    FederationOperation, FederationOperationConflictKey, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationKind, FederationRestoreOperation,
+    FederationSwapOperation, FEDERATION_OPERATION_VERSION,
+};
 pub use self::trusted_dealer::{
     generate_trusted_dealer_configs, TrustedDealerConfigBundle, TrustedDealerKeysetSpec,
     TrustedDealerMember,
@@ -38,6 +47,14 @@ pub enum FederationError {
     /// A federation ID must be exactly 32 bytes.
     #[error("Invalid federation id size: expected={expected}, found={found}")]
     InvalidFederationIdSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
+    /// A federation operation ID must be exactly 32 bytes.
+    #[error("Invalid federation operation id size: expected={expected}, found={found}")]
+    InvalidOperationIdSize {
         /// Expected byte length.
         expected: usize,
         /// Actual byte length.
@@ -235,6 +252,9 @@ pub enum FederationError {
     /// NUT-02 keyset ID error.
     #[error(transparent)]
     Nut02(#[from] crate::nuts::nut02::Error),
+    /// Canonical operation encoding error.
+    #[error("Federation canonical encoding failed: {0}")]
+    CanonicalEncoding(#[from] serde_json::Error),
 }
 
 /// Stable identifier for a federation roster.
