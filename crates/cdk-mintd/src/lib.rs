@@ -65,11 +65,31 @@ use tracing_subscriber::EnvFilter;
 pub mod cli;
 pub mod config;
 pub mod env_vars;
+#[cfg(feature = "federation")]
+mod federation_setup;
 pub mod setup;
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 const DEFAULT_BATCH_MINT_SIZE: u64 = 100;
 const REQUEST_BODY_LIMIT_BYTES: usize = 1_048_576;
+
+/// Run a one-shot CLI subcommand, returning true when no mint daemon should be started.
+pub fn run_cli_command(args: &CLIArgs) -> Result<bool> {
+    #[cfg(feature = "federation")]
+    if let Some(command) = &args.command {
+        match command {
+            cli::CliCommand::Federation(federation) => match &federation.command {
+                cli::FederationCommand::TrustedDealer(args) => {
+                    federation_setup::run_trusted_dealer_command(args)?;
+                }
+            },
+        }
+
+        return Ok(true);
+    }
+
+    Ok(false)
+}
 
 fn extract_supported_payment_methods(mint_info: &cdk::nuts::MintInfo) -> Vec<String> {
     let mut seen = HashSet::new();

@@ -15,11 +15,15 @@ fn main() -> Result<()> {
 
     rt.block_on(async {
         let args = CLIArgs::parse();
+        if cdk_mintd::run_cli_command(&args)? {
+            return Ok(());
+        }
+
         let work_dir = get_work_directory(&args).await?;
         let settings = load_settings_from_args(&work_dir, &args)?;
 
         #[cfg(feature = "sqlcipher")]
-        let password = Some(CLIArgs::parse().password);
+        let password = Some(args.password.clone());
 
         #[cfg(not(feature = "sqlcipher"))]
         let password = None;
