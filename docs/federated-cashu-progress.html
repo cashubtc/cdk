@@ -328,7 +328,7 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">5f15d9d1 threshold BLS serde</span>
+          <span class="value">4a92d826 federation config types</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
@@ -428,6 +428,10 @@
             <h3>Threshold BLS serde committed</h3>
             <p>G1/G2 public points and threshold share types now round-trip through canonical hex JSON encodings for configs and REST payloads.</p>
           </article>
+          <article class="item">
+            <h3>Federation config types committed</h3>
+            <p>Shared roster IDs, member identity keys, aggregate keysets, public-share validation, and private-share checks were committed in 4a92d826.</p>
+          </article>
         </div>
       </section>
 
@@ -524,6 +528,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cashu --features federation threshold_bls` passed 6 tests with JSON round-trips.</td>
               <td>Use these encodings in federation config and REST payloads.</td>
+            </tr>
+            <tr>
+              <td>Federation config</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federation`, `cargo check -p cdk-common --lib`, `cargo check -p cdk-common --features federation --lib`, and `cargo check -p cdk --lib --features federation` passed.</td>
+              <td>Generate these configs from a trusted-dealer setup helper.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
