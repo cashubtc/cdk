@@ -1,18 +1,22 @@
 use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use cdk::amount::SplitTarget;
+use cdk::cdk_database::{Error as DatabaseError, WalletDatabase};
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, PaymentMethod, State};
-use cdk::wallet::{FederatedMintConnector, HttpClient, MintConnector, Wallet, WalletBuilder};
+use cdk::wallet::{
+    FederatedMintConnector, HttpClient, MeltOutcome, MintConnector, Wallet, WalletBuilder,
+};
 use cdk::{Amount, Error};
 use cdk_common::federation::{FederationConfig, MemberId};
-use cdk_fake_wallet::create_fake_invoice;
+use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 
-use crate::cli::FederationSmokeOperationsArgs;
+use crate::cli::{FederationSmokeOperationsArgs, FederationSmokeScenario};
 
 pub(crate) async fn run_smoke_operations_command(
     args: &FederationSmokeOperationsArgs,
@@ -31,37 +35,65 @@ pub(crate) async fn run_smoke_operations_command(
             .context("federated wallet connector")?;
     let connector = Arc::new(federation_connector);
     let seed = [7u8; 64];
-    let wallet = smoke_wallet(&public_config, unit.clone(), seed, connector.clone()).await?;
 
-    let quote = wallet
-        .mint_quote(
-            PaymentMethod::BOLT11,
-            Some(Amount::from(args.mint_amount)),
-            None,
-            None,
-        )
-        .await
-        .context("create federation mint quote")?;
-    wait_for_mint_quote_paid(
-        &member_connectors,
-        &quote.id,
-        args.quote_retries,
-        Duration::from_millis(args.quote_sleep_ms),
-    )
-    .await?;
-
-    let minted = wallet
-        .mint(&quote.id, SplitTarget::default(), None)
-        .await
-        .context("mint through federation connector")?;
-    let minted_amount = minted.total_amount()?;
-    if minted_amount != Amount::from(args.mint_amount) {
-        bail!(
-            "federation smoke minted {}, expected {}",
-            minted_amount,
-            args.mint_amount
-        );
+    match args.scenario {
+        FederationSmokeScenario::Standard => {
+            run_standard_smoke(
+                args,
+                &public_config,
+                unit,
+                &member_connectors,
+                connector,
+                seed,
+            )
+            .await
+        }
+        FederationSmokeScenario::PendingMeltStart => {
+            let wallet_db = args
+                .wallet_db
+                .as_deref()
+                .context("--wallet-db is required for pending-melt-start")?;
+            run_pending_melt_start(
+                args,
+                &public_config,
+                unit,
+                &member_connectors,
+                connector,
+                seed,
+                wallet_db,
+            )
+            .await
+        }
+        FederationSmokeScenario::PendingMeltFinish => {
+            let wallet_db = args
+                .wallet_db
+                .as_deref()
+                .context("--wallet-db is required for pending-melt-finish")?;
+            run_pending_melt_finish(
+                args,
+                &public_config,
+                unit,
+                &member_connectors,
+                connector,
+                seed,
+                wallet_db,
+            )
+            .await
+        }
     }
+}
+
+async fn run_standard_smoke(
+    args: &FederationSmokeOperationsArgs,
+    public_config: &FederationConfig,
+    unit: CurrencyUnit,
+    member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+    connector: Arc<FederatedMintConnector>,
+    seed: [u8; 64],
+) -> Result<()> {
+    let wallet = smoke_wallet(public_config, unit.clone(), seed, connector.clone(), None).await?;
+
+    let minted_amount = mint_smoke_funds(&wallet, member_connectors, args).await?;
 
     let proofs_before_swap = wallet
         .get_unspent_proofs()
@@ -108,7 +140,7 @@ pub(crate) async fn run_smoke_operations_command(
         .await
         .context("create federation melt quote")?;
     wait_for_melt_quote_visible(
-        &member_connectors,
+        member_connectors,
         &melt_quote.id,
         args.quote_retries,
         Duration::from_millis(args.quote_sleep_ms),
@@ -129,7 +161,7 @@ pub(crate) async fn run_smoke_operations_command(
         );
     }
 
-    let restored_wallet = smoke_wallet(&public_config, unit, seed, connector).await?;
+    let restored_wallet = smoke_wallet(public_config, unit, seed, connector, None).await?;
     let restored = restored_wallet.restore().await.context("restore wallet")?;
     if restored.unspent == Amount::ZERO
         && restored.spent == Amount::ZERO
@@ -150,6 +182,166 @@ pub(crate) async fn run_smoke_operations_command(
     );
 
     Ok(())
+}
+
+async fn run_pending_melt_start(
+    args: &FederationSmokeOperationsArgs,
+    public_config: &FederationConfig,
+    unit: CurrencyUnit,
+    member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+    connector: Arc<FederatedMintConnector>,
+    seed: [u8; 64],
+    wallet_db: &Path,
+) -> Result<()> {
+    let wallet = smoke_wallet(public_config, unit, seed, connector, Some(wallet_db)).await?;
+    let minted_amount = mint_smoke_funds(&wallet, member_connectors, args).await?;
+
+    let fake_description = FakeInvoiceDescription {
+        pay_invoice_state: MeltQuoteState::Pending,
+        check_payment_state: MeltQuoteState::Paid,
+        pay_err: false,
+        check_err: false,
+    };
+    let melt_invoice = create_fake_invoice(
+        1000,
+        serde_json::to_string(&fake_description).context("serialize fake invoice description")?,
+    );
+    let melt_quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, melt_invoice, None, None)
+        .await
+        .context("create pending federation melt quote")?;
+    wait_for_melt_quote_visible(
+        member_connectors,
+        &melt_quote.id,
+        args.quote_retries,
+        Duration::from_millis(args.quote_sleep_ms),
+    )
+    .await?;
+
+    let prepared = wallet
+        .prepare_melt(&melt_quote.id, HashMap::new())
+        .await
+        .context("prepare pending federation melt")?;
+    let operation_id = prepared.operation_id();
+    match prepared
+        .confirm_prefer_async()
+        .await
+        .context("start pending federation melt")?
+    {
+        MeltOutcome::Pending(_) => {}
+        MeltOutcome::Paid(finalized) => {
+            bail!(
+                "pending federation melt finalized immediately in state {}, expected pending",
+                finalized.state()
+            );
+        }
+    }
+
+    let pending_quotes = wallet
+        .get_pending_melt_quotes()
+        .await
+        .context("load pending melt quotes")?;
+    if !pending_quotes.iter().any(|quote| quote.id == melt_quote.id) {
+        bail!(
+            "pending federation melt quote {} was not persisted in wallet db",
+            melt_quote.id
+        );
+    }
+
+    println!(
+        "federation pending melt smoke started: minted={} quote={} operation={}",
+        minted_amount, melt_quote.id, operation_id
+    );
+
+    Ok(())
+}
+
+async fn run_pending_melt_finish(
+    args: &FederationSmokeOperationsArgs,
+    public_config: &FederationConfig,
+    unit: CurrencyUnit,
+    member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+    connector: Arc<FederatedMintConnector>,
+    seed: [u8; 64],
+    wallet_db: &Path,
+) -> Result<()> {
+    let wallet = smoke_wallet(public_config, unit, seed, connector, Some(wallet_db)).await?;
+    let pending_quotes = wallet
+        .get_pending_melt_quotes()
+        .await
+        .context("load pending melt quotes before recovery")?;
+    let quote_id = pending_quotes
+        .first()
+        .map(|quote| quote.id.clone())
+        .context("pending-melt-finish found no pending melt quotes in wallet db")?;
+
+    let finalized = wallet
+        .finalize_pending_melts()
+        .await
+        .context("finalize pending federation melt")?;
+    let paid = finalized
+        .iter()
+        .find(|melt| melt.quote_id() == quote_id && melt.state() == MeltQuoteState::Paid)
+        .context("pending federation melt did not finalize as paid")?;
+
+    wait_for_melt_quote_state(
+        member_connectors,
+        &quote_id,
+        MeltQuoteState::Paid,
+        args.quote_retries,
+        Duration::from_millis(args.quote_sleep_ms),
+    )
+    .await?;
+
+    println!(
+        "federation pending melt smoke finalized: quote={} amount={} fee={} change={}",
+        paid.quote_id(),
+        paid.amount(),
+        paid.fee_paid(),
+        paid.change()
+            .and_then(|proofs| proofs.total_amount().ok())
+            .unwrap_or(Amount::ZERO)
+    );
+
+    Ok(())
+}
+
+async fn mint_smoke_funds(
+    wallet: &Wallet,
+    member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+    args: &FederationSmokeOperationsArgs,
+) -> Result<Amount> {
+    let quote = wallet
+        .mint_quote(
+            PaymentMethod::BOLT11,
+            Some(Amount::from(args.mint_amount)),
+            None,
+            None,
+        )
+        .await
+        .context("create federation mint quote")?;
+    wait_for_mint_quote_paid(
+        member_connectors,
+        &quote.id,
+        args.quote_retries,
+        Duration::from_millis(args.quote_sleep_ms),
+    )
+    .await?;
+
+    let minted = wallet
+        .mint(&quote.id, SplitTarget::default(), None)
+        .await
+        .context("mint through federation connector")?;
+    let minted_amount = minted.total_amount()?;
+    if minted_amount != Amount::from(args.mint_amount) {
+        bail!(
+            "federation smoke minted {}, expected {}",
+            minted_amount,
+            args.mint_amount
+        );
+    }
+
+    Ok(minted_amount)
 }
 
 fn member_connectors(
@@ -173,13 +365,20 @@ async fn smoke_wallet(
     unit: CurrencyUnit,
     seed: [u8; 64],
     connector: Arc<FederatedMintConnector>,
+    wallet_db: Option<&Path>,
 ) -> Result<Wallet, Error> {
     let primary_member = public_config
         .members
         .values()
         .next()
         .ok_or_else(|| Error::Custom("empty federation roster".to_string()))?;
-    let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await?);
+    let localstore: Arc<dyn WalletDatabase<DatabaseError> + Send + Sync> = match wallet_db {
+        Some(path) => {
+            let path = path.to_string_lossy().to_string();
+            Arc::new(cdk_sqlite::WalletSqliteDatabase::new(path.as_str()).await?)
+        }
+        None => Arc::new(cdk_sqlite::wallet::memory::empty().await?),
+    };
 
     WalletBuilder::new()
         .mint_url(primary_member.public_mint_url.clone())
@@ -266,6 +465,54 @@ async fn wait_for_melt_quote_visible(
     bail!(
         "federation smoke melt quote {} was not visible on every member after {} attempts",
         quote_id,
+        retries
+    )
+}
+
+async fn wait_for_melt_quote_state(
+    member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+    quote_id: &str,
+    expected_state: MeltQuoteState,
+    retries: u16,
+    sleep: Duration,
+) -> Result<()> {
+    for _ in 0..retries {
+        let mut all_expected = true;
+        for (member_id, connector) in member_connectors {
+            match connector
+                .get_melt_quote_status(PaymentMethod::BOLT11, quote_id)
+                .await
+            {
+                Ok(status) if status.state() == expected_state => {}
+                Ok(status) => {
+                    all_expected = false;
+                    tracing::debug!(
+                        member_id = %member_id,
+                        state = ?status.state(),
+                        expected_state = %expected_state,
+                        "federation smoke melt quote is not in expected state"
+                    );
+                }
+                Err(err) => {
+                    all_expected = false;
+                    tracing::debug!(
+                        member_id = %member_id,
+                        "federation smoke melt quote status unavailable: {}",
+                        err
+                    );
+                }
+            }
+        }
+        if all_expected {
+            return Ok(());
+        }
+        tokio::time::sleep(sleep).await;
+    }
+
+    bail!(
+        "federation smoke melt quote {} was not {} on every member after {} attempts",
+        quote_id,
+        expected_state,
         retries
     )
 }

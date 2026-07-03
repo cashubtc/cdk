@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 #[cfg(feature = "federation")]
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(about = "A cashu mint written in rust", author = env!("CARGO_PKG_AUTHORS"), version = env!("CARGO_PKG_VERSION"))]
@@ -129,12 +129,29 @@ pub struct FederationSmokeOperationsArgs {
     /// Amount to mint before swap and melt checks.
     #[arg(long, default_value_t = 4)]
     pub mint_amount: u64,
+    /// Smoke scenario to run.
+    #[arg(long, value_enum, default_value_t = FederationSmokeScenario::Standard)]
+    pub scenario: FederationSmokeScenario,
+    /// Wallet SQLite database path for resumable smoke scenarios.
+    #[arg(long)]
+    pub wallet_db: Option<PathBuf>,
     /// Number of mint quote status attempts before failing.
     #[arg(long, default_value_t = 100)]
     pub quote_retries: u16,
     /// Delay between quote status attempts.
     #[arg(long, default_value_t = 50)]
     pub quote_sleep_ms: u64,
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet", feature = "sqlite"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum FederationSmokeScenario {
+    /// Run the ordinary mint, swap, melt, restore smoke.
+    Standard,
+    /// Mint funds and leave a melt pending in the wallet database.
+    PendingMeltStart,
+    /// Resume and finalize the pending melt stored in the wallet database.
+    PendingMeltFinish,
 }
 
 #[cfg(feature = "federation")]
@@ -229,6 +246,10 @@ mod tests {
             "federation-public.json",
             "--mint-amount",
             "8",
+            "--scenario",
+            "pending-melt-start",
+            "--wallet-db",
+            "wallet.sqlite",
         ])
         .expect("smoke operations command parses");
 
@@ -240,6 +261,8 @@ mod tests {
         };
         assert_eq!(smoke.public_config, PathBuf::from("federation-public.json"));
         assert_eq!(smoke.mint_amount, 8);
+        assert_eq!(smoke.scenario, FederationSmokeScenario::PendingMeltStart);
+        assert_eq!(smoke.wallet_db, Some(PathBuf::from("wallet.sqlite")));
     }
 
     #[test]
