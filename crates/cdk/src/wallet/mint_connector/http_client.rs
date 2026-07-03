@@ -797,7 +797,7 @@ where
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_audit_pubkey(&self) -> Result<super::AuditPubkeyResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "audit", "pubkey"])?;
-        self.transport.http_get(url, None).await
+        self.transport_http_get(url, None).await
     }
 
     /// Get latest transparency log checkpoint [NUT-XX]
@@ -805,7 +805,7 @@ where
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn get_audit_checkpoint(&self) -> Result<super::AuditCheckpointResponse, Error> {
         let url = self.mint_url.join_paths(&["v1", "audit", "checkpoint"])?;
-        self.transport.http_get(url, None).await
+        self.transport_http_get(url, None).await
     }
 
     /// Get transparency log consistency proof [NUT-XX]
@@ -820,7 +820,7 @@ where
             .mint_url
             .join_paths(&["v1", "audit", "proof", "consistency"])?;
         url.set_query(Some(&format!("first={first}&second={second}")));
-        self.transport.http_get(url, None).await
+        self.transport_http_get(url, None).await
     }
 
     /// Get raw transparency log entries [NUT-XX]
@@ -833,7 +833,7 @@ where
     ) -> Result<super::AuditEntriesResponse, Error> {
         let mut url = self.mint_url.join_paths(&["v1", "audit", "entries"])?;
         url.set_query(Some(&format!("start={start}&end={end}")));
-        self.transport.http_get(url, None).await
+        self.transport_http_get(url, None).await
     }
 
     /// Spendable check [NUT-07]
