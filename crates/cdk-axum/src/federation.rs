@@ -18,7 +18,7 @@ use cdk::federation::{
     FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::instrument;
 
@@ -33,6 +33,7 @@ static FEDERATION_REST_SEQUENCE_SEED: AtomicU64 = AtomicU64::new(0);
 pub(crate) fn create_federation_router() -> Router<MintState> {
     Router::new()
         .route("/status", post(post_status))
+        .route("/local-status", post(post_local_status))
         .route("/operations", post(post_operation))
         .route("/journal", post(post_journal))
 }
@@ -123,6 +124,27 @@ async fn post_status(
 }
 
 #[instrument(skip_all)]
+async fn post_local_status(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationPeerStatusRequest>>,
+) -> Result<Json<FederationLocalStatusResponse>, Response> {
+    let verified =
+        verify_federation_request(&state, &payload, FederationRestMessageKind::Status).await?;
+    state
+        .persist_federation_sequence(verified.sender, verified.sequence)
+        .await
+        .map_err(cdk_error_response)?;
+    let consensus = federation_consensus(&state)?;
+    let consensus = consensus.lock().await;
+    let peer_status = consensus.peer_status();
+    let sync_status = state.federation_sync_status().await.unwrap_or_default();
+    Ok(Json(FederationLocalStatusResponse::new(
+        peer_status,
+        sync_status,
+    )))
+}
+
+#[instrument(skip_all)]
 async fn post_operation(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationSubmitOperationRequest>>,
@@ -203,6 +225,27 @@ where
 struct VerifiedFederationRequest {
     sender: cdk::federation::MemberId,
     sequence: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct FederationLocalStatusResponse {
+    pub(crate) version: u16,
+    pub(crate) peer_status: FederationPeerStatus,
+    pub(crate) sync_state: String,
+    pub(crate) sync_ready: bool,
+    pub(crate) sync_message: String,
+}
+
+impl FederationLocalStatusResponse {
+    fn new(peer_status: FederationPeerStatus, sync_status: crate::FederationSyncStatus) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            peer_status,
+            sync_state: sync_status.state_name().to_string(),
+            sync_ready: sync_status.is_ready(),
+            sync_message: sync_status.not_ready_message(),
+        }
+    }
 }
 
 fn federation_runtime_config(
@@ -867,6 +910,23 @@ mod tests {
             private_config,
         )
         .expect("signed operation request")
+    }
+
+    fn signed_status_request(
+        public_config: &FederationConfig,
+        private_config: &MemberConfigPrivate,
+        receiver: MemberId,
+        sequence: u64,
+    ) -> FederationSignedRequest<FederationPeerStatusRequest> {
+        FederationSignedRequest::new_signed(
+            public_config.federation_id,
+            receiver,
+            sequence,
+            FederationRestMessageKind::Status,
+            FederationPeerStatusRequest::default(),
+            private_config,
+        )
+        .expect("signed status request")
     }
 
     async fn consensus_operation_count(state: &MintState) -> u64 {
@@ -2344,6 +2404,61 @@ mod tests {
                 .status,
             FederationOperationStatus::Applied
         );
+    }
+
+    #[tokio::test]
+    async fn private_local_status_route_returns_consensus_and_sync_state() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let local_member = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .member_id();
+        state
+            .submit_federation_envelope(restore_envelope(
+                public_config.federation_id,
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            ))
+            .await
+            .expect("submit restore");
+
+        let request = signed_status_request(&public_config, &peer_private, local_member, 1);
+        let response = post_local_status(State(state), Json(request))
+            .await
+            .expect("local status response")
+            .0;
+
+        assert_eq!(response.version, FEDERATION_REST_API_VERSION);
+        assert_eq!(response.peer_status.member_id, local_member);
+        assert_eq!(response.peer_status.operation_count, 1);
+        assert_eq!(response.sync_state, "healthy");
+        assert!(response.sync_ready);
+        assert_eq!(response.sync_message, "federation member is healthy");
+    }
+
+    #[tokio::test]
+    async fn private_local_status_route_reports_lagging_sync_state() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let local_member = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .member_id();
+        let peer_member = peer_private.member_id;
+        state.mark_federation_lagging(peer_member, 0, 3).await;
+
+        let request = signed_status_request(&public_config, &peer_private, local_member, 1);
+        let response = post_local_status(State(state), Json(request))
+            .await
+            .expect("local status response")
+            .0;
+
+        assert_eq!(response.peer_status.operation_count, 0);
+        assert_eq!(response.sync_state, "lagging");
+        assert!(!response.sync_ready);
+        assert!(response
+            .sync_message
+            .contains("federation member is lagging behind peer"));
     }
 
     #[tokio::test]

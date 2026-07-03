@@ -64,11 +64,20 @@ impl Default for FederationSyncStatus {
 
 #[cfg(feature = "federation")]
 impl FederationSyncStatus {
-    fn is_ready(&self) -> bool {
+    pub(crate) fn is_ready(&self) -> bool {
         matches!(self, Self::Healthy)
     }
 
-    fn not_ready_message(&self) -> String {
+    pub(crate) fn state_name(&self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::Lagging { .. } => "lagging",
+            Self::CatchingUp { .. } => "catching_up",
+            Self::Halted { .. } => "halted",
+        }
+    }
+
+    pub(crate) fn not_ready_message(&self) -> String {
         match self {
             Self::Healthy => "federation member is healthy".to_string(),
             Self::Lagging {
@@ -269,7 +278,6 @@ impl MintState {
         Ok(())
     }
 
-    #[cfg(test)]
     pub(crate) async fn federation_sync_status(&self) -> Option<FederationSyncStatus> {
         let sync = self.federation_sync.as_ref()?;
         Some(sync.lock().await.status())
