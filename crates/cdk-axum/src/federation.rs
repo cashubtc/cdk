@@ -3401,6 +3401,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn materialized_state_digest_tracks_swap_spend_and_output_share_rows() {
+        let (state, public_config, _) = federation_route_state().await;
+        let config = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .clone();
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let input = proof_for_amount(&state, 1, "digest-swap");
+        let input_y = input.y().expect("input y");
+        let output = swap_output(&state, "digest-swap");
+        let request = cdk::nuts::SwapRequest::new(vec![input], vec![output.clone()]);
+        let envelope = config.swap_operation(request).expect("swap envelope");
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+        peer_consensus
+            .submit_envelope(envelope)
+            .expect("peer accepted swap");
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+        let catch_up_request = local_consensus.lock().await.catch_up_request();
+        let catch_up_response = peer_consensus
+            .catch_up_checked(&catch_up_request)
+            .expect("catch-up response");
+
+        let before_digest = materialized_state_digest(&state, &catch_up_response.entries)
+            .await
+            .expect("before digest");
+        state
+            .apply_federation_catch_up_response(&catch_up_response)
+            .await
+            .expect("apply catch-up");
+        let after_digest = materialized_state_digest(&state, &catch_up_response.entries)
+            .await
+            .expect("after digest");
+
+        assert_ne!(before_digest, after_digest);
+        assert_ne!(after_digest, FederationStateDigest::genesis());
+
+        let proof_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&[input_y])
+            .await
+            .expect("proof state lookup");
+        assert_eq!(proof_states, vec![Some(cdk::nuts::State::Spent)]);
+
+        let signatures = state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[output.blinded_secret])
+            .await
+            .expect("signature lookup");
+        assert!(signatures[0].is_some());
+    }
+
+    #[tokio::test]
     async fn submit_federation_envelope_notifies_operation_acceptance() {
         let (mut state, _, _) = federation_route_state().await;
         state.start_federation_finalization_loop();
@@ -3582,6 +3638,91 @@ mod tests {
             .expect("second digest");
 
         assert_eq!(first_digest, second_digest);
+    }
+
+    #[tokio::test]
+    async fn materialized_state_digest_tracks_melt_quote_spend_and_change_rows() {
+        let (state, public_config, _) = federation_route_state().await;
+        let config = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .clone();
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let quote_id = melt_quote(&state, 1000).await;
+        let inputs = vec![
+            proof_for_amount(&state, 1, "digest-melt-a"),
+            proof_for_amount(&state, 1, "digest-melt-b"),
+            proof_for_amount(&state, 1, "digest-melt-c"),
+        ];
+        let input_ys = inputs
+            .iter()
+            .map(|proof| proof.y().expect("input y"))
+            .collect::<Vec<_>>();
+        let mut change_output = swap_output(&state, "digest-melt-change");
+        change_output.amount = Amount::ZERO;
+        let request = cdk::nuts::MeltRequest::new(
+            quote_id.clone(),
+            inputs,
+            Some(vec![change_output.clone()]),
+        );
+        let envelope = config.melt_operation(request).expect("melt envelope");
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+        peer_consensus
+            .submit_envelope(envelope)
+            .expect("peer accepted melt");
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+        let catch_up_request = local_consensus.lock().await.catch_up_request();
+        let catch_up_response = peer_consensus
+            .catch_up_checked(&catch_up_request)
+            .expect("catch-up response");
+
+        let before_digest = materialized_state_digest(&state, &catch_up_response.entries)
+            .await
+            .expect("before digest");
+        state
+            .apply_federation_catch_up_response(&catch_up_response)
+            .await
+            .expect("apply catch-up");
+        let after_digest = materialized_state_digest(&state, &catch_up_response.entries)
+            .await
+            .expect("after digest");
+
+        assert_ne!(before_digest, after_digest);
+        assert_ne!(after_digest, FederationStateDigest::genesis());
+
+        let quote = state
+            .mint
+            .localstore()
+            .get_melt_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .expect("quote persisted");
+        assert_eq!(quote.state, MeltQuoteState::Paid);
+
+        let proof_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("proof state lookup");
+        assert_eq!(
+            proof_states,
+            vec![
+                Some(cdk::nuts::State::Spent),
+                Some(cdk::nuts::State::Spent),
+                Some(cdk::nuts::State::Spent),
+            ]
+        );
+
+        let signatures = state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[change_output.blinded_secret])
+            .await
+            .expect("signature lookup");
+        assert!(signatures[0].is_some());
     }
 
     #[tokio::test]
