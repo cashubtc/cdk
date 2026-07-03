@@ -264,6 +264,23 @@ pub fn verify_bls_message(
     Err(Error::TokenNotVerified)
 }
 
+/// Verify BLS blind signature using pairings.
+pub fn verify_bls_blind_signature(
+    mint_pubkey: PublicKey,
+    blinded_signature: PublicKey,
+    blinded_message: PublicKey,
+) -> Result<(), Error> {
+    if bls::verify_blind_signature_pairing(
+        &blinded_signature.as_bls_g1()?,
+        &blinded_message.as_bls_g1()?,
+        &mint_pubkey.as_bls_g2()?,
+    ) {
+        return Ok(());
+    }
+
+    Err(Error::TokenNotVerified)
+}
+
 /// Verify BLS proof using the mint secret key.
 pub fn verify_bls_message_keyed(
     mint_secretkey: &SecretKey,
@@ -629,6 +646,32 @@ mod tests {
             .expect("keyed verification");
         verify_bls_message(mint_secret.public_key(), unblinded_signature, secret_msg)
             .expect("pairing verification");
+    }
+
+    #[test]
+    fn test_bls_blind_signature_pairing_verification() {
+        let secret_msg = b"test_message";
+        let (blinded, _) =
+            blind_message_for_version(secret_msg, None, KeySetVersion::Version02).expect("blind");
+
+        let mint_secret = SecretKey::generate_bls();
+        let blinded_signature = sign_message(&mint_secret, &blinded).expect("sign");
+
+        verify_bls_blind_signature(mint_secret.public_key(), blinded_signature, blinded)
+            .expect("valid blind signature pairing");
+
+        let wrong_mint_pubkey = SecretKey::generate_bls().public_key();
+        assert!(verify_bls_blind_signature(wrong_mint_pubkey, blinded_signature, blinded).is_err());
+
+        let (wrong_blinded, _) =
+            blind_message_for_version(b"wrong_message", None, KeySetVersion::Version02)
+                .expect("blind");
+        assert!(verify_bls_blind_signature(
+            mint_secret.public_key(),
+            blinded_signature,
+            wrong_blinded
+        )
+        .is_err());
     }
 
     #[test]

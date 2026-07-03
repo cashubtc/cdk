@@ -13,7 +13,7 @@ use tracing::instrument;
 
 use super::AuthMintConnector;
 use crate::amount::SplitTarget;
-use crate::dhke::{construct_proofs, verify_bls_message};
+use crate::dhke::{construct_proofs, verify_bls_blind_signature};
 use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
     nut12, AuthRequired, AuthToken, BlindAuthToken, CurrencyUnit, KeySetInfo, KeySetVersion,
@@ -479,8 +479,12 @@ impl AuthWallet {
                         if sig.dleq.is_some() {
                             return Err(Error::CouldNotVerifyDleq);
                         }
-                        verify_bls_message(key, sig.c, premint.secret.as_bytes())
-                            .map_err(|_| Error::CouldNotVerifyDleq)?;
+                        verify_bls_blind_signature(
+                            key,
+                            sig.c,
+                            premint.blinded_message.blinded_secret,
+                        )
+                        .map_err(|_| Error::CouldNotVerifyDleq)?;
                     }
                 }
             }

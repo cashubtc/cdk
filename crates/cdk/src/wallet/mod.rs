@@ -34,6 +34,9 @@ use crate::nuts::{
     nut10, CurrencyUnit, Id, KeySetVersion, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
     RestoreRequest, SpendingConditions, State,
 };
+use crate::wallet::blind_signature::{
+    validate_mint_response_signatures, SignatureAmountValidation,
+};
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::wallet::p2pk::{P2PK_ACCOUNT, P2PK_PURPOSE};
 use crate::Amount;
@@ -649,13 +652,25 @@ impl Wallet {
                     )));
                 }
 
+                let matched_signatures = matched_secrets
+                    .iter()
+                    .map(|(_, _, sig)| sig.clone())
+                    .collect::<Vec<_>>();
+
+                validate_mint_response_signatures(
+                    self,
+                    &matched_signatures,
+                    matched_secrets
+                        .iter()
+                        .map(|(_, premint, _)| &premint.blinded_message),
+                    SignatureAmountValidation::AllowZeroAmountPlaceholder,
+                )
+                .await?;
+
                 // Extract signatures, rs, and secrets in matching order
                 // Each tuple (idx, premint, signature) ensures correct pairing
                 let proofs = construct_proofs(
-                    matched_secrets
-                        .iter()
-                        .map(|(_, _, sig)| sig.clone())
-                        .collect(),
+                    matched_signatures,
                     matched_secrets
                         .iter()
                         .map(|(_, p, _)| p.r.clone())
