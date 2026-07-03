@@ -17,6 +17,7 @@ use thiserror::Error;
 mod consensus;
 mod journal;
 mod operation;
+mod signing;
 mod transport;
 mod trusted_dealer;
 
@@ -32,6 +33,7 @@ pub use self::operation::{
     FederationOperationId, FederationOperationKind, FederationRestoreOperation,
     FederationSwapOperation, FEDERATION_OPERATION_VERSION,
 };
+pub use self::signing::{FederationBlindSignatureShare, FederationBlindSignatureShareSet};
 pub use self::transport::{
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
     FederationSubmitOperationRequest, FederationSubmitOperationResponse,
@@ -145,6 +147,18 @@ pub enum FederationError {
     #[error("Federated keyset {keyset_id} has no aggregate keys")]
     EmptyFederatedKeyset {
         /// Keyset ID being validated.
+        keyset_id: Id,
+    },
+    /// Output references a keyset that is not in the public federation config.
+    #[error("Unknown federated keyset {keyset_id}")]
+    UnknownFederatedKeyset {
+        /// Unknown keyset ID.
+        keyset_id: Id,
+    },
+    /// Members must not sign outputs for inactive keysets.
+    #[error("Federated keyset {keyset_id} is inactive")]
+    InactiveFederatedKeyset {
+        /// Inactive keyset ID.
         keyset_id: Id,
     },
     /// Trusted-dealer setup needs at least one amount per keyset.
@@ -261,6 +275,28 @@ pub enum FederationError {
         /// Local member ID.
         member_id: MemberId,
         /// Amount whose share did not match.
+        amount: Amount,
+    },
+    /// Federated signing requires BLS G1 blinded messages.
+    #[error(
+        "Federation output for keyset {keyset_id} amount {amount} must use a BLS blinded secret"
+    )]
+    InvalidFederationBlindedSecret {
+        /// Keyset ID being signed.
+        keyset_id: Id,
+        /// Output amount.
+        amount: Amount,
+    },
+    /// A generated signature share failed verification against the public share.
+    #[error(
+        "Federation signature share verification failed for keyset {keyset_id} member {member_id} amount {amount}"
+    )]
+    SignatureShareVerificationFailed {
+        /// Keyset ID being signed.
+        keyset_id: Id,
+        /// Signing member ID.
+        member_id: MemberId,
+        /// Output amount.
         amount: Amount,
     },
     /// An operation conflicts with an existing quote-scoped operation.
