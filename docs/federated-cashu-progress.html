@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">c0c6df27 REST consensus wiring</span>
+          <span class="value">a84f69ff Federated mint operation prep</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federated mint quote flow</span>
+          <span class="value">Federated mint consensus gate</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Federated mint operation signing</span>
+          <span class="value">Public mint flow consensus wiring</span>
         </div>
       </aside>
     </header>
@@ -464,6 +464,10 @@
             <h3>Private REST uses consensus</h3>
             <p>Federation status, operation submit, and journal catch-up routes now use the local dummy consensus journal when a mint is configured as a federation member.</p>
           </article>
+          <article class="item">
+            <h3>Federated mint operation prep committed</h3>
+            <p>Mint quote creation, mint payment observations, and single or batch mint requests can now be converted into canonical federation envelopes from the mint runtime.</p>
+          </article>
         </div>
       </section>
 
@@ -488,7 +492,7 @@
           </article>
           <article class="item">
             <h3>Mix-and-match guardrail started</h3>
-            <p>The same mint quote cannot be paired with different blinded output sets without producing a conflict before any future federation member signs.</p>
+            <p>The same mint quote cannot be paired with different blinded output sets, including through an overlapping NUT-29 batch, without producing a conflict before any future federation member signs.</p>
           </article>
           <article class="item">
             <h3>Catch-up shape defined</h3>
@@ -641,13 +645,19 @@
               <td>Private REST consensus wiring</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation federation` passed 31 tests. `cargo check` passed for cdk-common, cdk-axum with and without federation, and cdk-mintd with federation/fakewallet/sqlite.</td>
-              <td>Use fake-wallet quote creation to propose and accept federated mint quote operations.</td>
+              <td>Prepare mint quote, payment-observation, and mint request operations at the mint runtime boundary.</td>
+            </tr>
+            <tr>
+              <td>Federated mint operation prep</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federation` passed 32 tests, including overlapping batch mint conflict coverage. `cargo test -p cdk --lib --features federation federation` passed 5 mint runtime federation tests. `cargo check` passed for cdk-common, cdk, cdk-axum, and cdk-mintd with federation/fakewallet/sqlite.</td>
+              <td>Submit prepared mint quote, payment-observation, and mint request envelopes from the public mint flow before signing.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
               <td><span class="status pending">Pending</span></td>
-              <td>Implementation not started.</td>
-              <td>Begin after config, consensus, and journal checkpoints.</td>
+              <td>Mint runtime operation preparation has started; public handler/database flow wiring is not complete yet.</td>
+              <td>Wire minting first, then swap, restore/check-state, and fake-wallet melt paths.</td>
             </tr>
           </tbody>
         </table>
@@ -683,12 +693,12 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Federated mint quote flow</h3>
-            <p>Use fake wallet quote creation and payment observations to drive accepted mint operations before producing signature shares.</p>
+            <h3>Public mint flow consensus wiring</h3>
+            <p>Submit mint quote, payment observation, and mint request envelopes into the local consensus handle before mutating quote state or producing signatures.</p>
           </article>
           <article class="item">
             <h3>Federated mint operation signing</h3>
-            <p>Convert paid mint requests into consensus operations and return local BLS signature shares after acceptance.</p>
+            <p>Use accepted mint operations to return local BLS signature shares and prepare wallet-side threshold aggregation.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>
