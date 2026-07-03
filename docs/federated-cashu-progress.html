@@ -224,6 +224,16 @@
       font-size: 0.9rem;
     }
 
+    .milestone .test-gate {
+      margin-top: 6px;
+      color: var(--text);
+    }
+
+    .milestone .test-gate strong {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
     .stack {
       display: grid;
       gap: 12px;
@@ -355,13 +365,16 @@
         <h2>Implementation Plan Milestones</h2>
         <p class="section-note">
           All 24 implementation-plan milestones are listed below as individual
-          points, with no grouped ranges or shorthand future phases.
+          points, with no grouped ranges or shorthand future phases. Each point
+          includes the local success gate from the plan so progress can be
+          checked without decoding bundled milestone ranges.
         </p>
         <ul class="milestones" aria-label="Implementation plan milestone points">
           <li class="milestone">
             <div>
               <h3>Milestone 0: written RFC and feature gate</h3>
               <p>Objective: make the safety model explicit before code paths start diverging.</p>
+              <p class="test-gate"><strong>Test gate:</strong> feature-disabled workspace tests pass, feature-enabled federation stubs compile, and the future-PR review checklist exists.</p>
             </div>
             <span class="status done">Done</span>
           </li>
@@ -369,6 +382,7 @@
             <div>
               <h3>Milestone 1: threshold BLS blind signature primitives</h3>
               <p>Objective: add the cryptographic building blocks without touching mint state logic.</p>
+              <p class="test-gate"><strong>Test gate:</strong> 1-of-1 matches standalone BLS, threshold subsets aggregate, duplicate or invalid shares fail, and randomized property tests pass.</p>
             </div>
             <span class="status done">Done</span>
           </li>
@@ -376,6 +390,7 @@
             <div>
               <h3>Milestone 2: federation configuration and trusted-dealer setup</h3>
               <p>Objective: create deterministic federation configs and local key shares for test federations.</p>
+              <p class="test-gate"><strong>Test gate:</strong> generated members agree on federation identity, roster, and aggregate v3 keysets; identity keys and shares validate; malformed configs fail startup.</p>
             </div>
             <span class="status done">Done</span>
           </li>
@@ -383,6 +398,7 @@
             <div>
               <h3>Milestone 3: canonical operation encoding and hashes</h3>
               <p>Objective: make every consensus operation uniquely and deterministically identified.</p>
+              <p class="test-gate"><strong>Test gate:</strong> golden vectors stay stable, equivalent operations hash identically, changed request material changes the hash, and bad encodings are rejected.</p>
             </div>
             <span class="status done">Done</span>
           </li>
@@ -390,6 +406,7 @@
             <div>
               <h3>Milestone 4: consensus engine abstraction</h3>
               <p>Objective: add an ordered log before integrating with mint business logic.</p>
+              <p class="test-gate"><strong>Test gate:</strong> single-node and multi-node engines converge, duplicates are accepted once, oversized items fail admission, restart replay is clean, and quorum loss halts or rejects.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -397,6 +414,7 @@
             <div>
               <h3>Milestone 5: federation DB journal and state digests</h3>
               <p>Objective: keep replicated operation history separate from materialized mint state.</p>
+              <p class="test-gate"><strong>Test gate:</strong> SQLite and Postgres migrations apply, identical operation logs produce identical digests, local-only fields are excluded, audits catch negatives, and signature shares are queryable.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -404,6 +422,7 @@
             <div>
               <h3>Milestone 6: deterministic mint state machine extraction</h3>
               <p>Objective: refactor CDK mint operations so consensus can call deterministic apply functions.</p>
+              <p class="test-gate"><strong>Test gate:</strong> standalone tests remain green, issue and swap apply paths are idempotent, conflicts fail deterministically, multi-DB state matches, and pubsub fires only after commit.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -411,6 +430,7 @@
             <div>
               <h3>Milestone 7: federated key-share signatory</h3>
               <p>Objective: let each member sign only with its own BLS share while advertising aggregate keys.</p>
+              <p class="test-gate"><strong>Test gate:</strong> members never return final signatures, shares verify and aggregate, standalone signing is unchanged, and federation signing rejects non-v3 or non-BLS keysets.</p>
             </div>
             <span class="status done">Done</span>
           </li>
@@ -418,6 +438,7 @@
             <div>
               <h3>Milestone 8: federated mint quote creation and payment observations</h3>
               <p>Objective: make all members agree on mint quotes and paid status.</p>
+              <p class="test-gate"><strong>Test gate:</strong> quotes created on one member appear on all members, fake-wallet payment observations mark them paid everywhere, duplicate observations do not double-count, conflicts are rejected, and digests match.</p>
             </div>
             <span class="status done">Done</span>
           </li>
@@ -425,6 +446,7 @@
             <div>
               <h3>Milestone 9: federated mint issuance</h3>
               <p>Objective: issue eCash from paid quotes only after the exact issuance request is accepted by consensus.</p>
+              <p class="test-gate"><strong>Test gate:</strong> paid quotes mint through threshold members, batch minting updates all quotes, replays return stored shares, conflicting output sets fail, crash retries recover, and NUT-20 tests pass.</p>
             </div>
             <span class="status done">Done</span>
           </li>
@@ -432,6 +454,7 @@
             <div>
               <h3>Milestone 10: federated wallet connector and aggregation</h3>
               <p>Objective: make the wallet see normal Cashu responses while the connector handles member fanout.</p>
+              <p class="test-gate"><strong>Test gate:</strong> the connector mints valid aggregate proofs, tolerates offline or bad-share members when threshold remains reachable, and rejects mismatched or non-v3 aggregate keysets.</p>
             </div>
             <span class="status done">Done</span>
           </li>
@@ -439,6 +462,7 @@
             <div>
               <h3>Milestone 11: federated swap</h3>
               <p>Objective: prevent double-spends and mix-and-match output attacks for swaps.</p>
+              <p class="test-gate"><strong>Test gate:</strong> normal swaps succeed, concurrent double-spends accept only once, replays are idempotent, conflicting outputs fail, and P2PK, HTLC, and SIG_ALL tests pass.</p>
             </div>
             <span class="status done">Done</span>
           </li>
@@ -446,6 +470,7 @@
             <div>
               <h3>Milestone 12: explicit sliding-window attack regression suite</h3>
               <p>Objective: prove that threshold shares cannot be mixed across different output sets.</p>
+              <p class="test-gate"><strong>Test gate:</strong> only one exact operation receives enough shares, unpaid extra outputs cannot aggregate, conflicts are rejected before signing, digests match, and the same attack fails only against the intentionally naive test double.</p>
             </div>
             <span class="status done">Done</span>
           </li>
@@ -453,6 +478,7 @@
             <div>
               <h3>Milestone 13: restore and check-state</h3>
               <p>Objective: support wallet recovery without reintroducing unsafe signing.</p>
+              <p class="test-gate"><strong>Test gate:</strong> wallets restore from threshold member responses, unknown or never-consensus outputs receive no shares, and check-state answers match across honest members.</p>
             </div>
             <span class="status done">Done</span>
           </li>
@@ -460,6 +486,7 @@
             <div>
               <h3>Milestone 14: melt reserve and payment finalization</h3>
               <p>Objective: federate melts without losing funds or allowing proof reuse.</p>
+              <p class="test-gate"><strong>Test gate:</strong> fake-wallet melts finalize with aggregate change, failures release inputs, pending melts later resolve, crash recovery is safe, duplicate melts cannot both pay, and internal melt-to-mint is atomic.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -467,6 +494,7 @@
             <div>
               <h3>Milestone 15: networking and peer authentication</h3>
               <p>Objective: run federation members as separate processes.</p>
+              <p class="test-gate"><strong>Test gate:</strong> five local processes form consensus over private REST, retries are idempotent, authentication and allowlists reject bad peers, restarts catch up, and status exposes healthy, offline, lagging, catching-up, and halted states.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -474,6 +502,7 @@
             <div>
               <h3>Milestone 16: member startup, catch-up, and recovery</h3>
               <p>Objective: make nodes durable and restart-safe.</p>
+              <p class="test-gate"><strong>Test gate:</strong> crash-before and crash-after states replay cleanly, missing shares regenerate, lagging members refuse signing, offline members catch up without duplicate payments, and partitions converge or halt on digest mismatch.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -481,6 +510,7 @@
             <div>
               <h3>Milestone 17: `cdk-mintd` integration and regtest tooling</h3>
               <p>Objective: make the federation easy to run locally.</p>
+              <p class="test-gate"><strong>Test gate:</strong> local fake-wallet federations start and cleanly stop, wallets mint, swap, restore, check state, and melt through them, stopped members catch up, digests match, and local auth rejects bad peers.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -488,6 +518,7 @@
             <div>
               <h3>Milestone 18: storage backend coverage</h3>
               <p>Objective: support the same storage expectations as CDK does today.</p>
+              <p class="test-gate"><strong>Test gate:</strong> SQLite and Postgres federation tests pass, concurrent request stress tests avoid deadlocks, and hot-path query plans use the intended indexes.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -495,6 +526,7 @@
             <div>
               <h3>Milestone 19: real payment backend policy</h3>
               <p>Objective: move beyond fake wallet without centralizing payment trust accidentally.</p>
+              <p class="test-gate"><strong>Test gate:</strong> fake-wallet and real-backend policies are separate, a single malicious observation cannot mark a quote paid, conflicting amounts are not silently accepted, and stale pending payments are operator-visible.</p>
             </div>
             <span class="status pending">Pending</span>
           </li>
@@ -502,6 +534,7 @@
             <div>
               <h3>Milestone 20: distributed key generation</h3>
               <p>Objective: replace trusted-dealer setup with dealer-free DKG.</p>
+              <p class="test-gate"><strong>Test gate:</strong> DKG behaves like trusted-dealer keygen, rejects unknown or reassigned participants, verifies transcript signatures, detects invalid shares, survives setup restart, rotates keys, and preserves old proof verification.</p>
             </div>
             <span class="status pending">Pending</span>
           </li>
@@ -509,6 +542,7 @@
             <div>
               <h3>Milestone 21: key rotation and federation upgrades</h3>
               <p>Objective: keep long-running federations maintainable.</p>
+              <p class="test-gate"><strong>Test gate:</strong> wallets mint with the new active keyset, old proofs stay spendable, stale configs cannot join upgraded consensus, and mixed major versions fail cleanly.</p>
             </div>
             <span class="status pending">Pending</span>
           </li>
@@ -516,6 +550,7 @@
             <div>
               <h3>Milestone 22: observability and operator safety</h3>
               <p>Objective: make failures diagnosable without exposing private user data.</p>
+              <p class="test-gate"><strong>Test gate:</strong> logs redact secrets and private config, metrics are emitted in fake regtest, and injected digest mismatches trigger operator-visible alerts.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -523,6 +558,7 @@
             <div>
               <h3>Milestone 23: security review checklist</h3>
               <p>Objective: make the design reviewable before mainnet use.</p>
+              <p class="test-gate"><strong>Test gate:</strong> reviewers can trace every signature share to an accepted operation hash, operation decoding is fuzzed, the attack suite passes, and no public route signs directly in federation mode.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -988,7 +1024,7 @@
           </article>
           <article class="item">
             <h3>Milestone map expanded</h3>
-            <p>The dashboard now renders 24 explicit implementation-plan milestone points, with no grouped shorthand ranges.</p>
+            <p>The dashboard now renders 24 explicit implementation-plan milestone points, each with an objective and test gate, with no grouped shorthand ranges.</p>
           </article>
         </div>
       </section>
