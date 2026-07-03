@@ -86,6 +86,8 @@ pub use cdk_common::wallet as types;
 pub use cdk_common::wallet::{
     NUT13Options, P2PKLockedProofSendMode, ReceiveOptions, SendMemo, SendOptions,
 };
+#[cfg(feature = "federation")]
+pub use federation::{FederatedMintConnector, FederationWalletConnector};
 pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
 pub use mint_connector::{

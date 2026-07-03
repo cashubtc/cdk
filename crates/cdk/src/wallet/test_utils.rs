@@ -462,6 +462,8 @@ pub struct MockMintConnector {
         Mutex<std::collections::VecDeque<Result<MeltQuoteBolt11Response<String>, Error>>>,
     /// Response for post_mint calls
     pub post_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
+    /// Response for post_batch_mint calls
+    pub post_batch_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
     /// Response for post_swap calls
     pub post_swap_response: Mutex<Option<Result<SwapResponse, Error>>>,
     /// Queue of responses for successive post_swap calls.
@@ -505,6 +507,7 @@ impl MockMintConnector {
             melt_quote_status_response: Mutex::new(None),
             melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
             post_mint_response: Mutex::new(None),
+            post_batch_mint_response: Mutex::new(None),
             post_swap_response: Mutex::new(None),
             post_swap_responses: Mutex::new(std::collections::VecDeque::new()),
             captured_swap_requests: Mutex::new(Vec::new()),
@@ -604,6 +607,10 @@ impl MockMintConnector {
 
     pub fn set_post_mint_response(&self, response: Result<MintResponse, Error>) {
         *self.post_mint_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn set_post_batch_mint_response(&self, response: Result<MintResponse, Error>) {
+        *self.post_batch_mint_response.lock().unwrap() = Some(response);
     }
 
     pub fn set_post_swap_response(&self, response: Result<SwapResponse, Error>) {
@@ -836,6 +843,10 @@ impl MintConnector for MockMintConnector {
         _method: &PaymentMethod,
         _request: BatchMintRequest<String>,
     ) -> Result<MintResponse, Error> {
-        unimplemented!()
+        self.post_batch_mint_response
+            .lock()
+            .unwrap()
+            .take()
+            .expect("MockMintConnector: post_batch_mint called without configured response")
     }
 }

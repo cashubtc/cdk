@@ -1,8 +1,26 @@
-//! Wallet-side federation validation helpers.
+//! Wallet-side federation validation and aggregation helpers.
 
-use cdk_common::federation::{FederationConfig, MemberId};
-use cdk_common::nuts::KeySet;
+use std::collections::BTreeMap;
+use std::fmt;
+use std::sync::Arc;
 
+use async_trait::async_trait;
+use cdk_common::federation::{FederatedKeyset, FederationConfig, FederationError, MemberId};
+use cdk_common::{
+    MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
+    MintQuoteResponse,
+};
+
+use super::{AuthWallet, MintConnector};
+use crate::nuts::nut01::{
+    aggregate_blind_signature_shares, verify_blind_signature_share, BlsBlindSignatureShare,
+};
+use crate::nuts::{
+    BatchCheckMintQuoteRequest, BatchMintRequest, BlindSignature, BlindedMessage,
+    CheckStateRequest, CheckStateResponse, Id, KeySet, KeySetInfo, KeysetResponse, MeltRequest,
+    MintInfo, MintRequest, MintResponse, PaymentMethod, RestoreRequest, RestoreResponse,
+    SwapRequest, SwapResponse,
+};
 use crate::Error;
 
 /// Minimal wallet federation connector validation.
@@ -20,21 +38,577 @@ impl FederationWalletConnector {
     }
 }
 
+/// Wallet mint connector that fans out signing requests to federation members.
+///
+/// The connector preserves the existing wallet-to-mint protocol surface: member
+/// mints return ordinary Cashu responses whose `C_` values are threshold BLS
+/// signature shares, and the connector verifies and aggregates those shares
+/// before returning a normal aggregate Cashu response to the wallet.
+#[derive(Clone)]
+pub struct FederatedMintConnector {
+    public_config: FederationConfig,
+    member_connectors: BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+    primary_member_id: MemberId,
+}
+
+impl fmt::Debug for FederatedMintConnector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FederatedMintConnector")
+            .field("federation_id", &self.public_config.federation_id)
+            .field("member_ids", &self.member_connectors.keys())
+            .field("primary_member_id", &self.primary_member_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl FederatedMintConnector {
+    /// Create a wallet connector for a static federation roster.
+    pub fn new(
+        public_config: FederationConfig,
+        member_connectors: BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+    ) -> Result<Self, Error> {
+        public_config.validate()?;
+
+        for member_id in public_config.members.keys() {
+            if !member_connectors.contains_key(member_id) {
+                return Err(FederationError::MissingMember {
+                    member_id: *member_id,
+                }
+                .into());
+            }
+        }
+
+        for member_id in member_connectors.keys() {
+            if !public_config.members.contains_key(member_id) {
+                return Err(FederationError::UnknownMember {
+                    member_id: *member_id,
+                }
+                .into());
+            }
+        }
+
+        let primary_member_id = public_config
+            .members
+            .keys()
+            .next()
+            .copied()
+            .ok_or_else(|| Error::InvalidMintResponse("empty federation roster".to_string()))?;
+
+        Ok(Self {
+            public_config,
+            member_connectors,
+            primary_member_id,
+        })
+    }
+
+    /// Return the public federation config used by this connector.
+    #[must_use]
+    pub fn public_config(&self) -> &FederationConfig {
+        &self.public_config
+    }
+
+    fn primary_connector(&self) -> Result<Arc<dyn MintConnector + Send + Sync>, Error> {
+        self.member_connectors
+            .get(&self.primary_member_id)
+            .cloned()
+            .ok_or_else(|| {
+                Error::InvalidMintResponse("missing primary member connector".to_string())
+            })
+    }
+
+    fn active_aggregate_keysets(&self) -> Vec<KeySet> {
+        self.public_config
+            .keysets
+            .iter()
+            .filter(|keyset| keyset.active)
+            .map(federated_keyset_to_keyset)
+            .collect()
+    }
+
+    fn aggregate_keyset_infos(&self) -> Vec<KeySetInfo> {
+        self.public_config
+            .keysets
+            .iter()
+            .map(federated_keyset_to_keyset_info)
+            .collect()
+    }
+
+    fn aggregate_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
+        self.public_config
+            .keysets
+            .iter()
+            .find(|keyset| keyset.id == keyset_id)
+            .map(federated_keyset_to_keyset)
+            .ok_or(Error::UnknownKeySet)
+    }
+
+    async fn validate_member_active_keysets(&self) -> Result<(), Error> {
+        for (member_id, connector) in &self.member_connectors {
+            let advertised = connector.get_mint_keys().await?;
+            validate_member_active_keysets(&self.public_config, *member_id, &advertised)?;
+        }
+
+        Ok(())
+    }
+
+    async fn collect_mint_responses<F, Fut>(
+        &self,
+        mut call_member: F,
+    ) -> Result<Vec<(MemberId, MintResponse)>, Error>
+    where
+        F: FnMut(Arc<dyn MintConnector + Send + Sync>) -> Fut,
+        Fut: std::future::Future<Output = Result<MintResponse, Error>>,
+    {
+        let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
+        let mut responses = Vec::new();
+        let mut failures = Vec::new();
+
+        for (member_id, connector) in &self.member_connectors {
+            match call_member(connector.clone()).await {
+                Ok(response) => {
+                    responses.push((*member_id, response));
+                    if responses.len() >= threshold {
+                        break;
+                    }
+                }
+                Err(err) => failures.push(format!("member {}: {}", member_id, err)),
+            }
+        }
+
+        if responses.len() >= threshold {
+            return Ok(responses);
+        }
+
+        Err(Error::InvalidMintResponse(format!(
+            "insufficient federation signature shares: required {}, received {}, failures: {}",
+            threshold,
+            responses.len(),
+            failures.join("; ")
+        )))
+    }
+
+    fn aggregate_member_responses(
+        &self,
+        outputs: &[BlindedMessage],
+        member_responses: &[(MemberId, MintResponse)],
+    ) -> Result<MintResponse, Error> {
+        self.public_config.validate_blinded_outputs(outputs)?;
+
+        let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
+        if member_responses.len() < threshold {
+            return Err(Error::InvalidMintResponse(format!(
+                "insufficient federation signature shares: required {}, received {}",
+                threshold,
+                member_responses.len()
+            )));
+        }
+
+        let mut aggregate_signatures = Vec::with_capacity(outputs.len());
+        for (index, output) in outputs.iter().enumerate() {
+            let keyset = self.public_config.validate_blinded_output(output)?;
+            let blinded_message = output.blinded_secret.as_bls_g1()?;
+            let mut shares = Vec::with_capacity(member_responses.len());
+
+            for (member_id, response) in member_responses {
+                let signature = response.signatures.get(index).ok_or_else(|| {
+                    Error::InvalidMintResponse(format!(
+                        "member {} returned too few signature shares",
+                        member_id
+                    ))
+                })?;
+                validate_signature_metadata(signature, output, *member_id)?;
+
+                let public_share = keyset
+                    .public_shares
+                    .get(member_id)
+                    .ok_or(FederationError::MissingPublicShares {
+                        keyset_id: keyset.id,
+                        member_id: *member_id,
+                    })?
+                    .get(&output.amount)
+                    .ok_or(FederationError::MissingPublicShareAmount {
+                        keyset_id: keyset.id,
+                        member_id: *member_id,
+                        amount: output.amount,
+                    })?;
+                let share = BlsBlindSignatureShare::new(
+                    member_id.to_bls_signer_id(),
+                    signature.c.as_bls_g1()?,
+                );
+
+                if !verify_blind_signature_share(&share, &blinded_message, public_share)? {
+                    return Err(Error::InvalidMintResponse(format!(
+                        "member {} returned an invalid signature share for keyset {} amount {}",
+                        member_id, output.keyset_id, output.amount
+                    )));
+                }
+                shares.push(share);
+            }
+
+            let aggregate_signature = aggregate_blind_signature_shares(threshold, &shares)?;
+            aggregate_signatures.push(BlindSignature {
+                amount: output.amount,
+                keyset_id: output.keyset_id,
+                c: aggregate_signature.into(),
+                dleq: None,
+            });
+        }
+
+        for (member_id, response) in member_responses {
+            if response.signatures.len() != outputs.len() {
+                return Err(Error::InvalidMintResponse(format!(
+                    "member {} returned {} signature shares for {} outputs",
+                    member_id,
+                    response.signatures.len(),
+                    outputs.len()
+                )));
+            }
+        }
+
+        Ok(MintResponse {
+            signatures: aggregate_signatures,
+        })
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+impl MintConnector for FederatedMintConnector {
+    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+    async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, Error> {
+        self.primary_connector()?.resolve_dns_txt(domain).await
+    }
+
+    async fn fetch_lnurl_pay_request(
+        &self,
+        url: &str,
+    ) -> Result<crate::lightning_address::LnurlPayResponse, Error> {
+        self.primary_connector()?.fetch_lnurl_pay_request(url).await
+    }
+
+    async fn fetch_lnurl_invoice(
+        &self,
+        url: &str,
+    ) -> Result<crate::lightning_address::LnurlPayInvoiceResponse, Error> {
+        self.primary_connector()?.fetch_lnurl_invoice(url).await
+    }
+
+    async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
+        self.validate_member_active_keysets().await?;
+        Ok(self.active_aggregate_keysets())
+    }
+
+    async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
+        for (member_id, connector) in &self.member_connectors {
+            let advertised = connector.get_mint_keyset(keyset_id).await?;
+            validate_member_advertised_keyset(&self.public_config, *member_id, &advertised)?;
+        }
+
+        self.aggregate_keyset(keyset_id)
+    }
+
+    async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
+        Ok(KeysetResponse {
+            keysets: self.aggregate_keyset_infos(),
+        })
+    }
+
+    async fn post_mint_quote(
+        &self,
+        request: MintQuoteRequest,
+    ) -> Result<MintQuoteResponse<String>, Error> {
+        self.primary_connector()?.post_mint_quote(request).await
+    }
+
+    async fn post_mint(
+        &self,
+        method: &PaymentMethod,
+        request: MintRequest<String>,
+    ) -> Result<MintResponse, Error> {
+        self.public_config
+            .validate_blinded_outputs(&request.outputs)?;
+        self.validate_member_active_keysets().await?;
+
+        let member_responses = self
+            .collect_mint_responses(|connector| {
+                let method = method.clone();
+                let request = request.clone();
+                async move { connector.post_mint(&method, request).await }
+            })
+            .await?;
+        self.aggregate_member_responses(&request.outputs, &member_responses)
+    }
+
+    async fn post_batch_check_mint_quote_status(
+        &self,
+        method: &PaymentMethod,
+        request: BatchCheckMintQuoteRequest<String>,
+    ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
+        self.primary_connector()?
+            .post_batch_check_mint_quote_status(method, request)
+            .await
+    }
+
+    async fn post_batch_mint(
+        &self,
+        method: &PaymentMethod,
+        request: BatchMintRequest<String>,
+    ) -> Result<MintResponse, Error> {
+        self.public_config
+            .validate_blinded_outputs(&request.outputs)?;
+        self.validate_member_active_keysets().await?;
+
+        let member_responses = self
+            .collect_mint_responses(|connector| {
+                let method = method.clone();
+                let request = request.clone();
+                async move { connector.post_batch_mint(&method, request).await }
+            })
+            .await?;
+        self.aggregate_member_responses(&request.outputs, &member_responses)
+    }
+
+    async fn post_melt_quote(
+        &self,
+        request: MeltQuoteRequest,
+    ) -> Result<MeltQuoteCreateResponse<String>, Error> {
+        self.primary_connector()?.post_melt_quote(request).await
+    }
+
+    async fn get_mint_quote_status(
+        &self,
+        method: PaymentMethod,
+        quote_id: &str,
+    ) -> Result<MintQuoteResponse<String>, Error> {
+        self.primary_connector()?
+            .get_mint_quote_status(method, quote_id)
+            .await
+    }
+
+    async fn get_melt_quote_status(
+        &self,
+        method: PaymentMethod,
+        quote_id: &str,
+    ) -> Result<MeltQuoteResponse<String>, Error> {
+        self.primary_connector()?
+            .get_melt_quote_status(method, quote_id)
+            .await
+    }
+
+    async fn post_melt(
+        &self,
+        method: &PaymentMethod,
+        request: MeltRequest<String>,
+    ) -> Result<MeltQuoteResponse<String>, Error> {
+        if let Some(outputs) = request.outputs() {
+            self.public_config.validate_blinded_outputs(outputs)?;
+        }
+
+        self.primary_connector()?.post_melt(method, request).await
+    }
+
+    async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error> {
+        self.public_config
+            .validate_blinded_outputs(request.outputs())?;
+        self.validate_member_active_keysets().await?;
+
+        let member_responses = self
+            .collect_mint_responses(|connector| {
+                let request = request.clone();
+                async move {
+                    connector
+                        .post_swap(request)
+                        .await
+                        .map(|response| MintResponse {
+                            signatures: response.signatures,
+                        })
+                }
+            })
+            .await?;
+        let response = self.aggregate_member_responses(request.outputs(), &member_responses)?;
+
+        Ok(SwapResponse {
+            signatures: response.signatures,
+        })
+    }
+
+    async fn get_mint_info(&self) -> Result<MintInfo, Error> {
+        self.primary_connector()?.get_mint_info().await
+    }
+
+    async fn post_check_state(
+        &self,
+        request: CheckStateRequest,
+    ) -> Result<CheckStateResponse, Error> {
+        self.primary_connector()?.post_check_state(request).await
+    }
+
+    async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
+        self.public_config
+            .validate_blinded_outputs(&request.outputs)?;
+        self.primary_connector()?.post_restore(request).await
+    }
+
+    async fn get_auth_wallet(&self) -> Option<AuthWallet> {
+        match self.primary_connector() {
+            Ok(connector) => connector.get_auth_wallet().await,
+            Err(_) => None,
+        }
+    }
+
+    async fn set_auth_wallet(&self, wallet: Option<AuthWallet>) {
+        if let Ok(connector) = self.primary_connector() {
+            connector.set_auth_wallet(wallet).await;
+        }
+    }
+}
+
+fn federated_keyset_to_keyset(keyset: &FederatedKeyset) -> KeySet {
+    KeySet {
+        id: keyset.id,
+        unit: keyset.unit.clone(),
+        active: Some(keyset.active),
+        keys: keyset.keys(),
+        input_fee_ppk: keyset.input_fee_ppk,
+        final_expiry: keyset.final_expiry,
+    }
+}
+
+fn federated_keyset_to_keyset_info(keyset: &FederatedKeyset) -> KeySetInfo {
+    KeySetInfo {
+        id: keyset.id,
+        unit: keyset.unit.clone(),
+        active: keyset.active,
+        input_fee_ppk: keyset.input_fee_ppk,
+        final_expiry: keyset.final_expiry,
+    }
+}
+
+fn validate_signature_metadata(
+    signature: &BlindSignature,
+    output: &BlindedMessage,
+    member_id: MemberId,
+) -> Result<(), Error> {
+    if signature.amount != output.amount {
+        return Err(Error::InvalidMintResponse(format!(
+            "member {} signature amount ({}) does not match requested amount ({})",
+            member_id, signature.amount, output.amount
+        )));
+    }
+    if signature.keyset_id != output.keyset_id {
+        return Err(Error::InvalidMintResponse(format!(
+            "member {} signature keyset ({}) does not match requested keyset ({})",
+            member_id, signature.keyset_id, output.keyset_id
+        )));
+    }
+    if signature.dleq.is_some() {
+        return Err(Error::InvalidMintResponse(format!(
+            "member {} returned DLEQ data for a BLS federation share",
+            member_id
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_member_active_keysets(
+    public_config: &FederationConfig,
+    member_id: MemberId,
+    advertised_keysets: &[KeySet],
+) -> Result<(), Error> {
+    public_config.validate()?;
+    if !public_config.members.contains_key(&member_id) {
+        return Err(FederationError::UnknownMember { member_id }.into());
+    }
+
+    for advertised in advertised_keysets {
+        validate_member_advertised_keyset(public_config, member_id, advertised)?;
+    }
+
+    for keyset in public_config.keysets.iter().filter(|keyset| keyset.active) {
+        if !advertised_keysets
+            .iter()
+            .any(|advertised| advertised.id == keyset.id)
+        {
+            return Err(FederationError::MissingAdvertisedFederatedKeyset {
+                member_id,
+                keyset_id: keyset.id,
+            }
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_member_advertised_keyset(
+    public_config: &FederationConfig,
+    member_id: MemberId,
+    advertised: &KeySet,
+) -> Result<(), Error> {
+    if advertised.id.get_version() != crate::nuts::KeySetVersion::Version02 {
+        return Err(FederationError::InvalidFederatedKeysetVersion {
+            keyset_id: advertised.id,
+        }
+        .into());
+    }
+
+    let expected = public_config
+        .keysets
+        .iter()
+        .find(|keyset| keyset.id == advertised.id)
+        .ok_or(FederationError::UnknownFederatedKeyset {
+            keyset_id: advertised.id,
+        })?;
+    let expected_keyset = federated_keyset_to_keyset(expected);
+
+    if advertised.id != expected_keyset.id
+        || advertised.unit != expected_keyset.unit
+        || advertised.input_fee_ppk != expected_keyset.input_fee_ppk
+        || advertised.final_expiry != expected_keyset.final_expiry
+        || advertised.keys != expected_keyset.keys
+    {
+        return Err(FederationError::AdvertisedFederatedKeysetMismatch {
+            member_id,
+            keyset_id: expected.id,
+        }
+        .into());
+    }
+    if let Some(active) = advertised.active {
+        if active != expected.active {
+            return Err(FederationError::AdvertisedFederatedKeysetMismatch {
+                member_id,
+                keyset_id: expected.id,
+            }
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::str::FromStr;
+    use std::sync::Arc;
 
     use cdk_common::federation::{
-        generate_trusted_dealer_configs, FederationError, MemberId, ThresholdParams,
-        TrustedDealerKeysetSpec, TrustedDealerMember,
+        generate_trusted_dealer_configs, FederationError, FederationOperationId, MemberId,
+        ThresholdParams, TrustedDealerConfigBundle, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     use cdk_common::mint_url::MintUrl;
-    use cdk_common::nuts::nut01::BlsSecretKey;
+    use cdk_common::nuts::nut01::{BlsG1PublicKey, BlsSecretKey};
     use cdk_common::nuts::nut02::KeySet;
-    use cdk_common::{Amount, CurrencyUnit, Id, SecretKey};
+    use cdk_common::{Amount, BlindSignature, BlindedMessage, CurrencyUnit, Id, PublicKey};
+    use cdk_common::{MintResponse, SecretKey};
 
-    use super::FederationWalletConnector;
+    use super::{FederatedMintConnector, FederationWalletConnector};
+    use crate::dhke::verify_bls_blind_signature;
+    use crate::nuts::nut00::{KnownMethod, PaymentMethod};
+    use crate::nuts::{BatchMintRequest, MintRequest, SwapRequest, SwapResponse};
+    use crate::wallet::test_utils::MockMintConnector;
+    use crate::wallet::MintConnector;
 
     fn member_id(id: u16) -> MemberId {
         MemberId::new(id).expect("member id")
@@ -75,6 +649,40 @@ mod tests {
         .expect("trusted dealer bundle")
     }
 
+    fn threshold_bundle() -> TrustedDealerConfigBundle {
+        generate_trusted_dealer_configs(
+            ThresholdParams::with_bft_consensus(3, 2).expect("params"),
+            vec![
+                member(member_id(1)),
+                member(member_id(2)),
+                member(member_id(3)),
+            ],
+            vec![TrustedDealerKeysetSpec::new(
+                CurrencyUnit::Sat,
+                true,
+                0,
+                None,
+                BTreeMap::from([
+                    (
+                        Amount::from(1),
+                        vec![
+                            BlsSecretKey::from_reduced_bytes(&[2; 32]),
+                            BlsSecretKey::from_reduced_bytes(&[3; 32]),
+                        ],
+                    ),
+                    (
+                        Amount::from(2),
+                        vec![
+                            BlsSecretKey::from_reduced_bytes(&[4; 32]),
+                            BlsSecretKey::from_reduced_bytes(&[5; 32]),
+                        ],
+                    ),
+                ]),
+            )],
+        )
+        .expect("trusted dealer bundle")
+    }
+
     fn advertised_keyset(bundle: &cdk_common::federation::TrustedDealerConfigBundle) -> KeySet {
         let keyset = &bundle.public_config.keysets[0];
         KeySet {
@@ -84,6 +692,96 @@ mod tests {
             keys: keyset.keys(),
             input_fee_ppk: keyset.input_fee_ppk,
             final_expiry: keyset.final_expiry,
+        }
+    }
+
+    fn blinded_outputs(bundle: &TrustedDealerConfigBundle) -> Vec<BlindedMessage> {
+        let keyset = &bundle.public_config.keysets[0];
+        vec![
+            BlindedMessage::new(
+                Amount::from(1),
+                keyset.id,
+                PublicKey::from(BlsG1PublicKey::hash_to_curve(
+                    b"federated wallet connector output 1",
+                )),
+            ),
+            BlindedMessage::new(
+                Amount::from(2),
+                keyset.id,
+                PublicKey::from(BlsG1PublicKey::hash_to_curve(
+                    b"federated wallet connector output 2",
+                )),
+            ),
+        ]
+    }
+
+    fn share_response(
+        bundle: &TrustedDealerConfigBundle,
+        member_id: MemberId,
+        outputs: &[BlindedMessage],
+    ) -> MintResponse {
+        let private = bundle
+            .private_configs
+            .get(&member_id)
+            .expect("member private config");
+        let share_set = private
+            .sign_blinded_messages(
+                &bundle.public_config,
+                FederationOperationId::from_bytes([9; 32]),
+                outputs,
+            )
+            .expect("signature shares");
+
+        MintResponse {
+            signatures: share_set
+                .shares
+                .into_iter()
+                .map(|share| BlindSignature {
+                    amount: share.amount,
+                    keyset_id: share.keyset_id,
+                    c: share.share.signature().into(),
+                    dleq: None,
+                })
+                .collect(),
+        }
+    }
+
+    fn member_connectors(
+        bundle: &TrustedDealerConfigBundle,
+        outputs: &[BlindedMessage],
+    ) -> BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>> {
+        let advertised = advertised_keyset(bundle);
+        [member_id(1), member_id(2), member_id(3)]
+            .into_iter()
+            .map(|member_id| {
+                let connector = MockMintConnector::new();
+                connector.set_active_keyset(advertised.clone());
+                connector.set_post_mint_response(Ok(share_response(bundle, member_id, outputs)));
+                connector
+                    .set_post_batch_mint_response(Ok(share_response(bundle, member_id, outputs)));
+                connector.set_post_swap_response(Ok(SwapResponse {
+                    signatures: share_response(bundle, member_id, outputs).signatures,
+                }));
+                (
+                    member_id,
+                    Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+                )
+            })
+            .collect()
+    }
+
+    fn assert_aggregate_response_valid(
+        bundle: &TrustedDealerConfigBundle,
+        outputs: &[BlindedMessage],
+        response: &MintResponse,
+    ) {
+        let keyset = advertised_keyset(bundle);
+
+        assert_eq!(response.signatures.len(), outputs.len());
+        for (signature, output) in response.signatures.iter().zip(outputs) {
+            let aggregate_key = keyset.keys.amount_key(output.amount).expect("amount key");
+            verify_bls_blind_signature(aggregate_key, signature.c, output.blinded_secret)
+                .expect("aggregate signature verifies");
         }
     }
 
@@ -140,6 +838,119 @@ mod tests {
             Err(crate::Error::Federation(
                 FederationError::Nut02(_)
                     | FederationError::AdvertisedFederatedKeysetMismatch { .. }
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_aggregates_mint_signature_shares() {
+        let bundle = threshold_bundle();
+        let outputs = blinded_outputs(&bundle);
+        let connector = FederatedMintConnector::new(
+            bundle.public_config.clone(),
+            member_connectors(&bundle, &outputs),
+        )
+        .expect("federated mint connector");
+        let response = connector
+            .post_mint(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                MintRequest {
+                    quote: "paid-quote".to_string(),
+                    outputs: outputs.clone(),
+                    signature: None,
+                },
+            )
+            .await
+            .expect("mint response");
+
+        assert_aggregate_response_valid(&bundle, &outputs, &response);
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_aggregates_batch_mint_signature_shares() {
+        let bundle = threshold_bundle();
+        let outputs = blinded_outputs(&bundle);
+        let connector = FederatedMintConnector::new(
+            bundle.public_config.clone(),
+            member_connectors(&bundle, &outputs),
+        )
+        .expect("federated mint connector");
+        let response = connector
+            .post_batch_mint(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                BatchMintRequest {
+                    quotes: vec!["paid-quote-1".to_string(), "paid-quote-2".to_string()],
+                    quote_amounts: None,
+                    outputs: outputs.clone(),
+                    signatures: None,
+                },
+            )
+            .await
+            .expect("batch mint response");
+
+        assert_aggregate_response_valid(&bundle, &outputs, &response);
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_aggregates_swap_signature_shares() {
+        let bundle = threshold_bundle();
+        let outputs = blinded_outputs(&bundle);
+        let connector = FederatedMintConnector::new(
+            bundle.public_config.clone(),
+            member_connectors(&bundle, &outputs),
+        )
+        .expect("federated mint connector");
+        let response = connector
+            .post_swap(SwapRequest::new(Vec::new(), outputs.clone()))
+            .await
+            .expect("swap response");
+
+        assert_aggregate_response_valid(
+            &bundle,
+            &outputs,
+            &MintResponse {
+                signatures: response.signatures,
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_rejects_non_v3_member_advertisement() {
+        let bundle = threshold_bundle();
+        let outputs = blinded_outputs(&bundle);
+        let mut connectors = member_connectors(&bundle, &outputs);
+        let mut advertised = advertised_keyset(&bundle);
+        let expected = &bundle.public_config.keysets[0];
+        advertised.id = Id::v2_from_data(
+            &advertised.keys,
+            &expected.unit,
+            expected.input_fee_ppk,
+            expected.final_expiry,
+        );
+        let bad_member = MockMintConnector::new();
+        bad_member.set_active_keyset(advertised);
+        connectors.insert(
+            member_id(1),
+            Arc::new(bad_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let result = connector
+            .post_mint(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                MintRequest {
+                    quote: "paid-quote".to_string(),
+                    outputs,
+                    signature: None,
+                },
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(crate::Error::Federation(
+                FederationError::InvalidFederatedKeysetVersion { .. }
             ))
         ));
     }
