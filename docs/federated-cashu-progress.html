@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: bound federation operation admission</span>
+          <span class="value">feat: add signed catch-up session outcomes</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Bounded consensus admission</span>
+          <span class="value">Signed session outcomes</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Signed session outcomes</span>
+          <span class="value">Persist session outcomes</span>
         </div>
       </aside>
     </header>
@@ -894,6 +894,10 @@
             <p>Consensus admission now checks operation-envelope size using the same canonical representation used for operation IDs, so formatted JSON differences cannot change whether members accept a proposal.</p>
           </article>
           <article class="item">
+            <h3>Catch-up no longer trusts raw peer ranges</h3>
+            <p>When a peer returns missing journal entries over private REST, the response must include a signed session outcome from that roster member before the local node replays the entries.</p>
+          </article>
+          <article class="item">
             <h3>Federation inspect CLI ready</h3>
             <p>`cdk-mintd federation inspect` validates public federation material, optionally checks a local member config against it, and prints roster plus v3/BLS aggregate keyset summaries without exposing private member material.</p>
           </article>
@@ -912,6 +916,10 @@
           <article class="item">
             <h3>Bounded operation admission ready</h3>
             <p>Federation operation envelopes now have a deterministic canonical-size limit. Oversized operations are rejected before consensus journal append, peer clients refuse to broadcast them, and signed private REST submissions leave sequence watermarks untouched when admission fails.</p>
+          </article>
+          <article class="item">
+            <h3>Signed catch-up outcomes ready</h3>
+            <p>Private REST catch-up responses now carry member-signed session outcomes over returned accepted-operation ranges, operation IDs, range digests, and latest order/state digests. Peer clients reject non-empty catch-up data without a valid serving-member signature.</p>
           </article>
           <article class="item">
             <h3>Milestone map expanded</h3>
@@ -1273,10 +1281,16 @@
               <td>Add signed session outcomes and stronger catch-up proofs around accepted consensus ranges.</td>
             </tr>
             <tr>
+              <td>Signed catch-up session outcomes</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation session_outcome -- --test-threads 1`, `cargo test -p cdk-axum --features federation session_outcome -- --test-threads 1`, `cargo test -p cdk-axum --features federation unsigned_nonempty -- --test-threads 1`, `cargo test -p cdk-common --features federation federation -- --test-threads 1`, and `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed.</td>
+              <td>Persist signed session outcomes and verify quorum coverage for catch-up ranges.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, and bounded operation admission before consensus append or peer REST broadcast.</td>
-              <td>Add signed session outcomes, then run live multi-process fake-wallet member scenarios from generated configs where loopback listeners are permitted.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, and signed catch-up session outcomes for non-empty private REST journal ranges.</td>
+              <td>Persist signed session outcomes, then run live multi-process fake-wallet member scenarios from generated configs where loopback listeners are permitted.</td>
             </tr>
           </tbody>
         </table>
@@ -1316,8 +1330,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Signed session outcomes</h3>
-            <p>Persist quorum-verifiable session outcome records for accepted operation ranges so catch-up can verify more than one peer's journal response.</p>
+            <h3>Persist session outcomes</h3>
+            <p>Store signed session outcome records with accepted journal ranges so restart and catch-up verification can survive process lifetime boundaries.</p>
           </article>
           <article class="item">
             <h3>Live multi-process smoke</h3>

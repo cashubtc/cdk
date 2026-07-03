@@ -38,9 +38,9 @@ pub use self::signing::{FederationBlindSignatureShare, FederationBlindSignatureS
 pub use self::transport::{
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
     FederationPeerStatusRequest, FederationRestBodyHash, FederationRestMessageKind,
-    FederationRestSequenceTracker, FederationRestSignature, FederationSignedRequest,
-    FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    FEDERATION_REST_API_VERSION,
+    FederationRestSequenceTracker, FederationRestSignature, FederationSessionOutcome,
+    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    FEDERATION_REST_API_VERSION, FEDERATION_SESSION_OUTCOME_VERSION,
 };
 pub use self::trusted_dealer::{
     generate_trusted_dealer_configs, TrustedDealerConfigBundle, TrustedDealerKeysetSpec,
@@ -476,6 +476,26 @@ pub enum FederationError {
     #[error("Federation REST signature verification failed for member {member_id}")]
     RestSignatureVerificationFailed {
         /// Sender whose signature was checked.
+        member_id: MemberId,
+    },
+    /// Signed session outcome used an unsupported payload version.
+    #[error("Federation session outcome version mismatch: expected={expected}, found={found}")]
+    SessionOutcomeVersionMismatch {
+        /// Expected session outcome version.
+        expected: u16,
+        /// Found session outcome version.
+        found: u16,
+    },
+    /// Signed session outcome did not match the catch-up response it accompanied.
+    #[error("Federation session outcome mismatch: {reason}")]
+    SessionOutcomeMismatch {
+        /// Human-readable mismatch reason.
+        reason: String,
+    },
+    /// Signed session outcome had an invalid member identity signature.
+    #[error("Federation session outcome signature verification failed for member {member_id}")]
+    SessionOutcomeSignatureVerificationFailed {
+        /// Member whose signature was checked.
         member_id: MemberId,
     },
     /// Signed REST request was sent to an endpoint for a different message kind.

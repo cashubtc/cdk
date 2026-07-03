@@ -175,6 +175,7 @@ async fn post_journal(
         .await
         .map_err(cdk_error_response)?;
     let consensus = federation_consensus(&state)?;
+    let private_config = federation_runtime_config(&state)?.private_config().clone();
     tracing::debug!(
         next_index = payload.payload.next_index,
         limit = ?payload.payload.limit,
@@ -183,6 +184,8 @@ async fn post_journal(
     let consensus = consensus.lock().await;
     let response = consensus
         .catch_up_checked(&payload.payload)
+        .map_err(federation_error_response)?
+        .with_signed_session_outcome(&private_config)
         .map_err(federation_error_response)?;
     Ok(Json(response))
 }
@@ -404,6 +407,7 @@ where
                 self.federation_id
             );
         }
+        response.verify_session_outcome(member)?;
         Ok(response)
     }
 
@@ -930,6 +934,33 @@ mod tests {
         .expect("signed status request")
     }
 
+    fn signed_catch_up_request(
+        public_config: &FederationConfig,
+        private_config: &MemberConfigPrivate,
+        receiver: MemberId,
+        sequence: u64,
+        request: FederationJournalCatchUpRequest,
+    ) -> FederationSignedRequest<FederationJournalCatchUpRequest> {
+        FederationSignedRequest::new_signed(
+            public_config.federation_id,
+            receiver,
+            sequence,
+            FederationRestMessageKind::CatchUp,
+            request,
+            private_config,
+        )
+        .expect("signed catch-up request")
+    }
+
+    fn signed_catch_up_response(
+        response: FederationJournalCatchUpResponse,
+        private_config: &MemberConfigPrivate,
+    ) -> FederationJournalCatchUpResponse {
+        response
+            .with_signed_session_outcome(private_config)
+            .expect("signed catch-up response")
+    }
+
     async fn consensus_operation_count(state: &MintState) -> u64 {
         state
             .federation_consensus
@@ -1258,7 +1289,7 @@ mod tests {
 
     #[tokio::test]
     async fn rest_peer_client_catches_up_local_consensus_from_member() {
-        let (state, public_config, local_private, _) =
+        let (state, public_config, local_private, peer_private) =
             federation_route_state_with_local_private().await;
         let federation_id = public_config.federation_id;
         let peer_member = public_config.member(member_id(2)).expect("peer member");
@@ -1286,8 +1317,8 @@ mod tests {
         let catch_up_response = peer_consensus
             .catch_up_checked(&local_consensus.lock().await.catch_up_request())
             .expect("peer catch-up response");
-        let transport =
-            MockFederationTransport::default().with_catch_up_response(catch_up_response);
+        let transport = MockFederationTransport::default()
+            .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private));
         let client =
             FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
                 .expect("client");
@@ -1323,6 +1354,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rest_peer_client_rejects_unsigned_nonempty_catch_up_response() {
+        let (state, public_config, local_private, _) =
+            federation_route_state_with_local_private().await;
+        let federation_id = public_config.federation_id;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let first = restore_envelope(
+            federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        let second = restore_envelope(
+            federation_id,
+            "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+        );
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
+        state
+            .submit_federation_envelope(first.clone())
+            .await
+            .expect("local first operation");
+        peer_consensus
+            .submit_envelope(first)
+            .expect("peer first operation");
+        peer_consensus
+            .submit_envelope(second)
+            .expect("peer second operation");
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+        let catch_up_response = peer_consensus
+            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
+            .expect("peer catch-up response");
+        assert!(catch_up_response.session_outcome.is_none());
+        let transport =
+            MockFederationTransport::default().with_catch_up_response(catch_up_response);
+        let client = FederationRestPeerClient::new(transport, &public_config, local_private)
+            .expect("client");
+
+        let err = client
+            .catch_up_state_from_member(&state, peer_member)
+            .await
+            .expect_err("unsigned response must fail");
+
+        assert!(matches!(
+            err.downcast_ref::<FederationError>(),
+            Some(FederationError::SessionOutcomeMismatch { .. })
+        ));
+        assert_eq!(
+            local_consensus.lock().await.peer_status().operation_count,
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn lagging_member_refuses_public_federation_submit_until_healthy() {
         let (state, public_config, _) = federation_route_state().await;
         let peer_member = public_config.member(member_id(2)).expect("peer member");
@@ -1355,7 +1437,7 @@ mod tests {
 
     #[tokio::test]
     async fn rest_peer_client_syncs_lagging_member_before_public_submit() {
-        let (state, public_config, local_private, _) =
+        let (state, public_config, local_private, peer_private) =
             federation_route_state_with_local_private().await;
         let federation_id = public_config.federation_id;
         let peer_member = public_config.member(member_id(2)).expect("peer member");
@@ -1374,7 +1456,7 @@ mod tests {
             .expect("peer catch-up response");
         let transport = MockFederationTransport::default()
             .with_status_response(peer_consensus.peer_status())
-            .with_catch_up_response(catch_up_response);
+            .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private));
         let client = FederationRestPeerClient::new(transport, &public_config, local_private)
             .expect("client");
 
@@ -1401,7 +1483,7 @@ mod tests {
 
     #[tokio::test]
     async fn peer_sync_round_catches_up_from_configured_peer() {
-        let (state, public_config, local_private, _) =
+        let (state, public_config, local_private, peer_private) =
             federation_route_state_with_local_private().await;
         let federation_id = public_config.federation_id;
         let peer_member = public_config.member(member_id(2)).expect("peer member");
@@ -1420,7 +1502,7 @@ mod tests {
             .expect("peer catch-up response");
         let transport = MockFederationTransport::default()
             .with_status_response(peer_consensus.peer_status())
-            .with_catch_up_response(catch_up_response);
+            .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private));
         let client = FederationRestPeerClient::new(transport, &public_config, local_private)
             .expect("client");
 
@@ -2524,6 +2606,41 @@ mod tests {
         assert!(response
             .sync_message
             .contains("federation member is lagging behind peer"));
+    }
+
+    #[tokio::test]
+    async fn private_journal_route_returns_signed_session_outcome() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let local_member = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .member_id();
+        state
+            .submit_federation_envelope(restore_envelope(
+                public_config.federation_id,
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            ))
+            .await
+            .expect("submit restore");
+        let request = signed_catch_up_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            1,
+            FederationJournalCatchUpRequest::new(0),
+        );
+
+        let response = post_journal(State(state), Json(request))
+            .await
+            .expect("journal response")
+            .0;
+
+        assert_eq!(response.entries.len(), 1);
+        assert!(response.session_outcome.is_some());
+        response
+            .verify_session_outcome(public_config.member(local_member).expect("local member"))
+            .expect("session outcome verifies");
     }
 
     #[tokio::test]

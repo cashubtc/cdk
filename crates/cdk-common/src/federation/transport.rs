@@ -17,14 +17,18 @@ use super::{
     FederationConfig, FederationError, FederationId, FederationJournalAppendOutcome,
     FederationJournalDigest, FederationJournalEntry, FederationOperationEnvelope,
     FederationOperationId, FederationStateDigest, InMemoryFederationJournal, MemberConfigPrivate,
-    MemberId, Result,
+    MemberConfigPublic, MemberId, Result,
 };
 
 /// Version of the private federation REST payload format.
 pub const FEDERATION_REST_API_VERSION: u16 = 1;
+/// Version of signed federation session outcome payloads.
+pub const FEDERATION_SESSION_OUTCOME_VERSION: u16 = 1;
 
 const FEDERATION_REST_BODY_HASH_VERSION: &[u8] = b"cdk-federation-rest-body-v1";
 const FEDERATION_REST_SIGNATURE_VERSION: &[u8] = b"cdk-federation-rest-signature-v1";
+const FEDERATION_SESSION_OUTCOME_SIGNATURE_VERSION: &[u8] =
+    b"cdk-federation-session-outcome-signature-v1";
 
 /// Private federation REST message kind covered by member signatures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -593,6 +597,161 @@ impl FederationJournalCatchUpRequest {
     }
 }
 
+/// Signed summary of a contiguous accepted-operation range served during catch-up.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationSessionOutcome {
+    /// Session outcome payload version.
+    pub version: u16,
+    /// Federation whose accepted range is summarized.
+    pub federation_id: FederationId,
+    /// Member that signed this outcome.
+    pub signer: MemberId,
+    /// First returned journal index.
+    pub from_index: u64,
+    /// Number of returned entries.
+    pub operation_count: u64,
+    /// Last returned journal index.
+    pub latest_index: u64,
+    /// Digest before the first returned entry.
+    pub previous_order_digest: FederationJournalDigest,
+    /// Digest after the returned range.
+    pub range_order_digest: FederationJournalDigest,
+    /// Latest accepted-order digest known to the signer.
+    pub latest_order_digest: FederationJournalDigest,
+    /// Latest consensus-visible state digest known to the signer.
+    pub state_digest: FederationStateDigest,
+    /// Operation IDs covered by this range, in order.
+    pub operation_ids: Vec<FederationOperationId>,
+    /// Member identity signature over the session outcome transcript.
+    pub signature: FederationRestSignature,
+}
+
+impl FederationSessionOutcome {
+    /// Sign a contiguous range of accepted journal entries.
+    pub fn new_signed(
+        federation_id: FederationId,
+        entries: &[FederationJournalEntry],
+        latest_order_digest: FederationJournalDigest,
+        state_digest: FederationStateDigest,
+        private_config: &MemberConfigPrivate,
+    ) -> Result<Self> {
+        let first = entries
+            .first()
+            .ok_or_else(|| session_outcome_mismatch("cannot sign an empty entry range"))?;
+        let last = entries
+            .last()
+            .ok_or_else(|| session_outcome_mismatch("cannot sign an empty entry range"))?;
+        let operation_ids = entries
+            .iter()
+            .map(|entry| entry.operation_id)
+            .collect::<Vec<_>>();
+        let transcript = session_outcome_transcript(
+            federation_id,
+            private_config.member_id,
+            first.index,
+            entries.len() as u64,
+            last.index,
+            first.previous_order_digest,
+            last.order_digest,
+            latest_order_digest,
+            state_digest,
+            &operation_ids,
+        );
+        let signature = FederationRestSignature::sign(&transcript, private_config)?;
+
+        Ok(Self {
+            version: FEDERATION_SESSION_OUTCOME_VERSION,
+            federation_id,
+            signer: private_config.member_id,
+            from_index: first.index,
+            operation_count: entries.len() as u64,
+            latest_index: last.index,
+            previous_order_digest: first.previous_order_digest,
+            range_order_digest: last.order_digest,
+            latest_order_digest,
+            state_digest,
+            operation_ids,
+            signature,
+        })
+    }
+
+    /// Verify this outcome against returned catch-up entries and a roster member.
+    pub fn verify(
+        &self,
+        member: &MemberConfigPublic,
+        federation_id: FederationId,
+        from_index: u64,
+        entries: &[FederationJournalEntry],
+        latest_order_digest: FederationJournalDigest,
+        state_digest: FederationStateDigest,
+    ) -> Result<()> {
+        if self.version != FEDERATION_SESSION_OUTCOME_VERSION {
+            return Err(FederationError::SessionOutcomeVersionMismatch {
+                expected: FEDERATION_SESSION_OUTCOME_VERSION,
+                found: self.version,
+            });
+        }
+
+        if self.federation_id != federation_id {
+            return Err(session_outcome_mismatch("federation id mismatch"));
+        }
+
+        if self.signer != member.member_id {
+            return Err(session_outcome_mismatch("signer member mismatch"));
+        }
+
+        let first = entries
+            .first()
+            .ok_or_else(|| session_outcome_mismatch("missing entries for signed outcome"))?;
+        let last = entries
+            .last()
+            .ok_or_else(|| session_outcome_mismatch("missing entries for signed outcome"))?;
+        let operation_ids = entries
+            .iter()
+            .map(|entry| entry.operation_id)
+            .collect::<Vec<_>>();
+
+        if self.from_index != from_index || first.index != from_index {
+            return Err(session_outcome_mismatch("range start mismatch"));
+        }
+
+        if self.operation_count != entries.len() as u64
+            || self.latest_index != last.index
+            || self.previous_order_digest != first.previous_order_digest
+            || self.range_order_digest != last.order_digest
+            || self.latest_order_digest != latest_order_digest
+            || self.state_digest != state_digest
+            || self.operation_ids != operation_ids
+        {
+            return Err(session_outcome_mismatch("range content mismatch"));
+        }
+
+        let transcript = session_outcome_transcript(
+            self.federation_id,
+            self.signer,
+            self.from_index,
+            self.operation_count,
+            self.latest_index,
+            self.previous_order_digest,
+            self.range_order_digest,
+            self.latest_order_digest,
+            self.state_digest,
+            &self.operation_ids,
+        );
+        let signature = self.signature.as_schnorr()?;
+        member
+            .identity_public_key
+            .verify(&transcript, &signature)
+            .map_err(
+                |_| FederationError::SessionOutcomeSignatureVerificationFailed {
+                    member_id: self.signer,
+                },
+            )?;
+
+        Ok(())
+    }
+}
+
 /// Catch-up response containing accepted journal entries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederationJournalCatchUpResponse {
@@ -612,6 +771,9 @@ pub struct FederationJournalCatchUpResponse {
     /// Latest local consensus-visible state digest.
     #[serde(default = "FederationStateDigest::genesis")]
     pub state_digest: FederationStateDigest,
+    /// Signed summary of the returned accepted-operation range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_outcome: Option<FederationSessionOutcome>,
     /// Whether the peer returned all entries currently available from `from_index`.
     pub complete: bool,
 }
@@ -638,8 +800,88 @@ impl FederationJournalCatchUpResponse {
             latest_index: journal.entries().last().map(|entry| entry.index),
             latest_order_digest: journal.latest_order_digest(),
             state_digest: journal.state_digest(),
+            session_outcome: None,
             complete,
         }
+    }
+
+    /// Attach a member-signed session outcome for the returned entry range.
+    pub fn with_signed_session_outcome(
+        mut self,
+        private_config: &MemberConfigPrivate,
+    ) -> Result<Self> {
+        if !self.entries.is_empty() {
+            self.session_outcome = Some(FederationSessionOutcome::new_signed(
+                self.federation_id,
+                &self.entries,
+                self.latest_order_digest,
+                self.state_digest,
+                private_config,
+            )?);
+        }
+
+        Ok(self)
+    }
+
+    /// Verify the signed session outcome for this response.
+    pub fn verify_session_outcome(&self, member: &MemberConfigPublic) -> Result<()> {
+        match (self.entries.is_empty(), &self.session_outcome) {
+            (true, None) => Ok(()),
+            (true, Some(_)) => Err(session_outcome_mismatch(
+                "empty catch-up response carried an outcome",
+            )),
+            (false, None) => Err(session_outcome_mismatch(
+                "non-empty catch-up response missing outcome",
+            )),
+            (false, Some(outcome)) => outcome.verify(
+                member,
+                self.federation_id,
+                self.from_index,
+                &self.entries,
+                self.latest_order_digest,
+                self.state_digest,
+            ),
+        }
+    }
+}
+
+fn session_outcome_transcript(
+    federation_id: FederationId,
+    signer: MemberId,
+    from_index: u64,
+    operation_count: u64,
+    latest_index: u64,
+    previous_order_digest: FederationJournalDigest,
+    range_order_digest: FederationJournalDigest,
+    latest_order_digest: FederationJournalDigest,
+    state_digest: FederationStateDigest,
+    operation_ids: &[FederationOperationId],
+) -> Vec<u8> {
+    let mut transcript = Vec::new();
+    append_hash_bytes(
+        &mut transcript,
+        FEDERATION_SESSION_OUTCOME_SIGNATURE_VERSION,
+    );
+    transcript.extend_from_slice(&FEDERATION_SESSION_OUTCOME_VERSION.to_be_bytes());
+    append_hash_bytes(&mut transcript, &federation_id.to_bytes());
+    transcript.extend_from_slice(&signer.get().to_be_bytes());
+    transcript.extend_from_slice(&from_index.to_be_bytes());
+    transcript.extend_from_slice(&operation_count.to_be_bytes());
+    transcript.extend_from_slice(&latest_index.to_be_bytes());
+    append_hash_bytes(&mut transcript, &previous_order_digest.to_bytes());
+    append_hash_bytes(&mut transcript, &range_order_digest.to_bytes());
+    append_hash_bytes(&mut transcript, &latest_order_digest.to_bytes());
+    append_hash_bytes(&mut transcript, &state_digest.to_bytes());
+    transcript.extend_from_slice(&(operation_ids.len() as u64).to_be_bytes());
+    for operation_id in operation_ids {
+        append_hash_bytes(&mut transcript, &operation_id.to_bytes());
+    }
+    transcript
+}
+
+fn session_outcome_mismatch(reason: &str) -> FederationError {
+    FederationError::SessionOutcomeMismatch {
+        reason: reason.to_string(),
     }
 }
 
@@ -857,6 +1099,66 @@ mod tests {
         assert_eq!(response.latest_index, Some(2));
         assert_eq!(response.latest_order_digest, journal.latest_order_digest());
         assert_eq!(response.state_digest, journal.state_digest());
+    }
+
+    #[test]
+    fn catch_up_response_signs_and_verifies_session_outcome() {
+        let (config, _, second_private) = transport_config();
+        let member = config
+            .member(second_private.member_id)
+            .expect("signing member");
+        let mut journal = InMemoryFederationJournal::new();
+        journal.append(mint_quote_envelope()).expect("append quote");
+        journal
+            .append(mint_envelope(
+                "quote-1",
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            ))
+            .expect("append mint");
+        let request = FederationJournalCatchUpRequest::new(0);
+        let response = FederationJournalCatchUpResponse::from_journal(
+            federation_id(),
+            &journal,
+            &request,
+            50,
+            100,
+        )
+        .with_signed_session_outcome(&second_private)
+        .expect("signed response");
+
+        let outcome = response.session_outcome.as_ref().expect("session outcome");
+        assert_eq!(outcome.signer, second_private.member_id);
+        assert_eq!(outcome.operation_count, 2);
+        assert_eq!(outcome.operation_ids.len(), 2);
+        response
+            .verify_session_outcome(member)
+            .expect("verified outcome");
+    }
+
+    #[test]
+    fn catch_up_response_rejects_tampered_session_outcome() {
+        let (config, _, second_private) = transport_config();
+        let member = config
+            .member(second_private.member_id)
+            .expect("signing member");
+        let mut journal = InMemoryFederationJournal::new();
+        journal.append(mint_quote_envelope()).expect("append quote");
+        let request = FederationJournalCatchUpRequest::new(0);
+        let mut response = FederationJournalCatchUpResponse::from_journal(
+            federation_id(),
+            &journal,
+            &request,
+            50,
+            100,
+        )
+        .with_signed_session_outcome(&second_private)
+        .expect("signed response");
+        response.entries[0].operation_id = FederationOperationId::from_bytes([42; 32]);
+
+        assert!(matches!(
+            response.verify_session_outcome(member),
+            Err(FederationError::SessionOutcomeMismatch { .. })
+        ));
     }
 
     #[test]
