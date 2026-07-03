@@ -328,11 +328,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">e7494bea feature gate scaffold</span>
+          <span class="value">7f0115ca progress after milestone 0</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Threshold BLS primitives</span>
+          <span class="value">Threshold BLS aggregation slice</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -416,6 +416,10 @@
             <h3>Milestone 0 committed</h3>
             <p>The inert federation feature chain, mint mode placeholder, and RFC/review checklist were committed in e7494bea.</p>
           </article>
+          <article class="item">
+            <h3>Threshold BLS first slice ready</h3>
+            <p>Trusted-dealer polynomial shares, public share aggregation, blind signature share verification, and Lagrange aggregation are ready to commit.</p>
+          </article>
         </div>
       </section>
 
@@ -433,6 +437,10 @@
           <article class="item">
             <h3>Identity split clarified</h3>
             <p>Member identity keys authenticate federation traffic; threshold BLS shares sign Cashu outputs.</p>
+          </article>
+          <article class="item">
+            <h3>Threshold math baseline</h3>
+            <p>The first implementation proves that any valid threshold subset aggregates to the same blind signature under the aggregate key.</p>
           </article>
         </div>
       </section>
@@ -493,9 +501,15 @@
             </tr>
             <tr>
               <td>Threshold BLS</td>
-              <td><span class="status pending">Pending</span></td>
-              <td>No threshold primitives implemented yet.</td>
-              <td>Add 1-of-1, 3-of-5, invalid-share, and duplicate-share tests.</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cashu --features federation threshold_bls` passed 3 tests.</td>
+              <td>Add serialization, randomized/property coverage, and final proof unblinding tests.</td>
+            </tr>
+            <tr>
+              <td>Threshold BLS feature-off compile</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo check -p cashu --lib` passed with federation disabled.</td>
+              <td>Keep default builds warning-free as threshold APIs expand.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
@@ -526,6 +540,10 @@
             <h3>Feature-off compatibility</h3>
             <p>The first Rust scaffold is gated so normal standalone builds do not see federation mint fields or APIs.</p>
           </article>
+          <article class="item">
+            <h3>Trusted-dealer first</h3>
+            <p>Milestone 1 starts with local polynomial shares so later DKG work can reuse the same share verification and aggregation code.</p>
+          </article>
         </div>
       </section>
 
@@ -534,7 +552,7 @@
         <div class="stack">
           <article class="item">
             <h3>Threshold BLS primitives</h3>
-            <p>Implement trusted-dealer shares, public shares, share verification, interpolation, and aggregate blind-signature tests.</p>
+            <p>Add serialization for share types, broader subset coverage, and final unblind-and-verify tests using existing Cashu BLS proof verification.</p>
           </article>
           <article class="item">
             <h3>Focused verification</h3>

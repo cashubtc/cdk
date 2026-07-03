@@ -15,6 +15,12 @@ use thiserror::Error;
 mod public_key;
 mod secret_key;
 
+#[cfg(feature = "federation")]
+pub use self::bls::{
+    aggregate_blind_signature_shares, aggregate_public_key_shares, trusted_dealer_keygen,
+    verify_blind_signature_share, BlsBlindSignatureShare, BlsPublicKeyShare, BlsSecretKeyShare,
+    BlsSignerId, BlsThresholdKeySet,
+};
 pub use self::bls::{BlsG1PublicKey, BlsG2PublicKey, BlsSecretKey};
 pub use self::public_key::PublicKey;
 pub use self::secret_key::SecretKey;
@@ -60,6 +66,39 @@ pub enum Error {
     /// Wrong key kind for operation
     #[error("Wrong key kind for operation")]
     WrongKeyKind,
+    /// Threshold must be at least one and no greater than participant count.
+    #[error("Invalid threshold: threshold={threshold}, participants={participants}")]
+    InvalidThreshold {
+        /// Requested threshold.
+        threshold: usize,
+        /// Number of participants.
+        participants: usize,
+    },
+    /// BLS threshold signer IDs must be non-zero.
+    #[error("Invalid threshold signer id: {0}")]
+    InvalidThresholdSignerId(u16),
+    /// Duplicate BLS threshold signer ID.
+    #[error("Duplicate threshold signer id: {id}")]
+    DuplicateThresholdSignerId {
+        /// Duplicated signer ID.
+        id: u16,
+    },
+    /// Not enough threshold shares were provided.
+    #[error("Insufficient threshold shares: threshold={threshold}, found={found}")]
+    InsufficientThresholdShares {
+        /// Required threshold.
+        threshold: usize,
+        /// Number of shares found.
+        found: usize,
+    },
+    /// A signature share did not belong to the expected signer.
+    #[error("Threshold share signer mismatch: expected={expected}, found={found}")]
+    ThresholdSignerMismatch {
+        /// Expected signer ID.
+        expected: u16,
+        /// Found signer ID.
+        found: u16,
+    },
 }
 
 /// Mint public keys per amount.
