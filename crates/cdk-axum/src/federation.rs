@@ -1028,6 +1028,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn catch_up_applies_melt_quote_operation_to_local_store() {
+        let (state, public_config, _) = federation_route_state().await;
+        let config = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .clone();
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let quote_id = QuoteId::new();
+        let invoice = create_fake_invoice(1000, "".to_string());
+        let request = cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+            request: invoice.clone(),
+            unit: CurrencyUnit::Sat,
+            options: None,
+        });
+        let envelope = config.melt_quote_operation(quote_id.clone(), request);
+        let operation_id = envelope.operation_id().expect("operation id");
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+        peer_consensus
+            .submit_envelope(envelope)
+            .expect("peer accepted melt quote");
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+        let catch_up_response = peer_consensus
+            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
+            .expect("catch-up response");
+
+        state
+            .apply_federation_catch_up_response(&catch_up_response)
+            .await
+            .expect("apply catch-up");
+
+        let quote = state
+            .mint
+            .localstore()
+            .get_melt_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .expect("quote persisted");
+        assert_eq!(quote.id, quote_id);
+        assert_eq!(
+            quote.payment_method,
+            PaymentMethod::Known(KnownMethod::Bolt11)
+        );
+        assert_eq!(quote.request.to_string(), invoice.to_string());
+        assert_eq!(quote.state, MeltQuoteState::Unpaid);
+        assert_eq!(quote.amount(), Amount::new(1, CurrencyUnit::Sat));
+        assert_eq!(quote.fee_reserve(), Amount::new(1, CurrencyUnit::Sat));
+
+        let persisted = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal lookup");
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
+        assert_eq!(
+            local_consensus
+                .lock()
+                .await
+                .journal()
+                .entry_by_operation_id(operation_id)
+                .expect("runtime entry")
+                .status,
+            FederationOperationStatus::Applied
+        );
+    }
+
+    #[tokio::test]
     async fn catch_up_applies_swap_operation_to_local_store() {
         let (state, public_config, _) = federation_route_state().await;
         let config = state

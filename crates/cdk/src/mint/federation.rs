@@ -12,18 +12,18 @@ use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::federation::{
     FederationBlindSignatureShareSet, FederationConfig, FederationError, FederationId,
-    FederationJournalEntry, FederationMeltOperation, FederationMintOperation,
-    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
-    FederationOperation, FederationOperationEnvelope, FederationOperationId,
+    FederationJournalEntry, FederationMeltOperation, FederationMeltQuoteOperation,
+    FederationMintOperation, FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
+    FederationMintRequest, FederationOperation, FederationOperationEnvelope, FederationOperationId,
     FederationOperationStatus, FederationSwapOperation, MemberConfigPrivate, MemberId,
 };
-use cdk_common::mint::{MintQuote, Operation, OperationKind};
+use cdk_common::mint::{MeltQuote, MintQuote, Operation, OperationKind};
 use cdk_common::payment::PaymentIdentifier;
 use cdk_common::{
-    Amount, BatchMintRequest, BlindSignature, BlindedMessage, CurrencyUnit, MeltRequest,
-    MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest, MintResponse, PaymentMethod,
-    Proofs, ProofsMethods, PublicKey, QuoteId, RestoreRequest, SpendingConditionVerification,
-    State, SwapRequest, SwapResponse,
+    Amount, BatchMintRequest, BlindSignature, BlindedMessage, CurrencyUnit, MeltQuoteRequest,
+    MeltRequest, MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest, MintResponse,
+    PaymentMethod, Proofs, ProofsMethods, PublicKey, QuoteId, RestoreRequest,
+    SpendingConditionVerification, State, SwapRequest, SwapResponse,
 };
 use uuid::Uuid;
 
@@ -146,6 +146,23 @@ impl FederationRuntimeConfig {
                 amount_paid,
                 amount_issued,
                 payment_proof,
+            },
+        ))
+    }
+
+    /// Build the consensus operation for creating a melt quote.
+    pub fn melt_quote_operation<Q>(
+        &self,
+        quote: Q,
+        request: MeltQuoteRequest,
+    ) -> FederationOperationEnvelope
+    where
+        Q: ToString,
+    {
+        self.operation_envelope(FederationOperation::MeltQuote(
+            FederationMeltQuoteOperation {
+                quote: quote.to_string(),
+                request,
             },
         ))
     }
@@ -378,6 +395,11 @@ impl Mint {
                     .await?;
                 Ok(true)
             }
+            FederationOperation::MeltQuote(operation) => {
+                self.apply_federation_melt_quote(entry.operation_id, operation)
+                    .await?;
+                Ok(true)
+            }
             FederationOperation::Swap(operation) => {
                 self.apply_federation_swap(entry.operation_id, operation)
                     .await?;
@@ -388,9 +410,7 @@ impl Mint {
                     .await?;
                 Ok(true)
             }
-            FederationOperation::MeltQuote(_)
-            | FederationOperation::MeltQuotePayment(_)
-            | FederationOperation::Restore(_) => Ok(false),
+            FederationOperation::MeltQuotePayment(_) | FederationOperation::Restore(_) => Ok(false),
         }
     }
 
@@ -681,6 +701,26 @@ impl Mint {
         Ok(())
     }
 
+    async fn apply_federation_melt_quote(
+        &self,
+        operation_id: FederationOperationId,
+        operation: &FederationMeltQuoteOperation,
+    ) -> Result<(), Error> {
+        let quote_id = quote_id_from_federation(&operation.quote)?;
+        if let Some(existing) = self.localstore.get_melt_quote(&quote_id).await? {
+            ensure_melt_quote_matches_request(&existing, &operation.request)?;
+        } else {
+            self.get_federation_melt_quote(quote_id, operation.request.clone())
+                .await?;
+        }
+
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn apply_federation_melt(
         &self,
         operation_id: FederationOperationId,
@@ -907,6 +947,30 @@ fn ensure_mint_quote_matches(existing: &MintQuote, expected: &MintQuote) -> Resu
     }
 
     Ok(())
+}
+
+fn ensure_melt_quote_matches_request(
+    existing: &MeltQuote,
+    request: &MeltQuoteRequest,
+) -> Result<(), Error> {
+    if existing.payment_method != request.method()
+        || existing.request.to_string() != melt_quote_request_string(request)
+    {
+        return Err(Error::Custom(
+            "federation melt quote replay found mismatched local quote".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn melt_quote_request_string(request: &MeltQuoteRequest) -> String {
+    match request {
+        MeltQuoteRequest::Bolt11(request) => request.request.to_string(),
+        MeltQuoteRequest::Bolt12(request) => request.request.clone(),
+        MeltQuoteRequest::Onchain(request) => request.request.clone(),
+        MeltQuoteRequest::Custom(request) => request.request.clone(),
+    }
 }
 
 fn federation_share_signatures(share_set: FederationBlindSignatureShareSet) -> Vec<BlindSignature> {

@@ -212,6 +212,21 @@ async fn submit_federation_mint_quote_payment_observation(
 }
 
 #[cfg(feature = "federation")]
+async fn submit_federation_melt_quote_operation(
+    state: &MintState,
+    request: cdk::MeltQuoteRequest,
+    response: &MeltQuoteCreateResponse<QuoteId>,
+) -> Result<(), cdk::Error> {
+    let Some(config) = state.mint.federation_config() else {
+        return Ok(());
+    };
+    let quote = response.quote().cloned().ok_or(cdk::Error::UnknownQuote)?;
+    let envelope = config.melt_quote_operation(quote, request);
+    state.submit_federation_envelope(envelope).await?;
+    Ok(())
+}
+
+#[cfg(feature = "federation")]
 async fn submit_federation_mint_operation(
     state: &MintState,
     input: cdk::mint::MintInput,
@@ -578,7 +593,7 @@ pub async fn post_melt_custom_quote(
         .await
         .map_err(into_response)?;
 
-    let response = match method.as_str() {
+    let (quote_request, response) = match method.as_str() {
         "bolt11" => {
             let bolt11_request: MeltQuoteBolt11Request =
                 serde_json::from_value(payload).map_err(|e| {
@@ -586,11 +601,14 @@ pub async fn post_melt_custom_quote(
                     into_response(cdk::Error::InvalidPaymentMethod)
                 })?;
 
-            state
+            let quote_request = cdk::MeltQuoteRequest::Bolt11(bolt11_request);
+            let response = state
                 .mint
-                .get_melt_quote(bolt11_request.into())
+                .get_melt_quote(quote_request.clone())
                 .await
-                .map_err(into_response)?
+                .map_err(into_response)?;
+
+            (quote_request, response)
         }
         "bolt12" => {
             let bolt12_request: MeltQuoteBolt12Request =
@@ -599,11 +617,14 @@ pub async fn post_melt_custom_quote(
                     into_response(cdk::Error::InvalidPaymentMethod)
                 })?;
 
-            state
+            let quote_request = cdk::MeltQuoteRequest::Bolt12(bolt12_request);
+            let response = state
                 .mint
-                .get_melt_quote(bolt12_request.into())
+                .get_melt_quote(quote_request.clone())
                 .await
-                .map_err(into_response)?
+                .map_err(into_response)?;
+
+            (quote_request, response)
         }
         "onchain" => {
             let onchain_request: MeltQuoteOnchainRequest = serde_json::from_value(payload)
@@ -612,16 +633,14 @@ pub async fn post_melt_custom_quote(
                     into_response(cdk::Error::InvalidPaymentMethod)
                 })?;
 
+            let quote_request = cdk::MeltQuoteRequest::Onchain(onchain_request);
             let response = state
                 .mint
-                .get_melt_quote(onchain_request.into())
+                .get_melt_quote(quote_request.clone())
                 .await
                 .map_err(into_response)?;
 
-            return match response {
-                MeltQuoteCreateResponse::Onchain(r) => Ok(Json(r).into_response()),
-                _ => Err(into_response(cdk::Error::InvalidPaymentMethod)),
-            };
+            (quote_request, response)
         }
         _ => {
             let custom_request: MeltQuoteCustomRequest =
@@ -637,13 +656,23 @@ pub async fn post_melt_custom_quote(
                 return Err(into_response(cdk::Error::InvalidPaymentMethod));
             }
 
-            state
+            let quote_request = cdk::MeltQuoteRequest::Custom(custom_request);
+            let response = state
                 .mint
-                .get_melt_quote(custom_request.into())
+                .get_melt_quote(quote_request.clone())
                 .await
-                .map_err(into_response)?
+                .map_err(into_response)?;
+
+            (quote_request, response)
         }
     };
+
+    #[cfg(feature = "federation")]
+    submit_federation_melt_quote_operation(&state, quote_request, &response)
+        .await
+        .map_err(into_response)?;
+    #[cfg(not(feature = "federation"))]
+    let _ = quote_request;
 
     Ok(melt_quote_create_response_to_json(response))
 }
@@ -1472,6 +1501,32 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::MintQuote]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn post_melt_custom_quote_records_federation_quote_operation() {
+        let state = create_federated_test_state().await;
+        let payload = serde_json::to_value(MeltQuoteBolt11Request {
+            request: create_fake_invoice(1000, "".to_string()),
+            unit: CurrencyUnit::Sat,
+            options: None,
+        })
+        .expect("melt quote payload");
+
+        let result = post_melt_custom_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_ok(), "melt quote creation should succeed");
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::MeltQuote]
         );
     }
 
