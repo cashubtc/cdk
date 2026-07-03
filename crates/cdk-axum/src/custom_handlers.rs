@@ -147,7 +147,132 @@ async fn process_mint_input(
     state: &MintState,
     input: cdk::mint::MintInput,
 ) -> Result<MintResponse, cdk::Error> {
+    #[cfg(feature = "federation")]
+    submit_federation_mint_operation(state, input.clone()).await?;
+
     state.mint.process_mint_request(input).await
+}
+
+#[cfg(feature = "federation")]
+async fn submit_federation_mint_quote_operation(
+    state: &MintState,
+    request: cdk::mint::MintQuoteRequest,
+    response: &cdk::mint::MintQuoteResponse<QuoteId>,
+) -> Result<(), cdk::Error> {
+    let Some(config) = state.mint.federation_config() else {
+        return Ok(());
+    };
+    let Some(consensus) = state.federation_consensus.clone() else {
+        return Ok(());
+    };
+    let envelope = config.mint_quote_operation(
+        response.quote().clone(),
+        request,
+        mint_quote_response_to_string(response),
+    );
+    let mut consensus = consensus.lock().await;
+    consensus.submit_envelope(envelope)?;
+    Ok(())
+}
+
+#[cfg(feature = "federation")]
+async fn submit_federation_mint_quote_payment_observation(
+    state: &MintState,
+    response: &cdk::mint::MintQuoteResponse<QuoteId>,
+) -> Result<(), cdk::Error> {
+    let Some(config) = state.mint.federation_config() else {
+        return Ok(());
+    };
+    let Some(consensus) = state.federation_consensus.clone() else {
+        return Ok(());
+    };
+    let (amount_paid, amount_issued) = mint_quote_response_amounts(response);
+    let envelope = config.mint_quote_payment_observation(
+        response.quote().clone(),
+        response.method(),
+        response
+            .state()
+            .unwrap_or(cdk::nuts::MintQuoteState::Unpaid),
+        amount_paid,
+        amount_issued,
+        None,
+    );
+    let mut consensus = consensus.lock().await;
+    consensus.submit_envelope(envelope)?;
+    Ok(())
+}
+
+#[cfg(feature = "federation")]
+async fn submit_federation_mint_operation(
+    state: &MintState,
+    input: cdk::mint::MintInput,
+) -> Result<(), cdk::Error> {
+    let Some(config) = state.mint.federation_config() else {
+        return Ok(());
+    };
+    let Some(consensus) = state.federation_consensus.clone() else {
+        return Ok(());
+    };
+    let envelope = config.mint_operation(input);
+    let mut consensus = consensus.lock().await;
+    consensus.submit_envelope(envelope)?;
+    Ok(())
+}
+
+#[cfg(feature = "federation")]
+fn mint_quote_response_to_string(
+    response: &cdk::mint::MintQuoteResponse<QuoteId>,
+) -> cdk::mint::MintQuoteResponse<String> {
+    match response {
+        cdk::mint::MintQuoteResponse::Bolt11(response) => {
+            cdk::mint::MintQuoteResponse::Bolt11(response.to_string_id())
+        }
+        cdk::mint::MintQuoteResponse::Bolt12(response) => {
+            cdk::mint::MintQuoteResponse::Bolt12(response.to_string_id())
+        }
+        cdk::mint::MintQuoteResponse::Onchain(response) => {
+            cdk::mint::MintQuoteResponse::Onchain(response.to_string_id())
+        }
+        cdk::mint::MintQuoteResponse::Custom { method, response } => {
+            cdk::mint::MintQuoteResponse::Custom {
+                method: method.clone(),
+                response: response.to_string_id(),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "federation")]
+fn mint_quote_response_amounts(
+    response: &cdk::mint::MintQuoteResponse<QuoteId>,
+) -> (cdk::Amount, cdk::Amount) {
+    match response {
+        cdk::mint::MintQuoteResponse::Bolt11(response) => {
+            bolt11_mint_quote_amounts(response.state, response.amount)
+        }
+        cdk::mint::MintQuoteResponse::Bolt12(response) => {
+            (response.amount_paid, response.amount_issued)
+        }
+        cdk::mint::MintQuoteResponse::Onchain(response) => {
+            (response.amount_paid, response.amount_issued)
+        }
+        cdk::mint::MintQuoteResponse::Custom { response, .. } => {
+            (response.amount_paid, response.amount_issued)
+        }
+    }
+}
+
+#[cfg(feature = "federation")]
+fn bolt11_mint_quote_amounts(
+    state: cdk::nuts::MintQuoteState,
+    amount: Option<cdk::Amount>,
+) -> (cdk::Amount, cdk::Amount) {
+    let amount = amount.unwrap_or(cdk::Amount::ZERO);
+    match state {
+        cdk::nuts::MintQuoteState::Unpaid => (cdk::Amount::ZERO, cdk::Amount::ZERO),
+        cdk::nuts::MintQuoteState::Paid => (amount, cdk::Amount::ZERO),
+        cdk::nuts::MintQuoteState::Issued => (amount, amount),
+    }
 }
 
 async fn validate_melt_request_route(
@@ -196,9 +321,14 @@ pub async fn post_mint_custom_quote(
                     into_response(cdk::Error::InvalidPaymentMethod)
                 })?;
 
+            let quote_request: cdk::mint::MintQuoteRequest = bolt11_request.into();
             let quote = state
                 .mint
-                .get_mint_quote(bolt11_request.into())
+                .get_mint_quote(quote_request.clone())
+                .await
+                .map_err(into_response)?;
+            #[cfg(feature = "federation")]
+            submit_federation_mint_quote_operation(&state, quote_request, &quote)
                 .await
                 .map_err(into_response)?;
 
@@ -216,9 +346,14 @@ pub async fn post_mint_custom_quote(
                     into_response(cdk::Error::InvalidPaymentMethod)
                 })?;
 
+            let quote_request: cdk::mint::MintQuoteRequest = bolt12_request.into();
             let quote = state
                 .mint
-                .get_mint_quote(bolt12_request.into())
+                .get_mint_quote(quote_request.clone())
+                .await
+                .map_err(into_response)?;
+            #[cfg(feature = "federation")]
+            submit_federation_mint_quote_operation(&state, quote_request, &quote)
                 .await
                 .map_err(into_response)?;
 
@@ -237,9 +372,14 @@ pub async fn post_mint_custom_quote(
                     }
                 })?;
 
+            let quote_request: cdk::mint::MintQuoteRequest = onchain_request.into();
             let quote = state
                 .mint
-                .get_mint_quote(onchain_request.into())
+                .get_mint_quote(quote_request.clone())
+                .await
+                .map_err(into_response)?;
+            #[cfg(feature = "federation")]
+            submit_federation_mint_quote_operation(&state, quote_request, &quote)
                 .await
                 .map_err(into_response)?;
 
@@ -261,7 +401,11 @@ pub async fn post_mint_custom_quote(
 
             let response = state
                 .mint
-                .get_mint_quote(quote_request)
+                .get_mint_quote(quote_request.clone())
+                .await
+                .map_err(into_response)?;
+            #[cfg(feature = "federation")]
+            submit_federation_mint_quote_operation(&state, quote_request, &response)
                 .await
                 .map_err(into_response)?;
 
@@ -299,6 +443,10 @@ pub async fn get_check_mint_custom_quote(
         .first()
         .cloned()
         .ok_or(cdk::Error::UnknownQuote)
+        .map_err(into_response)?;
+    #[cfg(feature = "federation")]
+    submit_federation_mint_quote_payment_observation(&state, &quote_response)
+        .await
         .map_err(into_response)?;
 
     match method.as_str() {
@@ -362,6 +510,12 @@ pub async fn post_batch_check_mint_quote(
         .check_mint_quotes(&payload.quotes)
         .await
         .map_err(into_response)?;
+    #[cfg(feature = "federation")]
+    for response in &responses {
+        submit_federation_mint_quote_payment_observation(&state, response)
+            .await
+            .map_err(into_response)?;
+    }
 
     match method.as_str() {
         "bolt11" => {
@@ -737,7 +891,9 @@ mod tests {
     use bip39::Mnemonic;
     use cdk::mint::{MintBuilder, MintMeltLimits, MintQuoteResponse};
     use cdk::nuts::nut00::KnownMethod;
-    use cdk::nuts::{BlindedMessage, CurrencyUnit, MintQuoteState, PaymentMethod, SecretKey};
+    #[cfg(feature = "federation")]
+    use cdk::nuts::SecretKey;
+    use cdk::nuts::{BlindedMessage, CurrencyUnit, MintQuoteState, PaymentMethod};
     use cdk::types::{FeeReserve, QuoteTTL};
     use cdk::Amount;
     use cdk_fake_wallet::FakeWallet;
@@ -812,7 +968,120 @@ mod tests {
         MintState {
             mint: Arc::new(mint),
             cache: Arc::new(HttpCache::default()),
+            #[cfg(feature = "federation")]
+            federation_consensus: None,
         }
+    }
+
+    #[cfg(feature = "federation")]
+    fn test_federation_runtime_config() -> cdk::mint::FederationRuntimeConfig {
+        let member = cdk::federation::TrustedDealerMember::new(
+            cdk::federation::MemberId::new(1).expect("member id"),
+            "https://mint1.example.com"
+                .parse::<cdk::mint_url::MintUrl>()
+                .expect("public mint url"),
+            "https://fed1.example.com"
+                .parse::<cdk::mint_url::MintUrl>()
+                .expect("federation api url"),
+            SecretKey::from_slice(&[1; 32]).expect("identity secret"),
+        );
+        let keyset = cdk::federation::TrustedDealerKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            std::collections::BTreeMap::from([
+                (
+                    Amount::from(1),
+                    vec![cdk::nuts::nut01::BlsSecretKey::from_reduced_bytes(&[2; 32])],
+                ),
+                (
+                    Amount::from(2),
+                    vec![cdk::nuts::nut01::BlsSecretKey::from_reduced_bytes(&[3; 32])],
+                ),
+            ]),
+        );
+        let bundle = cdk::federation::generate_trusted_dealer_configs(
+            cdk::federation::ThresholdParams::with_bft_consensus(1, 1).expect("params"),
+            vec![member],
+            vec![keyset],
+        )
+        .expect("trusted dealer bundle");
+        let private_config = bundle
+            .private_configs
+            .get(&cdk::federation::MemberId::new(1).expect("member id"))
+            .expect("private config")
+            .clone();
+
+        cdk::mint::FederationRuntimeConfig::new(bundle.public_config, private_config)
+            .expect("runtime config")
+    }
+
+    #[cfg(feature = "federation")]
+    async fn create_federated_test_state() -> MintState {
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let runtime_config = test_federation_runtime_config();
+        let mut builder = MintBuilder::new(db.clone())
+            .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]))
+            .with_federation_config(runtime_config.clone());
+        let fake = FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 0.0,
+            },
+            HashMap::default(),
+            HashSet::default(),
+            0,
+            CurrencyUnit::Sat,
+        );
+        builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintMeltLimits::new(1, 10_000),
+                Arc::new(fake),
+            )
+            .await
+            .unwrap();
+
+        let mnemonic = Mnemonic::generate(12).unwrap();
+        let mint = builder
+            .build_with_seed(db, &mnemonic.to_seed_normalized(""))
+            .await
+            .unwrap();
+        mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000))
+            .await
+            .unwrap();
+        mint.start().await.unwrap();
+
+        MintState {
+            mint: Arc::new(mint),
+            cache: Arc::new(HttpCache::default()),
+            federation_consensus: Some(Arc::new(tokio::sync::Mutex::new(
+                cdk::federation::InMemoryFederationConsensus::new(
+                    runtime_config.federation_id(),
+                    runtime_config.member_id(),
+                ),
+            ))),
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    async fn federation_operation_kinds(
+        state: &MintState,
+    ) -> Vec<cdk::federation::FederationOperationKind> {
+        let consensus = state
+            .federation_consensus
+            .as_ref()
+            .expect("federation consensus")
+            .lock()
+            .await;
+        consensus
+            .journal()
+            .entries()
+            .iter()
+            .map(|entry| entry.envelope.operation.kind())
+            .collect()
     }
 
     async fn create_test_state_with_custom_methods(methods: &[&str]) -> MintState {
@@ -864,6 +1133,8 @@ mod tests {
         MintState {
             mint: Arc::new(mint),
             cache: Arc::new(HttpCache::default()),
+            #[cfg(feature = "federation")]
+            federation_consensus: None,
         }
     }
 
@@ -927,11 +1198,23 @@ mod tests {
             .get(&CurrencyUnit::Sat)
             .unwrap();
 
+        let blinded_secret =
+            cdk::nuts::PublicKey::from(cdk::nuts::nut01::BlsG1PublicKey::hash_to_curve(
+                format!("axum federated mint output {amount}").as_bytes(),
+            ));
+
         vec![BlindedMessage::new(
             Amount::from(amount),
             keyset_id,
-            SecretKey::generate().public_key(),
+            blinded_secret,
         )]
+    }
+
+    async fn response_error_detail(response: Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&bytes).to_string()
     }
 
     #[tokio::test]
@@ -1006,6 +1289,88 @@ mod tests {
         assert!(!result.unwrap().respond_async);
     }
 
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn post_mint_custom_quote_records_federation_quote_operation() {
+        let state = create_federated_test_state().await;
+        let payload = serde_json::to_value(MintQuoteBolt11Request {
+            amount: Amount::from(2u64),
+            unit: CurrencyUnit::Sat,
+            description: None,
+            pubkey: None,
+        })
+        .unwrap();
+
+        let result = post_mint_custom_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(payload),
+        )
+        .await;
+
+        assert!(result.is_ok(), "mint quote creation should succeed");
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::MintQuote]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn post_batch_check_mint_quote_records_federation_payment_observation() {
+        let state = create_federated_test_state().await;
+        let quote_id = create_paid_bolt11_quote(&state).await;
+
+        let result = post_batch_check_mint_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(BatchCheckMintQuoteRequest {
+                quotes: vec![quote_id],
+            }),
+        )
+        .await;
+
+        assert!(result.is_ok(), "mint quote check should succeed");
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::MintQuotePayment]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn cache_post_batch_mint_records_federation_mint_operation() {
+        let state = create_federated_test_state().await;
+        let quote_id = create_paid_bolt11_quote(&state).await;
+        let batch_request = BatchMintRequest {
+            quotes: vec![quote_id],
+            quote_amounts: None,
+            outputs: outputs_for_amount(&state, 2),
+            signatures: None,
+        };
+
+        let result = cache_post_batch_mint(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(batch_request),
+        )
+        .await;
+
+        if let Err(response) = result {
+            panic!(
+                "batch mint should succeed: {}",
+                response_error_detail(response).await
+            );
+        }
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Mint]
+        );
+    }
+
     #[tokio::test]
     async fn cache_post_mint_custom_rejects_cached_url_method_quote_method_mismatch() {
         let state = create_test_state().await;
@@ -1023,7 +1388,12 @@ mod tests {
             Json(mint_request.clone()),
         )
         .await;
-        assert!(result.is_ok(), "bolt11 mint should populate the cache");
+        if let Err(response) = result {
+            panic!(
+                "bolt11 mint should populate the cache: {}",
+                response_error_detail(response).await
+            );
+        }
 
         let result = cache_post_mint_custom(
             AuthHeader::None,
@@ -1057,10 +1427,12 @@ mod tests {
             Json(batch_request.clone()),
         )
         .await;
-        assert!(
-            result.is_ok(),
-            "bolt11 batch mint should populate the cache"
-        );
+        if let Err(response) = result {
+            panic!(
+                "bolt11 batch mint should populate the cache: {}",
+                response_error_detail(response).await
+            );
+        }
 
         let result = cache_post_batch_mint(
             AuthHeader::None,

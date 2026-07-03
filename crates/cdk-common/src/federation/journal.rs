@@ -342,7 +342,8 @@ mod tests {
     use super::*;
     use crate::{
         Amount, BlindedMessage, CurrencyUnit, Id, MeltQuoteCustomRequest, MintQuoteBolt11Request,
-        MintQuoteRequest, MintRequest, PaymentMethod, PublicKey,
+        MintQuoteBolt11Response, MintQuoteRequest, MintQuoteResponse, MintRequest, PaymentMethod,
+        PublicKey,
     };
 
     fn federation_id() -> super::super::FederationId {
@@ -384,6 +385,15 @@ mod tests {
                         amount: Amount::from(amount),
                         unit: CurrencyUnit::Sat,
                         description: None,
+                        pubkey: None,
+                    }),
+                    response: MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
+                        quote: "quote-1".to_string(),
+                        request: "invoice-quote-1".to_string(),
+                        amount: Some(Amount::from(amount)),
+                        unit: Some(CurrencyUnit::Sat),
+                        state: crate::MintQuoteState::Unpaid,
+                        expiry: None,
                         pubkey: None,
                     }),
                 },

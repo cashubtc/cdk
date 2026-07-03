@@ -16,7 +16,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use super::{FederationError, FederationId, Result};
 use crate::{
     Amount, BatchMintRequest, MeltQuoteRequest, MeltQuoteState, MeltRequest, MintQuoteRequest,
-    MintQuoteState, MintRequest, PaymentMethod, RestoreRequest, SwapRequest,
+    MintQuoteResponse, MintQuoteState, MintRequest, PaymentMethod, RestoreRequest, SwapRequest,
 };
 
 const FEDERATION_OPERATION_HASH_VERSION: &[u8] = b"cdk-federation-operation-v1";
@@ -171,6 +171,8 @@ pub struct FederationMintQuoteOperation {
     pub quote: String,
     /// Wallet's quote request.
     pub request: MintQuoteRequest,
+    /// Quote response produced by the proposing member, including the payment request.
+    pub response: MintQuoteResponse<String>,
 }
 
 /// Observed incoming mint quote payment state.
@@ -442,7 +444,8 @@ mod tests {
     use super::*;
     use crate::{
         BatchMintRequest, BlindedMessage, CurrencyUnit, Id, MeltQuoteCustomRequest,
-        MintQuoteBolt11Request, Proof, PublicKey,
+        MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteCustomResponse,
+        MintQuoteResponse, Proof, PublicKey,
     };
 
     fn federation_id() -> FederationId {
@@ -477,6 +480,18 @@ mod tests {
                 outputs,
                 signature: None,
             }),
+        })
+    }
+
+    fn bolt11_quote_response(quote: &str, amount: u64) -> MintQuoteResponse<String> {
+        MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
+            quote: quote.to_string(),
+            request: format!("invoice-{quote}"),
+            amount: Some(Amount::from(amount)),
+            unit: Some(CurrencyUnit::Sat),
+            state: MintQuoteState::Unpaid,
+            expiry: None,
+            pubkey: None,
         })
     }
 
@@ -613,12 +628,40 @@ mod tests {
             FederationMintQuoteOperation {
                 quote: "quote-custom".to_string(),
                 request: request_one,
+                response: MintQuoteResponse::Custom {
+                    method: PaymentMethod::Custom("custom".to_string()),
+                    response: MintQuoteCustomResponse {
+                        quote: "quote-custom".to_string(),
+                        request: "custom-payment-request".to_string(),
+                        amount: Some(Amount::from(21)),
+                        amount_paid: Amount::ZERO,
+                        amount_issued: Amount::ZERO,
+                        unit: Some(CurrencyUnit::Sat),
+                        expiry: None,
+                        pubkey: None,
+                        extra: serde_json::from_str(r#"{"d":4,"c":3}"#).expect("extra json"),
+                    },
+                },
             },
         ));
         let second = envelope(FederationOperation::MintQuote(
             FederationMintQuoteOperation {
                 quote: "quote-custom".to_string(),
                 request: request_two,
+                response: MintQuoteResponse::Custom {
+                    method: PaymentMethod::Custom("custom".to_string()),
+                    response: MintQuoteCustomResponse {
+                        quote: "quote-custom".to_string(),
+                        request: "custom-payment-request".to_string(),
+                        amount: Some(Amount::from(21)),
+                        amount_paid: Amount::ZERO,
+                        amount_issued: Amount::ZERO,
+                        unit: Some(CurrencyUnit::Sat),
+                        expiry: None,
+                        pubkey: None,
+                        extra: serde_json::from_str(r#"{"c":3,"d":4}"#).expect("extra json"),
+                    },
+                },
             },
         ));
 
@@ -684,6 +727,7 @@ mod tests {
                 description: None,
                 pubkey: None,
             }),
+            response: bolt11_quote_response("mint-quote", 10),
         });
         let mint_payment =
             FederationOperation::MintQuotePayment(FederationMintQuotePaymentObservation {

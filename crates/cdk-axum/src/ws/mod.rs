@@ -244,6 +244,8 @@ mod tests {
         let state = MintState {
             mint,
             cache: Arc::new(HttpCache::default()),
+            #[cfg(feature = "federation")]
+            federation_consensus: None,
         };
         let (publisher, _receiver) = tokio::sync::mpsc::channel(100);
         WsContext {

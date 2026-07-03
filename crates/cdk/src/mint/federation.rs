@@ -12,7 +12,8 @@ use cdk_common::federation::{
     FederationOperationEnvelope, MemberConfigPrivate, MemberId,
 };
 use cdk_common::{
-    Amount, BatchMintRequest, MintQuoteRequest, MintQuoteState, MintRequest, PaymentMethod,
+    Amount, BatchMintRequest, MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest,
+    PaymentMethod,
 };
 
 use super::MintInput;
@@ -96,6 +97,7 @@ impl FederationRuntimeConfig {
         &self,
         quote: Q,
         request: MintQuoteRequest,
+        response: MintQuoteResponse<String>,
     ) -> FederationOperationEnvelope
     where
         Q: ToString,
@@ -104,6 +106,7 @@ impl FederationRuntimeConfig {
             FederationMintQuoteOperation {
                 quote: quote.to_string(),
                 request,
+                response,
             },
         ))
     }
@@ -179,7 +182,8 @@ mod tests {
     use cdk_common::quote_id::QuoteId;
     use cdk_common::{
         Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Id, MintQuoteBolt11Request,
-        MintQuoteRequest, MintQuoteState, MintRequest, PaymentMethod, PublicKey, SecretKey,
+        MintQuoteBolt11Response, MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest,
+        PaymentMethod, PublicKey, SecretKey,
     };
 
     use super::{FederationMode, FederationRuntimeConfig};
@@ -238,6 +242,18 @@ mod tests {
         })
     }
 
+    fn bolt11_quote_response(quote: &QuoteId, amount: u64) -> MintQuoteResponse<String> {
+        MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
+            quote: quote.to_string(),
+            request: format!("invoice-{quote}"),
+            amount: Some(Amount::from(amount)),
+            unit: Some(CurrencyUnit::Sat),
+            state: MintQuoteState::Unpaid,
+            expiry: None,
+            pubkey: None,
+        })
+    }
+
     #[test]
     fn federation_mode_defaults_to_standalone() {
         assert_eq!(FederationMode::default(), FederationMode::Standalone);
@@ -260,7 +276,11 @@ mod tests {
     fn runtime_config_builds_mint_quote_consensus_operations() {
         let runtime_config = runtime_config();
         let quote = QuoteId::new();
-        let envelope = runtime_config.mint_quote_operation(quote.clone(), bolt11_quote_request(10));
+        let envelope = runtime_config.mint_quote_operation(
+            quote.clone(),
+            bolt11_quote_request(10),
+            bolt11_quote_response(&quote, 10),
+        );
 
         assert_eq!(envelope.federation_id, runtime_config.federation_id());
         let quote_string = quote.to_string();
@@ -280,7 +300,11 @@ mod tests {
         let duplicate_response = consensus
             .submit_envelope(envelope)
             .expect("duplicate quote");
-        let conflict = runtime_config.mint_quote_operation(quote.clone(), bolt11_quote_request(11));
+        let conflict = runtime_config.mint_quote_operation(
+            quote.clone(),
+            bolt11_quote_request(11),
+            bolt11_quote_response(&quote, 11),
+        );
 
         assert_eq!(first_response.operation_id, duplicate_response.operation_id);
         assert!(matches!(
