@@ -1,0 +1,1002 @@
+//! Shared federation configuration types.
+//!
+//! These types describe a static Cashu federation roster and its threshold BLS
+//! key material. They are deliberately transport-agnostic so mintd, tests,
+//! private REST peers, and future DKG tooling can reuse the same validation
+//! rules.
+
+use core::fmt;
+use core::str::FromStr;
+use std::collections::BTreeMap;
+
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use thiserror::Error;
+
+use crate::nuts::nut01::{
+    aggregate_public_key_shares, BlsAggregatePublicKey, BlsPublicKeyShare, BlsSecretKeyShare,
+    BlsSignerId,
+};
+use crate::{mint_url::MintUrl, Amount, CurrencyUnit, Id, Keys, PublicKey, SecretKey};
+
+const FEDERATION_ROSTER_HASH_VERSION: &[u8] = b"cdk-federation-roster-v1";
+
+/// Result alias for federation configuration validation.
+pub type Result<T> = std::result::Result<T, FederationError>;
+
+/// Errors returned by federation configuration helpers.
+#[derive(Debug, Error)]
+pub enum FederationError {
+    /// A federation ID must be exactly 32 bytes.
+    #[error("Invalid federation id size: expected={expected}, found={found}")]
+    InvalidFederationIdSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
+    /// Member IDs are non-zero u16 values.
+    #[error("Invalid federation member id: {0}")]
+    InvalidMemberId(u16),
+    /// Threshold parameters must be non-zero and no greater than the member count.
+    #[error(
+        "Invalid federation threshold params: members={members}, signature_threshold={signature_threshold}, consensus_threshold={consensus_threshold}"
+    )]
+    InvalidThresholdParams {
+        /// Configured federation member count.
+        members: u16,
+        /// Configured BLS signature threshold.
+        signature_threshold: u16,
+        /// Configured consensus threshold.
+        consensus_threshold: u16,
+    },
+    /// The roster has a different member count than the threshold params.
+    #[error("Federation member count mismatch: expected={expected}, found={found}")]
+    MemberCountMismatch {
+        /// Expected member count.
+        expected: u16,
+        /// Actual roster size.
+        found: usize,
+    },
+    /// A member was required but is missing.
+    #[error("Federation member {member_id} is missing")]
+    MissingMember {
+        /// Missing member ID.
+        member_id: MemberId,
+    },
+    /// A member exists in one section but not in the federation roster.
+    #[error("Unknown federation member {member_id}")]
+    UnknownMember {
+        /// Unknown member ID.
+        member_id: MemberId,
+    },
+    /// The member ID stored inside a config value does not match its map key.
+    #[error("Federation member id mismatch: expected={expected}, found={found}")]
+    MemberIdMismatch {
+        /// Expected member ID.
+        expected: MemberId,
+        /// Found member ID.
+        found: MemberId,
+    },
+    /// Federation member identity keys must be secp256k1 keys.
+    #[error("Federation member {member_id} identity key must be secp256k1")]
+    InvalidIdentityKeyKind {
+        /// Member with the invalid key kind.
+        member_id: MemberId,
+    },
+    /// The private identity key does not derive to the public roster key.
+    #[error("Federation member {member_id} private identity key does not match public roster key")]
+    PrivateIdentityMismatch {
+        /// Member with the mismatched private key.
+        member_id: MemberId,
+    },
+    /// A federated keyset must contain at least one amount key.
+    #[error("Federated keyset {keyset_id} has no aggregate keys")]
+    EmptyFederatedKeyset {
+        /// Keyset ID being validated.
+        keyset_id: Id,
+    },
+    /// The keyset ID does not match its aggregate public keys and metadata.
+    #[error("Federated keyset id mismatch: expected={expected}, found={found}")]
+    KeysetIdMismatch {
+        /// Derived keyset ID.
+        expected: Id,
+        /// Configured keyset ID.
+        found: Id,
+    },
+    /// The configured federation ID does not match the derived roster ID.
+    #[error("Federation id mismatch: expected={expected}, found={found}")]
+    FederationIdMismatch {
+        /// Derived federation ID.
+        expected: FederationId,
+        /// Configured federation ID.
+        found: FederationId,
+    },
+    /// A keyset has no public shares for a member.
+    #[error("Federated keyset {keyset_id} has no public shares for member {member_id}")]
+    MissingPublicShares {
+        /// Keyset ID being validated.
+        keyset_id: Id,
+        /// Member missing public shares.
+        member_id: MemberId,
+    },
+    /// A keyset member has no public share for an aggregate amount key.
+    #[error(
+        "Federated keyset {keyset_id} has no public share for member {member_id} amount {amount}"
+    )]
+    MissingPublicShareAmount {
+        /// Keyset ID being validated.
+        keyset_id: Id,
+        /// Member missing the share.
+        member_id: MemberId,
+        /// Amount missing the share.
+        amount: Amount,
+    },
+    /// A public share's signer ID must match the federation member ID.
+    #[error(
+        "Federated keyset {keyset_id} public share signer mismatch for member {member_id}: signer={signer_id}"
+    )]
+    PublicShareSignerMismatch {
+        /// Keyset ID being validated.
+        keyset_id: Id,
+        /// Member whose share was checked.
+        member_id: MemberId,
+        /// Signer ID encoded in the share.
+        signer_id: u16,
+    },
+    /// Public shares did not interpolate to the configured aggregate key.
+    #[error("Federated keyset {keyset_id} aggregate key mismatch for amount {amount}")]
+    AggregateKeyMismatch {
+        /// Keyset ID being validated.
+        keyset_id: Id,
+        /// Amount whose aggregate key did not match.
+        amount: Amount,
+    },
+    /// Private config contains a keyset that is not in the public config.
+    #[error("Private federation config has unknown keyset {keyset_id}")]
+    UnknownPrivateKeyset {
+        /// Unknown keyset ID.
+        keyset_id: Id,
+    },
+    /// Private config is missing secret shares for a public keyset.
+    #[error("Private federation config is missing keyset {keyset_id}")]
+    MissingPrivateKeyset {
+        /// Missing keyset ID.
+        keyset_id: Id,
+    },
+    /// Private config is missing a secret share for a keyset amount.
+    #[error("Private federation config is missing keyset {keyset_id} amount {amount}")]
+    MissingSecretShare {
+        /// Keyset ID being validated.
+        keyset_id: Id,
+        /// Missing amount.
+        amount: Amount,
+    },
+    /// A secret share's signer ID must match the local federation member.
+    #[error(
+        "Private federation keyset {keyset_id} secret share signer mismatch for member {member_id}: signer={signer_id}"
+    )]
+    SecretShareSignerMismatch {
+        /// Keyset ID being validated.
+        keyset_id: Id,
+        /// Local member ID.
+        member_id: MemberId,
+        /// Signer ID encoded in the secret share.
+        signer_id: u16,
+    },
+    /// A private secret share does not derive to the configured public share.
+    #[error("Private federation keyset {keyset_id} share mismatch for member {member_id} amount {amount}")]
+    PrivateShareMismatch {
+        /// Keyset ID being validated.
+        keyset_id: Id,
+        /// Local member ID.
+        member_id: MemberId,
+        /// Amount whose share did not match.
+        amount: Amount,
+    },
+    /// Hex parsing error.
+    #[error(transparent)]
+    Hex(#[from] crate::util::hex::Error),
+    /// NUT-01 threshold BLS error.
+    #[error(transparent)]
+    Nut01(#[from] crate::nuts::nut01::Error),
+    /// NUT-02 keyset ID error.
+    #[error(transparent)]
+    Nut02(#[from] crate::nuts::nut02::Error),
+}
+
+/// Stable identifier for a federation roster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FederationId([u8; 32]);
+
+impl FederationId {
+    /// Create a federation ID from raw bytes.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Parse a federation ID from a byte slice.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
+        let bytes: [u8; 32] =
+            bytes
+                .try_into()
+                .map_err(|_| FederationError::InvalidFederationIdSize {
+                    expected: 32,
+                    found: bytes.len(),
+                })?;
+        Ok(Self(bytes))
+    }
+
+    /// Parse a federation ID from hex.
+    pub fn from_hex<S>(hex: S) -> Result<Self>
+    where
+        S: AsRef<str>,
+    {
+        let bytes = crate::util::hex::decode(hex.as_ref())?;
+        Self::from_slice(&bytes)
+    }
+
+    /// Return this federation ID as bytes.
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    /// Return this federation ID as hex.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        crate::util::hex::encode(self.0)
+    }
+}
+
+impl fmt::Display for FederationId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
+
+impl FromStr for FederationId {
+    type Err = FederationError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Self::from_hex(value)
+    }
+}
+
+impl Serialize for FederationId {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for FederationId {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::from_hex(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Non-zero federation member identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MemberId(u16);
+
+impl MemberId {
+    /// Create a member ID.
+    pub fn new(id: u16) -> Result<Self> {
+        if id == 0 {
+            return Err(FederationError::InvalidMemberId(id));
+        }
+
+        Ok(Self(id))
+    }
+
+    /// Return this member ID as a u16.
+    #[must_use]
+    pub fn get(self) -> u16 {
+        self.0
+    }
+
+    /// Return this member ID as a threshold BLS signer ID.
+    #[must_use]
+    pub fn to_bls_signer_id(self) -> BlsSignerId {
+        BlsSignerId::new(self.0).expect("member id is non-zero")
+    }
+}
+
+impl fmt::Display for MemberId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Serialize for MemberId {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u16(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for MemberId {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let id = u16::deserialize(deserializer)?;
+        Self::new(id).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Federation threshold settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ThresholdParams {
+    /// Number of federation members.
+    pub member_count: u16,
+    /// Number of BLS shares needed to produce a mint signature.
+    pub signature_threshold: u16,
+    /// Number of members needed to commit consensus items.
+    pub consensus_threshold: u16,
+}
+
+impl ThresholdParams {
+    /// Create validated threshold parameters.
+    pub fn new(
+        member_count: u16,
+        signature_threshold: u16,
+        consensus_threshold: u16,
+    ) -> Result<Self> {
+        let params = Self {
+            member_count,
+            signature_threshold,
+            consensus_threshold,
+        };
+        params.validate()?;
+        Ok(params)
+    }
+
+    /// Create threshold params with the default BFT consensus quorum.
+    pub fn with_bft_consensus(member_count: u16, signature_threshold: u16) -> Result<Self> {
+        let max_faulty = member_count.saturating_sub(1) / 3;
+        let consensus_threshold = member_count.saturating_sub(max_faulty);
+        Self::new(member_count, signature_threshold, consensus_threshold)
+    }
+
+    /// Validate threshold parameters.
+    pub fn validate(&self) -> Result<()> {
+        if self.member_count == 0
+            || self.signature_threshold == 0
+            || self.consensus_threshold == 0
+            || self.signature_threshold > self.member_count
+            || self.consensus_threshold > self.member_count
+            || self.consensus_threshold < self.signature_threshold
+        {
+            return Err(FederationError::InvalidThresholdParams {
+                members: self.member_count,
+                signature_threshold: self.signature_threshold,
+                consensus_threshold: self.consensus_threshold,
+            });
+        }
+
+        Ok(())
+    }
+}
+
+/// Public configuration for one federation member.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberConfigPublic {
+    /// Stable federation member ID.
+    pub member_id: MemberId,
+    /// Public Cashu mint REST URL exposed to wallets.
+    pub public_mint_url: MintUrl,
+    /// Private federation REST URL exposed to federation peers.
+    pub federation_api_url: MintUrl,
+    /// Public secp256k1 identity key used to authenticate peer traffic.
+    pub identity_public_key: PublicKey,
+}
+
+impl MemberConfigPublic {
+    /// Validate this member against its map key.
+    pub fn validate(&self, expected_member_id: MemberId) -> Result<()> {
+        if self.member_id != expected_member_id {
+            return Err(FederationError::MemberIdMismatch {
+                expected: expected_member_id,
+                found: self.member_id,
+            });
+        }
+
+        if !matches!(self.identity_public_key, PublicKey::Secp256k1(_)) {
+            return Err(FederationError::InvalidIdentityKeyKind {
+                member_id: self.member_id,
+            });
+        }
+
+        Ok(())
+    }
+}
+
+/// Public aggregate keyset plus every member's public BLS shares.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederatedKeyset {
+    /// Cashu keyset ID derived from the aggregate public keys.
+    pub id: Id,
+    /// Keyset currency unit.
+    pub unit: CurrencyUnit,
+    /// Whether members should sign new outputs for this keyset.
+    pub active: bool,
+    /// Input fee in parts per thousand.
+    #[serde(default)]
+    pub input_fee_ppk: u64,
+    /// Optional final expiry timestamp.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_expiry: Option<u64>,
+    /// Aggregate BLS public key per amount, exposed to wallets as the mint keyset.
+    pub aggregate_keys: BTreeMap<Amount, BlsAggregatePublicKey>,
+    /// Public BLS share per member and amount.
+    pub public_shares: BTreeMap<MemberId, BTreeMap<Amount, BlsPublicKeyShare>>,
+}
+
+impl FederatedKeyset {
+    /// Create a federated keyset with a computed NUT-02 v2 keyset ID.
+    pub fn new(
+        unit: CurrencyUnit,
+        active: bool,
+        input_fee_ppk: u64,
+        final_expiry: Option<u64>,
+        aggregate_keys: BTreeMap<Amount, BlsAggregatePublicKey>,
+        public_shares: BTreeMap<MemberId, BTreeMap<Amount, BlsPublicKeyShare>>,
+    ) -> Self {
+        let id = Self::derive_keyset_id(&unit, input_fee_ppk, final_expiry, &aggregate_keys);
+        Self {
+            id,
+            unit,
+            active,
+            input_fee_ppk,
+            final_expiry,
+            aggregate_keys,
+            public_shares,
+        }
+    }
+
+    /// Derive a NUT-02 v2 keyset ID from aggregate public keys.
+    #[must_use]
+    pub fn derive_keyset_id(
+        unit: &CurrencyUnit,
+        input_fee_ppk: u64,
+        final_expiry: Option<u64>,
+        aggregate_keys: &BTreeMap<Amount, BlsAggregatePublicKey>,
+    ) -> Id {
+        let keys = Self::aggregate_keys_as_cashu_keys(aggregate_keys);
+        Id::v2_from_data(&keys, unit, input_fee_ppk, final_expiry)
+    }
+
+    /// Convert aggregate BLS public keys into a standard Cashu `Keys` map.
+    #[must_use]
+    pub fn aggregate_keys_as_cashu_keys(
+        aggregate_keys: &BTreeMap<Amount, BlsAggregatePublicKey>,
+    ) -> Keys {
+        Keys::new(
+            aggregate_keys
+                .iter()
+                .map(|(amount, key)| (*amount, PublicKey::from(*key)))
+                .collect(),
+        )
+    }
+
+    /// Return aggregate public keys as a standard Cashu `Keys` map.
+    #[must_use]
+    pub fn keys(&self) -> Keys {
+        Self::aggregate_keys_as_cashu_keys(&self.aggregate_keys)
+    }
+
+    /// Validate aggregate keys, keyset ID, member shares, and interpolation.
+    pub fn validate(
+        &self,
+        threshold_params: ThresholdParams,
+        members: &BTreeMap<MemberId, MemberConfigPublic>,
+    ) -> Result<()> {
+        if self.aggregate_keys.is_empty() {
+            return Err(FederationError::EmptyFederatedKeyset { keyset_id: self.id });
+        }
+
+        let expected_id = Self::derive_keyset_id(
+            &self.unit,
+            self.input_fee_ppk,
+            self.final_expiry,
+            &self.aggregate_keys,
+        );
+        if expected_id != self.id {
+            return Err(FederationError::KeysetIdMismatch {
+                expected: expected_id,
+                found: self.id,
+            });
+        }
+
+        for member_id in self.public_shares.keys() {
+            if !members.contains_key(member_id) {
+                return Err(FederationError::UnknownMember {
+                    member_id: *member_id,
+                });
+            }
+        }
+
+        for member_id in members.keys() {
+            let member_shares =
+                self.public_shares
+                    .get(member_id)
+                    .ok_or(FederationError::MissingPublicShares {
+                        keyset_id: self.id,
+                        member_id: *member_id,
+                    })?;
+
+            for amount in self.aggregate_keys.keys() {
+                let share =
+                    member_shares
+                        .get(amount)
+                        .ok_or(FederationError::MissingPublicShareAmount {
+                            keyset_id: self.id,
+                            member_id: *member_id,
+                            amount: *amount,
+                        })?;
+                if share.signer_id().get() != member_id.get() {
+                    return Err(FederationError::PublicShareSignerMismatch {
+                        keyset_id: self.id,
+                        member_id: *member_id,
+                        signer_id: share.signer_id().get(),
+                    });
+                }
+            }
+        }
+
+        for (amount, aggregate_key) in &self.aggregate_keys {
+            let mut shares = Vec::with_capacity(members.len());
+            for member_id in members.keys() {
+                let member_shares = self.public_shares.get(member_id).ok_or(
+                    FederationError::MissingPublicShares {
+                        keyset_id: self.id,
+                        member_id: *member_id,
+                    },
+                )?;
+                let share =
+                    member_shares
+                        .get(amount)
+                        .ok_or(FederationError::MissingPublicShareAmount {
+                            keyset_id: self.id,
+                            member_id: *member_id,
+                            amount: *amount,
+                        })?;
+                shares.push(*share);
+            }
+
+            let derived = aggregate_public_key_shares(
+                usize::from(threshold_params.signature_threshold),
+                &shares,
+            )?;
+            if derived != *aggregate_key {
+                return Err(FederationError::AggregateKeyMismatch {
+                    keyset_id: self.id,
+                    amount: *amount,
+                });
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Public federation config shared by every member.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationConfig {
+    /// Stable federation roster ID.
+    pub federation_id: FederationId,
+    /// Federation threshold settings.
+    pub threshold_params: ThresholdParams,
+    /// Public member roster keyed by member ID.
+    pub members: BTreeMap<MemberId, MemberConfigPublic>,
+    /// Federated aggregate keysets.
+    pub keysets: Vec<FederatedKeyset>,
+}
+
+impl FederationConfig {
+    /// Create a federation config and compute its roster ID.
+    pub fn new(
+        threshold_params: ThresholdParams,
+        members: BTreeMap<MemberId, MemberConfigPublic>,
+        keysets: Vec<FederatedKeyset>,
+    ) -> Result<Self> {
+        let federation_id = Self::derive_federation_id(threshold_params, &members)?;
+        let config = Self {
+            federation_id,
+            threshold_params,
+            members,
+            keysets,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Derive the deterministic federation ID from threshold params and roster.
+    pub fn derive_federation_id(
+        threshold_params: ThresholdParams,
+        members: &BTreeMap<MemberId, MemberConfigPublic>,
+    ) -> Result<FederationId> {
+        threshold_params.validate()?;
+        if usize::from(threshold_params.member_count) != members.len() {
+            return Err(FederationError::MemberCountMismatch {
+                expected: threshold_params.member_count,
+                found: members.len(),
+            });
+        }
+
+        let mut transcript = Vec::new();
+        append_bytes(&mut transcript, FEDERATION_ROSTER_HASH_VERSION);
+        transcript.extend_from_slice(&threshold_params.member_count.to_be_bytes());
+        transcript.extend_from_slice(&threshold_params.signature_threshold.to_be_bytes());
+        transcript.extend_from_slice(&threshold_params.consensus_threshold.to_be_bytes());
+
+        for (member_id, member) in members {
+            member.validate(*member_id)?;
+            transcript.extend_from_slice(&member_id.get().to_be_bytes());
+            append_str(&mut transcript, &member.public_mint_url.to_string());
+            append_str(&mut transcript, &member.federation_api_url.to_string());
+            append_bytes(&mut transcript, &member.identity_public_key.to_bytes());
+        }
+
+        Ok(FederationId::from_bytes(
+            Sha256Hash::hash(&transcript).to_byte_array(),
+        ))
+    }
+
+    /// Validate this config.
+    pub fn validate(&self) -> Result<()> {
+        let expected_id = Self::derive_federation_id(self.threshold_params, &self.members)?;
+        if expected_id != self.federation_id {
+            return Err(FederationError::FederationIdMismatch {
+                expected: expected_id,
+                found: self.federation_id,
+            });
+        }
+
+        for keyset in &self.keysets {
+            keyset.validate(self.threshold_params, &self.members)?;
+        }
+
+        Ok(())
+    }
+
+    /// Return a member by ID.
+    #[must_use]
+    pub fn member(&self, member_id: MemberId) -> Option<&MemberConfigPublic> {
+        self.members.get(&member_id)
+    }
+}
+
+/// Private federation config stored by one local member.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberConfigPrivate {
+    /// Local member ID.
+    pub member_id: MemberId,
+    /// Private secp256k1 identity key used to authenticate peer traffic.
+    pub identity_secret_key: SecretKey,
+    /// Local secret BLS shares by keyset ID and amount.
+    pub keyset_secret_shares: BTreeMap<Id, BTreeMap<Amount, BlsSecretKeyShare>>,
+}
+
+impl fmt::Debug for MemberConfigPrivate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MemberConfigPrivate")
+            .field("member_id", &self.member_id)
+            .field("keyset_secret_shares", &self.keyset_secret_shares.keys())
+            .finish_non_exhaustive()
+    }
+}
+
+impl MemberConfigPrivate {
+    /// Validate this private config against the public federation config.
+    pub fn validate_against_public(&self, public_config: &FederationConfig) -> Result<()> {
+        let member =
+            public_config
+                .member(self.member_id)
+                .ok_or(FederationError::MissingMember {
+                    member_id: self.member_id,
+                })?;
+
+        if !matches!(self.identity_secret_key, SecretKey::Secp256k1(_)) {
+            return Err(FederationError::InvalidIdentityKeyKind {
+                member_id: self.member_id,
+            });
+        }
+
+        if self.identity_secret_key.public_key() != member.identity_public_key {
+            return Err(FederationError::PrivateIdentityMismatch {
+                member_id: self.member_id,
+            });
+        }
+
+        for keyset_id in self.keyset_secret_shares.keys() {
+            if public_config
+                .keysets
+                .iter()
+                .all(|keyset| keyset.id != *keyset_id)
+            {
+                return Err(FederationError::UnknownPrivateKeyset {
+                    keyset_id: *keyset_id,
+                });
+            }
+        }
+
+        for keyset in &public_config.keysets {
+            let secret_shares = self.keyset_secret_shares.get(&keyset.id).ok_or(
+                FederationError::MissingPrivateKeyset {
+                    keyset_id: keyset.id,
+                },
+            )?;
+            let public_member_shares = keyset.public_shares.get(&self.member_id).ok_or(
+                FederationError::MissingPublicShares {
+                    keyset_id: keyset.id,
+                    member_id: self.member_id,
+                },
+            )?;
+
+            for amount in keyset.aggregate_keys.keys() {
+                let secret_share =
+                    secret_shares
+                        .get(amount)
+                        .ok_or(FederationError::MissingSecretShare {
+                            keyset_id: keyset.id,
+                            amount: *amount,
+                        })?;
+                if secret_share.signer_id().get() != self.member_id.get() {
+                    return Err(FederationError::SecretShareSignerMismatch {
+                        keyset_id: keyset.id,
+                        member_id: self.member_id,
+                        signer_id: secret_share.signer_id().get(),
+                    });
+                }
+
+                let public_share = public_member_shares.get(amount).ok_or(
+                    FederationError::MissingPublicShareAmount {
+                        keyset_id: keyset.id,
+                        member_id: self.member_id,
+                        amount: *amount,
+                    },
+                )?;
+                if secret_share.public_key_share() != *public_share {
+                    return Err(FederationError::PrivateShareMismatch {
+                        keyset_id: keyset.id,
+                        member_id: self.member_id,
+                        amount: *amount,
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn append_str(transcript: &mut Vec<u8>, value: &str) {
+    append_bytes(transcript, value.as_bytes());
+}
+
+fn append_bytes(transcript: &mut Vec<u8>, value: &[u8]) {
+    transcript.extend_from_slice(&(value.len() as u32).to_be_bytes());
+    transcript.extend_from_slice(value);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::str::FromStr;
+
+    use cashu::nuts::nut01::{trusted_dealer_keygen, BlsSecretKey};
+
+    use super::*;
+
+    fn member_id(id: u16) -> MemberId {
+        MemberId::new(id).expect("valid member id")
+    }
+
+    fn identity_secret(member_id: MemberId) -> SecretKey {
+        let mut bytes = [0u8; 32];
+        bytes[31] = member_id.get() as u8;
+        SecretKey::from_slice(&bytes).expect("valid secp256k1 secret")
+    }
+
+    fn member(member_id: MemberId) -> MemberConfigPublic {
+        let public_mint_url =
+            MintUrl::from_str(&format!("https://mint{}.example.com", member_id.get()))
+                .expect("public mint url");
+        let federation_api_url =
+            MintUrl::from_str(&format!("https://fed{}.example.com", member_id.get()))
+                .expect("federation api url");
+        MemberConfigPublic {
+            member_id,
+            public_mint_url,
+            federation_api_url,
+            identity_public_key: identity_secret(member_id).public_key(),
+        }
+    }
+
+    fn bls_key(byte: u8) -> BlsSecretKey {
+        BlsSecretKey::from_reduced_bytes(&[byte; 32])
+    }
+
+    fn test_roster() -> BTreeMap<MemberId, MemberConfigPublic> {
+        [member_id(1), member_id(2), member_id(3)]
+            .into_iter()
+            .map(|id| (id, member(id)))
+            .collect()
+    }
+
+    fn test_keyset(
+        members: &BTreeMap<MemberId, MemberConfigPublic>,
+    ) -> (
+        FederatedKeyset,
+        BTreeMap<MemberId, BTreeMap<Amount, BlsSecretKeyShare>>,
+    ) {
+        let signer_ids = members
+            .keys()
+            .map(|member_id| member_id.to_bls_signer_id())
+            .collect::<Vec<_>>();
+        let amount = Amount::from(1);
+        let threshold_keyset =
+            trusted_dealer_keygen(&[bls_key(1), bls_key(2)], &signer_ids).expect("keyset");
+        let mut aggregate_keys = BTreeMap::new();
+        aggregate_keys.insert(amount, threshold_keyset.aggregate_public_key());
+
+        let mut public_shares = BTreeMap::new();
+        for share in threshold_keyset.public_shares() {
+            public_shares
+                .entry(MemberId::new(share.signer_id().get()).expect("member id"))
+                .or_insert_with(BTreeMap::new)
+                .insert(amount, *share);
+        }
+
+        let mut private_shares = BTreeMap::new();
+        for share in threshold_keyset.secret_shares() {
+            private_shares
+                .entry(MemberId::new(share.signer_id().get()).expect("member id"))
+                .or_insert_with(BTreeMap::new)
+                .insert(amount, share.clone());
+        }
+
+        (
+            FederatedKeyset::new(
+                CurrencyUnit::Sat,
+                true,
+                0,
+                None,
+                aggregate_keys,
+                public_shares,
+            ),
+            private_shares,
+        )
+    }
+
+    #[test]
+    fn member_id_rejects_zero_and_serializes() {
+        assert!(matches!(
+            MemberId::new(0),
+            Err(FederationError::InvalidMemberId(0))
+        ));
+        let json = serde_json::to_string(&member_id(42)).expect("member json");
+        assert_eq!(json, "42");
+        assert_eq!(
+            serde_json::from_str::<MemberId>(&json).expect("member from json"),
+            member_id(42)
+        );
+    }
+
+    #[test]
+    fn threshold_params_validate_bft_defaults() {
+        let params = ThresholdParams::with_bft_consensus(5, 3).expect("params");
+        assert_eq!(params.consensus_threshold, 4);
+        assert!(matches!(
+            ThresholdParams::new(5, 4, 3),
+            Err(FederationError::InvalidThresholdParams {
+                members: 5,
+                signature_threshold: 4,
+                consensus_threshold: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn federation_id_is_deterministic_for_roster() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let id = FederationConfig::derive_federation_id(params, &members).expect("id");
+        let config = FederationConfig::new(params, members.clone(), Vec::new()).expect("config");
+
+        assert_eq!(config.federation_id, id);
+        assert_eq!(
+            serde_json::from_str::<FederationId>(&serde_json::to_string(&id).expect("id json"))
+                .expect("id from json"),
+            id
+        );
+    }
+
+    #[test]
+    fn federation_config_validates_keyset_public_and_private_shares() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let (keyset, private_shares) = test_keyset(&members);
+        let config =
+            FederationConfig::new(params, members.clone(), vec![keyset.clone()]).expect("config");
+        let config_json = serde_json::to_string(&config).expect("config json");
+        assert_eq!(
+            serde_json::from_str::<FederationConfig>(&config_json).expect("config from json"),
+            config
+        );
+
+        for member_id in members.keys() {
+            let mut keyset_secret_shares = BTreeMap::new();
+            keyset_secret_shares.insert(
+                keyset.id,
+                private_shares
+                    .get(member_id)
+                    .expect("member private shares")
+                    .clone(),
+            );
+            let private = MemberConfigPrivate {
+                member_id: *member_id,
+                identity_secret_key: identity_secret(*member_id),
+                keyset_secret_shares,
+            };
+            private
+                .validate_against_public(&config)
+                .expect("private config");
+        }
+    }
+
+    #[test]
+    fn federation_config_rejects_mismatched_share() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let (mut keyset, _) = test_keyset(&members);
+        let amount = Amount::from(1);
+        let wrong_keyset = trusted_dealer_keygen(
+            &[bls_key(9), bls_key(10)],
+            &[
+                member_id(1).to_bls_signer_id(),
+                member_id(2).to_bls_signer_id(),
+            ],
+        )
+        .expect("wrong keyset");
+        keyset
+            .public_shares
+            .get_mut(&member_id(1))
+            .expect("member shares")
+            .insert(amount, wrong_keyset.public_shares()[0]);
+
+        assert!(matches!(
+            FederationConfig::new(params, members, vec![keyset]),
+            Err(FederationError::AggregateKeyMismatch { amount, .. }) if amount == Amount::from(1)
+        ));
+    }
+
+    #[test]
+    fn federation_config_rejects_wrong_identity_key_kind() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let mut members = test_roster();
+        let member_id = member_id(1);
+        members
+            .get_mut(&member_id)
+            .expect("member")
+            .identity_public_key = SecretKey::bls_from_reduced_bytes(&[9; 32]).public_key();
+
+        assert!(matches!(
+            FederationConfig::new(params, members, Vec::new()),
+            Err(FederationError::InvalidIdentityKeyKind { member_id: id }) if id == member_id
+        ));
+    }
+}

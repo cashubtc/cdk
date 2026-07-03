@@ -461,6 +461,10 @@ pub enum Error {
     /// Subscription error
     #[error("Subscription error: {0}")]
     SubscriptionError(String),
+    /// Federation configuration error
+    #[cfg(feature = "federation")]
+    #[error(transparent)]
+    Federation(#[from] crate::federation::FederationError),
     /// Custom Error
     #[error("`{0}`")]
     Custom(String),

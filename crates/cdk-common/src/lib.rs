@@ -27,6 +27,8 @@ pub mod grpc;
 pub mod common;
 pub mod database;
 pub mod error;
+#[cfg(feature = "federation")]
+pub mod federation;
 pub mod melt;
 #[cfg(feature = "mint")]
 pub mod mint;
