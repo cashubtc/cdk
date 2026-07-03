@@ -328,11 +328,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">66f23580 Mint flow consensus gate</span>
+          <span class="value">2aa781c1 Mint share helper</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federated mint signature shares</span>
+          <span class="value">Federated mint response shape</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -472,6 +472,10 @@
             <h3>Public mint flow consensus gate committed</h3>
             <p>Mint quote creation, quote payment checks, and batch mint requests now submit canonical federation operations into the local consensus journal when federation mode is configured.</p>
           </article>
+          <article class="item">
+            <h3>Mint share helper committed</h3>
+            <p>The mint runtime can now turn an accepted mint operation ID plus BLS blinded outputs into a verified local threshold signature share set.</p>
+          </article>
         </div>
       </section>
 
@@ -525,6 +529,10 @@
           <article class="item">
             <h3>Public mint paths can feed consensus</h3>
             <p>Axum mint quote, quote-check, and mint-submit handlers now prove consensus submission without changing wallet-facing REST payloads.</p>
+          </article>
+          <article class="item">
+            <h3>Mint share generation is isolated</h3>
+            <p>Threshold share generation is now testable at the mint runtime boundary before changing wallet-facing response formats.</p>
           </article>
           <article class="item">
             <h3>Threshold math baseline</h3>
@@ -672,9 +680,15 @@
               <td>Return local threshold BLS signature shares from accepted mint operations instead of standalone blind signatures.</td>
             </tr>
             <tr>
+              <td>Mint signature share helper</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --lib --features federation federation` passed 6 tests, including runtime share generation and public-share verification. `cargo check -p cdk --lib --features federation` and the mintd federation/fakewallet/sqlite check passed.</td>
+              <td>Define the wallet-facing federated mint response or route so operation IDs and signer IDs are preserved for aggregation.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status pending">Pending</span></td>
-              <td>Mint quote, quote-check, and mint-submit handlers are now consensus-gated locally; federated signature-share responses and wallet aggregation are not complete yet.</td>
+              <td>Mint quote, quote-check, and mint-submit handlers are consensus-gated locally; runtime signature share generation is available; wallet-facing share responses and wallet aggregation are not complete yet.</td>
               <td>Finish federated mint signing first, then swap, restore/check-state, and fake-wallet melt paths.</td>
             </tr>
           </tbody>
@@ -711,8 +725,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Federated mint signature shares</h3>
-            <p>Use accepted mint operations to return local BLS signature shares instead of standalone signatures when a mint runs as a federation member.</p>
+            <h3>Federated mint response shape</h3>
+            <p>Define a federation-aware mint response or route that carries operation IDs, member IDs, signer IDs, and BLS share bytes without breaking standalone Cashu clients.</p>
           </article>
           <article class="item">
             <h3>Wallet threshold aggregation</h3>
