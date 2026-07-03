@@ -22,6 +22,8 @@ const FEDERATION_JOURNAL_GENESIS_VERSION: &[u8] = b"cdk-federation-journal-genes
 const FEDERATION_JOURNAL_ENTRY_VERSION: &[u8] = b"cdk-federation-journal-entry-v1";
 const FEDERATION_STATE_GENESIS_VERSION: &[u8] = b"cdk-federation-state-genesis-v1";
 const FEDERATION_STATE_ENTRY_VERSION: &[u8] = b"cdk-federation-state-entry-v1";
+const FEDERATION_MATERIALIZED_STATE_ROW_VERSION: &[u8] =
+    b"cdk-federation-materialized-state-row-v1";
 
 /// Digest of the accepted federation operation order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -180,6 +182,15 @@ impl FederationStateDigest {
         append_hash_bytes(&mut transcript, &operation_id.to_bytes());
         Self(Sha256Hash::hash(&transcript).to_byte_array())
     }
+
+    fn append_materialized_row(self, row: &FederationMaterializedStateRow) -> Result<Self> {
+        let row = serde_json::to_vec(row)?;
+        let mut transcript = Vec::new();
+        append_hash_bytes(&mut transcript, FEDERATION_MATERIALIZED_STATE_ROW_VERSION);
+        append_hash_bytes(&mut transcript, &self.to_bytes());
+        append_hash_bytes(&mut transcript, &row);
+        Ok(Self(Sha256Hash::hash(&transcript).to_byte_array()))
+    }
 }
 
 impl fmt::Display for FederationStateDigest {
@@ -212,6 +223,115 @@ impl<'de> Deserialize<'de> for FederationStateDigest {
     {
         let value = String::deserialize(deserializer)?;
         Self::from_hex(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// One deterministic row included in a materialized federation state digest.
+///
+/// The row intentionally stores string fields instead of backend-specific Rust
+/// structs. Database adapters can map mint quotes, melt quotes, proof states,
+/// and blind signatures into this stable shape without making the digest depend
+/// on SQL column order or debug formatting.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct FederationMaterializedStateRow {
+    /// Logical table or state collection name.
+    pub table: String,
+    /// Stable row key inside the table.
+    pub key: String,
+    /// Deterministic row fields as string values.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fields: BTreeMap<String, String>,
+}
+
+impl FederationMaterializedStateRow {
+    /// Create a materialized state row.
+    pub fn new<T, K>(table: T, key: K) -> Self
+    where
+        T: Into<String>,
+        K: Into<String>,
+    {
+        Self {
+            table: table.into(),
+            key: key.into(),
+            fields: BTreeMap::new(),
+        }
+    }
+
+    /// Add one deterministic field and return the row.
+    #[must_use]
+    pub fn with_field<N, V>(mut self, name: N, value: V) -> Self
+    where
+        N: Into<String>,
+        V: Into<String>,
+    {
+        self.insert_field(name, value);
+        self
+    }
+
+    /// Insert or replace one deterministic field.
+    pub fn insert_field<N, V>(&mut self, name: N, value: V)
+    where
+        N: Into<String>,
+        V: Into<String>,
+    {
+        self.fields.insert(name.into(), value.into());
+    }
+}
+
+/// Deterministic materialized-state snapshot used for federation convergence checks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationMaterializedStateSnapshot {
+    rows: Vec<FederationMaterializedStateRow>,
+}
+
+impl FederationMaterializedStateSnapshot {
+    /// Create an empty materialized-state snapshot.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { rows: Vec::new() }
+    }
+
+    /// Create a snapshot from rows. Rows are sorted during digest calculation.
+    #[must_use]
+    pub fn from_rows<I>(rows: I) -> Self
+    where
+        I: IntoIterator<Item = FederationMaterializedStateRow>,
+    {
+        Self {
+            rows: rows.into_iter().collect(),
+        }
+    }
+
+    /// Add one row to the snapshot.
+    pub fn push(&mut self, row: FederationMaterializedStateRow) {
+        self.rows.push(row);
+    }
+
+    /// Return snapshot rows in insertion order.
+    #[must_use]
+    pub fn rows(&self) -> &[FederationMaterializedStateRow] {
+        &self.rows
+    }
+
+    /// Consume this snapshot and return its rows.
+    #[must_use]
+    pub fn into_rows(self) -> Vec<FederationMaterializedStateRow> {
+        self.rows
+    }
+
+    /// Compute a deterministic digest over all materialized rows.
+    ///
+    /// Rows are sorted by table, key, and field content before hashing, so
+    /// backend iteration order cannot affect the digest. Duplicate rows remain
+    /// visible to the digest because every sorted row is appended.
+    pub fn digest(&self) -> Result<FederationStateDigest> {
+        let mut rows = self.rows.clone();
+        rows.sort();
+        let mut digest = FederationStateDigest::genesis();
+        for row in &rows {
+            digest = digest.append_materialized_row(row)?;
+        }
+        Ok(digest)
     }
 }
 
@@ -786,6 +906,79 @@ mod tests {
 
         assert_eq!(first.state_digest(), second.state_digest());
         assert_ne!(first.state_digest(), FederationStateDigest::genesis());
+    }
+
+    #[test]
+    fn materialized_state_digest_is_order_independent() {
+        let first = FederationMaterializedStateSnapshot::from_rows([
+            FederationMaterializedStateRow::new("proofs", "proof-y-1")
+                .with_field("amount", "1")
+                .with_field("state", "SPENT"),
+            FederationMaterializedStateRow::new("mint_quotes", "quote-1")
+                .with_field("amount", "1")
+                .with_field("state", "ISSUED"),
+        ]);
+        let second = FederationMaterializedStateSnapshot::from_rows([
+            FederationMaterializedStateRow::new("mint_quotes", "quote-1")
+                .with_field("state", "ISSUED")
+                .with_field("amount", "1"),
+            FederationMaterializedStateRow::new("proofs", "proof-y-1")
+                .with_field("state", "SPENT")
+                .with_field("amount", "1"),
+        ]);
+
+        assert_eq!(
+            first.digest().expect("first digest"),
+            second.digest().expect("second digest")
+        );
+        assert_ne!(
+            first.digest().expect("first digest"),
+            FederationStateDigest::genesis()
+        );
+    }
+
+    #[test]
+    fn materialized_state_digest_changes_when_row_field_changes() {
+        let pending =
+            FederationMaterializedStateSnapshot::from_rows([FederationMaterializedStateRow::new(
+                "proofs",
+                "proof-y-1",
+            )
+            .with_field("amount", "1")
+            .with_field("state", "PENDING")]);
+        let spent =
+            FederationMaterializedStateSnapshot::from_rows([FederationMaterializedStateRow::new(
+                "proofs",
+                "proof-y-1",
+            )
+            .with_field("amount", "1")
+            .with_field("state", "SPENT")]);
+
+        assert_ne!(
+            pending.digest().expect("pending digest"),
+            spent.digest().expect("spent digest")
+        );
+    }
+
+    #[test]
+    fn materialized_state_digest_is_duplicate_sensitive() {
+        let one =
+            FederationMaterializedStateSnapshot::from_rows([FederationMaterializedStateRow::new(
+                "blind_signatures",
+                "b-1",
+            )
+            .with_field("amount", "1")]);
+        let duplicated = FederationMaterializedStateSnapshot::from_rows([
+            FederationMaterializedStateRow::new("blind_signatures", "b-1")
+                .with_field("amount", "1"),
+            FederationMaterializedStateRow::new("blind_signatures", "b-1")
+                .with_field("amount", "1"),
+        ]);
+
+        assert_ne!(
+            one.digest().expect("one digest"),
+            duplicated.digest().expect("duplicated digest")
+        );
     }
 
     #[test]

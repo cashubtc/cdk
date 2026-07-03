@@ -337,15 +337,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: record live federation smoke</span>
+          <span class="value">feat: add materialized state digest scaffold</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Live multi-process smoke</span>
+          <span class="value">Materialized state digest scaffold</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Materialized state digests</span>
+          <span class="value">Database-backed state digest</span>
         </div>
       </aside>
     </header>
@@ -983,6 +983,10 @@
             <p>The generated fake-wallet harness started five independent mintd members, queried signed private REST status, verified readiness and digest convergence, restarted one member, and verified convergence again.</p>
           </article>
           <article class="item">
+            <h3>Materialized digest scaffold ready</h3>
+            <p>`cdk-common::federation` now exports deterministic materialized-state rows and snapshots, giving database adapters a stable way to hash mint quotes, melt quotes, proof states, and blind signatures.</p>
+          </article>
+          <article class="item">
             <h3>Milestone map expanded</h3>
             <p>The dashboard now renders 24 explicit implementation-plan milestone points, with no grouped shorthand ranges.</p>
           </article>
@@ -1420,10 +1424,16 @@
               <td>Add operation-bearing process smoke traffic for mint, swap, melt, restore, and check-state once the live harness can drive a federation-aware wallet end to end.</td>
             </tr>
             <tr>
+              <td>Materialized state digest scaffold</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation materialized_state_digest -- --test-threads 1` passed order-independence, field-change sensitivity, and duplicate-row sensitivity. `cargo test -p cdk-common --features federation federation -- --test-threads 1` passed 74 federation tests. `cargo check -p cdk-axum --features federation`, `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"`, and `cargo fmt --all -- --check` passed.</td>
+              <td>Build database snapshots from applied mint state and wire the digest into signed private REST status.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, a replaceable consensus runtime boundary, a multi-node simulator for delayed, duplicated, reordered, and quorum-limited proposal delivery, explicit consensus item admission with bounded pending batches, operation acceptance notifications back to public handlers, a finalization loop for accepted-entry apply/notify delivery, an exported backend adapter for queued operation dispatch plus finalized responses, and a live generated 5-member process smoke that verifies signed status, readiness, convergence, restart, and cleanup.</td>
-              <td>Add operation-bearing live smoke coverage, materialize state digests over consensus-visible mint tables, then replace the simulator ordering source with a real BFT backend.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, a replaceable consensus runtime boundary, a multi-node simulator for delayed, duplicated, reordered, and quorum-limited proposal delivery, explicit consensus item admission with bounded pending batches, operation acceptance notifications back to public handlers, a finalization loop for accepted-entry apply/notify delivery, an exported backend adapter for queued operation dispatch plus finalized responses, a live generated 5-member process smoke that verifies signed status, readiness, convergence, restart, and cleanup, and a materialized-state digest scaffold for consensus-visible mint rows.</td>
+              <td>Feed the materialized digest from database rows, add operation-bearing live smoke coverage, then replace the simulator ordering source with a real BFT backend.</td>
             </tr>
           </tbody>
         </table>
@@ -1465,6 +1475,10 @@
             <p>The first backend adapter is simulator-backed and operation-focused, giving CDK a tested queue-to-finalized-response seam before introducing AlephBFT or another production ordering crate.</p>
           </article>
           <article class="item">
+            <h3>Digest format before DB wiring</h3>
+            <p>Materialized state convergence starts with a backend-neutral row snapshot and deterministic hash before individual storage adapters are asked to enumerate their mint state rows.</p>
+          </article>
+          <article class="item">
             <h3>Federation keysets are v3/BLS-only</h3>
             <p>Aggregate federation keysets use Cashu keyset v3 IDs and BLS public keys exclusively; v1/v2 keysets remain standalone-only unless a future protocol explicitly adds support.</p>
           </article>
@@ -1483,8 +1497,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Materialized state digests</h3>
-            <p>Compute audit-friendly state digests over consensus-visible mint tables so convergence checks cover applied mint quote, swap, melt, restore, and proof-state effects instead of only the accepted operation order.</p>
+            <h3>Database-backed state digest</h3>
+            <p>Build materialized snapshots from applied mint database rows and use that digest in signed status so convergence checks cover actual mint quote, swap, melt, restore, and proof-state effects.</p>
           </article>
           <article class="item">
             <h3>Operation-bearing process smoke</h3>

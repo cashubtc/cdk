@@ -30,7 +30,8 @@ pub use self::consensus::{
 };
 pub use self::journal::{
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
-    FederationOperationStatus, FederationStateDigest, InMemoryFederationJournal,
+    FederationMaterializedStateRow, FederationMaterializedStateSnapshot, FederationOperationStatus,
+    FederationStateDigest, InMemoryFederationJournal,
 };
 pub use self::operation::{
     FederationMeltOperation, FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation,
