@@ -62,6 +62,8 @@ pub struct FederationArgs {
 pub enum FederationCommand {
     /// Generate local trusted-dealer federation configs for fake-wallet testing.
     TrustedDealer(FederationTrustedDealerArgs),
+    /// Query signed local status from federation members.
+    Status(FederationStatusArgs),
 }
 
 #[cfg(feature = "federation")]
@@ -99,6 +101,20 @@ pub struct FederationTrustedDealerArgs {
     pub force: bool,
 }
 
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationStatusArgs {
+    /// Shared public federation config JSON path.
+    #[arg(long)]
+    pub public_config: Option<PathBuf>,
+    /// Private member config JSON path used to sign status requests.
+    #[arg(long)]
+    pub private_config: Option<PathBuf>,
+    /// Member ID to query. Repeat to query multiple members. Defaults to every member.
+    #[arg(long = "member")]
+    pub members: Vec<u16>,
+}
+
 #[cfg(all(test, feature = "federation"))]
 mod tests {
     use super::*;
@@ -123,9 +139,45 @@ mod tests {
         let Some(CliCommand::Federation(federation)) = args.command else {
             panic!("expected federation command");
         };
-        let FederationCommand::TrustedDealer(trusted_dealer) = federation.command;
+        let FederationCommand::TrustedDealer(trusted_dealer) = federation.command else {
+            panic!("expected federation trusted-dealer command");
+        };
         assert_eq!(trusted_dealer.members, 5);
         assert_eq!(trusted_dealer.threshold, 3);
         assert_eq!(trusted_dealer.amounts, vec![1, 2, 4]);
+    }
+
+    #[test]
+    fn parses_federation_status_subcommand() {
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "status",
+            "--public-config",
+            "federation-public.json",
+            "--private-config",
+            "member-1/federation-private.json",
+            "--member",
+            "1",
+            "--member",
+            "3",
+        ])
+        .expect("status command parses");
+
+        let Some(CliCommand::Federation(federation)) = args.command else {
+            panic!("expected federation command");
+        };
+        let FederationCommand::Status(status) = federation.command else {
+            panic!("expected federation status command");
+        };
+        assert_eq!(
+            status.public_config,
+            Some(PathBuf::from("federation-public.json"))
+        );
+        assert_eq!(
+            status.private_config,
+            Some(PathBuf::from("member-1/federation-private.json"))
+        );
+        assert_eq!(status.members, vec![1, 3]);
     }
 }

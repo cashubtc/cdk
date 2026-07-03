@@ -15,7 +15,7 @@ fn main() -> Result<()> {
 
     rt.block_on(async {
         let args = CLIArgs::parse();
-        if cdk_mintd::run_cli_command(&args)? {
+        if cdk_mintd::run_cli_command(&args).await? {
             return Ok(());
         }
 

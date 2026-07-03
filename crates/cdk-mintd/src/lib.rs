@@ -67,6 +67,8 @@ pub mod config;
 pub mod env_vars;
 #[cfg(feature = "federation")]
 mod federation_setup;
+#[cfg(feature = "federation")]
+mod federation_status;
 pub mod setup;
 
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
@@ -74,13 +76,16 @@ const DEFAULT_BATCH_MINT_SIZE: u64 = 100;
 const REQUEST_BODY_LIMIT_BYTES: usize = 1_048_576;
 
 /// Run a one-shot CLI subcommand, returning true when no mint daemon should be started.
-pub fn run_cli_command(args: &CLIArgs) -> Result<bool> {
+pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
     #[cfg(feature = "federation")]
     if let Some(command) = &args.command {
         match command {
             cli::CliCommand::Federation(federation) => match &federation.command {
                 cli::FederationCommand::TrustedDealer(args) => {
                     federation_setup::run_trusted_dealer_command(args)?;
+                }
+                cli::FederationCommand::Status(status) => {
+                    federation_status::run_status_command(args, status).await?;
                 }
             },
         }
@@ -551,7 +556,7 @@ fn configure_federation(
 }
 
 #[cfg(feature = "federation")]
-fn read_federation_json<T>(path: &Path, label: &str) -> Result<T>
+pub(crate) fn read_federation_json<T>(path: &Path, label: &str) -> Result<T>
 where
     T: DeserializeOwned,
 {
