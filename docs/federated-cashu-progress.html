@@ -324,19 +324,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Milestone 3 in progress</span>
+          <span class="value">Milestone 4 in progress</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">6f856d26 mintd config wiring</span>
+          <span class="value">296e2c93 operation encoding</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Canonical operation encoding</span>
+          <span class="value">Consensus journal scaffold</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Consensus journal scaffold</span>
+          <span class="value">Private REST transport scaffold</span>
         </div>
       </aside>
     </header>
@@ -371,14 +371,14 @@
               <h3>3. Operation encoding</h3>
               <p>Canonical hashes for mint, swap, melt, restore, and payment observations.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </article>
           <article class="milestone">
             <div>
               <h3>4-7. Consensus, journal, and signatory</h3>
               <p>Transport traits, private REST, dummy consensus, durable journal, state digests, and signing shares.</p>
             </div>
-            <span class="status pending">Pending</span>
+            <span class="status progress">In progress</span>
           </article>
           <article class="milestone">
             <div>
@@ -440,6 +440,10 @@
             <h3>Mintd federation config wiring committed</h3>
             <p>Mintd can now load public federation JSON plus local member private JSON, validate them, expose them through the mint builder, and stay unchanged when federation is disabled.</p>
           </article>
+          <article class="item">
+            <h3>Canonical operation encoding committed</h3>
+            <p>Mint quote, mint, melt quote, melt, swap, restore, and payment-observation requests now have versioned federation envelopes, deterministic operation IDs, and quote-scoped conflict keys.</p>
+          </article>
         </div>
       </section>
 
@@ -461,6 +465,10 @@
           <article class="item">
             <h3>Startup validation landed</h3>
             <p>Federation configs are rejected at startup when public roster data and local private member state do not match.</p>
+          </article>
+          <article class="item">
+            <h3>Mix-and-match guardrail started</h3>
+            <p>The same mint quote cannot be paired with different blinded output sets without producing a conflict before any future federation member signs.</p>
           </article>
           <article class="item">
             <h3>Threshold math baseline</h3>
@@ -560,6 +568,12 @@
               <td>Encode mint, swap, melt, restore, and payment observations as canonical consensus operations.</td>
             </tr>
             <tr>
+              <td>Canonical operation encoding</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federation` passed 15 tests, plus `cargo check -p cdk-common --lib`, `cargo check -p cdk-common --features federation --lib`, and `cargo check -p cdk --lib --features federation` passed.</td>
+              <td>Persist ordered operation IDs, conflict keys, and state digests in a consensus journal scaffold.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status pending">Pending</span></td>
               <td>Implementation not started.</td>
@@ -599,12 +613,12 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Canonical operation encoding</h3>
-            <p>Define stable hashes and validation for federated mint, swap, melt, restore, and payment-observation operations before they enter consensus.</p>
+            <h3>Consensus journal scaffold</h3>
+            <p>Add an append-only journal abstraction for accepted operation order, conflict keys, operation status, and state digests.</p>
           </article>
           <article class="item">
-            <h3>Consensus journal scaffold</h3>
-            <p>Persist accepted operation order, member observations, operation status, and state digests so offline members can catch up deterministically.</p>
+            <h3>Private REST transport scaffold</h3>
+            <p>Expose member-only routes for submitting operations, exchanging acknowledgements, and asking peers for missed journal entries.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>
