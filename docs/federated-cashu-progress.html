@@ -196,6 +196,9 @@
     .milestones {
       display: grid;
       gap: 10px;
+      list-style: none;
+      margin: 0;
+      padding: 0;
     }
 
     .milestone {
@@ -344,176 +347,176 @@
     <div class="grid">
       <section class="panel span-8">
         <h2>Milestones</h2>
-        <div class="milestones">
-          <article class="milestone">
+        <ul class="milestones" aria-label="Implementation plan milestone points">
+          <li class="milestone">
             <div>
-              <h3>0. RFC and feature gate</h3>
-              <p>Document threat model, add no-op federation gates, keep standalone behavior unchanged.</p>
+              <h3>Milestone 0: written RFC and feature gate</h3>
+              <p>Objective: make the safety model explicit before code paths start diverging.</p>
             </div>
             <span class="status done">Done</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>1. Threshold BLS primitives</h3>
-              <p>Trusted-dealer shares, share verification, interpolation, and aggregate blind signatures.</p>
+              <h3>Milestone 1: threshold BLS blind signature primitives</h3>
+              <p>Objective: add the cryptographic building blocks without touching mint state logic.</p>
             </div>
             <span class="status done">Done</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>2. Federation config and roster</h3>
-              <p>Static member identity keys, partner allowlists, aggregate keysets, and trusted-dealer configs.</p>
+              <h3>Milestone 2: federation configuration and trusted-dealer setup</h3>
+              <p>Objective: create deterministic federation configs and local key shares for test federations.</p>
             </div>
             <span class="status done">Done</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>3. Operation encoding</h3>
-              <p>Canonical hashes for mint, swap, melt, restore, and payment observations.</p>
+              <h3>Milestone 3: canonical operation encoding and hashes</h3>
+              <p>Objective: make every consensus operation uniquely and deterministically identified.</p>
             </div>
             <span class="status done">Done</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>4. Consensus engine abstraction</h3>
-              <p>Ordered operation journal, local consensus scaffold, duplicate/conflict handling, catch-up DTOs, and future BFT engine work.</p>
+              <h3>Milestone 4: consensus engine abstraction</h3>
+              <p>Objective: add an ordered log before integrating with mint business logic.</p>
             </div>
             <span class="status progress">In progress</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>5. Federation DB journal and state digests</h3>
-              <p>Durable accepted operation history, signature-share storage, restart replay, and later state digests and audit summaries.</p>
+              <h3>Milestone 5: federation DB journal and state digests</h3>
+              <p>Objective: keep replicated operation history separate from materialized mint state.</p>
             </div>
             <span class="status progress">In progress</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>6. Deterministic mint state machine extraction</h3>
-              <p>Consensus-applied mint, swap, melt, quote, and payment-observation transitions that replay into local mint storage.</p>
+              <h3>Milestone 6: deterministic mint state machine extraction</h3>
+              <p>Objective: refactor CDK mint operations so consensus can call deterministic apply functions.</p>
             </div>
             <span class="status progress">In progress</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>7. Federated key-share signatory</h3>
-              <p>Member-local BLS share signing, aggregate key advertisement, v3/BLS guards, and share verification before return.</p>
+              <h3>Milestone 7: federated key-share signatory</h3>
+              <p>Objective: let each member sign only with its own BLS share while advertising aggregate keys.</p>
             </div>
             <span class="status done">Done</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>8. Federated mint quote creation and payment observations</h3>
-              <p>Consensus-backed mint quotes, fake-wallet paid observations, duplicate handling, and catch-up replay.</p>
+              <h3>Milestone 8: federated mint quote creation and payment observations</h3>
+              <p>Objective: make all members agree on mint quotes and paid status.</p>
             </div>
             <span class="status done">Done</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>9. Federated mint issuance</h3>
-              <p>Paid quote issuance through consensus, exact-output conflict rejection, cached member shares, and wallet aggregation.</p>
+              <h3>Milestone 9: federated mint issuance</h3>
+              <p>Objective: issue eCash from paid quotes only after the exact issuance request is accepted by consensus.</p>
             </div>
             <span class="status done">Done</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>10. Federated wallet connector and aggregation</h3>
-              <p>Multi-member wallet fan-out, aggregate keyset validation, BLS share verification, threshold aggregation, and failure handling.</p>
+              <h3>Milestone 10: federated wallet connector and aggregation</h3>
+              <p>Objective: make the wallet see normal Cashu responses while the connector handles member fanout.</p>
             </div>
             <span class="status done">Done</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>11. Federated swap</h3>
-              <p>Consensus-gated swap requests, aggregate proof verification, spent-state replay, output shares, and wallet aggregation.</p>
+              <h3>Milestone 11: federated swap</h3>
+              <p>Objective: prevent double-spends and mix-and-match output attacks for swaps.</p>
             </div>
             <span class="status done">Done</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>12. Sliding-window attack regression suite</h3>
-              <p>Overlapping output-set attacks are rejected by quote-scoped consensus conflicts before threshold signing can help an attacker.</p>
+              <h3>Milestone 12: explicit sliding-window attack regression suite</h3>
+              <p>Objective: prove that threshold shares cannot be mixed across different output sets.</p>
             </div>
             <span class="status done">Done</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>13. Restore and check-state</h3>
-              <p>Restore only returns shares for accepted outputs, and wallet check-state requires threshold agreement from members.</p>
+              <h3>Milestone 13: restore and check-state</h3>
+              <p>Objective: support wallet recovery without reintroducing unsafe signing.</p>
             </div>
             <span class="status done">Done</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>14. Melt reserve and payment finalization</h3>
-              <p>Fake-wallet melt quotes, pending/paid/unpaid observations, aggregate input verification, change shares, and replay recovery.</p>
+              <h3>Milestone 14: melt reserve and payment finalization</h3>
+              <p>Objective: federate melts without losing funds or allowing proof reuse.</p>
             </div>
             <span class="status progress">In progress</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>15. Networking and peer authentication</h3>
-              <p>Signed private REST routes, member allowlists, sequence tracking, catch-up transport, and future Iroh or lower-level P2P adapters.</p>
+              <h3>Milestone 15: networking and peer authentication</h3>
+              <p>Objective: run federation members as separate processes.</p>
             </div>
             <span class="status progress">In progress</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>16. Member startup, catch-up, and recovery</h3>
-              <p>Startup replay, lag-aware signing guards, automatic sync rounds, offline catch-up, divergence detection, and restart-safe sequences.</p>
+              <h3>Milestone 16: member startup, catch-up, and recovery</h3>
+              <p>Objective: make nodes durable and restart-safe.</p>
             </div>
             <span class="status progress">In progress</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>17. cdk-mintd integration and regtest tooling</h3>
-              <p>Federation config loading, trusted-dealer generation, inspect/status CLIs, and generated local smoke scripts.</p>
+              <h3>Milestone 17: `cdk-mintd` integration and regtest tooling</h3>
+              <p>Objective: make the federation easy to run locally.</p>
             </div>
             <span class="status progress">In progress</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>18. Storage backend coverage</h3>
-              <p>SQLite federation persistence is exercised, with broader backend, locking, indexing, and stress coverage still to finish.</p>
+              <h3>Milestone 18: storage backend coverage</h3>
+              <p>Objective: support the same storage expectations as CDK does today.</p>
             </div>
             <span class="status progress">In progress</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>19. Real payment backend policy</h3>
-              <p>Move beyond fake-wallet assumptions with explicit Lightning/onchain observation policies and operator tooling.</p>
+              <h3>Milestone 19: real payment backend policy</h3>
+              <p>Objective: move beyond fake wallet without centralizing payment trust accidentally.</p>
             </div>
             <span class="status pending">Pending</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>20. Distributed key generation</h3>
-              <p>Replace trusted-dealer setup with authenticated dealer-free BLS DKG and signed transcripts.</p>
+              <h3>Milestone 20: distributed key generation</h3>
+              <p>Objective: replace trusted-dealer setup with dealer-free DKG.</p>
             </div>
             <span class="status pending">Pending</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>21. Key rotation and federation upgrades</h3>
-              <p>Consensus-accepted aggregate keyset rotation, protocol negotiation, and stale-member upgrade safety.</p>
+              <h3>Milestone 21: key rotation and federation upgrades</h3>
+              <p>Objective: keep long-running federations maintainable.</p>
             </div>
             <span class="status pending">Pending</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>22. Observability and operator safety</h3>
-              <p>Status probes exist; metrics, digest alerts, redaction tests, and operator inspection surfaces still need expansion.</p>
+              <h3>Milestone 22: observability and operator safety</h3>
+              <p>Objective: make failures diagnosable without exposing private user data.</p>
             </div>
             <span class="status progress">In progress</span>
-          </article>
-          <article class="milestone">
+          </li>
+          <li class="milestone">
             <div>
-              <h3>23. Security review checklist</h3>
-              <p>Consensus-before-signing and attack regressions are accumulating, with a full route, DoS, payment, and transcript review still ahead.</p>
+              <h3>Milestone 23: security review checklist</h3>
+              <p>Objective: make the design reviewable before mainnet use.</p>
             </div>
             <span class="status progress">In progress</span>
-          </article>
-        </div>
+          </li>
+        </ul>
       </section>
 
       <section class="panel span-4">
@@ -923,7 +926,7 @@
           </article>
           <article class="item">
             <h3>Milestone map expanded</h3>
-            <p>The dashboard now lists every implementation-plan milestone from 0 through 23 individually, instead of grouping the remaining work into broad ranges.</p>
+            <p>The dashboard now renders 24 explicit implementation-plan milestone points, with no grouped shorthand ranges.</p>
           </article>
         </div>
       </section>
