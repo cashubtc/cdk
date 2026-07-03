@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: propagate federation melt payment observations</span>
+          <span class="value">test: cover federation offline catch-up recovery</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Melt payment observations</span>
+          <span class="value">Multi-member recovery scenarios</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Multi-member recovery scenarios</span>
+          <span class="value">Lag-aware peer sync loop</span>
         </div>
       </aside>
     </header>
@@ -556,6 +556,10 @@
             <h3>Melt payment observation replay ready</h3>
             <p>Public melt quote status checks now submit outgoing payment observations to consensus, and catch-up replay can finalize paid pending melts or roll back unpaid pending melts through the existing saga recovery path.</p>
           </article>
+          <article class="item">
+            <h3>Offline catch-up convergence covered</h3>
+            <p>A member that misses a full sequence of accepted mint, swap, melt quote, pending melt, and melt payment observation operations can catch up from a peer journal and reconstruct the same local storage state.</p>
+          </article>
         </div>
       </section>
 
@@ -694,6 +698,10 @@
             <h3>Failed melt settlement rolls back cleanly</h3>
             <p>A member that learns an unpaid outgoing melt observation after a pending melt now removes saga metadata, releases pending proofs, returns the quote to Unpaid, and keeps the consensus journal applied.</p>
           </article>
+          <article class="item">
+            <h3>Divergent peer history halts catch-up</h3>
+            <p>Digest-bound catch-up requests and response validation reject a member history that already diverged, preventing a node from silently blending two accepted operation orders.</p>
+          </article>
         </div>
       </section>
 
@@ -710,7 +718,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Mint quote, melt quote, mint issuance, swap, melt, and melt payment observation entries apply into storage; multi-member restart scenarios still need broader coverage before offline recovery is production-safe.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up now covers mint, swap, melt, and payment observations, but automatic background peer sync and lag-aware public serving guards are still needed before offline recovery is production-safe.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -966,10 +974,16 @@
               <td>Run restart and catch-up scenarios across multiple fake-wallet federation members for mint, swap, and melt flows.</td>
             </tr>
             <tr>
+              <td>Multi-member recovery scenarios</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation offline_member_catches_up_multiple_operations_and_converges` and `diverged_member_rejects_peer_catch_up_digest_mismatch` passed. The new recovery coverage replays seven missed consensus entries across mint, swap, melt quote, pending melt, and paid melt observation state, then verifies journal convergence, stored shares, spent proofs, completed saga metadata, quote status, and digest-mismatch rejection.</td>
+              <td>Add an automatic peer sync loop and prevent lagging members from serving signing shares before they catch up.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Broader multi-member recovery remains open.</td>
-              <td>Test restart/catch-up around fake-wallet mint, swap, and melt flows with multiple local members.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence and divergent-history rejection.</td>
+              <td>Add lag-aware peer sync before signing and then run multi-process fake-wallet member scenarios.</td>
             </tr>
           </tbody>
         </table>
@@ -1009,8 +1023,12 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Multi-member recovery scenarios</h3>
-            <p>Run restart and catch-up scenarios across multiple fake-wallet members for mint, swap, and melt flows, including members that miss quote, payment, and spend operations before reconnecting.</p>
+            <h3>Lag-aware peer sync loop</h3>
+            <p>Add a member recovery loop that checks peer status, catches up before serving signing shares, and exposes clear lagging/catching-up/healthy states for operators and tests.</p>
+          </article>
+          <article class="item">
+            <h3>Multi-process local federation</h3>
+            <p>Run fake-wallet federation members as separate local mint processes with private REST endpoints, stop and restart members, and compare consensus height and state digests after recovery.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>

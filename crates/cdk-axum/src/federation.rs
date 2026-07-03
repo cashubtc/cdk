@@ -1517,6 +1517,264 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn offline_member_catches_up_multiple_operations_and_converges() {
+        let (state, public_config, _) = federation_route_state().await;
+        let config = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .clone();
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+
+        let mint_quote_id = QuoteId::new();
+        let minted_output = mint_output(&state, &mint_quote_id);
+        let mint_request = MintInput::Single(MintRequest {
+            quote: mint_quote_id.clone(),
+            outputs: vec![minted_output.clone()],
+            signature: None,
+        });
+
+        let swap_input = proof_for_amount(&state, 1, "offline-catch-up-swap-input");
+        let swap_input_y = swap_input.y().expect("swap input y");
+        let swapped_output = swap_output(&state, "offline-catch-up-swap-output");
+        let swap_request =
+            cdk::nuts::SwapRequest::new(vec![swap_input], vec![swapped_output.clone()]);
+
+        let fake_description = FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Pending,
+            check_payment_state: MeltQuoteState::Pending,
+            pay_err: false,
+            check_err: false,
+        };
+        let melt_quote_id = QuoteId::new();
+        let melt_invoice = create_fake_invoice(
+            1000,
+            serde_json::to_string(&fake_description).expect("fake invoice description"),
+        );
+        let melt_quote_envelope = config.melt_quote_operation(
+            melt_quote_id.clone(),
+            cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+                request: melt_invoice,
+                unit: CurrencyUnit::Sat,
+                options: None,
+            }),
+        );
+        let melt_inputs = vec![
+            proof_for_amount(&state, 1, "offline-catch-up-melt-a"),
+            proof_for_amount(&state, 1, "offline-catch-up-melt-b"),
+            proof_for_amount(&state, 1, "offline-catch-up-melt-c"),
+        ];
+        let melt_input_ys = melt_inputs
+            .iter()
+            .map(|proof| proof.y().expect("melt input y"))
+            .collect::<Vec<_>>();
+        let mut melt_change_output = swap_output(&state, "offline-catch-up-melt-change");
+        melt_change_output.amount = Amount::ZERO;
+        let melt_request = cdk::nuts::MeltRequest::new(
+            melt_quote_id.clone(),
+            melt_inputs,
+            Some(vec![melt_change_output.clone()]),
+        );
+        let melt_envelope = config.melt_operation(melt_request).expect("melt envelope");
+        let melt_payment_envelope = melt_payment_observation_envelope(
+            &state,
+            &melt_quote_id,
+            MeltQuoteState::Paid,
+            Some("offline-catch-up-preimage".to_string()),
+        );
+
+        for envelope in [
+            mint_quote_envelope(&state, &mint_quote_id),
+            paid_observation_envelope(&state, &mint_quote_id),
+            config
+                .mint_operation(mint_request.clone())
+                .expect("mint envelope"),
+            config
+                .swap_operation(swap_request.clone())
+                .expect("swap envelope"),
+            melt_quote_envelope,
+            melt_envelope,
+            melt_payment_envelope,
+        ] {
+            peer_consensus
+                .submit_envelope(envelope)
+                .expect("peer accepted operation");
+        }
+
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+        assert_eq!(
+            local_consensus.lock().await.peer_status().operation_count,
+            0
+        );
+        let catch_up_response = peer_consensus
+            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
+            .expect("peer catch-up response");
+
+        let applied = state
+            .apply_federation_catch_up_response(&catch_up_response)
+            .await
+            .expect("apply offline catch-up");
+
+        assert_eq!(applied.len(), 7);
+        assert_eq!(
+            local_consensus
+                .lock()
+                .await
+                .peer_status()
+                .latest_order_digest,
+            peer_consensus.peer_status().latest_order_digest
+        );
+
+        let persisted = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal lookup");
+        assert_eq!(persisted.len(), 7);
+        assert!(persisted
+            .iter()
+            .all(|entry| entry.status == FederationOperationStatus::Applied));
+
+        let quote = state
+            .mint
+            .localstore()
+            .get_mint_quote(&mint_quote_id)
+            .await
+            .expect("mint quote lookup")
+            .expect("mint quote persisted");
+        assert_eq!(quote.state(), MintQuoteState::Issued);
+
+        let mint_signatures = state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[minted_output.blinded_secret])
+            .await
+            .expect("mint signature lookup");
+        assert!(mint_signatures[0].is_some());
+
+        let swap_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&[swap_input_y])
+            .await
+            .expect("swap state lookup");
+        assert_eq!(swap_states, vec![Some(cdk::nuts::State::Spent)]);
+        let swap_signatures = state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[swapped_output.blinded_secret])
+            .await
+            .expect("swap signature lookup");
+        assert!(swap_signatures[0].is_some());
+
+        let melt_quote = state
+            .mint
+            .localstore()
+            .get_melt_quote(&melt_quote_id)
+            .await
+            .expect("melt quote lookup")
+            .expect("melt quote persisted");
+        assert_eq!(melt_quote.state, MeltQuoteState::Paid);
+        assert_eq!(
+            melt_quote.payment_proof.as_deref(),
+            Some("offline-catch-up-preimage")
+        );
+        assert!(
+            state
+                .mint
+                .localstore()
+                .get_melt_saga_by_quote_id(&melt_quote_id)
+                .await
+                .expect("melt saga lookup")
+                .is_none(),
+            "paid observation replay should complete pending melt saga metadata"
+        );
+
+        let melt_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&melt_input_ys)
+            .await
+            .expect("melt state lookup");
+        assert_eq!(
+            melt_states,
+            vec![
+                Some(cdk::nuts::State::Spent),
+                Some(cdk::nuts::State::Spent),
+                Some(cdk::nuts::State::Spent),
+            ]
+        );
+        let melt_change_signatures = state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[melt_change_output.blinded_secret])
+            .await
+            .expect("melt change signature lookup");
+        assert!(melt_change_signatures[0].is_some());
+
+        let conflicting_output = swap_output(&state, "offline-catch-up-conflicting-mint");
+        let conflicting_mint = config
+            .mint_operation(MintInput::Single(MintRequest {
+                quote: mint_quote_id,
+                outputs: vec![conflicting_output],
+                signature: None,
+            }))
+            .expect("conflicting mint envelope");
+        let conflict = state.submit_federation_envelope(conflicting_mint).await;
+        assert!(matches!(
+            conflict,
+            Err(cdk::Error::Federation(
+                FederationError::ConflictingOperation { .. }
+            ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn diverged_member_rejects_peer_catch_up_digest_mismatch() {
+        let (state, public_config, _) = federation_route_state().await;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let peer_entry = restore_envelope(
+            public_config.federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        let local_entry = restore_envelope(
+            public_config.federation_id,
+            "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+        );
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+        peer_consensus
+            .submit_envelope(peer_entry)
+            .expect("peer accepted operation");
+        state
+            .submit_federation_envelope(local_entry)
+            .await
+            .expect("local accepted divergent operation");
+
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+        let request = local_consensus.lock().await.catch_up_request();
+        assert_eq!(request.next_index, 1);
+        assert!(matches!(
+            peer_consensus.catch_up_checked(&request),
+            Err(FederationError::CatchUpDigestMismatch { .. })
+        ));
+
+        let unchecked_response = peer_consensus.catch_up(&request);
+        let apply = state
+            .apply_federation_catch_up_response(&unchecked_response)
+            .await;
+        assert!(matches!(
+            apply,
+            Err(cdk::Error::Federation(
+                FederationError::CatchUpDigestMismatch { .. }
+            ))
+        ));
+    }
+
+    #[tokio::test]
     async fn federation_runtime_state_replays_persisted_journal_and_sequences() {
         let (state, public_config, peer_private) = federation_route_state().await;
         let peer_member = peer_private.member_id;
