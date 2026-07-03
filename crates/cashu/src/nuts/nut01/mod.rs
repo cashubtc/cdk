@@ -77,6 +77,14 @@ pub enum Error {
     /// BLS threshold signer IDs must be non-zero.
     #[error("Invalid threshold signer id: {0}")]
     InvalidThresholdSignerId(u16),
+    /// Invalid threshold share size.
+    #[error("Invalid threshold share size: expected={expected}, found={found}")]
+    InvalidThresholdShareSize {
+        /// Expected size.
+        expected: usize,
+        /// Actual size.
+        found: usize,
+    },
     /// Duplicate BLS threshold signer ID.
     #[error("Duplicate threshold signer id: {id}")]
     DuplicateThresholdSignerId {

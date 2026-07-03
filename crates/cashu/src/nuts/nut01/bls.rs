@@ -186,6 +186,17 @@ impl BlsSignerId {
         self.0
     }
 
+    /// Return big-endian signer ID bytes.
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; 2] {
+        self.0.to_be_bytes()
+    }
+
+    /// Parse a signer ID from big-endian bytes.
+    pub fn from_bytes(bytes: [u8; 2]) -> Result<Self, Error> {
+        Self::new(u16::from_be_bytes(bytes))
+    }
+
     fn scalar(self) -> Scalar {
         Scalar::from(u64::from(self.0))
     }
@@ -247,6 +258,38 @@ impl BlsSecretKeyShare {
     pub fn to_secret_bytes(&self) -> [u8; 32] {
         self.secret_key.to_bytes()
     }
+
+    /// Serialize this secret share as `signer_id || scalar`.
+    ///
+    /// The returned bytes contain secret key material and must only be written to
+    /// private member configuration or secret storage.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; 34] {
+        let mut bytes = [0u8; 34];
+        bytes[..2].copy_from_slice(&self.signer_id.to_bytes());
+        bytes[2..].copy_from_slice(&self.secret_key.to_bytes());
+        bytes
+    }
+
+    /// Parse a secret share from `signer_id || scalar` bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() != 34 {
+            return Err(Error::InvalidThresholdShareSize {
+                expected: 34,
+                found: bytes.len(),
+            });
+        }
+
+        let mut signer_id = [0u8; 2];
+        signer_id.copy_from_slice(&bytes[..2]);
+        let signer_id = BlsSignerId::from_bytes(signer_id)?;
+        let secret_key = BlsSecretKey::from_bytes(&bytes[2..])?;
+
+        Ok(Self {
+            signer_id,
+            secret_key,
+        })
+    }
 }
 
 /// Public threshold BLS key share for one federation member.
@@ -278,6 +321,35 @@ impl BlsPublicKeyShare {
     pub fn public_key(&self) -> BlsG2PublicKey {
         self.public_key
     }
+
+    /// Serialize this public share as `signer_id || compressed_g2`.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; 98] {
+        let mut bytes = [0u8; 98];
+        bytes[..2].copy_from_slice(&self.signer_id.to_bytes());
+        bytes[2..].copy_from_slice(&self.public_key.to_bytes());
+        bytes
+    }
+
+    /// Parse a public share from `signer_id || compressed_g2` bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() != 98 {
+            return Err(Error::InvalidThresholdShareSize {
+                expected: 98,
+                found: bytes.len(),
+            });
+        }
+
+        let mut signer_id = [0u8; 2];
+        signer_id.copy_from_slice(&bytes[..2]);
+        let signer_id = BlsSignerId::from_bytes(signer_id)?;
+        let public_key = BlsG2PublicKey::from_bytes(&bytes[2..])?;
+
+        Ok(Self {
+            signer_id,
+            public_key,
+        })
+    }
 }
 
 /// Blind signature share produced by one threshold BLS signer.
@@ -308,6 +380,35 @@ impl BlsBlindSignatureShare {
     #[must_use]
     pub fn signature(&self) -> BlsG1PublicKey {
         self.signature
+    }
+
+    /// Serialize this blind signature share as `signer_id || compressed_g1`.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; 50] {
+        let mut bytes = [0u8; 50];
+        bytes[..2].copy_from_slice(&self.signer_id.to_bytes());
+        bytes[2..].copy_from_slice(&self.signature.to_bytes());
+        bytes
+    }
+
+    /// Parse a blind signature share from `signer_id || compressed_g1` bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() != 50 {
+            return Err(Error::InvalidThresholdShareSize {
+                expected: 50,
+                found: bytes.len(),
+            });
+        }
+
+        let mut signer_id = [0u8; 2];
+        signer_id.copy_from_slice(&bytes[..2]);
+        let signer_id = BlsSignerId::from_bytes(signer_id)?;
+        let signature = BlsG1PublicKey::from_bytes(&bytes[2..])?;
+
+        Ok(Self {
+            signer_id,
+            signature,
+        })
     }
 }
 
@@ -834,6 +935,69 @@ mod tests {
                 expected: 2,
                 found: 1
             })
+        ));
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn test_threshold_bls_share_serialization_round_trips() {
+        let coefficients = vec![bls_key(19), bls_key(23), bls_key(29)];
+        let keyset =
+            trusted_dealer_keygen(&coefficients, &signer_ids(&[1, 2, 3, 4, 5])).expect("keyset");
+        let blinded_message = BlsG1PublicKey::hash_to_curve(b"share serialization");
+        let secret_share = &keyset.secret_shares()[0];
+        let public_share = keyset.public_shares()[0];
+        let signature_share = secret_share.blind_sign_share(&blinded_message);
+
+        assert_eq!(
+            BlsSecretKeyShare::from_bytes(&secret_share.to_bytes()).expect("secret share"),
+            *secret_share
+        );
+        assert_eq!(
+            BlsPublicKeyShare::from_bytes(&public_share.to_bytes()).expect("public share"),
+            public_share
+        );
+        assert_eq!(
+            BlsBlindSignatureShare::from_bytes(&signature_share.to_bytes()).expect("signature"),
+            signature_share
+        );
+        assert!(matches!(
+            BlsBlindSignatureShare::from_bytes(&signature_share.to_bytes()[..49]),
+            Err(Error::InvalidThresholdShareSize {
+                expected: 50,
+                found: 49
+            })
+        ));
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn test_threshold_bls_aggregate_signature_unblinds_and_verifies() {
+        let coefficients = vec![bls_key(31), bls_key(37), bls_key(41)];
+        let keyset =
+            trusted_dealer_keygen(&coefficients, &signer_ids(&[1, 2, 3, 4, 5])).expect("keyset");
+        let secret = b"threshold aggregate proof";
+        let blinding_factor = bls_key(43);
+        let blinded_message = BlsG1PublicKey::hash_to_curve(secret).mul(&blinding_factor);
+        let shares = keyset
+            .secret_shares()
+            .iter()
+            .take(3)
+            .map(|share| share.blind_sign_share(&blinded_message))
+            .collect::<Vec<_>>();
+
+        let blinded_signature =
+            aggregate_blind_signature_shares(keyset.threshold(), &shares).expect("signature");
+        let unblinded_signature = blinded_signature.mul(
+            &blinding_factor
+                .invert()
+                .expect("non-zero blinding factor inverse"),
+        );
+
+        assert!(verify_pairing(
+            &unblinded_signature,
+            secret,
+            &keyset.aggregate_public_key()
         ));
     }
 }
