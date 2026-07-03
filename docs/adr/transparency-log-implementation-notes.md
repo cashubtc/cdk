@@ -48,7 +48,7 @@ hierarchy:
 
 ```rust
 pub enum LoggedEntity { MeltQuote, Proof, Keyset, BlindSignature }
-pub enum EventOp { Update = 1, Delete = 2 }
+pub enum EventOp { Insert = 0, Update = 1, Delete = 2 }
 pub struct MintEventLogEntry { seq, entity_type, entity_id, op, payload, leaf_hash, created_time }
 pub trait TransparencyLogDatabase {
     // Assigns dense zero-based leaf indices to committed-but-unindexed
@@ -80,17 +80,27 @@ chicken-and-egg problem: `seq` isn't known until the `INSERT` that assigns
 it has already happened.
 
 **`crates/cdk-sql-common/src/mint/event_log.rs`** (new) — `append_event()`,
-called directly (same connection, same transaction) from the six real
-mutation sites:
+called directly (same connection, same transaction) from the mutation
+sites. As of 2026-07-03 creation is logged too (`op=Insert`), so the tree
+commits to row *existence*, replay works from the log alone, and issuance
+is no longer path-dependent:
 
 | File | Method | Logs |
 |---|---|---|
+| `quotes.rs` | `add_melt_quote` | `op=Insert`: `{"amount","unit","fee_reserve","state","expiry","payment_method","request_lookup_id","request_lookup_id_kind"}` — **never** the full `request` (reveals payment destination) |
 | `quotes.rs` | `update_melt_quote_request_lookup_id` | `{"request_lookup_id", "request_lookup_id_kind"}` |
 | `quotes.rs` | `update_melt_quote_state` | `{"state","fee_reserve","estimated_blocks","selected_fee_index"[,"paid_time","payment_proof"]}` |
+| `proofs.rs` | `add_proofs` | one event per Y, `op=Insert`: `{"amount","keyset_id","state"}` — never `secret`/`c`/`witness` |
 | `proofs.rs` | `update_proofs_state` | one event per Y: `{"state"}` |
 | `proofs.rs` | `remove_proofs` | one event per Y: `{"state":"removed"}`, `op=Delete` |
+| `keys.rs` | `add_keyset_info` | `op=Insert` (first time only — the call is an upsert re-run at startup, guarded by an existence check): `{"unit","active","valid_from","valid_to","input_fee_ppk"}` |
 | `keys.rs` | `set_active_keyset` | one event per keyset touched: `{"active"}` |
-| `signatures.rs` | `add_blind_signatures` (the fill-in-`c`/`dleq` branch, **not** the insert branch) | `{"c","dleq_e","dleq_s","signed_time","amount"}` |
+| `signatures.rs` | `add_blind_signatures`, complete-insert branch | `op=Insert`: `{"amount","keyset_id","c","dleq_e","dleq_s","signed_time"}` |
+| `signatures.rs` | `add_blind_signatures`, fill-in-`c`/`dleq` branch | `op=Update`: `{"c","dleq_e","dleq_s","signed_time","amount"}` |
+
+(The NULL-`c` placeholder rows written by `add_blinded_messages` and
+cleaned up by `delete_blinded_messages` are ephemeral staging, not
+issuance — deliberately unlogged.)
 
 Also implements `TransparencyLogDatabase for SQLMintDatabase<RM>` (read
 side), generic over both SQLite and Postgres via `RM: DatabasePool`.
@@ -115,6 +125,13 @@ CREATE TABLE mint_event_log (
 CREATE INDEX idx_mint_event_log_entity ON mint_event_log(entity_type, entity_id, seq);
 CREATE UNIQUE INDEX idx_mint_event_log_leaf_index ON mint_event_log(leaf_index);
 ```
+
+A third migration (`20260703000000_enforce_append_only_event_log.sql`,
+both dialects) enforces the ADR's append-only invariant with triggers:
+DELETE always aborts, and the only permitted UPDATE is the appender's
+one-time `leaf_index` assignment (NULL → value, all other columns
+unchanged). Covered by `event_log_is_append_only_at_db_level` in
+`cdk-sqlite`.
 
 No new tables for tree state or checkpoints — both live in the mint's
 **existing generic KV store** (see §3), since they're small/single-valued
@@ -430,7 +447,9 @@ curl -s http://127.0.0.1:8085/v1/keys | jq '.keysets[] | {id, unit}'
    operators to copy.
 5. **Proof/consistency-proof generation is O(tree size)** — loads every leaf
    hash on every request. Flagged as a scaling follow-up in the original
-   ADR, still unaddressed.
+   ADR, still unaddressed. (Requests for a `tree_size`/`second` beyond the
+   current published tree now get a clean HTTP 400 via
+   `TransparencyLogService::tree_size()` instead of a 500.)
 6. `cdk-sigsum` anchoring **verified live against the public `barreleye`
    test log** (leaf included under a signed, witness-cosigned tree head;
    independently re-verified with a from-scratch Python verifier). The
@@ -441,13 +460,33 @@ curl -s http://127.0.0.1:8085/v1/keys | jq '.keysets[] | {id, unit}'
    feature `transparency-log`): TOFU-pins the log key + origin, requires
    consistency proofs on growth, reports `RollbackDetected` /
    `RootMismatch` / `InconsistentHistory` / `IdentityChanged` as typed
-   statuses. Not yet exposed over the cdk-swift FFI.
+   statuses. Since 2026-07-03 also:
+   `verify_transparency_log_with_witnesses(&[TrustedWitness], min)` gates
+   pin advancement on verified witness cosignatures
+   (`InsufficientCosignatures` status), and
+   `verify_transparency_log_replay()` performs the full NUT-XX
+   entry-by-entry replay audit (recompute every leaf hash via
+   `GET /v1/audit/entries` pagination, rebuild the tree, compare roots;
+   typed `ReplayStatus`). Not yet exposed over the cdk-swift FFI.
+   Sigsum-proof verification wallet-side (offline, via the `sigsum` crate)
+   remains follow-up.
 9. **Cosignature wire format fixed** to match c2sp tlog-cosignature: the
    signature-line payload is `key_id(4) || timestamp(8 BE) || sig(64)` —
    an earlier revision omitted the embedded timestamp and would not have
    interoperated with external C2SP verifiers.
 10. **Discovery**: no NUT-06 `nuts` entry until a NUT number is assigned;
     wallets probe `GET /v1/audit/pubkey` (404 = unsupported).
+11. **Insert events added 2026-07-03** (`op=Insert`, consensus-critical —
+    changes leaf hashes for newly created rows; fine pre-release, would be
+    a fork after a NUT number is assigned). See the call-site table in §1.
+12. **Log-key rotation is unimplemented** — NUT-XX says a mint that loses
+    its log key MUST rotate and publish an event identifying the new key;
+    today the wallet just reports `IdentityChanged`. Needs protocol design
+    (signed rotation event in the log itself) — deliberate follow-up, see
+    the ADR's Negative Consequences.
+13. **Genesis snapshot** for mints enabling the log on pre-existing state:
+    still an open NUT-XX question; insert events only cover rows created
+    after enablement.
 
 ## 6. Reference material used while building this
 

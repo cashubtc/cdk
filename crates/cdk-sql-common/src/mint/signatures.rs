@@ -136,6 +136,27 @@ where
                     .bind("keyset_id", signature.keyset_id.to_string())
                     .execute(&self.inner)
                     .await?;
+
+                    // A complete signature was issued in one shot (no
+                    // placeholder row existed), so issuance is logged here;
+                    // the placeholder flow logs it via the Update branch
+                    // below instead. Either way every issued signature
+                    // lands in the event log exactly once.
+                    event_log::append_event(
+                        &self.inner,
+                        LoggedEntity::BlindSignature,
+                        &message.to_string(),
+                        EventOp::Insert,
+                        &serde_json::to_vec(&serde_json::json!({
+                            "amount": u64::from(signature.amount),
+                            "keyset_id": signature.keyset_id.to_string(),
+                            "c": signature.c.to_string(),
+                            "dleq_e": signature.dleq.as_ref().map(|dleq| dleq.e.to_secret_hex()),
+                            "dleq_s": signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()),
+                            "signed_time": current_time,
+                        }))?,
+                    )
+                    .await?;
                 }
                 Some((c, _dleq_e, _dleq_s)) => {
                     // Blind message exists: check if c is NULL

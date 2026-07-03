@@ -73,8 +73,7 @@ Where:
 
 * `seq` is the zero-based leaf index.
 * `entity_type` is the event kind.
-* `op` is `"update"` or `"delete"`. Entities in scope for this NUT are never
-  logged as `"insert"` — see [Event Kinds](#event-kinds).
+* `op` is `"insert"`, `"update"`, or `"delete"`.
 * `entity_id` is the event's stable entity identifier.
 * `payload` is a JSON object containing *only the fields the mutation actually
   wrote*, not a full snapshot of the entity. This keeps the log's shape tied
@@ -92,14 +91,23 @@ affects the following protocol-visible entities after the log is enabled:
 
 | `entity_type` | `entity_id` | Purpose |
 |---|---|---|
-| `proof` | `Y`, the compressed point from `hash_to_curve(secret)` | Records proof state changes using the states from NUT-07, and removals on compensation. |
-| `blind_signature` | `B_`, the blinded message being signed | Records a blind signature's DLEQ fields being filled in after being initially stored with placeholders. |
-| `keyset` | keyset `id` | Records keyset activation/deactivation from NUT-02. |
-| `melt_quote` | quote id | Records melt quote state and payment-lookup changes from NUT-05 and payment-method NUTs. |
+| `proof` | `Y`, the compressed point from `hash_to_curve(secret)` | Records proofs being received (`insert`), state changes using the states from NUT-07 (`update`), and removals on compensation (`delete`). |
+| `blind_signature` | `B_`, the blinded message being signed | Records a blind signature being issued — either as an `insert` when the complete signature is stored in one step, or as an `update` when a previously stored placeholder has its `c`/DLEQ fields filled in. Every issued signature appears exactly once. |
+| `keyset` | keyset `id` | Records keyset creation (`insert`) and activation/deactivation from NUT-02 (`update`). |
+| `melt_quote` | quote id | Records melt quote creation (`insert`), and state and payment-lookup changes from NUT-05 and payment-method NUTs (`update`). |
 
-Insert-only entities (mint quotes, blind signatures at creation time, completed
-operations) are already their own complete history and are out of scope for
-this log — logging them would duplicate data without adding auditability.
+`insert` events exist so that the Merkle tree commits to an entity's
+*existence*, not only to its later transitions: without them a mint could
+retroactively invent or vanish rows that were never updated, and a third
+party could not replay the logged entities' state from the log alone.
+
+Tables that are never mutated after creation and are not one of the four
+entities above (mint quote payments, completed operations) remain out of
+scope — their rows are their own complete history, and unlike the entities
+above they participate in no logged transition whose starting point would
+otherwise be missing. Ephemeral staging rows (e.g. a blinded message stored
+with a placeholder `c` and deleted again if its operation fails) are not
+logged either; only the issuance of an actual signature is.
 
 Mints MAY add implementation-specific event kinds. Implementations that replay
 the log MUST preserve unknown event kinds but MAY ignore them when reconstructing
@@ -113,7 +121,14 @@ are shown below (not full entity snapshots).
 
 #### `proof`
 
-On a state change (`op: "update"`):
+On receipt (`op: "insert"`):
+
+```json
+{ "amount": 8, "keyset_id": "009a1f293253e41e", "state": "UNSPENT" }
+```
+
+The proof's `secret`, `c`, and `witness` MUST NOT be included — the proof
+is identified by `Y` only. On a state change (`op: "update"`):
 
 ```json
 { "state": "SPENT" }
@@ -128,8 +143,21 @@ NUT-07. On removal during compensation (`op: "delete"`):
 
 #### `blind_signature`
 
-Logged only when a previously-placeholder row is filled in with its DLEQ
-fields (`op: "update"`):
+When a complete signature is stored in one step (`op: "insert"`):
+
+```json
+{
+  "amount": 8,
+  "keyset_id": "009a1f293253e41e",
+  "c": "0277d1de806ed177007e5b94a8139343b6382e472c752a74e99949d511f7194f6c",
+  "dleq_e": "...",
+  "dleq_s": "...",
+  "signed_time": 1782920900
+}
+```
+
+When a previously-placeholder row is filled in with its `c`/DLEQ fields
+(`op: "update"`):
 
 ```json
 {
@@ -145,19 +173,50 @@ fields (`op: "update"`):
 
 #### `keyset`
 
+On creation (`op: "insert"`):
+
+```json
+{
+  "unit": "sat",
+  "active": true,
+  "valid_from": 1782920800,
+  "valid_to": null,
+  "input_fee_ppk": 0
+}
+```
+
+On activation/deactivation (`op: "update"`):
+
 ```json
 { "active": false }
 ```
 
 #### `melt_quote`
 
-On a request-lookup-id change:
+On creation (`op: "insert"`):
+
+```json
+{
+  "amount": 100,
+  "unit": "sat",
+  "fee_reserve": 1,
+  "state": "UNPAID",
+  "expiry": 1782920900,
+  "payment_method": "bolt11",
+  "request_lookup_id": "...",
+  "request_lookup_id_kind": "..."
+}
+```
+
+The quote's `request` (the full payment request, which reveals the payment
+destination) MUST NOT be included. On a request-lookup-id change
+(`op: "update"`):
 
 ```json
 { "request_lookup_id": "...", "request_lookup_id_kind": "..." }
 ```
 
-On a state change:
+On a state change (`op: "update"`):
 
 ```json
 {
@@ -190,6 +249,7 @@ above, and `op` is encoded as:
 
 | `op` | Value |
 |---|---:|
+| `"insert"` | `0` |
 | `"update"` | `1` |
 | `"delete"` | `2` |
 
@@ -383,9 +443,9 @@ Response:
     {
       "seq": 0,
       "entity_type": "keyset",
-      "op": "update",
+      "op": "insert",
       "entity_id": "009a1f293253e41e",
-      "payload": {"active": true},
+      "payload": {"unit": "sat", "active": true, "valid_from": 1782920800, "valid_to": null, "input_fee_ppk": 0},
       "created_time": 1782920800,
       "leaf_hash": "..."
     },
@@ -489,8 +549,9 @@ clients.
 ## Privacy Considerations
 
 This NUT intentionally makes more mint state observable. Mints MUST NOT include
-wallet secrets, proof `secret` values, blinding factors, private keys, access
-tokens, or authentication credentials in log payloads.
+wallet secrets, proof `secret` values, proof signatures (`c`), witnesses,
+blinding factors, private keys, access tokens, authentication credentials, or
+full payment requests (which reveal the payment destination) in log payloads.
 
 For proof events, mints MUST identify proofs by `Y = hash_to_curve(secret)`,
 not by `secret`.

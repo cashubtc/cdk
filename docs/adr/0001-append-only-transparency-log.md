@@ -1,8 +1,8 @@
 # Append-only mint event log with Merkle transparency proofs
 
-* Status: proposed
+* Status: accepted, implemented on `feat/append-only`
 * Authors: @asmogo
-* Date: 2026-07-01
+* Date: 2026-07-01 (design §§1–9 updated 2026-07-03 to match the implementation and the NUT-XX draft; see `nut-xx.md` for the normative wire formats)
 * Targeted modules: `cashu`, `cdk-common`, `cdk-sql-common`, `cdk` (mint), `cdk-axum`, `cdk-mintd`, `cdk-sigsum` (new)
 * Associated tickets/PRs: supersedes/merges [#2173](https://github.com/cashubtc/cdk/pull/2173) ("ADR for append-only change log in mint database")
 
@@ -75,41 +75,44 @@ Chosen option: **single generic event log + Merkle transparency layer, with peri
 
 ### 1. What gets logged
 
-Same scope analysis as #2173 — only entities that are mutated or deleted after creation need logging. Insert-only tables (`mint_quote_payments`, `mint_quote_issued`, `completed_operation`) and ephemeral tables (`melt_request`, `blinded_message`, `saga_state`) are unaffected.
+The four entities that are mutated or deleted after creation (the same scope analysis as #2173) are logged across their whole lifecycle — creation included. Insert events exist so the Merkle tree commits to a row's *existence*, not only its transitions: without them, replay from the log alone is impossible (update payloads carry only changed fields, so the starting point of every entity would be missing), and an operator could retroactively invent or vanish rows that were never updated without any checkpoint breaking. Truly insert-only tables that participate in no logged transition (`mint_quote_payments`, `mint_quote_issued`, `completed_operation`) and ephemeral staging tables (`melt_request`, the placeholder blinded-message rows, `saga_state`) remain unaffected.
 
 | Entity | `entity_type` | Triggered by |
 |---|---|---|
-| melt quote | `melt_quote` | `update_melt_quote_state`, `update_melt_quote_request_lookup_id` |
-| proof | `proof` | `update_proofs_state`, `remove_proofs` |
-| keyset | `keyset` | `set_active_keyset` |
-| blind signature | `blind_signature` | `add_blind_signatures` (the fill-in-`c`/`dleq` update path — this is the case flagged in review of #2173; it is a real mutation and must be logged) |
+| melt quote | `melt_quote` | `add_melt_quote` (insert), `update_melt_quote_state`, `update_melt_quote_request_lookup_id` |
+| proof | `proof` | `add_proofs` (insert), `update_proofs_state`, `remove_proofs` (delete) |
+| keyset | `keyset` | `add_keyset_info` (insert, first time only — the call is an upsert re-run at startup), `set_active_keyset` |
+| blind signature | `blind_signature` | `add_blind_signatures` — both branches: the complete-row insert, and the fill-in-`c`/`dleq` update path (the case flagged in review of #2173). Every issued signature is logged exactly once, on whichever path issued it. |
 
 Adding a fifth logged entity later is a one-line change at the call site — no new table, no new migration.
 
 ### 2. Canonical event log (single table, one migration, both dialects)
 
 ```sql
--- migrations/sqlite/20260701000000_create_mint_event_log.sql
--- migrations/postgres/20260701000000_create_mint_event_log.sql
+-- migrations/{sqlite,postgres}/20260701000000_create_mint_event_log.sql
+-- migrations/{sqlite,postgres}/20260702000000_add_leaf_index_to_mint_event_log.sql
 
 CREATE TABLE mint_event_log (
-    seq         BIGINT PRIMARY KEY,   -- monotonic, gap-tolerant, see "sequencing" below
+    seq         INTEGER PRIMARY KEY AUTOINCREMENT, -- IDENTITY on Postgres; commit-order hint only
     entity_type TEXT   NOT NULL,      -- 'melt_quote' | 'proof' | 'keyset' | 'blind_signature'
     entity_id   TEXT   NOT NULL,      -- quote id / Y hex / keyset id / blinded message hex
     op          SMALLINT NOT NULL,    -- 0 = Insert, 1 = Update, 2 = Delete
-    payload     BLOB   NOT NULL,      -- canonical CBOR of the new field values
+    payload     BLOB   NOT NULL,      -- canonical JSON of the new field values (see below)
     leaf_hash   BLOB   NOT NULL,      -- RFC 6962 leaf hash, precomputed at insert time
-    created_time BIGINT NOT NULL
+    created_time BIGINT NOT NULL,
+    leaf_index  BIGINT                -- zero-based Merkle tree position; NULL until the
+                                      -- single appender folds the row (see §4)
 );
 CREATE INDEX idx_mint_event_log_entity ON mint_event_log(entity_type, entity_id, seq);
+CREATE UNIQUE INDEX idx_mint_event_log_leaf_index ON mint_event_log(leaf_index);
 ```
 
-`payload` is not an unstructured blob in the pejorative sense — it's a canonical (deterministic field order, deterministic number encoding) CBOR encoding of exactly the fields the mutation call site is writing. This is the same information a typed `_log` table would store, just not pre-split into per-entity SQL schemas. If a specific entity ever needs indexed SQL queries over one field (e.g. "all melt quotes that transitioned to `Failed`"), add a single derived/materialized table for *that* field, driven by an actual need — not three tables built speculatively.
+`payload` is not an unstructured blob in the pejorative sense — it's a canonical JSON encoding (compact, keys sorted; `serde_json`'s default map behavior, pinned by a unit test in `cdk-sql-common`'s `event_log.rs` so a dependency-feature flip can't silently change the bytes) of exactly the fields the mutation call site is writing. JSON was chosen over the CBOR considered in an earlier draft of this ADR because the NUT-XX audit endpoints serve entries as JSON anyway, and one encoding end-to-end means an external verifier can re-serialize the served payload object and get byte-identical input to the leaf hash. This is the same information a typed `_log` table would store, just not pre-split into per-entity SQL schemas. If a specific entity ever needs indexed SQL queries over one field (e.g. "all melt quotes that transitioned to `Failed`"), add a single derived/materialized table for *that* field, driven by an actual need — not three tables built speculatively.
 
 ### 3. `cdk-common`: log entry types
 
 ```rust
-// crates/cdk-common/src/database/event_log.rs
+// crates/cdk-common/src/database/mint/transparency.rs
 
 /// Entity kinds that participate in the append-only transparency log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -120,7 +123,10 @@ pub enum LoggedEntity {
     BlindSignature,
 }
 
-/// The kind of mutation an event log entry records.
+/// The kind of mutation an event log entry records. `Insert` exists so the
+/// tree commits to a row's *existence*, not just its later transitions —
+/// without it, replay from the log alone is impossible and an operator
+/// could silently invent or vanish rows that were never updated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventOp {
     Insert = 0,
@@ -128,167 +134,75 @@ pub enum EventOp {
     Delete = 2,
 }
 
-/// A single append-only log entry, prior to sequencing.
-#[derive(Debug, Clone)]
-pub struct LogEntry {
+/// One durable, sequenced row of the log, as read back by the checkpoint
+/// publisher and the audit HTTP endpoints. `seq` here is the zero-based
+/// Merkle leaf index (`leaf_index` in SQL, NUT-XX's public `seq`), not the
+/// row's auto-increment id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MintEventLogEntry {
+    pub seq: u64,
     pub entity_type: LoggedEntity,
     pub entity_id: String,
     pub op: EventOp,
-    /// Canonical CBOR of the fields written by this mutation.
+    /// Canonical JSON of the fields written by this mutation.
     pub payload: Vec<u8>,
-}
-
-/// A sequenced, hashed log entry as persisted in `mint_event_log`.
-#[derive(Debug, Clone)]
-pub struct SequencedLogEntry {
-    pub seq: u64,
-    pub entry: LogEntry,
     pub leaf_hash: [u8; 32],
     pub created_time: u64,
 }
 ```
 
+The leaf-hash preimage (`event_leaf_preimage`) is
+`utf8(entity_type) || 0x00 || utf8(entity_id) || 0x00 || uint8(op) ||
+uint64_be(created_time) || payload`. **`seq` is deliberately excluded** —
+RFC 6962 leaves never encode their own tree position (it's implicit from
+where the leaf lands), and excluding it also sidesteps a chicken-and-egg
+problem: the row's id isn't known until the `INSERT` that assigns it has
+already happened. This is normative in NUT-XX's "Leaf Hash" section.
+
 ### 4. Sequencing (the part that needs care)
 
 The tree requires a single, strictly ordered, gap-free sequence of leaves. Two deployment shapes:
 
-* **Single mint process (SQLite, or Postgres with one writer)** — an in-process `AtomicU64` sequencer, seeded from `MAX(seq)` at startup, assigns `seq` synchronously inside the same transaction as the mutation. Simple, matches #2173's original assumption, no contention concerns.
-* **Multiple mint processes sharing one Postgres database (HA)** — do **not** let every process claim `seq` via a shared `SEQUENCE`/`nextval()` directly for tree leaves. Postgres sequences don't block, but they also don't guarantee commit order matches allocation order (a transaction that grabs `seq=105` can commit before the one holding `seq=104`), which breaks the tree's "no gaps, no reordering after publication" invariant. Instead: mutation transactions still write their row (with a Postgres `SEQUENCE`-assigned `seq`, gaps from aborted transactions are harmless), but a single dedicated **appender** task per mint (leader-elected, or simply "the one process configured as the log writer" in a typical active/passive mint HA setup) is the only thing that reads committed rows in `seq` order and folds them into the Merkle tree — advancing the tree only over a contiguous prefix it has observed. This mirrors what CT logs, Sigsum, and Rekor all do in practice: the write-serving frontend scales horizontally, but there is exactly one sequencer for the tree itself. This is called out explicitly here rather than glossed over, since it's the one place a naive implementation breaks.
+The implementation uses **two numberings, deliberately**, on both backends:
 
-This also resolves the `change_id`-generation debate from the #2173 review thread: the row's `seq` no longer has to double as a globally meaningful, collision-resistant, timestamp-embedding identifier (as the PR's bit-packed `change_id` scheme tried to do) — it only has to be a stable per-row identity for querying. The identifier that actually matters cryptographically is the **leaf's position in the tree**, assigned once by the single appender, never renumbered.
+* The table's auto-increment row id (`seq` column) is only a commit-order hint. Gaps are harmless and expected — on Postgres, `IDENTITY` values burned by rolled-back transactions are *permanent* gaps, and any consumer keyed on row id contiguity would stall at the first one forever.
+* The Merkle tree position is a separate, nullable `leaf_index` column, assigned densely (zero-based) by a single **appender** task (`TransparencyLogDatabase::assign_leaf_indices`) when it folds committed rows into the tree, in row-id order. A transaction that commits late simply gets a later leaf index — observation order, exactly like CT/Sigsum sequencers. Per-entity event order is still preserved, because two mutations of the same entity are serialized by row locks, so the second's event `INSERT` happens after the first commits. Assignment is durable in the event log table itself, which is what makes crash recovery trivial: an appender that dies between assigning and folding just re-reads the already-indexed-but-unfolded suffix on restart.
+
+In an HA multi-process Postgres deployment, exactly one process may run the appender (leader-elected, or simply "the one process configured as the log writer" in a typical active/passive setup). The write-serving frontend scales horizontally; there is exactly one sequencer for the tree itself — the same shape CT logs, Sigsum, and Rekor all use. This is called out explicitly here rather than glossed over, since it's the one place a naive implementation breaks.
+
+This also resolves the `change_id`-generation debate from the #2173 review thread: the row's id no longer has to double as a globally meaningful, collision-resistant, timestamp-embedding identifier (as the PR's bit-packed `change_id` scheme tried to do) — it only has to be a stable per-row identity for querying. The identifier that actually matters cryptographically is the **leaf's position in the tree** (`leaf_index`, exposed as NUT-XX's `seq`), assigned once by the single appender, never renumbered.
 
 ### 5. Merkle tree layer (RFC 6962 hashing, Merkle Mountain Range storage)
 
-No new dependency required — SHA-256 is already in the dependency tree (`sha2`, used elsewhere in `cashu`).
+Implemented in a new dependency-light crate, **`crates/cdk-tlog`** (`merkle.rs`), pure logic with no DB/HTTP dependency, hashing via `bitcoin::hashes::sha256` (already in the tree):
 
-```rust
-// crates/cdk-common/src/database/transparency.rs
+* `leaf_hash(data)` — the RFC 6962 leaf hash `SHA256(0x00 || data)` over the preimage from §3 (note: the leaf's tree position is *not* part of the preimage).
+* `node_hash` — RFC 6962 interior hash `SHA256(0x01 || left || right)`.
+* `TreeHead` — append-only accumulator stored as a Merkle Mountain Range (one peak per set bit of `size`), so appending a leaf costs O(log n) hashes instead of a full rehash. Deliberately unable to produce proofs on its own — proof generation needs the actual leaves, which the durable event log already stores.
+* `inclusion_proof` / `verify_inclusion`, `consistency_proof` / `verify_consistency` — the standard RFC 6962 algorithms, validated against RFC 6962 §2.1.3's own worked examples (`PROOF(3, D[7]) = [c, d, g, l]` etc.) as unit tests, not just internal round-trips.
 
-use sha2::{Digest, Sha256};
+Tree state (size + peaks) is persisted through the mint's **existing generic KV store** (namespace `cdk_transparency`, key `state/tree_state`), not a bespoke SQL table — it's a single small record with no need for relational queries. Only the event log itself, which needs real range queries, got a table (§2). An earlier draft of this ADR sketched `transparency_tree_state`/`transparency_checkpoint` tables; the KV store subsumed both.
 
-/// RFC 6962 leaf hash: domain-separated so a leaf can never collide with an
-/// interior node hash.
-pub fn leaf_hash(seq: u64, entity_type: LoggedEntity, entity_id: &str, op: EventOp, payload: &[u8]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update([0x00]); // leaf domain separator
-    hasher.update(seq.to_be_bytes());
-    hasher.update([entity_type as u8]);
-    hasher.update(entity_id.as_bytes());
-    hasher.update([op as u8]);
-    hasher.update(payload);
-    hasher.finalize().into()
-}
-
-/// RFC 6962 interior node hash.
-fn node_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update([0x01]); // interior domain separator
-    hasher.update(left);
-    hasher.update(right);
-    hasher.finalize().into()
-}
-
-/// Append-only Merkle tree, stored as a Merkle Mountain Range so that
-/// appending a leaf costs O(log n) hashes instead of a full rehash.
-#[derive(Debug, Clone, Default)]
-pub struct MerkleTreeState {
-    pub tree_size: u64,
-    /// One root hash per set bit in `tree_size`'s binary representation,
-    /// ordered from the tallest (leftmost) peak to the shortest.
-    pub peaks: Vec<[u8; 32]>,
-}
-
-impl MerkleTreeState {
-    /// Appends a leaf and returns the new root hash.
-    pub fn append(&mut self, leaf: [u8; 32]) -> [u8; 32] {
-        let mut carry = leaf;
-        let mut new_peaks = Vec::with_capacity(self.peaks.len() + 1);
-        // Merge the new leaf with existing peaks the same way binary addition
-        // carries: a peak of height h only survives if bit h of tree_size is 0.
-        for &peak in self.peaks.iter().rev() {
-            if self.tree_size & 1 == 1 {
-                carry = node_hash(&peak, &carry);
-                self.tree_size >>= 1;
-                continue;
-            }
-            new_peaks.push(peak);
-            self.tree_size >>= 1;
-        }
-        new_peaks.push(carry);
-        new_peaks.reverse();
-        self.peaks = new_peaks;
-        self.tree_size += 1;
-        self.root()
-    }
-
-    /// Combines all peaks into a single root hash (bagging the peaks, MMR-style).
-    pub fn root(&self) -> [u8; 32] {
-        self.peaks
-            .iter()
-            .rev()
-            .copied()
-            .reduce(|acc, peak| node_hash(&peak, &acc))
-            .unwrap_or([0u8; 32])
-    }
-}
-```
-
-Persisted as a single-row table:
-
-```sql
-CREATE TABLE transparency_tree_state (
-    id        INTEGER PRIMARY KEY CHECK (id = 1),
-    tree_size BIGINT NOT NULL,
-    peaks     BLOB    NOT NULL   -- concatenated 32-byte hashes
-);
-```
-
-Inclusion and consistency proofs (`prove_inclusion(seq, tree_size)`, `prove_consistency(old_size, new_size)`) follow the standard RFC 6962 algorithms over the same peak/hash primitives; omitted here for brevity but are ~40 lines each and well-specified. (If preferred over hand-rolling, `warg-transparency`, `ct-merkle`, or `merkle-log` on crates.io implement the same math and could be vendored instead of the sketch above — see prior discussion.)
+Known scaling limitation, accepted for now: generating an inclusion or consistency proof loads every leaf hash in `[0, tree_size)` — O(n) per request. Fine at current volumes; a peak-cache or tile-based store (à la sumdb tiles) is follow-up work before this ships to high-volume mints.
 
 ### 6. Signed checkpoints
 
-Reuse the existing `cashu::nuts::nut01` Schnorr signing primitives (`SecretKey::sign` / `PublicKey::verify`, already backed by `bitcoin::secp256k1`) with a **dedicated log-signing keypair**, separate from the mint's minting key, so a compromised log key cannot mint.
+Checkpoints are **not** a bespoke format: they are [c2sp.org/tlog-checkpoint](https://c2sp.org/tlog-checkpoint) text checkpoints, signed as [c2sp.org/signed-note](https://c2sp.org/signed-note) notes with **Ed25519** (signed-note type `0x01`), with witness cosignatures as timestamped Ed25519 cosignature lines (type `0x04`, per [c2sp.org/tlog-cosignature](https://c2sp.org/tlog-cosignature)). Implemented in `crates/cdk-tlog` (`checkpoint.rs`, `witness.rs`).
 
-```rust
-// crates/cdk-common/src/database/transparency.rs
+An earlier draft of this ADR proposed reusing the mint's existing secp256k1/BIP-340 Schnorr primitives with a bespoke signing payload. That was dropped deliberately: the C2SP formats are what Sigsum, Tessera, and Sunlight-family logs and witnesses actually speak, and Ed25519 is the only signature type their signed-note profile defines — using them unmodified is what lets a mint's checkpoint be cosigned by already-running third-party witnesses (and by another mint's built-in witness, §9) with zero protocol translation. The log-signing key is still a **dedicated keypair** (never the mint's NUT-01 minting key), so a compromised log key cannot mint; it just happens to be an Ed25519 key.
 
-/// A signed commitment to the state of the transparency log at a point in time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Checkpoint {
-    pub tree_size: u64,
-    pub root_hash: [u8; 32],
-    pub timestamp: u64,
-    pub log_key_id: String,
-    pub signature: bitcoin::secp256k1::schnorr::Signature,
-}
+```text
+<origin>            e.g. mint.example.com/transparency-log (schema-less, per NUT-XX)
+<tree_size>
+<base64(root_hash)>
 
-impl Checkpoint {
-    /// Message signed: `origin || tree_size || root_hash || timestamp`, following
-    /// the c2sp.org/checkpoint text-checkpoint convention so third-party witness
-    /// tooling (e.g. Sigsum witnesses) can cosign it unmodified.
-    fn signing_payload(origin: &str, tree_size: u64, root_hash: &[u8; 32], timestamp: u64) -> Vec<u8> { /* ... */ }
-
-    #[instrument(skip_all)]
-    pub fn sign(origin: &str, tree: &MerkleTreeState, key: &SecretKey, timestamp: u64) -> Result<Self, Error> { /* ... */ }
-
-    #[instrument(skip_all)]
-    pub fn verify(&self, origin: &str, log_key: &PublicKey) -> Result<(), Error> { /* ... */ }
-}
+— <origin> base64(4-byte key ID || Ed25519 signature)
+— <witness name> base64(4-byte key ID || 8-byte BE timestamp || Ed25519 signature)   (cosignatures)
 ```
 
-Persisted append-only (checkpoints are themselves never mutated):
+Checkpoint notes are persisted append-only through the mint's KV store (namespace `cdk_transparency`, key `checkpoint/size_{tree_size:020}`, plus a `state/latest_checkpoint_size` pointer), written **in the same KV transaction as the advanced tree state** so a crash can never persist the tree ahead of or behind its checkpoint. The only later write to a stored note is *appending* witness cosignature lines to it — the checkpoint body and the mint's own signature never change.
 
-```sql
-CREATE TABLE transparency_checkpoint (
-    id         BIGINT PRIMARY KEY,
-    tree_size  BIGINT NOT NULL,
-    root_hash  BLOB   NOT NULL,
-    timestamp  BIGINT NOT NULL,
-    signature  BLOB   NOT NULL
-);
-```
-
-The mint signs a new checkpoint on a cadence similar to CT's Maximum Merge Delay — e.g. every N appended entries or every M seconds, whichever comes first (configurable in `cdk-mintd`).
+The mint signs a new checkpoint whenever the tree has advanced, on a periodic tick (default 30s, configurable as `[transparency_log].checkpoint_interval_secs` in `cdk-mintd`) — the same cadence role as CT's Maximum Merge Delay.
 
 ### 7. Wallet/auditor-facing API (new NUT)
 
@@ -322,7 +236,7 @@ Never submit `mint_event_log` itself externally — it's a shared, general-purpo
 
 Any third party with a copy of `mint_event_log` (via `/v1/audit/entries`) and the mint's initial keyset generation parameters can:
 
-1. **Reconstruct state** — fold `op`/`entity_type`/`entity_id`/`payload` over `seq` order to rebuild the current-state tables (`melt_quote`, `proof`, `keyset`, `blind_signature`). This alone fully replaces #2173's replay use case.
+1. **Reconstruct state** — fold `op`/`entity_type`/`entity_id`/`payload` over `seq` order to rebuild the protocol-visible state of the logged entities (`melt_quote`, `proof`, `keyset`, `blind_signature`): insert events establish each row's existence and initial fields, update/delete events its transitions. Secret-bearing columns (`proof.secret`/`c`/`witness`, `melt_quote.request`) are deliberately absent from payloads, so the replayed view is the auditable one, not a byte-identical database copy. This replaces #2173's replay use case.
 2. **Verify the replay is authentic**, not merely self-consistent — recompute `leaf_hash` for each entry, rebuild the `MerkleTreeState` incrementally, and compare the resulting root at `tree_size = N` against a `Checkpoint` signed by the mint for that same `tree_size`. A match proves the replayed entries are exactly, and only, the ones the mint publicly committed to.
 3. **Verify the mint itself couldn't have quietly rewritten that checkpoint** — check the checkpoint's Sigsum inclusion proof against a `seasalp` tree head that carries the Glasklar/Mullvad witness cosignatures (using the [`sigsum`](https://docs.rs/sigsum) crate for offline verification), and/or check its OpenTimestamps proof against the Bitcoin blockchain. Steps 1–2 alone still trust the mint's own signature; step 3 is what makes the trust independently checkable.
 
@@ -340,9 +254,9 @@ What's left, and genuinely still ecosystem-level future work rather than somethi
 ### Invariants
 
 1. Existing tables remain the source of current state; the log is additive.
-2. `mint_event_log` and `transparency_checkpoint` are append-only — no `UPDATE`, no `DELETE`, enforced by DB-level `REVOKE UPDATE, DELETE` grants where the backend supports it, and by code review elsewhere.
+2. `mint_event_log` is append-only: no `DELETE`, and the only permitted `UPDATE` is the appender's one-time `leaf_index` assignment (`NULL` → a value, all other columns unchanged). Enforced by database triggers on both backends (`20260703000000_enforce_append_only_event_log.sql`), not just code review. Checkpoint notes in the KV store are append-only by construction: the only rewrite is appending witness cosignature lines to an existing note.
 3. Every log entry is appended in the same transaction as the mutation it describes.
-4. Exactly one appender advances `transparency_tree_state` at a time; leaves are never reordered once included in a published checkpoint.
+4. Exactly one appender assigns leaf indices and advances the persisted tree state at a time; leaves are never reordered once included in a published checkpoint.
 5. A checkpoint's `root_hash` is reproducible by anyone from `mint_event_log` entries `[0, tree_size)` alone.
 
 ## Positive Consequences
@@ -358,7 +272,11 @@ What's left, and genuinely still ecosystem-level future work rather than somethi
 * Requires a decision, per deployment, about who runs the single "appender" role in an HA Postgres setup (§4) — not automatic.
 * Log and tree growth are unbounded; pruning must preserve provability for still-referenced ranges (RFC 9162-style "expired" shards), which is a harder retention story than deleting old rows from a plain log table. This ADR does not solve retention, only flags that it's a harder problem than in #2173 and should be its own follow-up before this ships to mints with high transaction volume.
 * External anchoring (§7.1) depends on the continued operation of Sigsum's `seasalp` log and Glasklar's rate-limit registration process for it; both are outside CDK's control. This is mitigated, not eliminated, by also anchoring to OpenTimestamps, and by the mint's own `/v1/audit/*` endpoints remaining fully functional (just not externally witnessed) if both anchors are temporarily unavailable.
-* Wallet-side checkpoint pinning/gossip and a built-in `cdk-mintd` witness (§9) are not implemented yet. Until then, external verifiability meaningfully protects against tampering by anyone *without* the mint's log key (§7.1's Sigsum witnesses already cover most of the operator-equivocation case too), but a fully closed-loop "wallet detects an equivocating mint entirely on its own" story is still follow-up work.
+* Wallet-side verification is implemented (`Wallet::verify_transparency_log[_with_witnesses]` — TOFU pinning, rollback/rewrite/equivocation detection, witness-cosignature gating — and `Wallet::verify_transparency_log_replay` for the full NUT-XX entry-by-entry replay audit), as is a built-in witness in `cdk-mintd` (§9). Remaining follow-ups, deliberately out of scope for this revision:
+  * **Log-key rotation.** NUT-XX requires a mint that loses its log key to rotate and publish an event identifying the new key; no rotation mechanism exists yet — a wallet currently just reports `IdentityChanged` and a human has to adjudicate. Needs a protocol-level design (a signed rotation event in the log itself) before implementation.
+  * **Genesis snapshot.** A mint enabling the log with pre-existing state has no logged `insert` events for rows created before enablement, so replay only covers post-enablement history. NUT-XX tracks this as an open question (a standardized snapshot event).
+  * **O(n) proof generation** (§5) and log retention/pruning — both must be addressed before high-volume mints ship this.
+  * **Wallet-side gossip** between independent observers (comparing pinned checkpoints out of band) remains ecosystem-level work; per-wallet pinning and witness cosignatures already cover the single-observer case.
 
 ## Links
 

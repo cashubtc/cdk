@@ -823,6 +823,19 @@ where
         self.transport.http_get(url, None).await
     }
 
+    /// Get raw transparency log entries [NUT-XX]
+    #[cfg(feature = "transparency-log")]
+    #[instrument(skip(self), fields(mint_url = %self.mint_url))]
+    async fn get_audit_entries(
+        &self,
+        start: u64,
+        end: u64,
+    ) -> Result<super::AuditEntriesResponse, Error> {
+        let mut url = self.mint_url.join_paths(&["v1", "audit", "entries"])?;
+        url.set_query(Some(&format!("start={start}&end={end}")));
+        self.transport.http_get(url, None).await
+    }
+
     /// Spendable check [NUT-07]
     #[instrument(skip(self, request), fields(mint_url = %self.mint_url))]
     async fn post_check_state(

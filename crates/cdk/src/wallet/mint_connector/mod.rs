@@ -162,6 +162,20 @@ pub trait MintConnector: Debug {
             "transparency log endpoints not supported by this connector".to_string(),
         ))
     }
+
+    /// Get raw log entries with leaf index in `[start, end)` (NUT-XX,
+    /// `GET /v1/audit/entries`). The mint may return fewer entries than
+    /// requested; callers paginate using the response's `end`.
+    #[cfg(feature = "transparency-log")]
+    async fn get_audit_entries(
+        &self,
+        _start: u64,
+        _end: u64,
+    ) -> Result<AuditEntriesResponse, Error> {
+        Err(Error::Custom(
+            "transparency log endpoints not supported by this connector".to_string(),
+        ))
+    }
 }
 
 /// Response of `GET /v1/audit/pubkey` (NUT-XX).
@@ -197,4 +211,37 @@ pub struct AuditConsistencyResponse {
     pub second: u64,
     /// Hex-encoded RFC 6962 consistency proof nodes.
     pub proof: Vec<String>,
+}
+
+/// One raw log entry from `GET /v1/audit/entries` (NUT-XX).
+#[cfg(feature = "transparency-log")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AuditLogEntry {
+    /// Zero-based leaf index.
+    pub seq: u64,
+    /// Event kind (`proof`, `blind_signature`, `keyset`, `melt_quote`, or
+    /// an implementation-specific kind a verifier must preserve).
+    pub entity_type: String,
+    /// `insert`, `update`, or `delete`.
+    pub op: String,
+    /// The entity's stable identifier.
+    pub entity_id: String,
+    /// The fields the mutation wrote, as a JSON object.
+    pub payload: serde_json::Value,
+    /// Unix timestamp (seconds) the entry was appended at.
+    pub created_time: u64,
+    /// Lowercase hex SHA-256 leaf hash the mint stored for this entry.
+    pub leaf_hash: String,
+}
+
+/// Response of `GET /v1/audit/entries` (NUT-XX).
+#[cfg(feature = "transparency-log")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AuditEntriesResponse {
+    /// Inclusive start of the returned range.
+    pub start: u64,
+    /// Exclusive end of the returned range.
+    pub end: u64,
+    /// The entries, ordered by `seq`.
+    pub entries: Vec<AuditLogEntry>,
 }

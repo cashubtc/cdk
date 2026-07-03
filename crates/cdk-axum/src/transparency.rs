@@ -161,6 +161,7 @@ pub(crate) async fn get_entries(
             seq: e.seq,
             entity_type: e.entity_type.as_str().to_string(),
             op: match e.op {
+                cdk::cdk_database::EventOp::Insert => "insert".to_string(),
                 cdk::cdk_database::EventOp::Update => "update".to_string(),
                 cdk::cdk_database::EventOp::Delete => "delete".to_string(),
             },
@@ -204,6 +205,14 @@ pub(crate) async fn get_inclusion_proof(
     if query.seq >= query.tree_size {
         return Err((StatusCode::BAD_REQUEST, "seq out of range").into_response());
     }
+    let current = service.tree_size().await.map_err(internal_error)?;
+    if query.tree_size > current {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("tree_size {} exceeds current log size {current}", query.tree_size),
+        )
+            .into_response());
+    }
 
     let (leaf, proof) = service
         .inclusion_proof(query.seq, query.tree_size)
@@ -242,6 +251,14 @@ pub(crate) async fn get_consistency_proof(
     };
     if query.first > query.second {
         return Err((StatusCode::BAD_REQUEST, "first must not exceed second").into_response());
+    }
+    let current = service.tree_size().await.map_err(internal_error)?;
+    if query.second > current {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("second {} exceeds current log size {current}", query.second),
+        )
+            .into_response());
     }
 
     let proof = service

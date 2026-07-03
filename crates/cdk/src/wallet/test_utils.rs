@@ -496,6 +496,11 @@ pub struct MockMintConnector {
     #[cfg(feature = "transparency-log")]
     pub audit_consistency_response:
         Mutex<Option<Result<crate::wallet::mint_connector::AuditConsistencyResponse, Error>>>,
+    /// Full staged log for get_audit_entries calls (NUT-XX). Unlike the
+    /// take-once responses above this is persistent: each call slices the
+    /// requested `[start, end)` range out of it, like a real mint would.
+    #[cfg(feature = "transparency-log")]
+    pub audit_entries: Mutex<Option<Vec<crate::wallet::mint_connector::AuditLogEntry>>>,
 }
 
 impl Default for MockMintConnector {
@@ -532,6 +537,8 @@ impl MockMintConnector {
             audit_checkpoint_response: Mutex::new(None),
             #[cfg(feature = "transparency-log")]
             audit_consistency_response: Mutex::new(None),
+            #[cfg(feature = "transparency-log")]
+            audit_entries: Mutex::new(None),
         }
     }
 
@@ -869,6 +876,29 @@ impl MintConnector for MockMintConnector {
                     "no audit consistency response staged".to_string(),
                 ))
             })
+    }
+
+    #[cfg(feature = "transparency-log")]
+    async fn get_audit_entries(
+        &self,
+        start: u64,
+        end: u64,
+    ) -> Result<crate::wallet::mint_connector::AuditEntriesResponse, Error> {
+        let entries = self.audit_entries.lock().unwrap();
+        let Some(all) = entries.as_ref() else {
+            return Err(Error::Custom("no audit entries staged".to_string()));
+        };
+        let selected: Vec<_> = all
+            .iter()
+            .filter(|e| e.seq >= start && e.seq < end)
+            .cloned()
+            .collect();
+        let actual_end = selected.last().map(|e| e.seq + 1).unwrap_or(start);
+        Ok(crate::wallet::mint_connector::AuditEntriesResponse {
+            start,
+            end: actual_end,
+            entries: selected,
+        })
     }
 
     async fn post_melt(

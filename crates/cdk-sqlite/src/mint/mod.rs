@@ -133,8 +133,20 @@ mod test {
         assert!(
             entries
                 .iter()
+                .any(|e| e.entity_type == LoggedEntity::Keyset && e.op == EventOp::Insert),
+            "missing keyset creation log entry: {entries:?}"
+        );
+        assert!(
+            entries
+                .iter()
                 .any(|e| e.entity_type == LoggedEntity::Keyset && e.op == EventOp::Update),
             "missing keyset activation log entry: {entries:?}"
+        );
+        assert!(
+            entries.iter().any(|e| e.entity_type == LoggedEntity::Proof
+                && e.entity_id == y.to_string()
+                && e.op == EventOp::Insert),
+            "missing proof receipt log entry: {entries:?}"
         );
         assert!(
             entries.iter().any(|e| e.entity_type == LoggedEntity::Proof
@@ -158,6 +170,62 @@ mod test {
         for (i, entry) in entries.iter().enumerate() {
             assert_eq!(entry.seq, i as u64);
         }
+    }
+
+    /// The append-only invariant on `mint_event_log` (ADR "Invariants"
+    /// item 2) must hold at the database level, not just by code review:
+    /// DELETE always fails, the only allowed UPDATE is the appender's
+    /// one-time `leaf_index` assignment.
+    #[tokio::test]
+    async fn event_log_is_append_only_at_db_level() {
+        let path = std::env::temp_dir().join(format!(
+            "cdk-append-only-trigger-test-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = remove_file(&path);
+
+        // Creating the database applies all migrations, including the
+        // trigger migration under test.
+        let _db = MintSqliteDatabase::new(path.clone()).await.unwrap();
+
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute(
+            "INSERT INTO mint_event_log (entity_type, entity_id, op, payload, leaf_hash, created_time)
+             VALUES ('proof', '02aa', 1, X'7B7D', X'0000000000000000000000000000000000000000000000000000000000000000', 100)",
+            [],
+        )
+        .unwrap();
+
+        // DELETE is never allowed.
+        assert!(conn
+            .execute("DELETE FROM mint_event_log", [])
+            .unwrap_err()
+            .to_string()
+            .contains("append-only"));
+
+        // Rewriting a hash-covered column is not allowed.
+        assert!(conn
+            .execute("UPDATE mint_event_log SET payload = X'7B20207D'", [])
+            .unwrap_err()
+            .to_string()
+            .contains("append-only"));
+
+        // The appender's one-time leaf_index assignment is allowed...
+        conn.execute(
+            "UPDATE mint_event_log SET leaf_index = 0 WHERE leaf_index IS NULL",
+            [],
+        )
+        .unwrap();
+
+        // ...but only once: an assigned index can never change.
+        assert!(conn
+            .execute("UPDATE mint_event_log SET leaf_index = 1", [])
+            .unwrap_err()
+            .to_string()
+            .contains("append-only"));
+
+        drop(conn);
+        let _ = remove_file(&path);
     }
 
     #[tokio::test]

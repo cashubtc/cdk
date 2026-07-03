@@ -231,5 +231,59 @@ mod tests {
 
         let keyset_update = serde_json::to_vec(&serde_json::json!({ "active": true })).unwrap();
         assert_eq!(keyset_update, br#"{"active":true}"#);
+
+        let proof_insert = serde_json::to_vec(&serde_json::json!({
+            "amount": 8u64,
+            "keyset_id": "00916bbf7ef91a36",
+            "state": "UNSPENT",
+        }))
+        .unwrap();
+        assert_eq!(
+            proof_insert,
+            br#"{"amount":8,"keyset_id":"00916bbf7ef91a36","state":"UNSPENT"}"#
+        );
+
+        let blind_signature_insert = serde_json::to_vec(&serde_json::json!({
+            "amount": 8u64,
+            "keyset_id": "00916bbf7ef91a36",
+            "c": "02aa",
+            "dleq_e": Option::<String>::None,
+            "dleq_s": Option::<String>::None,
+            "signed_time": 100u64,
+        }))
+        .unwrap();
+        assert_eq!(
+            blind_signature_insert,
+            br#"{"amount":8,"c":"02aa","dleq_e":null,"dleq_s":null,"keyset_id":"00916bbf7ef91a36","signed_time":100}"#
+        );
+
+        let melt_quote_insert = serde_json::to_vec(&serde_json::json!({
+            "amount": 100u64,
+            "unit": "sat",
+            "fee_reserve": 1u64,
+            "state": "UNPAID",
+            "expiry": 1_782_920_900u64,
+            "payment_method": "bolt11",
+            "request_lookup_id": Option::<String>::None,
+            "request_lookup_id_kind": Option::<String>::None,
+        }))
+        .unwrap();
+        assert_eq!(
+            melt_quote_insert,
+            br#"{"amount":100,"expiry":1782920900,"fee_reserve":1,"payment_method":"bolt11","request_lookup_id":null,"request_lookup_id_kind":null,"state":"UNPAID","unit":"sat"}"#
+        );
+
+        let keyset_insert = serde_json::to_vec(&serde_json::json!({
+            "unit": "sat",
+            "active": true,
+            "valid_from": 0u64,
+            "valid_to": Option::<u64>::None,
+            "input_fee_ppk": 0u64,
+        }))
+        .unwrap();
+        assert_eq!(
+            keyset_insert,
+            br#"{"active":true,"input_fee_ppk":0,"unit":"sat","valid_from":0,"valid_to":null}"#
+        );
     }
 }

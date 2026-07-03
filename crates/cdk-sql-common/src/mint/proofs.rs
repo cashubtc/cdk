@@ -181,6 +181,21 @@ where
             .bind("operation_id", operation.id().to_string())
             .execute(&self.inner)
             .await?;
+
+            // Only non-secret fields: the proof is identified by Y, and
+            // `secret`/`c`/`witness` must never enter the public log.
+            event_log::append_event(
+                &self.inner,
+                LoggedEntity::Proof,
+                &y.to_string(),
+                EventOp::Insert,
+                &serde_json::to_vec(&serde_json::json!({
+                    "amount": u64::from(proof.amount),
+                    "keyset_id": proof.keyset_id.to_string(),
+                    "state": "UNSPENT",
+                }))?,
+            )
+            .await?;
         }
 
         Ok(ProofsWithState::new(proofs, State::Unspent).into())

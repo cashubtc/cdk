@@ -957,6 +957,21 @@ where
         // enforced by never touching this column on update.
         let fee_options_json = serde_json::to_string(quote.fee_options()).ok();
 
+        // Built before the chained binds below move fields out of `quote`.
+        // `request` (the full payment request — payee, payment hash) is
+        // deliberately excluded from the public log payload.
+        let log_payload = serde_json::to_vec(&serde_json::json!({
+            "amount": quote.amount().value(),
+            "unit": quote.unit.to_string(),
+            "fee_reserve": quote.fee_reserve().value(),
+            "state": quote.state.to_string(),
+            "expiry": quote.expiry,
+            "payment_method": quote.payment_method.to_string(),
+            "request_lookup_id": quote.request_lookup_id.as_ref().map(|id| id.to_string()),
+            "request_lookup_id_kind": quote.request_lookup_id.as_ref().map(|id| id.kind()),
+        }))?;
+        let quote_id = quote.id.to_string();
+
         // Now insert the new quote
         query(
             r#"
@@ -1010,6 +1025,15 @@ where
             quote.extra_json.as_ref().map(|value| value.to_string()),
         )
         .execute(&self.inner)
+        .await?;
+
+        event_log::append_event(
+            &self.inner,
+            LoggedEntity::MeltQuote,
+            &quote_id,
+            EventOp::Insert,
+            &log_payload,
+        )
         .await?;
 
         Ok(())

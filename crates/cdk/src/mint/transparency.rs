@@ -517,6 +517,15 @@ impl TransparencyLogService {
         }
     }
 
+    /// The current size of the published tree (number of leaves folded and
+    /// committed to by the latest persisted tree state). Proof requests for
+    /// a `tree_size` beyond this are invalid rather than "not yet served",
+    /// so HTTP handlers can reject them as client errors instead of
+    /// surfacing an internal error.
+    pub async fn tree_size(&self) -> Result<u64, Error> {
+        Ok(read_tree_state(&self.kv_db).await?.size)
+    }
+
     /// Log entries with zero-based leaf index in `[start, end)`, ordered by
     /// index, for the `/v1/audit/entries` endpoint.
     ///

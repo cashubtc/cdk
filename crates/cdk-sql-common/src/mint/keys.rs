@@ -72,6 +72,14 @@ where
     RM: DatabasePool + 'static,
 {
     async fn add_keyset_info(&mut self, keyset: MintKeySetInfo) -> Result<(), Error> {
+        // This is an upsert re-run on every startup for already-known
+        // keysets; only a genuinely new keyset is an Insert event.
+        let is_new = query(r#"SELECT id FROM keyset WHERE id = :id"#)?
+            .bind("id", keyset.id.to_string())
+            .pluck(&self.inner)
+            .await?
+            .is_none();
+
         query(
             r#"
         INSERT INTO
@@ -110,6 +118,23 @@ where
         )
         .execute(&self.inner)
         .await?;
+
+        if is_new {
+            event_log::append_event(
+                &self.inner,
+                LoggedEntity::Keyset,
+                &keyset.id.to_string(),
+                EventOp::Insert,
+                &serde_json::to_vec(&serde_json::json!({
+                    "unit": keyset.unit.to_string(),
+                    "active": keyset.active,
+                    "valid_from": keyset.valid_from,
+                    "valid_to": keyset.final_expiry,
+                    "input_fee_ppk": keyset.input_fee_ppk,
+                }))?,
+            )
+            .await?;
+        }
 
         Ok(())
     }

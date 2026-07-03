@@ -68,6 +68,12 @@ impl std::str::FromStr for LoggedEntity {
 /// The kind of mutation a transparency log entry records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventOp {
+    /// A row was created (the entry payload records its initial,
+    /// non-secret field values). Logged so that the Merkle tree commits
+    /// to a row's *existence*, not just its later transitions — without
+    /// it, replay from the log alone is impossible and an operator could
+    /// silently invent or vanish rows that were never updated.
+    Insert = 0,
     /// A row was updated (its new field values are in the entry payload).
     Update = 1,
     /// A row was deleted (the entry payload records its final state).
@@ -86,6 +92,7 @@ impl TryFrom<i16> for EventOp {
 
     fn try_from(value: i16) -> Result<Self, Self::Error> {
         match value {
+            0 => Ok(Self::Insert),
             1 => Ok(Self::Update),
             2 => Ok(Self::Delete),
             other => Err(Error::Internal(format!(
@@ -242,7 +249,7 @@ mod tests {
 
     #[test]
     fn event_op_round_trips_through_i16() {
-        for op in [EventOp::Update, EventOp::Delete] {
+        for op in [EventOp::Insert, EventOp::Update, EventOp::Delete] {
             assert_eq!(EventOp::try_from(op.as_i16()).unwrap(), op);
         }
     }
