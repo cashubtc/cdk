@@ -16,8 +16,13 @@ use thiserror::Error;
 
 mod trusted_dealer;
 
+mod journal;
 mod operation;
 
+pub use self::journal::{
+    FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
+    FederationOperationStatus, InMemoryFederationJournal,
+};
 pub use self::operation::{
     FederationMeltOperation, FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation,
     FederationMintOperation, FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
@@ -55,6 +60,14 @@ pub enum FederationError {
     /// A federation operation ID must be exactly 32 bytes.
     #[error("Invalid federation operation id size: expected={expected}, found={found}")]
     InvalidOperationIdSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
+    /// A federation journal digest must be exactly 32 bytes.
+    #[error("Invalid federation journal digest size: expected={expected}, found={found}")]
+    InvalidJournalDigestSize {
         /// Expected byte length.
         expected: usize,
         /// Actual byte length.
@@ -242,6 +255,24 @@ pub enum FederationError {
         member_id: MemberId,
         /// Amount whose share did not match.
         amount: Amount,
+    },
+    /// An operation conflicts with an existing quote-scoped operation.
+    #[error(
+        "Conflicting federation operation for key {conflict_key}: existing={existing_operation_id}, attempted={attempted_operation_id}"
+    )]
+    ConflictingOperation {
+        /// Canonical conflict key.
+        conflict_key: String,
+        /// Existing operation ID in the journal.
+        existing_operation_id: String,
+        /// Attempted conflicting operation ID.
+        attempted_operation_id: String,
+    },
+    /// A requested operation ID was not found in the journal.
+    #[error("Unknown federation operation {operation_id}")]
+    UnknownOperation {
+        /// Operation ID that could not be found.
+        operation_id: String,
     },
     /// Hex parsing error.
     #[error(transparent)]
