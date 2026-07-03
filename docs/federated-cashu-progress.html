@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">25814389 Federated v3 keysets</span>
+          <span class="value">7840b184 Federated mint shares</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federation keyset constraint</span>
+          <span class="value">Federated mint response shape</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Federated mint response shape</span>
+          <span class="value">Wallet threshold aggregation</span>
         </div>
       </aside>
     </header>
@@ -480,6 +480,10 @@
             <h3>Federation keyset constraint committed</h3>
             <p>Federation configs now derive v3 aggregate keyset IDs, startup rejects v1/v2 or non-BLS aggregate keysets, mint/swap/restore/change validators reject non-v3 outputs, and wallet-side member keyset checks reject mismatched advertisements.</p>
           </article>
+          <article class="item">
+            <h3>Federated mint share responses committed</h3>
+            <p>Federation members now advertise aggregate v3/BLS keysets and return local BLS signature shares as wallet-facing `MintResponse` values after mint operations are accepted by consensus.</p>
+          </article>
         </div>
       </section>
 
@@ -525,6 +529,10 @@
           <article class="item">
             <h3>Federation keyset boundary closed</h3>
             <p>Federation mode now treats Cashu keyset v3, CDK `KeySetVersion::Version02`, as mandatory for aggregate BLS keysets while standalone non-federation keyset behavior remains untouched.</p>
+          </article>
+          <article class="item">
+            <h3>Standalone signer bypassed for federation minting</h3>
+            <p>Federated mint requests no longer fall through to standalone blind signing after consensus; they return this member's threshold BLS share response instead.</p>
           </article>
           <article class="item">
             <h3>Member catch-up route works against journal</h3>
@@ -700,10 +708,16 @@
               <td>Return local threshold BLS shares from accepted federation mint operations without falling back to standalone keysets.</td>
             </tr>
             <tr>
+              <td>Federated mint share responses</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --lib --features federation federation` passed 11 tests, including `MintResponse` share mapping. `cargo test -p cdk-axum --features federation custom_handlers` passed 17 tests, including aggregate key advertisement and cryptographic verification of a returned BLS share. `cargo test -p cdk-axum custom_handlers` passed 12 standalone tests. `cargo check -p cdk --lib`, `cargo check -p cdk --lib --features federation`, `cargo check -p cdk-axum --features federation`, `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"`, and `cargo fmt --all -- --check` passed.</td>
+              <td>Implement the wallet federation connector fan-out and threshold aggregation for returned mint shares.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status pending">Pending</span></td>
-              <td>Mint quote, quote-check, and mint-submit handlers are consensus-gated locally; runtime signature share generation is available; wallet-facing share responses and wallet aggregation are not complete yet.</td>
-              <td>Finish federated mint signing first, then swap, restore/check-state, and fake-wallet melt paths.</td>
+              <td>Mint quote, quote-check, and mint-submit handlers are consensus-gated locally; mint members advertise aggregate keysets and return verified local share responses; wallet aggregation is not complete yet.</td>
+              <td>Finish wallet mint aggregation first, then swap, restore/check-state, and fake-wallet melt paths.</td>
             </tr>
           </tbody>
         </table>
@@ -744,7 +758,7 @@
         <div class="stack">
           <article class="item">
             <h3>Federated mint response shape</h3>
-            <p>Define a federation-aware mint response or route that carries operation IDs, member IDs, signer IDs, and BLS share bytes without breaking standalone Cashu clients.</p>
+            <p>Extend the current share-response shape into a wallet connector contract that can reconstruct signer IDs from member metadata and aggregate threshold shares.</p>
           </article>
           <article class="item">
             <h3>Wallet threshold aggregation</h3>
