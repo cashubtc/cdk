@@ -695,6 +695,11 @@ async fn process_melt_request(
     method: &str,
     payload: &cdk::nuts::MeltRequest<QuoteId>,
 ) -> Result<MeltQuoteResponse<QuoteId>, cdk::Error> {
+    #[cfg(feature = "federation")]
+    if let Some(response) = process_federation_melt_request(state, payload).await? {
+        return Ok(response);
+    }
+
     // Check for async preference in either the Prefer header or the request body
     // For onchain we always want to do the async flow
     let respond_async = prefer.respond_async || payload.is_prefer_async() || method == "onchain";
@@ -710,6 +715,39 @@ async fn process_melt_request(
     };
 
     Ok(res)
+}
+
+#[cfg(feature = "federation")]
+async fn process_federation_melt_request(
+    state: &MintState,
+    payload: &cdk::nuts::MeltRequest<QuoteId>,
+) -> Result<Option<MeltQuoteResponse<QuoteId>>, cdk::Error> {
+    let Some(config) = state.mint.federation_config() else {
+        return Ok(None);
+    };
+    let Some(consensus) = state.federation_consensus.clone() else {
+        return Err(cdk::Error::Custom(
+            "federation mint is missing its consensus handle".to_string(),
+        ));
+    };
+
+    let envelope = config.melt_operation(payload.clone())?;
+    let mut consensus = consensus.lock().await;
+    consensus.submit_envelope(envelope)?;
+
+    if payload
+        .outputs()
+        .as_ref()
+        .is_some_and(|outputs| !outputs.is_empty())
+    {
+        return Err(cdk::Error::Custom(
+            "federated melt change signing requires federation-aware finalization".to_string(),
+        ));
+    }
+
+    Err(cdk::Error::Custom(
+        "federated melt execution requires consensus-backed spend-table apply".to_string(),
+    ))
 }
 
 // ============================================================================
@@ -1239,6 +1277,24 @@ mod tests {
         )]
     }
 
+    #[cfg(feature = "federation")]
+    fn non_v3_change_output_for_state(state: &MintState) -> BlindedMessage {
+        let config = state.mint.federation_config().expect("federation config");
+        let keyset = &config.public_config().keysets[0];
+        let non_v3_keyset_id = cdk::nuts::Id::v2_from_data(
+            &keyset.keys(),
+            &keyset.unit,
+            keyset.input_fee_ppk,
+            keyset.final_expiry,
+        );
+        let blinded_secret =
+            cdk::nuts::PublicKey::from(cdk::nuts::nut01::BlsG1PublicKey::hash_to_curve(
+                b"axum federated melt non-v3 change output",
+            ));
+
+        BlindedMessage::new(Amount::ZERO, non_v3_keyset_id, blinded_secret)
+    }
+
     async fn response_error_detail(response: Response) -> String {
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -1515,6 +1571,99 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::Swap]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn process_melt_request_records_federation_melt_operation() {
+        let state = create_federated_test_state().await;
+        let request = cdk::nuts::MeltRequest::new(QuoteId::new(), Vec::new(), None);
+
+        let error = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect_err("federated melt executor is still a guarded stub");
+
+        assert!(
+            error
+                .to_string()
+                .contains("consensus-backed spend-table apply"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn process_melt_request_rejects_federated_change_before_standalone_signing() {
+        let state = create_federated_test_state().await;
+        let request = cdk::nuts::MeltRequest::new(
+            QuoteId::new(),
+            Vec::new(),
+            Some(outputs_for_amount(&state, 1)),
+        );
+
+        let error = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect_err("federated melt change signing is not wired yet");
+
+        assert!(
+            error.to_string().contains("federation-aware finalization"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn process_melt_request_rejects_non_v3_change_before_consensus() {
+        let state = create_federated_test_state().await;
+        let request = cdk::nuts::MeltRequest::new(
+            QuoteId::new(),
+            Vec::new(),
+            Some(vec![non_v3_change_output_for_state(&state)]),
+        );
+
+        let error = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect_err("non-v3 aggregate keysets must be rejected");
+
+        assert!(matches!(
+            error,
+            cdk::Error::Federation(
+                cdk::federation::FederationError::InvalidFederatedKeysetVersion { .. }
+            )
+        ));
+        assert!(
+            federation_operation_kinds(&state).await.is_empty(),
+            "invalid federated change outputs must fail before consensus"
         );
     }
 

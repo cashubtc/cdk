@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: return federated swap shares</span>
+          <span class="value">feat: guard federated melt route</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Public swap federation route</span>
+          <span class="value">Federated melt public gate</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Federated melt public handler</span>
+          <span class="value">Consensus-backed melt executor</span>
         </div>
       </aside>
     </header>
@@ -500,6 +500,10 @@
             <h3>Public swap share route ready</h3>
             <p>The public `/v1/swap` route now submits canonical swap operations to the federation consensus journal in member mode and returns local BLS threshold signature shares instead of standalone signatures. Server tests verify the returned share against the member public share.</p>
           </article>
+          <article class="item">
+            <h3>Federated melt route gate ready</h3>
+            <p>The public melt request path now detects federation member mode before entering the standalone saga, submits canonical melt operations to consensus, rejects non-v3 change outputs before journaling, and refuses to emit standalone change signatures while federation-aware finalization is still pending.</p>
+          </article>
         </div>
       </section>
 
@@ -570,6 +574,10 @@
             <h3>Threshold math baseline</h3>
             <p>The first implementation proves that any valid threshold subset aggregates to the same blind signature under the aggregate key.</p>
           </article>
+          <article class="item">
+            <h3>Melt standalone-signature leak blocked</h3>
+            <p>Federation melt requests no longer flow silently into the standalone finalization path for change outputs; member mode now fails closed until the consensus-backed spend-table executor owns proof verification, settlement, and change-share generation.</p>
+          </article>
         </div>
       </section>
 
@@ -583,6 +591,10 @@
           <article class="item">
             <h3>State-machine extraction</h3>
             <p>Mint issue, swap, and melt logic must be refactored carefully so standalone behavior remains unchanged.</p>
+          </article>
+          <article class="item">
+            <h3>Federated melt executor</h3>
+            <p>The melt gate records canonical operations, but full happy-path melting still needs consensus-owned proof verification, spend marking, fake-wallet settlement, pending retry handling, and change BLS share generation.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -754,10 +766,16 @@
               <td>Route public melt requests through federation consensus and model fake-wallet outgoing payment finalization.</td>
             </tr>
             <tr>
+              <td>Federated melt public gate</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation custom_handlers` passed 21 tests, including melt consensus journaling, non-v3 change rejection before consensus, and a guard preventing federated change outputs from falling through to standalone signing. `cargo test -p cdk-axum custom_handlers`, cdk/cdk-axum/mintd feature checks, and `cargo fmt --all -- --check` passed.</td>
+              <td>Refactor melt proof verification, spend-table apply, fake-wallet settlement, pending retry, and change-share generation into a consensus-backed federated executor.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
-              <td><span class="status pending">Pending</span></td>
-              <td>Mint quote, quote-check, mint-submit, and swap handlers are consensus-gated locally; mint members advertise aggregate keysets and return verified local share responses; wallets can aggregate mint, batch mint, swap, and melt change shares. Local fake-wallet member tests now bridge real member mints to wallet aggregation for mint, batch mint, and swap. Public melt handler integration, restore/check-state federation routing, durable catch-up, and full networked fake-wallet flows remain open.</td>
-              <td>Wire public melt routes through consensus and add multi-member fake-wallet finalization tests.</td>
+              <td><span class="status progress">In progress</span></td>
+              <td>Mint quote, quote-check, mint-submit, swap, and melt submit handlers are consensus-gated locally; mint members advertise aggregate keysets and return verified local share responses for mint/swap; wallets can aggregate mint, batch mint, swap, and melt change shares. Local fake-wallet member tests bridge real member mints to wallet aggregation for mint, batch mint, and swap. Full federated melt execution, restore/check-state federation routing, durable catch-up, and networked fake-wallet flows remain open.</td>
+              <td>Implement the federated melt executor and then add multi-member fake-wallet finalization tests.</td>
             </tr>
           </tbody>
         </table>
@@ -797,8 +815,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Federated melt public handler</h3>
-            <p>Route `/v1/melt/{method}` through federation consensus, including fake-wallet melt reserve, pending, success, failure, retry, and change-signing states.</p>
+            <h3>Consensus-backed melt executor</h3>
+            <p>Move federated melt proof verification, pending/spent marking, fake-wallet outgoing settlement, retry handling, and change BLS share generation behind the accepted consensus operation.</p>
           </article>
           <article class="item">
             <h3>Restore and check-state routing</h3>
