@@ -268,7 +268,7 @@ impl WalletRepository {
 }
 
 #[cfg(feature = "tor")]
-#[uniffi::export(async_runtime = "tokio")]
+#[uniffi::export]
 impl WalletRepository {
     /// Create a new WalletRepository that routes all mint connections over Tor
     ///
