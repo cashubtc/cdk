@@ -6,7 +6,7 @@
 
 use core::fmt;
 use core::str::FromStr;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -626,6 +626,23 @@ pub struct FederationSessionOutcome {
     pub signature: FederationRestSignature,
 }
 
+/// Verified quorum of signed session outcomes over one catch-up range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationSessionOutcomeQuorum {
+    /// Distinct valid member signatures required by federation consensus params.
+    pub required: u16,
+    /// Distinct federation members whose signatures verified for the range.
+    pub signers: BTreeSet<MemberId>,
+    /// First journal index covered by the quorum.
+    pub from_index: u64,
+    /// Last journal index covered by the quorum.
+    pub latest_index: u64,
+    /// Number of operations covered by the quorum.
+    pub operation_count: u64,
+    /// Order digest after the covered range.
+    pub range_order_digest: FederationJournalDigest,
+}
+
 impl FederationSessionOutcome {
     /// Sign a contiguous range of accepted journal entries.
     pub fn new_signed(
@@ -843,6 +860,67 @@ impl FederationJournalCatchUpResponse {
             ),
         }
     }
+
+    /// Verify distinct member signatures over this exact catch-up range.
+    pub fn verify_session_outcome_quorum(
+        &self,
+        config: &FederationConfig,
+        additional_outcomes: &[FederationSessionOutcome],
+    ) -> Result<FederationSessionOutcomeQuorum> {
+        let required = config.threshold_params.consensus_threshold;
+        if self.entries.is_empty() {
+            return Ok(FederationSessionOutcomeQuorum {
+                required,
+                signers: BTreeSet::new(),
+                from_index: self.from_index,
+                latest_index: self.from_index.saturating_sub(1),
+                operation_count: 0,
+                range_order_digest: self.latest_order_digest,
+            });
+        }
+
+        let mut signers = BTreeSet::new();
+        for outcome in self
+            .session_outcome
+            .iter()
+            .chain(additional_outcomes.iter())
+        {
+            let member = config
+                .member(outcome.signer)
+                .ok_or(FederationError::UnknownMember {
+                    member_id: outcome.signer,
+                })?;
+            outcome.verify(
+                member,
+                self.federation_id,
+                self.from_index,
+                &self.entries,
+                self.latest_order_digest,
+                self.state_digest,
+            )?;
+            signers.insert(outcome.signer);
+        }
+
+        if signers.len() < usize::from(required) {
+            return Err(FederationError::SessionOutcomeQuorumNotReached {
+                required,
+                found: signers.len() as u16,
+            });
+        }
+
+        let latest_entry = self
+            .entries
+            .last()
+            .ok_or_else(|| session_outcome_mismatch("missing entries for quorum"))?;
+        Ok(FederationSessionOutcomeQuorum {
+            required,
+            signers,
+            from_index: self.from_index,
+            latest_index: latest_entry.index,
+            operation_count: self.entries.len() as u64,
+            range_order_digest: latest_entry.order_digest,
+        })
+    }
 }
 
 fn session_outcome_transcript(
@@ -982,6 +1060,26 @@ mod tests {
         let first_private = private_member(1, first_secret);
         let second_private = private_member(2, second_secret);
         (config, first_private, second_private)
+    }
+
+    fn transport_config_three() -> (FederationConfig, Vec<MemberConfigPrivate>) {
+        let first_secret = identity_secret(1);
+        let second_secret = identity_secret(2);
+        let third_secret = identity_secret(3);
+        let members = BTreeMap::from([
+            (roster_member_id(1), member_config(1, &first_secret)),
+            (roster_member_id(2), member_config(2, &second_secret)),
+            (roster_member_id(3), member_config(3, &third_secret)),
+        ]);
+        let threshold_params = ThresholdParams::new(3, 2, 2).expect("threshold params");
+        let config = FederationConfig::new(threshold_params, members, Vec::new())
+            .expect("federation config");
+        let private_members = vec![
+            private_member(1, first_secret),
+            private_member(2, second_secret),
+            private_member(3, third_secret),
+        ];
+        (config, private_members)
     }
 
     fn keyset_id() -> Id {
@@ -1157,6 +1255,144 @@ mod tests {
 
         assert!(matches!(
             response.verify_session_outcome(member),
+            Err(FederationError::SessionOutcomeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn catch_up_response_verifies_session_outcome_quorum() {
+        let (config, private_members) = transport_config_three();
+        let mut journal = InMemoryFederationJournal::new();
+        journal.append(mint_quote_envelope()).expect("append quote");
+        journal
+            .append(mint_envelope(
+                "quote-1",
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            ))
+            .expect("append mint");
+        let request = FederationJournalCatchUpRequest::new(0);
+        let response = FederationJournalCatchUpResponse::from_journal(
+            federation_id(),
+            &journal,
+            &request,
+            50,
+            100,
+        )
+        .with_signed_session_outcome(&private_members[0])
+        .expect("signed response");
+        let second_outcome = FederationJournalCatchUpResponse::from_journal(
+            federation_id(),
+            &journal,
+            &request,
+            50,
+            100,
+        )
+        .with_signed_session_outcome(&private_members[1])
+        .expect("second signed response")
+        .session_outcome
+        .expect("second session outcome");
+
+        let quorum = response
+            .verify_session_outcome_quorum(&config, &[second_outcome])
+            .expect("quorum");
+
+        assert_eq!(quorum.required, 2);
+        assert_eq!(quorum.from_index, 0);
+        assert_eq!(quorum.operation_count, 2);
+        assert_eq!(quorum.signers.len(), 2);
+        assert!(quorum.signers.contains(&private_members[0].member_id));
+        assert!(quorum.signers.contains(&private_members[1].member_id));
+    }
+
+    #[test]
+    fn catch_up_response_rejects_insufficient_session_outcome_quorum() {
+        let (config, private_members) = transport_config_three();
+        let mut journal = InMemoryFederationJournal::new();
+        journal.append(mint_quote_envelope()).expect("append quote");
+        let request = FederationJournalCatchUpRequest::new(0);
+        let response = FederationJournalCatchUpResponse::from_journal(
+            federation_id(),
+            &journal,
+            &request,
+            50,
+            100,
+        )
+        .with_signed_session_outcome(&private_members[0])
+        .expect("signed response");
+
+        assert!(matches!(
+            response.verify_session_outcome_quorum(&config, &[]),
+            Err(FederationError::SessionOutcomeQuorumNotReached {
+                required: 2,
+                found: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn catch_up_response_does_not_count_duplicate_session_outcome_signers() {
+        let (config, private_members) = transport_config_three();
+        let mut journal = InMemoryFederationJournal::new();
+        journal.append(mint_quote_envelope()).expect("append quote");
+        let request = FederationJournalCatchUpRequest::new(0);
+        let response = FederationJournalCatchUpResponse::from_journal(
+            federation_id(),
+            &journal,
+            &request,
+            50,
+            100,
+        )
+        .with_signed_session_outcome(&private_members[0])
+        .expect("signed response");
+        let duplicate_outcome = response
+            .session_outcome
+            .as_ref()
+            .expect("session outcome")
+            .clone();
+
+        assert!(matches!(
+            response.verify_session_outcome_quorum(&config, &[duplicate_outcome]),
+            Err(FederationError::SessionOutcomeQuorumNotReached {
+                required: 2,
+                found: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn catch_up_response_rejects_mismatched_session_outcome_quorum_member() {
+        let (config, private_members) = transport_config_three();
+        let mut journal = InMemoryFederationJournal::new();
+        journal.append(mint_quote_envelope()).expect("append quote");
+        journal
+            .append(mint_envelope(
+                "quote-1",
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            ))
+            .expect("append mint");
+        let response = FederationJournalCatchUpResponse::from_journal(
+            federation_id(),
+            &journal,
+            &FederationJournalCatchUpRequest::new(0),
+            50,
+            100,
+        )
+        .with_signed_session_outcome(&private_members[0])
+        .expect("signed response");
+        let mismatched_outcome = FederationJournalCatchUpResponse::from_journal(
+            federation_id(),
+            &journal,
+            &FederationJournalCatchUpRequest::new(1),
+            50,
+            100,
+        )
+        .with_signed_session_outcome(&private_members[1])
+        .expect("mismatched signed response")
+        .session_outcome
+        .expect("mismatched session outcome");
+
+        assert!(matches!(
+            response.verify_session_outcome_quorum(&config, &[mismatched_outcome]),
             Err(FederationError::SessionOutcomeMismatch { .. })
         ));
     }

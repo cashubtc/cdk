@@ -1,5 +1,6 @@
 //! Private federation member REST routes.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -11,9 +12,11 @@ use axum::routing::post;
 use axum::Router;
 use cdk::federation::{
     FederationConfig, FederationError, FederationId, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationJournalEntry, FederationPeerStatus,
-    FederationPeerStatusRequest, FederationRestMessageKind, FederationRestSequenceTracker,
-    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    FederationJournalCatchUpResponse, FederationJournalDigest, FederationJournalEntry,
+    FederationOperationId, FederationPeerStatus, FederationPeerStatusRequest,
+    FederationRestMessageKind, FederationRestSequenceTracker, FederationSessionOutcome,
+    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationStateDigest,
+    FederationSubmitOperationRequest, FederationSubmitOperationResponse,
     InMemoryFederationConsensus, MemberConfigPrivate, MemberConfigPublic,
     FEDERATION_REST_API_VERSION,
 };
@@ -138,9 +141,13 @@ async fn post_local_status(
     let consensus = consensus.lock().await;
     let peer_status = consensus.peer_status();
     let sync_status = state.federation_sync_status().await.unwrap_or_default();
+    let session_outcome_quorum = session_outcome_quorum_status(&state)
+        .await
+        .map_err(cdk_error_response)?;
     Ok(Json(FederationLocalStatusResponse::new(
         peer_status,
         sync_status,
+        session_outcome_quorum,
     )))
 }
 
@@ -237,18 +244,138 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) sync_state: String,
     pub(crate) sync_ready: bool,
     pub(crate) sync_message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) session_outcome_quorum_operation_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) session_outcome_quorum_signers: Vec<cdk::federation::MemberId>,
 }
 
 impl FederationLocalStatusResponse {
-    fn new(peer_status: FederationPeerStatus, sync_status: crate::FederationSyncStatus) -> Self {
+    fn new(
+        peer_status: FederationPeerStatus,
+        sync_status: crate::FederationSyncStatus,
+        session_outcome_quorum: Option<FederationSessionOutcomeQuorum>,
+    ) -> Self {
+        let session_outcome_quorum_operation_count = session_outcome_quorum
+            .as_ref()
+            .map(|quorum| quorum.latest_index.saturating_add(1));
+        let session_outcome_quorum_signers = session_outcome_quorum
+            .map(|quorum| quorum.signers.into_iter().collect())
+            .unwrap_or_default();
         Self {
             version: FEDERATION_REST_API_VERSION,
             peer_status,
             sync_state: sync_status.state_name().to_string(),
             sync_ready: sync_status.is_ready(),
             sync_message: sync_status.not_ready_message(),
+            session_outcome_quorum_operation_count,
+            session_outcome_quorum_signers,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct SessionOutcomeRangeKey {
+    from_index: u64,
+    operation_count: u64,
+    latest_index: u64,
+    previous_order_digest: FederationJournalDigest,
+    range_order_digest: FederationJournalDigest,
+    latest_order_digest: FederationJournalDigest,
+    state_digest: FederationStateDigest,
+    operation_ids: Vec<FederationOperationId>,
+}
+
+impl From<&FederationSessionOutcome> for SessionOutcomeRangeKey {
+    fn from(outcome: &FederationSessionOutcome) -> Self {
+        Self {
+            from_index: outcome.from_index,
+            operation_count: outcome.operation_count,
+            latest_index: outcome.latest_index,
+            previous_order_digest: outcome.previous_order_digest,
+            range_order_digest: outcome.range_order_digest,
+            latest_order_digest: outcome.latest_order_digest,
+            state_digest: outcome.state_digest,
+            operation_ids: outcome.operation_ids.clone(),
+        }
+    }
+}
+
+async fn session_outcome_quorum_status(
+    state: &MintState,
+) -> Result<Option<FederationSessionOutcomeQuorum>, cdk::Error> {
+    let Some(runtime_config) = state.mint.federation_config() else {
+        return Ok(None);
+    };
+    let db = state.mint.localstore();
+    let entries = db.get_federation_journal_entries().await?;
+    let outcomes = db.get_federation_session_outcomes().await?;
+    if entries.is_empty() || outcomes.is_empty() {
+        return Ok(None);
+    }
+
+    let entries_by_index = entries
+        .into_iter()
+        .map(|entry| (entry.index, entry))
+        .collect::<BTreeMap<_, _>>();
+    let mut grouped_outcomes: BTreeMap<SessionOutcomeRangeKey, Vec<FederationSessionOutcome>> =
+        BTreeMap::new();
+    for outcome in outcomes {
+        grouped_outcomes
+            .entry(SessionOutcomeRangeKey::from(&outcome))
+            .or_default()
+            .push(outcome);
+    }
+
+    let mut best_quorum: Option<FederationSessionOutcomeQuorum> = None;
+    for (range, outcomes) in grouped_outcomes {
+        let Some(entries) = entries_for_session_outcome_range(&entries_by_index, &range) else {
+            continue;
+        };
+        let response = FederationJournalCatchUpResponse {
+            version: FEDERATION_REST_API_VERSION,
+            federation_id: runtime_config.public_config().federation_id,
+            from_index: range.from_index,
+            entries,
+            latest_index: Some(range.latest_index),
+            latest_order_digest: range.latest_order_digest,
+            state_digest: range.state_digest,
+            session_outcome: None,
+            complete: true,
+        };
+
+        let quorum = match response
+            .verify_session_outcome_quorum(runtime_config.public_config(), &outcomes)
+        {
+            Ok(quorum) => quorum,
+            Err(FederationError::SessionOutcomeQuorumNotReached { .. }) => continue,
+            Err(_) => continue,
+        };
+        match &best_quorum {
+            Some(best) if best.latest_index >= quorum.latest_index => {}
+            _ => best_quorum = Some(quorum),
+        }
+    }
+
+    Ok(best_quorum)
+}
+
+fn entries_for_session_outcome_range(
+    entries_by_index: &BTreeMap<u64, FederationJournalEntry>,
+    range: &SessionOutcomeRangeKey,
+) -> Option<Vec<FederationJournalEntry>> {
+    if range.operation_count == 0
+        || range.latest_index < range.from_index
+        || range.operation_count != range.latest_index.saturating_sub(range.from_index) + 1
+    {
+        return None;
+    }
+
+    let mut entries = Vec::with_capacity(range.operation_count as usize);
+    for index in range.from_index..=range.latest_index {
+        entries.push(entries_by_index.get(&index)?.clone());
+    }
+    Some(entries)
 }
 
 fn federation_runtime_config(
@@ -2590,6 +2717,74 @@ mod tests {
         assert_eq!(response.sync_state, "healthy");
         assert!(response.sync_ready);
         assert_eq!(response.sync_message, "federation member is healthy");
+        assert_eq!(response.session_outcome_quorum_operation_count, None);
+        assert!(response.session_outcome_quorum_signers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn private_local_status_route_reports_session_outcome_quorum_evidence() {
+        let (state, public_config, local_private, peer_private) =
+            federation_route_state_with_local_private().await;
+        let local_member = local_private.member_id;
+        state
+            .submit_federation_envelope(restore_envelope(
+                public_config.federation_id,
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            ))
+            .await
+            .expect("submit restore");
+        let entries = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal entries");
+        let peer_status = local_peer_status(&state).await.expect("local status");
+        let local_outcome = FederationSessionOutcome::new_signed(
+            public_config.federation_id,
+            &entries,
+            peer_status.latest_order_digest,
+            peer_status.state_digest,
+            &local_private,
+        )
+        .expect("local session outcome");
+        let peer_outcome = FederationSessionOutcome::new_signed(
+            public_config.federation_id,
+            &entries,
+            peer_status.latest_order_digest,
+            peer_status.state_digest,
+            &peer_private,
+        )
+        .expect("peer session outcome");
+        let mut tx = state
+            .mint
+            .localstore()
+            .begin_transaction()
+            .await
+            .expect("begin transaction");
+        tx.add_federation_session_outcome(&local_outcome)
+            .await
+            .expect("persist local outcome");
+        tx.add_federation_session_outcome(&peer_outcome)
+            .await
+            .expect("persist peer outcome");
+        tx.commit().await.expect("commit outcomes");
+
+        let request = signed_status_request(&public_config, &peer_private, local_member, 1);
+        let response = post_local_status(State(state), Json(request))
+            .await
+            .expect("local status response")
+            .0;
+
+        assert_eq!(response.peer_status.operation_count, 1);
+        assert_eq!(response.session_outcome_quorum_operation_count, Some(1));
+        assert_eq!(response.session_outcome_quorum_signers.len(), 2);
+        assert!(response
+            .session_outcome_quorum_signers
+            .contains(&local_private.member_id));
+        assert!(response
+            .session_outcome_quorum_signers
+            .contains(&peer_private.member_id));
     }
 
     #[tokio::test]

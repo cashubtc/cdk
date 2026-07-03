@@ -39,8 +39,9 @@ pub use self::transport::{
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
     FederationPeerStatusRequest, FederationRestBodyHash, FederationRestMessageKind,
     FederationRestSequenceTracker, FederationRestSignature, FederationSessionOutcome,
-    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    FEDERATION_REST_API_VERSION, FEDERATION_SESSION_OUTCOME_VERSION,
+    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, FEDERATION_REST_API_VERSION,
+    FEDERATION_SESSION_OUTCOME_VERSION,
 };
 pub use self::trusted_dealer::{
     generate_trusted_dealer_configs, TrustedDealerConfigBundle, TrustedDealerKeysetSpec,
@@ -497,6 +498,14 @@ pub enum FederationError {
     SessionOutcomeSignatureVerificationFailed {
         /// Member whose signature was checked.
         member_id: MemberId,
+    },
+    /// Not enough distinct members signed matching session outcomes.
+    #[error("Federation session outcome quorum not reached: required={required}, found={found}")]
+    SessionOutcomeQuorumNotReached {
+        /// Required distinct member signatures.
+        required: u16,
+        /// Valid distinct member signatures found.
+        found: u16,
     },
     /// Signed REST request was sent to an endpoint for a different message kind.
     #[error("Federation REST message kind mismatch: expected={expected:?}, found={found:?}")]
