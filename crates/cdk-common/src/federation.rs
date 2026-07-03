@@ -14,12 +14,13 @@ use bitcoin::hashes::Hash;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
-mod trusted_dealer;
-
+mod consensus;
 mod journal;
 mod operation;
 mod transport;
+mod trusted_dealer;
 
+pub use self::consensus::InMemoryFederationConsensus;
 pub use self::journal::{
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
     FederationOperationStatus, InMemoryFederationJournal,
@@ -279,6 +280,14 @@ pub enum FederationError {
     UnknownOperation {
         /// Operation ID that could not be found.
         operation_id: String,
+    },
+    /// Operation envelope belongs to a different federation.
+    #[error("Federation operation id mismatch: expected={expected}, found={found}")]
+    OperationFederationMismatch {
+        /// Expected federation ID.
+        expected: FederationId,
+        /// Found federation ID.
+        found: FederationId,
     },
     /// Hex parsing error.
     #[error(transparent)]
