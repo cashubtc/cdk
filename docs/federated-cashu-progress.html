@@ -328,11 +328,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: add sliding-window mint regression</span>
+          <span class="value">docs: expand federation milestones</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Sliding-window mint attack regression</span>
+          <span class="value">Expanded milestone dashboard</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -375,24 +375,143 @@
           </article>
           <article class="milestone">
             <div>
-              <h3>4-7. Consensus, journal, and signatory</h3>
-              <p>Transport traits, private REST, dummy consensus, durable journal, state digests, and signing shares.</p>
+              <h3>4. Consensus engine abstraction</h3>
+              <p>Ordered operation journal, local consensus scaffold, duplicate/conflict handling, catch-up DTOs, and future BFT engine work.</p>
             </div>
             <span class="status progress">In progress</span>
           </article>
           <article class="milestone">
             <div>
-              <h3>8-14. Core eCash flows</h3>
-              <p>Federated minting, wallet aggregation, swapping, restore/check-state, and fake-wallet melting.</p>
+              <h3>5. Federation DB journal and state digests</h3>
+              <p>Durable accepted operation history, signature-share storage, restart replay, and later state digests and audit summaries.</p>
+            </div>
+            <span class="status progress">In progress</span>
+          </article>
+          <article class="milestone">
+            <div>
+              <h3>6. Deterministic mint state machine extraction</h3>
+              <p>Consensus-applied mint, swap, melt, quote, and payment-observation transitions that replay into local mint storage.</p>
+            </div>
+            <span class="status progress">In progress</span>
+          </article>
+          <article class="milestone">
+            <div>
+              <h3>7. Federated key-share signatory</h3>
+              <p>Member-local BLS share signing, aggregate key advertisement, v3/BLS guards, and share verification before return.</p>
+            </div>
+            <span class="status done">Done</span>
+          </article>
+          <article class="milestone">
+            <div>
+              <h3>8. Federated mint quote creation and payment observations</h3>
+              <p>Consensus-backed mint quotes, fake-wallet paid observations, duplicate handling, and catch-up replay.</p>
+            </div>
+            <span class="status done">Done</span>
+          </article>
+          <article class="milestone">
+            <div>
+              <h3>9. Federated mint issuance</h3>
+              <p>Paid quote issuance through consensus, exact-output conflict rejection, cached member shares, and wallet aggregation.</p>
+            </div>
+            <span class="status done">Done</span>
+          </article>
+          <article class="milestone">
+            <div>
+              <h3>10. Federated wallet connector and aggregation</h3>
+              <p>Multi-member wallet fan-out, aggregate keyset validation, BLS share verification, threshold aggregation, and failure handling.</p>
+            </div>
+            <span class="status done">Done</span>
+          </article>
+          <article class="milestone">
+            <div>
+              <h3>11. Federated swap</h3>
+              <p>Consensus-gated swap requests, aggregate proof verification, spent-state replay, output shares, and wallet aggregation.</p>
+            </div>
+            <span class="status done">Done</span>
+          </article>
+          <article class="milestone">
+            <div>
+              <h3>12. Sliding-window attack regression suite</h3>
+              <p>Overlapping output-set attacks are rejected by quote-scoped consensus conflicts before threshold signing can help an attacker.</p>
+            </div>
+            <span class="status done">Done</span>
+          </article>
+          <article class="milestone">
+            <div>
+              <h3>13. Restore and check-state</h3>
+              <p>Restore only returns shares for accepted outputs, and wallet check-state requires threshold agreement from members.</p>
+            </div>
+            <span class="status done">Done</span>
+          </article>
+          <article class="milestone">
+            <div>
+              <h3>14. Melt reserve and payment finalization</h3>
+              <p>Fake-wallet melt quotes, pending/paid/unpaid observations, aggregate input verification, change shares, and replay recovery.</p>
+            </div>
+            <span class="status progress">In progress</span>
+          </article>
+          <article class="milestone">
+            <div>
+              <h3>15. Networking and peer authentication</h3>
+              <p>Signed private REST routes, member allowlists, sequence tracking, catch-up transport, and future Iroh or lower-level P2P adapters.</p>
+            </div>
+            <span class="status progress">In progress</span>
+          </article>
+          <article class="milestone">
+            <div>
+              <h3>16. Member startup, catch-up, and recovery</h3>
+              <p>Startup replay, lag-aware signing guards, automatic sync rounds, offline catch-up, divergence detection, and restart-safe sequences.</p>
+            </div>
+            <span class="status progress">In progress</span>
+          </article>
+          <article class="milestone">
+            <div>
+              <h3>17. cdk-mintd integration and regtest tooling</h3>
+              <p>Federation config loading, trusted-dealer generation, inspect/status CLIs, and generated local smoke scripts.</p>
+            </div>
+            <span class="status progress">In progress</span>
+          </article>
+          <article class="milestone">
+            <div>
+              <h3>18. Storage backend coverage</h3>
+              <p>SQLite federation persistence is exercised, with broader backend, locking, indexing, and stress coverage still to finish.</p>
+            </div>
+            <span class="status progress">In progress</span>
+          </article>
+          <article class="milestone">
+            <div>
+              <h3>19. Real payment backend policy</h3>
+              <p>Move beyond fake-wallet assumptions with explicit Lightning/onchain observation policies and operator tooling.</p>
             </div>
             <span class="status pending">Pending</span>
           </article>
           <article class="milestone">
             <div>
-              <h3>15-23. Networking hardening and production path</h3>
-              <p>Peer auth, catch-up, regtest tooling, storage coverage, DKG, key rotation, observability, review.</p>
+              <h3>20. Distributed key generation</h3>
+              <p>Replace trusted-dealer setup with authenticated dealer-free BLS DKG and signed transcripts.</p>
             </div>
             <span class="status pending">Pending</span>
+          </article>
+          <article class="milestone">
+            <div>
+              <h3>21. Key rotation and federation upgrades</h3>
+              <p>Consensus-accepted aggregate keyset rotation, protocol negotiation, and stale-member upgrade safety.</p>
+            </div>
+            <span class="status pending">Pending</span>
+          </article>
+          <article class="milestone">
+            <div>
+              <h3>22. Observability and operator safety</h3>
+              <p>Status probes exist; metrics, digest alerts, redaction tests, and operator inspection surfaces still need expansion.</p>
+            </div>
+            <span class="status progress">In progress</span>
+          </article>
+          <article class="milestone">
+            <div>
+              <h3>23. Security review checklist</h3>
+              <p>Consensus-before-signing and attack regressions are accumulating, with a full route, DoS, payment, and transcript review still ahead.</p>
+            </div>
+            <span class="status progress">In progress</span>
           </article>
         </div>
       </section>
@@ -777,6 +896,10 @@
           <article class="item">
             <h3>Sliding-window mint attack covered</h3>
             <p>A focused consensus regression now submits ABC, BCD, CDA, and DAB output sets for the same mint quote. The first accepted operation is replay-idempotent, all overlapping variants conflict on the quote key, and the journal keeps one canonical mint entry.</p>
+          </article>
+          <article class="item">
+            <h3>Milestone map expanded</h3>
+            <p>The dashboard now lists every implementation-plan milestone from 0 through 23 individually, instead of grouping the remaining work into broad ranges.</p>
           </article>
         </div>
       </section>
