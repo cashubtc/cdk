@@ -35,6 +35,26 @@ impl InMemoryFederationConsensus {
         }
     }
 
+    /// Rebuild local consensus from persisted journal entries.
+    pub fn from_entries(
+        federation_id: FederationId,
+        member_id: MemberId,
+        entries: Vec<FederationJournalEntry>,
+    ) -> Result<Self> {
+        let journal = InMemoryFederationJournal::from_entries(entries)?;
+        let consensus = Self {
+            federation_id,
+            member_id,
+            journal,
+        };
+
+        for entry in consensus.journal.entries() {
+            consensus.ensure_federation(entry.envelope.federation_id)?;
+        }
+
+        Ok(consensus)
+    }
+
     /// Return this member's federation ID.
     #[must_use]
     pub fn federation_id(&self) -> FederationId {

@@ -37,7 +37,12 @@ async fn post_status(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationPeerStatusRequest>>,
 ) -> Result<Json<FederationPeerStatus>, Response> {
-    verify_federation_request(&state, &payload, FederationRestMessageKind::Status).await?;
+    let verified =
+        verify_federation_request(&state, &payload, FederationRestMessageKind::Status).await?;
+    state
+        .persist_federation_sequence(verified.sender, verified.sequence)
+        .await
+        .map_err(cdk_error_response)?;
     let consensus = federation_consensus(&state)?;
     let consensus = consensus.lock().await;
     Ok(Json(consensus.peer_status()))
@@ -48,12 +53,16 @@ async fn post_operation(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationSubmitOperationRequest>>,
 ) -> Result<Json<FederationSubmitOperationResponse>, Response> {
-    verify_federation_request(&state, &payload, FederationRestMessageKind::SubmitOperation).await?;
-    let consensus = federation_consensus(&state)?;
-    let mut consensus = consensus.lock().await;
-    let response = consensus
-        .submit_operation(payload.payload)
-        .map_err(federation_error_response)?;
+    let verified =
+        verify_federation_request(&state, &payload, FederationRestMessageKind::SubmitOperation)
+            .await?;
+    let response = state
+        .submit_federation_envelope_with_sequence(
+            payload.payload.envelope,
+            Some((verified.sender, verified.sequence)),
+        )
+        .await
+        .map_err(cdk_error_response)?;
     tracing::debug!("Accepted federation operation {}", response.operation_id);
     Ok(Json(response))
 }
@@ -63,7 +72,12 @@ async fn post_journal(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationJournalCatchUpRequest>>,
 ) -> Result<Json<FederationJournalCatchUpResponse>, Response> {
-    verify_federation_request(&state, &payload, FederationRestMessageKind::CatchUp).await?;
+    let verified =
+        verify_federation_request(&state, &payload, FederationRestMessageKind::CatchUp).await?;
+    state
+        .persist_federation_sequence(verified.sender, verified.sequence)
+        .await
+        .map_err(cdk_error_response)?;
     let consensus = federation_consensus(&state)?;
     tracing::debug!(
         next_index = payload.payload.next_index,
@@ -81,7 +95,7 @@ async fn verify_federation_request<T>(
     state: &MintState,
     request: &FederationSignedRequest<T>,
     expected_kind: FederationRestMessageKind,
-) -> Result<(), Response>
+) -> Result<VerifiedFederationRequest, Response>
 where
     T: Serialize,
 {
@@ -96,14 +110,25 @@ where
 
     let runtime_config = federation_runtime_config(state)?;
     let sequences = federation_sequences(state)?;
-    let mut sequences = sequences.lock().await;
+    let sequences = sequences.lock().await;
     sequences
-        .verify_and_record(
+        .verify_next(
             request,
             runtime_config.public_config(),
             runtime_config.member_id(),
         )
-        .map_err(federation_error_response)
+        .map_err(federation_error_response)?;
+
+    Ok(VerifiedFederationRequest {
+        sender: request.sender,
+        sequence: request.sequence,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VerifiedFederationRequest {
+    sender: cdk::federation::MemberId,
+    sequence: u64,
 }
 
 fn federation_runtime_config(
@@ -144,11 +169,22 @@ fn federation_error_response(err: FederationError) -> Response {
         | FederationError::CatchUpFederationMismatch { .. }
         | FederationError::CatchUpIndexMismatch { .. }
         | FederationError::CatchUpDigestMismatch { .. }
-        | FederationError::CatchUpOperationIdMismatch { .. } => StatusCode::BAD_REQUEST,
+        | FederationError::CatchUpOperationIdMismatch { .. }
+        | FederationError::JournalConflictKeysMismatch { .. } => StatusCode::BAD_REQUEST,
         _ => StatusCode::BAD_REQUEST,
     };
     tracing::warn!("Federation request failed: {}", err);
     (status, err.to_string()).into_response()
+}
+
+fn cdk_error_response(err: cdk::Error) -> Response {
+    match err {
+        cdk::Error::Federation(err) => federation_error_response(err),
+        err => {
+            tracing::error!("Federation storage mutation failed: {}", err);
+            (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -253,18 +289,21 @@ where
         Ok(response)
     }
 
-    pub(crate) async fn catch_up_local_from_member(
+    pub(crate) async fn catch_up_state_from_member(
         &self,
-        consensus: ConsensusHandle,
+        state: &MintState,
         member: &MemberConfigPublic,
     ) -> anyhow::Result<Vec<FederationJournalEntry>> {
+        let consensus = state
+            .federation_consensus
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("mint is not configured as a federation member"))?;
         let request = {
             let consensus = consensus.lock().await;
             consensus.catch_up_request()
         };
         let response = self.catch_up(member, &request).await?;
-        let mut consensus = consensus.lock().await;
-        Ok(consensus.apply_catch_up_response(&response)?)
+        Ok(state.apply_federation_catch_up_response(&response).await?)
     }
 
     fn signed_request<P>(
@@ -563,10 +602,15 @@ mod tests {
         (bundle.public_config, first_private, second_private)
     }
 
-    async fn federation_route_state() -> (MintState, FederationConfig, MemberConfigPrivate) {
+    async fn federation_route_state_with_local_private() -> (
+        MintState,
+        FederationConfig,
+        MemberConfigPrivate,
+        MemberConfigPrivate,
+    ) {
         let (public_config, local_private, peer_private) = transport_config();
         let runtime_config =
-            cdk::mint::FederationRuntimeConfig::new(public_config.clone(), local_private)
+            cdk::mint::FederationRuntimeConfig::new(public_config.clone(), local_private.clone())
                 .expect("runtime config");
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
         let mnemonic = Mnemonic::generate(12).expect("mnemonic");
@@ -610,6 +654,12 @@ mod tests {
             ))),
         };
 
+        (state, public_config, local_private, peer_private)
+    }
+
+    async fn federation_route_state() -> (MintState, FederationConfig, MemberConfigPrivate) {
+        let (state, public_config, _, peer_private) =
+            federation_route_state_with_local_private().await;
         (state, public_config, peer_private)
     }
 
@@ -761,9 +811,9 @@ mod tests {
 
     #[tokio::test]
     async fn rest_peer_client_catches_up_local_consensus_from_member() {
-        let (public_config, local_private, _) = transport_config();
+        let (state, public_config, local_private, _) =
+            federation_route_state_with_local_private().await;
         let federation_id = public_config.federation_id;
-        let local_member = member_id(1);
         let peer_member = public_config.member(member_id(2)).expect("peer member");
         let first = restore_envelope(
             federation_id,
@@ -773,11 +823,11 @@ mod tests {
             federation_id,
             "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
         );
-        let mut local_consensus = InMemoryFederationConsensus::new(federation_id, local_member);
         let mut peer_consensus =
             InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
-        local_consensus
-            .submit_envelope(first.clone())
+        state
+            .submit_federation_envelope(first.clone())
+            .await
             .expect("local first operation");
         peer_consensus
             .submit_envelope(first)
@@ -785,10 +835,10 @@ mod tests {
         peer_consensus
             .submit_envelope(second)
             .expect("peer second operation");
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
         let catch_up_response = peer_consensus
-            .catch_up_checked(&local_consensus.catch_up_request())
+            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
             .expect("peer catch-up response");
-        let consensus = Arc::new(tokio::sync::Mutex::new(local_consensus));
         let transport =
             MockFederationTransport::default().with_catch_up_response(catch_up_response);
         let client =
@@ -796,21 +846,68 @@ mod tests {
                 .expect("client");
 
         let applied = client
-            .catch_up_local_from_member(consensus.clone(), peer_member)
+            .catch_up_state_from_member(&state, peer_member)
             .await
             .expect("catch up");
 
         assert_eq!(applied.len(), 1);
         assert_eq!(
-            consensus.lock().await.peer_status().latest_order_digest,
+            local_consensus
+                .lock()
+                .await
+                .peer_status()
+                .latest_order_digest,
             peer_consensus.peer_status().latest_order_digest
         );
+        let persisted = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("persisted journal");
+        assert_eq!(persisted.len(), 2);
+        assert_eq!(persisted[1].operation_id, applied[0].operation_id);
         let requests = transport.catch_up_requests();
         assert_eq!(requests.len(), 1);
         requests[0]
             .verify(&public_config, peer_member.member_id)
             .expect("signed catch-up request");
         assert_eq!(requests[0].payload.next_index, 1);
+    }
+
+    #[tokio::test]
+    async fn federation_runtime_state_replays_persisted_journal_and_sequences() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let peer_member = peer_private.member_id;
+        let envelope = payment_observation_envelope(public_config.federation_id);
+        let response = state
+            .submit_federation_envelope(envelope)
+            .await
+            .expect("persist operation");
+        state
+            .persist_federation_sequence(peer_member, 42)
+            .await
+            .expect("persist sequence");
+
+        let (consensus, sequences) = crate::create_federation_runtime_state(&state.mint)
+            .await
+            .expect("runtime state");
+        let consensus = consensus.expect("consensus");
+        let sequences = sequences.expect("sequences");
+        let consensus = consensus.lock().await;
+        let sequences = sequences.lock().await;
+
+        assert_eq!(consensus.peer_status().operation_count, 1);
+        assert_eq!(
+            consensus
+                .journal()
+                .entries()
+                .first()
+                .expect("journal entry")
+                .operation_id,
+            response.operation_id
+        );
+        assert_eq!(sequences.sequences().get(&peer_member), Some(&42));
     }
 
     #[tokio::test]
@@ -834,6 +931,21 @@ mod tests {
             envelope.operation_id().expect("operation id")
         );
         assert_eq!(consensus_operation_count(&state).await, 1);
+        let persisted = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("persisted journal");
+        let sequences = state
+            .mint
+            .localstore()
+            .get_federation_member_sequences()
+            .await
+            .expect("persisted sequences");
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].operation_id, response.0.operation_id);
+        assert_eq!(sequences.get(&peer_private.member_id), Some(&1));
     }
 
     #[tokio::test]

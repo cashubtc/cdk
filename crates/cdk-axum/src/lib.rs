@@ -11,6 +11,12 @@ use axum::response::Response;
 use axum::routing::{get, post};
 use axum::Router;
 use cache::HttpCache;
+#[cfg(feature = "federation")]
+use cdk::federation::{
+    FederationJournalAppendOutcome, FederationJournalEntry, FederationOperationEnvelope,
+    FederationRestSequenceTracker, FederationSubmitOperationResponse, InMemoryFederationConsensus,
+    MemberId,
+};
 use cdk::mint::Mint;
 use router_handlers::*;
 
@@ -25,6 +31,11 @@ mod federation;
 mod router_handlers;
 mod ws;
 
+#[cfg(feature = "federation")]
+type FederationConsensusHandle = Arc<tokio::sync::Mutex<InMemoryFederationConsensus>>;
+#[cfg(feature = "federation")]
+type FederationSequenceHandle = Arc<tokio::sync::Mutex<FederationRestSequenceTracker>>;
+
 /// CDK Mint State
 #[derive(Clone)]
 #[allow(missing_debug_implementations)]
@@ -32,11 +43,110 @@ pub struct MintState {
     mint: Arc<Mint>,
     cache: Arc<cache::HttpCache>,
     #[cfg(feature = "federation")]
-    federation_consensus:
-        Option<Arc<tokio::sync::Mutex<cdk::federation::InMemoryFederationConsensus>>>,
+    federation_consensus: Option<FederationConsensusHandle>,
     #[cfg(feature = "federation")]
-    federation_sequences:
-        Option<Arc<tokio::sync::Mutex<cdk::federation::FederationRestSequenceTracker>>>,
+    federation_sequences: Option<FederationSequenceHandle>,
+}
+
+#[cfg(feature = "federation")]
+impl MintState {
+    pub(crate) async fn submit_federation_envelope(
+        &self,
+        envelope: FederationOperationEnvelope,
+    ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
+        self.submit_federation_envelope_with_sequence(envelope, None)
+            .await
+    }
+
+    pub(crate) async fn submit_federation_envelope_with_sequence(
+        &self,
+        envelope: FederationOperationEnvelope,
+        sequence: Option<(MemberId, u64)>,
+    ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
+        let consensus = self.federation_consensus.as_ref().ok_or_else(|| {
+            cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
+        })?;
+        let mut consensus = consensus.lock().await;
+        let mut next_consensus = consensus.clone();
+        let response = next_consensus.submit_envelope(envelope)?;
+
+        self.persist_federation_append_outcome(&response.outcome, sequence)
+            .await?;
+        *consensus = next_consensus;
+        if let Some((sender, sequence)) = sequence {
+            self.record_federation_sequence(sender, sequence).await;
+        }
+
+        Ok(response)
+    }
+
+    pub(crate) async fn apply_federation_catch_up_response(
+        &self,
+        response: &cdk::federation::FederationJournalCatchUpResponse,
+    ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
+        let consensus = self.federation_consensus.as_ref().ok_or_else(|| {
+            cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
+        })?;
+        let mut consensus = consensus.lock().await;
+        let mut next_consensus = consensus.clone();
+        let applied = next_consensus.apply_catch_up_response(response)?;
+
+        self.persist_federation_journal_entries(&applied, None)
+            .await?;
+        *consensus = next_consensus;
+
+        Ok(applied)
+    }
+
+    pub(crate) async fn persist_federation_sequence(
+        &self,
+        sender: MemberId,
+        sequence: u64,
+    ) -> Result<(), cdk::Error> {
+        self.persist_federation_journal_entries(&[], Some((sender, sequence)))
+            .await?;
+        self.record_federation_sequence(sender, sequence).await;
+        Ok(())
+    }
+
+    async fn persist_federation_append_outcome(
+        &self,
+        outcome: &FederationJournalAppendOutcome,
+        sequence: Option<(MemberId, u64)>,
+    ) -> Result<(), cdk::Error> {
+        match outcome {
+            FederationJournalAppendOutcome::Appended(entry) => {
+                self.persist_federation_journal_entries(std::slice::from_ref(entry), sequence)
+                    .await
+            }
+            FederationJournalAppendOutcome::Duplicate(_) => {
+                self.persist_federation_journal_entries(&[], sequence).await
+            }
+        }
+    }
+
+    async fn persist_federation_journal_entries(
+        &self,
+        entries: &[FederationJournalEntry],
+        sequence: Option<(MemberId, u64)>,
+    ) -> Result<(), cdk::Error> {
+        let db = self.mint.localstore();
+        let mut tx = db.begin_transaction().await?;
+        for entry in entries {
+            tx.add_federation_journal_entry(entry).await?;
+        }
+        if let Some((sender, sequence)) = sequence {
+            tx.set_federation_member_sequence(sender, sequence).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn record_federation_sequence(&self, sender: MemberId, sequence: u64) {
+        if let Some(sequences) = &self.federation_sequences {
+            sequences.lock().await.record_sequence(sender, sequence);
+        }
+    }
 }
 
 /// Create mint [`Router`] with required endpoints for cashu mint with the default cache
@@ -103,20 +213,8 @@ pub async fn create_mint_router_with_custom_cache(
     enable_info_page: bool,
 ) -> Result<Router> {
     #[cfg(feature = "federation")]
-    let federation_consensus = mint.federation_config().map(|config| {
-        Arc::new(tokio::sync::Mutex::new(
-            cdk::federation::InMemoryFederationConsensus::new(
-                config.federation_id(),
-                config.member_id(),
-            ),
-        ))
-    });
-    #[cfg(feature = "federation")]
-    let federation_sequences = federation_consensus.as_ref().map(|_| {
-        Arc::new(tokio::sync::Mutex::new(
-            cdk::federation::FederationRestSequenceTracker::new(),
-        ))
-    });
+    let (federation_consensus, federation_sequences) =
+        create_federation_runtime_state(&mint).await?;
     let state = MintState {
         mint,
         cache: Arc::new(cache),
@@ -182,4 +280,31 @@ pub async fn create_mint_router_with_custom_cache(
         .with_state(state);
 
     Ok(mint_router)
+}
+
+#[cfg(feature = "federation")]
+async fn create_federation_runtime_state(
+    mint: &Arc<Mint>,
+) -> Result<(
+    Option<FederationConsensusHandle>,
+    Option<FederationSequenceHandle>,
+)> {
+    let Some(config) = mint.federation_config() else {
+        return Ok((None, None));
+    };
+
+    let db = mint.localstore();
+    let entries = db.get_federation_journal_entries().await?;
+    let sequences = db.get_federation_member_sequences().await?;
+    let consensus = InMemoryFederationConsensus::from_entries(
+        config.federation_id(),
+        config.member_id(),
+        entries,
+    )?;
+    let sequences = FederationRestSequenceTracker::from_sequences(sequences);
+
+    Ok((
+        Some(Arc::new(tokio::sync::Mutex::new(consensus))),
+        Some(Arc::new(tokio::sync::Mutex::new(sequences))),
+    ))
 }

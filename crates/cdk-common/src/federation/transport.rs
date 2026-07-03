@@ -347,6 +347,18 @@ impl FederationRestSequenceTracker {
         Self::default()
     }
 
+    /// Rebuild a sequence tracker from persisted sender watermarks.
+    #[must_use]
+    pub fn from_sequences(highest_by_sender: BTreeMap<MemberId, u64>) -> Self {
+        Self { highest_by_sender }
+    }
+
+    /// Return persisted sender watermarks known to this tracker.
+    #[must_use]
+    pub fn sequences(&self) -> &BTreeMap<MemberId, u64> {
+        &self.highest_by_sender
+    }
+
     /// Verify a request and record its sequence if it advances the sender stream.
     pub fn verify_and_record<T>(
         &mut self,
@@ -357,20 +369,47 @@ impl FederationRestSequenceTracker {
     where
         T: Serialize,
     {
+        self.verify_next(request, public_config, expected_receiver)?;
+        self.record_sequence(request.sender, request.sequence);
+
+        Ok(())
+    }
+
+    /// Verify a request without recording its sequence.
+    pub fn verify_next<T>(
+        &self,
+        request: &FederationSignedRequest<T>,
+        public_config: &FederationConfig,
+        expected_receiver: MemberId,
+    ) -> Result<()>
+    where
+        T: Serialize,
+    {
         request.verify(public_config, expected_receiver)?;
 
-        if let Some(last) = self.highest_by_sender.get(&request.sender) {
-            if request.sequence <= *last {
+        self.ensure_sequence_advances(request.sender, request.sequence)
+    }
+
+    /// Record an already-verified sender sequence.
+    pub fn record_sequence(&mut self, sender: MemberId, sequence: u64) {
+        match self.highest_by_sender.get(&sender) {
+            Some(last) if *last >= sequence => {}
+            _ => {
+                self.highest_by_sender.insert(sender, sequence);
+            }
+        }
+    }
+
+    fn ensure_sequence_advances(&self, sender: MemberId, sequence: u64) -> Result<()> {
+        if let Some(last) = self.highest_by_sender.get(&sender) {
+            if sequence <= *last {
                 return Err(FederationError::RestStaleSequence {
-                    member_id: request.sender,
+                    member_id: sender,
                     last: *last,
-                    found: request.sequence,
+                    found: sequence,
                 });
             }
         }
-
-        self.highest_by_sender
-            .insert(request.sender, request.sequence);
 
         Ok(())
     }

@@ -234,12 +234,8 @@ async fn process_federation_swap(
     let Some(config) = state.mint.federation_config() else {
         return Ok(None);
     };
-    let Some(consensus) = state.federation_consensus.clone() else {
-        return Ok(None);
-    };
     let envelope = config.swap_operation(payload.clone())?;
-    let mut consensus = consensus.lock().await;
-    let response = consensus.submit_envelope(envelope)?;
+    let response = state.submit_federation_envelope(envelope).await?;
     Ok(Some(
         config.swap_share_response(response.operation_id, payload)?,
     ))

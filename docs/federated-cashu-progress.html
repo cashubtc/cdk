@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: persist federation journal</span>
+          <span class="value">feat: replay federation journal at startup</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Durable journal storage</span>
+          <span class="value">Runtime journal boot replay</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Runtime journal boot replay</span>
+          <span class="value">Deterministic state-machine replay</span>
         </div>
       </aside>
     </header>
@@ -532,6 +532,10 @@
             <h3>Durable journal storage ready</h3>
             <p>SQL-backed mint databases can now persist accepted federation journal entries, operation statuses, order digests, conflict keys, and per-member private REST sequence watermarks.</p>
           </article>
+          <article class="item">
+            <h3>Runtime journal replay ready</h3>
+            <p>Federation-enabled mint state now hydrates its consensus journal and signed-route sequence tracker from SQL at startup, persists accepted public/private route mutations before swapping runtime state, and records catch-up entries durably.</p>
+          </article>
         </div>
       </section>
 
@@ -642,6 +646,10 @@
             <h3>Accepted order survives storage</h3>
             <p>The federation journal row shape now preserves consensus order, digest continuity, local application status, quote conflict metadata, and member sequence watermarks across SQL round trips.</p>
           </article>
+          <article class="item">
+            <h3>Restart loses less federation state</h3>
+            <p>Storage-backed members now rebuild accepted operation order, digest continuity, operation conflict indexes, and member REST sequence watermarks when the mint runtime starts again.</p>
+          </article>
         </div>
       </section>
 
@@ -658,7 +666,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage can persist accepted entries plus sequence watermarks. Runtime boot replay and transactional route persistence still need to land before offline recovery is production-safe.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Deterministic replay into mint quote, proof state, and saga tables still needs to land before offline recovery is production-safe.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -878,10 +886,16 @@
               <td>Load persisted entries and sequence watermarks into runtime consensus and the signed-route sequence tracker at mint startup.</td>
             </tr>
             <tr>
+              <td>Runtime journal boot replay</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation federation` passed 17 tests, including startup replay of persisted journal entries and signed-route sequence watermarks. `cargo test -p cdk-axum --features federation custom_handlers`, `cargo test -p cdk-axum custom_handlers`, `cargo test -p cdk-sqlite --features "mint federation" federation_journal_persistence`, `cargo test -p cdk-common --features federation federation`, cdk-sql-common/cdk-sqlite/cdk-postgres/cdk/cdk-axum/cdk-mintd feature checks, `cargo fmt --all -- --check`, and `git diff --check` passed.</td>
+              <td>Replay accepted operations into deterministic mint database state so restart recovery reconstructs quotes, proof states, and saga progress.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks; runtime boot replay and networked fake-wallet state-machine replay remain open.</td>
-              <td>Replay persisted federation journal state into storage-backed members at startup.</td>
+              <td>Mint quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, and runtime boot replay now restores the consensus layer. Deterministic mint state-machine replay remains open.</td>
+              <td>Replay accepted federation operations into storage-backed mint state and test restart/catch-up around fake-wallet mint, swap, and melt flows.</td>
             </tr>
           </tbody>
         </table>
@@ -921,8 +935,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Runtime journal boot replay</h3>
-            <p>Load persisted accepted operations and member sequence watermarks into in-memory consensus and the signed-route sequence tracker at startup, then persist private REST route mutations transactionally.</p>
+            <h3>Deterministic state-machine replay</h3>
+            <p>Apply accepted journal operations into mint quote, proof state, and saga storage in consensus order so an offline member can catch up and restart into the same observable mint state.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>

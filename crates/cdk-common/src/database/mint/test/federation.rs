@@ -97,6 +97,9 @@ where
     tx.set_federation_member_sequence(member_one, 9)
         .await
         .expect("sequence one update");
+    tx.set_federation_member_sequence(member_one, 5)
+        .await
+        .expect("sequence one stale update");
     tx.commit().await.expect("commit");
 
     let entries = db

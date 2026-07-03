@@ -252,6 +252,90 @@ impl InMemoryFederationJournal {
             .collect()
     }
 
+    /// Rebuild a journal from persisted entries after validating the digest chain.
+    pub fn from_entries(entries: Vec<FederationJournalEntry>) -> Result<Self> {
+        let mut journal = Self::new();
+
+        for entry in entries {
+            let expected_index = journal.next_index();
+            if entry.index != expected_index {
+                return Err(FederationError::CatchUpIndexMismatch {
+                    expected: expected_index,
+                    found: entry.index,
+                });
+            }
+
+            let expected_operation_id = entry.envelope.operation_id()?;
+            if expected_operation_id != entry.operation_id {
+                return Err(FederationError::CatchUpOperationIdMismatch {
+                    index: entry.index,
+                    expected: expected_operation_id,
+                    found: entry.operation_id,
+                });
+            }
+
+            if entry.previous_order_digest != journal.latest_order_digest {
+                return Err(FederationError::CatchUpDigestMismatch {
+                    index: entry.index,
+                    expected: journal.latest_order_digest,
+                    found: entry.previous_order_digest,
+                });
+            }
+
+            let expected_order_digest = journal
+                .latest_order_digest
+                .append(entry.index, entry.operation_id);
+            if entry.order_digest != expected_order_digest {
+                return Err(FederationError::CatchUpDigestMismatch {
+                    index: entry.index.saturating_add(1),
+                    expected: expected_order_digest,
+                    found: entry.order_digest,
+                });
+            }
+
+            let conflict_keys = entry.envelope.operation.conflict_keys();
+            let conflict_key = conflict_keys.first().cloned();
+            if entry.conflict_key != conflict_key || entry.conflict_keys != conflict_keys {
+                return Err(FederationError::JournalConflictKeysMismatch { index: entry.index });
+            }
+
+            if journal.operation_indices.contains_key(&entry.operation_id) {
+                return Err(FederationError::ConflictingOperation {
+                    conflict_key: format!("operation_id:{}", entry.operation_id),
+                    existing_operation_id: entry.operation_id.to_string(),
+                    attempted_operation_id: entry.operation_id.to_string(),
+                });
+            }
+
+            let conflict_key_labels = conflict_keys
+                .iter()
+                .map(canonical_json_string)
+                .collect::<Result<Vec<_>>>()?;
+            for conflict_key_label in &conflict_key_labels {
+                if let Some(existing_operation_id) = journal.conflict_keys.get(conflict_key_label) {
+                    return Err(FederationError::ConflictingOperation {
+                        conflict_key: conflict_key_label.clone(),
+                        existing_operation_id: existing_operation_id.to_string(),
+                        attempted_operation_id: entry.operation_id.to_string(),
+                    });
+                }
+            }
+
+            journal
+                .operation_indices
+                .insert(entry.operation_id, entry.index as usize);
+            for conflict_key_label in conflict_key_labels {
+                journal
+                    .conflict_keys
+                    .insert(conflict_key_label, entry.operation_id);
+            }
+            journal.latest_order_digest = entry.order_digest;
+            journal.entries.push(entry);
+        }
+
+        Ok(journal)
+    }
+
     /// Return an entry by operation ID.
     #[must_use]
     pub fn entry_by_operation_id(

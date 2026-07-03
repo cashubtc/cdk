@@ -179,16 +179,12 @@ async fn submit_federation_mint_quote_operation(
     let Some(config) = state.mint.federation_config() else {
         return Ok(());
     };
-    let Some(consensus) = state.federation_consensus.clone() else {
-        return Ok(());
-    };
     let envelope = config.mint_quote_operation(
         response.quote().clone(),
         request,
         mint_quote_response_to_string(response),
     );
-    let mut consensus = consensus.lock().await;
-    consensus.submit_envelope(envelope)?;
+    state.submit_federation_envelope(envelope).await?;
     Ok(())
 }
 
@@ -198,9 +194,6 @@ async fn submit_federation_mint_quote_payment_observation(
     response: &cdk::mint::MintQuoteResponse<QuoteId>,
 ) -> Result<(), cdk::Error> {
     let Some(config) = state.mint.federation_config() else {
-        return Ok(());
-    };
-    let Some(consensus) = state.federation_consensus.clone() else {
         return Ok(());
     };
     let (amount_paid, amount_issued) = mint_quote_response_amounts(response);
@@ -214,8 +207,7 @@ async fn submit_federation_mint_quote_payment_observation(
         amount_issued,
         None,
     );
-    let mut consensus = consensus.lock().await;
-    consensus.submit_envelope(envelope)?;
+    state.submit_federation_envelope(envelope).await?;
     Ok(())
 }
 
@@ -227,12 +219,8 @@ async fn submit_federation_mint_operation(
     let Some(config) = state.mint.federation_config() else {
         return Ok(None);
     };
-    let Some(consensus) = state.federation_consensus.clone() else {
-        return Ok(None);
-    };
     let envelope = config.mint_operation(input)?;
-    let mut consensus = consensus.lock().await;
-    let response = consensus.submit_envelope(envelope)?;
+    let response = state.submit_federation_envelope(envelope).await?;
     Ok(Some(response.operation_id))
 }
 
@@ -725,16 +713,8 @@ async fn process_federation_melt_request(
     let Some(config) = state.mint.federation_config() else {
         return Ok(None);
     };
-    let Some(consensus) = state.federation_consensus.clone() else {
-        return Err(cdk::Error::Custom(
-            "federation mint is missing its consensus handle".to_string(),
-        ));
-    };
-
     let envelope = config.melt_operation(payload.clone())?;
-    let mut consensus = consensus.lock().await;
-    let response = consensus.submit_envelope(envelope)?;
-    drop(consensus);
+    let response = state.submit_federation_envelope(envelope).await?;
 
     Ok(Some(
         state

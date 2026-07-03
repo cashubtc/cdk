@@ -398,6 +398,12 @@ pub enum FederationError {
         /// Operation ID carried by the entry.
         found: FederationOperationId,
     },
+    /// Stored journal conflict metadata did not match the canonical operation.
+    #[error("Federation journal conflict metadata mismatch at index {index}")]
+    JournalConflictKeysMismatch {
+        /// Journal index whose conflict metadata did not match.
+        index: u64,
+    },
     /// A federation REST body hash must be exactly 32 bytes.
     #[error("Invalid federation REST body hash size: expected={expected}, found={found}")]
     InvalidRestBodyHashSize {
