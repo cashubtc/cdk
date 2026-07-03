@@ -13,8 +13,8 @@ use cdk_common::federation::{
     MemberId,
 };
 use cdk_common::{
-    Amount, BatchMintRequest, MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest,
-    PaymentMethod,
+    Amount, BatchMintRequest, BlindedMessage, MeltRequest, MintQuoteRequest, MintQuoteResponse,
+    MintQuoteState, MintRequest, PaymentMethod, QuoteId, RestoreRequest, SwapRequest,
 };
 
 use super::MintInput;
@@ -138,12 +138,40 @@ impl FederationRuntimeConfig {
         ))
     }
 
+    /// Validate outputs against the active v3/BLS aggregate keysets.
+    pub fn validate_output_keysets(&self, outputs: &[BlindedMessage]) -> Result<(), Error> {
+        Ok(self.public_config.validate_blinded_outputs(outputs)?)
+    }
+
+    /// Validate outputs from a swap request.
+    pub fn validate_swap_outputs(&self, request: &SwapRequest) -> Result<(), Error> {
+        self.validate_output_keysets(request.outputs())
+    }
+
+    /// Validate outputs from a restore request.
+    pub fn validate_restore_outputs(&self, request: &RestoreRequest) -> Result<(), Error> {
+        self.validate_output_keysets(&request.outputs)
+    }
+
+    /// Validate change outputs from a melt request.
+    pub fn validate_melt_change_outputs(
+        &self,
+        request: &MeltRequest<QuoteId>,
+    ) -> Result<(), Error> {
+        match request.outputs() {
+            Some(outputs) => self.validate_output_keysets(outputs),
+            None => Ok(()),
+        }
+    }
+
     /// Build the consensus operation for signing mint outputs.
-    #[must_use]
-    pub fn mint_operation(&self, input: MintInput) -> FederationOperationEnvelope {
-        self.operation_envelope(FederationOperation::Mint(FederationMintOperation {
-            request: mint_request_from_input(input),
-        }))
+    pub fn mint_operation(&self, input: MintInput) -> Result<FederationOperationEnvelope, Error> {
+        self.validate_output_keysets(input.outputs())?;
+        Ok(
+            self.operation_envelope(FederationOperation::Mint(FederationMintOperation {
+                request: mint_request_from_input(input),
+            })),
+        )
     }
 
     /// Sign an accepted mint operation into local threshold BLS signature shares.
@@ -195,9 +223,10 @@ mod tests {
     use cdk_common::nuts::nut01::{verify_blind_signature_share, BlsG1PublicKey, BlsSecretKey};
     use cdk_common::quote_id::QuoteId;
     use cdk_common::{
-        Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Id, MintQuoteBolt11Request,
-        MintQuoteBolt11Response, MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest,
-        PaymentMethod, PublicKey, SecretKey,
+        Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Id, MeltRequest,
+        MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteRequest, MintQuoteResponse,
+        MintQuoteState, MintRequest, PaymentMethod, PublicKey, RestoreRequest, SecretKey,
+        SwapRequest,
     };
 
     use super::{FederationMode, FederationRuntimeConfig};
@@ -235,15 +264,30 @@ mod tests {
             .expect("runtime config")
     }
 
-    fn keyset_id() -> Id {
-        Id::from_str("00bfa73302d12ffd").expect("keyset id")
-    }
-
-    fn output(hex: &str) -> BlindedMessage {
+    fn output_for_runtime(
+        runtime_config: &FederationRuntimeConfig,
+        label: &[u8],
+    ) -> BlindedMessage {
+        let keyset = &runtime_config.public_config().keysets[0];
         BlindedMessage::new(
             Amount::from(1),
-            keyset_id(),
-            PublicKey::from_hex(hex).expect("public key"),
+            keyset.id,
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(label)),
+        )
+    }
+
+    fn non_v3_output_for_runtime(runtime_config: &FederationRuntimeConfig) -> BlindedMessage {
+        let keyset = &runtime_config.public_config().keysets[0];
+        let non_v3_keyset_id = Id::v2_from_data(
+            &keyset.keys(),
+            &keyset.unit,
+            keyset.input_fee_ppk,
+            keyset.final_expiry,
+        );
+        BlindedMessage::new(
+            Amount::from(1),
+            non_v3_keyset_id,
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(b"non-v3 mint output")),
         )
     }
 
@@ -370,13 +414,13 @@ mod tests {
     fn runtime_config_builds_single_and_batch_mint_operations() {
         let runtime_config = runtime_config();
         let quote = QuoteId::new();
-        let single = runtime_config.mint_operation(super::MintInput::Single(MintRequest {
-            quote: quote.clone(),
-            outputs: vec![output(
-                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
-            )],
-            signature: None,
-        }));
+        let single = runtime_config
+            .mint_operation(super::MintInput::Single(MintRequest {
+                quote: quote.clone(),
+                outputs: vec![output_for_runtime(&runtime_config, b"single mint")],
+                signature: None,
+            }))
+            .expect("single mint operation");
 
         match single.operation {
             FederationOperation::Mint(operation) => match operation.request {
@@ -391,14 +435,14 @@ mod tests {
         let quote_one = QuoteId::new();
         let quote_two = QuoteId::new();
         let quote_three = QuoteId::new();
-        let batch = runtime_config.mint_operation(super::MintInput::Batch(BatchMintRequest {
-            quotes: vec![quote_one.clone(), quote_two.clone()],
-            quote_amounts: Some(vec![Amount::from(1), Amount::from(1)]),
-            outputs: vec![output(
-                "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
-            )],
-            signatures: None,
-        }));
+        let batch = runtime_config
+            .mint_operation(super::MintInput::Batch(BatchMintRequest {
+                quotes: vec![quote_one.clone(), quote_two.clone()],
+                quote_amounts: Some(vec![Amount::from(1), Amount::from(1)]),
+                outputs: vec![output_for_runtime(&runtime_config, b"batch mint")],
+                signatures: None,
+            }))
+            .expect("batch mint operation");
 
         assert_eq!(batch.operation.conflict_keys().len(), 2);
         let mut consensus = InMemoryFederationConsensus::new(
@@ -407,19 +451,68 @@ mod tests {
         );
         consensus.submit_envelope(batch).expect("submit batch mint");
 
-        let overlapping_batch =
-            runtime_config.mint_operation(super::MintInput::Batch(BatchMintRequest {
+        let overlapping_batch = runtime_config
+            .mint_operation(super::MintInput::Batch(BatchMintRequest {
                 quotes: vec![quote_two, quote_three],
                 quote_amounts: Some(vec![Amount::from(1), Amount::from(1)]),
-                outputs: vec![output(
-                    "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39",
+                outputs: vec![output_for_runtime(
+                    &runtime_config,
+                    b"overlapping batch mint",
                 )],
                 signatures: None,
-            }));
+            }))
+            .expect("overlapping batch mint operation");
 
         assert!(matches!(
             consensus.submit_envelope(overlapping_batch),
             Err(FederationError::ConflictingOperation { .. })
+        ));
+    }
+
+    #[test]
+    fn runtime_config_rejects_non_v3_mint_outputs_before_consensus() {
+        let runtime_config = runtime_config();
+        let input = super::MintInput::Single(MintRequest {
+            quote: QuoteId::new(),
+            outputs: vec![non_v3_output_for_runtime(&runtime_config)],
+            signature: None,
+        });
+
+        assert!(matches!(
+            runtime_config.mint_operation(input),
+            Err(cdk_common::Error::Federation(
+                FederationError::InvalidFederatedKeysetVersion { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn runtime_config_rejects_non_v3_swap_restore_and_change_outputs() {
+        let runtime_config = runtime_config();
+        let output = non_v3_output_for_runtime(&runtime_config);
+        let swap = SwapRequest::new(Vec::new(), vec![output.clone()]);
+        let restore = RestoreRequest {
+            outputs: vec![output.clone()],
+        };
+        let melt = MeltRequest::new(QuoteId::new(), Vec::new(), Some(vec![output]));
+
+        assert!(matches!(
+            runtime_config.validate_swap_outputs(&swap),
+            Err(cdk_common::Error::Federation(
+                FederationError::InvalidFederatedKeysetVersion { .. }
+            ))
+        ));
+        assert!(matches!(
+            runtime_config.validate_restore_outputs(&restore),
+            Err(cdk_common::Error::Federation(
+                FederationError::InvalidFederatedKeysetVersion { .. }
+            ))
+        ));
+        assert!(matches!(
+            runtime_config.validate_melt_change_outputs(&melt),
+            Err(cdk_common::Error::Federation(
+                FederationError::InvalidFederatedKeysetVersion { .. }
+            ))
         ));
     }
 
@@ -439,6 +532,7 @@ mod tests {
         });
         let operation_id = runtime_config
             .mint_operation(input.clone())
+            .expect("mint operation")
             .operation_id()
             .expect("operation id");
 

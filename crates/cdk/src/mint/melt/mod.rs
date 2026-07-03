@@ -901,6 +901,11 @@ impl Mint {
     /// Uses MeltSaga typestate pattern for atomic transaction handling with automatic rollback on failure.
     #[instrument(skip_all)]
     pub async fn melt(&self, melt_request: &MeltRequest<QuoteId>) -> Result<PendingMelt, Error> {
+        #[cfg(feature = "federation")]
+        if let Some(config) = self.federation_config() {
+            config.validate_melt_change_outputs(melt_request)?;
+        }
+
         // Check max outputs limit (if change outputs are provided)
         if let Some(outputs) = melt_request.outputs() {
             let outputs_count = outputs.len();

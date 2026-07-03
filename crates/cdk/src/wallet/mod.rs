@@ -48,6 +48,8 @@ mod nostr_backup;
 pub use mint_connector::TorHttpClient;
 mod balance;
 mod builder;
+#[cfg(feature = "federation")]
+pub mod federation;
 mod issue;
 mod keysets;
 mod melt;

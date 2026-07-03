@@ -48,19 +48,7 @@ impl MemberConfigPrivate {
 
         let mut shares = Vec::with_capacity(outputs.len());
         for output in outputs {
-            let keyset = public_config
-                .keysets
-                .iter()
-                .find(|keyset| keyset.id == output.keyset_id)
-                .ok_or(FederationError::UnknownFederatedKeyset {
-                    keyset_id: output.keyset_id,
-                })?;
-            if !keyset.active {
-                return Err(FederationError::InactiveFederatedKeyset {
-                    keyset_id: keyset.id,
-                });
-            }
-
+            let keyset = public_config.validate_blinded_output(output)?;
             let blinded_secret = output.blinded_secret.as_bls_g1().map_err(|_| {
                 FederationError::InvalidFederationBlindedSecret {
                     keyset_id: output.keyset_id,
@@ -264,7 +252,35 @@ mod tests {
     }
 
     #[test]
-    fn signing_rejects_missing_amount_share() {
+    fn signing_rejects_non_v3_outputs() {
+        let bundle = bundle();
+        let keyset = &bundle.public_config.keysets[0];
+        let operation_id = FederationOperationId::from_bytes([5; 32]);
+        let blinded_message = BlsG1PublicKey::hash_to_curve(b"non-v3 federation output");
+        let non_v3_keyset_id = Id::v2_from_data(
+            &keyset.keys(),
+            &keyset.unit,
+            keyset.input_fee_ppk,
+            keyset.final_expiry,
+        );
+        let output = BlindedMessage::new(
+            Amount::from(1),
+            non_v3_keyset_id,
+            PublicKey::from(blinded_message),
+        );
+        let private = bundle
+            .private_configs
+            .get(&member_id(1))
+            .expect("private config");
+
+        assert!(matches!(
+            private.sign_blinded_messages(&bundle.public_config, operation_id, &[output]),
+            Err(FederationError::InvalidFederatedKeysetVersion { .. })
+        ));
+    }
+
+    #[test]
+    fn signing_rejects_missing_keyset_amount() {
         let bundle = bundle();
         let keyset = &bundle.public_config.keysets[0];
         let operation_id = FederationOperationId::from_bytes([4; 32]);
@@ -278,7 +294,7 @@ mod tests {
 
         assert!(matches!(
             private.sign_blinded_messages(&bundle.public_config, operation_id, &[output]),
-            Err(FederationError::MissingSecretShare { .. })
+            Err(FederationError::UnknownFederatedKeysetAmount { .. })
         ));
     }
 }

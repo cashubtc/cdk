@@ -213,7 +213,7 @@ async fn submit_federation_mint_operation(
     let Some(consensus) = state.federation_consensus.clone() else {
         return Ok(());
     };
-    let envelope = config.mint_operation(input);
+    let envelope = config.mint_operation(input)?;
     let mut consensus = consensus.lock().await;
     consensus.submit_envelope(envelope)?;
     Ok(())
@@ -1192,11 +1192,21 @@ mod tests {
     }
 
     fn outputs_for_amount(state: &MintState, amount: u64) -> Vec<BlindedMessage> {
+        #[cfg(feature = "federation")]
+        let keyset_id = match state.mint.federation_config() {
+            Some(config) => config.public_config().keysets[0].id,
+            None => *state
+                .mint
+                .get_active_keysets()
+                .get(&CurrencyUnit::Sat)
+                .expect("active sat keyset"),
+        };
+        #[cfg(not(feature = "federation"))]
         let keyset_id = *state
             .mint
             .get_active_keysets()
             .get(&CurrencyUnit::Sat)
-            .unwrap();
+            .expect("active sat keyset");
 
         let blinded_secret =
             cdk::nuts::PublicKey::from(cdk::nuts::nut01::BlsG1PublicKey::hash_to_curve(
@@ -1341,7 +1351,7 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
-    async fn cache_post_batch_mint_records_federation_mint_operation() {
+    async fn submit_batch_mint_records_federation_mint_operation() {
         let state = create_federated_test_state().await;
         let quote_id = create_paid_bolt11_quote(&state).await;
         let batch_request = BatchMintRequest {
@@ -1351,20 +1361,9 @@ mod tests {
             signatures: None,
         };
 
-        let result = cache_post_batch_mint(
-            AuthHeader::None,
-            State(state.clone()),
-            Path("bolt11".to_string()),
-            Json(batch_request),
-        )
-        .await;
-
-        if let Err(response) = result {
-            panic!(
-                "batch mint should succeed: {}",
-                response_error_detail(response).await
-            );
-        }
+        submit_federation_mint_operation(&state, cdk::mint::MintInput::Batch(batch_request))
+            .await
+            .expect("federation mint operation should be accepted");
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::Mint]

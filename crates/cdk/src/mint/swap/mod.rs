@@ -21,6 +21,11 @@ impl Mint {
         let metrics = super::MintMetricGuard::new("process_swap_request");
 
         let result = async {
+            #[cfg(feature = "federation")]
+            if let Some(config) = self.federation_config() {
+                config.validate_swap_outputs(&swap_request)?;
+            }
+
             swap_request.input_amount()?;
             swap_request.output_amount()?;
 

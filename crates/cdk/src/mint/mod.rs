@@ -1192,6 +1192,11 @@ impl Mint {
         let metrics = MintMetricGuard::new("restore");
 
         let result = async {
+            #[cfg(feature = "federation")]
+            if let Some(config) = self.federation_config() {
+                config.validate_restore_outputs(&request)?;
+            }
+
             let output_len = request.outputs.len();
 
             // Check max outputs limit

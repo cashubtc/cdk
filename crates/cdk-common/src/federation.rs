@@ -48,7 +48,10 @@ use crate::nuts::nut01::{
     aggregate_public_key_shares, BlsAggregatePublicKey, BlsPublicKeyShare, BlsSecretKeyShare,
     BlsSignerId,
 };
-use crate::{mint_url::MintUrl, Amount, CurrencyUnit, Id, Keys, PublicKey, SecretKey};
+use crate::nuts::nut02::{KeySet, KeySetVersion};
+use crate::{
+    mint_url::MintUrl, Amount, BlindedMessage, CurrencyUnit, Id, Keys, PublicKey, SecretKey,
+};
 
 const FEDERATION_ROSTER_HASH_VERSION: &[u8] = b"cdk-federation-roster-v1";
 
@@ -149,11 +152,25 @@ pub enum FederationError {
         /// Keyset ID being validated.
         keyset_id: Id,
     },
+    /// Federated BLS aggregate keysets must use Cashu keyset v3.
+    #[error("Federated keyset {keyset_id} must use Cashu keyset v3")]
+    InvalidFederatedKeysetVersion {
+        /// Keyset ID being validated.
+        keyset_id: Id,
+    },
     /// Output references a keyset that is not in the public federation config.
     #[error("Unknown federated keyset {keyset_id}")]
     UnknownFederatedKeyset {
         /// Unknown keyset ID.
         keyset_id: Id,
+    },
+    /// Output references an amount that is not in a federated aggregate keyset.
+    #[error("Federated keyset {keyset_id} does not support amount {amount}")]
+    UnknownFederatedKeysetAmount {
+        /// Keyset ID being validated.
+        keyset_id: Id,
+        /// Unsupported output amount.
+        amount: Amount,
     },
     /// Members must not sign outputs for inactive keysets.
     #[error("Federated keyset {keyset_id} is inactive")]
@@ -186,6 +203,22 @@ pub enum FederationError {
         expected: Id,
         /// Configured keyset ID.
         found: Id,
+    },
+    /// A federation member did not advertise an aggregate keyset from the roster.
+    #[error("Federation member {member_id} did not advertise keyset {keyset_id}")]
+    MissingAdvertisedFederatedKeyset {
+        /// Member whose advertisement was checked.
+        member_id: MemberId,
+        /// Missing keyset ID.
+        keyset_id: Id,
+    },
+    /// A federation member advertised keys or metadata that do not match the aggregate keyset.
+    #[error("Federation member {member_id} advertised mismatched keyset {keyset_id}")]
+    AdvertisedFederatedKeysetMismatch {
+        /// Member whose advertisement was checked.
+        member_id: MemberId,
+        /// Mismatched keyset ID.
+        keyset_id: Id,
     },
     /// The configured federation ID does not match the derived roster ID.
     #[error("Federation id mismatch: expected={expected}, found={found}")]
@@ -578,7 +611,7 @@ pub struct FederatedKeyset {
 }
 
 impl FederatedKeyset {
-    /// Create a federated keyset with a computed NUT-02 v2 keyset ID.
+    /// Create a federated keyset with a computed NUT-02 v3 keyset ID.
     pub fn new(
         unit: CurrencyUnit,
         active: bool,
@@ -599,7 +632,7 @@ impl FederatedKeyset {
         }
     }
 
-    /// Derive a NUT-02 v2 keyset ID from aggregate public keys.
+    /// Derive a NUT-02 v3 keyset ID from aggregate BLS public keys.
     #[must_use]
     pub fn derive_keyset_id(
         unit: &CurrencyUnit,
@@ -608,7 +641,7 @@ impl FederatedKeyset {
         aggregate_keys: &BTreeMap<Amount, BlsAggregatePublicKey>,
     ) -> Id {
         let keys = Self::aggregate_keys_as_cashu_keys(aggregate_keys);
-        Id::v2_from_data(&keys, unit, input_fee_ppk, final_expiry)
+        Id::v3_from_data(&keys, unit, input_fee_ppk, final_expiry)
     }
 
     /// Convert aggregate BLS public keys into a standard Cashu `Keys` map.
@@ -638,6 +671,9 @@ impl FederatedKeyset {
     ) -> Result<()> {
         if self.aggregate_keys.is_empty() {
             return Err(FederationError::EmptyFederatedKeyset { keyset_id: self.id });
+        }
+        if self.id.get_version() != KeySetVersion::Version02 {
+            return Err(FederationError::InvalidFederatedKeysetVersion { keyset_id: self.id });
         }
 
         let expected_id = Self::derive_keyset_id(
@@ -723,6 +759,41 @@ impl FederatedKeyset {
 
         Ok(())
     }
+
+    fn validate_advertised_by_member(
+        &self,
+        member_id: MemberId,
+        advertised: &KeySet,
+    ) -> Result<()> {
+        if advertised.id.get_version() != KeySetVersion::Version02 {
+            return Err(FederationError::InvalidFederatedKeysetVersion {
+                keyset_id: advertised.id,
+            });
+        }
+
+        advertised.verify_id()?;
+        if advertised.id != self.id
+            || advertised.unit != self.unit
+            || advertised.input_fee_ppk != self.input_fee_ppk
+            || advertised.final_expiry != self.final_expiry
+            || advertised.keys != self.keys()
+        {
+            return Err(FederationError::AdvertisedFederatedKeysetMismatch {
+                member_id,
+                keyset_id: self.id,
+            });
+        }
+        if let Some(active) = advertised.active {
+            if active != self.active {
+                return Err(FederationError::AdvertisedFederatedKeysetMismatch {
+                    member_id,
+                    keyset_id: self.id,
+                });
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Public federation config shared by every member.
@@ -800,6 +871,93 @@ impl FederationConfig {
 
         for keyset in &self.keysets {
             keyset.validate(self.threshold_params, &self.members)?;
+        }
+
+        Ok(())
+    }
+
+    /// Validate that blinded outputs target active v3/BLS aggregate keysets.
+    pub fn validate_blinded_outputs(&self, outputs: &[BlindedMessage]) -> Result<()> {
+        for output in outputs {
+            self.validate_blinded_output(output)?;
+        }
+
+        Ok(())
+    }
+
+    /// Validate one blinded output and return the aggregate keyset it targets.
+    pub fn validate_blinded_output(&self, output: &BlindedMessage) -> Result<&FederatedKeyset> {
+        if output.keyset_id.get_version() != KeySetVersion::Version02 {
+            return Err(FederationError::InvalidFederatedKeysetVersion {
+                keyset_id: output.keyset_id,
+            });
+        }
+
+        let keyset = self
+            .keysets
+            .iter()
+            .find(|keyset| keyset.id == output.keyset_id)
+            .ok_or(FederationError::UnknownFederatedKeyset {
+                keyset_id: output.keyset_id,
+            })?;
+        if !keyset.active {
+            return Err(FederationError::InactiveFederatedKeyset {
+                keyset_id: keyset.id,
+            });
+        }
+        if !keyset.aggregate_keys.contains_key(&output.amount) {
+            return Err(FederationError::UnknownFederatedKeysetAmount {
+                keyset_id: keyset.id,
+                amount: output.amount,
+            });
+        }
+        output.blinded_secret.as_bls_g1().map_err(|_| {
+            FederationError::InvalidFederationBlindedSecret {
+                keyset_id: output.keyset_id,
+                amount: output.amount,
+            }
+        })?;
+
+        Ok(keyset)
+    }
+
+    /// Validate keysets advertised by one federation member to a wallet.
+    pub fn validate_member_advertised_keysets(
+        &self,
+        member_id: MemberId,
+        advertised_keysets: &[KeySet],
+    ) -> Result<()> {
+        self.validate()?;
+        if !self.members.contains_key(&member_id) {
+            return Err(FederationError::UnknownMember { member_id });
+        }
+
+        for advertised in advertised_keysets {
+            if advertised.id.get_version() != KeySetVersion::Version02 {
+                return Err(FederationError::InvalidFederatedKeysetVersion {
+                    keyset_id: advertised.id,
+                });
+            }
+            let keyset = self
+                .keysets
+                .iter()
+                .find(|keyset| keyset.id == advertised.id)
+                .ok_or(FederationError::UnknownFederatedKeyset {
+                    keyset_id: advertised.id,
+                })?;
+            keyset.validate_advertised_by_member(member_id, advertised)?;
+        }
+
+        for keyset in &self.keysets {
+            if !advertised_keysets
+                .iter()
+                .any(|advertised| advertised.id == keyset.id)
+            {
+                return Err(FederationError::MissingAdvertisedFederatedKeyset {
+                    member_id,
+                    keyset_id: keyset.id,
+                });
+            }
         }
 
         Ok(())
@@ -930,6 +1088,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::str::FromStr;
 
+    use crate::nuts::nut02::KeySetVersion;
     use cashu::nuts::nut01::{trusted_dealer_keygen, BlsSecretKey};
 
     use super::*;
@@ -1065,6 +1224,7 @@ mod tests {
         let (keyset, private_shares) = test_keyset(&members);
         let config =
             FederationConfig::new(params, members.clone(), vec![keyset.clone()]).expect("config");
+        assert_eq!(keyset.id.get_version(), KeySetVersion::Version02);
         let config_json = serde_json::to_string(&config).expect("config json");
         assert_eq!(
             serde_json::from_str::<FederationConfig>(&config_json).expect("config from json"),
@@ -1089,6 +1249,67 @@ mod tests {
                 .validate_against_public(&config)
                 .expect("private config");
         }
+    }
+
+    #[test]
+    fn federation_config_rejects_v2_aggregate_keyset() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let (mut keyset, _) = test_keyset(&members);
+        keyset.id = Id::v2_from_data(
+            &keyset.keys(),
+            &keyset.unit,
+            keyset.input_fee_ppk,
+            keyset.final_expiry,
+        );
+
+        assert!(matches!(
+            FederationConfig::new(params, members, vec![keyset]),
+            Err(FederationError::InvalidFederatedKeysetVersion { .. })
+        ));
+    }
+
+    #[test]
+    fn federation_config_rejects_v1_aggregate_keyset() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let (mut keyset, _) = test_keyset(&members);
+        keyset.id = Id::v1_from_keys(&keyset.keys());
+
+        assert!(matches!(
+            FederationConfig::new(params, members, vec![keyset]),
+            Err(FederationError::InvalidFederatedKeysetVersion { .. })
+        ));
+    }
+
+    #[test]
+    fn federation_config_rejects_non_bls_aggregate_keyset_json() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let (keyset, _) = test_keyset(&members);
+        let config = FederationConfig::new(params, members, vec![keyset]).expect("config");
+        let mut json = serde_json::to_value(&config).expect("config json");
+        let keysets = json
+            .get_mut("keysets")
+            .and_then(serde_json::Value::as_array_mut)
+            .expect("keysets array");
+        let aggregate_keys = keysets
+            .get_mut(0)
+            .and_then(|keyset| keyset.get_mut("aggregate_keys"))
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("aggregate key map");
+        let amount_key = aggregate_keys.keys().next().expect("amount key").to_owned();
+        aggregate_keys.insert(
+            amount_key,
+            serde_json::Value::String(
+                "02a8cda4cf448bfce9a9e46e588c06ea1780fcb94e3bbdf3277f42995d403a8b0c".to_string(),
+            ),
+        );
+
+        assert!(
+            serde_json::from_value::<FederationConfig>(json).is_err(),
+            "secp-style public key must not deserialize as a BLS aggregate key"
+        );
     }
 
     #[test]

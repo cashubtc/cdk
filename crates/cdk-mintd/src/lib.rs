@@ -2080,6 +2080,95 @@ mod tests {
         );
     }
 
+    #[cfg(all(feature = "federation", feature = "sqlite"))]
+    #[tokio::test]
+    async fn configure_federation_rejects_non_v3_keysets() {
+        use std::collections::BTreeMap;
+        use std::str::FromStr;
+
+        use cdk::mint::MintBuilder;
+        use cdk_common::federation::{
+            generate_trusted_dealer_configs, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
+            TrustedDealerMember,
+        };
+        use cdk_common::mint_url::MintUrl;
+        use cdk_common::nuts::nut01::BlsSecretKey;
+        use cdk_common::{Amount, CurrencyUnit, Id, SecretKey};
+        use cdk_sqlite::mint::memory;
+
+        let member_id = MemberId::new(1).expect("member id");
+        let member = TrustedDealerMember::new(
+            member_id,
+            MintUrl::from_str("https://mint1.example.com").expect("public mint url"),
+            MintUrl::from_str("https://fed1.example.com").expect("federation api url"),
+            SecretKey::from_slice(&[1; 32]).expect("identity secret"),
+        );
+        let keyset = TrustedDealerKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            BTreeMap::from([(
+                Amount::from(1),
+                vec![BlsSecretKey::from_reduced_bytes(&[2; 32])],
+            )]),
+        );
+        let mut bundle = generate_trusted_dealer_configs(
+            ThresholdParams::with_bft_consensus(1, 1).expect("params"),
+            vec![member],
+            vec![keyset],
+        )
+        .expect("trusted dealer bundle");
+        let keyset = &mut bundle.public_config.keysets[0];
+        keyset.id = Id::v2_from_data(
+            &keyset.keys(),
+            &keyset.unit,
+            keyset.input_fee_ppk,
+            keyset.final_expiry,
+        );
+
+        let public_config_path = temp_seed_file("fed_public_config_non_v3");
+        let private_config_path = temp_seed_file("fed_private_config_non_v3");
+        fs::write(
+            &public_config_path,
+            serde_json::to_string(&bundle.public_config).expect("public config json"),
+        )
+        .expect("public config should be written");
+        fs::write(
+            &private_config_path,
+            serde_json::to_string(
+                bundle
+                    .private_configs
+                    .get(&member_id)
+                    .expect("private config"),
+            )
+            .expect("private config json"),
+        )
+        .expect("private config should be written");
+
+        let settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                public_config_path: Some(public_config_path.clone()),
+                private_config_path: Some(private_config_path.clone()),
+            }),
+            ..Default::default()
+        };
+        let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
+        let builder = MintBuilder::new(localstore);
+        let err = configure_federation(&settings, builder)
+            .expect_err("non-v3 federation keyset should fail startup");
+
+        assert!(
+            err.chain()
+                .any(|cause| cause.to_string().contains("Cashu keyset v3")),
+            "error chain should mention v3 aggregate keyset requirement: {err:?}"
+        );
+
+        let _ = fs::remove_file(public_config_path);
+        let _ = fs::remove_file(private_config_path);
+    }
+
     #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
     #[tokio::test]
     async fn fakewallet_dispatcher_uses_ln_entry_unit() {
