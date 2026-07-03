@@ -1187,6 +1187,20 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
+        if quote.state != MeltQuoteState::Unpaid {
+            let change = self
+                .localstore
+                .get_blind_signatures_for_quote(&quote_id)
+                .await?;
+            let change_opt = if change.is_empty() {
+                None
+            } else {
+                Some(change)
+            };
+
+            return Ok(quote.into_response(change_opt));
+        }
+
         let init_saga = MeltSaga::new(
             Arc::new(self.clone()),
             self.localstore.clone(),

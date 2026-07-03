@@ -384,12 +384,13 @@ mod tests {
     use cdk::nuts::nut01::{BlsG1PublicKey, BlsSecretKey};
     use cdk::nuts::nut22::AuthToken;
     use cdk::nuts::{
-        BlindedMessage, CurrencyUnit, MintQuoteBolt11Request, MintQuoteBolt11Response,
-        MintQuoteState, MintRequest, PaymentMethod, PublicKey, RestoreRequest, SecretKey,
+        BlindedMessage, CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState,
+        MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteState, MintRequest,
+        PaymentMethod, PublicKey, RestoreRequest, SecretKey,
     };
     use cdk::types::FeeReserve;
     use cdk::Amount;
-    use cdk_fake_wallet::FakeWallet;
+    use cdk_fake_wallet::{create_fake_invoice, FakeWallet};
     use cdk_http_client::HttpError;
     use serde::de::DeserializeOwned;
     use serde::Serialize;
@@ -789,6 +790,23 @@ mod tests {
         )
     }
 
+    async fn melt_quote(state: &MintState, amount_msat: u64) -> QuoteId {
+        let response = state
+            .mint
+            .get_melt_quote(cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+                request: create_fake_invoice(amount_msat, "".to_string()),
+                unit: CurrencyUnit::Sat,
+                options: None,
+            }))
+            .await
+            .expect("melt quote");
+
+        match response {
+            cdk::MeltQuoteCreateResponse::Bolt11(response) => response.quote,
+            _ => panic!("expected bolt11 melt quote"),
+        }
+    }
+
     fn restore_envelope(
         federation_id: FederationId,
         label: &'static str,
@@ -1062,6 +1080,103 @@ mod tests {
             signatures,
             vec![Some(expected_response.signatures[0].clone())]
         );
+
+        let persisted = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal lookup");
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
+        assert_eq!(
+            local_consensus
+                .lock()
+                .await
+                .journal()
+                .entry_by_operation_id(operation_id)
+                .expect("runtime entry")
+                .status,
+            FederationOperationStatus::Applied
+        );
+    }
+
+    #[tokio::test]
+    async fn catch_up_applies_melt_operation_to_local_store() {
+        let (state, public_config, _) = federation_route_state().await;
+        let config = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .clone();
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let quote_id = melt_quote(&state, 1000).await;
+        let inputs = vec![
+            proof_for_amount(&state, 1, "melt-catch-up-a"),
+            proof_for_amount(&state, 1, "melt-catch-up-b"),
+            proof_for_amount(&state, 1, "melt-catch-up-c"),
+        ];
+        let input_ys = inputs
+            .iter()
+            .map(|proof| proof.y().expect("input y"))
+            .collect::<Vec<_>>();
+        let mut change_output = swap_output(&state, "melt-catch-up-change");
+        change_output.amount = Amount::ZERO;
+        let request = cdk::nuts::MeltRequest::new(
+            quote_id.clone(),
+            inputs,
+            Some(vec![change_output.clone()]),
+        );
+        let envelope = config.melt_operation(request).expect("melt envelope");
+        let operation_id = envelope.operation_id().expect("operation id");
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+        peer_consensus
+            .submit_envelope(envelope)
+            .expect("peer accepted melt");
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+        let catch_up_response = peer_consensus
+            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
+            .expect("catch-up response");
+
+        state
+            .apply_federation_catch_up_response(&catch_up_response)
+            .await
+            .expect("apply catch-up");
+
+        let quote = state
+            .mint
+            .localstore()
+            .get_melt_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .expect("quote persisted");
+        assert_eq!(quote.state, MeltQuoteState::Paid);
+
+        let proof_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("proof state lookup");
+        assert_eq!(
+            proof_states,
+            vec![
+                Some(cdk::nuts::State::Spent),
+                Some(cdk::nuts::State::Spent),
+                Some(cdk::nuts::State::Spent),
+            ]
+        );
+
+        let signatures = state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[change_output.blinded_secret])
+            .await
+            .expect("signature lookup");
+        let signature = signatures[0].clone().expect("change share persisted");
+        assert_eq!(signature.amount, Amount::from(1));
+        assert_eq!(signature.keyset_id, change_output.keyset_id);
 
         let persisted = state
             .mint

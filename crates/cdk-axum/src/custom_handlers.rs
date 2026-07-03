@@ -714,14 +714,36 @@ async fn process_federation_melt_request(
         return Ok(None);
     };
     let envelope = config.melt_operation(payload.clone())?;
-    let response = state.submit_federation_envelope(envelope).await?;
+    state.submit_federation_envelope(envelope).await?;
 
     Ok(Some(
-        state
-            .mint
-            .melt_federation(payload, response.operation_id)
-            .await?,
+        federation_melt_response_from_store(state, payload.quote()).await?,
     ))
+}
+
+#[cfg(feature = "federation")]
+async fn federation_melt_response_from_store(
+    state: &MintState,
+    quote_id: &QuoteId,
+) -> Result<MeltQuoteResponse<QuoteId>, cdk::Error> {
+    let quote = state
+        .mint
+        .localstore()
+        .get_melt_quote(quote_id)
+        .await?
+        .ok_or(cdk::Error::UnknownQuote)?;
+    let change = state
+        .mint
+        .localstore()
+        .get_blind_signatures_for_quote(quote_id)
+        .await?;
+    let change_opt = if change.is_empty() {
+        None
+    } else {
+        Some(change)
+    };
+
+    Ok(quote.into_response(change_opt))
 }
 
 // ============================================================================

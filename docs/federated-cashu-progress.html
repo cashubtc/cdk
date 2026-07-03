@@ -328,15 +328,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: apply federation swap journal entries</span>
+          <span class="value">feat: apply federation melt journal entries</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Swap state-machine replay</span>
+          <span class="value">Melt state-machine replay</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Melt replay</span>
+          <span class="value">Quote propagation and multi-member recovery</span>
         </div>
       </aside>
     </header>
@@ -544,6 +544,10 @@
             <h3>Swap journal application ready</h3>
             <p>Accepted swap operations now verify aggregate BLS inputs, enforce balance and spending conditions, spend proofs, persist blinded outputs plus member signature shares, and replay safely through private REST catch-up.</p>
           </article>
+          <article class="item">
+            <h3>Melt journal application ready</h3>
+            <p>Accepted melt operations now replay through the federation fake-wallet executor, spend aggregate BLS proofs, finalize paid quotes, persist member change shares, preserve pending saga metadata, and mark journal entries Applied.</p>
+          </article>
         </div>
       </section>
 
@@ -666,6 +670,10 @@
             <h3>Catch-up spends swap inputs deterministically</h3>
             <p>A member that learns a swap through catch-up now verifies the aggregate input proof, marks it spent, stores the authorized output share, and marks the journal entry Applied without needing the original public REST request.</p>
           </article>
+          <article class="item">
+            <h3>Catch-up can finalize fake-wallet melts</h3>
+            <p>A member that learns an accepted melt through catch-up now executes the same federation melt state machine as the public route, ending with a paid quote, spent proofs, stored change shares, and Applied journal status.</p>
+          </article>
         </div>
       </section>
 
@@ -682,7 +690,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Mint quote, mint issuance, and swap entries apply into storage; melt sagas and outgoing payment observations still need deterministic replay before offline recovery is production-safe.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Mint quote, mint issuance, swap, and melt entries apply into storage; quote propagation, outgoing payment observations, and multi-member restart scenarios still need broader coverage before offline recovery is production-safe.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -920,10 +928,16 @@
               <td>Apply accepted melt operations to proof states, fake-wallet settlement state, change shares, and pending saga recovery state.</td>
             </tr>
             <tr>
+              <td>Melt state-machine replay</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation federation` passed 22 tests, including private REST catch-up applying a fake-wallet melt into paid quote state, spent proofs, stored change shares, and Applied journal status. `cargo test -p cdk-axum --features federation custom_handlers` passed 26 tests, including paid, change, pending, and non-v3 federated melt routes. `cargo test -p cdk --features federation federation`, `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"`, `cargo fmt --all -- --check`, and `git diff --check` passed.</td>
+              <td>Propagate melt quote/payment observations and run multi-member restart/catch-up scenarios around fake-wallet mint, swap, and melt flows.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap entries now apply into local storage. Melt state-machine replay remains open.</td>
-              <td>Replay accepted melt federation operations into storage-backed proof states, fake-wallet outgoing payment state, and saga recovery state, then test restart/catch-up around fake-wallet melts.</td>
+              <td>Mint quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt entries now apply into local storage. Quote propagation and broader multi-member recovery remain open.</td>
+              <td>Propagate melt quote/payment observations across members, then test restart/catch-up around fake-wallet mint, swap, and melt flows with multiple local members.</td>
             </tr>
           </tbody>
         </table>
@@ -963,8 +977,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Melt replay</h3>
-            <p>Apply accepted melt journal operations into proof state, fake-wallet outgoing payment state, change-share storage, completed-operation records, and saga storage so payment progress recovers after restart or catch-up.</p>
+            <h3>Quote propagation and multi-member recovery</h3>
+            <p>Propagate melt quote and outgoing payment observations through consensus, then run restart and catch-up scenarios across multiple fake-wallet members for mint, swap, and melt flows.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>

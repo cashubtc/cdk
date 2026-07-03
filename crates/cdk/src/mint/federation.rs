@@ -383,9 +383,13 @@ impl Mint {
                     .await?;
                 Ok(true)
             }
+            FederationOperation::Melt(operation) => {
+                self.apply_federation_melt(entry.operation_id, operation)
+                    .await?;
+                Ok(true)
+            }
             FederationOperation::MeltQuote(_)
             | FederationOperation::MeltQuotePayment(_)
-            | FederationOperation::Melt(_)
             | FederationOperation::Restore(_) => Ok(false),
         }
     }
@@ -674,6 +678,23 @@ impl Mint {
             self.pubsub_manager.proof_state((y, State::Spent));
         }
 
+        Ok(())
+    }
+
+    async fn apply_federation_melt(
+        &self,
+        operation_id: FederationOperationId,
+        operation: &FederationMeltOperation,
+    ) -> Result<(), Error> {
+        let request = MeltRequest::<QuoteId>::try_from(operation.request.clone())
+            .map_err(|_| Error::UnknownQuote)?;
+
+        self.melt_federation(&request, operation_id).await?;
+
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 
