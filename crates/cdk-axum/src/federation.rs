@@ -2,6 +2,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Json, State};
 use axum::http::StatusCode;
@@ -27,6 +28,7 @@ type ConsensusHandle = std::sync::Arc<tokio::sync::Mutex<InMemoryFederationConse
 type SequenceHandle = std::sync::Arc<tokio::sync::Mutex<FederationRestSequenceTracker>>;
 
 const FEDERATION_PEER_SYNC_INTERVAL: Duration = Duration::from_secs(5);
+static FEDERATION_REST_SEQUENCE_SEED: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn create_federation_router() -> Router<MintState> {
     Router::new()
@@ -283,7 +285,7 @@ where
             transport,
             federation_id: public_config.federation_id,
             private_config,
-            next_sequence: Arc::new(AtomicU64::new(0)),
+            next_sequence: Arc::new(AtomicU64::new(initial_federation_rest_sequence())),
         })
     }
 
@@ -469,6 +471,32 @@ where
             payload,
             &self.private_config,
         )?)
+    }
+}
+
+fn initial_federation_rest_sequence() -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| {
+            duration
+                .as_secs()
+                .saturating_mul(1_000_000_000)
+                .saturating_add(u64::from(duration.subsec_nanos()))
+        })
+        .unwrap_or_default();
+
+    loop {
+        let last = FEDERATION_REST_SEQUENCE_SEED.load(Ordering::Relaxed);
+        let candidate = now.max(last.saturating_add(1));
+        match FEDERATION_REST_SEQUENCE_SEED.compare_exchange(
+            last,
+            candidate,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return candidate,
+            Err(_) => continue,
+        }
     }
 }
 
@@ -1035,6 +1063,44 @@ mod tests {
             .expect("signed status request");
         assert_eq!(requests[0].sender, member_id(1));
         assert_eq!(requests[0].kind, FederationRestMessageKind::Status);
+    }
+
+    #[tokio::test]
+    async fn rest_peer_client_initial_sequence_advances_across_clients() {
+        let (public_config, local_private, _) = transport_config();
+        let federation_id = public_config.federation_id;
+        let member = public_config.member(member_id(2)).expect("peer member");
+        let status = FederationPeerStatus::new(
+            federation_id,
+            member.member_id,
+            0,
+            None,
+            cdk::federation::FederationJournalDigest::genesis(),
+        );
+        let transport = MockFederationTransport::default().with_status_response(status);
+        let first_client =
+            FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+                .expect("first client");
+        first_client
+            .peer_status(member)
+            .await
+            .expect("first peer status");
+
+        let second_client =
+            FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
+                .expect("second client");
+        second_client
+            .peer_status(member)
+            .await
+            .expect("second peer status");
+
+        let requests = transport.status_requests();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].sequence > 1);
+        assert!(
+            requests[1].sequence > requests[0].sequence,
+            "fresh clients must not replay stale federation REST sequences"
+        );
     }
 
     #[tokio::test]

@@ -328,11 +328,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add federation trusted-dealer CLI</span>
+          <span class="value">fix: seed federation rest sequences</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Local trusted-dealer generator</span>
+          <span class="value">Restart-safe private REST sequences</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -572,6 +572,10 @@
             <h3>Local trusted-dealer CLI ready</h3>
             <p>`cdk-mintd federation trusted-dealer` now writes a shared public federation config, per-member private share configs, and runnable fake-wallet member TOMLs from the existing validated trusted-dealer setup path.</p>
           </article>
+          <article class="item">
+            <h3>Restart-safe REST sequence seed ready</h3>
+            <p>Fresh private REST peer clients now seed outbound signed-request sequences from a monotonic time-based counter, avoiding stale sequence replays after member process restarts.</p>
+          </article>
         </div>
       </section>
 
@@ -726,6 +730,10 @@
             <h3>Local federation setup is reproducible</h3>
             <p>Operators and tests no longer need to handcraft federation JSON: the mint daemon can generate a complete fake-wallet local roster, validate every private member config, and protect generated secret material with a local ignore file.</p>
           </article>
+          <article class="item">
+            <h3>Restarted members stop replaying sequence one</h3>
+            <p>The private peer client no longer starts every process lifetime at REST sequence 1, so receivers that persist signed-route watermarks are not forced to reject legitimate restarted members as stale senders.</p>
+          </article>
         </div>
       </section>
 
@@ -742,7 +750,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, and mintd can generate runnable local member configs. The remaining work is to exercise the loop with separate member processes and operator-facing status commands.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs, and restarted private REST clients no longer replay low sequence numbers. The remaining work is to exercise the loop with separate member processes and operator-facing status commands.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -1022,9 +1030,15 @@
               <td>Start the generated members as separate local processes and verify private REST status/catch-up between them.</td>
             </tr>
             <tr>
+              <td>Restart-safe private REST sequences</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation rest_peer_client_initial_sequence_advances_across_clients` passed, proving fresh clients do not restart at sequence 1. `cargo test -p cdk-axum --features federation federation` passed 35 tests with signed status, submit, catch-up, peer sync, offline catch-up, and digest-mismatch coverage.</td>
+              <td>Run the automatic peer sync loop across restarted member processes.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, and generated local member configs.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries and sequence watermarks, runtime boot replay restores the consensus layer, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, and restart-safe outbound REST sequences.</td>
               <td>Run multi-process fake-wallet member scenarios from generated configs and expose operator sync status.</td>
             </tr>
           </tbody>
