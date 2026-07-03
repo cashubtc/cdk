@@ -113,6 +113,12 @@ pub struct FederationStatusArgs {
     /// Member ID to query. Repeat to query multiple members. Defaults to every member.
     #[arg(long = "member")]
     pub members: Vec<u16>,
+    /// Fail if any queried member reports a non-ready sync state.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub require_ready: bool,
+    /// Fail if queried members disagree on consensus height or latest order digest.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub require_converged: bool,
 }
 
 #[cfg(all(test, feature = "federation"))]
@@ -161,6 +167,8 @@ mod tests {
             "1",
             "--member",
             "3",
+            "--require-ready",
+            "--require-converged",
         ])
         .expect("status command parses");
 
@@ -179,5 +187,7 @@ mod tests {
             Some(PathBuf::from("member-1/federation-private.json"))
         );
         assert_eq!(status.members, vec![1, 3]);
+        assert!(status.require_ready);
+        assert!(status.require_converged);
     }
 }

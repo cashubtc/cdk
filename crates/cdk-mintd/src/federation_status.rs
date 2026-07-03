@@ -40,6 +40,12 @@ pub(crate) async fn run_status_command(
     .await?;
 
     print_statuses(&public_config, &private_config, &statuses);
+    if args.require_ready {
+        ensure_statuses_ready(&statuses)?;
+    }
+    if args.require_converged {
+        ensure_statuses_converged(&statuses)?;
+    }
 
     Ok(())
 }
@@ -216,6 +222,42 @@ fn print_statuses(
     }
 }
 
+fn ensure_statuses_ready(statuses: &[FederationLocalStatusResponse]) -> Result<()> {
+    for status in statuses {
+        if !status.sync_ready {
+            bail!(
+                "federation member {} is not ready: {}",
+                status.peer_status.member_id,
+                status.sync_message
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_statuses_converged(statuses: &[FederationLocalStatusResponse]) -> Result<()> {
+    let Some(first) = statuses.first() else {
+        return Ok(());
+    };
+    for status in statuses.iter().skip(1) {
+        if status.peer_status.operation_count != first.peer_status.operation_count
+            || status.peer_status.latest_order_digest != first.peer_status.latest_order_digest
+        {
+            bail!(
+                "federation status is not converged: member {} has operations {} digest {}, expected operations {} digest {}",
+                status.peer_status.member_id,
+                status.peer_status.operation_count,
+                status.peer_status.latest_order_digest,
+                first.peer_status.operation_count,
+                first.peer_status.latest_order_digest
+            );
+        }
+    }
+
+    Ok(())
+}
+
 fn initial_status_sequence() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -387,6 +429,17 @@ mod tests {
         }
     }
 
+    fn not_ready_status(
+        public_config: &FederationConfig,
+        member_id: u16,
+    ) -> FederationLocalStatusResponse {
+        let mut status = local_status(public_config, member_id, 0);
+        status.sync_state = "lagging".to_string();
+        status.sync_ready = false;
+        status.sync_message = "federation member is lagging behind peer 2".to_string();
+        status
+    }
+
     #[tokio::test]
     async fn status_query_signs_local_status_requests_for_selected_members() {
         let (public_config, private_config) = status_fixture();
@@ -456,5 +509,42 @@ mod tests {
         assert_eq!(targets[0].member_id, MemberId::new(1).expect("member id"));
         assert_eq!(targets[1].member_id, MemberId::new(2).expect("member id"));
         assert_eq!(targets[2].member_id, MemberId::new(3).expect("member id"));
+    }
+
+    #[test]
+    fn status_readiness_guard_rejects_lagging_member() {
+        let (public_config, _) = status_fixture();
+        let statuses = vec![
+            local_status(&public_config, 1, 0),
+            not_ready_status(&public_config, 2),
+        ];
+
+        let err = ensure_statuses_ready(&statuses).expect_err("lagging member should fail");
+        assert!(err.to_string().contains("is not ready"));
+    }
+
+    #[test]
+    fn status_convergence_guard_rejects_height_mismatch() {
+        let (public_config, _) = status_fixture();
+        let statuses = vec![
+            local_status(&public_config, 1, 0),
+            local_status(&public_config, 2, 1),
+        ];
+
+        let err = ensure_statuses_converged(&statuses).expect_err("divergent member should fail");
+        assert!(err.to_string().contains("not converged"));
+    }
+
+    #[test]
+    fn status_guards_accept_ready_converged_members() {
+        let (public_config, _) = status_fixture();
+        let statuses = vec![
+            local_status(&public_config, 1, 0),
+            local_status(&public_config, 2, 0),
+            local_status(&public_config, 3, 0),
+        ];
+
+        ensure_statuses_ready(&statuses).expect("members ready");
+        ensure_statuses_converged(&statuses).expect("members converged");
     }
 }

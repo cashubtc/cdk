@@ -513,7 +513,7 @@ wait_for_status() {{
   private_config="$(member_private_config "$PRIMARY_MEMBER")"
   work_dir="$(member_work_dir "$member")"
   for _ in $(seq 1 "$STATUS_RETRIES"); do
-    if "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" >/dev/null 2>&1; then
+    if "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready >/dev/null 2>&1; then
       return 0
     fi
     sleep "$STATUS_SLEEP_SECONDS"
@@ -533,13 +533,13 @@ for member in "${{MEMBERS[@]}}"; do
   wait_for_status "$member"
 done
 
-"$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$(member_private_config "$PRIMARY_MEMBER")"
+"$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$(member_private_config "$PRIMARY_MEMBER")" --require-ready --require-converged
 
 stop_member "$RESTART_MEMBER"
 start_member "$RESTART_MEMBER"
 wait_for_status "$RESTART_MEMBER"
 
-"$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$(member_private_config "$PRIMARY_MEMBER")"
+"$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$(member_private_config "$PRIMARY_MEMBER")" --require-ready --require-converged
 printf 'local federation smoke test passed\n'
 "#,
         public_config_path = public_config_path,
@@ -624,6 +624,8 @@ mod tests {
             std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
         assert!(smoke_script.starts_with("#!/usr/bin/env bash"));
         assert!(smoke_script.contains("federation status"));
+        assert!(smoke_script.contains("--require-ready"));
+        assert!(smoke_script.contains("--require-converged"));
         assert!(smoke_script.contains("RESTART_MEMBER"));
         assert!(smoke_script.contains("local federation smoke test passed"));
         assert!(smoke_script.contains(&artifacts.public_config_path.to_string_lossy().to_string()));
