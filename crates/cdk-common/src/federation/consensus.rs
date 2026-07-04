@@ -1865,6 +1865,143 @@ mod tests {
     }
 
     #[test]
+    fn multi_node_engine_scales_to_seven_members_with_threshold_partition_catch_up() {
+        let federation_id = federation_id(14);
+        let members = (1..=7).map(member_id_value).collect::<Vec<_>>();
+        let public_keys = [
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+            "0238b95dfe74856e3e3d122fef8ca3a674cce8f22388e361c1ee8b9d52386cd61c",
+        ];
+        let mut network =
+            InMemoryFederationConsensusNetwork::new(federation_id, members.clone(), 5)
+                .expect("network");
+
+        network
+            .set_online(members[5], false)
+            .expect("member 6 offline");
+        network
+            .set_online(members[6], false)
+            .expect("member 7 offline");
+
+        let mut operation_ids = Vec::new();
+        for index in 0..6 {
+            let quote = format!("quote-{index}");
+            let sender = members[index % 5];
+            operation_ids.push(
+                network
+                    .submit(
+                        sender,
+                        mint_envelope(
+                            federation_id,
+                            &quote,
+                            public_keys[index % public_keys.len()],
+                        ),
+                    )
+                    .expect("submit operation"),
+            );
+        }
+
+        assert!(network.delay_next_proposal());
+        assert!(network.duplicate_next_proposal());
+        assert!(network.delay_next_proposal());
+        let responses = network.deliver_all().expect("deliver at threshold");
+        let mut expected_order = vec![
+            operation_ids[2],
+            operation_ids[3],
+            operation_ids[4],
+            operation_ids[5],
+            operation_ids[0],
+            operation_ids[1],
+        ];
+
+        assert_eq!(responses.len(), 7);
+        for member in members.iter().take(5).copied() {
+            assert_eq!(
+                network
+                    .accepted_operation_ids(member)
+                    .expect("accepted ids"),
+                expected_order
+            );
+        }
+        for member in members.iter().skip(5).copied() {
+            assert_eq!(
+                network
+                    .member_status(member)
+                    .expect("offline member status")
+                    .operation_count,
+                0
+            );
+        }
+        assert!(!network.all_members_converged());
+
+        network
+            .set_online(members[4], false)
+            .expect("member 5 offline");
+        let stalled_operation = network
+            .submit(
+                members[0],
+                mint_envelope(
+                    federation_id,
+                    "quote-stalled",
+                    "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+                ),
+            )
+            .expect("submit stalled operation");
+        assert!(matches!(
+            network.deliver_next(),
+            Err(FederationError::ConsensusQuorumUnavailable {
+                reachable: 4,
+                required: 5
+            })
+        ));
+        assert_eq!(network.pending_len(), 1);
+
+        network
+            .set_online(members[4], true)
+            .expect("member 5 online");
+        let response = network
+            .deliver_next()
+            .expect("deliver after quorum recovers")
+            .expect("finalized response");
+        expected_order.push(stalled_operation);
+
+        assert_eq!(response.operation_id, stalled_operation);
+        assert_eq!(network.pending_len(), 0);
+        for member in members.iter().take(5).copied() {
+            assert_eq!(
+                network
+                    .accepted_operation_ids(member)
+                    .expect("accepted ids"),
+                expected_order
+            );
+        }
+
+        network
+            .set_online(members[5], true)
+            .expect("member 6 online");
+        network
+            .set_online(members[6], true)
+            .expect("member 7 online");
+        network
+            .catch_up_member_from_peer(members[5], members[0])
+            .expect("catch up member 6");
+        network
+            .catch_up_member_from_peer(members[6], members[4])
+            .expect("catch up member 7");
+
+        for member in members {
+            assert_eq!(
+                network
+                    .accepted_operation_ids(member)
+                    .expect("accepted ids"),
+                expected_order
+            );
+        }
+        assert!(network.all_members_converged());
+    }
+
+    #[test]
     fn backend_adapter_dispatches_queued_operations_to_finalized_order() {
         let federation_id = federation_id(13);
         let members = [member_id_value(1), member_id_value(2), member_id_value(3)];

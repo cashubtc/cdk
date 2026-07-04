@@ -522,15 +522,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: propagate federated auth wallet state</span>
+          <span class="value">test: cover seven-member consensus partitions</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Wallet federation signing paths now fan out concurrently, first-healthy-member quote and LNURL fallbacks are covered, auth wallet state propagates across all member connectors, consensus backend identity is status-visible, the adapter selector has a backend-neutral runtime slot, live peer sync halts on backend mismatch, and digest-compare now treats equal digests from different consensus backends as divergence</span>
+          <span class="value">Wallet federation signing paths now fan out concurrently, first-healthy-member quote and LNURL fallbacks are covered, auth wallet state propagates across all member connectors, seven-member/five-threshold consensus partition behavior has a fast simulator gate, consensus backend identity is status-visible, the adapter selector has a backend-neutral runtime slot, live peer sync halts on backend mismatch, and digest-compare now treats equal digests from different consensus backends as divergence</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Broaden long-partition runs to larger rosters and start the first production BFT ordering adapter behind the status-visible backend selector</span>
+          <span class="value">Broaden live long-partition process smokes to larger rosters and start the first production BFT ordering adapter behind the status-visible backend selector</span>
         </div>
       </aside>
     </header>
@@ -1553,6 +1553,10 @@
           <article class="item">
             <h3>Five-member Postgres long partition verified</h3>
             <p>A five-member, three-threshold Postgres-backed smoke now passes baseline mint, swap, check-state, melt, and restore; eight offline wallet-operation batches; paid and failed pending-melt finalization while one member is offline; quarantine catch-up; offline keyset rotation; restarted-member session-outcome quorum evidence; digest comparison; and clean shutdown.</p>
+          </article>
+          <article class="item">
+            <h3>Seven-member consensus partition covered</h3>
+            <p>The in-memory consensus simulator now has a seven-member, five-threshold regression covering delayed and duplicated proposals, exact-threshold delivery, below-threshold stalling, recovered quorum delivery, and catch-up of offline members from different peers.</p>
           </article>
           <article class="item">
             <h3>Payment observation admin view added</h3>
@@ -2728,6 +2732,12 @@
               <td><span class="status done">Passed</span></td>
               <td>A five-member, three-threshold Postgres-backed long-partition smoke passed with eight offline wallet-operation batches, paid and failed pending-melt terminal observations while a member was offline, quarantine replay after restart, offline keyset rotation, old-keyset restore and spend, post-rotation mint and melt, restarted-member session-outcome quorum evidence, signed status checks, digest comparison gates, and clean process shutdown. The run first exposed a stale equal-height materialized peer-status snapshot; the peer sync recheck now refreshes peer status during the bounded recheck window, and the full smoke then passed.</td>
               <td>Repeat with larger rosters, longer partition windows, and targeted performance work on slow sequential status and keyset polling paths.</td>
+            </tr>
+            <tr>
+              <td>Seven-member consensus partition simulation</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation multi_node_engine_scales_to_seven_members_with_threshold_partition_catch_up -- --test-threads 1` passed exact-threshold delivery, below-threshold stall, recovered-quorum delivery, duplicate and delayed proposals, and catch-up of two offline members from different peers. `cargo test -p cdk-common --features federation consensus -- --test-threads 1` passed all 27 consensus tests, and `cargo check -p cdk-common --features federation` passed.</td>
+              <td>Promote the same seven-member/five-threshold matrix to a live process smoke once the runtime cost is acceptable, then mirror it against the first production BFT backend.</td>
             </tr>
             <tr>
               <td>Wallet federation probe concurrency</td>
