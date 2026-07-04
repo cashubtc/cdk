@@ -51,6 +51,7 @@ pub(crate) struct TrustedDealerMemberArtifacts {
     pub(crate) config_path: PathBuf,
     pub(crate) private_config_path: PathBuf,
     pub(crate) work_dir: PathBuf,
+    pub(crate) prometheus_url: String,
 }
 
 #[cfg(feature = "federation")]
@@ -133,14 +134,23 @@ pub(crate) fn generate_trusted_dealer_artifacts(
         let config_path = member_dir.join(MEMBER_CONFIG_FILE);
         let member_url = member.public_mint_url.to_string();
         let database_config = member_database_config(args, *member_id)?;
+        let listen_port = args
+            .port_start
+            .checked_add(member_id.get() - 1)
+            .ok_or_else(|| anyhow!("member ports overflow u16"))?;
+        let prometheus_port = args
+            .port_start
+            .checked_add(args.members)
+            .and_then(|port| port.checked_add(member_id.get() - 1))
+            .ok_or_else(|| anyhow!("member Prometheus ports overflow u16"))?;
+        let prometheus_url = format!("http://127.0.0.1:{prometheus_port}/metrics");
         let config_toml = member_config_toml(
             member_id,
             &args.host,
             &member_url,
             &member_url,
-            args.port_start
-                .checked_add(member_id.get() - 1)
-                .ok_or_else(|| anyhow!("member ports overflow u16"))?,
+            listen_port,
+            prometheus_port,
             &public_config_path,
             &private_config_path,
             &config_path,
@@ -156,6 +166,7 @@ pub(crate) fn generate_trusted_dealer_artifacts(
                 config_path,
                 private_config_path,
                 work_dir,
+                prometheus_url,
             },
         );
     }
@@ -226,7 +237,11 @@ fn validate_trusted_dealer_args(args: &FederationTrustedDealerArgs) -> Result<()
             }
         }
     }
-    let last_port_offset = args.members.saturating_sub(1);
+    let last_port_offset = args
+        .members
+        .checked_mul(2)
+        .and_then(|ports| ports.checked_sub(1))
+        .ok_or_else(|| anyhow!("member and Prometheus port span overflows u16"))?;
     args.port_start
         .checked_add(last_port_offset)
         .ok_or_else(|| anyhow!("member ports overflow u16"))?;
@@ -336,6 +351,7 @@ fn member_config_toml(
     mint_url: &str,
     federation_url: &str,
     listen_port: u16,
+    prometheus_port: u16,
     public_config_path: &Path,
     private_config_path: &Path,
     config_path: &Path,
@@ -374,6 +390,11 @@ tti = 60
 name = {name}
 description = {description}
 
+[prometheus]
+enabled = true
+address = "127.0.0.1"
+port = {prometheus_port}
+
 {database_config}
 [ln]
 ln_backend = "fakewallet"
@@ -406,6 +427,7 @@ private_config_path = {private_config_path}
             member_id.get(),
             federation_url
         ))?,
+        prometheus_port = prometheus_port,
         unit = toml_string(&unit)?,
         database_config = database_config,
         public_config_path = toml_string(&public_config_path)?,
@@ -525,6 +547,8 @@ fn local_smoke_script(
     let work_dir_cases = member_path_cases(member_artifacts, |member| &member.work_dir)?;
     let private_config_cases =
         member_path_cases(member_artifacts, |member| &member.private_config_path)?;
+    let prometheus_url_cases =
+        member_string_cases(member_artifacts, |member| &member.prometheus_url);
     let public_config_path = shell_single_quote(&path_to_string(public_config_path));
 
     Ok(format!(
@@ -539,6 +563,7 @@ RESTART_MEMBER="${{RESTART_MEMBER:-{restart_member}}}"
 QUARANTINE_OFFLINE_MEMBER="${{QUARANTINE_OFFLINE_MEMBER:-$RESTART_MEMBER}}"
 STATUS_RETRIES="${{STATUS_RETRIES:-60}}"
 STATUS_SLEEP_SECONDS="${{STATUS_SLEEP_SECONDS:-1}}"
+CHECK_PROMETHEUS_METRICS="${{CHECK_PROMETHEUS_METRICS:-1}}"
 SMOKE_QUOTE_RETRIES="${{SMOKE_QUOTE_RETRIES:-300}}"
 SMOKE_QUOTE_SLEEP_MS="${{SMOKE_QUOTE_SLEEP_MS:-100}}"
 OFFLINE_OPERATION_BATCHES="${{OFFLINE_OPERATION_BATCHES:-3}}"
@@ -561,6 +586,12 @@ member_work_dir() {{
 member_private_config() {{
   case "$1" in
 {private_config_cases}    *) return 1 ;;
+  esac
+}}
+
+member_prometheus_url() {{
+  case "$1" in
+{prometheus_url_cases}    *) return 1 ;;
   esac
 }}
 
@@ -640,6 +671,54 @@ member_payment_report_lines() {{
   local private_config
   private_config="$(member_private_config "$member")"
   "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" | awk '/^  payment_report / {{ print }}'
+}}
+
+wait_for_prometheus_metrics() {{
+  if [[ "$CHECK_PROMETHEUS_METRICS" != "1" ]]; then
+    return 0
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    printf 'curl is required when CHECK_PROMETHEUS_METRICS=1\n' >&2
+    return 1
+  fi
+  local member
+  for member in "${{MEMBERS[@]}}"; do
+    local metrics_url
+    metrics_url="$(member_prometheus_url "$member")"
+    local metrics=""
+    for _ in $(seq 1 "$STATUS_RETRIES"); do
+      if metrics="$(curl -fsS "$metrics_url" 2>/dev/null)" && prometheus_metrics_are_ready "$metrics"; then
+        break
+      fi
+      sleep "$STATUS_SLEEP_SECONDS"
+    done
+    if ! prometheus_metrics_are_ready "$metrics"; then
+      printf 'member %s did not expose federation Prometheus metrics at %s\n' "$member" "$metrics_url" >&2
+      return 1
+    fi
+  done
+}}
+
+prometheus_metrics_are_ready() {{
+  local metrics="$1"
+  local metric
+  for metric in \
+    cdk_federation_consensus_operation_count \
+    cdk_federation_sync_ready \
+    cdk_federation_sync_state \
+    cdk_federation_session_outcome_quorum_operation_count \
+    cdk_federation_payment_observation_reports; do
+    if ! grep -q "^$metric" <<<"$metrics"; then
+      return 1
+    fi
+  done
+  local federation_metrics
+  federation_metrics="$(grep '^cdk_federation_' <<<"$metrics" || true)"
+  if grep -Eq '(quote|invoice|proof|secret|path)=' <<<"$federation_metrics"; then
+    printf 'federation Prometheus metrics include a sensitive label\n' >&2
+    return 1
+  fi
+  return 0
 }}
 
 status_field() {{
@@ -796,6 +875,7 @@ for member in "${{MEMBERS[@]}}"; do
 done
 
 wait_for_converged
+wait_for_prometheus_metrics
 run_smoke_operations
 wait_for_converged
 
@@ -838,6 +918,7 @@ wait_for_status "$QUARANTINE_OFFLINE_MEMBER"
 wait_for_converged
 wait_for_session_outcome_quorum "$QUARANTINE_OFFLINE_MEMBER"
 wait_for_quarantine_report "$QUARANTINE_OFFLINE_MEMBER"
+wait_for_prometheus_metrics
 
 printf 'local federation smoke test passed\n'
 "#,
@@ -848,6 +929,7 @@ printf 'local federation smoke test passed\n'
         config_cases = config_cases,
         work_dir_cases = work_dir_cases,
         private_config_cases = private_config_cases,
+        prometheus_url_cases = prometheus_url_cases,
     ))
 }
 
@@ -868,6 +950,25 @@ where
         ));
     }
     Ok(cases)
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn member_string_cases<F>(
+    member_artifacts: &BTreeMap<MemberId, TrustedDealerMemberArtifacts>,
+    value: F,
+) -> String
+where
+    F: Fn(&TrustedDealerMemberArtifacts) -> &str,
+{
+    let mut cases = String::new();
+    for (member_id, member) in member_artifacts {
+        cases.push_str(&format!(
+            "    {}) printf '%s\\n' {} ;;\n",
+            member_id.get(),
+            shell_single_quote(value(member))
+        ));
+    }
+    cases
 }
 
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
@@ -948,11 +1049,20 @@ mod tests {
         assert!(smoke_script.contains("SMOKE_QUOTE_RETRIES"));
         assert!(smoke_script.contains("SMOKE_QUOTE_SLEEP_MS"));
         assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES"));
+        assert!(smoke_script.contains("CHECK_PROMETHEUS_METRICS"));
         assert!(smoke_script.contains("validate_smoke_settings()"));
         assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES must be a positive integer"));
         assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES must be 255 or lower"));
         assert!(smoke_script.contains("member_payment_report_lines()"));
+        assert!(smoke_script.contains("member_prometheus_url()"));
         assert!(smoke_script.contains("run_smoke_operations()"));
+        assert!(smoke_script.contains("wait_for_prometheus_metrics()"));
+        assert!(smoke_script.contains("prometheus_metrics_are_ready()"));
+        assert!(smoke_script.contains("cdk_federation_consensus_operation_count"));
+        assert!(smoke_script.contains("cdk_federation_sync_ready"));
+        assert!(smoke_script.contains("cdk_federation_sync_state"));
+        assert!(smoke_script.contains("cdk_federation_payment_observation_reports"));
+        assert!(smoke_script.contains("federation Prometheus metrics include a sensitive label"));
         assert!(smoke_script.contains("wait_for_session_outcome_quorum()"));
         assert!(smoke_script
             .contains("member %s did not report quorum-backed session outcome evidence"));
@@ -1023,6 +1133,14 @@ mod tests {
                 .validate_against_public(&public_config)
                 .expect("private config validates");
 
+            let config_text =
+                std::fs::read_to_string(&member_artifacts.config_path).expect("member config text");
+            let expected_prometheus_port = 8085 + 3 + member_id.get() - 1;
+            assert!(config_text.contains("[prometheus]"));
+            assert!(config_text.contains("enabled = true"));
+            assert!(config_text.contains("address = \"127.0.0.1\""));
+            assert!(config_text.contains(&format!("port = {expected_prometheus_port}")));
+
             let settings = config::Settings::try_new(Some(&member_artifacts.config_path))
                 .expect("member config toml");
             assert_eq!(settings.database.engine, config::DatabaseEngine::Sqlite);
@@ -1034,6 +1152,13 @@ mod tests {
                     .enabled
             );
             assert_eq!(settings.info.listen_port, 8084 + member_id.get());
+            #[cfg(feature = "prometheus")]
+            {
+                let prometheus = settings.prometheus.expect("prometheus settings");
+                assert!(prometheus.enabled);
+                assert_eq!(prometheus.address.as_deref(), Some("127.0.0.1"));
+                assert_eq!(prometheus.port, Some(expected_prometheus_port));
+            }
             assert!(
                 smoke_script.contains(&member_artifacts.config_path.to_string_lossy().to_string())
             );
@@ -1044,6 +1169,7 @@ mod tests {
                     .to_string()
             ));
             assert!(smoke_script.contains(&member_artifacts.work_dir.to_string_lossy().to_string()));
+            assert!(smoke_script.contains(&member_artifacts.prometheus_url));
         }
 
         let _ = std::fs::remove_dir_all(&output_dir);
@@ -1182,9 +1308,13 @@ mod tests {
         assert!(
             smoke_script.contains("OFFLINE_OPERATION_BATCHES=\"${OFFLINE_OPERATION_BATCHES:-3}\"")
         );
+        assert!(
+            smoke_script.contains("CHECK_PROMETHEUS_METRICS=\"${CHECK_PROMETHEUS_METRICS:-1}\"")
+        );
         assert!(smoke_script.contains("for member in \"${MEMBERS[@]}\"; do"));
         assert!(smoke_script.contains("for batch in $(seq 1 \"$OFFLINE_OPERATION_BATCHES\"); do"));
         assert!(smoke_script.contains("wait_for_converged"));
+        assert!(smoke_script.contains("wait_for_prometheus_metrics"));
         assert!(smoke_script.contains("wait_for_session_outcome_quorum"));
         assert!(smoke_script.contains("--scenario offline-member-operations"));
         assert!(smoke_script.contains("--scenario pending-melt-fail-finish"));
@@ -1202,6 +1332,7 @@ mod tests {
                     .to_string()
             ));
             assert!(smoke_script.contains(&member_artifacts.work_dir.to_string_lossy().to_string()));
+            assert!(smoke_script.contains(&member_artifacts.prometheus_url));
         }
 
         let _ = std::fs::remove_dir_all(&output_dir);

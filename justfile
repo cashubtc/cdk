@@ -483,7 +483,7 @@ fed-regtest-generate dir="target/cdk-fed-regtest" members="5" threshold="3" port
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  cargo build -p cdk-mintd --features federation,fakewallet,sqlite
+  cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus
   target/debug/cdk-mintd federation trusted-dealer \
     --output-dir "{{dir}}" \
     --force \
@@ -511,7 +511,7 @@ fed-regtest-start dir="target/cdk-fed-regtest" members="5" threshold="3" port_st
   if [ ! -f "{{dir}}/federation-public.json" ]; then
     just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
   else
-    cargo build -p cdk-mintd --features federation,fakewallet,sqlite
+    cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus
   fi
   for member in $(seq 1 "{{members}}"); do
     work_dir="{{dir}}/member-${member}/work"
@@ -547,7 +547,7 @@ fed-regtest-start-member member dir="target/cdk-fed-regtest":
     exit 0
   fi
   mkdir -p "$work_dir"
-  cargo build -p cdk-mintd --features federation,fakewallet,sqlite
+  cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus
   target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
   echo "$!" > "$pid_file"
   echo "started member {{member}} with pid $(cat "$pid_file")"
@@ -591,7 +591,7 @@ fed-regtest-status dir="target/cdk-fed-regtest" signer="1":
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  cargo build -p cdk-mintd --features federation,fakewallet,sqlite
+  cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus
   if [ ! -f "{{dir}}/federation-public.json" ]; then
     echo "missing federation public config: {{dir}}/federation-public.json" >&2
     echo "run: just fed-regtest-generate" >&2
