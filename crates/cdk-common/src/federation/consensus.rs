@@ -794,6 +794,143 @@ impl InMemoryFederationConsensusNetwork {
     }
 }
 
+/// Backend-neutral operation adapter used by consensus ordering engines.
+///
+/// The MVP implementation dispatches into the deterministic in-memory
+/// simulator. A production BFT backend should implement the same admission,
+/// dispatch, and finalized-response boundary without changing public mint
+/// handlers.
+pub trait FederationConsensusBackendAdapter: fmt::Debug + Send {
+    /// Return the backend kind used by this adapter.
+    fn backend_kind(&self) -> FederationConsensusBackendKind;
+
+    /// Return the number of locally queued consensus items.
+    fn queued_len(&self) -> usize;
+
+    /// Return the number of items dispatched but not yet finalized.
+    fn pending_finalization_len(&self) -> usize;
+
+    /// Queue one operation envelope for later backend dispatch.
+    fn submit_operation(
+        &mut self,
+        envelope: FederationOperationEnvelope,
+    ) -> Result<FederationConsensusItemAdmission>;
+
+    /// Dispatch queued operation items to the backend without finalizing them.
+    fn dispatch_queued_operations(&mut self, limit: usize) -> Result<usize>;
+
+    /// Deliver every dispatched operation finalized by the backend.
+    fn finalize_dispatched_operations(&mut self) -> Result<Vec<FederationSubmitOperationResponse>>;
+
+    /// Dispatch queued operations and return finalized responses.
+    fn dispatch_and_finalize(
+        &mut self,
+        limit: usize,
+    ) -> Result<Vec<FederationSubmitOperationResponse>> {
+        self.dispatch_queued_operations(limit)?;
+        self.finalize_dispatched_operations()
+    }
+}
+
+/// Runtime-selected consensus backend adapter.
+#[derive(Debug, Clone)]
+pub struct FederationConsensusBackendAdapterRuntime {
+    backend: FederationConsensusBackendAdapterRuntimeBackend,
+}
+
+#[derive(Debug, Clone)]
+enum FederationConsensusBackendAdapterRuntimeBackend {
+    InMemory(InMemoryFederationConsensusAdapter),
+}
+
+impl FederationConsensusBackendAdapterRuntime {
+    /// Create an in-memory backend adapter runtime.
+    pub fn in_memory<I>(
+        federation_id: FederationId,
+        member_ids: I,
+        consensus_threshold: u16,
+        local_member: MemberId,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = MemberId>,
+    {
+        Ok(Self {
+            backend: FederationConsensusBackendAdapterRuntimeBackend::InMemory(
+                InMemoryFederationConsensusAdapter::new(
+                    federation_id,
+                    member_ids,
+                    consensus_threshold,
+                    local_member,
+                )?,
+            ),
+        })
+    }
+
+    /// Create an adapter runtime for the selected backend.
+    pub fn with_backend<I>(
+        backend: FederationConsensusBackendKind,
+        federation_id: FederationId,
+        member_ids: I,
+        consensus_threshold: u16,
+        local_member: MemberId,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = MemberId>,
+    {
+        match backend {
+            FederationConsensusBackendKind::InMemory => {
+                Self::in_memory(federation_id, member_ids, consensus_threshold, local_member)
+            }
+            FederationConsensusBackendKind::AlephBft => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: backend.as_str().to_string(),
+                })
+            }
+        }
+    }
+
+    fn adapter(&self) -> &dyn FederationConsensusBackendAdapter {
+        match &self.backend {
+            FederationConsensusBackendAdapterRuntimeBackend::InMemory(adapter) => adapter,
+        }
+    }
+
+    fn adapter_mut(&mut self) -> &mut dyn FederationConsensusBackendAdapter {
+        match &mut self.backend {
+            FederationConsensusBackendAdapterRuntimeBackend::InMemory(adapter) => adapter,
+        }
+    }
+}
+
+impl FederationConsensusBackendAdapter for FederationConsensusBackendAdapterRuntime {
+    fn backend_kind(&self) -> FederationConsensusBackendKind {
+        self.adapter().backend_kind()
+    }
+
+    fn queued_len(&self) -> usize {
+        self.adapter().queued_len()
+    }
+
+    fn pending_finalization_len(&self) -> usize {
+        self.adapter().pending_finalization_len()
+    }
+
+    fn submit_operation(
+        &mut self,
+        envelope: FederationOperationEnvelope,
+    ) -> Result<FederationConsensusItemAdmission> {
+        self.adapter_mut().submit_operation(envelope)
+    }
+
+    fn dispatch_queued_operations(&mut self, limit: usize) -> Result<usize> {
+        self.adapter_mut().dispatch_queued_operations(limit)
+    }
+
+    fn finalize_dispatched_operations(&mut self) -> Result<Vec<FederationSubmitOperationResponse>> {
+        self.adapter_mut().finalize_dispatched_operations()
+    }
+}
+
 /// Operation-focused adapter between the pending consensus item queue and the
 /// deterministic multi-member simulator.
 ///
@@ -907,6 +1044,35 @@ impl InMemoryFederationConsensusAdapter {
     #[must_use]
     pub fn all_members_converged(&self) -> bool {
         self.network.all_members_converged()
+    }
+}
+
+impl FederationConsensusBackendAdapter for InMemoryFederationConsensusAdapter {
+    fn backend_kind(&self) -> FederationConsensusBackendKind {
+        FederationConsensusBackendKind::InMemory
+    }
+
+    fn queued_len(&self) -> usize {
+        Self::queued_len(self)
+    }
+
+    fn pending_finalization_len(&self) -> usize {
+        Self::network_pending_len(self)
+    }
+
+    fn submit_operation(
+        &mut self,
+        envelope: FederationOperationEnvelope,
+    ) -> Result<FederationConsensusItemAdmission> {
+        Self::submit_operation(self, envelope)
+    }
+
+    fn dispatch_queued_operations(&mut self, limit: usize) -> Result<usize> {
+        Self::dispatch_queued_operations(self, limit)
+    }
+
+    fn finalize_dispatched_operations(&mut self) -> Result<Vec<FederationSubmitOperationResponse>> {
+        Self::finalize_dispatched_operations(self)
     }
 }
 
@@ -1754,6 +1920,103 @@ mod tests {
             );
         }
         assert!(adapter.all_members_converged());
+    }
+
+    #[test]
+    fn backend_adapter_trait_dispatches_in_memory_operations() {
+        let federation_id = federation_id(13);
+        let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+        let mut adapter =
+            InMemoryFederationConsensusAdapter::new(federation_id, members, 2, members[0])
+                .expect("adapter");
+        let envelope = mint_envelope(
+            federation_id,
+            "quote-1",
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        let operation_id = envelope.operation_id().expect("operation id");
+
+        {
+            let backend: &mut dyn FederationConsensusBackendAdapter = &mut adapter;
+            assert_eq!(
+                backend.backend_kind(),
+                FederationConsensusBackendKind::InMemory
+            );
+            assert_eq!(
+                backend.submit_operation(envelope).expect("submit"),
+                FederationConsensusItemAdmission::Accepted
+            );
+            assert_eq!(backend.queued_len(), 1);
+            assert_eq!(backend.pending_finalization_len(), 0);
+
+            let responses = backend
+                .dispatch_and_finalize(10)
+                .expect("dispatch and finalize");
+
+            assert_eq!(responses.len(), 1);
+            assert_eq!(responses[0].operation_id, operation_id);
+            assert_eq!(backend.queued_len(), 0);
+            assert_eq!(backend.pending_finalization_len(), 0);
+        }
+
+        assert!(adapter.all_members_converged());
+    }
+
+    #[test]
+    fn backend_adapter_runtime_dispatches_selected_in_memory_backend() {
+        let federation_id = federation_id(13);
+        let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+        let mut adapter = FederationConsensusBackendAdapterRuntime::with_backend(
+            FederationConsensusBackendKind::InMemory,
+            federation_id,
+            members,
+            2,
+            members[0],
+        )
+        .expect("adapter runtime");
+        let envelope = mint_envelope(
+            federation_id,
+            "quote-1",
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+
+        assert_eq!(
+            adapter.backend_kind(),
+            FederationConsensusBackendKind::InMemory
+        );
+        assert_eq!(
+            adapter.submit_operation(envelope).expect("submit"),
+            FederationConsensusItemAdmission::Accepted
+        );
+        assert_eq!(adapter.queued_len(), 1);
+        assert_eq!(adapter.dispatch_queued_operations(10).expect("dispatch"), 1);
+        assert_eq!(adapter.queued_len(), 0);
+        assert_eq!(adapter.pending_finalization_len(), 1);
+
+        let responses = adapter.finalize_dispatched_operations().expect("finalize");
+
+        assert_eq!(responses.len(), 1);
+        assert_eq!(adapter.pending_finalization_len(), 0);
+    }
+
+    #[test]
+    fn backend_adapter_runtime_rejects_unavailable_backend_kind() {
+        let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+
+        let err = FederationConsensusBackendAdapterRuntime::with_backend(
+            FederationConsensusBackendKind::AlephBft,
+            federation_id(13),
+            members,
+            2,
+            members[0],
+        )
+        .expect_err("aleph-bft adapter is not implemented yet");
+
+        assert!(matches!(
+            err,
+            FederationError::UnsupportedConsensusBackend { ref backend }
+                if backend == "aleph_bft"
+        ));
     }
 
     #[test]

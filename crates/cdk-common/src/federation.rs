@@ -23,6 +23,7 @@ mod transport;
 mod trusted_dealer;
 
 pub use self::consensus::{
+    FederationConsensusBackendAdapter, FederationConsensusBackendAdapterRuntime,
     FederationConsensusBackendKind, FederationConsensusDefaultItem, FederationConsensusEngine,
     FederationConsensusItem, FederationConsensusItemAdmission, FederationConsensusItemQueue,
     FederationConsensusModuleFact, FederationConsensusRuntime, InMemoryFederationConsensus,
