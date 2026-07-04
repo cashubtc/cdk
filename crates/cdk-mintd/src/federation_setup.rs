@@ -2201,12 +2201,24 @@ mod tests {
         for (member_id, member_artifacts) in &artifacts.member_artifacts {
             let settings = config::Settings::try_new(Some(&member_artifacts.config_path))
                 .expect("member config toml");
+            let dkg_setup_settings =
+                config::Settings::try_new(Some(&member_artifacts.dkg_setup_config_path))
+                    .expect("setup-only member config toml");
             assert_eq!(settings.database.engine, config::DatabaseEngine::Postgres);
+            assert_eq!(
+                dkg_setup_settings.database.engine,
+                config::DatabaseEngine::Postgres
+            );
             let postgres = settings
                 .database
                 .postgres
                 .as_ref()
                 .expect("postgres config");
+            let dkg_setup_postgres = dkg_setup_settings
+                .database
+                .postgres
+                .as_ref()
+                .expect("setup-only postgres config");
             assert_eq!(
                 postgres.url,
                 format!(
@@ -2214,7 +2226,9 @@ mod tests {
                     member_id.get()
                 )
             );
+            assert_eq!(dkg_setup_postgres.url, postgres.url);
             assert!(!postgres.url.contains("{member}"));
+            assert!(!dkg_setup_postgres.url.contains("{member}"));
         }
         let smoke_script =
             std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
@@ -2238,12 +2252,24 @@ mod tests {
         for (member_id, member_artifacts) in &artifacts.member_artifacts {
             let settings = config::Settings::try_new(Some(&member_artifacts.config_path))
                 .expect("member config toml");
+            let dkg_setup_settings =
+                config::Settings::try_new(Some(&member_artifacts.dkg_setup_config_path))
+                    .expect("setup-only member config toml");
             assert_eq!(settings.database.engine, config::DatabaseEngine::Postgres);
+            assert_eq!(
+                dkg_setup_settings.database.engine,
+                config::DatabaseEngine::Postgres
+            );
             let postgres = settings
                 .database
                 .postgres
                 .as_ref()
                 .expect("postgres config");
+            let dkg_setup_postgres = dkg_setup_settings
+                .database
+                .postgres
+                .as_ref()
+                .expect("setup-only postgres config");
             assert_eq!(
                 postgres.url,
                 format!(
@@ -2251,6 +2277,7 @@ mod tests {
                     member_id.get()
                 )
             );
+            assert_eq!(dkg_setup_postgres.url, postgres.url);
         }
         let smoke_script =
             std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");

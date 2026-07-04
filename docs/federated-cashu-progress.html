@@ -522,15 +522,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: verify setup dkg restart activation</span>
+          <span class="value">test: cover setup dkg postgres configs</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`DKG_ROUTE_PROBE_ONLY=1` generated smoke restarts setup-only members after DKG completion and requires `/v1/keysets` to expose the activated route-derived keyset</span>
+          <span class="value">Generated setup-only DKG member configs now preserve both Postgres URL-template and schema-base storage settings in focused generator tests</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Broaden setup-only DKG process coverage across storage backends and fold it into the longer generated smoke path</span>
+          <span class="value">Run setup-only DKG restart activation against a real Postgres-backed local process environment when Postgres is available</span>
         </div>
       </aside>
     </header>
@@ -1639,6 +1639,10 @@
             <p>The fast setup-only DKG smoke now restarts members after DKG completion and waits for public `/v1/keysets` to expose the activated route-derived keyset, proving startup activation from durable records in a live process run.</p>
           </article>
           <article class="item">
+            <h3>Setup-only Postgres generation covered</h3>
+            <p>The Postgres generator tests now assert setup-only DKG member configs carry the same URL-template and schema-base storage settings as the normal generated member configs.</p>
+          </article>
+          <article class="item">
             <h3>Key rotation operation scaffold ready</h3>
             <p>Federation consensus can now encode proposed aggregate keysets, hash them canonically, dedupe conflicting payloads by keyset ID, and validate that rotation targets are v3/BLS keysets for the current roster.</p>
           </article>
@@ -1944,6 +1948,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`DKG_ROUTE_PROBE_ONLY=1 STATUS_RETRIES=45 STATUS_SLEEP_SECONDS=1 CDK_MINTD_BIN=target/debug/cdk-mintd bash <generated-smoke-script>` passed after stopping and restarting setup-only members, then waiting for `/v1/keysets` to expose an activated keyset. The restarted member log included `Activated finalized federation DKG config from durable records` with `keyset_count=1`. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1`, `cargo build -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
               <td>Run the setup-only DKG restart path against additional storage configurations and decide how it should compose with full wallet/payment smoke.</td>
+            </tr>
+            <tr>
+              <td>Setup-only DKG Postgres generation</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1` passed all 6 generator tests, including setup-only DKG assertions for Postgres URL templates and schema-base URLs. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Run a real Postgres-backed setup-only DKG restart smoke when a local Postgres service is available.</td>
             </tr>
             <tr>
               <td>Key rotation operation scaffold</td>
