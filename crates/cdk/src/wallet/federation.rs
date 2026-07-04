@@ -1106,18 +1106,20 @@ mod tests {
     };
     use cdk_common::{MintQuoteRequest, MintQuoteResponse, MintResponse, SecretKey};
     use cdk_fake_wallet::{create_fake_invoice, FakeWallet};
+    use cdk_http_client::HttpError;
 
     use super::{FederatedMintConnector, FederationWalletConnector};
     use crate::dhke::verify_bls_blind_signature;
     use crate::mint::{FederationRuntimeConfig, Mint, MintBuilder, MintInput, MintMeltLimits};
     use crate::nuts::nut00::{KnownMethod, PaymentMethod};
     use crate::nuts::{
-        BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse,
-        KeysetResponse, MeltQuoteState, MeltRequest, MintInfo, MintQuoteBolt11Request,
-        MintQuoteState, MintRequest, ProofState, RestoreRequest, RestoreResponse, State,
-        SwapRequest, SwapResponse,
+        AuthToken, BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest,
+        CheckStateResponse, KeysetResponse, MeltQuoteState, MeltRequest, MintInfo,
+        MintQuoteBolt11Request, MintQuoteState, MintRequest, ProofState, RestoreRequest,
+        RestoreResponse, State, SwapRequest, SwapResponse,
     };
     use crate::types::{FeeReserve, QuoteTTL};
+    use crate::wallet::mint_connector::transport::Transport;
     use crate::wallet::test_utils::MockMintConnector;
     use crate::wallet::MintConnector;
 
@@ -1818,6 +1820,207 @@ mod tests {
         async fn set_auth_wallet(&self, _wallet: Option<crate::wallet::AuthWallet>) {}
     }
 
+    #[derive(Clone, Default)]
+    struct LocalMemberHttpTransport {
+        connector: Option<Arc<dyn MintConnector + Send + Sync>>,
+    }
+
+    impl fmt::Debug for LocalMemberHttpTransport {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("LocalMemberHttpTransport")
+                .field("has_connector", &self.connector.is_some())
+                .finish()
+        }
+    }
+
+    impl LocalMemberHttpTransport {
+        fn new(connector: Arc<dyn MintConnector + Send + Sync>) -> Self {
+            Self {
+                connector: Some(connector),
+            }
+        }
+
+        fn connector(&self) -> Result<Arc<dyn MintConnector + Send + Sync>, HttpError> {
+            self.connector
+                .clone()
+                .ok_or_else(|| HttpError::Other("missing local member connector".to_string()))
+        }
+
+        fn decode_payload<T, P>(payload: &P) -> Result<T, HttpError>
+        where
+            T: serde::de::DeserializeOwned,
+            P: serde::Serialize + Send + Sync,
+        {
+            serde_json::from_value(
+                serde_json::to_value(payload)
+                    .map_err(|err| HttpError::Serialization(err.to_string()))?,
+            )
+            .map_err(|err| HttpError::Serialization(err.to_string()))
+        }
+
+        fn encode_response<T, R>(response: T) -> Result<R, HttpError>
+        where
+            T: serde::Serialize,
+            R: serde::de::DeserializeOwned,
+        {
+            serde_json::from_value(
+                serde_json::to_value(response)
+                    .map_err(|err| HttpError::Serialization(err.to_string()))?,
+            )
+            .map_err(|err| HttpError::Serialization(err.to_string()))
+        }
+
+        fn map_error(err: crate::Error) -> HttpError {
+            HttpError::Other(err.to_string())
+        }
+    }
+
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+    impl Transport for LocalMemberHttpTransport {
+        fn with_proxy(
+            &mut self,
+            _proxy: url::Url,
+            _host_matcher: Option<&str>,
+            _accept_invalid_certs: bool,
+        ) -> Result<(), HttpError> {
+            Ok(())
+        }
+
+        #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+        async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, HttpError> {
+            Ok(Vec::new())
+        }
+
+        async fn http_get<R>(&self, url: url::Url, _auth: Option<AuthToken>) -> Result<R, HttpError>
+        where
+            R: serde::de::DeserializeOwned,
+        {
+            let connector = self.connector()?;
+            let path = url.path();
+
+            if path == "/v1/keys" {
+                let keysets = connector.get_mint_keys().await.map_err(Self::map_error)?;
+                return Self::encode_response(cdk_common::KeysResponse { keysets });
+            }
+
+            if let Some(keyset_id) = path.strip_prefix("/v1/keys/") {
+                let keyset_id = Id::from_str(keyset_id)
+                    .map_err(|err| HttpError::Serialization(err.to_string()))?;
+                let keyset = connector
+                    .get_mint_keyset(keyset_id)
+                    .await
+                    .map_err(Self::map_error)?;
+                return Self::encode_response(cdk_common::KeysResponse {
+                    keysets: vec![keyset],
+                });
+            }
+
+            if path == "/v1/keysets" {
+                return Self::encode_response(
+                    connector
+                        .get_mint_keysets()
+                        .await
+                        .map_err(Self::map_error)?,
+                );
+            }
+
+            Err(HttpError::Other(format!(
+                "unsupported local member GET path {path}"
+            )))
+        }
+
+        async fn http_post<P, R>(
+            &self,
+            url: url::Url,
+            _auth_token: Option<AuthToken>,
+            payload: &P,
+        ) -> Result<R, HttpError>
+        where
+            P: serde::Serialize + Send + Sync,
+            R: serde::de::DeserializeOwned,
+        {
+            let connector = self.connector()?;
+            match url.path() {
+                "/v1/mint/bolt11" => {
+                    let request = Self::decode_payload::<MintRequest<String>, _>(payload)?;
+                    Self::encode_response(
+                        connector
+                            .post_mint(&PaymentMethod::Known(KnownMethod::Bolt11), request)
+                            .await
+                            .map_err(Self::map_error)?,
+                    )
+                }
+                "/v1/mint/bolt11/batch" => {
+                    let request = Self::decode_payload::<BatchMintRequest<String>, _>(payload)?;
+                    Self::encode_response(
+                        connector
+                            .post_batch_mint(&PaymentMethod::Known(KnownMethod::Bolt11), request)
+                            .await
+                            .map_err(Self::map_error)?,
+                    )
+                }
+                "/v1/swap" => {
+                    let request = Self::decode_payload::<SwapRequest, _>(payload)?;
+                    Self::encode_response(
+                        connector
+                            .post_swap(request)
+                            .await
+                            .map_err(Self::map_error)?,
+                    )
+                }
+                "/v1/melt/bolt11" => {
+                    let request = Self::decode_payload::<MeltRequest<String>, _>(payload)?;
+                    let response = connector
+                        .post_melt(&PaymentMethod::Known(KnownMethod::Bolt11), request)
+                        .await
+                        .map_err(Self::map_error)?;
+                    match response {
+                        MeltQuoteResponse::Bolt11(response) => Self::encode_response(response),
+                        _ => Err(HttpError::Other(
+                            "local member returned non-bolt11 melt response".to_string(),
+                        )),
+                    }
+                }
+                "/v1/restore" => {
+                    let request = Self::decode_payload::<RestoreRequest, _>(payload)?;
+                    Self::encode_response(
+                        connector
+                            .post_restore(request)
+                            .await
+                            .map_err(Self::map_error)?,
+                    )
+                }
+                path => Err(HttpError::Other(format!(
+                    "unsupported local member POST path {path}"
+                ))),
+            }
+        }
+    }
+
+    fn http_member_connectors(
+        connectors: BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+    ) -> BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>> {
+        connectors
+            .into_iter()
+            .map(|(member_id, connector)| {
+                let mint_url =
+                    MintUrl::from_str(&format!("https://member{}.example.com", member_id.get()))
+                        .expect("member mint url");
+                let client = crate::wallet::mint_connector::http_client::HttpClient::with_transport(
+                    mint_url,
+                    LocalMemberHttpTransport::new(connector),
+                    None,
+                );
+
+                (
+                    member_id,
+                    Arc::new(client) as Arc<dyn MintConnector + Send + Sync>,
+                )
+            })
+            .collect()
+    }
+
     async fn create_fake_wallet_member_mint(
         bundle: &TrustedDealerConfigBundle,
         member_id: MemberId,
@@ -2467,6 +2670,115 @@ mod tests {
             })
             .await
             .expect("rotated restore response");
+        assert_eq!(restore_response.outputs, vec![old_restore_output.clone()]);
+        assert_aggregate_response_valid(
+            &bundle,
+            &[old_restore_output],
+            &MintResponse {
+                signatures: restore_response.signatures,
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_aggregates_rotated_http_member_shares() {
+        let bundle = threshold_rotation_bundle();
+        let old_keyset = active_keyset(&bundle);
+        let next_keyset = activated_rotation_keyset(&bundle);
+        let old_mint_quote_id = QuoteId::new();
+        let new_mint_quote_id = QuoteId::new();
+        let melt_quote_id = QuoteId::new();
+        let melt_invoice = create_fake_invoice(1000, "".to_string());
+        let old_restore_output =
+            blinded_outputs_for_keyset(&old_keyset, b"rotated http old restore")
+                .into_iter()
+                .next()
+                .expect("old restore output");
+        let next_outputs = blinded_outputs_for_keyset(&next_keyset, b"rotated http output");
+        let next_change_outputs =
+            vec![
+                blinded_change_outputs_for_keyset(&next_keyset, b"rotated http melt change")
+                    .into_iter()
+                    .next()
+                    .expect("next change output"),
+            ];
+        let local_connectors = rotated_fake_wallet_member_connectors_with_state(
+            &bundle,
+            &old_mint_quote_id,
+            &new_mint_quote_id,
+            &old_restore_output,
+            &melt_quote_id,
+            &melt_invoice,
+            1,
+        )
+        .await;
+        let connector = FederatedMintConnector::new(
+            rotated_public_config(&bundle),
+            http_member_connectors(local_connectors),
+        )
+        .expect("rotated federated HTTP mint connector");
+
+        let advertised = connector
+            .get_mint_keyset(next_keyset.id)
+            .await
+            .expect("next keyset over HTTP");
+        assert_eq!(advertised.id, next_keyset.id);
+
+        let mint_response = connector
+            .post_mint(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                MintRequest {
+                    quote: new_mint_quote_id.to_string(),
+                    outputs: next_outputs.clone(),
+                    signature: None,
+                },
+            )
+            .await
+            .expect("rotated HTTP mint response");
+        assert_aggregate_response_valid(&bundle, &next_outputs, &mint_response);
+
+        let swap_response = connector
+            .post_swap(SwapRequest::new(
+                vec![proof_for_amount(&bundle, 4, "rotated-http-swap")],
+                next_outputs.clone(),
+            ))
+            .await
+            .expect("rotated HTTP swap response");
+        assert_aggregate_response_valid(
+            &bundle,
+            &next_outputs,
+            &MintResponse {
+                signatures: swap_response.signatures,
+            },
+        );
+
+        let melt_response = connector
+            .post_melt(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                MeltRequest::new(
+                    melt_quote_id.to_string(),
+                    vec![proof_for_amount(&bundle, 4, "rotated-http-melt")],
+                    Some(next_change_outputs.clone()),
+                ),
+            )
+            .await
+            .expect("rotated HTTP melt response");
+        let change = melt_response.change().cloned().expect("change signatures");
+        let mut signed_change_output = next_change_outputs[0].clone();
+        signed_change_output.amount = Amount::from(2);
+        assert_eq!(melt_response.state(), MeltQuoteState::Paid);
+        assert_aggregate_response_valid(
+            &bundle,
+            &[signed_change_output],
+            &MintResponse { signatures: change },
+        );
+
+        let restore_response = connector
+            .post_restore(RestoreRequest {
+                outputs: vec![old_restore_output.clone()],
+            })
+            .await
+            .expect("rotated HTTP restore response");
         assert_eq!(restore_response.outputs, vec![old_restore_output.clone()]);
         assert_aggregate_response_valid(
             &bundle,

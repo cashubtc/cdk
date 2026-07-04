@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Replay-derived key rotation now reaches wallet-side threshold aggregation for mint, swap, melt change, and restore</span>
+          <span class="value">Replay-derived key rotation now reaches wallet-side threshold aggregation through local connectors and wallet HttpClient transports</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: cover rotated wallet federation aggregation</span>
+          <span class="value">test: cover rotated wallet HTTP member aggregation</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The wallet federation connector validates restore with inactive old keysets, local member connectors advertise and sign from effective configs, and melt setup accepts zero-amount federated change placeholders before final change assignment</span>
+          <span class="value">Rotated fake-wallet federation members can now be wrapped in wallet HttpClient transports, exercising REST path serialization for mint, swap, melt-change, restore, and keyset discovery before threshold aggregation</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Move the rotated aggregation proof from local member connectors into an Axum/HTTP multi-member smoke, then extend rotated status and check-state coverage</span>
+          <span class="value">Move the rotated aggregation proof into a real Axum router or process-level multi-member smoke, then extend rotated status and check-state coverage</span>
         </div>
       </aside>
     </header>
@@ -1575,6 +1575,10 @@
             <p>Wallet-side federation aggregation now accepts inactive old-keyset restore outputs, local member connector tests use replay-derived configs, and a rotated fake-wallet federation aggregates mint, swap, melt-change, and restore shares.</p>
           </article>
           <article class="item">
+            <h3>Wallet HTTP-client rotation smoke ready</h3>
+            <p>Rotated member connectors can now sit behind wallet HttpClient transports, proving the REST path serialization boundary for keyset discovery plus mint, swap, melt, and restore aggregation.</p>
+          </article>
+          <article class="item">
             <h3>State convergence certification planned</h3>
             <p>The implementation plan now has Milestone 16A, an explicit gate for consensus-visible database equality, canonical snapshots, quorum-backed catch-up evidence, safe catch-up mode, digest comparison, and row-level mismatch diagnostics.</p>
           </article>
@@ -1782,6 +1786,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --lib --features federation wallet::federation -- --test-threads 1` passed 18 tests, including rotated fake-wallet mint, swap, melt-change, and restore aggregation. `cargo test -p cdk --lib --features federation mint::federation -- --test-threads 1` passed 30 tests, `cargo check -p cdk-axum --features federation`, `cargo fmt --all`, and `git diff --check` passed.</td>
               <td>Promote the rotated aggregation proof to real Axum/HTTP member connectors, then add rotated status and check-state coverage.</td>
+            </tr>
+            <tr>
+              <td>Wallet HTTP-client rotation aggregation</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --lib --features federation federated_mint_connector_aggregates_rotated_http_member_shares -- --test-threads 1` passed. `cargo test -p cdk --lib --features federation wallet::federation -- --test-threads 1` passed 19 tests, including rotated HttpClient member keyset discovery plus mint, swap, melt-change, and restore aggregation. `cargo check -p cdk --lib --features federation`, `cargo check -p cdk-axum --features federation`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Move the same rotated proof into a real Axum router or process-level multi-member smoke, then add rotated status and check-state coverage.</td>
             </tr>
             <tr>
               <td>State convergence certification plan</td>
@@ -2412,7 +2422,7 @@
           </article>
           <article class="item">
             <h3>Rotation state transition</h3>
-            <p>Promote the rotated aggregation proof from local member connectors to Axum/HTTP member connectors, then add rotated status and check-state coverage.</p>
+            <p>Promote the rotated aggregation proof from wallet HttpClient transports to a real Axum router or process-level multi-member smoke, then add rotated status and check-state coverage.</p>
           </article>
           <article class="item">
             <h3>BFT backend selection</h3>
