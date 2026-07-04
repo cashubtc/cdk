@@ -185,7 +185,7 @@ pub(crate) fn generate_trusted_dealer_artifacts(
     }
 
     let smoke_script_path = output_dir.join(SMOKE_SCRIPT_FILE);
-    let smoke_script = local_smoke_script(&public_config_path, &member_artifacts)?;
+    let smoke_script = local_smoke_script(&public_config_path, &member_artifacts, args)?;
     write_executable_text_file(&smoke_script_path, &smoke_script, args.force)?;
 
     Ok(TrustedDealerArtifacts {
@@ -545,6 +545,7 @@ fn write_executable_text_file(path: &Path, contents: &str, force: bool) -> Resul
 fn local_smoke_script(
     public_config_path: &Path,
     member_artifacts: &BTreeMap<MemberId, TrustedDealerMemberArtifacts>,
+    args: &FederationTrustedDealerArgs,
 ) -> Result<String> {
     let members = member_artifacts
         .keys()
@@ -564,6 +565,10 @@ fn local_smoke_script(
     let prometheus_url_cases =
         member_string_cases(member_artifacts, |member| &member.prometheus_url);
     let public_config_path = shell_single_quote(&path_to_string(public_config_path));
+    let postgres_schema_reset_url = postgres_schema_reset_url(args)
+        .map(|url| shell_single_quote(&url))
+        .unwrap_or_else(|| "''".to_string());
+    let postgres_schema_reset_cases = postgres_schema_reset_cases(member_artifacts);
 
     Ok(format!(
         r#"#!/usr/bin/env bash
@@ -571,6 +576,8 @@ set -euo pipefail
 
 CDK_MINTD_BIN="${{CDK_MINTD_BIN:-cdk-mintd}}"
 PUBLIC_CONFIG={public_config_path}
+POSTGRES_SCHEMA_RESET_URL={postgres_schema_reset_url}
+RESET_POSTGRES_SCHEMAS="${{RESET_POSTGRES_SCHEMAS:-0}}"
 MEMBERS=({members})
 PRIMARY_MEMBER="${{PRIMARY_MEMBER:-{primary_member}}}"
 RESTART_MEMBER="${{RESTART_MEMBER:-{restart_member}}}"
@@ -639,9 +646,36 @@ cleanup() {{
   done
 }}
 
+postgres_member_schema() {{
+  case "$1" in
+{postgres_schema_reset_cases}    *) return 1 ;;
+  esac
+}}
+
+reset_postgres_schemas() {{
+  if [[ -z "$POSTGRES_SCHEMA_RESET_URL" ]]; then
+    return 0
+  fi
+  if [[ "$RESET_POSTGRES_SCHEMAS" != "1" ]]; then
+    printf 'generated PostgreSQL member schemas are configured; set RESET_POSTGRES_SCHEMAS=1 to reset them before smoke\n' >&2
+    return 1
+  fi
+  if ! command -v psql >/dev/null 2>&1; then
+    printf 'psql is required to reset PostgreSQL member schemas before smoke\n' >&2
+    return 1
+  fi
+  local member
+  for member in "${{MEMBERS[@]}}"; do
+    local schema
+    schema="$(postgres_member_schema "$member")"
+    psql "$POSTGRES_SCHEMA_RESET_URL" -v ON_ERROR_STOP=1 -c "DROP SCHEMA IF EXISTS \"$schema\" CASCADE; CREATE SCHEMA \"$schema\";" >/dev/null
+  done
+}}
+
 reset_member_work_dirs() {{
   rm -f "$PENDING_WALLET_DB" "$PENDING_WALLET_DB-shm" "$PENDING_WALLET_DB-wal"
   rm -f "$FAILED_PENDING_WALLET_DB" "$FAILED_PENDING_WALLET_DB-shm" "$FAILED_PENDING_WALLET_DB-wal"
+  reset_postgres_schemas
   local member
   for member in "${{MEMBERS[@]}}"; do
     local work_dir
@@ -991,7 +1025,36 @@ printf 'local federation smoke test passed\n'
         work_dir_cases = work_dir_cases,
         private_config_cases = private_config_cases,
         prometheus_url_cases = prometheus_url_cases,
+        postgres_schema_reset_url = postgres_schema_reset_url,
+        postgres_schema_reset_cases = postgres_schema_reset_cases,
     ))
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn postgres_schema_reset_url(args: &FederationTrustedDealerArgs) -> Option<String> {
+    match args.database_engine {
+        FederationTrustedDealerDatabaseEngine::Sqlite => None,
+        FederationTrustedDealerDatabaseEngine::Postgres => args
+            .postgres_base_url
+            .as_deref()
+            .map(|url| url.trim().to_string()),
+    }
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn postgres_schema_reset_cases(
+    member_artifacts: &BTreeMap<MemberId, TrustedDealerMemberArtifacts>,
+) -> String {
+    let mut cases = String::new();
+    for member_id in member_artifacts.keys() {
+        let schema = format!("cdk_federation_member_{}", member_id.get());
+        cases.push_str(&format!(
+            "    {}) printf '%s\\n' {} ;;\n",
+            member_id.get(),
+            shell_single_quote(&schema)
+        ));
+    }
+    cases
 }
 
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
@@ -1316,6 +1379,10 @@ mod tests {
             );
             assert!(!postgres.url.contains("{member}"));
         }
+        let smoke_script =
+            std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
+        assert!(smoke_script.contains("POSTGRES_SCHEMA_RESET_URL=''"));
+        assert!(smoke_script.contains("reset_postgres_schemas()"));
 
         let _ = std::fs::remove_dir_all(&output_dir);
     }
@@ -1347,6 +1414,18 @@ mod tests {
                     member_id.get()
                 )
             );
+        }
+        let smoke_script =
+            std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
+        assert!(smoke_script
+            .contains("POSTGRES_SCHEMA_RESET_URL='postgresql://cdk:cdk@localhost:5432/cdk_mint'"));
+        assert!(smoke_script.contains("RESET_POSTGRES_SCHEMAS=\"${RESET_POSTGRES_SCHEMAS:-0}\""));
+        assert!(smoke_script.contains("generated PostgreSQL member schemas are configured"));
+        assert!(smoke_script.contains("psql is required to reset PostgreSQL member schemas"));
+        assert!(smoke_script.contains("DROP SCHEMA IF EXISTS"));
+        assert!(smoke_script.contains("CREATE SCHEMA"));
+        for member_id in artifacts.member_artifacts.keys() {
+            assert!(smoke_script.contains(&format!("cdk_federation_member_{}", member_id.get())));
         }
 
         let _ = std::fs::remove_dir_all(&output_dir);

@@ -544,7 +544,7 @@ fed-regtest-postgres dir="target/cdk-fed-regtest-postgres" members="5" threshold
   fi
   just fed-regtest-postgres-preflight "{{postgres_base_url}}"
   just fed-regtest-postgres-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{postgres_base_url}}"
-  CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
+  RESET_POSTGRES_SCHEMAS=1 CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
 
 # Start generated PostgreSQL-backed fake-wallet federation members and leave them running
 fed-regtest-postgres-start dir="target/cdk-fed-regtest-postgres" members="5" threshold="3" port_start="22885" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":

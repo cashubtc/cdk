@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated local federation smoke passed end to end with a member offline across key rotation, old-keyset restore, old-proof spend, post-rotation minting, melting, and restart catch-up</span>
+          <span class="value">Generated local federation smoke passed end to end, and the Postgres-backed smoke path now resets generated member schemas before clean process runs</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: add dkg record recovery runbook</span>
+          <span class="value">feat: reset postgres federation smoke schemas</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Generated local federation smoke scripts now print DKG record recovery commands for database-backed checks and file-based keyset-share/transcript-signature handoff when readiness fails</span>
+          <span class="value">Generated Postgres/base-url smoke scripts can drop and recreate only their generated per-member schemas, while direct script runs require an explicit reset opt-in</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Exercise a generated local DKG setup path end to end, then continue into accepted-rotation persistence and active-keyset switching</span>
+          <span class="value">Run the live Postgres-backed federation smoke, then compare convergence, restart, catch-up, and session-outcome evidence with the SQLite smoke</span>
         </div>
       </aside>
     </header>
@@ -1547,6 +1547,10 @@
             <p>The generated local smoke script now includes failure-time guidance for `federation dkg-status --from-database` plus file-based `--keyset-share` and `--transcript-signature` recovery checks, so operators have reconstructable DKG completion commands in the generated artifacts.</p>
           </article>
           <article class="item">
+            <h3>Postgres smoke schema reset ready</h3>
+            <p>Generated Postgres/base-url smoke scripts now know the deterministic per-member schemas they own, refuse schema resets unless `RESET_POSTGRES_SCHEMAS=1` is set, and the `just fed-regtest-postgres` wrapper opts in for clean local process-smoke runs.</p>
+          </article>
+          <article class="item">
             <h3>DKG setup private routes added</h3>
             <p>Federation members now expose signed private REST endpoints for DKG commitments and reveals, the peer client can submit both messages, and accepted setup payloads persist the sender sequence watermark.</p>
           </article>
@@ -1924,6 +1928,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation -- --test-threads 1` passed 61 tests, including the new keyset-rotation smoke CLI parser and trusted-dealer artifact checks for one active plus one inactive aggregate keyset. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo build -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and the generated three-member local smoke script passed with standard operations, one offline-operation batch, paid and failed pending-melt recovery, payment-observation quarantine catch-up, and keyset rotation restoring 4 old-keyset sats, minting 4 post-rotation sats, melting 1 sat, and restoring final unspent/spent state.</td>
               <td>Keep one member offline across the keyset rotation operation and verify restart catch-up converges, then repeat the generated smoke with Postgres-backed storage.</td>
+            </tr>
+            <tr>
+              <td>Postgres smoke schema reset</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_support_postgres_schema_base_url -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_support_postgres_database_template -- --test-threads 1`, and `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1` passed. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite,postgres,prometheus` and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed.</td>
+              <td>Run `just fed-regtest-postgres` against a live local Postgres service and compare convergence, restart, catch-up, schema reset behavior, and session-outcome evidence with the SQLite smoke.</td>
             </tr>
             <tr>
               <td>State convergence certification plan</td>
