@@ -286,6 +286,11 @@ impl WalletTraitDef for Wallet {
         Ok(proofs)
     }
 
+    async fn mint_unissued_quotes(&self) -> Result<Self::Amount, Self::Error> {
+        let amount = WalletTraitDef::mint_unissued_quotes(self.inner().as_ref()).await?;
+        Ok(amount.into())
+    }
+
     async fn check_mint_quote_status(
         &self,
         quote_id: &str,

@@ -241,6 +241,11 @@ impl WalletTrait for super::Wallet {
     }
 
     #[instrument(skip(self))]
+    async fn mint_unissued_quotes(&self) -> Result<Amount, Self::Error> {
+        self.mint_unissued_quotes().await
+    }
+
+    #[instrument(skip(self))]
     async fn check_mint_quote_status(&self, quote_id: &str) -> Result<MintQuote, Self::Error> {
         self.check_mint_quote_status(quote_id).await
     }

@@ -995,6 +995,9 @@ pub trait Wallet: Send + Sync {
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Self::Error>;
 
+    /// Check and mint any paid but unissued mint quotes
+    async fn mint_unissued_quotes(&self) -> Result<Self::Amount, Self::Error>;
+
     /// Check mint quote status
     async fn check_mint_quote_status(&self, quote_id: &str)
         -> Result<Self::MintQuote, Self::Error>;
