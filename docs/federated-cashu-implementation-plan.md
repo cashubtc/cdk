@@ -460,7 +460,7 @@ Implementation checklist:
   - [x] `federation_journal_entries` for accepted items, operation envelopes, and operation outcomes.
   - [ ] `federation_signature_share`; federated shares currently use existing blind-signature rows.
   - [x] `federation_payment_observations`.
-  - [ ] `federation_state_digest`; current digests are computed and reported, but no dedicated digest-history table exists.
+  - [ ] Dedicated `federation_state_digest` digest-history table; current digests are computed and reported through existing session/status data.
   - [x] `federation_member_sequences` for private REST sequence watermarks.
   - [ ] Dedicated `federation_member_status` table if runtime/admin state should become persistent.
 - [x] Keep existing mint tables as the materialized state used by existing APIs where possible.
@@ -558,7 +558,7 @@ Implementation checklist:
 - [ ] Add explicit payment ID and observed-time fields if optional payment proof plus journal ordering are insufficient.
 - [x] Mark quote paid only after the configured observation policy is satisfied.
 - [x] For fake wallet MVP, allow all members to observe paid deterministically.
-- [ ] For real Lightning/onchain, define observation policies:
+- [x] For real Lightning/onchain, define observation policies:
   - [x] shared backend or independently verifiable settlement: threshold matching observations.
   - [x] origin-custodied invoice: origin observation plus policy-defined quorum acknowledgement.
   - [x] onchain: consensus block height plus transaction proof.
@@ -916,15 +916,21 @@ Local multi-mint federation harness:
 
 Tests and success criteria:
 
-- [ ] `just fed-regtest` starts a 5-member fake-wallet federation. Status: target and generated smoke script exist, but this was not re-run during the audit.
-- [ ] A CDK wallet can mint, swap, restore, and check state against it. Status: connector and local smoke coverage exist, but this full regtest was not re-run during the audit.
-- [ ] A CDK wallet can melt through the fake-wallet federation and receive aggregated change signatures when change is expected. Status: code/tests exist, but this full regtest was not re-run during the audit.
-- [ ] Stopping one member still allows operations if threshold and consensus quorum allow. Status: stop/start tooling and catch-up tests exist, but this exact regtest was not re-run during the audit.
-- [ ] Restarting the stopped member makes it reconnect, catch up from peers, and reach the same state digest. Status: catch-up tests and tooling exist, but this exact regtest was not re-run during the audit.
-- [ ] State digest comparison reports all members equal after each test. Status: digest comparison command exists, but this exact regtest was not re-run during the audit.
+- [x] `just fed-regtest` target and generated smoke scripts exist for fake-wallet federation runs.
+- [ ] Re-run `just fed-regtest` and record that it starts a 5-member fake-wallet federation.
+- [x] Connector and local smoke coverage exist for mint, swap, restore, and check-state flows.
+- [ ] Re-run full regtest proving a CDK wallet can mint, swap, restore, and check state against the federation.
+- [x] Code and tests exist for fake-wallet federated melt and aggregated change signatures.
+- [ ] Re-run full regtest proving a CDK wallet can melt through the fake-wallet federation and receive aggregated change signatures when change is expected.
+- [x] Stop/start tooling and catch-up tests exist for threshold liveness and member recovery.
+- [ ] Re-run regtest proving stopping one member still allows operations if threshold and consensus quorum allow.
+- [ ] Re-run regtest proving restarting the stopped member reconnects, catches up from peers, and reaches the same state digest.
+- [x] State digest comparison command exists.
+- [ ] Re-run regtest proving state digest comparison reports all members equal after each test.
 - [x] Local private REST peer authentication rejects unknown members, wrong federation IDs, wrong claimed member IDs, and invalid signatures on localhost.
 - [x] Local status commands clearly show connected, offline, lagging, catching-up, and healthy members.
-- [ ] `just fed-regtest-clean` leaves no running member processes and removes generated local state. Status: clean target exists, but it was not re-run during the audit.
+- [x] `just fed-regtest-clean` target exists.
+- [ ] Re-run `just fed-regtest-clean` and verify it leaves no running member processes or generated local state.
 
 ## Milestone 18: storage backend coverage
 
@@ -934,17 +940,19 @@ Implementation checklist:
 
 - [x] Implement federation DB traits for SQLite first.
 - [x] Implement Postgres after SQLite semantics are stable.
-- [ ] Decide whether Redb is wallet-only and therefore out of scope for mint federation. Status: no explicit decision note was found.
+- [ ] Decide whether Redb is wallet-only and therefore out of scope for mint federation.
 - [x] Keep migrations additive and compatible with standalone mode.
-- [ ] Add SQL lock ordering rules for all conflict keys to avoid deadlocks. Status: conflict keys and concurrency tests exist; a documented SQL lock-ordering rule set was not confirmed.
-- [x] Add database indexes for operation hash, quote ID, proof Y, blinded message, session index, and member ID. Status: federation journal/payment/session indexes exist; exact index coverage should still be reviewed alongside the missing signature-share table.
+- [x] Conflict keys and concurrent request stress tests exist.
+- [ ] Document SQL lock ordering rules for all conflict keys to avoid deadlocks.
+- [x] Add federation journal/payment/session indexes for operation/session/payment hot paths.
+- [ ] Review and add exact indexes for quote ID, proof Y, blinded message, and dedicated signature-share rows after the final federation schema settles.
 
 Tests and success criteria:
 
-- [ ] SQLite unit and integration tests pass. Status: not re-run during this audit.
-- [ ] Postgres integration tests pass when a Postgres instance is available. Status: not re-run during this audit.
+- [ ] Re-run SQLite unit and integration tests.
+- [ ] Re-run Postgres integration tests when a Postgres instance is available.
 - [x] Concurrent request stress tests do not deadlock.
-- [ ] Query plans for hot paths use indexes. Status: indexes exist, but no query-plan verification was confirmed.
+- [ ] Verify query plans for hot paths use indexes.
 
 ## Milestone 19: real payment backend policy
 
@@ -976,8 +984,9 @@ Objective: replace trusted-dealer setup with dealer-free DKG.
 
 Implementation checklist:
 
-- [ ] Port or adapt Pedersen DKG for BLS G2, using Fedimint's DKG as a reference. Status: DKG setup phases and share aggregation scaffold exist, but a complete production-ready dealer-free Pedersen DKG replacement is not yet confirmed.
-- [x] Run DKG over authenticated P2P during federation setup, accepting DKG messages only from identity public keys in the federation roster. Status: implemented over authenticated private REST setup routes.
+- [x] Add DKG setup phases, commitments/reveals, secret-share contributions, transcript signatures, and local member keyset-share derivation.
+- [ ] Complete a production-ready dealer-free Pedersen DKG replacement for BLS G2, using Fedimint's DKG as a reference.
+- [x] Run DKG over authenticated private REST setup routes, accepting DKG messages only from identity public keys in the federation roster.
 - [x] Include federation ID, member roster, member identity public keys, participant order, commitments, BLS public shares, and aggregate public keys in the DKG transcript.
 - [x] Require each participant to sign the final DKG transcript with its federation identity key.
 - [x] Commit hash of polynomial commitments before revealing commitments.
@@ -986,7 +995,7 @@ Implementation checklist:
 - [x] Persist DKG transcript for audit and recovery.
 - [x] Persist the final roster hash and DKG transcript hash in each member config.
 - [x] Support key rotation through consensus as a federation operation.
-- [ ] Keep trusted-dealer mode for tests only. Status: trusted-dealer setup remains the primary local generator path.
+- [ ] Make trusted-dealer mode test-only once production DKG is complete.
 
 Tests and success criteria:
 
@@ -1005,20 +1014,23 @@ Objective: keep long-running federations maintainable.
 
 Implementation checklist:
 
-- [x] Add consensus operation `RotateKeyset`. Status: implemented as `KeysetRotation`.
+- [x] Add consensus operation `KeysetRotation`.
 - [x] New aggregate keysets become active only after consensus acceptance.
-- [ ] Each member proves possession of the corresponding secret share before activation. Status: key-share validation exists, but an explicit rotation-time proof-of-possession gate was not confirmed.
+- [x] Validate configured key shares against public shares.
+- [ ] Add an explicit rotation-time proof-of-possession gate before activating a new keyset.
 - [x] Wallet sees NUT-02 keyset changes consistently across members.
-- [ ] Add protocol version negotiation in federation metadata. Status: no full negotiation mechanism confirmed.
-- [ ] Add migration plan for changing operation encoding versions. Status: no dedicated migration plan confirmed.
+- [ ] Add protocol version negotiation in federation metadata.
+- [ ] Add migration plan for changing operation encoding versions.
 - [x] Add member add/remove as a later, explicit governance operation. Do not include in MVP.
 
 Tests and success criteria:
 
 - [x] Wallet can mint with new active keyset after rotation.
 - [x] Old proofs remain spendable.
-- [ ] Members with stale config refuse to join upgraded consensus. Status: config mismatch validation exists; stale-upgrade consensus tests were not confirmed.
-- [ ] Mixed version tests reject unsupported major versions cleanly. Status: version fields and some version checks exist; mixed-version federation tests remain open.
+- [x] Config mismatch validation exists for federation membership/configuration.
+- [ ] Add stale-upgrade consensus tests proving members with stale config refuse to join upgraded consensus.
+- [x] Version fields and some version checks exist for federation data.
+- [ ] Add mixed-version federation tests proving unsupported major versions are rejected cleanly.
 
 ## Milestone 22: observability and operator safety
 
@@ -1026,18 +1038,19 @@ Objective: make failures diagnosable without exposing private user data.
 
 Implementation checklist:
 
-- [ ] Add metrics for consensus height, pending mempool items, accepted operations, rejected operations, signing share latency, aggregation failures, state digest mismatches, and peer connectivity. Status: admin/status reporting exists; comprehensive metrics coverage was not confirmed.
+- [x] Add admin/status reporting for consensus height, digests, lag, and peer state.
+- [ ] Add comprehensive metrics for consensus height, pending mempool items, accepted operations, rejected operations, signing share latency, aggregation failures, state digest mismatches, and peer connectivity.
 - [x] Add structured logs with short operation hashes, not full secrets or PII.
 - [x] Add admin command to compare state digests across members.
 - [x] Add admin command to list pending payment observations by quote ID.
 - [x] Add alert when a member is behind by more than configured sessions.
-- [ ] Add alert when too many invalid operations are submitted by one client IP or auth token. Status: not confirmed.
+- [ ] Add alert when too many invalid operations are submitted by one client IP or auth token.
 - [x] Redact proof secrets, witnesses, invoices, local paths, and private keys from logs.
 
 Tests and success criteria:
 
 - [x] Log snapshot tests verify redaction of secrets and private config.
-- [ ] Metrics are emitted in fake regtest. Status: not confirmed.
+- [ ] Metrics are emitted in fake regtest.
 - [x] Digest mismatch alert fires in an injected-divergence test.
 
 ## Milestone 23: security review checklist
@@ -1046,23 +1059,31 @@ Objective: make the design reviewable before mainnet use.
 
 Implementation checklist:
 
-- [ ] Review threshold choice and BFT assumptions. Status: defaults and validation are implemented; formal review remains open.
-- [ ] Review operation canonicalization and transcript binding. Status: canonical JSON hashing exists; binary encoding and dedicated SIG_ALL transcript review remain open.
-- [ ] Review all paths that can call `blind_sign` or `blind_sign_share`. Status: no final review checklist/signoff found.
-- [ ] Ensure no public endpoint can bypass consensus in federation mode. Status: public handlers are wired through federation paths, but final security review remains open.
-- [ ] Review NUT-20 signature verification for federated batch issuance. Status: federated NUT-20 coverage not confirmed.
-- [ ] Review P2PK, HTLC, and SIG_ALL transcript construction. Status: federated transcript tests remain open.
+- [x] Implement default threshold rules and validation.
+- [ ] Complete formal review of threshold choice and BFT assumptions.
+- [x] Implement canonical JSON operation hashing.
+- [ ] Complete formal review of operation canonicalization and transcript binding, including the binary-encoding decision and dedicated SIG_ALL transcript behavior.
+- [ ] Complete final review of all paths that can call `blind_sign` or `blind_sign_share`.
+- [x] Public handlers are wired through federation paths in federation mode.
+- [ ] Complete final security review proving no public endpoint can bypass consensus in federation mode.
+- [ ] Complete final review and/or tests for NUT-20 signature verification in federated batch issuance.
+- [ ] Complete final review and/or tests for P2PK, HTLC, and SIG_ALL transcript construction.
 - [x] Review real payment observation policies.
-- [ ] Review DB conflict keys and indexes. Status: conflict keys and indexes exist, but missing signature-share table and query-plan review remain open.
+- [x] Implement DB conflict keys and initial federation indexes.
+- [ ] Complete final DB conflict-key and index review after the signature-share schema and query-plan checks are done.
 - [x] Review member identity authentication.
-- [ ] Review denial-of-service surfaces: huge witnesses, huge batches, repeated invalid ops, slow consensus, and restore spam. Status: size limits exist; full DoS review remains open.
+- [x] Implement size/admission limits for oversized consensus items.
+- [ ] Complete full DoS review for huge witnesses, huge batches, repeated invalid ops, slow consensus, and restore spam.
 
 Tests and success criteria:
 
-- [ ] Independent reviewer can trace every signature share to an accepted operation hash. Status: operation IDs are tied to share generation, but lack of a separate signature-share table means this needs final review.
-- [ ] Fuzzers cover operation decoding and request conversion. Status: no federation operation fuzz target confirmed.
-- [ ] Attack regression suite passes. Status: attack tests exist, but the full suite was not re-run during this audit.
-- [ ] No known route signs directly in federation mode. Status: code paths appear consensus-gated, but final security-review signoff remains open.
+- [x] Operation IDs are tied to share generation in federation apply paths.
+- [ ] Ensure an independent reviewer can trace every signature share to an accepted operation hash after the signature-share persistence decision is finalized.
+- [ ] Add federation operation fuzz targets for operation decoding and request conversion.
+- [x] Attack regression tests exist.
+- [ ] Re-run and record the full attack regression suite.
+- [x] Code paths appear consensus-gated in federation mode.
+- [ ] Complete final security-review signoff that no route signs directly in federation mode.
 
 ## MVP cut lines
 
