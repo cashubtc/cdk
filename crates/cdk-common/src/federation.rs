@@ -78,9 +78,185 @@ const FEDERATION_DKG_COMMITMENT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-commi
 const FEDERATION_DKG_TRANSCRIPT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-transcript-v1";
 const FEDERATION_DKG_TRANSCRIPT_SIGNATURE_VERSION: &[u8] =
     b"cdk-federation-dkg-transcript-signature-v1";
+const FEDERATION_OPERATOR_REDACTED_VALUE: &str = "[REDACTED]";
+const FEDERATION_OPERATOR_REDACTED_PATH: &str = "[REDACTED_PATH]";
+const FEDERATION_OPERATOR_REDACTED_URL_CREDENTIAL: &str = "redacted";
 
 /// Result alias for federation configuration validation.
 pub type Result<T> = std::result::Result<T, FederationError>;
+
+/// Redact likely secrets and local paths from federation operator-facing text.
+pub fn redact_federation_operator_message(message: &str) -> String {
+    message
+        .split_whitespace()
+        .map(redact_federation_operator_token)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn redact_federation_operator_token(token: &str) -> String {
+    let (prefix, core, suffix) = split_federation_operator_token(token);
+    if core.is_empty() {
+        return token.to_string();
+    }
+
+    format!("{prefix}{}{suffix}", redact_federation_operator_core(core))
+}
+
+fn redact_federation_operator_core(core: &str) -> String {
+    let redacted_core = redact_federation_operator_value(core);
+    if redacted_core != core {
+        return redacted_core;
+    }
+
+    if let Some((key, separator, value)) = split_federation_operator_key_value(core) {
+        if federation_operator_key_is_sensitive(key) {
+            return format!("{key}{separator}{FEDERATION_OPERATOR_REDACTED_VALUE}");
+        }
+
+        let redacted_value = redact_federation_operator_value(value);
+        if redacted_value != value {
+            return format!("{key}{separator}{redacted_value}");
+        }
+    }
+
+    core.to_string()
+}
+
+fn redact_federation_operator_value(value: &str) -> String {
+    if let Some(redacted_url) = redact_federation_operator_url(value) {
+        return redacted_url;
+    }
+    if looks_like_federation_operator_path(value) {
+        return FEDERATION_OPERATOR_REDACTED_PATH.to_string();
+    }
+
+    value.to_string()
+}
+
+fn redact_federation_operator_url(value: &str) -> Option<String> {
+    let mut url = url::Url::parse(value).ok()?;
+    if url.scheme().eq_ignore_ascii_case("file") {
+        return Some(FEDERATION_OPERATOR_REDACTED_PATH.to_string());
+    }
+    if url.username().is_empty() && url.password().is_none() {
+        return None;
+    }
+
+    if url
+        .set_username(FEDERATION_OPERATOR_REDACTED_URL_CREDENTIAL)
+        .is_err()
+    {
+        return Some(FEDERATION_OPERATOR_REDACTED_VALUE.to_string());
+    }
+    if url
+        .set_password(Some(FEDERATION_OPERATOR_REDACTED_URL_CREDENTIAL))
+        .is_err()
+    {
+        return Some(FEDERATION_OPERATOR_REDACTED_VALUE.to_string());
+    }
+
+    Some(url.to_string())
+}
+
+fn looks_like_federation_operator_path(value: &str) -> bool {
+    if value.starts_with("~/") || value.starts_with("./") || value.starts_with("../") {
+        return true;
+    }
+    if value.starts_with('/') && !value.starts_with("//") && value.len() > 1 {
+        return true;
+    }
+
+    let bytes = value.as_bytes();
+    bytes.len() > 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'/' || bytes[2] == b'\\')
+}
+
+fn split_federation_operator_key_value(core: &str) -> Option<(&str, char, &str)> {
+    for separator in ['=', ':'] {
+        if let Some(index) = core.find(separator) {
+            let key = &core[..index];
+            let value = &core[index + separator.len_utf8()..];
+            if separator == ':' && value.starts_with("//") {
+                continue;
+            }
+            if !value.is_empty() && federation_operator_key_is_structured(key) {
+                return Some((key, separator, value));
+            }
+        }
+    }
+
+    None
+}
+
+fn federation_operator_key_is_structured(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 64
+        && key
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+}
+
+fn federation_operator_key_is_sensitive(key: &str) -> bool {
+    let key = key
+        .trim_start_matches('-')
+        .to_ascii_lowercase()
+        .replace('-', "_");
+    key.contains("password")
+        || key.contains("passwd")
+        || key.contains("secret")
+        || key.contains("token")
+        || key.contains("api_key")
+        || key.contains("apikey")
+        || key.contains("mnemonic")
+        || key.contains("seed")
+        || key.contains("preimage")
+        || key.contains("invoice")
+        || key.contains("proof")
+        || key.contains("private_config")
+        || key == "path"
+        || key.ends_with("_path")
+}
+
+fn split_federation_operator_token(token: &str) -> (&str, &str, &str) {
+    let start = token
+        .char_indices()
+        .find_map(|(index, ch)| {
+            if federation_operator_token_prefix(ch) {
+                None
+            } else {
+                Some(index)
+            }
+        })
+        .unwrap_or(token.len());
+    if start == token.len() {
+        return (token, "", "");
+    }
+
+    let end = token
+        .char_indices()
+        .rev()
+        .find_map(|(index, ch)| {
+            if index < start || federation_operator_token_suffix(ch) {
+                None
+            } else {
+                Some(index + ch.len_utf8())
+            }
+        })
+        .unwrap_or(start);
+
+    (&token[..start], &token[start..end], &token[end..])
+}
+
+fn federation_operator_token_prefix(ch: char) -> bool {
+    matches!(ch, '(' | '[' | '{' | '<' | '"' | '\'')
+}
+
+fn federation_operator_token_suffix(ch: char) -> bool {
+    matches!(ch, ')' | ']' | '}' | '>' | '"' | '\'' | ',' | ';')
+}
 
 /// Errors returned by federation configuration helpers.
 #[derive(Debug, Error)]
@@ -3095,6 +3271,45 @@ mod tests {
 
     fn bls_key(byte: u8) -> BlsSecretKey {
         BlsSecretKey::from_reduced_bytes(&[byte; 32])
+    }
+
+    #[test]
+    fn federation_operator_message_redacts_sensitive_fragments() {
+        let message = concat!(
+            "peer 2 digest mismatch at operation count 4 ",
+            "password=hunter2 token=sync-token ",
+            "private_config_path=/home/example/fed/private.json ",
+            "database_url=postgresql://status:db-secret@db.example.invalid/cdk ",
+            "file=file:///home/example/cdk/config.toml ",
+            "relative=../member/private.json ",
+            "route=https://fed.example.invalid/federation/v1/local-status ",
+            "(secret=quoted-secret),"
+        );
+
+        let redacted = redact_federation_operator_message(message);
+
+        assert!(redacted.contains("digest mismatch"));
+        assert!(redacted.contains("password=[REDACTED]"));
+        assert!(redacted.contains("token=[REDACTED]"));
+        assert!(redacted.contains("private_config_path=[REDACTED]"));
+        assert!(
+            redacted.contains("database_url=postgresql://redacted:redacted@db.example.invalid/cdk")
+        );
+        assert!(redacted.contains("file=[REDACTED_PATH]"));
+        assert!(redacted.contains("relative=[REDACTED_PATH]"));
+        assert!(redacted.contains("route=https://fed.example.invalid/federation/v1/local-status"));
+        assert!(redacted.contains("(secret=[REDACTED]),"));
+        for sensitive in [
+            "hunter2",
+            "sync-token",
+            "/home/example",
+            "db-secret",
+            "file://",
+            "../member",
+            "quoted-secret",
+        ] {
+            assert!(!redacted.contains(sensitive));
+        }
     }
 
     fn dkg_amount_coefficients(seed: u8) -> BTreeMap<Amount, Vec<BlsSecretKey>> {

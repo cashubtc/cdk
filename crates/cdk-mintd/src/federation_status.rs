@@ -3,11 +3,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
-    FederationConfig, FederationId, FederationPaymentObservationReportAction,
-    FederationPaymentObservationReportStatus, FederationPaymentObservationReportSummary,
-    FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
-    FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic, MemberId,
-    FEDERATION_REST_API_VERSION,
+    redact_federation_operator_message, FederationConfig, FederationId,
+    FederationPaymentObservationReportAction, FederationPaymentObservationReportStatus,
+    FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
+    FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic,
+    MemberId, FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
 use serde::{Deserialize, Serialize};
@@ -230,7 +230,7 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         payment_unresolved,
         payment_stale,
         payment_quarantine,
-        status.sync_message
+        redact_federation_operator_message(&status.sync_message)
     )
 }
 
@@ -350,7 +350,7 @@ fn ensure_statuses_ready(statuses: &[FederationLocalStatusResponse]) -> Result<(
             bail!(
                 "federation member {} is not ready: {}",
                 status.peer_status.member_id,
-                status.sync_message
+                redact_federation_operator_message(&status.sync_message)
             );
         }
     }
@@ -421,7 +421,7 @@ fn ensure_statuses_no_digest_alerts(statuses: &[FederationLocalStatusResponse]) 
                 "federation member {} reports digest alert: sync={} message={}",
                 status.peer_status.member_id,
                 status.sync_state,
-                status.sync_message
+                redact_federation_operator_message(&status.sync_message)
             );
         }
     }
@@ -832,6 +832,49 @@ mod tests {
     }
 
     #[test]
+    fn status_line_redacts_sensitive_sync_message() {
+        let (public_config, _) = status_fixture();
+        let mut status = local_status(&public_config, 1, 2);
+        status.sync_state = "halted".to_string();
+        status.sync_ready = false;
+        status.sync_message = concat!(
+            "peer 2 digest mismatch at operation count 2 ",
+            "password=hunter2 token=sync-token ",
+            "private_config_path=/home/example/fed/private.json ",
+            "database_url=postgresql://status:db-secret@db.example.invalid/cdk"
+        )
+        .to_string();
+
+        let line = member_status_line(&status);
+
+        assert!(line.contains("digest mismatch"));
+        assert!(line.contains("password=[REDACTED]"));
+        assert!(line.contains("token=[REDACTED]"));
+        assert!(line.contains("private_config_path=[REDACTED]"));
+        assert!(!line.contains("hunter2"));
+        assert!(!line.contains("sync-token"));
+        assert!(!line.contains("/home/example"));
+        assert!(!line.contains("db-secret"));
+    }
+
+    #[test]
+    fn status_readiness_guard_redacts_sensitive_sync_message() {
+        let (public_config, _) = status_fixture();
+        let mut status = not_ready_status(&public_config, 1);
+        status.sync_message =
+            "lagging while reading secret=sync-secret from /home/example/fed/private.json"
+                .to_string();
+
+        let err = ensure_statuses_ready(&[status]).expect_err("not ready should fail");
+        let message = err.to_string();
+
+        assert!(message.contains("secret=[REDACTED]"));
+        assert!(message.contains("[REDACTED_PATH]"));
+        assert!(!message.contains("sync-secret"));
+        assert!(!message.contains("/home/example"));
+    }
+
+    #[test]
     fn status_lines_include_payment_observation_report_counts() {
         let (public_config, _) = status_fixture();
         let mut status = local_status(&public_config, 1, 2);
@@ -1118,6 +1161,29 @@ mod tests {
 
         assert!(err.to_string().contains("reports digest alert"));
         assert!(err.to_string().contains("halted"));
+    }
+
+    #[test]
+    fn status_digest_alert_guard_redacts_sensitive_halted_message() {
+        let (public_config, _) = status_fixture();
+        let mut status = local_status(&public_config, 1, 2);
+        status.sync_state = "halted".to_string();
+        status.sync_ready = false;
+        status.sync_message = concat!(
+            "peer 2 digest mismatch at operation count 2 ",
+            "password=hunter2 private_config_path=/home/example/fed/private.json"
+        )
+        .to_string();
+
+        let err =
+            ensure_statuses_no_digest_alerts(&[status]).expect_err("halted digest mismatch fails");
+        let message = err.to_string();
+
+        assert!(message.contains("digest mismatch"));
+        assert!(message.contains("password=[REDACTED]"));
+        assert!(message.contains("private_config_path=[REDACTED]"));
+        assert!(!message.contains("hunter2"));
+        assert!(!message.contains("/home/example"));
     }
 
     #[test]

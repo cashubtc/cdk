@@ -15,13 +15,13 @@ use axum::Router;
 use cache::HttpCache;
 #[cfg(feature = "federation")]
 use cdk::federation::{
-    FederationConfig, FederationConsensusEngine, FederationConsensusRuntime,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSetupState, FederationDkgTranscriptSignatureRequest, FederationError,
-    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationRestSequenceTracker, FederationSessionOutcome, FederationSubmitOperationResponse,
-    MemberId,
+    redact_federation_operator_message, FederationConfig, FederationConsensusEngine,
+    FederationConsensusRuntime, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgSetupState,
+    FederationDkgTranscriptSignatureRequest, FederationError, FederationJournalAppendOutcome,
+    FederationJournalCatchUpResponse, FederationJournalEntry, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationStatus, FederationRestSequenceTracker,
+    FederationSessionOutcome, FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -255,7 +255,12 @@ impl FederationSyncStatus {
             } => format!(
                 "federation member is waiting for materialized state digest convergence with peer {peer}: operation_count={operation_count}"
             ),
-            Self::Halted { reason } => format!("federation member is halted: {reason}"),
+            Self::Halted { reason } => {
+                format!(
+                    "federation member is halted: {}",
+                    redact_federation_operator_message(reason)
+                )
+            }
         }
     }
 }
@@ -344,7 +349,54 @@ impl FederationSyncState {
     }
 
     fn mark_halted(&mut self, reason: String) {
+        let reason = redact_federation_operator_message(&reason);
         self.status = FederationSyncStatus::Halted { reason };
+    }
+}
+
+#[cfg(all(test, feature = "federation"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn federation_halted_sync_status_redacts_operator_message() {
+        let status = FederationSyncStatus::Halted {
+            reason: concat!(
+                "peer 2 digest mismatch at operation count 4 ",
+                "password=hunter2 token=sync-token ",
+                "private_config_path=/home/example/fed/private.json ",
+                "database_url=postgresql://status:db-secret@db.example.invalid/cdk"
+            )
+            .to_string(),
+        };
+
+        let message = status.not_ready_message();
+
+        assert!(message.contains("digest mismatch"));
+        assert!(!message.contains("hunter2"));
+        assert!(!message.contains("sync-token"));
+        assert!(!message.contains("/home/example"));
+        assert!(!message.contains("db-secret"));
+    }
+
+    #[test]
+    fn federation_sync_state_stores_redacted_halted_reason() {
+        let mut state = FederationSyncState::default();
+
+        state.mark_halted(
+            "halted while reading secret=sync-secret from /home/example/fed/private.json"
+                .to_string(),
+        );
+
+        match state.status() {
+            FederationSyncStatus::Halted { reason } => {
+                assert!(reason.contains("secret=[REDACTED]"));
+                assert!(reason.contains("[REDACTED_PATH]"));
+                assert!(!reason.contains("sync-secret"));
+                assert!(!reason.contains("/home/example"));
+            }
+            _ => panic!("expected halted status"),
+        }
     }
 }
 
