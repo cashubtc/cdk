@@ -2188,17 +2188,27 @@ mod tests {
     }
 
     fn transport_config() -> (FederationConfig, MemberConfigPrivate, MemberConfigPrivate) {
+        transport_config_with_federation_api_urls(
+            MintUrl::from_str("https://fed1.example.com/api").expect("federation api url"),
+            MintUrl::from_str("https://fed2.example.com/api").expect("federation api url"),
+        )
+    }
+
+    fn transport_config_with_federation_api_urls(
+        first_federation_api_url: MintUrl,
+        second_federation_api_url: MintUrl,
+    ) -> (FederationConfig, MemberConfigPrivate, MemberConfigPrivate) {
         let members = vec![
             TrustedDealerMember::new(
                 member_id(1),
                 MintUrl::from_str("https://mint1.example.com").expect("public mint url"),
-                MintUrl::from_str("https://fed1.example.com/api").expect("federation api url"),
+                first_federation_api_url,
                 SecretKey::from_slice(&[1; 32]).expect("identity secret"),
             ),
             TrustedDealerMember::new(
                 member_id(2),
                 MintUrl::from_str("https://mint2.example.com").expect("public mint url"),
-                MintUrl::from_str("https://fed2.example.com/api").expect("federation api url"),
+                second_federation_api_url,
                 SecretKey::from_slice(&[2; 32]).expect("identity secret"),
             ),
         ];
@@ -3024,6 +3034,101 @@ mod tests {
         assert!(reveals[0].sequence > commitments[0].sequence);
         assert!(secret_shares[0].sequence > reveals[0].sequence);
         assert!(transcript_signatures[0].sequence > secret_shares[0].sequence);
+    }
+
+    #[tokio::test]
+    async fn rest_peer_client_submits_dkg_setup_messages_over_http() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind receiver federation route");
+        let address = listener.local_addr().expect("receiver route address");
+        let sender_federation_api_url =
+            MintUrl::from_str("http://127.0.0.1:9").expect("sender federation api url");
+        let receiver_federation_api_url =
+            MintUrl::from_str(&format!("http://127.0.0.1:{}", address.port()))
+                .expect("receiver federation api url");
+        let (public_config, sender_private, receiver_private) =
+            transport_config_with_federation_api_urls(
+                sender_federation_api_url,
+                receiver_federation_api_url,
+            );
+        let receiver_member = public_config
+            .member(receiver_private.member_id)
+            .expect("receiver member");
+        let commitment_request =
+            dkg_commitment_request(&public_config, sender_private.member_id, 11);
+        let expected_commitment = commitment_request.commitment;
+        let reveal_request = dkg_reveal_request(&public_config, sender_private.member_id, 11);
+        let expected_reveal = reveal_request.reveal.clone();
+        let secret_share_request = dkg_secret_share_request(
+            &public_config,
+            sender_private.member_id,
+            receiver_private.member_id,
+            11,
+        );
+        let expected_secret_share = secret_share_request.clone();
+        let receiver_state =
+            federation_route_state_for_private(public_config.clone(), receiver_private).await;
+        let router = Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(receiver_state.clone());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("receiver federation route server");
+        });
+        tokio::task::yield_now().await;
+
+        let client =
+            FederationRestPeerClient::new(Async::default(), &public_config, sender_private)
+                .expect("client");
+        client
+            .submit_dkg_commitment(receiver_member, &commitment_request)
+            .await
+            .expect("submit DKG commitment");
+        client
+            .submit_dkg_reveal(receiver_member, &reveal_request)
+            .await
+            .expect("submit DKG reveal");
+        client
+            .submit_dkg_secret_share(receiver_member, &secret_share_request)
+            .await
+            .expect("submit DKG secret share");
+
+        let sequences = receiver_state
+            .mint
+            .localstore()
+            .get_federation_member_sequences()
+            .await
+            .expect("persisted sequences");
+        let sender_sequence = sequences
+            .get(&member_id(1))
+            .copied()
+            .expect("persisted sender sequence");
+        assert!(sender_sequence >= 3);
+        let commitments = receiver_state
+            .mint
+            .localstore()
+            .get_federation_dkg_commitments()
+            .await
+            .expect("persisted commitments");
+        let reveals = receiver_state
+            .mint
+            .localstore()
+            .get_federation_dkg_reveals()
+            .await
+            .expect("persisted reveals");
+        let secret_shares = receiver_state
+            .mint
+            .localstore()
+            .get_federation_dkg_secret_share_contributions()
+            .await
+            .expect("persisted secret-share contributions");
+        assert_eq!(commitments, vec![expected_commitment]);
+        assert_eq!(reveals, vec![expected_reveal]);
+        assert_eq!(secret_shares, vec![expected_secret_share]);
+
+        server.abort();
     }
 
     #[tokio::test]

@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated local federation smoke passed end to end, and the Postgres-backed smoke path now resets generated member schemas before clean process runs</span>
+          <span class="value">Generated local federation smoke passed end to end, Postgres smoke cleanup resets generated member schemas, and DKG setup messages now pass through real private REST routes</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: correct dkg milestone frontier</span>
+          <span class="value">test: cover dkg peer client over http</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Dashboard frontier now reflects that key rotation runtime work is done; remaining DKG work is generated setup exercise plus live storage-backed smoke</span>
+          <span class="value">DKG commitment, reveal, and secret-share setup messages now traverse the real FederationRestPeerClient to Axum private routes and persist receiver records</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Run the live Postgres-backed federation smoke, then compare convergence, restart, catch-up, and session-outcome evidence with the SQLite smoke</span>
+          <span class="value">Drive generated route-driven DKG setup across member processes, then compare SQLite and Postgres storage-backed smoke coverage</span>
         </div>
       </aside>
     </header>
@@ -1611,6 +1611,10 @@
             <p>The local trusted-dealer smoke script now gates each member with `federation dkg-status --from-database --require-ready`, and the command treats already-finalized configs as ready without requiring DKG record files.</p>
           </article>
           <article class="item">
+            <h3>Real HTTP DKG setup path covered</h3>
+            <p>A loopback Axum test now sends DKG commitment, reveal, and secret-share setup messages through `FederationRestPeerClient`, proving URL construction, signed private REST validation, sender sequence persistence, and durable setup-record writes work together.</p>
+          </article>
+          <article class="item">
             <h3>Key rotation operation scaffold ready</h3>
             <p>Federation consensus can now encode proposed aggregate keysets, hash them canonically, dedupe conflicting payloads by keyset ID, and validate that rotation targets are v3/BLS keysets for the current roster.</p>
           </article>
@@ -1678,7 +1682,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, durable secret-share contribution storage, secret-share private REST exchange, route-driven local member keyset-share derivation, route-derived restart activation, generated record-recovery runbook guidance, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed setup-progress reads, generated setup readiness gates, and the key-rotation runtime path. The remaining setup work is generated local DKG setup exercise and live storage-backed smoke coverage.</p>
+            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, durable secret-share contribution storage, secret-share private REST exchange, a real HTTP setup-message bridge, route-driven local member keyset-share derivation, route-derived restart activation, generated record-recovery runbook guidance, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed setup-progress reads, generated setup readiness gates, and the key-rotation runtime path. The remaining setup work is generated local DKG setup exercise and live storage-backed smoke coverage.</p>
           </article>
         </div>
       </section>
@@ -1880,6 +1884,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1` and `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1` passed with generated smoke-script checks for `federation dkg-status`, `--from-database`, `member_dkg_status()`, `wait_for_dkg_status()`, and the `setup_records` recovery hint.</td>
               <td>Exercise this gate in the next live generated smoke run after route-driven DKG completion recovery is wired.</td>
+            </tr>
+            <tr>
+              <td>DKG setup HTTP bridge</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation rest_peer_client_submits_dkg_setup_messages_over_http -- --test-threads 1` passed with a loopback Axum receiver and the production async REST transport. `cargo test -p cdk-axum --features federation dkg -- --test-threads 1` passed 13 DKG route/client tests, `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 83 federation route/client tests, `cargo check -p cdk-axum --features federation` passed, and `git diff --check` passed.</td>
+              <td>Use this networked DKG setup path from generated member smoke scripts, then verify SQLite and Postgres process-level setup recovery.</td>
             </tr>
             <tr>
               <td>Key rotation operation scaffold</td>
