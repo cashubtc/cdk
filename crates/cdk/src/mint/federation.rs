@@ -1315,14 +1315,17 @@ mod tests {
     use std::sync::Arc;
 
     use cdk_common::common::FeeReserve;
-    use cdk_common::database::{MintFederationJournalDatabase, MintQuotesDatabase};
+    use cdk_common::database::mint::SagaDatabase;
+    use cdk_common::database::{
+        MintFederationJournalDatabase, MintProofsDatabase, MintQuotesDatabase,
+    };
     use cdk_common::federation::{
         generate_trusted_dealer_configs, FederationError, FederationJournalEntry,
-        FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
-        FederationOperationEnvelope, FederationPaymentObservationContext,
-        FederationPaymentObservationPolicy, FederationPaymentTrustModel,
-        InMemoryFederationConsensus, InMemoryFederationJournal, MemberId, ThresholdParams,
-        TrustedDealerKeysetSpec, TrustedDealerMember,
+        FederationMeltQuotePaymentObservation, FederationMintQuotePaymentObservation,
+        FederationMintRequest, FederationOperation, FederationOperationEnvelope,
+        FederationPaymentObservationContext, FederationPaymentObservationPolicy,
+        FederationPaymentTrustModel, InMemoryFederationConsensus, InMemoryFederationJournal,
+        MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     use cdk_common::mint_url::MintUrl;
     use cdk_common::nuts::nut00::KnownMethod;
@@ -1330,9 +1333,10 @@ mod tests {
     use cdk_common::quote_id::QuoteId;
     use cdk_common::secret::Secret;
     use cdk_common::{
-        Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Id, MeltRequest,
-        MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteRequest, MintQuoteResponse,
-        MintQuoteState, MintRequest, PaymentMethod, Proof, PublicKey, RestoreRequest, SecretKey,
+        Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Id, MeltQuoteBolt11Request,
+        MeltQuoteRequest, MeltQuoteState, MeltRequest, MintQuoteBolt11Request,
+        MintQuoteBolt11Response, MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest,
+        PaymentMethod, Proof, ProofsMethods, PublicKey, RestoreRequest, SecretKey, State,
         SwapRequest,
     };
     use cdk_sqlite::mint::{memory, MintSqliteDatabase};
@@ -1489,6 +1493,113 @@ mod tests {
                 payment_proof: Some(payment_proof.to_string()),
             },
         ))
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct MeltPaymentObservationFixture<'a> {
+        observer: u16,
+        state: MeltQuoteState,
+        amount: Amount,
+        fee_reserve: Amount,
+        payment_proof: Option<&'a str>,
+        failure_reason: Option<&'a str>,
+    }
+
+    fn melt_payment_observation_envelope(
+        runtime_config: &FederationRuntimeConfig,
+        quote: &QuoteId,
+        fixture: MeltPaymentObservationFixture<'_>,
+    ) -> FederationOperationEnvelope {
+        runtime_config.operation_envelope(FederationOperation::MeltQuotePayment(
+            FederationMeltQuotePaymentObservation {
+                quote: quote.to_string(),
+                observer: MemberId::new(fixture.observer).expect("observer"),
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                state: fixture.state,
+                amount: fixture.amount,
+                fee_reserve: fixture.fee_reserve,
+                payment_proof: fixture.payment_proof.map(str::to_string),
+                failure_reason: fixture.failure_reason.map(str::to_string),
+            },
+        ))
+    }
+
+    fn pending_melt_quote_request(amount_msat: u64) -> MeltQuoteRequest {
+        let description = cdk_fake_wallet::FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Pending,
+            check_payment_state: MeltQuoteState::Pending,
+            pay_err: false,
+            check_err: false,
+        };
+        let invoice = cdk_fake_wallet::create_fake_invoice(
+            amount_msat,
+            serde_json::to_string(&description).expect("fake invoice description"),
+        );
+
+        MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+            request: invoice,
+            unit: CurrencyUnit::Sat,
+            options: None,
+        })
+    }
+
+    async fn setup_pending_federated_melt(
+        mint: &Mint,
+        localstore: &Arc<MintSqliteDatabase>,
+        runtime_config: &FederationRuntimeConfig,
+        journal: &mut InMemoryFederationJournal,
+    ) -> (QuoteId, Vec<PublicKey>) {
+        let quote = QuoteId::new();
+        let quote_entry = appended_entry(
+            journal,
+            runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+        );
+        persist_and_apply_entry(mint, &quote_entry).await;
+
+        let proofs = vec![
+            proof_for_runtime(runtime_config, "melt-input-one"),
+            proof_for_runtime(runtime_config, "melt-input-two"),
+        ];
+        let input_ys = proofs.ys().expect("melt input ys");
+        let melt_request = MeltRequest::new(quote.clone(), proofs, None);
+        let melt_entry = appended_entry(
+            journal,
+            runtime_config
+                .melt_operation(melt_request)
+                .expect("melt operation"),
+        );
+        persist_and_apply_entry(mint, &melt_entry).await;
+
+        let pending_quote = localstore
+            .get_melt_quote(&quote)
+            .await
+            .expect("melt quote lookup")
+            .expect("melt quote");
+        assert_eq!(pending_quote.state, MeltQuoteState::Pending);
+        assert_eq!(pending_quote.amount(), Amount::new(1, CurrencyUnit::Sat));
+        assert_eq!(
+            pending_quote.fee_reserve(),
+            Amount::new(1, CurrencyUnit::Sat)
+        );
+        assert!(
+            localstore
+                .get_melt_saga_by_quote_id(&quote)
+                .await
+                .expect("melt saga lookup")
+                .is_some(),
+            "pending federated melt should keep saga metadata"
+        );
+
+        let proof_states = localstore
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("proof states");
+        assert_eq!(
+            proof_states,
+            vec![Some(State::Pending), Some(State::Pending)]
+        );
+
+        (quote, input_ys)
     }
 
     fn output_for_runtime(
@@ -1746,6 +1857,283 @@ mod tests {
             observations_after_conflict[2].observation.observer(),
             MemberId::new(3).expect("member three")
         );
+    }
+
+    #[tokio::test]
+    async fn real_policy_melt_payment_observations_finalize_from_stored_quorum() {
+        let policy = FederationPaymentObservationPolicy::member_quorum(
+            2,
+            FederationPaymentTrustModel::SharedBackendReadOnly,
+        );
+        let runtime_config = runtime_config_with_payment_policy(policy);
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let (quote, input_ys) =
+            setup_pending_federated_melt(&mint, &localstore, &runtime_config, &mut journal).await;
+
+        let first_observation = appended_entry(
+            &mut journal,
+            melt_payment_observation_envelope(
+                &runtime_config,
+                &quote,
+                MeltPaymentObservationFixture {
+                    observer: 1,
+                    state: MeltQuoteState::Paid,
+                    amount: Amount::from(1),
+                    fee_reserve: Amount::from(1),
+                    payment_proof: Some("paid-preimage"),
+                    failure_reason: None,
+                },
+            ),
+        );
+        persist_and_apply_entry(&mint, &first_observation).await;
+
+        let quote_after_single = localstore
+            .get_melt_quote(&quote)
+            .await
+            .expect("melt quote lookup")
+            .expect("melt quote");
+        assert_eq!(quote_after_single.state, MeltQuoteState::Pending);
+        assert_eq!(quote_after_single.payment_proof, None);
+        assert!(
+            localstore
+                .get_melt_saga_by_quote_id(&quote)
+                .await
+                .expect("melt saga lookup")
+                .is_some(),
+            "single real-backend observation must not finalize the saga"
+        );
+        assert_eq!(
+            localstore
+                .get_proofs_states(&input_ys)
+                .await
+                .expect("proof states after single observation"),
+            vec![Some(State::Pending), Some(State::Pending)]
+        );
+
+        let observations_after_single = localstore
+            .get_federation_payment_observations(
+                FederationPaymentObservationContext::MeltQuote,
+                &quote.to_string(),
+            )
+            .await
+            .expect("single melt observation rows");
+        assert_eq!(observations_after_single.len(), 1);
+
+        let matching_second = appended_entry(
+            &mut journal,
+            melt_payment_observation_envelope(
+                &runtime_config,
+                &quote,
+                MeltPaymentObservationFixture {
+                    observer: 2,
+                    state: MeltQuoteState::Paid,
+                    amount: Amount::from(1),
+                    fee_reserve: Amount::from(1),
+                    payment_proof: Some("paid-preimage"),
+                    failure_reason: None,
+                },
+            ),
+        );
+        persist_and_apply_entry(&mint, &matching_second).await;
+
+        let quote_after_quorum = localstore
+            .get_melt_quote(&quote)
+            .await
+            .expect("melt quote lookup")
+            .expect("melt quote");
+        assert_eq!(quote_after_quorum.state, MeltQuoteState::Paid);
+        assert_eq!(
+            quote_after_quorum.payment_proof,
+            Some("paid-preimage".to_string())
+        );
+        assert!(
+            localstore
+                .get_melt_saga_by_quote_id(&quote)
+                .await
+                .expect("melt saga lookup")
+                .is_none(),
+            "matching quorum should clear the pending melt saga"
+        );
+        assert_eq!(
+            localstore
+                .get_proofs_states(&input_ys)
+                .await
+                .expect("proof states after quorum"),
+            vec![Some(State::Spent), Some(State::Spent)]
+        );
+
+        let conflicting_third = appended_entry(
+            &mut journal,
+            melt_payment_observation_envelope(
+                &runtime_config,
+                &quote,
+                MeltPaymentObservationFixture {
+                    observer: 3,
+                    state: MeltQuoteState::Paid,
+                    amount: Amount::from(1),
+                    fee_reserve: Amount::from(1),
+                    payment_proof: Some("different-preimage"),
+                    failure_reason: None,
+                },
+            ),
+        );
+        persist_and_apply_entry(&mint, &conflicting_third).await;
+
+        let quote_after_conflict = localstore
+            .get_melt_quote(&quote)
+            .await
+            .expect("melt quote lookup")
+            .expect("melt quote");
+        assert_eq!(quote_after_conflict.state, MeltQuoteState::Paid);
+        assert_eq!(
+            quote_after_conflict.payment_proof,
+            Some("paid-preimage".to_string())
+        );
+
+        let observations_after_conflict = localstore
+            .get_federation_payment_observations(
+                FederationPaymentObservationContext::MeltQuote,
+                &quote.to_string(),
+            )
+            .await
+            .expect("conflicting melt observation rows");
+        assert_eq!(observations_after_conflict.len(), 3);
+        assert_eq!(
+            observations_after_conflict[2].observation.observer(),
+            MemberId::new(3).expect("member three")
+        );
+    }
+
+    #[tokio::test]
+    async fn real_policy_failed_melt_observations_rollback_from_stored_quorum() {
+        let policy = FederationPaymentObservationPolicy::member_quorum(
+            2,
+            FederationPaymentTrustModel::SharedBackendReadOnly,
+        );
+        let runtime_config = runtime_config_with_payment_policy(policy);
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let (quote, input_ys) =
+            setup_pending_federated_melt(&mint, &localstore, &runtime_config, &mut journal).await;
+
+        let first_observation = appended_entry(
+            &mut journal,
+            melt_payment_observation_envelope(
+                &runtime_config,
+                &quote,
+                MeltPaymentObservationFixture {
+                    observer: 1,
+                    state: MeltQuoteState::Failed,
+                    amount: Amount::from(1),
+                    fee_reserve: Amount::from(1),
+                    payment_proof: None,
+                    failure_reason: Some("route failed"),
+                },
+            ),
+        );
+        persist_and_apply_entry(&mint, &first_observation).await;
+
+        let quote_after_single = localstore
+            .get_melt_quote(&quote)
+            .await
+            .expect("melt quote lookup")
+            .expect("melt quote");
+        assert_eq!(quote_after_single.state, MeltQuoteState::Pending);
+        assert!(
+            localstore
+                .get_melt_saga_by_quote_id(&quote)
+                .await
+                .expect("melt saga lookup")
+                .is_some(),
+            "single failed observation must not compensate pending inputs"
+        );
+        assert_eq!(
+            localstore
+                .get_proofs_states(&input_ys)
+                .await
+                .expect("proof states after single failed observation"),
+            vec![Some(State::Pending), Some(State::Pending)]
+        );
+
+        let matching_second = appended_entry(
+            &mut journal,
+            melt_payment_observation_envelope(
+                &runtime_config,
+                &quote,
+                MeltPaymentObservationFixture {
+                    observer: 2,
+                    state: MeltQuoteState::Failed,
+                    amount: Amount::from(1),
+                    fee_reserve: Amount::from(1),
+                    payment_proof: None,
+                    failure_reason: Some("route failed"),
+                },
+            ),
+        );
+        persist_and_apply_entry(&mint, &matching_second).await;
+
+        let quote_after_quorum = localstore
+            .get_melt_quote(&quote)
+            .await
+            .expect("melt quote lookup")
+            .expect("melt quote");
+        assert_eq!(quote_after_quorum.state, MeltQuoteState::Unpaid);
+        assert!(
+            localstore
+                .get_melt_saga_by_quote_id(&quote)
+                .await
+                .expect("melt saga lookup")
+                .is_none(),
+            "matching failed quorum should clear the pending melt saga"
+        );
+        assert_eq!(
+            localstore
+                .get_proofs_states(&input_ys)
+                .await
+                .expect("proof states after rollback"),
+            vec![None, None]
+        );
+
+        let conflicting_paid = appended_entry(
+            &mut journal,
+            melt_payment_observation_envelope(
+                &runtime_config,
+                &quote,
+                MeltPaymentObservationFixture {
+                    observer: 3,
+                    state: MeltQuoteState::Paid,
+                    amount: Amount::from(1),
+                    fee_reserve: Amount::from(1),
+                    payment_proof: Some("late-preimage"),
+                    failure_reason: None,
+                },
+            ),
+        );
+        persist_and_apply_entry(&mint, &conflicting_paid).await;
+
+        let quote_after_conflict = localstore
+            .get_melt_quote(&quote)
+            .await
+            .expect("melt quote lookup")
+            .expect("melt quote");
+        assert_eq!(quote_after_conflict.state, MeltQuoteState::Unpaid);
+        assert_eq!(
+            localstore
+                .get_proofs_states(&input_ys)
+                .await
+                .expect("proof states after conflict"),
+            vec![None, None]
+        );
+
+        let observations_after_conflict = localstore
+            .get_federation_payment_observations(
+                FederationPaymentObservationContext::MeltQuote,
+                &quote.to_string(),
+            )
+            .await
+            .expect("conflicting melt observation rows");
+        assert_eq!(observations_after_conflict.len(), 3);
     }
 
     #[test]

@@ -99,10 +99,11 @@ For real backends:
   trigger duplicate external payments.
 
 Melt observations are persisted and evaluated against stored quorum evidence
-before quote state transitions. The next implementation step is focused melt
-saga coverage proving pending-to-paid and pending-to-failed real-policy
-transitions only finalize after stored quorum evidence, while the idempotent
-real payment executor remains future work.
+before quote state transitions. Focused mint-side regressions now prove that a
+single real-backend observation leaves a pending melt saga untouched, a matching
+paid quorum finalizes the saga and spends inputs, and a matching failed quorum
+rolls the quote back to unpaid and releases inputs. The idempotent real payment
+executor remains future work.
 
 ## Pending And Stale Quotes
 
@@ -119,7 +120,6 @@ logging secrets, invoices, local paths, private keys, or proof secrets.
 
 ## Required Follow-Up
 
-- Add focused melt saga tests for the DB-backed payment finalizer.
 - Add explicit conflict quarantine for mismatched amounts, payment proofs,
   states, or backend-specific settlement references.
 - Add admin tooling to inspect unresolved, conflicting, and stale observations.
