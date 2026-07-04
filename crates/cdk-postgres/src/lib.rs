@@ -462,6 +462,15 @@ mod test {
         .await;
     }
 
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn federation_journal_concurrent_metadata_updates() {
+        cdk_common::database::mint::test::federation_journal_concurrent_metadata_updates(
+            provide_mint_db("federation_journal_concurrent_metadata_updates".to_string()).await,
+        )
+        .await;
+    }
+
     #[tokio::test]
     async fn failed_initial_connect_marks_connection_stale() {
         let stale = Arc::new(AtomicBool::new(false));

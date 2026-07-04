@@ -276,3 +276,171 @@ where
     );
     assert_eq!(catch_up_entries[0].index, catch_up_from);
 }
+
+/// Assert concurrent federation metadata updates preserve monotonic watermarks and outcomes.
+pub async fn federation_journal_concurrent_metadata_updates<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>
+        + FederationJournalDatabase<Err = crate::database::Error>
+        + Send
+        + Sync
+        + 'static,
+{
+    let mut journal = InMemoryFederationJournal::new();
+    let entries = (0..4)
+        .map(|index| {
+            appended(
+                journal
+                    .append(mint_quote_envelope(
+                        &format!("metadata-quote-{index}"),
+                        index + 1,
+                    ))
+                    .expect("append metadata entry"),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    {
+        let mut tx = Database::begin_transaction(&db)
+            .await
+            .expect("begin metadata seed transaction");
+        for entry in &entries {
+            tx.add_federation_journal_entry(entry)
+                .await
+                .expect("persist metadata seed entry");
+        }
+        tx.commit().await.expect("commit metadata seed transaction");
+    }
+
+    let member_one = MemberId::new(1).expect("member one");
+    let member_two = MemberId::new(2).expect("member two");
+    let member_three = MemberId::new(3).expect("member three");
+    let db = Arc::new(db);
+
+    let sequence_updates = [
+        (member_one, 1),
+        (member_one, 5),
+        (member_one, 3),
+        (member_two, 2),
+        (member_two, 7),
+        (member_two, 6),
+        (member_three, 4),
+    ];
+    let mut sequence_tasks = Vec::new();
+    for (member, sequence) in sequence_updates {
+        let db = Arc::clone(&db);
+        sequence_tasks.push(tokio::spawn(async move {
+            let mut tx = Database::begin_transaction(db.as_ref())
+                .await
+                .expect("begin sequence transaction");
+            tx.set_federation_member_sequence(member, sequence)
+                .await
+                .expect("persist sequence update");
+            tx.commit().await.expect("commit sequence transaction");
+        }));
+    }
+
+    for task in sequence_tasks {
+        task.await.expect("sequence writer task");
+    }
+
+    let member_two_private = private_member(2);
+    let member_three_private = private_member(3);
+    let session_outcomes = [
+        FederationJournalCatchUpResponse::from_journal(
+            federation_id(),
+            &journal,
+            &FederationJournalCatchUpRequest::new(0),
+            50,
+            100,
+        )
+        .with_signed_session_outcome(&member_two_private)
+        .expect("member two outcome from zero")
+        .session_outcome
+        .expect("member two outcome from zero"),
+        FederationJournalCatchUpResponse::from_journal(
+            federation_id(),
+            &journal,
+            &FederationJournalCatchUpRequest::new(0),
+            50,
+            100,
+        )
+        .with_signed_session_outcome(&member_three_private)
+        .expect("member three outcome from zero")
+        .session_outcome
+        .expect("member three outcome from zero"),
+        FederationJournalCatchUpResponse::from_journal(
+            federation_id(),
+            &journal,
+            &FederationJournalCatchUpRequest::new(1),
+            50,
+            100,
+        )
+        .with_signed_session_outcome(&member_two_private)
+        .expect("member two outcome from one")
+        .session_outcome
+        .expect("member two outcome from one"),
+        FederationJournalCatchUpResponse::from_journal(
+            federation_id(),
+            &journal,
+            &FederationJournalCatchUpRequest::new(2),
+            50,
+            100,
+        )
+        .with_signed_session_outcome(&member_three_private)
+        .expect("member three outcome from two")
+        .session_outcome
+        .expect("member three outcome from two"),
+    ];
+
+    let mut outcome_tasks = Vec::new();
+    for outcome in session_outcomes.clone() {
+        let db = Arc::clone(&db);
+        outcome_tasks.push(tokio::spawn(async move {
+            let mut tx = Database::begin_transaction(db.as_ref())
+                .await
+                .expect("begin outcome transaction");
+            tx.add_federation_session_outcome(&outcome)
+                .await
+                .expect("persist session outcome");
+            tx.commit().await.expect("commit outcome transaction");
+        }));
+    }
+
+    for task in outcome_tasks {
+        task.await.expect("outcome writer task");
+    }
+
+    let sequences = db
+        .as_ref()
+        .get_federation_member_sequences()
+        .await
+        .expect("metadata sequences");
+    assert_eq!(sequences.get(&member_one), Some(&5));
+    assert_eq!(sequences.get(&member_two), Some(&7));
+    assert_eq!(sequences.get(&member_three), Some(&4));
+
+    let stored_outcomes = db
+        .as_ref()
+        .get_federation_session_outcomes()
+        .await
+        .expect("metadata session outcomes");
+    assert_eq!(stored_outcomes.len(), session_outcomes.len());
+    assert_eq!(stored_outcomes[0].from_index, 0);
+    assert_eq!(stored_outcomes[0].signer, member_two);
+    assert_eq!(stored_outcomes[1].from_index, 0);
+    assert_eq!(stored_outcomes[1].signer, member_three);
+    assert_eq!(stored_outcomes[2].from_index, 1);
+    assert_eq!(stored_outcomes[2].signer, member_two);
+    assert_eq!(stored_outcomes[3].from_index, 2);
+    assert_eq!(stored_outcomes[3].signer, member_three);
+
+    let ranged_outcomes = db
+        .as_ref()
+        .get_federation_session_outcomes_from(1)
+        .await
+        .expect("metadata ranged outcomes");
+    assert_eq!(ranged_outcomes.len(), 2);
+    assert_eq!(ranged_outcomes[0].from_index, 1);
+    assert_eq!(ranged_outcomes[1].from_index, 2);
+}
