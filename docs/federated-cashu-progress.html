@@ -522,15 +522,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add dkg secret share routes</span>
+          <span class="value">feat: derive dkg member shares from routes</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federation members now accept, validate, persist, and peer-submit signed private DKG secret-share contributions without advancing sequence watermarks on rejected payloads</span>
+          <span class="value">Route-driven DKG setup now derives and persists the completed local member keyset-share once a full reveal round and all local secret-share contributions are available</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Assemble completed local DKG keyset-share records from stored secret-share contributions plus public reveals, then recover that completion path after restart</span>
+          <span class="value">Recover completed DKG setup after restart and wire record export/import guidance into the generated operator runbooks</span>
         </div>
       </aside>
     </header>
@@ -1535,6 +1535,10 @@
             <p>Federation members now expose signed private REST submission for DKG secret-share contributions, the peer client can send them, wrong receivers fail before sequence persistence, and conflicting sender/receiver payloads leave the previous accepted sequence intact.</p>
           </article>
           <article class="item">
+            <h3>Route-driven DKG member shares ready</h3>
+            <p>When a member has a complete DKG reveal round plus every participant's secret-share contribution for its local signer, the route persistence path derives and stores the completed local member keyset-share atomically with the accepted setup message.</p>
+          </article>
+          <article class="item">
             <h3>DKG setup private routes added</h3>
             <p>Federation members now expose signed private REST endpoints for DKG commitments and reveals, the peer client can submit both messages, and accepted setup payloads persist the sender sequence watermark.</p>
           </article>
@@ -1650,7 +1654,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, durable secret-share contribution storage, secret-share private REST exchange, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed record reads, generated setup readiness gates, and the first canonical key-rotation operation. The remaining setup work is route-driven completed-share recovery, record export/import runbook wiring, accepted-rotation persistence, and active-keyset switching.</p>
+            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, durable secret-share contribution storage, secret-share private REST exchange, route-driven local member keyset-share derivation, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed record reads, generated setup readiness gates, and the first canonical key-rotation operation. The remaining setup work is restart recovery for completed route-driven setup, record export/import runbook wiring, accepted-rotation persistence, and active-keyset switching.</p>
           </article>
         </div>
       </section>
@@ -1756,6 +1760,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation dkg -- --test-threads 1` passed 9 DKG route/client tests covering commitment, reveal, transcript-signature, and secret-share submission, including wrong-receiver rejection and conflict rejection before sequence advancement. `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 79 federation route, catch-up, and peer-client tests. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
               <td>Use stored secret-share contributions and public DKG reveals to derive completed local member keyset-share records through the route-driven setup flow.</td>
+            </tr>
+            <tr>
+              <td>Route-driven DKG member keyset-share derivation</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation private_dkg_secret_share_route_derives_member_keyset_share_when_ready -- --test-threads 1` passed the happy path where the final accepted contribution stores the completed local DKG keyset-share. `cargo test -p cdk-axum --features federation private_dkg_secret_share_route_rejects_bad_share_during_completion -- --test-threads 1` rejected a bad contribution against the completed reveal round without storing it or advancing the peer sequence. `cargo test -p cdk-axum --features federation dkg -- --test-threads 1` passed 11 DKG route/client tests, `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 81 federation tests, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Reload completed route-driven DKG records after restart and assemble final public/private configs without requiring record files.</td>
             </tr>
             <tr>
               <td>DKG setup private routes</td>

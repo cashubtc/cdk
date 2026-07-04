@@ -2497,6 +2497,27 @@ mod tests {
         .expect("signed DKG secret-share request")
     }
 
+    async fn persist_complete_dkg_round(
+        state: &MintState,
+        public_config: &FederationConfig,
+        first_private: &MemberConfigPrivate,
+        second_private: &MemberConfigPrivate,
+    ) {
+        for (private_config, seed) in [(first_private, 11), (second_private, 21)] {
+            let commitment =
+                dkg_commitment_request(public_config, private_config.member_id, seed).commitment;
+            state
+                .persist_federation_dkg_commitment(&commitment, private_config.member_id, 1)
+                .await
+                .expect("persist DKG commitment");
+            let reveal = dkg_reveal_request(public_config, private_config.member_id, seed).reveal;
+            state
+                .persist_federation_dkg_reveal(&reveal, private_config.member_id, 2)
+                .await
+                .expect("persist DKG reveal");
+        }
+    }
+
     fn dkg_transcript_signature_request(
         public_config: &FederationConfig,
         private_config: &MemberConfigPrivate,
@@ -6871,6 +6892,135 @@ mod tests {
             .await
             .expect("persisted secret-share contributions");
         assert_eq!(secret_shares, vec![first_payload]);
+    }
+
+    #[tokio::test]
+    async fn private_dkg_secret_share_route_derives_member_keyset_share_when_ready() {
+        let (state, public_config, local_private, peer_private) =
+            federation_route_state_with_local_private().await;
+        let local_member = local_private.member_id;
+        persist_complete_dkg_round(&state, &public_config, &local_private, &peer_private).await;
+
+        let local_contribution =
+            dkg_secret_share_request(&public_config, local_member, local_member, 11);
+        state
+            .persist_federation_dkg_secret_share_contribution(&local_contribution, local_member, 3)
+            .await
+            .expect("persist local secret-share contribution");
+        assert!(
+            state
+                .mint
+                .localstore()
+                .get_federation_dkg_member_keyset_shares()
+                .await
+                .expect("member keyset shares before final contribution")
+                .is_empty(),
+            "local keyset share should wait for every participant contribution"
+        );
+
+        let peer_contribution =
+            dkg_secret_share_request(&public_config, peer_private.member_id, local_member, 21);
+        let request = signed_dkg_secret_share_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            3,
+            peer_contribution.clone(),
+        );
+
+        let response = post_dkg_secret_share(State(state.clone()), Json(request))
+            .await
+            .expect("peer secret share accepted")
+            .0;
+
+        response
+            .validate(
+                public_config.federation_id,
+                local_member,
+                FederationRestMessageKind::DkgSecretShare,
+                peer_private.member_id,
+            )
+            .expect("secret-share ack");
+        let shares = state
+            .mint
+            .localstore()
+            .get_federation_dkg_member_keyset_shares()
+            .await
+            .expect("member keyset shares");
+        assert_eq!(shares.len(), 1);
+        assert_eq!(shares[0].member_id, local_member);
+        assert_eq!(shares[0].secret_shares.len(), 1);
+        shares[0]
+            .keyset
+            .validate(public_config.threshold_params, &public_config.members)
+            .expect("derived keyset validates");
+        let contributions = state
+            .mint
+            .localstore()
+            .get_federation_dkg_secret_share_contributions()
+            .await
+            .expect("stored secret-share contributions");
+        assert_eq!(contributions, vec![local_contribution, peer_contribution]);
+        let sequences = state
+            .mint
+            .localstore()
+            .get_federation_member_sequences()
+            .await
+            .expect("persisted sequences");
+        assert_eq!(sequences.get(&local_member), Some(&3));
+        assert_eq!(sequences.get(&peer_private.member_id), Some(&3));
+    }
+
+    #[tokio::test]
+    async fn private_dkg_secret_share_route_rejects_bad_share_during_completion() {
+        let (state, public_config, local_private, peer_private) =
+            federation_route_state_with_local_private().await;
+        let local_member = local_private.member_id;
+        persist_complete_dkg_round(&state, &public_config, &local_private, &peer_private).await;
+        let local_contribution =
+            dkg_secret_share_request(&public_config, local_member, local_member, 11);
+        state
+            .persist_federation_dkg_secret_share_contribution(&local_contribution, local_member, 3)
+            .await
+            .expect("persist local secret-share contribution");
+
+        let bad_peer_contribution =
+            dkg_secret_share_request(&public_config, peer_private.member_id, local_member, 31);
+        let request = signed_dkg_secret_share_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            3,
+            bad_peer_contribution,
+        );
+
+        let response = post_dkg_secret_share(State(state.clone()), Json(request))
+            .await
+            .expect_err("bad secret share must fail");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let shares = state
+            .mint
+            .localstore()
+            .get_federation_dkg_member_keyset_shares()
+            .await
+            .expect("member keyset shares");
+        assert!(shares.is_empty());
+        let contributions = state
+            .mint
+            .localstore()
+            .get_federation_dkg_secret_share_contributions()
+            .await
+            .expect("stored secret-share contributions");
+        assert_eq!(contributions, vec![local_contribution]);
+        let sequences = state
+            .mint
+            .localstore()
+            .get_federation_member_sequences()
+            .await
+            .expect("persisted sequences");
+        assert_eq!(sequences.get(&local_member), Some(&3));
+        assert_eq!(sequences.get(&peer_private.member_id), Some(&2));
     }
 
     #[tokio::test]
