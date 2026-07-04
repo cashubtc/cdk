@@ -646,6 +646,14 @@ validate_quarantine_members() {{
     printf 'unknown PRIMARY_MEMBER %s\n' "$PRIMARY_MEMBER" >&2
     return 1
   }}
+  member_config "$RESTART_MEMBER" >/dev/null || {{
+    printf 'unknown RESTART_MEMBER %s\n' "$RESTART_MEMBER" >&2
+    return 1
+  }}
+  if [[ "$PRIMARY_MEMBER" == "$RESTART_MEMBER" ]]; then
+    printf 'RESTART_MEMBER must differ from PRIMARY_MEMBER for offline operation smoke\n' >&2
+    return 1
+  fi
   member_config "$QUARANTINE_OFFLINE_MEMBER" >/dev/null || {{
     printf 'unknown QUARANTINE_OFFLINE_MEMBER %s\n' "$QUARANTINE_OFFLINE_MEMBER" >&2
     return 1
@@ -671,6 +679,12 @@ done
 
 wait_for_converged
 run_smoke_operations
+wait_for_converged
+
+stop_member "$RESTART_MEMBER"
+run_smoke_operations --scenario offline-member-operations
+start_member "$RESTART_MEMBER"
+wait_for_status "$RESTART_MEMBER"
 wait_for_converged
 
 run_smoke_operations --scenario pending-melt-start --wallet-db "$PENDING_WALLET_DB"
@@ -800,6 +814,10 @@ mod tests {
         assert!(smoke_script.contains("PRIMARY_MEMBER"));
         assert!(smoke_script.contains("RESTART_MEMBER"));
         assert!(smoke_script.contains("QUARANTINE_OFFLINE_MEMBER"));
+        assert!(smoke_script.contains("unknown RESTART_MEMBER"));
+        assert!(smoke_script.contains(
+            "RESTART_MEMBER must differ from PRIMARY_MEMBER for offline operation smoke"
+        ));
         assert!(smoke_script.contains("PENDING_WALLET_DB"));
         assert!(smoke_script.contains("FAILED_PENDING_WALLET_DB"));
         assert!(smoke_script.contains("SMOKE_QUOTE_RETRIES"));
@@ -810,6 +828,7 @@ mod tests {
         assert!(smoke_script.contains("--quote-sleep-ms \"$SMOKE_QUOTE_SLEEP_MS\""));
         assert!(smoke_script.contains("wait_for_quarantine_report()"));
         assert!(smoke_script.contains("validate_quarantine_members()"));
+        assert!(smoke_script.contains("--scenario offline-member-operations"));
         assert!(smoke_script.contains("--scenario pending-melt-start"));
         assert!(smoke_script.contains("--scenario pending-melt-finish"));
         assert!(smoke_script.contains("--scenario pending-melt-fail-start"));
@@ -908,6 +927,7 @@ mod tests {
         ));
         assert!(smoke_script.contains("for member in \"${MEMBERS[@]}\"; do"));
         assert!(smoke_script.contains("wait_for_converged"));
+        assert!(smoke_script.contains("--scenario offline-member-operations"));
         assert!(smoke_script.contains("--scenario pending-melt-fail-finish"));
         assert!(smoke_script.contains("--scenario quarantine-mint-conflict"));
 

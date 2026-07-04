@@ -199,6 +199,8 @@ pub struct FederationSmokeOperationsArgs {
 pub enum FederationSmokeScenario {
     /// Run the ordinary mint, swap, melt, restore smoke.
     Standard,
+    /// Run ordinary wallet operations while one non-primary member is offline.
+    OfflineMemberOperations,
     /// Mint funds and leave a melt pending in the wallet database.
     PendingMeltStart,
     /// Resume and finalize the pending melt stored in the wallet database.
@@ -409,6 +411,32 @@ mod tests {
         assert_eq!(
             smoke.scenario,
             FederationSmokeScenario::QuarantineMintConflict
+        );
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[test]
+    fn parses_federation_offline_smoke_operations_subcommand() {
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "smoke-operations",
+            "--public-config",
+            "federation-public.json",
+            "--scenario",
+            "offline-member-operations",
+        ])
+        .expect("offline smoke operations command parses");
+
+        let Some(CliCommand::Federation(federation)) = args.command else {
+            panic!("expected federation command");
+        };
+        let FederationCommand::SmokeOperations(smoke) = federation.command else {
+            panic!("expected federation smoke-operations command");
+        };
+        assert_eq!(
+            smoke.scenario,
+            FederationSmokeScenario::OfflineMemberOperations
         );
     }
 

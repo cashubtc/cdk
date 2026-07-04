@@ -149,9 +149,27 @@ impl FederatedMintConnector {
     }
 
     async fn validate_member_active_keysets(&self) -> Result<(), Error> {
+        let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
+        let mut valid_members = 0usize;
+        let mut failures = Vec::new();
+
         for (member_id, connector) in &self.member_connectors {
-            let advertised = connector.get_mint_keys().await?;
-            validate_member_active_keysets(&self.public_config, *member_id, &advertised)?;
+            match connector.get_mint_keys().await {
+                Ok(advertised) => {
+                    validate_member_active_keysets(&self.public_config, *member_id, &advertised)?;
+                    valid_members = valid_members.saturating_add(1);
+                }
+                Err(err) => failures.push(format!("member {}: {}", member_id, err)),
+            }
+        }
+
+        if valid_members < threshold {
+            return Err(Error::InvalidMintResponse(format!(
+                "insufficient federation keyset advertisements: required {}, received {}, failures: {}",
+                threshold,
+                valid_members,
+                failures.join("; ")
+            )));
         }
 
         Ok(())
@@ -577,9 +595,31 @@ impl MintConnector for FederatedMintConnector {
     }
 
     async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
+        let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
+        let mut valid_members = 0usize;
+        let mut failures = Vec::new();
+
         for (member_id, connector) in &self.member_connectors {
-            let advertised = connector.get_mint_keyset(keyset_id).await?;
-            validate_member_advertised_keyset(&self.public_config, *member_id, &advertised)?;
+            match connector.get_mint_keyset(keyset_id).await {
+                Ok(advertised) => {
+                    validate_member_advertised_keyset(
+                        &self.public_config,
+                        *member_id,
+                        &advertised,
+                    )?;
+                    valid_members = valid_members.saturating_add(1);
+                }
+                Err(err) => failures.push(format!("member {}: {}", member_id, err)),
+            }
+        }
+
+        if valid_members < threshold {
+            return Err(Error::InvalidMintResponse(format!(
+                "insufficient federation keyset advertisements: required {}, received {}, failures: {}",
+                threshold,
+                valid_members,
+                failures.join("; ")
+            )));
         }
 
         self.aggregate_keyset(keyset_id)
@@ -1841,6 +1881,50 @@ mod tests {
             member_connectors(&bundle, &outputs),
         )
         .expect("federated mint connector");
+        let response = connector
+            .post_mint(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                MintRequest {
+                    quote: "paid-quote".to_string(),
+                    outputs: outputs.clone(),
+                    signature: None,
+                },
+            )
+            .await
+            .expect("mint response");
+
+        assert_aggregate_response_valid(&bundle, &outputs, &response);
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_tolerates_offline_member_key_discovery() {
+        let bundle = threshold_bundle();
+        let outputs = blinded_outputs(&bundle);
+        let advertised = advertised_keyset(&bundle);
+        let mut connectors = BTreeMap::new();
+
+        let offline_member = MockMintConnector::new();
+        offline_member.set_active_keyset(advertised.clone());
+        offline_member.set_mint_keys_error("member unavailable");
+        offline_member
+            .set_post_mint_response(Err(crate::Error::Custom("member unavailable".to_string())));
+        connectors.insert(
+            member_id(1),
+            Arc::new(offline_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        for member_id in [member_id(2), member_id(3)] {
+            let connector = MockMintConnector::new();
+            connector.set_active_keyset(advertised.clone());
+            connector.set_post_mint_response(Ok(share_response(&bundle, member_id, &outputs)));
+            connectors.insert(
+                member_id,
+                Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+            );
+        }
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
         let response = connector
             .post_mint(
                 &PaymentMethod::Known(KnownMethod::Bolt11),

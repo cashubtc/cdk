@@ -358,19 +358,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated 3-member and 5-member federation smokes pass standard, pending-melt, failed-melt, and quarantine catch-up paths</span>
+          <span class="value">Generated smokes now pass threshold wallet operations while a non-primary member is offline, then catch up after restart</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover five-member federation smoke</span>
+          <span class="value">fix: tolerate offline federation members in wallet key discovery</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">3-of-5 wallet aggregation and member catch-up converge in live process smoke</span>
+          <span class="value">Offline member operation batch converges after restart catch-up</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Add storage-backend process variants and longer restart windows</span>
+          <span class="value">Add storage-backend process variants and deeper fault-injection windows</span>
         </div>
       </aside>
     </header>
@@ -1206,6 +1206,14 @@
             <h3>Five-member operation smoke verified</h3>
             <p>The generated five-member, three-threshold local smoke passed the same standard wallet, paid pending-melt, failed pending-melt, offline quarantine injection, restart catch-up, signed status, and convergence checks.</p>
           </article>
+          <article class="item">
+            <h3>Offline operation batch verified</h3>
+            <p>The generated local smoke now stops a non-primary member, runs wallet mint, swap, check-state, melt, and restore through the remaining threshold, restarts the member, and requires signed status plus digest convergence before continuing.</p>
+          </article>
+          <article class="item">
+            <h3>Wallet key discovery tolerates outages</h3>
+            <p>The federated wallet connector now rejects any responding member that advertises mismatched keysets, while allowing operations to continue when unreachable members are below the configured signing threshold.</p>
+          </article>
         </div>
       </section>
 
@@ -1756,8 +1764,8 @@
             <tr>
               <td>Live quarantine process smoke drill</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer -- --test-threads 1`, `cargo build -p cdk-mintd --features federation,fakewallet,sqlite`, the generated three-member local smoke, and the generated five-member local smoke passed. The live runs covered standard wallet mint, swap, check-state, melt, restore, paid pending-melt restart recovery, failed pending-melt compensation to unpaid with restored proofs, conflicting mint payment observations, quarantine submission while one member was offline, restart catch-up, signed status, and final convergence. The five-member run specifically exercised 3-of-5 aggregate signing and catch-up.</td>
-              <td>Repeat the process smoke with storage-backend variants and longer restart windows.</td>
+              <td>`cargo test -p cdk --features wallet,federation federated_mint_connector_tolerates_offline_member_key_discovery -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation -- --test-threads 1`, `cargo build -p cdk-mintd --features federation,fakewallet,sqlite`, and the generated three-member local smoke passed with the new offline operation batch. The live run covered standard wallet mint, swap, check-state, melt, restore, stopping a non-primary member, repeating the operation batch through the remaining threshold, restarting and catching up the offline member, paid pending-melt restart recovery, failed pending-melt compensation, offline quarantine injection, signed status, and final convergence. Earlier generated five-member smoke still covers 3-of-5 aggregate signing and catch-up.</td>
+              <td>Repeat the process smoke with storage-backend variants and deeper fault-injection windows.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
@@ -1835,8 +1843,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Longer restart windows</h3>
-            <p>Extend process smoke to keep restarted members offline across more operation batches before catch-up, then compare digest convergence and signed status evidence.</p>
+            <h3>Deeper fault windows</h3>
+            <p>Extend process smoke to keep restarted members offline across multiple operation batches and payment-observation phases before catch-up, then compare digest convergence and signed status evidence.</p>
           </article>
           <article class="item">
             <h3>Backend-backed smoke matrix</h3>

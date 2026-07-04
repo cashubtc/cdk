@@ -33,6 +33,13 @@ use crate::cli::{FederationSmokeOperationsArgs, FederationSmokeScenario};
 const STANDARD_SMOKE_SEED: [u8; 64] = [7u8; 64];
 const PENDING_PAID_SMOKE_SEED: [u8; 64] = [8u8; 64];
 const PENDING_FAILED_SMOKE_SEED: [u8; 64] = [9u8; 64];
+const OFFLINE_MEMBER_SMOKE_SEED: [u8; 64] = [10u8; 64];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SmokeMemberExpectation {
+    AllMembers,
+    ThresholdMembers,
+}
 
 pub(crate) async fn run_smoke_operations_command(
     args: &FederationSmokeOperationsArgs,
@@ -60,6 +67,19 @@ pub(crate) async fn run_smoke_operations_command(
                 &member_connectors,
                 connector,
                 STANDARD_SMOKE_SEED,
+                SmokeMemberExpectation::AllMembers,
+            )
+            .await
+        }
+        FederationSmokeScenario::OfflineMemberOperations => {
+            run_standard_smoke(
+                args,
+                &public_config,
+                unit,
+                &member_connectors,
+                connector,
+                OFFLINE_MEMBER_SMOKE_SEED,
+                SmokeMemberExpectation::ThresholdMembers,
             )
             .await
         }
@@ -150,10 +170,18 @@ async fn run_standard_smoke(
     member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
     connector: Arc<FederatedMintConnector>,
     seed: [u8; 64],
+    member_expectation: SmokeMemberExpectation,
 ) -> Result<()> {
     let wallet = smoke_wallet(public_config, unit.clone(), seed, connector.clone(), None).await?;
 
-    let minted_amount = mint_smoke_funds(&wallet, member_connectors, args).await?;
+    let minted_amount = mint_smoke_funds(
+        &wallet,
+        public_config,
+        member_connectors,
+        args,
+        member_expectation,
+    )
+    .await?;
 
     let proofs_before_swap = wallet
         .get_unspent_proofs()
@@ -201,9 +229,11 @@ async fn run_standard_smoke(
         .context("create federation melt quote")?;
     wait_for_melt_quote_visible(
         member_connectors,
+        public_config,
         &melt_quote.id,
         args.quote_retries,
         Duration::from_millis(args.quote_sleep_ms),
+        member_expectation,
     )
     .await?;
 
@@ -255,7 +285,14 @@ async fn run_pending_melt_start(
     terminal_state: MeltQuoteState,
 ) -> Result<()> {
     let wallet = smoke_wallet(public_config, unit, seed, connector, Some(wallet_db)).await?;
-    let minted_amount = mint_smoke_funds(&wallet, member_connectors, args).await?;
+    let minted_amount = mint_smoke_funds(
+        &wallet,
+        public_config,
+        member_connectors,
+        args,
+        SmokeMemberExpectation::AllMembers,
+    )
+    .await?;
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Pending,
@@ -273,9 +310,11 @@ async fn run_pending_melt_start(
         .context("create pending federation melt quote")?;
     wait_for_melt_quote_visible(
         member_connectors,
+        public_config,
         &melt_quote.id,
         args.quote_retries,
         Duration::from_millis(args.quote_sleep_ms),
+        SmokeMemberExpectation::AllMembers,
     )
     .await?;
 
@@ -494,8 +533,10 @@ fn wallet_melt_quote_state_for_terminal(terminal_state: MeltQuoteState) -> MeltQ
 
 async fn mint_smoke_funds(
     wallet: &Wallet,
+    public_config: &FederationConfig,
     member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
     args: &FederationSmokeOperationsArgs,
+    member_expectation: SmokeMemberExpectation,
 ) -> Result<Amount> {
     let quote = wallet
         .mint_quote(
@@ -508,9 +549,11 @@ async fn mint_smoke_funds(
         .context("create federation mint quote")?;
     wait_for_mint_quote_paid(
         member_connectors,
+        public_config,
         &quote.id,
         args.quote_retries,
         Duration::from_millis(args.quote_sleep_ms),
+        member_expectation,
     )
     .await?;
 
@@ -749,20 +792,24 @@ async fn smoke_wallet(
 
 async fn wait_for_mint_quote_paid(
     member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+    public_config: &FederationConfig,
     quote_id: &str,
     retries: u16,
     sleep: Duration,
+    member_expectation: SmokeMemberExpectation,
 ) -> Result<()> {
+    let required = required_member_observations(public_config, member_expectation);
     for _ in 0..retries {
-        let mut all_paid = true;
+        let mut paid = 0usize;
         for (member_id, connector) in member_connectors {
             match connector
                 .get_mint_quote_status(PaymentMethod::BOLT11, quote_id)
                 .await
             {
-                Ok(status) if status.state() == Some(MintQuoteState::Paid) => {}
+                Ok(status) if status.state() == Some(MintQuoteState::Paid) => {
+                    paid = paid.saturating_add(1);
+                }
                 Ok(status) => {
-                    all_paid = false;
                     tracing::debug!(
                         member_id = %member_id,
                         state = ?status.state(),
@@ -770,7 +817,6 @@ async fn wait_for_mint_quote_paid(
                     );
                 }
                 Err(err) => {
-                    all_paid = false;
                     tracing::debug!(
                         member_id = %member_id,
                         "federation smoke mint quote status unavailable: {}",
@@ -779,51 +825,72 @@ async fn wait_for_mint_quote_paid(
                 }
             }
         }
-        if all_paid {
+        if paid >= required {
             return Ok(());
         }
         tokio::time::sleep(sleep).await;
     }
 
     bail!(
-        "federation smoke mint quote {} was not paid on every member after {} attempts",
+        "federation smoke mint quote {} did not reach {} paid member observations after {} attempts",
         quote_id,
+        required,
         retries
     )
 }
 
 async fn wait_for_melt_quote_visible(
     member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+    public_config: &FederationConfig,
     quote_id: &str,
     retries: u16,
     sleep: Duration,
+    member_expectation: SmokeMemberExpectation,
 ) -> Result<()> {
+    let required = required_member_observations(public_config, member_expectation);
     for _ in 0..retries {
-        let mut all_visible = true;
+        let mut visible = 0usize;
         for (member_id, connector) in member_connectors {
-            if let Err(err) = connector
+            match connector
                 .get_melt_quote_status(PaymentMethod::BOLT11, quote_id)
                 .await
             {
-                all_visible = false;
-                tracing::debug!(
-                    member_id = %member_id,
-                    "federation smoke melt quote status unavailable: {}",
-                    err
-                );
+                Ok(_) => {
+                    visible = visible.saturating_add(1);
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        member_id = %member_id,
+                        "federation smoke melt quote status unavailable: {}",
+                        err
+                    );
+                }
             }
         }
-        if all_visible {
+        if visible >= required {
             return Ok(());
         }
         tokio::time::sleep(sleep).await;
     }
 
     bail!(
-        "federation smoke melt quote {} was not visible on every member after {} attempts",
+        "federation smoke melt quote {} did not reach {} visible member observations after {} attempts",
         quote_id,
+        required,
         retries
     )
+}
+
+fn required_member_observations(
+    public_config: &FederationConfig,
+    member_expectation: SmokeMemberExpectation,
+) -> usize {
+    match member_expectation {
+        SmokeMemberExpectation::AllMembers => public_config.members.len(),
+        SmokeMemberExpectation::ThresholdMembers => {
+            usize::from(public_config.threshold_params.signature_threshold)
+        }
+    }
 }
 
 async fn wait_for_melt_quote_state(

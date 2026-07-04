@@ -444,6 +444,8 @@ pub async fn create_test_wallet_with_mock_http_subscription(
 pub struct MockMintConnector {
     /// Mock mint keyset state
     pub keysets: Mutex<Vec<KeySet>>,
+    /// Optional error returned by mint key discovery calls.
+    pub mint_keys_error: Mutex<Option<String>>,
     /// Mock mint info state
     pub mint_info: Mutex<MintInfo>,
     /// Response for post_check_state calls
@@ -501,6 +503,7 @@ impl MockMintConnector {
 
         Self {
             keysets: Mutex::new(vec![keyset]),
+            mint_keys_error: Mutex::new(None),
             mint_info: Mutex::new(mint_info),
             check_state_response: Mutex::new(None),
             restore_response: Mutex::new(None),
@@ -527,15 +530,21 @@ impl MockMintConnector {
     pub fn set_mint_keys_response(&self, response: Result<Vec<KeySet>, Error>) {
         match response {
             Ok(keysets) => {
+                *self.mint_keys_error.lock().unwrap() = None;
                 *self.keysets.lock().unwrap() = keysets;
             }
             Err(_) => unimplemented!("error responses for key state are not supported"),
         }
     }
 
+    pub fn set_mint_keys_error(&self, message: &str) {
+        *self.mint_keys_error.lock().unwrap() = Some(message.to_string());
+    }
+
     pub fn set_mint_keyset_response(&self, response: Result<KeySet, Error>) {
         match response {
             Ok(keyset) => {
+                *self.mint_keys_error.lock().unwrap() = None;
                 let mut keysets = self.keysets.lock().unwrap();
                 if let Some(existing) = keysets.iter_mut().find(|k| k.id == keyset.id) {
                     *existing = keyset;
@@ -572,6 +581,7 @@ impl MockMintConnector {
     }
 
     pub fn set_active_keyset(&self, keyset: KeySet) {
+        *self.mint_keys_error.lock().unwrap() = None;
         *self.keysets.lock().unwrap() = vec![keyset];
     }
 
@@ -690,10 +700,18 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn get_mint_keys(&self) -> Result<Vec<crate::nuts::KeySet>, Error> {
+        if let Some(message) = self.mint_keys_error.lock().unwrap().clone() {
+            return Err(Error::Custom(message));
+        }
+
         Ok(self.keysets.lock().unwrap().clone())
     }
 
     async fn get_mint_keyset(&self, keyset_id: Id) -> Result<crate::nuts::KeySet, Error> {
+        if let Some(message) = self.mint_keys_error.lock().unwrap().clone() {
+            return Err(Error::Custom(message));
+        }
+
         self.keysets
             .lock()
             .unwrap()
