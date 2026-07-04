@@ -522,15 +522,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: parallelize federation wallet probes</span>
+          <span class="value">fix: fan out federation wallet signing requests</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Wallet federation keyset validation and check-state reads now poll members concurrently while still rejecting bad advertisements and mismatched proof-state views</span>
+          <span class="value">Wallet federation signing paths now send mint, batch mint, swap, melt, and restore requests to members concurrently, return after threshold replies, and use quorum melt-status reads when the primary is unavailable</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Broaden long-partition runs to larger rosters, keep tightening slow member fanout paths, and choose the first production BFT ordering backend path</span>
+          <span class="value">Broaden long-partition runs to larger rosters, harden remaining primary-only quote propagation paths, and choose the first production BFT ordering backend path</span>
         </div>
       </aside>
     </header>
@@ -1483,6 +1483,10 @@
             <p>Federated wallet keyset validation, single-keyset validation, and check-state collection now poll member connectors concurrently, so one slow or offline member no longer serializes every read before the wallet can find a threshold view.</p>
           </article>
           <article class="item">
+            <h3>Wallet signing fanout is threshold-first</h3>
+            <p>Federated wallet mint, batch mint, swap, melt, and restore calls now launch against members concurrently and return once a signing threshold replies. Melt quote status also accepts a threshold view, so a temporarily unavailable primary no longer blocks post-melt status recovery.</p>
+          </article>
+          <article class="item">
             <h3>Offline pending-melt finalization verified</h3>
             <p>The generated smoke now keeps a non-primary member offline while paid and failed pending-melt terminal observations are submitted and finalized through the remaining threshold, then restarts the member and requires signed status plus digest convergence.</p>
           </article>
@@ -1512,7 +1516,7 @@
           </article>
           <article class="item">
             <h3>Local Postgres helper lifecycle verified</h3>
-            <p>The repository now has `just start-postgres`, `just stop-postgres`, `just pg-status`, and `just pg-connect` recipes with configurable data directory, host, port, database, user, password, and log path. An isolated non-default-port cycle started cleanly, passed the federation Postgres preflight, stopped cleanly, and re-stopped idempotently.</p>
+            <p>The repository now has `just start-postgres`, `just stop-postgres`, `just pg-status`, and `just pg-connect` recipes with configurable data directory, host, port, database, credentials, and log path. An isolated non-default-port cycle started cleanly, passed the federation Postgres preflight with redacted connection output, stopped cleanly, and re-stopped idempotently.</p>
           </article>
           <article class="item">
             <h3>Postgres process smoke verified</h3>
@@ -2686,7 +2690,7 @@
             <tr>
               <td>Local Postgres lifecycle helpers</td>
               <td><span class="status done">Passed</span></td>
-              <td>`CDK_POSTGRES_DATA_DIR=target/cdk-postgres-helper-test/pgdata CDK_POSTGRES_PORT=55433 just stop-postgres` passed when the helper was already stopped. The same isolated settings then passed `just start-postgres`, `just fed-regtest-postgres-preflight postgresql://cdk:cdk@127.0.0.1:55433/cdk_mint`, `just stop-postgres`, and a final `pg_isready` no-response check. `just --show start-postgres`, `just --show stop-postgres`, `just --show pg-status`, and `just --show pg-connect` expanded successfully.</td>
+              <td>An isolated non-default local Postgres helper configuration passed idempotent stop, start, federation preflight with redacted connection output, clean stop, and a final no-response readiness check. `just --show start-postgres`, `just --show stop-postgres`, `just --show pg-status`, and `just --show pg-connect` expanded successfully.</td>
               <td>Use `just start-postgres` before local Postgres-backed federation smoke, and keep the helper lifecycle in future runbooks.</td>
             </tr>
             <tr>
@@ -2706,6 +2710,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --features wallet,mint,federation federated_mint_connector_polls -- --test-threads 1` passed the barrier-backed concurrency regressions for member keyset discovery and check-state polling. `cargo test -p cdk --features wallet,mint,federation federated_mint_connector -- --test-threads 1` passed all 19 wallet federation connector tests, covering mint, batch mint, swap, melt change, restore, check-state quorum views, member advertisement rejection, offline key discovery, and the new concurrent probe paths.</td>
               <td>Apply the same fanout scrutiny to any remaining slow member reads before larger Postgres partition runs.</td>
+            </tr>
+            <tr>
+              <td>Wallet federation signing fanout</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --features wallet,mint,federation federated_mint_connector_fans_out_mint_members_concurrently -- --test-threads 1` passed the barrier-backed signing fanout regression. `cargo test -p cdk --features wallet,mint,federation federated_mint_connector_uses_threshold_melt_quote_status -- --test-threads 1` passed primary-unavailable melt-status quorum coverage. `cargo test -p cdk --features wallet,mint,federation federated_mint_connector -- --test-threads 1` passed all 21 wallet federation connector tests, covering mint, batch mint, swap, melt, restore, keyset validation, check-state quorum views, HTTP wrapper rotation, and threshold melt-status reads.</td>
+              <td>Move mint quote creation and quote-status propagation from primary-only behavior into explicit consensus-backed federation operations.</td>
             </tr>
             <tr>
               <td>Offline keyset rotation process smoke</td>

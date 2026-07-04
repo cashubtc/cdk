@@ -469,6 +469,8 @@ pub struct MockMintConnector {
         Mutex<std::collections::VecDeque<Result<MeltQuoteBolt11Response<String>, Error>>>,
     /// Response for post_mint calls
     pub post_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
+    /// Optional barrier used by tests to assert concurrent mint calls.
+    pub post_mint_barrier: Mutex<Option<Arc<Barrier>>>,
     /// Response for post_batch_mint calls
     pub post_batch_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
     /// Response for post_swap calls
@@ -517,6 +519,7 @@ impl MockMintConnector {
             melt_quote_status_response: Mutex::new(None),
             melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
             post_mint_response: Mutex::new(None),
+            post_mint_barrier: Mutex::new(None),
             post_batch_mint_response: Mutex::new(None),
             post_swap_response: Mutex::new(None),
             post_swap_responses: Mutex::new(std::collections::VecDeque::new()),
@@ -632,6 +635,10 @@ impl MockMintConnector {
 
     pub fn set_post_mint_response(&self, response: Result<MintResponse, Error>) {
         *self.post_mint_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn set_post_mint_barrier(&self, barrier: Arc<Barrier>) {
+        *self.post_mint_barrier.lock().unwrap() = Some(barrier);
     }
 
     pub fn set_post_batch_mint_response(&self, response: Result<MintResponse, Error>) {
@@ -778,6 +785,11 @@ impl MintConnector for MockMintConnector {
         _method: &PaymentMethod,
         _request: MintRequest<String>,
     ) -> Result<MintResponse, Error> {
+        let barrier = self.post_mint_barrier.lock().unwrap().clone();
+        if let Some(barrier) = barrier {
+            barrier.wait().await;
+        }
+
         self.post_mint_response
             .lock()
             .unwrap()

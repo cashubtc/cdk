@@ -11,6 +11,7 @@ use cdk_common::{
     MintQuoteResponse,
 };
 use futures::future::join_all;
+use futures::stream::{FuturesUnordered, StreamExt};
 
 use super::{AuthWallet, MintConnector};
 use crate::nuts::nut01::{
@@ -194,13 +195,20 @@ impl FederatedMintConnector {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
         let mut responses = Vec::new();
         let mut failures = Vec::new();
+        let mut pending = FuturesUnordered::new();
 
         for (member_id, connector) in &self.member_connectors {
-            match call_member(connector.clone()).await {
+            let member_id = *member_id;
+            let fut = call_member(connector.clone());
+            pending.push(async move { (member_id, fut.await) });
+        }
+
+        while let Some((member_id, result)) = pending.next().await {
+            match result {
                 Ok(response) => {
-                    responses.push((*member_id, response));
+                    responses.push((member_id, response));
                     if responses.len() >= threshold {
-                        break;
+                        return Ok(responses);
                     }
                 }
                 Err(err) => failures.push(format!("member {}: {}", member_id, err)),
@@ -230,13 +238,20 @@ impl FederatedMintConnector {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
         let mut responses = Vec::new();
         let mut failures = Vec::new();
+        let mut pending = FuturesUnordered::new();
 
         for (member_id, connector) in &self.member_connectors {
-            match call_member(connector.clone()).await {
+            let member_id = *member_id;
+            let fut = call_member(connector.clone());
+            pending.push(async move { (member_id, fut.await) });
+        }
+
+        while let Some((member_id, result)) = pending.next().await {
+            match result {
                 Ok(response) => {
-                    responses.push((*member_id, response));
+                    responses.push((member_id, response));
                     if responses.len() >= threshold {
-                        break;
+                        return Ok(responses);
                     }
                 }
                 Err(err) => failures.push(format!("member {}: {}", member_id, err)),
@@ -266,13 +281,20 @@ impl FederatedMintConnector {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
         let mut responses = Vec::new();
         let mut failures = Vec::new();
+        let mut pending = FuturesUnordered::new();
 
         for (member_id, connector) in &self.member_connectors {
-            match call_member(connector.clone()).await {
+            let member_id = *member_id;
+            let fut = call_member(connector.clone());
+            pending.push(async move { (member_id, fut.await) });
+        }
+
+        while let Some((member_id, result)) = pending.next().await {
+            match result {
                 Ok(response) => {
-                    responses.push((*member_id, response));
+                    responses.push((member_id, response));
                     if responses.len() >= threshold {
-                        break;
+                        return Ok(responses);
                     }
                 }
                 Err(err) => failures.push(format!("member {}: {}", member_id, err)),
@@ -285,6 +307,49 @@ impl FederatedMintConnector {
 
         Err(Error::InvalidMintResponse(format!(
             "insufficient federation restore responses: required {}, received {}, failures: {}",
+            threshold,
+            responses.len(),
+            failures.join("; ")
+        )))
+    }
+
+    async fn collect_melt_quote_status_responses<F, Fut>(
+        &self,
+        mut call_member: F,
+    ) -> Result<Vec<(MemberId, MeltQuoteResponse<String>)>, Error>
+    where
+        F: FnMut(Arc<dyn MintConnector + Send + Sync>) -> Fut,
+        Fut: std::future::Future<Output = Result<MeltQuoteResponse<String>, Error>>,
+    {
+        let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
+        let mut responses = Vec::new();
+        let mut failures = Vec::new();
+        let mut pending = FuturesUnordered::new();
+
+        for (member_id, connector) in &self.member_connectors {
+            let member_id = *member_id;
+            let fut = call_member(connector.clone());
+            pending.push(async move { (member_id, fut.await) });
+        }
+
+        while let Some((member_id, result)) = pending.next().await {
+            match result {
+                Ok(response) => {
+                    responses.push((member_id, response));
+                    if responses.len() >= threshold {
+                        return Ok(responses);
+                    }
+                }
+                Err(err) => failures.push(format!("member {}: {}", member_id, err)),
+            }
+        }
+
+        if responses.len() >= threshold {
+            return Ok(responses);
+        }
+
+        Err(Error::InvalidMintResponse(format!(
+            "insufficient federation melt quote status responses: required {}, received {}, failures: {}",
             threshold,
             responses.len(),
             failures.join("; ")
@@ -517,6 +582,110 @@ impl FederatedMintConnector {
         )?;
         let mut response = first_response.clone();
         set_melt_response_change(&mut response, Some(aggregate_change.signatures));
+
+        Ok(response)
+    }
+
+    fn aggregate_melt_quote_status_response(
+        &self,
+        member_responses: &[(MemberId, MeltQuoteResponse<String>)],
+    ) -> Result<MeltQuoteResponse<String>, Error> {
+        let (_, first_response) = member_responses.first().ok_or_else(|| {
+            Error::InvalidMintResponse("missing federation melt quote status responses".to_string())
+        })?;
+        for (member_id, response) in member_responses.iter().skip(1) {
+            validate_melt_response_metadata(first_response, response, *member_id)?;
+        }
+
+        let Some(first_change) = first_response.change() else {
+            for (member_id, response) in member_responses {
+                if response.change().is_some() {
+                    return Err(Error::InvalidMintResponse(format!(
+                        "member {} returned melt status change when the threshold set did not",
+                        member_id
+                    )));
+                }
+            }
+            return Ok(first_response.clone());
+        };
+
+        if first_change.is_empty() {
+            for (member_id, response) in member_responses {
+                match response.change() {
+                    Some(change) if change.is_empty() => (),
+                    _ => {
+                        return Err(Error::InvalidMintResponse(format!(
+                            "member {} returned mismatched empty melt status change",
+                            member_id
+                        )))
+                    }
+                }
+            }
+            return Ok(first_response.clone());
+        }
+
+        let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
+        let mut aggregate_change = Vec::with_capacity(first_change.len());
+        for (index, first_signature) in first_change.iter().enumerate() {
+            let mut shares = Vec::with_capacity(member_responses.len());
+
+            for (member_id, response) in member_responses {
+                let change = response.change().ok_or_else(|| {
+                    Error::InvalidMintResponse(format!(
+                        "member {} did not return melt status change signatures",
+                        member_id
+                    ))
+                })?;
+                let signature = change.get(index).ok_or_else(|| {
+                    Error::InvalidMintResponse(format!(
+                        "member {} returned too few melt status change signatures",
+                        member_id
+                    ))
+                })?;
+                if signature.amount != first_signature.amount
+                    || signature.keyset_id != first_signature.keyset_id
+                    || signature.dleq.is_some()
+                {
+                    return Err(Error::InvalidMintResponse(format!(
+                        "member {} returned mismatched melt status change metadata",
+                        member_id
+                    )));
+                }
+
+                shares.push(BlsBlindSignatureShare::new(
+                    member_id.to_bls_signer_id(),
+                    signature.c.as_bls_g1()?,
+                ));
+            }
+
+            let aggregate_signature = aggregate_blind_signature_shares(threshold, &shares)?;
+            aggregate_change.push(BlindSignature {
+                amount: first_signature.amount,
+                keyset_id: first_signature.keyset_id,
+                c: aggregate_signature.into(),
+                dleq: None,
+            });
+        }
+
+        for (member_id, response) in member_responses {
+            let change = response.change().ok_or_else(|| {
+                Error::InvalidMintResponse(format!(
+                    "member {} did not return melt status change signatures",
+                    member_id
+                ))
+            })?;
+            if change.len() != first_change.len() {
+                return Err(Error::InvalidMintResponse(format!(
+                    "member {} returned {} melt status change signatures for {} expected signatures",
+                    member_id,
+                    change.len(),
+                    first_change.len()
+                )));
+            }
+        }
+
+        let mut response = first_response.clone();
+        set_melt_response_change(&mut response, Some(aggregate_change));
 
         Ok(response)
     }
@@ -756,9 +925,15 @@ impl MintConnector for FederatedMintConnector {
         method: PaymentMethod,
         quote_id: &str,
     ) -> Result<MeltQuoteResponse<String>, Error> {
-        self.primary_connector()?
-            .get_melt_quote_status(method, quote_id)
-            .await
+        let member_responses = self
+            .collect_melt_quote_status_responses(|connector| {
+                let method = method.clone();
+                let quote_id = quote_id.to_string();
+                async move { connector.get_melt_quote_status(method, &quote_id).await }
+            })
+            .await?;
+
+        self.aggregate_melt_quote_status_response(&member_responses)
     }
 
     async fn post_melt(
@@ -2532,6 +2707,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn federated_mint_connector_fans_out_mint_members_concurrently() {
+        let bundle = threshold_bundle();
+        let outputs = blinded_outputs(&bundle);
+        let advertised = advertised_keyset(&bundle);
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let mut connectors = BTreeMap::new();
+
+        for member_id in [member_id(1), member_id(2)] {
+            let connector = MockMintConnector::new();
+            connector.set_active_keyset(advertised.clone());
+            connector.set_post_mint_barrier(barrier.clone());
+            connector.set_post_mint_response(Ok(share_response(&bundle, member_id, &outputs)));
+            connectors.insert(
+                member_id,
+                Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+            );
+        }
+
+        let failing_member = MockMintConnector::new();
+        failing_member.set_active_keyset(advertised);
+        failing_member
+            .set_post_mint_response(Err(crate::Error::Custom("member unavailable".to_string())));
+        connectors.insert(
+            member_id(3),
+            Arc::new(failing_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            connector.post_mint(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                MintRequest {
+                    quote: "paid-quote".to_string(),
+                    outputs: outputs.clone(),
+                    signature: None,
+                },
+            ),
+        )
+        .await
+        .expect("mint member requests should run concurrently")
+        .expect("mint response");
+
+        assert_aggregate_response_valid(&bundle, &outputs, &response);
+    }
+
+    #[tokio::test]
     async fn federated_mint_connector_aggregates_batch_mint_signature_shares() {
         let bundle = threshold_bundle();
         let outputs = blinded_outputs(&bundle);
@@ -2983,6 +3206,47 @@ mod tests {
             )
             .await
             .expect("melt response");
+
+        assert_eq!(response.state(), MeltQuoteState::Paid);
+        assert!(response.change().is_none());
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_uses_threshold_melt_quote_status() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let status = match melt_response_without_change() {
+            MeltQuoteResponse::Bolt11(response) => response,
+            _ => panic!("expected bolt11 melt response"),
+        };
+        let mut connectors = BTreeMap::new();
+
+        let failing_member = MockMintConnector::new();
+        failing_member.set_active_keyset(advertised.clone());
+        failing_member.set_melt_quote_status_response(Err(crate::Error::Custom(
+            "primary unavailable".to_string(),
+        )));
+        connectors.insert(
+            member_id(1),
+            Arc::new(failing_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        for member_id in [member_id(2), member_id(3)] {
+            let connector = MockMintConnector::new();
+            connector.set_active_keyset(advertised.clone());
+            connector.set_melt_quote_status_response(Ok(status.clone()));
+            connectors.insert(
+                member_id,
+                Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+            );
+        }
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let response = connector
+            .get_melt_quote_status(PaymentMethod::Known(KnownMethod::Bolt11), "melt-quote")
+            .await
+            .expect("melt quote status");
 
         assert_eq!(response.state(), MeltQuoteState::Paid);
         assert!(response.change().is_none());
