@@ -1028,6 +1028,7 @@ if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
 fi
 SMOKE_QUOTE_RETRIES="${{SMOKE_QUOTE_RETRIES:-300}}"
 SMOKE_QUOTE_SLEEP_MS="${{SMOKE_QUOTE_SLEEP_MS:-100}}"
+SMOKE_OPERATION_TIMEOUT_SECONDS="${{SMOKE_OPERATION_TIMEOUT_SECONDS:-300}}"
 OFFLINE_OPERATION_BATCHES="${{OFFLINE_OPERATION_BATCHES:-3}}"
 PENDING_WALLET_DB="${{PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/pending-melt-wallet.sqlite}}"
 FAILED_PENDING_WALLET_DB="${{FAILED_PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/failed-pending-melt-wallet.sqlite}}"
@@ -1344,6 +1345,7 @@ status_field() {{
 
 run_smoke_operations() {{
   local has_private_config=0
+  local timeout_args=(--operation-timeout-seconds "$SMOKE_OPERATION_TIMEOUT_SECONDS")
   local arg
   for arg in "$@"; do
     if [[ "$arg" == "--private-config" ]]; then
@@ -1358,6 +1360,7 @@ run_smoke_operations() {{
       --private-config "$(member_private_config "$signer")" \
       --quote-retries "$SMOKE_QUOTE_RETRIES" \
       --quote-sleep-ms "$SMOKE_QUOTE_SLEEP_MS" \
+      "${{timeout_args[@]}}" \
       "$@"
     return
   fi
@@ -1365,6 +1368,7 @@ run_smoke_operations() {{
     --public-config "$PUBLIC_CONFIG" \
     --quote-retries "$SMOKE_QUOTE_RETRIES" \
     --quote-sleep-ms "$SMOKE_QUOTE_SLEEP_MS" \
+    "${{timeout_args[@]}}" \
     "$@"
 }}
 
@@ -2001,6 +2005,7 @@ mod tests {
         assert!(smoke_script.contains("FAILED_PENDING_WALLET_DB"));
         assert!(smoke_script.contains("SMOKE_QUOTE_RETRIES"));
         assert!(smoke_script.contains("SMOKE_QUOTE_SLEEP_MS"));
+        assert!(smoke_script.contains("SMOKE_OPERATION_TIMEOUT_SECONDS"));
         assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES"));
         assert!(smoke_script.contains("CHECK_PROMETHEUS_METRICS"));
         assert!(smoke_script.contains("validate_smoke_settings()"));
@@ -2011,6 +2016,9 @@ mod tests {
         assert!(smoke_script.contains("member_prometheus_url()"));
         assert!(smoke_script.contains("run_smoke_operations()"));
         assert!(smoke_script.contains("local has_private_config=0"));
+        assert!(smoke_script.contains(
+            "local timeout_args=(--operation-timeout-seconds \"$SMOKE_OPERATION_TIMEOUT_SECONDS\")"
+        ));
         assert!(smoke_script.contains("if [[ \"$arg\" == \"--private-config\" ]]; then"));
         assert!(smoke_script.contains("--private-config \"$(member_private_config \"$signer\")\""));
         assert!(smoke_script.contains("return\n  fi"));
@@ -2026,6 +2034,7 @@ mod tests {
             .contains("member %s did not report quorum-backed session outcome evidence"));
         assert!(smoke_script.contains("--quote-retries \"$SMOKE_QUOTE_RETRIES\""));
         assert!(smoke_script.contains("--quote-sleep-ms \"$SMOKE_QUOTE_SLEEP_MS\""));
+        assert!(smoke_script.contains("\"${timeout_args[@]}\""));
         assert!(smoke_script.contains("wait_for_quarantine_report()"));
         assert!(smoke_script.contains("validate_quarantine_members()"));
         assert!(smoke_script.contains("--scenario offline-member-operations"));
@@ -2403,6 +2412,9 @@ mod tests {
         assert!(
             smoke_script.contains("CHECK_PROMETHEUS_METRICS=\"${CHECK_PROMETHEUS_METRICS:-1}\"")
         );
+        assert!(smoke_script.contains(
+            "SMOKE_OPERATION_TIMEOUT_SECONDS=\"${SMOKE_OPERATION_TIMEOUT_SECONDS:-300}\""
+        ));
         assert!(smoke_script.contains("for member in \"${MEMBERS[@]}\"; do"));
         assert!(smoke_script.contains("for batch in $(seq 1 \"$OFFLINE_OPERATION_BATCHES\"); do"));
         assert!(smoke_script.contains("wait_for_converged"));

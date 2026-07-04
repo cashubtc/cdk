@@ -282,6 +282,9 @@ pub struct FederationSmokeOperationsArgs {
     /// Delay between quote status attempts.
     #[arg(long, default_value_t = 50)]
     pub quote_sleep_ms: u64,
+    /// Maximum seconds allowed for one smoke scenario before failing.
+    #[arg(long)]
+    pub operation_timeout_seconds: Option<u64>,
 }
 
 #[cfg(all(feature = "federation", feature = "fakewallet", feature = "sqlite"))]
@@ -664,6 +667,8 @@ mod tests {
             "pending-melt-fail-start",
             "--wallet-db",
             "wallet.sqlite",
+            "--operation-timeout-seconds",
+            "42",
         ])
         .expect("smoke operations command parses");
 
@@ -681,6 +686,7 @@ mod tests {
         );
         assert_eq!(smoke.wallet_db, Some(PathBuf::from("wallet.sqlite")));
         assert_eq!(smoke.private_config, None);
+        assert_eq!(smoke.operation_timeout_seconds, Some(42));
     }
 
     #[cfg(all(feature = "fakewallet", feature = "sqlite"))]

@@ -522,15 +522,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover seven-member consensus partitions</span>
+          <span class="value">fix: bound federation smoke operations</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Wallet federation signing paths now fan out concurrently, first-healthy-member quote and LNURL fallbacks are covered, auth wallet state propagates across all member connectors, seven-member/five-threshold consensus partition behavior has a fast simulator gate, consensus backend identity is status-visible, the adapter selector has a backend-neutral runtime slot, live peer sync halts on backend mismatch, and digest-compare now treats equal digests from different consensus backends as divergence</span>
+          <span class="value">Wallet federation signing paths now fan out concurrently, first-healthy-member quote and LNURL fallbacks are covered, auth wallet state propagates across all member connectors, seven-member/five-threshold consensus partition behavior has a fast simulator gate, generated process smokes now bound each smoke-operation scenario, consensus backend identity is status-visible, the adapter selector has a backend-neutral runtime slot, live peer sync halts on backend mismatch, and digest-compare now treats equal digests from different consensus backends as divergence</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Broaden live long-partition process smokes to larger rosters and start the first production BFT ordering adapter behind the status-visible backend selector</span>
+          <span class="value">Profile and optimize the seven-member process smoke operation driver, then start the first production BFT ordering adapter behind the status-visible backend selector</span>
         </div>
       </aside>
     </header>
@@ -1557,6 +1557,10 @@
           <article class="item">
             <h3>Seven-member consensus partition covered</h3>
             <p>The in-memory consensus simulator now has a seven-member, five-threshold regression covering delayed and duplicated proposals, exact-threshold delivery, below-threshold stalling, recovered quorum delivery, and catch-up of offline members from different peers.</p>
+          </article>
+          <article class="item">
+            <h3>Smoke operation timeout added</h3>
+            <p>`federation smoke-operations` now accepts a per-scenario timeout and generated smoke scripts pass `SMOKE_OPERATION_TIMEOUT_SECONDS`, turning larger-roster operation-driver hot loops into bounded failures with a clear scenario name.</p>
           </article>
           <article class="item">
             <h3>Payment observation admin view added</h3>
@@ -2738,6 +2742,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation multi_node_engine_scales_to_seven_members_with_threshold_partition_catch_up -- --test-threads 1` passed exact-threshold delivery, below-threshold stall, recovered-quorum delivery, duplicate and delayed proposals, and catch-up of two offline members from different peers. `cargo test -p cdk-common --features federation consensus -- --test-threads 1` passed all 27 consensus tests, and `cargo check -p cdk-common --features federation` passed.</td>
               <td>Promote the same seven-member/five-threshold matrix to a live process smoke once the runtime cost is acceptable, then mirror it against the first production BFT backend.</td>
+            </tr>
+            <tr>
+              <td>Federation smoke operation timeout</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`just fed-regtest-long-partition target/cdk-fed-regtest-seven 7 5 31885 1` generated configs and started seven local members, then was manually interrupted after the baseline `federation smoke-operations` driver stayed CPU-bound for several minutes; cleanup stopped all seven members and a process check found no leftovers. The follow-up timeout guard passed `cargo test -p cdk-mintd --features federation,fakewallet,sqlite smoke_operations -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1`, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`.</td>
+              <td>Profile the seven-member baseline operation driver and decide whether the bottleneck is share generation, REST fanout, quote polling, or restore/check-state aggregation before promoting it to a regular live smoke.</td>
             </tr>
             <tr>
               <td>Wallet federation probe concurrency</td>

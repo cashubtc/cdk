@@ -66,148 +66,178 @@ pub(crate) async fn run_smoke_operations_command(
             .context("federated wallet connector")?;
     let connector = Arc::new(federation_connector);
 
-    match args.scenario {
-        FederationSmokeScenario::Standard => {
-            run_standard_smoke(
-                args,
-                &public_config,
-                unit,
-                &member_connectors,
-                connector,
-                smoke_seed(STANDARD_SMOKE_SEED, args.seed_offset),
-                SmokeMemberExpectation::AllMembers,
-            )
-            .await
+    let run_scenario = async move {
+        match args.scenario {
+            FederationSmokeScenario::Standard => {
+                run_standard_smoke(
+                    args,
+                    &public_config,
+                    unit,
+                    &member_connectors,
+                    connector,
+                    smoke_seed(STANDARD_SMOKE_SEED, args.seed_offset),
+                    SmokeMemberExpectation::AllMembers,
+                )
+                .await
+            }
+            FederationSmokeScenario::OfflineMemberOperations => {
+                run_standard_smoke(
+                    args,
+                    &public_config,
+                    unit,
+                    &member_connectors,
+                    connector,
+                    smoke_seed(OFFLINE_MEMBER_SMOKE_SEED, args.seed_offset),
+                    SmokeMemberExpectation::ThresholdMembers,
+                )
+                .await
+            }
+            FederationSmokeScenario::PendingMeltStart => {
+                let wallet_db = args
+                    .wallet_db
+                    .as_deref()
+                    .context("--wallet-db is required for pending-melt-start")?;
+                run_pending_melt_start(
+                    args,
+                    &public_config,
+                    unit,
+                    &member_connectors,
+                    connector,
+                    PENDING_PAID_SMOKE_SEED,
+                    wallet_db,
+                    MeltQuoteState::Paid,
+                )
+                .await
+            }
+            FederationSmokeScenario::PendingMeltFinish => {
+                let wallet_db = args
+                    .wallet_db
+                    .as_deref()
+                    .context("--wallet-db is required for pending-melt-finish")?;
+                run_pending_melt_finish(
+                    args,
+                    &public_config,
+                    unit,
+                    &member_connectors,
+                    connector,
+                    PENDING_PAID_SMOKE_SEED,
+                    wallet_db,
+                    MeltQuoteState::Paid,
+                    SmokeMemberExpectation::ThresholdMembers,
+                )
+                .await
+            }
+            FederationSmokeScenario::PendingMeltFailStart => {
+                let wallet_db = args
+                    .wallet_db
+                    .as_deref()
+                    .context("--wallet-db is required for pending-melt-fail-start")?;
+                run_pending_melt_start(
+                    args,
+                    &public_config,
+                    unit,
+                    &member_connectors,
+                    connector,
+                    PENDING_FAILED_SMOKE_SEED,
+                    wallet_db,
+                    MeltQuoteState::Failed,
+                )
+                .await
+            }
+            FederationSmokeScenario::PendingMeltFailFinish => {
+                let wallet_db = args
+                    .wallet_db
+                    .as_deref()
+                    .context("--wallet-db is required for pending-melt-fail-finish")?;
+                run_pending_melt_finish(
+                    args,
+                    &public_config,
+                    unit,
+                    &member_connectors,
+                    connector,
+                    PENDING_FAILED_SMOKE_SEED,
+                    wallet_db,
+                    MeltQuoteState::Failed,
+                    SmokeMemberExpectation::ThresholdMembers,
+                )
+                .await
+            }
+            FederationSmokeScenario::QuarantineMintConflict => {
+                let private_config_path = args
+                    .private_config
+                    .as_deref()
+                    .context("--private-config is required for quarantine-mint-conflict")?;
+                let private_config: MemberConfigPrivate =
+                    crate::read_federation_json(private_config_path, "private federation config")?;
+                run_quarantine_mint_conflict(args, &public_config, unit, &private_config).await
+            }
+            FederationSmokeScenario::KeysetRotation => {
+                let private_config_path = args
+                    .private_config
+                    .as_deref()
+                    .context("--private-config is required for keyset-rotation")?;
+                let private_config: MemberConfigPrivate =
+                    crate::read_federation_json(private_config_path, "private federation config")?;
+                run_keyset_rotation_smoke(
+                    args,
+                    &public_config,
+                    unit,
+                    &member_connectors,
+                    connector,
+                    smoke_seed(KEYSET_ROTATION_SMOKE_SEED, args.seed_offset),
+                    &private_config,
+                    SmokeMemberExpectation::AllMembers,
+                )
+                .await
+            }
+            FederationSmokeScenario::OfflineMemberKeysetRotation => {
+                let private_config_path = args
+                    .private_config
+                    .as_deref()
+                    .context("--private-config is required for offline-member-keyset-rotation")?;
+                let private_config: MemberConfigPrivate =
+                    crate::read_federation_json(private_config_path, "private federation config")?;
+                run_keyset_rotation_smoke(
+                    args,
+                    &public_config,
+                    unit,
+                    &member_connectors,
+                    connector,
+                    smoke_seed(KEYSET_ROTATION_SMOKE_SEED, args.seed_offset),
+                    &private_config,
+                    SmokeMemberExpectation::ThresholdMembers,
+                )
+                .await
+            }
         }
-        FederationSmokeScenario::OfflineMemberOperations => {
-            run_standard_smoke(
-                args,
-                &public_config,
-                unit,
-                &member_connectors,
-                connector,
-                smoke_seed(OFFLINE_MEMBER_SMOKE_SEED, args.seed_offset),
-                SmokeMemberExpectation::ThresholdMembers,
-            )
-            .await
+    };
+
+    match args.operation_timeout_seconds {
+        Some(timeout_seconds) => {
+            match tokio::time::timeout(Duration::from_secs(timeout_seconds), run_scenario).await {
+                Ok(result) => result,
+                Err(_) => bail!(
+                    "federation smoke scenario {} did not complete within {} seconds",
+                    smoke_scenario_name(args.scenario),
+                    timeout_seconds
+                ),
+            }
         }
-        FederationSmokeScenario::PendingMeltStart => {
-            let wallet_db = args
-                .wallet_db
-                .as_deref()
-                .context("--wallet-db is required for pending-melt-start")?;
-            run_pending_melt_start(
-                args,
-                &public_config,
-                unit,
-                &member_connectors,
-                connector,
-                PENDING_PAID_SMOKE_SEED,
-                wallet_db,
-                MeltQuoteState::Paid,
-            )
-            .await
-        }
-        FederationSmokeScenario::PendingMeltFinish => {
-            let wallet_db = args
-                .wallet_db
-                .as_deref()
-                .context("--wallet-db is required for pending-melt-finish")?;
-            run_pending_melt_finish(
-                args,
-                &public_config,
-                unit,
-                &member_connectors,
-                connector,
-                PENDING_PAID_SMOKE_SEED,
-                wallet_db,
-                MeltQuoteState::Paid,
-                SmokeMemberExpectation::ThresholdMembers,
-            )
-            .await
-        }
-        FederationSmokeScenario::PendingMeltFailStart => {
-            let wallet_db = args
-                .wallet_db
-                .as_deref()
-                .context("--wallet-db is required for pending-melt-fail-start")?;
-            run_pending_melt_start(
-                args,
-                &public_config,
-                unit,
-                &member_connectors,
-                connector,
-                PENDING_FAILED_SMOKE_SEED,
-                wallet_db,
-                MeltQuoteState::Failed,
-            )
-            .await
-        }
-        FederationSmokeScenario::PendingMeltFailFinish => {
-            let wallet_db = args
-                .wallet_db
-                .as_deref()
-                .context("--wallet-db is required for pending-melt-fail-finish")?;
-            run_pending_melt_finish(
-                args,
-                &public_config,
-                unit,
-                &member_connectors,
-                connector,
-                PENDING_FAILED_SMOKE_SEED,
-                wallet_db,
-                MeltQuoteState::Failed,
-                SmokeMemberExpectation::ThresholdMembers,
-            )
-            .await
-        }
-        FederationSmokeScenario::QuarantineMintConflict => {
-            let private_config_path = args
-                .private_config
-                .as_deref()
-                .context("--private-config is required for quarantine-mint-conflict")?;
-            let private_config: MemberConfigPrivate =
-                crate::read_federation_json(private_config_path, "private federation config")?;
-            run_quarantine_mint_conflict(args, &public_config, unit, &private_config).await
-        }
-        FederationSmokeScenario::KeysetRotation => {
-            let private_config_path = args
-                .private_config
-                .as_deref()
-                .context("--private-config is required for keyset-rotation")?;
-            let private_config: MemberConfigPrivate =
-                crate::read_federation_json(private_config_path, "private federation config")?;
-            run_keyset_rotation_smoke(
-                args,
-                &public_config,
-                unit,
-                &member_connectors,
-                connector,
-                smoke_seed(KEYSET_ROTATION_SMOKE_SEED, args.seed_offset),
-                &private_config,
-                SmokeMemberExpectation::AllMembers,
-            )
-            .await
-        }
-        FederationSmokeScenario::OfflineMemberKeysetRotation => {
-            let private_config_path = args
-                .private_config
-                .as_deref()
-                .context("--private-config is required for offline-member-keyset-rotation")?;
-            let private_config: MemberConfigPrivate =
-                crate::read_federation_json(private_config_path, "private federation config")?;
-            run_keyset_rotation_smoke(
-                args,
-                &public_config,
-                unit,
-                &member_connectors,
-                connector,
-                smoke_seed(KEYSET_ROTATION_SMOKE_SEED, args.seed_offset),
-                &private_config,
-                SmokeMemberExpectation::ThresholdMembers,
-            )
-            .await
-        }
+        None => run_scenario.await,
+    }
+}
+
+fn smoke_scenario_name(scenario: FederationSmokeScenario) -> &'static str {
+    match scenario {
+        FederationSmokeScenario::Standard => "standard",
+        FederationSmokeScenario::OfflineMemberOperations => "offline-member-operations",
+        FederationSmokeScenario::PendingMeltStart => "pending-melt-start",
+        FederationSmokeScenario::PendingMeltFinish => "pending-melt-finish",
+        FederationSmokeScenario::PendingMeltFailStart => "pending-melt-fail-start",
+        FederationSmokeScenario::PendingMeltFailFinish => "pending-melt-fail-finish",
+        FederationSmokeScenario::QuarantineMintConflict => "quarantine-mint-conflict",
+        FederationSmokeScenario::KeysetRotation => "keyset-rotation",
+        FederationSmokeScenario::OfflineMemberKeysetRotation => "offline-member-keyset-rotation",
     }
 }
 
