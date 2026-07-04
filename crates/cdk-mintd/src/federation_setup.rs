@@ -13,13 +13,17 @@ use anyhow::{bail, Result};
 use bip39::Mnemonic;
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 use cdk_common::federation::{
-    generate_trusted_dealer_configs, MemberId, ThresholdParams, TrustedDealerConfigBundle,
+    generate_trusted_dealer_configs, FederationConfig, FederationDkgCommitmentRequest,
+    FederationDkgCommitmentRound, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgRevealRequest,
+    FederationDkgSecretShareRequest, FederationRestMessageKind, FederationSignedRequest,
+    MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerConfigBundle,
     TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 use cdk_common::mint_url::MintUrl;
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
-use cdk_common::nuts::nut01::BlsSecretKey;
+use cdk_common::nuts::nut01::{evaluate_secret_key_coefficients, BlsSecretKey};
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
 
@@ -36,6 +40,8 @@ const MEMBER_CONFIG_FILE: &str = "config.toml";
 const GENERATED_GITIGNORE_FILE: &str = ".gitignore";
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 const SMOKE_SCRIPT_FILE: &str = "smoke-local-federation.sh";
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+const DKG_SETUP_ROUTE_PROBE_DIR: &str = "dkg-setup-route-probe";
 
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +57,8 @@ pub(crate) struct TrustedDealerMemberArtifacts {
     pub(crate) config_path: PathBuf,
     pub(crate) private_config_path: PathBuf,
     pub(crate) work_dir: PathBuf,
+    pub(crate) federation_api_url: String,
+    pub(crate) dkg_setup_request_dir: PathBuf,
     pub(crate) prometheus_url: String,
 }
 
@@ -127,6 +135,17 @@ pub(crate) fn generate_trusted_dealer_artifacts(
     )
     .context("failed to generate trusted-dealer federation configs")?;
     validate_bundle(&bundle)?;
+    let dkg_setup_request_dirs = write_dkg_setup_route_probe_requests(
+        &output_dir,
+        &bundle.public_config,
+        &bundle.private_configs,
+        &unit,
+        args.input_fee_ppk,
+        args.final_expiry,
+        args.threshold,
+        &args.amounts,
+        args.force,
+    )?;
 
     let public_config_path = output_dir.join(PUBLIC_CONFIG_FILE);
     write_json_file(&public_config_path, &bundle.public_config, args.force)?;
@@ -146,6 +165,7 @@ pub(crate) fn generate_trusted_dealer_artifacts(
         let work_dir = member_dir.join("work");
         let config_path = member_dir.join(MEMBER_CONFIG_FILE);
         let member_url = member.public_mint_url.to_string();
+        let federation_api_url = member.federation_api_url.to_string();
         let database_config = member_database_config(args, *member_id)?;
         let listen_port = args
             .port_start
@@ -179,6 +199,11 @@ pub(crate) fn generate_trusted_dealer_artifacts(
                 config_path,
                 private_config_path,
                 work_dir,
+                federation_api_url,
+                dkg_setup_request_dir: dkg_setup_request_dirs
+                    .get(member_id)
+                    .ok_or_else(|| anyhow!("missing DKG route-probe dir for member {member_id}"))?
+                    .clone(),
                 prometheus_url,
             },
         );
@@ -341,6 +366,236 @@ fn random_bls_coefficients(threshold: u16) -> Result<Vec<BlsSecretKey>> {
             Ok(secret_key.as_bls()?.clone())
         })
         .collect()
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn write_dkg_setup_route_probe_requests(
+    output_dir: &Path,
+    public_config: &FederationConfig,
+    private_configs: &BTreeMap<MemberId, MemberConfigPrivate>,
+    unit: &CurrencyUnit,
+    input_fee_ppk: u64,
+    final_expiry: Option<u64>,
+    threshold: u16,
+    amounts: &[u64],
+    force: bool,
+) -> Result<BTreeMap<MemberId, PathBuf>> {
+    let coefficients = dkg_probe_coefficients(public_config, threshold, amounts)?;
+    let reveals = coefficients
+        .keys()
+        .map(|member_id| {
+            Ok((
+                *member_id,
+                dkg_probe_reveal(public_config, *member_id, &coefficients)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let commitments = reveals
+        .iter()
+        .map(|(member_id, reveal)| {
+            Ok((
+                *member_id,
+                FederationDkgParticipantCommitment::from_reveal(reveal)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let round = FederationDkgCommitmentRound::new(public_config, commitments.clone())
+        .context("generated DKG route-probe commitments are invalid")?;
+    round
+        .validate_reveals(public_config, &reveals)
+        .context("generated DKG route-probe reveals are invalid")?;
+
+    let mut request_dirs = BTreeMap::new();
+    for receiver_id in public_config.members.keys().copied() {
+        let receiver_dir = output_dir
+            .join(DKG_SETUP_ROUTE_PROBE_DIR)
+            .join(format!("receiver-{}", receiver_id.get()));
+        request_dirs.insert(receiver_id, receiver_dir.clone());
+
+        let mut participant_secret_shares = BTreeMap::new();
+        for sender_id in public_config.members.keys().copied() {
+            let private_config = private_configs
+                .get(&sender_id)
+                .ok_or_else(|| anyhow!("missing private config for member {sender_id}"))?;
+            let commitment_payload =
+                FederationDkgCommitmentRequest::new(*commitments.get(&sender_id).ok_or_else(
+                    || anyhow!("missing DKG route-probe commitment for member {sender_id}"),
+                )?);
+            write_signed_dkg_probe_request(
+                public_config,
+                private_config,
+                receiver_id,
+                1,
+                FederationRestMessageKind::DkgCommitment,
+                commitment_payload,
+                &dkg_probe_request_path(&receiver_dir, sender_id, "commitment"),
+                force,
+            )?;
+
+            let reveal_payload = FederationDkgRevealRequest::new(
+                reveals
+                    .get(&sender_id)
+                    .ok_or_else(|| {
+                        anyhow!("missing DKG route-probe reveal for member {sender_id}")
+                    })?
+                    .clone(),
+            );
+            write_signed_dkg_probe_request(
+                public_config,
+                private_config,
+                receiver_id,
+                2,
+                FederationRestMessageKind::DkgReveal,
+                reveal_payload,
+                &dkg_probe_request_path(&receiver_dir, sender_id, "reveal"),
+                force,
+            )?;
+
+            let secret_share_payload = dkg_probe_secret_share_request(
+                public_config,
+                &coefficients,
+                sender_id,
+                receiver_id,
+            )?;
+            participant_secret_shares.insert(sender_id, secret_share_payload.secret_shares.clone());
+            write_signed_dkg_probe_request(
+                public_config,
+                private_config,
+                receiver_id,
+                3,
+                FederationRestMessageKind::DkgSecretShare,
+                secret_share_payload,
+                &dkg_probe_request_path(&receiver_dir, sender_id, "secret-share"),
+                force,
+            )?;
+        }
+
+        round
+            .derive_member_keyset_share(
+                public_config,
+                &reveals,
+                receiver_id,
+                &participant_secret_shares,
+                unit.clone(),
+                true,
+                input_fee_ppk,
+                final_expiry,
+            )
+            .with_context(|| {
+                format!("generated DKG route-probe shares for member {receiver_id} are invalid")
+            })?;
+    }
+
+    Ok(request_dirs)
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn dkg_probe_coefficients(
+    public_config: &FederationConfig,
+    threshold: u16,
+    amounts: &[u64],
+) -> Result<BTreeMap<MemberId, BTreeMap<Amount, Vec<BlsSecretKey>>>> {
+    let mut coefficients = BTreeMap::new();
+    for member_id in public_config.members.keys().copied() {
+        let mut member_coefficients = BTreeMap::new();
+        for amount in amounts {
+            if member_coefficients
+                .insert(Amount::from(*amount), random_bls_coefficients(threshold)?)
+                .is_some()
+            {
+                bail!("duplicate federation amount {amount}");
+            }
+        }
+        coefficients.insert(member_id, member_coefficients);
+    }
+    Ok(coefficients)
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn dkg_probe_reveal(
+    public_config: &FederationConfig,
+    member_id: MemberId,
+    coefficients: &BTreeMap<MemberId, BTreeMap<Amount, Vec<BlsSecretKey>>>,
+) -> Result<FederationDkgParticipantCommitmentReveal> {
+    let member_coefficients = coefficients
+        .get(&member_id)
+        .ok_or_else(|| anyhow!("missing DKG route-probe coefficients for member {member_id}"))?;
+    let coefficient_commitments = member_coefficients
+        .iter()
+        .map(|(amount, coefficients)| {
+            (
+                *amount,
+                coefficients
+                    .iter()
+                    .map(BlsSecretKey::public_key_g2)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    Ok(FederationDkgParticipantCommitmentReveal {
+        federation_id: public_config.federation_id,
+        member_id,
+        coefficient_commitments,
+    })
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn dkg_probe_secret_share_request(
+    public_config: &FederationConfig,
+    coefficients: &BTreeMap<MemberId, BTreeMap<Amount, Vec<BlsSecretKey>>>,
+    sender_id: MemberId,
+    receiver_id: MemberId,
+) -> Result<FederationDkgSecretShareRequest> {
+    let sender_coefficients = coefficients
+        .get(&sender_id)
+        .ok_or_else(|| anyhow!("missing DKG route-probe coefficients for member {sender_id}"))?;
+    let receiver_signer_id = receiver_id.to_bls_signer_id();
+    let secret_shares = sender_coefficients
+        .iter()
+        .map(|(amount, coefficients)| {
+            Ok((
+                *amount,
+                evaluate_secret_key_coefficients(receiver_signer_id, coefficients)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    Ok(FederationDkgSecretShareRequest::new(
+        public_config.federation_id,
+        sender_id,
+        receiver_id,
+        secret_shares,
+    ))
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn write_signed_dkg_probe_request<T>(
+    public_config: &FederationConfig,
+    private_config: &MemberConfigPrivate,
+    receiver_id: MemberId,
+    sequence: u64,
+    kind: FederationRestMessageKind,
+    payload: T,
+    path: &Path,
+    force: bool,
+) -> Result<()>
+where
+    T: serde::Serialize,
+{
+    let request = FederationSignedRequest::new_signed(
+        public_config.federation_id,
+        receiver_id,
+        sequence,
+        kind,
+        payload,
+        private_config,
+    )?;
+    request.verify(public_config, receiver_id)?;
+    write_json_file(path, &request, force)
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn dkg_probe_request_path(receiver_dir: &Path, sender_id: MemberId, label: &str) -> PathBuf {
+    receiver_dir.join(format!("from-{}-{label}.json", sender_id.get()))
 }
 
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
@@ -562,6 +817,10 @@ fn local_smoke_script(
     let work_dir_cases = member_path_cases(member_artifacts, |member| &member.work_dir)?;
     let private_config_cases =
         member_path_cases(member_artifacts, |member| &member.private_config_path)?;
+    let dkg_setup_request_dir_cases =
+        member_path_cases(member_artifacts, |member| &member.dkg_setup_request_dir)?;
+    let federation_url_cases =
+        member_string_cases(member_artifacts, |member| &member.federation_api_url);
     let prometheus_url_cases =
         member_string_cases(member_artifacts, |member| &member.prometheus_url);
     let public_config_path = shell_single_quote(&path_to_string(public_config_path));
@@ -585,6 +844,7 @@ QUARANTINE_OFFLINE_MEMBER="${{QUARANTINE_OFFLINE_MEMBER:-$RESTART_MEMBER}}"
 STATUS_RETRIES="${{STATUS_RETRIES:-60}}"
 STATUS_SLEEP_SECONDS="${{STATUS_SLEEP_SECONDS:-1}}"
 CHECK_PROMETHEUS_METRICS="${{CHECK_PROMETHEUS_METRICS:-1}}"
+PROBE_DKG_SETUP_ROUTES="${{PROBE_DKG_SETUP_ROUTES:-0}}"
 SMOKE_QUOTE_RETRIES="${{SMOKE_QUOTE_RETRIES:-300}}"
 SMOKE_QUOTE_SLEEP_MS="${{SMOKE_QUOTE_SLEEP_MS:-100}}"
 OFFLINE_OPERATION_BATCHES="${{OFFLINE_OPERATION_BATCHES:-3}}"
@@ -607,6 +867,18 @@ member_work_dir() {{
 member_private_config() {{
   case "$1" in
 {private_config_cases}    *) return 1 ;;
+  esac
+}}
+
+member_dkg_setup_request_dir() {{
+  case "$1" in
+{dkg_setup_request_dir_cases}    *) return 1 ;;
+  esac
+}}
+
+member_federation_url() {{
+  case "$1" in
+{federation_url_cases}    *) return 1 ;;
   esac
 }}
 
@@ -712,6 +984,13 @@ member_dkg_status() {{
   local private_config
   private_config="$(member_private_config "$member")"
   "$CDK_MINTD_BIN" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --from-database --require-ready | awk '/^finalized_ready=true/ {{ print; exit }}'
+}}
+
+member_dkg_setup_records_line() {{
+  local member="$1"
+  local private_config
+  private_config="$(member_private_config "$member")"
+  "$CDK_MINTD_BIN" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --from-database | awk '/^setup_records / {{ print; exit }}'
 }}
 
 print_dkg_record_runbook() {{
@@ -832,6 +1111,39 @@ run_smoke_operations() {{
     "$@"
 }}
 
+post_dkg_setup_request() {{
+  local endpoint="$1"
+  local request_file="$2"
+  curl -fsS -H 'content-type: application/json' --data-binary "@$request_file" "$endpoint" >/dev/null
+}}
+
+probe_dkg_setup_routes() {{
+  if [[ "$PROBE_DKG_SETUP_ROUTES" != "1" ]]; then
+    return 0
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    printf 'curl is required when PROBE_DKG_SETUP_ROUTES=1\n' >&2
+    return 1
+  fi
+  local receiver
+  for receiver in "${{MEMBERS[@]}}"; do
+    local receiver_url
+    local request_dir
+    receiver_url="$(member_federation_url "$receiver")"
+    request_dir="$(member_dkg_setup_request_dir "$receiver")"
+    local sender
+    for sender in "${{MEMBERS[@]}}"; do
+      post_dkg_setup_request "$receiver_url/federation/v1/dkg/commitments" "$request_dir/from-$sender-commitment.json"
+    done
+    for sender in "${{MEMBERS[@]}}"; do
+      post_dkg_setup_request "$receiver_url/federation/v1/dkg/reveals" "$request_dir/from-$sender-reveal.json"
+    done
+    for sender in "${{MEMBERS[@]}}"; do
+      post_dkg_setup_request "$receiver_url/federation/v1/dkg/secret-shares" "$request_dir/from-$sender-secret-share.json"
+    done
+  done
+}}
+
 wait_for_converged() {{
   for _ in $(seq 1 "$STATUS_RETRIES"); do
     local baseline_operations=""
@@ -881,6 +1193,40 @@ wait_for_converged() {{
     member_status_line "$member" >&2 || true
   done
   return 1
+}}
+
+wait_for_dkg_setup_records() {{
+  if [[ "$PROBE_DKG_SETUP_ROUTES" != "1" ]]; then
+    return 0
+  fi
+  local expected="${{#MEMBERS[@]}}"
+  local member
+  for member in "${{MEMBERS[@]}}"; do
+    local ready=0
+    for _ in $(seq 1 "$STATUS_RETRIES"); do
+      local line
+      if line="$(member_dkg_setup_records_line "$member" 2>/dev/null)"; then
+        local commitments
+        local reveals
+        local secret_shares
+        commitments="$(status_field "$line" commitments || true)"
+        reveals="$(status_field "$line" reveals || true)"
+        secret_shares="$(status_field "$line" secret_share_contributions || true)"
+        if [[ "$commitments" == "$expected" && "$reveals" == "$expected" && "$secret_shares" == "$expected" ]]; then
+          ready=1
+          break
+        fi
+      fi
+      sleep "$STATUS_SLEEP_SECONDS"
+    done
+    if [[ "$ready" == "1" ]]; then
+      continue
+    fi
+    printf 'member %s did not persist DKG setup route-probe records\n' "$member" >&2
+    member_dkg_setup_records_line "$member" >&2 || true
+    return 1
+  done
+  return 0
 }}
 
 wait_for_session_outcome_quorum() {{
@@ -964,6 +1310,9 @@ for member in "${{MEMBERS[@]}}"; do
   wait_for_dkg_status "$member"
 done
 
+probe_dkg_setup_routes
+wait_for_dkg_setup_records
+
 wait_for_converged
 wait_for_prometheus_metrics
 run_smoke_operations
@@ -1026,6 +1375,8 @@ printf 'local federation smoke test passed\n'
         config_cases = config_cases,
         work_dir_cases = work_dir_cases,
         private_config_cases = private_config_cases,
+        dkg_setup_request_dir_cases = dkg_setup_request_dir_cases,
+        federation_url_cases = federation_url_cases,
         prometheus_url_cases = prometheus_url_cases,
         postgres_schema_reset_url = postgres_schema_reset_url,
         postgres_schema_reset_cases = postgres_schema_reset_cases,
@@ -1168,6 +1519,59 @@ mod tests {
             .setup_transcript
             .as_ref()
             .expect("setup transcript");
+        let first_member = MemberId::new(1).expect("first member id");
+        let second_member = MemberId::new(2).expect("second member id");
+        let first_receiver_probe_dir = output_dir
+            .join(DKG_SETUP_ROUTE_PROBE_DIR)
+            .join("receiver-1");
+        let commitment_json =
+            std::fs::read_to_string(first_receiver_probe_dir.join("from-1-commitment.json"))
+                .expect("DKG commitment route-probe request");
+        let commitment_request: FederationSignedRequest<FederationDkgCommitmentRequest> =
+            serde_json::from_str(&commitment_json).expect("signed DKG commitment request");
+        commitment_request
+            .verify(&public_config, first_member)
+            .expect("commitment request verifies");
+        commitment_request
+            .payload
+            .validate_sender(&public_config, first_member)
+            .expect("commitment sender validates");
+        assert_eq!(commitment_request.sequence, 1);
+        assert_eq!(
+            commitment_request.kind,
+            FederationRestMessageKind::DkgCommitment
+        );
+        let reveal_json =
+            std::fs::read_to_string(first_receiver_probe_dir.join("from-1-reveal.json"))
+                .expect("DKG reveal route-probe request");
+        let reveal_request: FederationSignedRequest<FederationDkgRevealRequest> =
+            serde_json::from_str(&reveal_json).expect("signed DKG reveal request");
+        reveal_request
+            .verify(&public_config, first_member)
+            .expect("reveal request verifies");
+        reveal_request
+            .payload
+            .validate_sender(&public_config, first_member)
+            .expect("reveal sender validates");
+        assert_eq!(reveal_request.sequence, 2);
+        assert_eq!(reveal_request.kind, FederationRestMessageKind::DkgReveal);
+        let secret_share_json =
+            std::fs::read_to_string(first_receiver_probe_dir.join("from-2-secret-share.json"))
+                .expect("DKG secret-share route-probe request");
+        let secret_share_request: FederationSignedRequest<FederationDkgSecretShareRequest> =
+            serde_json::from_str(&secret_share_json).expect("signed DKG secret-share request");
+        secret_share_request
+            .verify(&public_config, first_member)
+            .expect("secret-share request verifies");
+        secret_share_request
+            .payload
+            .validate_sender_receiver(&public_config, second_member, first_member)
+            .expect("secret-share sender and receiver validate");
+        assert_eq!(secret_share_request.sequence, 3);
+        assert_eq!(
+            secret_share_request.kind,
+            FederationRestMessageKind::DkgSecretShare
+        );
 
         let smoke_script =
             std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
@@ -1180,6 +1584,15 @@ mod tests {
         assert!(smoke_script.contains("--from-database"));
         assert!(smoke_script.contains("member_status_line()"));
         assert!(smoke_script.contains("member_dkg_status()"));
+        assert!(smoke_script.contains("PROBE_DKG_SETUP_ROUTES"));
+        assert!(smoke_script.contains("member_dkg_setup_request_dir()"));
+        assert!(smoke_script.contains("member_federation_url()"));
+        assert!(smoke_script.contains("probe_dkg_setup_routes()"));
+        assert!(smoke_script.contains("post_dkg_setup_request()"));
+        assert!(smoke_script.contains("wait_for_dkg_setup_records()"));
+        assert!(smoke_script.contains("/federation/v1/dkg/commitments"));
+        assert!(smoke_script.contains("/federation/v1/dkg/reveals"));
+        assert!(smoke_script.contains("/federation/v1/dkg/secret-shares"));
         assert!(smoke_script.contains("wait_for_dkg_status()"));
         assert!(smoke_script.contains("print_dkg_record_runbook()"));
         assert!(smoke_script.contains("DKG record recovery for member"));

@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated local federation smoke passed end to end, Postgres smoke cleanup resets generated member schemas, and DKG setup messages now pass through real private REST routes</span>
+          <span class="value">Generated local federation smoke passed end to end, Postgres smoke cleanup resets generated member schemas, and generated DKG setup route probes are ready for opt-in live smoke</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover dkg peer client over http</span>
+          <span class="value">feat: generate dkg setup route probe</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">DKG commitment, reveal, and secret-share setup messages now traverse the real FederationRestPeerClient to Axum private routes and persist receiver records</span>
+          <span class="value">Trusted-dealer local artifacts now include signed DKG commitment, reveal, and secret-share route-probe JSON plus an opt-in smoke hook that posts them to private REST routes</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Drive generated route-driven DKG setup across member processes, then compare SQLite and Postgres storage-backed smoke coverage</span>
+          <span class="value">Run the generated route probe in live local smoke with `PROBE_DKG_SETUP_ROUTES=1`, then replace the probe path with setup-only DKG activation coverage</span>
         </div>
       </aside>
     </header>
@@ -1615,6 +1615,10 @@
             <p>A loopback Axum test now sends DKG commitment, reveal, and secret-share setup messages through `FederationRestPeerClient`, proving URL construction, signed private REST validation, sender sequence persistence, and durable setup-record writes work together.</p>
           </article>
           <article class="item">
+            <h3>Generated DKG route probe ready</h3>
+            <p>The local federation generator now writes signed DKG setup request JSON for every sender/receiver pair, validates the generated commitment round and receiver shares, and adds an opt-in smoke hook that posts the files to private DKG REST routes and waits for setup-record counts.</p>
+          </article>
+          <article class="item">
             <h3>Key rotation operation scaffold ready</h3>
             <p>Federation consensus can now encode proposed aggregate keysets, hash them canonically, dedupe conflicting payloads by keyset ID, and validate that rotation targets are v3/BLS keysets for the current roster.</p>
           </article>
@@ -1682,7 +1686,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, durable secret-share contribution storage, secret-share private REST exchange, a real HTTP setup-message bridge, route-driven local member keyset-share derivation, route-derived restart activation, generated record-recovery runbook guidance, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed setup-progress reads, generated setup readiness gates, and the key-rotation runtime path. The remaining setup work is generated local DKG setup exercise and live storage-backed smoke coverage.</p>
+            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, durable secret-share contribution storage, secret-share private REST exchange, a real HTTP setup-message bridge, generated route-probe request artifacts, route-driven local member keyset-share derivation, route-derived restart activation, generated record-recovery runbook guidance, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed setup-progress reads, generated setup readiness gates, and the key-rotation runtime path. The remaining setup work is live route-probe smoke execution, setup-only DKG activation, and live storage-backed smoke coverage.</p>
           </article>
         </div>
       </section>
@@ -1890,6 +1894,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation rest_peer_client_submits_dkg_setup_messages_over_http -- --test-threads 1` passed with a loopback Axum receiver and the production async REST transport. `cargo test -p cdk-axum --features federation dkg -- --test-threads 1` passed 13 DKG route/client tests, `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 83 federation route/client tests, `cargo check -p cdk-axum --features federation` passed, and `git diff --check` passed.</td>
               <td>Use this networked DKG setup path from generated member smoke scripts, then verify SQLite and Postgres process-level setup recovery.</td>
+            </tr>
+            <tr>
+              <td>Generated DKG setup route probe</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1` passed with generated signed DKG commitment/reveal/secret-share JSON verification and smoke-script route-probe assertions. `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, and `git diff --check` passed.</td>
+              <td>Run the generated local smoke with `PROBE_DKG_SETUP_ROUTES=1`, then promote this from a trusted-dealer route probe to setup-only DKG startup activation.</td>
             </tr>
             <tr>
               <td>Key rotation operation scaffold</td>
