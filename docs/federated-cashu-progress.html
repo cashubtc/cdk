@@ -207,6 +207,20 @@
       padding: 0;
     }
 
+    .milestone-index {
+      display: grid;
+      gap: 6px;
+      margin: 0 0 16px;
+      padding-left: 20px;
+      color: var(--text);
+      font-size: 0.93rem;
+    }
+
+    .milestone-index li::marker {
+      color: var(--accent);
+      font-weight: 700;
+    }
+
     .milestone {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -347,11 +361,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover federation metadata concurrency</span>
+          <span class="value">docs: list federation milestones individually</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Concurrent federation metadata storage coverage</span>
+          <span class="value">Full milestone index expanded</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -369,6 +383,32 @@
           includes the local success gate from the plan so progress can be
           checked without decoding bundled milestone ranges.
         </p>
+        <ol class="milestone-index" aria-label="Full milestone index">
+          <li>Milestone 0: written RFC and feature gate.</li>
+          <li>Milestone 1: threshold BLS blind signature primitives.</li>
+          <li>Milestone 2: federation configuration and trusted-dealer setup.</li>
+          <li>Milestone 3: canonical operation encoding and hashes.</li>
+          <li>Milestone 4: consensus engine abstraction.</li>
+          <li>Milestone 5: federation DB journal and state digests.</li>
+          <li>Milestone 6: deterministic mint state machine extraction.</li>
+          <li>Milestone 7: federated key-share signatory.</li>
+          <li>Milestone 8: federated mint quote creation and payment observations.</li>
+          <li>Milestone 9: federated mint issuance.</li>
+          <li>Milestone 10: federated wallet connector and aggregation.</li>
+          <li>Milestone 11: federated swap.</li>
+          <li>Milestone 12: explicit sliding-window attack regression suite.</li>
+          <li>Milestone 13: restore and check-state.</li>
+          <li>Milestone 14: melt reserve and payment finalization.</li>
+          <li>Milestone 15: networking and peer authentication.</li>
+          <li>Milestone 16: member startup, catch-up, and recovery.</li>
+          <li>Milestone 17: cdk-mintd integration and regtest tooling.</li>
+          <li>Milestone 18: storage backend coverage.</li>
+          <li>Milestone 19: real payment backend policy.</li>
+          <li>Milestone 20: distributed key generation.</li>
+          <li>Milestone 21: key rotation and federation upgrades.</li>
+          <li>Milestone 22: observability and operator safety.</li>
+          <li>Milestone 23: security review checklist.</li>
+        </ol>
         <ul class="milestones" aria-label="Implementation plan milestone points">
           <li class="milestone">
             <div>
@@ -1080,7 +1120,7 @@
           </article>
           <article class="item">
             <h3>Milestone map expanded</h3>
-            <p>The dashboard now renders 24 explicit implementation-plan milestone points, each with an objective and test gate, with no grouped shorthand ranges.</p>
+            <p>The dashboard now renders a compact 24-point milestone index plus detailed objective and test-gate cards, with no grouped shorthand ranges.</p>
           </article>
           <article class="item">
             <h3>Storage backend parity tightened</h3>
