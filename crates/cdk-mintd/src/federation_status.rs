@@ -20,6 +20,10 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) sync_state: String,
     pub(crate) sync_ready: bool,
     pub(crate) sync_message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) session_outcome_quorum_operation_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) session_outcome_quorum_signers: Vec<MemberId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
 }
@@ -190,10 +194,15 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         .latest_index
         .map(|index| index.to_string())
         .unwrap_or_else(|| "none".to_string());
+    let session_outcome_quorum_operations = status
+        .session_outcome_quorum_operation_count
+        .map(|count| count.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let session_outcome_quorum_signers = member_list(&status.session_outcome_quorum_signers);
     let (payment_reports, payment_conflicts, payment_unresolved, payment_stale, payment_quarantine) =
         payment_report_counts(status);
     format!(
-        "member {}: sync={} ready={} operations={} latest_index={} order_digest={} state_digest={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} message={}",
+        "member {}: sync={} ready={} operations={} latest_index={} order_digest={} state_digest={} session_outcome_quorum_operations={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} message={}",
         peer.member_id,
         status.sync_state,
         status.sync_ready,
@@ -201,6 +210,8 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         latest_index,
         peer.latest_order_digest,
         peer.state_digest,
+        session_outcome_quorum_operations,
+        session_outcome_quorum_signers,
         payment_reports,
         payment_conflicts,
         payment_unresolved,
@@ -526,6 +537,8 @@ mod tests {
             sync_state: "healthy".to_string(),
             sync_ready: true,
             sync_message: "federation member is healthy".to_string(),
+            session_outcome_quorum_operation_count: None,
+            session_outcome_quorum_signers: Vec::new(),
             payment_observation_reports: Vec::new(),
         }
     }
@@ -685,6 +698,8 @@ mod tests {
         }];
 
         let member_line = member_status_line(&status);
+        assert!(member_line.contains("session_outcome_quorum_operations=none"));
+        assert!(member_line.contains("session_outcome_quorum_signers=none"));
         assert!(member_line.contains("payment_reports=1"));
         assert!(member_line.contains("payment_conflicts=1"));
         assert!(member_line.contains("payment_unresolved=1"));
@@ -714,6 +729,22 @@ mod tests {
         assert!(group_line.contains("operation_indices=1,2"));
         assert!(group_line.contains("conflicts=3"));
         assert!(group_line.contains("terminal=true"));
+    }
+
+    #[test]
+    fn status_line_includes_session_outcome_quorum_evidence() {
+        let (public_config, _) = status_fixture();
+        let mut status = local_status(&public_config, 1, 3);
+        status.session_outcome_quorum_operation_count = Some(3);
+        status.session_outcome_quorum_signers = vec![
+            MemberId::new(1).expect("member one"),
+            MemberId::new(2).expect("member two"),
+        ];
+
+        let member_line = member_status_line(&status);
+
+        assert!(member_line.contains("session_outcome_quorum_operations=3"));
+        assert!(member_line.contains("session_outcome_quorum_signers=1,2"));
     }
 
     #[test]
