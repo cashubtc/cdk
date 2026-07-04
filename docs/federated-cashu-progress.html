@@ -522,11 +522,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">chore: add postgres federation schema cleanup</span>
+          <span class="value">feat: report dkg setup record status</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Repo-level Postgres smoke cleanup now drops generated member schemas as well as generated process files</span>
+          <span class="value">`federation dkg-status --from-database` now reports persisted commitment, reveal, and secret-share setup progress without exposing DKG secrets</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -1599,6 +1599,10 @@
             <p>`cdk-mintd federation dkg-status` now validates supplied and persisted DKG keyset-share and transcript-signature records against the setup config, reports whether final activation material can be assembled, and avoids printing local secret shares. Operators can pass `--from-database` to inspect the configured mint store without requiring payment backends to be runnable.</p>
           </article>
           <article class="item">
+            <h3>DKG setup progress is visible</h3>
+            <p>`federation dkg-status --from-database` now also summarizes persisted setup-round commitments, reveals, and secret-share contributions by member ID, giving operators a non-secret view into where route-driven DKG setup is stuck before final keyset-share and transcript-signature records exist.</p>
+          </article>
+          <article class="item">
             <h3>Generated setup readiness gate added</h3>
             <p>The local trusted-dealer smoke script now gates each member with `federation dkg-status --from-database --require-ready`, and the command treats already-finalized configs as ready without requiring DKG record files.</p>
           </article>
@@ -1860,6 +1864,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite dkg_status -- --test-threads 1` passed CLI parsing, finalized-config readiness, ready and missing-signature reports, file-plus-database record merging, and a real SQLite persisted-record read. `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" dkg_status -- --test-threads 1` passed the same focused slice without default features, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation -- --test-threads 1` passed 71 mintd federation tests, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed.</td>
               <td>Wire DKG record export/import guidance into generated setup runbooks, then use it in route-driven completion recovery tests.</td>
+            </tr>
+            <tr>
+              <td>DKG setup-record status</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite dkg_status -- --test-threads 1` passed 7 DKG-status tests, including the new non-secret setup-record summary for persisted commitments, reveals, and secret-share contributions. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation -- --test-threads 1` passed 72 mintd federation tests. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite,postgres,prometheus` passed.</td>
+              <td>Use these setup-progress lines in generated route-driven DKG smoke gates and failure runbooks.</td>
             </tr>
             <tr>
               <td>Generated setup DKG readiness gate</td>

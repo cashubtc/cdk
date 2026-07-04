@@ -5,8 +5,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
     redact_federation_operator_message, FederationConfig, FederationDkgFinalizedMemberConfig,
-    FederationDkgMemberKeysetShare, FederationDkgSetupMethod,
-    FederationDkgTranscriptSignatureRequest, MemberConfigPrivate, MemberId,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
+    FederationDkgSetupMethod, FederationDkgTranscriptSignatureRequest, MemberConfigPrivate,
+    MemberId,
 };
 
 use crate::cli::{CLIArgs, FederationDkgStatusArgs};
@@ -38,9 +40,25 @@ pub(crate) async fn run_dkg_status_command(
         merge_dkg_records(
             &mut keyset_shares,
             &mut transcript_signatures,
-            database_records,
+            database_records.clone(),
         );
+        let setup_summary = DkgSetupRecordSummary::from_records(&database_records);
+        let report = dkg_status_report_with_setup_records(
+            &public_config,
+            &private_config,
+            &keyset_shares,
+            &transcript_signatures,
+            &setup_summary,
+        );
+        print!("{}", report.text);
+
+        if args.require_ready && !report.ready {
+            bail!("federation DKG finalization is not ready");
+        }
+
+        return Ok(());
     }
+
     let report = dkg_status_report(
         &public_config,
         &private_config,
@@ -68,6 +86,18 @@ async fn read_database_records(cli_args: &CLIArgs) -> Result<DkgCompletionRecord
         .context("failed to open mint database for federation DKG status")?;
 
     Ok(DkgCompletionRecords {
+        commitments: db
+            .get_federation_dkg_commitments()
+            .await
+            .context("failed to read persisted DKG commitment records")?,
+        reveals: db
+            .get_federation_dkg_reveals()
+            .await
+            .context("failed to read persisted DKG reveal records")?,
+        secret_share_contributions: db
+            .get_federation_dkg_secret_share_contributions()
+            .await
+            .context("failed to read persisted DKG secret-share contribution records")?,
         keyset_shares: db
             .get_federation_dkg_member_keyset_shares()
             .await
@@ -116,6 +146,9 @@ fn apply_database_env_overrides(settings: &mut crate::config::Settings) -> Resul
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct DkgCompletionRecords {
+    commitments: Vec<FederationDkgParticipantCommitment>,
+    reveals: Vec<FederationDkgParticipantCommitmentReveal>,
+    secret_share_contributions: Vec<FederationDkgSecretShareRequest>,
     keyset_shares: Vec<FederationDkgMemberKeysetShare>,
     transcript_signatures: Vec<FederationDkgTranscriptSignatureRequest>,
 }
@@ -127,6 +160,47 @@ fn merge_dkg_records(
 ) {
     keyset_shares.extend(records.keyset_shares);
     transcript_signatures.extend(records.transcript_signatures);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct DkgSetupRecordSummary {
+    commitments: usize,
+    reveals: usize,
+    secret_share_contributions: usize,
+    commitment_members: BTreeSet<MemberId>,
+    reveal_members: BTreeSet<MemberId>,
+    secret_share_senders: BTreeSet<MemberId>,
+    secret_share_receivers: BTreeSet<MemberId>,
+}
+
+impl DkgSetupRecordSummary {
+    fn from_records(records: &DkgCompletionRecords) -> Self {
+        Self {
+            commitments: records.commitments.len(),
+            reveals: records.reveals.len(),
+            secret_share_contributions: records.secret_share_contributions.len(),
+            commitment_members: records
+                .commitments
+                .iter()
+                .map(|commitment| commitment.member_id)
+                .collect(),
+            reveal_members: records
+                .reveals
+                .iter()
+                .map(|reveal| reveal.member_id)
+                .collect(),
+            secret_share_senders: records
+                .secret_share_contributions
+                .iter()
+                .map(|contribution| contribution.sender)
+                .collect(),
+            secret_share_receivers: records
+                .secret_share_contributions
+                .iter()
+                .map(|contribution| contribution.receiver)
+                .collect(),
+        }
+    }
 }
 
 fn read_record_files<T>(paths: &[PathBuf], label: &str) -> Result<Vec<T>>
@@ -150,6 +224,22 @@ fn dkg_status_report(
     local_private_config: &MemberConfigPrivate,
     keyset_shares: &[FederationDkgMemberKeysetShare],
     transcript_signatures: &[FederationDkgTranscriptSignatureRequest],
+) -> DkgStatusReport {
+    dkg_status_report_with_setup_records(
+        setup_public_config,
+        local_private_config,
+        keyset_shares,
+        transcript_signatures,
+        &DkgSetupRecordSummary::default(),
+    )
+}
+
+fn dkg_status_report_with_setup_records(
+    setup_public_config: &FederationConfig,
+    local_private_config: &MemberConfigPrivate,
+    keyset_shares: &[FederationDkgMemberKeysetShare],
+    transcript_signatures: &[FederationDkgTranscriptSignatureRequest],
+    setup_records: &DkgSetupRecordSummary,
 ) -> DkgStatusReport {
     let keyset_ids = keyset_shares
         .iter()
@@ -187,6 +277,18 @@ fn dkg_status_report(
         display_string_set(&transcript_hashes),
         display_member_set(&transcript_signers)
     ));
+    if setup_records != &DkgSetupRecordSummary::default() {
+        text.push_str(&format!(
+            "setup_records commitments={} reveals={} secret_share_contributions={} commitment_members={} reveal_members={} secret_share_senders={} secret_share_receivers={}\n",
+            setup_records.commitments,
+            setup_records.reveals,
+            setup_records.secret_share_contributions,
+            display_member_set(&setup_records.commitment_members),
+            display_member_set(&setup_records.reveal_members),
+            display_member_set(&setup_records.secret_share_senders),
+            display_member_set(&setup_records.secret_share_receivers)
+        ));
+    }
 
     if !setup_public_config.keysets.is_empty()
         && !local_private_config.keyset_secret_shares.is_empty()
@@ -499,6 +601,47 @@ mod tests {
     }
 
     #[test]
+    fn dkg_status_report_summarizes_persisted_setup_records_without_secrets() {
+        let fixture = dkg_completion_fixture(member_id(2));
+        let setup_summary = DkgSetupRecordSummary {
+            commitments: 3,
+            reveals: 2,
+            secret_share_contributions: 4,
+            commitment_members: BTreeSet::from([member_id(1), member_id(2), member_id(3)]),
+            reveal_members: BTreeSet::from([member_id(1), member_id(2)]),
+            secret_share_senders: BTreeSet::from([member_id(1), member_id(2), member_id(3)]),
+            secret_share_receivers: BTreeSet::from([member_id(2)]),
+        };
+
+        let report = dkg_status_report_with_setup_records(
+            &fixture.setup_public_config,
+            &fixture.setup_private_config,
+            std::slice::from_ref(&fixture.keyset_share),
+            &fixture.transcript_signatures,
+            &setup_summary,
+        );
+
+        assert!(report.ready);
+        assert!(report
+            .text
+            .contains("setup_records commitments=3 reveals=2"));
+        assert!(report
+            .text
+            .contains("secret_share_contributions=4 commitment_members=1,2,3"));
+        assert!(report.text.contains("reveal_members=1,2"));
+        assert!(report.text.contains("secret_share_senders=1,2,3"));
+        assert!(report.text.contains("secret_share_receivers=2"));
+        for private_fragment in [
+            "secret_shares",
+            "BlsSecretKeyShare",
+            "coefficient_commitments",
+            "commitment_hash",
+        ] {
+            assert!(!report.text.contains(private_fragment));
+        }
+    }
+
+    #[test]
     fn dkg_status_report_marks_finalized_config_ready_without_records() {
         let bundle = generate_trusted_dealer_configs(
             ThresholdParams::with_bft_consensus(3, 2).expect("params"),
@@ -543,6 +686,7 @@ mod tests {
             DkgCompletionRecords {
                 keyset_shares: vec![fixture.keyset_share.clone()],
                 transcript_signatures: fixture.transcript_signatures[1..].to_vec(),
+                ..DkgCompletionRecords::default()
             },
         );
 
