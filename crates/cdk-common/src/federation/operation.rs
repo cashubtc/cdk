@@ -1063,7 +1063,14 @@ impl FederationKeysetRotationOperation {
     /// Validate this proposed keyset against the current federation roster.
     pub fn validate_against_config(&self, config: &FederationConfig) -> Result<()> {
         self.keyset
-            .validate(config.threshold_params, &config.members)
+            .validate(config.threshold_params, &config.members)?;
+        if !self.keyset.active {
+            return Err(FederationError::InactiveFederatedKeyset {
+                keyset_id: self.keyset.id,
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -1589,6 +1596,22 @@ mod tests {
         assert!(matches!(
             err,
             FederationError::InvalidFederatedKeysetVersion { .. }
+        ));
+    }
+
+    #[test]
+    fn keyset_rotation_rejects_inactive_keyset() {
+        let config = federation_config_with_keyset(1);
+        let mut rotation = keyset_rotation(7);
+        rotation.keyset.active = false;
+
+        let err = rotation
+            .validate_against_config(&config)
+            .expect_err("inactive keyset should be rejected");
+
+        assert!(matches!(
+            err,
+            FederationError::InactiveFederatedKeyset { .. }
         ));
     }
 

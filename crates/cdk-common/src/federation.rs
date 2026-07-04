@@ -2699,6 +2699,33 @@ impl FederationConfig {
         Ok(())
     }
 
+    /// Return a validated config view after applying an accepted keyset rotation.
+    pub fn apply_keyset_rotation(
+        &self,
+        operation: &FederationKeysetRotationOperation,
+    ) -> Result<Self> {
+        operation.validate_against_config(self)?;
+
+        let mut rotated = self.clone();
+        for keyset in &mut rotated.keysets {
+            if keyset.unit == operation.keyset.unit {
+                keyset.active = false;
+            }
+        }
+
+        match rotated
+            .keysets
+            .iter()
+            .position(|keyset| keyset.id == operation.keyset.id)
+        {
+            Some(index) => rotated.keysets[index] = operation.keyset.clone(),
+            None => rotated.keysets.push(operation.keyset.clone()),
+        }
+
+        rotated.validate()?;
+        Ok(rotated)
+    }
+
     /// Validate that blinded outputs target active v3/BLS aggregate keysets.
     pub fn validate_blinded_outputs(&self, outputs: &[BlindedMessage]) -> Result<()> {
         for output in outputs {
@@ -3069,13 +3096,26 @@ mod tests {
         FederatedKeyset,
         BTreeMap<MemberId, BTreeMap<Amount, BlsSecretKeyShare>>,
     ) {
+        test_keyset_with_seed(members, 1)
+    }
+
+    fn test_keyset_with_seed(
+        members: &BTreeMap<MemberId, MemberConfigPublic>,
+        seed: u8,
+    ) -> (
+        FederatedKeyset,
+        BTreeMap<MemberId, BTreeMap<Amount, BlsSecretKeyShare>>,
+    ) {
         let signer_ids = members
             .keys()
             .map(|member_id| member_id.to_bls_signer_id())
             .collect::<Vec<_>>();
         let amount = Amount::from(1);
-        let threshold_keyset =
-            trusted_dealer_keygen(&[bls_key(1), bls_key(2)], &signer_ids).expect("keyset");
+        let threshold_keyset = trusted_dealer_keygen(
+            &[bls_key(seed), bls_key(seed.saturating_add(1))],
+            &signer_ids,
+        )
+        .expect("keyset");
         let mut aggregate_keys = BTreeMap::new();
         aggregate_keys.insert(amount, threshold_keyset.aggregate_public_key());
 
@@ -4018,6 +4058,75 @@ mod tests {
             serde_json::from_value::<FederationConfig>(json).is_err(),
             "secp-style public key must not deserialize as a BLS aggregate key"
         );
+    }
+
+    #[test]
+    fn federation_config_applies_keyset_rotation_to_active_outputs() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let (old_keyset, _) = test_keyset_with_seed(&members, 1);
+        let (new_keyset, _) = test_keyset_with_seed(&members, 7);
+        let config =
+            FederationConfig::new(params, members, vec![old_keyset.clone()]).expect("config");
+        let old_output = BlindedMessage::new(
+            Amount::from(1),
+            old_keyset.id,
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(b"old rotation output")),
+        );
+        let new_output = BlindedMessage::new(
+            Amount::from(1),
+            new_keyset.id,
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(b"new rotation output")),
+        );
+
+        config
+            .validate_blinded_outputs(std::slice::from_ref(&old_output))
+            .expect("old keyset active before rotation");
+        let rotated = config
+            .apply_keyset_rotation(&FederationKeysetRotationOperation {
+                keyset: new_keyset.clone(),
+            })
+            .expect("apply keyset rotation");
+
+        assert_eq!(rotated.keysets.len(), 2);
+        assert!(
+            !rotated
+                .keysets
+                .iter()
+                .find(|keyset| keyset.id == old_keyset.id)
+                .expect("old keyset")
+                .active
+        );
+        assert!(
+            rotated
+                .keysets
+                .iter()
+                .find(|keyset| keyset.id == new_keyset.id)
+                .expect("new keyset")
+                .active
+        );
+        assert!(matches!(
+            rotated.validate_blinded_outputs(&[old_output]),
+            Err(FederationError::InactiveFederatedKeyset { .. })
+        ));
+        rotated
+            .validate_blinded_outputs(&[new_output])
+            .expect("new keyset active after rotation");
+    }
+
+    #[test]
+    fn federation_config_rejects_inactive_keyset_rotation_target() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let (old_keyset, _) = test_keyset_with_seed(&members, 1);
+        let (mut new_keyset, _) = test_keyset_with_seed(&members, 7);
+        new_keyset.active = false;
+        let config = FederationConfig::new(params, members, vec![old_keyset]).expect("config");
+
+        assert!(matches!(
+            config.apply_keyset_rotation(&FederationKeysetRotationOperation { keyset: new_keyset }),
+            Err(FederationError::InactiveFederatedKeyset { .. })
+        ));
     }
 
     #[test]
