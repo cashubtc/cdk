@@ -522,11 +522,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: surface dkg setup status in runbook</span>
+          <span class="value">docs: correct dkg milestone frontier</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Generated DKG recovery runbooks now point operators at the non-secret `setup_records` line when setup is not finalized yet</span>
+          <span class="value">Dashboard frontier now reflects that key rotation runtime work is done; remaining DKG work is generated setup exercise plus live storage-backed smoke</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -1678,7 +1678,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, durable secret-share contribution storage, secret-share private REST exchange, route-driven local member keyset-share derivation, route-derived restart activation, generated record-recovery runbook guidance, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed record reads, generated setup readiness gates, and the first canonical key-rotation operation. The remaining setup work is generated local DKG setup exercise, accepted-rotation persistence, and active-keyset switching.</p>
+            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, durable secret-share contribution storage, secret-share private REST exchange, route-driven local member keyset-share derivation, route-derived restart activation, generated record-recovery runbook guidance, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed setup-progress reads, generated setup readiness gates, and the key-rotation runtime path. The remaining setup work is generated local DKG setup exercise and live storage-backed smoke coverage.</p>
           </article>
         </div>
       </section>
@@ -1801,7 +1801,7 @@
               <td>Generated DKG record recovery runbook</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1` and `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1` passed with assertions for `print_dkg_record_runbook()`, database-backed readiness, `--keyset-share`, `--transcript-signature`, and combined `--from-database` recovery guidance. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
-              <td>Exercise generated local DKG setup behavior end to end, then move from setup completion into rotation persistence and active keyset switching.</td>
+              <td>Exercise generated local DKG setup behavior end to end, then connect it to live storage-backed smoke coverage and operator recovery runbooks.</td>
             </tr>
             <tr>
               <td>DKG setup private routes</td>
