@@ -1053,7 +1053,62 @@ Tests and success criteria:
 - [ ] Metrics are emitted in fake regtest.
 - [x] Digest mismatch alert fires in an injected-divergence test.
 
-## Milestone 23: security review checklist
+## Milestone 23: production cleanup and payment-backend isolation
+
+Objective: remove MVP/dev scaffolding from production federation semantics before real-funds deployment.
+
+Implementation checklist:
+
+- [ ] Ensure federation crates and production federation modules do not depend on, import, or semantically special-case `cdk-fake-wallet`.
+- [ ] Keep `FakeWallet` only as a normal CDK mint payment backend used by `cdk-mintd` for local development, smoke tests, and regtest.
+- [ ] Rename or replace any federation policy type, method, error, config field, or test helper whose production meaning is currently expressed as `FakeWallet`.
+- [ ] Replace implicit fake-wallet payment policy defaults with explicit payment observation policy configuration.
+- [ ] Reject production federation startup when a config relies on implicit fake-wallet defaults, single-observation dev policies, or test-only payment assumptions.
+- [ ] Model deterministic single-observation behavior, if still needed for local tests, as an explicit dev/test payment observation policy rather than as fakewallet-specific federation logic.
+- [ ] Make federation minting and melting depend only on generic payment observations, quote state transitions, and existing CDK payment backend traits.
+- [ ] Make federated minting and melting use the mint's configured payment backend in the same way standalone mint mode does; the federation layer must not know whether the backend is CLN, LND, LNBits, LDK Node, fakewallet, or a future backend.
+- [ ] Derive payment observations from generic quote/payment state returned by the configured backend, not from backend-specific federation branches.
+- [ ] Split trusted-dealer federation key/config generation from local fakewallet regtest config generation.
+- [ ] Allow `cdk-mintd federation trusted-dealer` or its successor setup command to generate member identities, public federation config, private member configs, BLS shares, and aggregate keysets without enabling the `fakewallet` feature.
+- [ ] Keep fakewallet-specific member config generation in a dev/regtest wrapper command, generated smoke harness, or `just` target rather than in the key generation path.
+- [ ] Add federation config for peer sync interval, peer request timeout, operation submission timeout, catch-up limits, digest recheck attempts, digest recheck delay, session outcome evidence chunk size, and related retry policy.
+- [ ] Add wallet federation connector configuration for per-member fallback timeout, quote-status polling timeout, and fanout concurrency.
+- [ ] Replace production reads from in-memory federation journal/runtime state with durable mint database reads for peer status, catch-up responses, state digests, and session outcomes.
+- [ ] On `cdk-mintd` startup, reconstruct federation runtime state from the database and replay unapplied accepted journal entries before serving signing shares or authoritative status.
+- [ ] Ensure a crash after consensus acceptance but before deterministic apply recovers from the database and converges to the same state digest.
+- [ ] Split large federation modules into logical submodules when useful, following existing CDK layout conventions.
+- [ ] Suggested mint split: config/runtime, apply, mint, swap, melt, restore/check-state, payment observations, keysets, and tests.
+- [ ] Suggested wallet split: connector, member fanout, share aggregation, keyset validation, quote/status aggregation, melt/change aggregation, and tests.
+- [ ] Suggested Axum split: routes, peer client, sync loop, status, catch-up, DKG/setup routes, payment-observation routes, and tests.
+- [ ] Move large inline federation test fixtures, local connectors, and fake-wallet helpers into dedicated test modules or integration-test helpers.
+- [ ] Gate any remaining smoke/regtest-only federation helpers behind test-only code or explicit dev features.
+- [ ] Audit `cdk`, `cdk-common`, `cdk-axum`, `cdk-mintd`, and storage crates for accidental fakewallet coupling in federation code.
+- [ ] Audit generated example configs so fake-wallet federation examples are clearly marked development-only and cannot be mistaken for production templates.
+- [ ] Audit timeout constants, fallback behavior, and member retry policies introduced for smoke tests, and make production-relevant values configurable.
+- [ ] Remove stale "scaffolding", "placeholder", and "MVP wiring" labels from production federation modules once the corresponding feature is implemented; keep such language only in explicit dev/test code.
+- [ ] Make fakewallet federation regtest and smoke tooling look and run more like existing CDK tests where practical, with `cargo test` coverage for core flows and `just` targets as convenience wrappers.
+- [ ] Remove or rewrite any comments, docs, metrics, or status labels that imply fakewallet is part of federation rather than a replaceable mint backend.
+- [ ] Confirm standalone fakewallet mint behavior remains unchanged outside federation mode.
+
+Tests and success criteria:
+
+- [ ] `rg "cdk_fake_wallet|FakeWallet|fake_wallet|fake-wallet"` in production federation modules only finds test-only code, mintd backend setup, smoke tooling, or documentation that explicitly marks fakewallet as development-only.
+- [ ] A federation built with a real payment backend can start without enabling the `fakewallet` feature.
+- [ ] `cdk-mintd` can generate trusted-dealer federation configs with `federation,sqlite` features and without the `fakewallet` feature.
+- [ ] Federated mint and melt tests pass through the same federation payment-observation path with fakewallet and with a backend-agnostic mock payment backend.
+- [ ] A production-mode federation config without an explicit payment observation policy fails startup with a clear error.
+- [ ] A production-mode federation config with a dev/test single-observation policy fails startup unless an explicit development override is set.
+- [ ] Custom peer sync, catch-up, digest recheck, operation submission, and wallet fallback timeouts are honored in unit tests.
+- [ ] Restart tests prove accepted-but-unapplied federation operations are replayed from the database and converge to the same state digest.
+- [ ] Private REST status, catch-up, digest, and session outcome tests read from durable database state rather than an in-memory journal scaffold.
+- [ ] Fake-wallet regtest still passes through the normal CDK payment backend interface.
+- [ ] Mint, melt, and swap federation tests still pass after fakewallet-specific naming is removed from federation semantics.
+- [ ] Module split/refactor keeps focused federation tests passing without behavioral changes.
+- [ ] `rg "scaffold|placeholder|MVP"` in production federation modules only finds intentional dev/test documentation or open future-work comments.
+- [ ] Standalone fakewallet mint tests remain unchanged and prove fakewallet is still available as a non-federation development backend.
+- [ ] Documentation states that federation is payment-backend agnostic and fakewallet is only a development backend for mintd/regtest.
+
+## Milestone 24: security review checklist
 
 Objective: make the design reviewable before mainnet use.
 
@@ -1110,6 +1165,7 @@ MVP 2: networked fake-wallet federation
 MVP 3: payments and production hardening
 
 - Real payment observation policy.
+- Production cleanup and payment-backend isolation.
 - Postgres support.
 - DKG.
 - Key rotation.
@@ -1134,3 +1190,4 @@ MVP 3: payments and production hardening
 15. Add state convergence, catch-up certification, and database-equivalence gates.
 16. Add network chaos, catch-up, and payment-observation recovery tests.
 17. Add real payment observation policy and DKG.
+18. Add production cleanup and payment-backend isolation.
