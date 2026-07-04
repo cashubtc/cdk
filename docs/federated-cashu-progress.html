@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">DKG transcript signatures are now durable and transcript-ready</span>
+          <span class="value">Durable DKG records can now assemble final member configs</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: persist DKG transcript signatures</span>
+          <span class="value">feat: assemble DKG final member configs</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">SQL storage persists member setup-transcript signatures idempotently, Axum stores accepted signatures with sequence watermarks atomically, and stored signatures can assemble a validated DKG transcript</span>
+          <span class="value">Common DKG completion logic turns durable keyset-share records and durable transcript signatures into a validated public federation config plus local private member config</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Bind durable DKG transcript signatures and member keyset shares into final restart-safe public/private federation configs</span>
+          <span class="value">Load DKG completion records from mint storage at startup and activate the finalized runtime config after restart-safe validation</span>
         </div>
       </aside>
     </header>
@@ -1107,6 +1107,10 @@
             <p>Setup transcript approvals now have a durable SQL row shape, so restart recovery can reload the collected member signatures and rebuild the public transcript instead of requiring all setup peers to be online again.</p>
           </article>
           <article class="item">
+            <h3>Final DKG configs assemble from records</h3>
+            <p>The common layer can now combine a setup roster, local DKG keyset-share records, and transcript-signature approvals into the exact public config and local private config a member needs after DKG completion.</p>
+          </article>
+          <article class="item">
             <h3>Accepted order survives storage</h3>
             <p>The federation journal row shape now preserves consensus order, digest continuity, local application status, quote conflict metadata, and member sequence watermarks across SQL round trips.</p>
           </article>
@@ -1535,6 +1539,10 @@
             <p>SQLite and Postgres storage now persist setup-transcript signature approvals per transcript hash and member, route handlers store accepted approvals with sender sequence watermarks, and stored approvals can rebuild a validated Pedersen-DKG transcript.</p>
           </article>
           <article class="item">
+            <h3>Final DKG member config assembly ready</h3>
+            <p>Durable DKG keyset shares and durable transcript-signature records can now materialize a final public federation config with setup transcript plus a local private config with secret shares and transcript-hash binding.</p>
+          </article>
+          <article class="item">
             <h3>State convergence certification planned</h3>
             <p>The implementation plan now has Milestone 16A, an explicit gate for consensus-visible database equality, canonical snapshots, quorum-backed catch-up evidence, safe catch-up mode, digest comparison, and row-level mismatch diagnostics.</p>
           </article>
@@ -1694,6 +1702,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-sqlite --features federation federation_dkg_transcript_signature_persistence -- --test-threads 1` passed idempotent replay, conflict rejection, deterministic readback, and transcript assembly from stored signatures. `cargo test -p cdk-postgres --features federation federation_dkg_transcript_signature_persistence --no-run`, `cargo test -p cdk-sql-common --features federation federation_mint_migrations_cover_sqlite_and_postgres -- --test-threads 1`, `cargo test -p cdk-axum --features federation dkg_transcript_signature -- --test-threads 1`, `cargo test -p cdk-common --features federation federation -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_journal_hot_path_indexes_are_used -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation -- --test-threads 1`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, and `cargo fmt --all` passed.</td>
               <td>Use durable transcript signatures and keyset-share records to materialize final public/private DKG configs at startup.</td>
+            </tr>
+            <tr>
+              <td>DKG final member config assembly</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation dkg_finalized_member_config -- --test-threads 1` passed final public/private config assembly from durable records and missing-transcript-signature rejection. `cargo test -p cdk-common --features federation federation -- --test-threads 1` passed 108 federation tests, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed.</td>
+              <td>Load stored DKG completion records during mint startup and activate the finalized runtime config only after validation succeeds.</td>
             </tr>
             <tr>
               <td>State convergence certification plan</td>
@@ -2324,7 +2338,7 @@
           </article>
           <article class="item">
             <h3>DKG completion wiring</h3>
-            <p>Use durable setup transcript signatures and DKG member keyset-share records to materialize final public/private configs, reload them on startup, and prove restart recovery does not change accepted setup state.</p>
+            <p>Load durable setup transcript signatures and DKG member keyset-share records during mint startup, activate the finalized public/private runtime config, and prove restart recovery does not change accepted setup state.</p>
           </article>
           <article class="item">
             <h3>BFT backend selection</h3>

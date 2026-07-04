@@ -2481,6 +2481,122 @@ impl FederationDkgTranscript {
     }
 }
 
+/// Final public and local-private member config material assembled from DKG records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationDkgFinalizedMemberConfig {
+    /// Public federation config with DKG-derived keysets and setup transcript.
+    pub public_config: FederationConfig,
+    /// Local private member config with DKG-derived secret shares and transcript binding.
+    pub private_config: MemberConfigPrivate,
+}
+
+impl FederationDkgFinalizedMemberConfig {
+    /// Assemble final member config material from durable DKG completion records.
+    pub fn from_records(
+        setup_public_config: &FederationConfig,
+        local_private_config: &MemberConfigPrivate,
+        keyset_shares: &[FederationDkgMemberKeysetShare],
+        transcript_signature_records: &[FederationDkgTranscriptSignatureRequest],
+    ) -> Result<Self> {
+        setup_public_config.validate()?;
+        let local_member = local_private_config.member_id;
+        if !setup_public_config.members.contains_key(&local_member) {
+            return Err(FederationError::MissingMember {
+                member_id: local_member,
+            });
+        }
+
+        let mut keysets_by_id = BTreeMap::new();
+        let mut secret_shares_by_keyset = BTreeMap::new();
+        for share in keyset_shares {
+            if share.federation_id != setup_public_config.federation_id {
+                return Err(FederationError::FederationIdMismatch {
+                    expected: setup_public_config.federation_id,
+                    found: share.federation_id,
+                });
+            }
+            if share.member_id != local_member {
+                return Err(FederationError::MemberIdMismatch {
+                    expected: local_member,
+                    found: share.member_id,
+                });
+            }
+            match keysets_by_id.insert(share.keyset.id, share.keyset.clone()) {
+                Some(existing) if existing != share.keyset => {
+                    return Err(FederationError::DkgTranscriptMismatch {
+                        reason: format!("conflicting DKG keyset {}", share.keyset.id),
+                    });
+                }
+                Some(_) | None => {}
+            }
+            match secret_shares_by_keyset.insert(share.keyset.id, share.secret_shares.clone()) {
+                Some(existing) if existing != share.secret_shares => {
+                    return Err(FederationError::DkgTranscriptMismatch {
+                        reason: format!(
+                            "conflicting local DKG secret shares for keyset {}",
+                            share.keyset.id
+                        ),
+                    });
+                }
+                Some(_) | None => {}
+            }
+        }
+        if keysets_by_id.is_empty() {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "missing DKG keyset shares".to_string(),
+            });
+        }
+
+        let mut public_config = setup_public_config.clone();
+        public_config.keysets = keysets_by_id.into_values().collect();
+        public_config.setup_transcript = None;
+        public_config.validate()?;
+
+        let transcript_hash = FederationDkgTranscript::hash_for_config(
+            FederationDkgSetupMethod::PedersenDkg,
+            &public_config,
+        )?;
+        let mut transcript_signatures = BTreeMap::new();
+        for signature_record in transcript_signature_records {
+            if signature_record.transcript_hash != transcript_hash {
+                continue;
+            }
+            signature_record.validate_sender(&public_config, signature_record.signer)?;
+            match transcript_signatures.insert(signature_record.signer, signature_record.signature)
+            {
+                Some(existing) if existing != signature_record.signature => {
+                    return Err(FederationError::DkgTranscriptMismatch {
+                        reason: format!(
+                            "conflicting transcript signature for member {}",
+                            signature_record.signer
+                        ),
+                    });
+                }
+                Some(_) | None => {}
+            }
+        }
+
+        let transcript = FederationDkgTranscript::from_signatures(
+            FederationDkgSetupMethod::PedersenDkg,
+            &public_config,
+            transcript_signatures,
+        )?;
+        public_config.setup_transcript = Some(transcript);
+        public_config.validate()?;
+
+        let mut private_config = local_private_config.clone();
+        private_config.federation_id = Some(public_config.federation_id);
+        private_config.setup_transcript_hash = Some(transcript_hash);
+        private_config.keyset_secret_shares = secret_shares_by_keyset;
+        private_config.validate_against_public(&public_config)?;
+
+        Ok(Self {
+            public_config,
+            private_config,
+        })
+    }
+}
+
 fn dkg_signature_transcript(transcript_hash: FederationDkgTranscriptHash) -> Vec<u8> {
     let mut transcript = Vec::new();
     append_bytes(&mut transcript, FEDERATION_DKG_TRANSCRIPT_SIGNATURE_VERSION);
@@ -3089,6 +3205,29 @@ mod tests {
             .collect()
     }
 
+    fn dkg_transcript_signature_records(
+        public_config: &FederationConfig,
+        private_configs: &BTreeMap<MemberId, MemberConfigPrivate>,
+    ) -> Vec<FederationDkgTranscriptSignatureRequest> {
+        let transcript_hash = FederationDkgTranscript::hash_for_config(
+            FederationDkgSetupMethod::PedersenDkg,
+            public_config,
+        )
+        .expect("transcript hash");
+        private_configs
+            .values()
+            .map(|private_config| {
+                FederationDkgTranscriptSignatureRequest::new(
+                    public_config.federation_id,
+                    private_config.member_id,
+                    transcript_hash,
+                    FederationDkgTranscriptSignature::sign(transcript_hash, private_config)
+                        .expect("transcript signature"),
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn member_id_rejects_zero_and_serializes() {
         assert!(matches!(
@@ -3488,6 +3627,111 @@ mod tests {
         private_config
             .validate_against_public(&public_config)
             .expect("derived private config validates");
+    }
+
+    #[test]
+    fn dkg_finalized_member_config_assembles_from_durable_records() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let setup_config =
+            FederationConfig::new(params, members.clone(), Vec::new()).expect("setup config");
+        let reveals = dkg_reveals(&setup_config);
+        let commitments = dkg_commitments(&reveals);
+        let round = FederationDkgCommitmentRound::new(&setup_config, commitments).expect("round");
+        let local_member = member_id(2);
+        let keyset_share = round
+            .derive_member_keyset_share(
+                &setup_config,
+                &reveals,
+                local_member,
+                &dkg_member_secret_contributions(local_member),
+                CurrencyUnit::Sat,
+                true,
+                0,
+                None,
+            )
+            .expect("local member keyset share");
+        let mut public_config =
+            FederationConfig::new(params, members, vec![keyset_share.keyset.clone()])
+                .expect("public config");
+        let private_configs = dkg_transcript_private_configs(&public_config);
+        let transcript_signatures =
+            dkg_transcript_signature_records(&public_config, &private_configs);
+        let finalized = FederationDkgFinalizedMemberConfig::from_records(
+            &setup_config,
+            private_configs
+                .get(&local_member)
+                .expect("local private config"),
+            &[keyset_share.clone()],
+            &transcript_signatures,
+        )
+        .expect("finalized member config");
+        let transcript = finalized
+            .public_config
+            .setup_transcript
+            .as_ref()
+            .expect("setup transcript");
+
+        assert_eq!(finalized.public_config.keysets, vec![keyset_share.keyset]);
+        assert_eq!(
+            finalized.private_config.federation_id,
+            Some(finalized.public_config.federation_id)
+        );
+        assert_eq!(
+            finalized.private_config.setup_transcript_hash,
+            Some(transcript.transcript_hash)
+        );
+        finalized
+            .private_config
+            .validate_against_public(&finalized.public_config)
+            .expect("finalized private validates");
+
+        public_config.setup_transcript = Some(transcript.clone());
+        assert_eq!(finalized.public_config, public_config);
+    }
+
+    #[test]
+    fn dkg_finalized_member_config_rejects_missing_transcript_signature() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let setup_config =
+            FederationConfig::new(params, members.clone(), Vec::new()).expect("setup config");
+        let reveals = dkg_reveals(&setup_config);
+        let commitments = dkg_commitments(&reveals);
+        let round = FederationDkgCommitmentRound::new(&setup_config, commitments).expect("round");
+        let local_member = member_id(2);
+        let keyset_share = round
+            .derive_member_keyset_share(
+                &setup_config,
+                &reveals,
+                local_member,
+                &dkg_member_secret_contributions(local_member),
+                CurrencyUnit::Sat,
+                true,
+                0,
+                None,
+            )
+            .expect("local member keyset share");
+        let public_config =
+            FederationConfig::new(params, members, vec![keyset_share.keyset.clone()])
+                .expect("public config");
+        let private_configs = dkg_transcript_private_configs(&public_config);
+        let mut transcript_signatures =
+            dkg_transcript_signature_records(&public_config, &private_configs);
+        transcript_signatures.retain(|signature| signature.signer != member_id(3));
+
+        assert!(matches!(
+            FederationDkgFinalizedMemberConfig::from_records(
+                &setup_config,
+                private_configs
+                    .get(&local_member)
+                    .expect("local private config"),
+                &[keyset_share],
+                &transcript_signatures,
+            ),
+            Err(FederationError::DkgTranscriptMismatch { reason })
+                if reason.contains("missing transcript signature for member 3")
+        ));
     }
 
     #[test]
