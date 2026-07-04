@@ -358,7 +358,7 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">All 24 plan milestones are listed below as individual points</span>
+          <span class="value">Expanded milestone map: every plan milestone is listed as its own point</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
@@ -379,12 +379,12 @@
       <section class="panel span-8">
         <h2>Implementation Plan Milestones</h2>
         <p class="section-note">
-          All 24 implementation-plan milestones are listed below as individual
-          points, with no grouped ranges or shorthand future phases. Each point
-          includes the local success gate from the plan so progress can be
-          checked without decoding bundled milestone ranges.
+          The implementation plan has 24 milestones, numbered from Milestone 0
+          through Milestone 23. Each milestone is listed here as its own point,
+          followed by a matching objective and test-gate card, so the dashboard
+          stays directly traceable to the plan without grouped future phases.
         </p>
-        <ol class="milestone-index" aria-label="Full milestone index">
+        <ol class="milestone-index" aria-label="Expanded milestone index with one point per implementation-plan milestone">
           <li>Milestone 0: written RFC and feature gate.</li>
           <li>Milestone 1: threshold BLS blind signature primitives.</li>
           <li>Milestone 2: federation configuration and trusted-dealer setup.</li>
@@ -1121,7 +1121,7 @@
           </article>
           <article class="item">
             <h3>Milestone map expanded</h3>
-            <p>The dashboard now renders a compact 24-point milestone index plus detailed objective and test-gate cards, with no grouped shorthand ranges.</p>
+            <p>The dashboard now renders every implementation-plan milestone as an individual index point plus a matching objective and test-gate card.</p>
           </article>
           <article class="item">
             <h3>Storage backend parity tightened</h3>
