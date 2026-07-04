@@ -1567,6 +1567,10 @@
             <p>`cdk-mintd federation dkg-status` now validates supplied and persisted DKG keyset-share and transcript-signature records against the setup config, reports whether final activation material can be assembled, and avoids printing local secret shares. Operators can pass `--from-database` to inspect the configured mint store without requiring payment backends to be runnable.</p>
           </article>
           <article class="item">
+            <h3>Generated setup readiness gate added</h3>
+            <p>The local trusted-dealer smoke script now gates each member with `federation dkg-status --from-database --require-ready`, and the command treats already-finalized configs as ready without requiring DKG record files.</p>
+          </article>
+          <article class="item">
             <h3>Key rotation operation scaffold ready</h3>
             <p>Federation consensus can now encode proposed aggregate keysets, hash them canonically, dedupe conflicting payloads by keyset ID, and validate that rotation targets are v3/BLS keysets for the current roster.</p>
           </article>
@@ -1634,7 +1638,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG scaffolding now covers commitments, reveals, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed record reads, and the first canonical key-rotation operation. The remaining setup work is route-driven completion recovery, record export/import runbook wiring, accepted-rotation persistence, and active-keyset switching.</p>
+            <p>The DKG scaffolding now covers commitments, reveals, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed record reads, generated setup readiness gates, and the first canonical key-rotation operation. The remaining setup work is route-driven completion recovery, record export/import runbook wiring, accepted-rotation persistence, and active-keyset switching.</p>
           </article>
         </div>
       </section>
@@ -1786,8 +1790,14 @@
             <tr>
               <td>DKG status operator command</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite dkg_status -- --test-threads 1` passed CLI parsing, ready and missing-signature reports, file-plus-database record merging, and a real SQLite persisted-record read. `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" dkg_status -- --test-threads 1` passed the same focused slice without default features, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation -- --test-threads 1` passed 70 mintd federation tests, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed.</td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite dkg_status -- --test-threads 1` passed CLI parsing, finalized-config readiness, ready and missing-signature reports, file-plus-database record merging, and a real SQLite persisted-record read. `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" dkg_status -- --test-threads 1` passed the same focused slice without default features, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation -- --test-threads 1` passed 71 mintd federation tests, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed.</td>
               <td>Wire DKG record export/import guidance into generated setup runbooks, then use it in route-driven completion recovery tests.</td>
+            </tr>
+            <tr>
+              <td>Generated setup DKG readiness gate</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1` and `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1` passed with generated smoke-script checks for `federation dkg-status`, `--from-database`, `member_dkg_status()`, and `wait_for_dkg_status()`.</td>
+              <td>Exercise this gate in the next live generated smoke run after route-driven DKG completion recovery is wired.</td>
             </tr>
             <tr>
               <td>Key rotation operation scaffold</td>

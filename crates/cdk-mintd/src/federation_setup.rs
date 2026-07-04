@@ -673,6 +673,29 @@ member_status_line() {{
   "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready | awk '/^member / {{ print; exit }}'
 }}
 
+member_dkg_status() {{
+  local member="$1"
+  local private_config
+  private_config="$(member_private_config "$member")"
+  "$CDK_MINTD_BIN" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --from-database --require-ready | awk '/^finalized_ready=true/ {{ print; exit }}'
+}}
+
+wait_for_dkg_status() {{
+  local member="$1"
+  local work_dir
+  work_dir="$(member_work_dir "$member")"
+  for _ in $(seq 1 "$STATUS_RETRIES"); do
+    if member_dkg_status "$member" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$STATUS_SLEEP_SECONDS"
+  done
+  printf 'member %s did not report usable federation DKG/config material\n' "$member" >&2
+  member_dkg_status "$member" >&2 || true
+  tail -n 80 "$work_dir/mintd.log" >&2 || true
+  return 1
+}}
+
 member_quorum_status_line() {{
   local member="$1"
   local private_config
@@ -887,6 +910,7 @@ done
 
 for member in "${{MEMBERS[@]}}"; do
   wait_for_status "$member"
+  wait_for_dkg_status "$member"
 done
 
 wait_for_converged
@@ -1069,10 +1093,14 @@ mod tests {
             std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
         assert!(smoke_script.starts_with("#!/usr/bin/env bash"));
         assert!(smoke_script.contains("federation status"));
+        assert!(smoke_script.contains("federation dkg-status"));
         assert!(smoke_script.contains("federation payment-observations"));
         assert!(smoke_script.contains("federation smoke-operations"));
         assert!(smoke_script.contains("--require-ready"));
+        assert!(smoke_script.contains("--from-database"));
         assert!(smoke_script.contains("member_status_line()"));
+        assert!(smoke_script.contains("member_dkg_status()"));
+        assert!(smoke_script.contains("wait_for_dkg_status()"));
         assert!(smoke_script.contains("member_quorum_status_line()"));
         assert!(smoke_script.contains("--require-session-outcome-quorum"));
         assert!(smoke_script.contains("--require-no-digest-alerts"));

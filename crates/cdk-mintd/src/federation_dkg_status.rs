@@ -188,6 +188,32 @@ fn dkg_status_report(
         display_member_set(&transcript_signers)
     ));
 
+    if !setup_public_config.keysets.is_empty()
+        && !local_private_config.keyset_secret_shares.is_empty()
+    {
+        let transcript = setup_public_config.setup_transcript.as_ref();
+        let transcript_hash = transcript
+            .map(|transcript| transcript.transcript_hash.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let transcript_signers = transcript
+            .map(|transcript| transcript.signatures.keys().copied().collect())
+            .unwrap_or_default();
+        let local_amounts = local_private_config
+            .keyset_secret_shares
+            .values()
+            .map(|shares| shares.len())
+            .sum::<usize>();
+        text.push_str(&format!(
+            "finalized_ready=true source=config final_keysets={} transcript_hash={} transcript_signers={} local_keysets={} local_amounts={}\n",
+            setup_public_config.keysets.len(),
+            transcript_hash,
+            display_member_set(&transcript_signers),
+            local_private_config.keyset_secret_shares.len(),
+            local_amounts
+        ));
+        return DkgStatusReport { text, ready: true };
+    }
+
     match FederationDkgFinalizedMemberConfig::from_records(
         setup_public_config,
         local_private_config,
@@ -469,6 +495,39 @@ mod tests {
         assert!(report
             .text
             .contains("missing transcript signature for member 3"));
+        assert!(!report.text.contains("keyset_secret_shares"));
+    }
+
+    #[test]
+    fn dkg_status_report_marks_finalized_config_ready_without_records() {
+        let bundle = generate_trusted_dealer_configs(
+            ThresholdParams::with_bft_consensus(3, 2).expect("params"),
+            vec![
+                member(member_id(1)),
+                member(member_id(2)),
+                member(member_id(3)),
+            ],
+            vec![TrustedDealerKeysetSpec::new(
+                CurrencyUnit::Sat,
+                true,
+                0,
+                None,
+                BTreeMap::from([(Amount::from(1), vec![bls_key(11), bls_key(12)])]),
+            )],
+        )
+        .expect("trusted dealer bundle");
+        let private_config = bundle
+            .private_configs
+            .get(&member_id(2))
+            .expect("private config");
+
+        let report = dkg_status_report(&bundle.public_config, private_config, &[], &[]);
+
+        assert!(report.ready);
+        assert!(report.text.contains("setup_transcript=trusted_dealer"));
+        assert!(report.text.contains("finalized_ready=true source=config"));
+        assert!(report.text.contains("final_keysets=1"));
+        assert!(report.text.contains("local_keysets=1 local_amounts=1"));
         assert!(!report.text.contains("keyset_secret_shares"));
     }
 
