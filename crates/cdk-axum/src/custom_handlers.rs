@@ -206,7 +206,9 @@ async fn submit_federation_mint_quote_payment_observation(
         amount_issued,
         None,
     );
-    state.submit_federation_envelope(envelope).await?;
+    state
+        .submit_federation_payment_observation_envelope(envelope)
+        .await?;
     Ok(())
 }
 
@@ -242,7 +244,9 @@ async fn submit_federation_melt_quote_payment_observation(
         response.payment_proof().map(str::to_string),
         None,
     );
-    state.submit_federation_envelope(envelope).await?;
+    state
+        .submit_federation_payment_observation_envelope(envelope)
+        .await?;
     Ok(())
 }
 
@@ -2250,6 +2254,35 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn post_batch_check_mint_quote_records_observation_while_sync_not_ready() {
+        let state = create_federated_test_state().await;
+        let quote_id = create_paid_bolt11_quote(&state).await;
+        state
+            .mark_federation_verifying_session_outcome(MemberId::new(2).unwrap(), 1)
+            .await;
+
+        let result = post_batch_check_mint_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(BatchCheckMintQuoteRequest {
+                quotes: vec![quote_id],
+            }),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "mint quote check should still record an internal payment observation"
+        );
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::MintQuotePayment]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn get_check_melt_custom_quote_records_federation_payment_observation() {
         let state = create_federated_test_state().await;
         let quote_id = create_federated_melt_quote(&state, 1000).await;
@@ -2262,6 +2295,39 @@ mod tests {
         .await;
 
         assert!(result.is_ok(), "melt quote check should succeed");
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::MeltQuotePayment]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn get_check_melt_custom_quote_records_observation_while_sync_not_ready() {
+        let state = create_federated_test_state().await;
+        let quote_id = create_federated_melt_quote(&state, 1000).await;
+        state
+            .mark_federation_verifying_session_outcome(MemberId::new(2).unwrap(), 1)
+            .await;
+
+        let result = get_check_melt_custom_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path(("bolt11".to_string(), quote_id)),
+        )
+        .await;
+
+        if let Err(response) = result {
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("error response body");
+            panic!(
+                "melt quote check should still record an internal payment observation: {} {}",
+                status,
+                String::from_utf8_lossy(&body)
+            );
+        }
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::MeltQuotePayment]

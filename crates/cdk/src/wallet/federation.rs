@@ -300,9 +300,6 @@ impl FederatedMintConnector {
             match call_member(connector.clone()).await {
                 Ok(response) => {
                     responses.push((*member_id, response));
-                    if responses.len() >= threshold {
-                        break;
-                    }
                 }
                 Err(err) => failures.push(format!("member {}: {}", member_id, err)),
             }
@@ -560,22 +557,36 @@ impl FederatedMintConnector {
         request: &CheckStateRequest,
         member_responses: &[(MemberId, CheckStateResponse)],
     ) -> Result<CheckStateResponse, Error> {
-        let (first_member_id, first_response) = member_responses.first().ok_or_else(|| {
-            Error::InvalidMintResponse("missing federation check-state responses".to_string())
-        })?;
-        validate_check_state_response(request, first_response, *first_member_id)?;
+        let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
+        let mut matching_views = Vec::<(CheckStateResponse, Vec<MemberId>)>::new();
 
-        for (member_id, response) in member_responses.iter().skip(1) {
+        for (member_id, response) in member_responses {
             validate_check_state_response(request, response, *member_id)?;
-            if response.states != first_response.states {
-                return Err(Error::InvalidMintResponse(format!(
-                    "member {} returned a mismatched proof state view",
-                    member_id
-                )));
+
+            match matching_views
+                .iter_mut()
+                .find(|(candidate, _)| candidate.states == response.states)
+            {
+                Some((_, members)) => members.push(*member_id),
+                None => matching_views.push((response.clone(), vec![*member_id])),
             }
         }
 
-        Ok(first_response.clone())
+        matching_views
+            .into_iter()
+            .find_map(|(response, members)| {
+                if members.len() >= threshold {
+                    Some(response)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| {
+                Error::InvalidMintResponse(format!(
+                    "insufficient matching federation check-state responses: required {}",
+                    threshold
+                ))
+            })
     }
 }
 
@@ -3061,6 +3072,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn federated_mint_connector_accepts_threshold_matching_check_state_views() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let ys = vec![
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(b"check-state-lag-y-1")),
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(b"check-state-lag-y-2")),
+        ];
+        let stale = proof_state_response(&ys, &[State::Unspent, State::Pending]);
+        let expected = proof_state_response(&ys, &[State::Spent, State::Pending]);
+        let mut connectors = BTreeMap::new();
+
+        for (member_id, response) in [
+            (member_id(1), expected.clone()),
+            (member_id(2), stale),
+            (member_id(3), expected.clone()),
+        ] {
+            let connector = MockMintConnector::new();
+            connector.set_active_keyset(advertised.clone());
+            connector.set_check_state_response(Ok(response));
+            connectors.insert(
+                member_id,
+                Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+            );
+        }
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let response = connector
+            .post_check_state(CheckStateRequest { ys })
+            .await
+            .expect("check-state response");
+
+        assert_eq!(response, expected);
+    }
+
+    #[tokio::test]
     async fn federated_mint_connector_rejects_mismatched_check_state_views() {
         let bundle = threshold_bundle();
         let advertised = advertised_keyset(&bundle);
@@ -3086,7 +3133,7 @@ mod tests {
         connector.set_active_keyset(advertised);
         connector.set_check_state_response(Ok(proof_state_response(
             &ys,
-            &[State::Unspent, State::Pending],
+            &[State::Unspent, State::Spent],
         )));
         connectors.insert(
             member_id(3),

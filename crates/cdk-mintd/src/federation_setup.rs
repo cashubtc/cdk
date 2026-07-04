@@ -1343,6 +1343,24 @@ status_field() {{
 }}
 
 run_smoke_operations() {{
+  local has_private_config=0
+  local arg
+  for arg in "$@"; do
+    if [[ "$arg" == "--private-config" ]]; then
+      has_private_config=1
+      break
+    fi
+  done
+  if [[ "$has_private_config" == "0" ]]; then
+    local signer="${{MEMBERS[0]}}"
+    "$CDK_MINTD_BIN" federation smoke-operations \
+      --public-config "$PUBLIC_CONFIG" \
+      --private-config "$(member_private_config "$signer")" \
+      --quote-retries "$SMOKE_QUOTE_RETRIES" \
+      --quote-sleep-ms "$SMOKE_QUOTE_SLEEP_MS" \
+      "$@"
+    return
+  fi
   "$CDK_MINTD_BIN" federation smoke-operations \
     --public-config "$PUBLIC_CONFIG" \
     --quote-retries "$SMOKE_QUOTE_RETRIES" \
@@ -1992,6 +2010,10 @@ mod tests {
         assert!(smoke_script.contains("--context mint-quote"));
         assert!(smoke_script.contains("member_prometheus_url()"));
         assert!(smoke_script.contains("run_smoke_operations()"));
+        assert!(smoke_script.contains("local has_private_config=0"));
+        assert!(smoke_script.contains("if [[ \"$arg\" == \"--private-config\" ]]; then"));
+        assert!(smoke_script.contains("--private-config \"$(member_private_config \"$signer\")\""));
+        assert!(smoke_script.contains("return\n  fi"));
         assert!(smoke_script.contains("wait_for_prometheus_metrics()"));
         assert!(smoke_script.contains("prometheus_metrics_are_ready()"));
         assert!(smoke_script.contains("cdk_federation_consensus_operation_count"));

@@ -20,9 +20,9 @@ use cdk::federation::{
     FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
     FederationDkgSetupState, FederationDkgTranscriptSignatureRequest, FederationError,
     FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationRestSequenceTracker, FederationSessionOutcome, FederationSubmitOperationResponse,
-    MemberId,
+    FederationOperation, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationRestSequenceTracker, FederationSessionOutcome,
+    FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -457,7 +457,7 @@ impl MintState {
         &self,
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
-        self.ensure_federation_ready_for_public_submit().await?;
+        self.ensure_federation_can_forward_public_submit().await?;
 
         if let Some(response) =
             crate::federation::submit_operation_to_primary_if_needed(self, envelope.clone(), None)
@@ -465,6 +465,8 @@ impl MintState {
         {
             return Ok(response);
         }
+
+        self.ensure_federation_ready_for_public_submit().await?;
 
         self.submit_federation_envelope_with_sequence(envelope, None)
             .await
@@ -496,6 +498,32 @@ impl MintState {
             .wait_for_federation_operation_acceptance(operation_id)
             .await
             .unwrap_or(response))
+    }
+
+    pub(crate) async fn submit_federation_payment_observation_envelope(
+        &self,
+        envelope: FederationOperationEnvelope,
+    ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
+        match &envelope.operation {
+            FederationOperation::MintQuotePayment(_) | FederationOperation::MeltQuotePayment(_) => {
+            }
+            _ => {
+                return Err(cdk::Error::Custom(
+                    "internal federation payment observation submit received non-observation operation"
+                        .to_string(),
+                ));
+            }
+        }
+
+        if let Some(response) =
+            crate::federation::submit_operation_to_primary_if_needed(self, envelope.clone(), None)
+                .await?
+        {
+            return Ok(response);
+        }
+
+        self.submit_federation_envelope_with_sequence(envelope, None)
+            .await
     }
 
     async fn finalize_federation_operation_acceptance(
@@ -1010,6 +1038,20 @@ impl MintState {
         }
 
         Err(cdk::Error::Custom(status.not_ready_message()))
+    }
+
+    async fn ensure_federation_can_forward_public_submit(&self) -> Result<(), cdk::Error> {
+        let Some(sync) = &self.federation_sync else {
+            return Ok(());
+        };
+        let status = sync.lock().await.status();
+        match &status {
+            FederationSyncStatus::MaterializedStateMismatch { .. }
+            | FederationSyncStatus::Halted { .. } => {
+                Err(cdk::Error::Custom(status.not_ready_message()))
+            }
+            _ => Ok(()),
+        }
     }
 }
 

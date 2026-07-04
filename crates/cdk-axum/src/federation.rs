@@ -41,6 +41,8 @@ type SequenceHandle = std::sync::Arc<tokio::sync::Mutex<FederationRestSequenceTr
 const FEDERATION_PEER_SYNC_INTERVAL: Duration = Duration::from_secs(5);
 const FEDERATION_DISABLE_PEER_SYNC_ENV_VAR: &str = "CDK_FEDERATION_DISABLE_PEER_SYNC";
 const FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT: usize = 1000;
+const FEDERATION_STATE_DIGEST_RECHECK_ATTEMPTS: usize = 20;
+const FEDERATION_STATE_DIGEST_RECHECK_DELAY: Duration = Duration::from_millis(100);
 static FEDERATION_REST_SEQUENCE_SEED: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn create_federation_router() -> Router<MintState> {
@@ -287,6 +289,8 @@ where
         .sync_once_from_member(state, primary_member)
         .await
         .map_err(|err| cdk::Error::Custom(err.to_string()))?;
+    collect_session_outcome_evidence_round(state, &client, std::slice::from_ref(primary_member))
+        .await;
 
     if let Some((sender, sequence)) = sequence {
         state.persist_federation_sequence(sender, sequence).await?;
@@ -1392,6 +1396,13 @@ where
         }
 
         local_status = local_peer_status(state).await?;
+        local_status = recheck_equal_height_materialized_digest(
+            state,
+            member.member_id,
+            &peer_status,
+            local_status,
+        )
+        .await?;
         let order_digest_mismatch =
             local_status.latest_order_digest != peer_status.latest_order_digest;
         let state_digest_mismatch = local_status.state_digest != peer_status.state_digest;
@@ -1555,6 +1566,39 @@ async fn local_peer_status(state: &MintState) -> anyhow::Result<FederationPeerSt
     let (mut status, entries) = local_peer_status_and_entries(state).await?;
     status.state_digest = materialized_state_digest(state, &entries).await?;
     Ok(status)
+}
+
+async fn recheck_equal_height_materialized_digest(
+    state: &MintState,
+    peer: MemberId,
+    peer_status: &FederationPeerStatus,
+    mut local_status: FederationPeerStatus,
+) -> anyhow::Result<FederationPeerStatus> {
+    if local_status.operation_count != peer_status.operation_count
+        || local_status.latest_order_digest != peer_status.latest_order_digest
+        || local_status.state_digest == peer_status.state_digest
+    {
+        return Ok(local_status);
+    }
+
+    for attempt in 1..=FEDERATION_STATE_DIGEST_RECHECK_ATTEMPTS {
+        time::sleep(FEDERATION_STATE_DIGEST_RECHECK_DELAY).await;
+        local_status = local_peer_status(state).await?;
+        if local_status.operation_count != peer_status.operation_count
+            || local_status.latest_order_digest != peer_status.latest_order_digest
+            || local_status.state_digest == peer_status.state_digest
+        {
+            tracing::debug!(
+                member_id = %peer,
+                operation_count = peer_status.operation_count,
+                attempt,
+                "Federation peer sync materialized digest converged after recheck"
+            );
+            return Ok(local_status);
+        }
+    }
+
+    Ok(local_status)
 }
 
 async fn local_peer_status_with_materialized_rows(
@@ -3582,13 +3626,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lagging_non_primary_refuses_public_submit_before_forwarding() {
+    async fn divergent_non_primary_refuses_public_submit_before_forwarding() {
         let (public_config, _, secondary_private) = transport_config();
         let state =
             federation_route_state_for_private(public_config.clone(), secondary_private).await;
         let primary_member = public_config.member(member_id(1)).expect("primary member");
         state
-            .mark_federation_lagging(primary_member.member_id, 0, 1)
+            .mark_federation_materialized_state_mismatch(primary_member.member_id, 1)
             .await;
         let envelope = restore_envelope(
             public_config.federation_id,
@@ -3601,8 +3645,9 @@ mod tests {
             .expect_err("lagging non-primary member must not forward public submits");
 
         assert!(
-            err.to_string().contains("lagging behind peer 1"),
-            "expected lagging readiness error before primary forwarding, got: {err}"
+            err.to_string()
+                .contains("materialized state digest convergence"),
+            "expected materialized-state readiness error before primary forwarding, got: {err}"
         );
     }
 
@@ -4007,6 +4052,89 @@ mod tests {
             .sync_once_from_member(&state, peer_member)
             .await
             .expect("second sync recovers");
+
+        assert!(matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Healthy)
+        ));
+    }
+
+    #[tokio::test]
+    async fn rest_peer_client_rechecks_equal_height_digest_while_materializing() {
+        let (state, public_config, local_private, _) =
+            federation_route_state_with_local_private().await;
+        let federation_id = public_config.federation_id;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let quote_id = QuoteId::new();
+        let envelope = mint_quote_envelope(&state, &quote_id);
+
+        let entry = {
+            let consensus = state.federation_consensus.as_ref().expect("consensus");
+            let mut consensus = consensus.lock().await;
+            match consensus
+                .submit_envelope(envelope.clone())
+                .expect("append local journal entry")
+                .outcome
+            {
+                cdk::federation::FederationJournalAppendOutcome::Appended(entry) => entry,
+                cdk::federation::FederationJournalAppendOutcome::Duplicate(_) => {
+                    panic!("unexpected duplicate journal entry")
+                }
+            }
+        };
+        let mut tx = state
+            .mint
+            .localstore()
+            .begin_transaction()
+            .await
+            .expect("begin transaction");
+        tx.add_federation_journal_entry(&entry)
+            .await
+            .expect("persist journal entry");
+        tx.commit().await.expect("commit journal entry");
+
+        let peer_state =
+            federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
+        peer_state
+            .submit_federation_envelope(envelope)
+            .await
+            .expect("materialize peer journal entry");
+        let materialized_peer_status = local_peer_status(&peer_state).await.expect("peer status");
+        let peer_status = FederationPeerStatus::new_with_state_digest(
+            federation_id,
+            peer_member.member_id,
+            materialized_peer_status.operation_count,
+            materialized_peer_status.latest_index,
+            materialized_peer_status.latest_order_digest,
+            materialized_peer_status.state_digest,
+        );
+        assert_ne!(
+            local_peer_status(&state)
+                .await
+                .expect("local status")
+                .state_digest,
+            peer_status.state_digest
+        );
+
+        let delayed_state = state.clone();
+        let delayed_entry = entry.clone();
+        let materializer = tokio::spawn(async move {
+            time::sleep(Duration::from_millis(250)).await;
+            delayed_state
+                .apply_federation_journal_entries(std::slice::from_ref(&delayed_entry))
+                .await
+                .expect("materialize delayed journal entry");
+        });
+
+        let transport = MockFederationTransport::default().with_status_response(peer_status);
+        let client = FederationRestPeerClient::new(transport, &public_config, local_private)
+            .expect("client");
+
+        client
+            .sync_once_from_member(&state, peer_member)
+            .await
+            .expect("sync rechecks until local materialization converges");
+        materializer.await.expect("materializer task");
 
         assert!(matches!(
             state.federation_sync_status().await,

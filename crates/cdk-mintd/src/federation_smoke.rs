@@ -29,6 +29,7 @@ use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_http_client::{Async, Transport};
 
 use crate::cli::{FederationSmokeOperationsArgs, FederationSmokeScenario};
+use crate::federation_status::{query_local_statuses, FederationLocalStatusResponse};
 
 const STANDARD_SMOKE_SEED: [u8; 64] = [7u8; 64];
 const PENDING_PAID_SMOKE_SEED: [u8; 64] = [8u8; 64];
@@ -802,6 +803,13 @@ async fn mint_smoke_funds(
         member_expectation,
     )
     .await?;
+    wait_for_ready_members_after_consensus(
+        public_config,
+        args,
+        member_expectation,
+        "mint quote payment",
+    )
+    .await?;
 
     let minted = wallet
         .mint(&quote.id, SplitTarget::default(), None)
@@ -817,6 +825,59 @@ async fn mint_smoke_funds(
     }
 
     Ok(minted_amount)
+}
+
+async fn wait_for_ready_members_after_consensus(
+    public_config: &FederationConfig,
+    args: &FederationSmokeOperationsArgs,
+    member_expectation: SmokeMemberExpectation,
+    context: &str,
+) -> Result<()> {
+    if member_expectation == SmokeMemberExpectation::ThresholdMembers {
+        return Ok(());
+    }
+    let Some(private_config_path) = args.private_config.as_deref() else {
+        return Ok(());
+    };
+    let private_config: MemberConfigPrivate =
+        crate::read_federation_json(private_config_path, "private federation config")?;
+    let required = required_member_observations(public_config, member_expectation);
+    let sleep = Duration::from_millis(args.quote_sleep_ms);
+    let mut last_ready = 0usize;
+    for _ in 0..args.quote_retries {
+        let mut ready = 0usize;
+        for member_id in public_config.members.keys() {
+            let selected = [member_id.get()];
+            match query_local_statuses(Async::default(), public_config, &private_config, &selected)
+                .await
+            {
+                Ok(statuses) if statuses.iter().any(status_ready_for_smoke) => {
+                    ready = ready.saturating_add(1);
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    tracing::debug!(
+                        member_id = %member_id,
+                        "federation smoke readiness status unavailable after {context}: {}",
+                        err
+                    );
+                }
+            }
+        }
+        last_ready = ready;
+        if ready >= required {
+            return Ok(());
+        }
+        tokio::time::sleep(sleep).await;
+    }
+
+    bail!(
+        "federation smoke saw only {last_ready} ready members after {context}, required {required}"
+    )
+}
+
+fn status_ready_for_smoke(status: &FederationLocalStatusResponse) -> bool {
+    status.sync_ready
 }
 
 async fn run_quarantine_mint_conflict(
