@@ -444,6 +444,15 @@ mod test {
 
     wallet_db_test!(provide_wallet_db);
 
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn federation_journal_persistence() {
+        cdk_common::database::mint::test::federation_journal_persistence(
+            provide_mint_db("federation_journal_persistence".to_string()).await,
+        )
+        .await;
+    }
+
     #[tokio::test]
     async fn failed_initial_connect_marks_connection_stale() {
         let stale = Arc::new(AtomicBool::new(false));

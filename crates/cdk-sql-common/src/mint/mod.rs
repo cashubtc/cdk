@@ -444,3 +444,74 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "federation"))]
+mod federation_migration_tests {
+    fn assert_contains_all(sql: &str, expected: &[&str]) {
+        for needle in expected {
+            assert!(
+                sql.contains(needle),
+                "migration is missing `{needle}` in:\n{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn federation_mint_migrations_cover_sqlite_and_postgres() {
+        let sqlite_saga =
+            include_str!("migrations/sqlite/20260703120000_add_saga_federation_operation_id.sql");
+        let postgres_saga =
+            include_str!("migrations/postgres/20260703120000_add_saga_federation_operation_id.sql");
+        let sqlite_journal =
+            include_str!("migrations/sqlite/20260703130000_add_federation_journal.sql");
+        let postgres_journal =
+            include_str!("migrations/postgres/20260703130000_add_federation_journal.sql");
+        let sqlite_outcomes =
+            include_str!("migrations/sqlite/20260703133000_add_federation_session_outcomes.sql");
+        let postgres_outcomes =
+            include_str!("migrations/postgres/20260703133000_add_federation_session_outcomes.sql");
+
+        for migration in [sqlite_saga, postgres_saga] {
+            assert_contains_all(
+                migration,
+                &["saga_state", "federation_operation_id", "TEXT"],
+            );
+        }
+
+        for migration in [sqlite_journal, postgres_journal] {
+            assert_contains_all(
+                migration,
+                &[
+                    "federation_journal_entries",
+                    "operation_index",
+                    "operation_id",
+                    "envelope_json",
+                    "conflict_key_json",
+                    "conflict_keys_json",
+                    "previous_order_digest",
+                    "order_digest",
+                    "status",
+                    "idx_federation_journal_operation_id",
+                    "federation_member_sequences",
+                    "member_id",
+                    "last_sequence",
+                ],
+            );
+        }
+
+        for migration in [sqlite_outcomes, postgres_outcomes] {
+            assert_contains_all(
+                migration,
+                &[
+                    "federation_session_outcomes",
+                    "from_index",
+                    "signer_member_id",
+                    "latest_index",
+                    "operation_count",
+                    "outcome_json",
+                    "idx_federation_session_outcomes_from_index",
+                ],
+            );
+        }
+    }
+}
