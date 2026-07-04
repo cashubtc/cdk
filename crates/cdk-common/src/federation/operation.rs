@@ -528,6 +528,17 @@ pub enum FederationPaymentObservationReportStatus {
     Conflicting,
 }
 
+impl fmt::Display for FederationPaymentObservationReportStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => f.write_str("empty"),
+            Self::AwaitingQuorum => f.write_str("awaiting_quorum"),
+            Self::QuorumReached => f.write_str("quorum_reached"),
+            Self::Conflicting => f.write_str("conflicting"),
+        }
+    }
+}
+
 /// One group of payment observations that all describe the same evidence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationPaymentObservationEvidenceGroup {
@@ -543,6 +554,48 @@ pub struct FederationPaymentObservationEvidenceGroup {
     pub conflicting_observers: Vec<MemberId>,
     /// Whether this matching evidence group satisfies the configured quorum.
     pub quorum_reached: bool,
+}
+
+/// Redacted summary for one group of matching payment observations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationPaymentObservationEvidenceGroupSummary {
+    /// Observed quote state for this evidence group.
+    pub state: String,
+    /// Members whose observations match this evidence group.
+    pub observers: Vec<MemberId>,
+    /// Number of distinct matching observers.
+    pub observer_count: u16,
+    /// Operation IDs that carried matching observations.
+    pub operation_ids: Vec<FederationOperationId>,
+    /// Consensus order indices that carried matching observations.
+    pub operation_indices: Vec<u64>,
+    /// Members that reported a different evidence payload for the same quote and state.
+    pub conflicting_observers: Vec<MemberId>,
+    /// Whether this matching evidence group satisfies the configured quorum.
+    pub quorum_reached: bool,
+    /// Whether this group represents a terminal quote state for conflict reporting.
+    pub terminal_state: bool,
+}
+
+/// Redacted payment observation report summary for operator status surfaces.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationPaymentObservationReportSummary {
+    /// Observation context being summarized.
+    pub context: FederationPaymentObservationContext,
+    /// Quote ID being summarized.
+    pub quote: String,
+    /// Required matching observer count for quorum.
+    pub required: u16,
+    /// Number of matching records included in this report.
+    pub total_observations: usize,
+    /// Evidence groups found among stored observations without backend proof material.
+    pub groups: Vec<FederationPaymentObservationEvidenceGroupSummary>,
+    /// Distinct members whose observations conflict with another evidence group.
+    pub conflicting_observers: Vec<MemberId>,
+    /// Distinct members participating in competing terminal-state observations.
+    pub competing_terminal_state_observers: Vec<MemberId>,
+    /// High-level report status for operator and admin surfaces.
+    pub status: FederationPaymentObservationReportStatus,
 }
 
 /// Summary of stored payment observations for one quote and context.
@@ -660,6 +713,37 @@ impl FederationPaymentObservationReport {
     pub fn is_unresolved(&self) -> bool {
         self.status == FederationPaymentObservationReportStatus::AwaitingQuorum
             || self.status == FederationPaymentObservationReportStatus::Conflicting
+    }
+
+    /// Return a redacted summary that does not expose backend proof material.
+    #[must_use]
+    pub fn summary(&self) -> FederationPaymentObservationReportSummary {
+        FederationPaymentObservationReportSummary {
+            context: self.context,
+            quote: self.quote.clone(),
+            required: self.required,
+            total_observations: self.total_observations,
+            groups: self
+                .groups
+                .iter()
+                .map(|group| FederationPaymentObservationEvidenceGroupSummary {
+                    state: group.representative.state_label(),
+                    observers: group.observers.clone(),
+                    observer_count: match group.observers.len().try_into() {
+                        Ok(count) => count,
+                        Err(_) => u16::MAX,
+                    },
+                    operation_ids: group.operation_ids.clone(),
+                    operation_indices: group.operation_indices.clone(),
+                    conflicting_observers: group.conflicting_observers.clone(),
+                    quorum_reached: group.quorum_reached,
+                    terminal_state: group.representative.is_terminal_state(),
+                })
+                .collect(),
+            conflicting_observers: self.conflicting_observers.clone(),
+            competing_terminal_state_observers: self.competing_terminal_state_observers.clone(),
+            status: self.status,
+        }
     }
 }
 
@@ -1431,6 +1515,18 @@ mod tests {
             quorum.status,
             FederationPaymentObservationReportStatus::AwaitingQuorum
         );
+
+        let summary = report.summary();
+        assert_eq!(
+            summary.status,
+            FederationPaymentObservationReportStatus::Conflicting
+        );
+        assert_eq!(summary.groups[0].observer_count, 2);
+        assert_eq!(summary.groups[0].state, "PAID");
+        assert_eq!(summary.groups[0].operation_indices, vec![0, 1]);
+        let summary_json = serde_json::to_string(&summary).expect("summary json");
+        assert!(!summary_json.contains("settled"));
+        assert!(!summary_json.contains("different-settlement"));
     }
 
     #[test]

@@ -16,11 +16,12 @@ use cdk::federation::{
     FederationId, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
     FederationJournalDigest, FederationJournalEntry, FederationMaterializedStateRow,
     FederationMaterializedStateSnapshot, FederationOperation, FederationOperationId,
-    FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
-    FederationRestSequenceTracker, FederationSessionOutcome, FederationSessionOutcomeQuorum,
-    FederationSignedRequest, FederationStateDigest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, MemberConfigPrivate, MemberConfigPublic,
-    FEDERATION_REST_API_VERSION,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
+    FederationRestMessageKind, FederationRestSequenceTracker, FederationSessionOutcome,
+    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationStateDigest,
+    FederationSubmitOperationRequest, FederationSubmitOperationResponse, MemberConfigPrivate,
+    MemberConfigPublic, FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
 use serde::{Deserialize, Serialize};
@@ -338,10 +339,14 @@ async fn post_local_status(
     let session_outcome_quorum = session_outcome_quorum_status(&state)
         .await
         .map_err(cdk_error_response)?;
+    let payment_observation_reports = payment_observation_report_summaries(&state)
+        .await
+        .map_err(cdk_error_response)?;
     Ok(Json(FederationLocalStatusResponse::new(
         peer_status,
         sync_status,
         session_outcome_quorum,
+        payment_observation_reports,
     )))
 }
 
@@ -451,6 +456,8 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) session_outcome_quorum_operation_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) session_outcome_quorum_signers: Vec<cdk::federation::MemberId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
 }
 
 impl FederationLocalStatusResponse {
@@ -458,6 +465,7 @@ impl FederationLocalStatusResponse {
         peer_status: FederationPeerStatus,
         sync_status: crate::FederationSyncStatus,
         session_outcome_quorum: Option<SessionOutcomeQuorumStatus>,
+        payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
     ) -> Self {
         let session_outcome_quorum_operation_count = session_outcome_quorum
             .as_ref()
@@ -473,6 +481,7 @@ impl FederationLocalStatusResponse {
             sync_message: sync_status.not_ready_message(),
             session_outcome_quorum_operation_count,
             session_outcome_quorum_signers,
+            payment_observation_reports,
         }
     }
 }
@@ -588,6 +597,46 @@ async fn session_outcome_quorum_status(
     }
 
     Ok(contiguous_session_outcome_quorum_prefix(&quorums_by_start))
+}
+
+async fn payment_observation_report_summaries(
+    state: &MintState,
+) -> Result<Vec<FederationPaymentObservationReportSummary>, cdk::Error> {
+    let Some(runtime_config) = state.mint.federation_config() else {
+        return Ok(Vec::new());
+    };
+    let db = state.mint.localstore();
+    let entries = db.get_federation_journal_entries().await?;
+    let mut report_keys = BTreeSet::new();
+
+    for entry in &entries {
+        if let Some(record) = FederationPaymentObservationRecord::from_journal_entry(entry) {
+            report_keys.insert((
+                record.observation.context(),
+                record.observation.quote().to_string(),
+            ));
+        }
+    }
+
+    let mut reports = Vec::with_capacity(report_keys.len());
+    for (context, quote) in report_keys {
+        let required = runtime_config
+            .public_config()
+            .payment_verification_policy(context)
+            .required_matching_observations();
+        let observations = db
+            .get_federation_payment_observations(context, &quote)
+            .await?;
+        let report = FederationPaymentObservationReport::from_records(
+            context,
+            &quote,
+            required,
+            &observations,
+        );
+        reports.push(report.summary());
+    }
+
+    Ok(reports)
 }
 
 fn contiguous_session_outcome_quorum_prefix(
@@ -1708,6 +1757,28 @@ mod tests {
             Amount::from(1),
             Amount::ZERO,
             Some(format!("paid-{quote_id}")),
+        )
+    }
+
+    fn mint_payment_observation_envelope_for_member(
+        state: &MintState,
+        quote_id: &QuoteId,
+        observer: u16,
+        amount_paid: u64,
+        payment_proof: &str,
+    ) -> FederationOperationEnvelope {
+        let config = state.mint.federation_config().expect("federation config");
+        FederationOperationEnvelope::new(
+            config.federation_id(),
+            FederationOperation::MintQuotePayment(FederationMintQuotePaymentObservation {
+                quote: quote_id.to_string(),
+                observer: member_id(observer),
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                state: MintQuoteState::Paid,
+                amount_paid: Amount::from(amount_paid),
+                amount_issued: Amount::ZERO,
+                payment_proof: Some(payment_proof.to_string()),
+            }),
         )
     }
 
@@ -4846,6 +4917,71 @@ mod tests {
         assert_eq!(response.sync_message, "federation member is healthy");
         assert_eq!(response.session_outcome_quorum_operation_count, None);
         assert!(response.session_outcome_quorum_signers.is_empty());
+        assert!(response.payment_observation_reports.is_empty());
+    }
+
+    #[tokio::test]
+    async fn private_local_status_route_reports_payment_observation_conflicts() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let local_member = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .member_id();
+        let quote_id = QuoteId::new();
+        state
+            .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
+            .await
+            .expect("submit mint quote");
+        state
+            .submit_federation_envelope(mint_payment_observation_envelope_for_member(
+                &state, &quote_id, 1, 1, "settled",
+            ))
+            .await
+            .expect("submit first payment observation");
+        state
+            .submit_federation_envelope(mint_payment_observation_envelope_for_member(
+                &state,
+                &quote_id,
+                2,
+                2,
+                "different-settlement",
+            ))
+            .await
+            .expect("submit conflicting second payment observation");
+
+        let request = signed_status_request(&public_config, &peer_private, local_member, 1);
+        let response = post_local_status(State(state), Json(request))
+            .await
+            .expect("local status response")
+            .0;
+
+        assert_eq!(response.payment_observation_reports.len(), 1);
+        let report = &response.payment_observation_reports[0];
+        assert_eq!(
+            report.context,
+            cdk::federation::FederationPaymentObservationContext::MintQuote
+        );
+        assert_eq!(report.quote, quote_id.to_string());
+        assert_eq!(report.required, 1);
+        assert_eq!(report.total_observations, 2);
+        assert_eq!(
+            report.status,
+            cdk::federation::FederationPaymentObservationReportStatus::Conflicting
+        );
+        assert_eq!(report.groups.len(), 2);
+        assert_eq!(report.groups[0].state, "PAID");
+        assert_eq!(report.groups[0].observers, vec![member_id(1)]);
+        assert!(report.groups[0].quorum_reached);
+        assert_eq!(report.groups[0].conflicting_observers, vec![member_id(2)]);
+        assert_eq!(
+            report.conflicting_observers,
+            vec![member_id(1), member_id(2)]
+        );
+
+        let status_json = serde_json::to_string(&response).expect("status json");
+        assert!(!status_json.contains("settled"));
+        assert!(!status_json.contains("different-settlement"));
     }
 
     #[tokio::test]

@@ -39,8 +39,9 @@ pub use self::operation::{
     FederationMintRequest, FederationOperation, FederationOperationConflictKey,
     FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
     FederationPaymentObservation, FederationPaymentObservationEvidenceGroup,
-    FederationPaymentObservationQuorum, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationPaymentObservationReportStatus,
+    FederationPaymentObservationEvidenceGroupSummary, FederationPaymentObservationQuorum,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationPaymentObservationReportStatus, FederationPaymentObservationReportSummary,
     FederationRestoreOperation, FederationSwapOperation, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
     FEDERATION_OPERATION_VERSION,
 };
@@ -742,7 +743,7 @@ impl<'de> Deserialize<'de> for MemberId {
 }
 
 /// Federation threshold settings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ThresholdParams {
     /// Number of federation members.
     pub member_count: u16,
@@ -812,7 +813,7 @@ fn default_stale_payment_observation_secs() -> u64 {
 }
 
 /// Payment-observation context with separate mint and melt policies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FederationPaymentObservationContext {
     /// Incoming payment observation for a mint quote.

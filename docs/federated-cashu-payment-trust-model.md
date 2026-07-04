@@ -81,7 +81,10 @@ silently increasing the paid amount. A shared
 for one quote, group matching evidence, mark whether any group reached quorum,
 and identify conflicting observers for operator-facing surfaces. Mint quote
 reports treat unpaid observations as unresolved progress, while paid or issued
-evidence can conflict with other terminal evidence.
+evidence can conflict with other terminal evidence. Signed private REST
+`local-status` responses and `cdk-mintd federation status` now expose redacted
+report summaries with context, quote ID, status, observer counts, conflicting
+members, and quorum flags without returning backend proof material.
 
 ## Melt Quote Observations
 
@@ -121,16 +124,15 @@ The policy includes operator-facing limits:
 - `stale_observation_secs`: age after which unresolved observation evidence is
   stale.
 
-These limits are validated as non-zero config values. The next admin work should
-expose unresolved observations by quote ID, member ID, state, report status,
-and age without logging secrets, invoices, local paths, private keys, or proof
-secrets.
+These limits are validated as non-zero config values. The current status
+surface exposes unresolved and conflicting observations by quote ID, member ID,
+state, and report status. The next admin work should add age and staleness
+classification without logging secrets, invoices, local paths, private keys, or
+proof secrets.
 
 ## Required Follow-Up
 
-- Wire payment observation reports into private REST and `cdk-mintd` status
-  tooling so operators can inspect unresolved, conflicting, and stale
-  observations.
+- Add stale-age classification to payment observation reports and status output.
 - Add explicit state-machine quarantine actions for mismatched amounts, payment
   proofs, states, or backend-specific settlement references where policy should
   halt instead of only reporting the conflict.

@@ -3,7 +3,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use cdk_common::federation::{
-    FederationConfig, FederationId, FederationPeerStatus, FederationPeerStatusRequest,
+    FederationConfig, FederationId, FederationPaymentObservationReportStatus,
+    FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
     FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic,
     MemberId, FEDERATION_REST_API_VERSION,
 };
@@ -20,6 +21,8 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) sync_state: String,
     pub(crate) sync_ready: bool,
     pub(crate) sync_message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
 }
 
 pub(crate) async fn run_status_command(
@@ -204,23 +207,102 @@ fn print_statuses(
         public_config.federation_id, private_config.member_id
     );
     for status in statuses {
-        let peer = &status.peer_status;
-        let latest_index = peer
-            .latest_index
-            .map(|index| index.to_string())
-            .unwrap_or_else(|| "none".to_string());
-        println!(
-            "member {}: sync={} ready={} operations={} latest_index={} order_digest={} state_digest={} message={}",
-            peer.member_id,
-            status.sync_state,
-            status.sync_ready,
-            peer.operation_count,
-            latest_index,
-            peer.latest_order_digest,
-            peer.state_digest,
-            status.sync_message
-        );
+        println!("{}", member_status_line(status));
+        for report in &status.payment_observation_reports {
+            print_payment_observation_report(report);
+        }
     }
+}
+
+fn member_status_line(status: &FederationLocalStatusResponse) -> String {
+    let peer = &status.peer_status;
+    let latest_index = peer
+        .latest_index
+        .map(|index| index.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let (payment_reports, payment_conflicts, payment_unresolved) = payment_report_counts(status);
+    format!(
+        "member {}: sync={} ready={} operations={} latest_index={} order_digest={} state_digest={} payment_reports={} payment_conflicts={} payment_unresolved={} message={}",
+        peer.member_id,
+        status.sync_state,
+        status.sync_ready,
+        peer.operation_count,
+        latest_index,
+        peer.latest_order_digest,
+        peer.state_digest,
+        payment_reports,
+        payment_conflicts,
+        payment_unresolved,
+        status.sync_message
+    )
+}
+
+fn payment_report_counts(status: &FederationLocalStatusResponse) -> (usize, usize, usize) {
+    let payment_reports = status.payment_observation_reports.len();
+    let payment_conflicts = status
+        .payment_observation_reports
+        .iter()
+        .filter(|report| report.status == FederationPaymentObservationReportStatus::Conflicting)
+        .count();
+    let payment_unresolved = status
+        .payment_observation_reports
+        .iter()
+        .filter(|report| {
+            matches!(
+                report.status,
+                FederationPaymentObservationReportStatus::AwaitingQuorum
+                    | FederationPaymentObservationReportStatus::Conflicting
+            )
+        })
+        .count();
+
+    (payment_reports, payment_conflicts, payment_unresolved)
+}
+
+fn print_payment_observation_report(report: &FederationPaymentObservationReportSummary) {
+    println!("{}", payment_observation_report_line(report));
+    for group in &report.groups {
+        println!("{}", payment_observation_group_line(group));
+    }
+}
+
+fn payment_observation_report_line(report: &FederationPaymentObservationReportSummary) -> String {
+    format!(
+        "  payment_report context={} quote={} status={} observations={} required={} groups={} conflicts={} terminal_conflicts={}",
+        report.context,
+        report.quote,
+        report.status,
+        report.total_observations,
+        report.required,
+        report.groups.len(),
+        report.conflicting_observers.len(),
+        report.competing_terminal_state_observers.len()
+    )
+}
+
+fn payment_observation_group_line(
+    group: &cdk_common::federation::FederationPaymentObservationEvidenceGroupSummary,
+) -> String {
+    format!(
+        "    payment_group state={} observers={} quorum={} conflicts={} terminal={}",
+        group.state,
+        member_list(&group.observers),
+        group.quorum_reached,
+        member_list(&group.conflicting_observers),
+        group.terminal_state
+    )
+}
+
+fn member_list(members: &[MemberId]) -> String {
+    if members.is_empty() {
+        return "none".to_string();
+    }
+
+    members
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn ensure_statuses_ready(statuses: &[FederationLocalStatusResponse]) -> Result<()> {
@@ -281,8 +363,9 @@ mod tests {
 
     use async_trait::async_trait;
     use cdk_common::federation::{
-        generate_trusted_dealer_configs, FederationJournalDigest, FederationStateDigest,
-        ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+        generate_trusted_dealer_configs, FederationJournalDigest,
+        FederationPaymentObservationContext, FederationPaymentObservationEvidenceGroupSummary,
+        FederationStateDigest, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     use cdk_common::mint_url::MintUrl;
     use cdk_common::nuts::nut22::AuthToken;
@@ -430,6 +513,7 @@ mod tests {
             sync_state: "healthy".to_string(),
             sync_ready: true,
             sync_message: "federation member is healthy".to_string(),
+            payment_observation_reports: Vec::new(),
         }
     }
 
@@ -525,6 +609,71 @@ mod tests {
 
         let err = ensure_statuses_ready(&statuses).expect_err("lagging member should fail");
         assert!(err.to_string().contains("is not ready"));
+    }
+
+    #[test]
+    fn status_lines_include_payment_observation_report_counts() {
+        let (public_config, _) = status_fixture();
+        let mut status = local_status(&public_config, 1, 2);
+        status.payment_observation_reports = vec![FederationPaymentObservationReportSummary {
+            context: FederationPaymentObservationContext::MintQuote,
+            quote: "quote-1".to_string(),
+            required: 2,
+            total_observations: 3,
+            groups: vec![
+                FederationPaymentObservationEvidenceGroupSummary {
+                    state: "PAID".to_string(),
+                    observers: vec![
+                        MemberId::new(1).expect("member one"),
+                        MemberId::new(2).expect("member two"),
+                    ],
+                    observer_count: 2,
+                    operation_ids: Vec::new(),
+                    operation_indices: vec![1, 2],
+                    conflicting_observers: vec![MemberId::new(3).expect("member three")],
+                    quorum_reached: true,
+                    terminal_state: true,
+                },
+                FederationPaymentObservationEvidenceGroupSummary {
+                    state: "PAID".to_string(),
+                    observers: vec![MemberId::new(3).expect("member three")],
+                    observer_count: 1,
+                    operation_ids: Vec::new(),
+                    operation_indices: vec![3],
+                    conflicting_observers: vec![
+                        MemberId::new(1).expect("member one"),
+                        MemberId::new(2).expect("member two"),
+                    ],
+                    quorum_reached: false,
+                    terminal_state: true,
+                },
+            ],
+            conflicting_observers: vec![
+                MemberId::new(1).expect("member one"),
+                MemberId::new(2).expect("member two"),
+                MemberId::new(3).expect("member three"),
+            ],
+            competing_terminal_state_observers: Vec::new(),
+            status: FederationPaymentObservationReportStatus::Conflicting,
+        }];
+
+        let member_line = member_status_line(&status);
+        assert!(member_line.contains("payment_reports=1"));
+        assert!(member_line.contains("payment_conflicts=1"));
+        assert!(member_line.contains("payment_unresolved=1"));
+
+        let report_line = payment_observation_report_line(&status.payment_observation_reports[0]);
+        assert!(report_line.contains("context=mint_quote"));
+        assert!(report_line.contains("quote=quote-1"));
+        assert!(report_line.contains("status=conflicting"));
+        assert!(report_line.contains("observations=3"));
+
+        let group_line =
+            payment_observation_group_line(&status.payment_observation_reports[0].groups[0]);
+        assert!(group_line.contains("state=PAID"));
+        assert!(group_line.contains("observers=1,2"));
+        assert!(group_line.contains("conflicts=3"));
+        assert!(group_line.contains("terminal=true"));
     }
 
     #[test]

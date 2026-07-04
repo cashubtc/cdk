@@ -358,19 +358,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Expanded milestone map: milestones 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, and 23 are listed individually</span>
+          <span class="value">Expanded milestone map: all 24 implementation-plan milestones are listed as individual points below</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: summarize federation payment conflicts</span>
+          <span class="value">feat: expose federation payment reports</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Payment observation conflict and unresolved evidence reports</span>
+          <span class="value">Private REST and mintd payment-observation report views</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Private REST and mintd unresolved observation admin views</span>
+          <span class="value">Stale quote inspection and explicit conflict quarantine</span>
         </div>
       </aside>
     </header>
@@ -379,14 +379,9 @@
       <section class="panel span-8">
         <h2>Implementation Plan Milestones</h2>
         <p class="section-note">
-          The implementation plan has 24 milestones, and this dashboard renders
-          them without compressed ranges. Milestone 0, Milestone 1, Milestone 2,
-          Milestone 3, Milestone 4, Milestone 5, Milestone 6, Milestone 7,
-          Milestone 8, Milestone 9, Milestone 10, Milestone 11, Milestone 12,
-          Milestone 13, Milestone 14, Milestone 15, Milestone 16, Milestone 17,
-          Milestone 18, Milestone 19, Milestone 20, Milestone 21, Milestone 22,
-          and Milestone 23 are each listed as their own point with a matching
-          objective and test-gate card.
+          The implementation plan has 24 milestones. This dashboard renders each
+          milestone as its own ordered-list point and as a matching objective and
+          test-gate card, with no compressed milestone ranges.
         </p>
         <ol class="milestone-index" aria-label="Expanded milestone index with one point per implementation-plan milestone">
           <li>Milestone 0: written RFC and feature gate.</li>
@@ -1167,6 +1162,10 @@
             <h3>Payment conflict reports scaffolded</h3>
             <p>Stored mint and melt payment observations can now be summarized into operator-facing reports that group matching evidence, flag missing quorum, identify conflicting observers, and distinguish normal unpaid or pending progress from competing terminal outcomes.</p>
           </article>
+          <article class="item">
+            <h3>Payment reports exposed to operators</h3>
+            <p>Signed private REST local-status responses and `cdk-mintd federation status` now surface redacted payment-observation report summaries with per-quote status, quorum counts, conflicting members, and group details without exposing backend proof material.</p>
+          </article>
         </div>
       </section>
 
@@ -1183,7 +1182,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations, and a fresh SQLite-backed mint state can restart through a pending melt reserve before catching up the paid observation. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, local sync plus materialized state-digest health is queryable from mintd over signed private REST, and the generated process smoke now drives live wallet mint, swap, proof-state check, melt, restore, convergence, restart, and catch-up. Payment observations are now durable SQL rows, mint quote payments can finalize from stored real-policy quorum evidence, melt paid/failed observations have focused stored-quorum saga coverage, and stored observations can be summarized into conflict/unresolved reports; remaining work is wiring those reports into admin surfaces, explicit conflict quarantine, stronger BFT ordering, and broader storage-backed process coverage.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations, and a fresh SQLite-backed mint state can restart through a pending melt reserve before catching up the paid observation. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, local sync plus materialized state-digest health is queryable from mintd over signed private REST, and the generated process smoke now drives live wallet mint, swap, proof-state check, melt, restore, convergence, restart, and catch-up. Payment observations are now durable SQL rows, mint quote payments can finalize from stored real-policy quorum evidence, melt paid/failed observations have focused stored-quorum saga coverage, stored observations can be summarized into conflict/unresolved reports, and those reports are visible through redacted signed local status plus mintd status output; remaining work is stale-age inspection, explicit conflict quarantine, stronger BFT ordering, and broader storage-backed process coverage.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -1711,8 +1710,8 @@
             <tr>
               <td>Payment observation policy</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk --lib --features federation real_policy -- --test-threads 1` passed the mint, paid-melt, and failed-melt stored-quorum regressions. `cargo test -p cdk-common --features federation payment_observation -- --test-threads 1` and `cargo test -p cdk-common --features federation federation -- --test-threads 1` passed the report and shared federation suites. `cargo test -p cdk-sqlite --features "mint federation" federation_payment_observation_persistence -- --test-threads 1` passed the persisted report regression, and `cargo test -p cdk-postgres --features federation federation_payment_observation_persistence --no-run` compiled the shared Postgres target.</td>
-              <td>Wire conflict and unresolved observation reports into private REST and mintd admin status, then add stale quote inspection and explicit conflict quarantine.</td>
+              <td>`cargo test -p cdk --lib --features federation real_policy -- --test-threads 1` passed the mint, paid-melt, and failed-melt stored-quorum regressions. `cargo test -p cdk-common --features federation federation -- --test-threads 1` passed 83 shared federation tests, including redacted report summaries. `cargo test -p cdk-axum --features federation private_local_status_route -- --test-threads 1` passed 5 signed local-status regressions, including payment-observation conflict reports without backend proof strings. `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" federation_status -- --test-threads 1` passed 9 status CLI regressions, including payment report counters and detail formatting.</td>
+              <td>Add stale quote inspection, age classification, and explicit conflict quarantine actions.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
