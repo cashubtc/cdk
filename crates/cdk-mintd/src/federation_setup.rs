@@ -105,14 +105,27 @@ pub(crate) fn generate_trusted_dealer_artifacts(
     let members = trusted_dealer_members(args.members, &args.host, args.port_start)?;
     let keyset_spec = trusted_dealer_keyset_spec(
         unit.clone(),
+        true,
+        args.input_fee_ppk,
+        args.final_expiry,
+        args.threshold,
+        &args.amounts,
+    )?;
+    let rotation_keyset_spec = trusted_dealer_keyset_spec(
+        unit.clone(),
+        false,
         args.input_fee_ppk,
         args.final_expiry,
         args.threshold,
         &args.amounts,
     )?;
 
-    let bundle = generate_trusted_dealer_configs(threshold_params, members, vec![keyset_spec])
-        .context("failed to generate trusted-dealer federation configs")?;
+    let bundle = generate_trusted_dealer_configs(
+        threshold_params,
+        members,
+        vec![keyset_spec, rotation_keyset_spec],
+    )
+    .context("failed to generate trusted-dealer federation configs")?;
     validate_bundle(&bundle)?;
 
     let public_config_path = output_dir.join(PUBLIC_CONFIG_FILE);
@@ -294,6 +307,7 @@ fn trusted_dealer_members(
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 fn trusted_dealer_keyset_spec(
     unit: CurrencyUnit,
+    active: bool,
     input_fee_ppk: u64,
     final_expiry: Option<u64>,
     threshold: u16,
@@ -312,7 +326,7 @@ fn trusted_dealer_keyset_spec(
 
     Ok(TrustedDealerKeysetSpec::new(
         unit,
-        true,
+        active,
         input_fee_ppk,
         final_expiry,
         amount_coefficients,
@@ -919,6 +933,9 @@ wait_for_status "$QUARANTINE_OFFLINE_MEMBER"
 wait_for_converged
 wait_for_session_outcome_quorum "$QUARANTINE_OFFLINE_MEMBER"
 wait_for_quarantine_report "$QUARANTINE_OFFLINE_MEMBER"
+
+run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario keyset-rotation
+wait_for_converged
 wait_for_prometheus_metrics
 
 printf 'local federation smoke test passed\n'
@@ -1022,7 +1039,23 @@ mod tests {
         public_config.validate().expect("public config validates");
         assert_eq!(public_config.threshold_params.member_count, 3);
         assert_eq!(public_config.threshold_params.signature_threshold, 2);
-        assert_eq!(public_config.keysets.len(), 1);
+        assert_eq!(public_config.keysets.len(), 2);
+        assert_eq!(
+            public_config
+                .keysets
+                .iter()
+                .filter(|keyset| keyset.active)
+                .count(),
+            1
+        );
+        assert_eq!(
+            public_config
+                .keysets
+                .iter()
+                .filter(|keyset| !keyset.active)
+                .count(),
+            1
+        );
         let setup_transcript = public_config
             .setup_transcript
             .as_ref()
@@ -1087,6 +1120,7 @@ mod tests {
         assert!(smoke_script.contains("--scenario pending-melt-fail-start"));
         assert!(smoke_script.contains("--scenario pending-melt-fail-finish"));
         assert!(smoke_script.contains("--scenario quarantine-mint-conflict"));
+        assert!(smoke_script.contains("--scenario keyset-rotation"));
         assert!(smoke_script.contains("--wallet-db \"$PENDING_WALLET_DB\""));
         assert!(smoke_script.contains("--wallet-db \"$FAILED_PENDING_WALLET_DB\""));
         assert!(smoke_script.contains(
@@ -1114,6 +1148,9 @@ mod tests {
         assert!(
             smoke_script.contains("wait_for_session_outcome_quorum \"$QUARANTINE_OFFLINE_MEMBER\"")
         );
+        assert!(smoke_script.contains(
+            "run_smoke_operations --private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\" --scenario keyset-rotation"
+        ));
         assert!(smoke_script.contains(
             "wait_for_status \"$RESTART_MEMBER\"\nwait_for_converged\nwait_for_session_outcome_quorum \"$RESTART_MEMBER\""
         ));

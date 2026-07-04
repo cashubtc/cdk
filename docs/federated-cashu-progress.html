@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Wallet federation aggregation now crosses rotated real Axum public and private REST member routes for mint, swap, melt, restore, status, and check-state</span>
+          <span class="value">Generated local federation smoke now includes process-level key rotation with old-keyset restore, old-proof spend, post-rotation minting, and melting</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: restore inactive federated axum keysets</span>
+          <span class="value">feat: add federated keyset rotation smoke</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">A three-member threshold federation now applies a keyset rotation, serves active/inactive keyset views over local Axum routers, and restores old inactive keyset signatures through wallet HTTP aggregation</span>
+          <span class="value">Trusted-dealer artifacts now include an inactive rotation keyset, and `cdk-mintd federation smoke-operations --scenario keyset-rotation` drives the rotated wallet path</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Lift the rotated route proof into generated process/storage-backed smoke, then compare restart and catch-up behavior across stored rotated keysets</span>
+          <span class="value">Run the generated multi-process smoke script end to end where loopback process orchestration is available, then add restart/catch-up checks after rotation</span>
         </div>
       </aside>
     </header>
@@ -1591,6 +1591,10 @@
             <p>The real Axum route smoke now applies an accepted v3/BLS keyset rotation before startup, verifies public active/inactive keyset views, aggregates rotated mint, swap, melt-change, and restore shares, and restores stored old inactive keyset signatures through wallet HTTP connectors.</p>
           </article>
           <article class="item">
+            <h3>Generated key rotation smoke ready</h3>
+            <p>The trusted-dealer generator now emits an inactive rotation keyset, the generated local smoke script runs a final keyset-rotation scenario, and the smoke command restores and spends pre-rotation proofs before minting and melting after rotation.</p>
+          </article>
+          <article class="item">
             <h3>State convergence certification planned</h3>
             <p>The implementation plan now has Milestone 16A, an explicit gate for consensus-visible database equality, canonical snapshots, quorum-backed catch-up evidence, safe catch-up mode, digest comparison, and row-level mismatch diagnostics.</p>
           </article>
@@ -1822,6 +1826,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation federated_wallet_connector_aggregates_rotated_real_axum_member_routes -- --test-threads 1` passed with accepted keyset rotation, active-only `/keys`, old-inactive plus new-active `/keysets`, old-proof spendability, new-output signing, mint, swap, melt-change, new-output restore, old inactive restore, and check-state assertions. `cargo test -p cdk-axum --features federation custom_handlers::tests -- --test-threads 1` passed 34 tests. `cargo check -p cdk-axum --features federation`, `cargo check -p cdk --lib --features federation`, `cargo fmt --all`, and `git diff --check` passed.</td>
               <td>Lift the rotated route smoke into generated process/storage-backed coverage with restart and catch-up checks.</td>
+            </tr>
+            <tr>
+              <td>Generated keyset rotation smoke</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation -- --test-threads 1` passed 61 tests, including the new keyset-rotation smoke CLI parser and trusted-dealer artifact checks for one active plus one inactive aggregate keyset. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` and `cargo fmt --all` passed.</td>
+              <td>Run the generated multi-process smoke script end to end, then keep one member offline across rotation and verify restart catch-up converges.</td>
             </tr>
             <tr>
               <td>State convergence certification plan</td>
@@ -2452,7 +2462,7 @@
           </article>
           <article class="item">
             <h3>Rotation state transition</h3>
-            <p>Lift the rotated real Axum wallet route smoke into generated process/storage-backed coverage, then compare restart and catch-up behavior across stored rotated keysets.</p>
+            <p>Run the generated multi-process smoke script end to end with the new keyset-rotation scenario, then keep one member offline across rotation and verify restart catch-up converges.</p>
           </article>
           <article class="item">
             <h3>BFT backend selection</h3>

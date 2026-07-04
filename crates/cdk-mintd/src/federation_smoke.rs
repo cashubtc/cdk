@@ -10,19 +10,19 @@ use cdk::cdk_database::{Error as DatabaseError, WalletDatabase};
 use cdk::mint::{FederationRuntimeConfig, MintQuoteRequest, MintQuoteResponse};
 use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
 use cdk::nuts::{
-    CurrencyUnit, MeltQuoteState, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteState,
-    PaymentMethod, State,
+    CurrencyUnit, Id, MeltQuoteState, MintQuoteBolt11Request, MintQuoteBolt11Response,
+    MintQuoteState, PaymentMethod, State,
 };
 use cdk::wallet::{
     FederatedMintConnector, HttpClient, MeltOutcome, MintConnector, Wallet, WalletBuilder,
 };
 use cdk::{Amount, Error};
 use cdk_common::federation::{
-    FederationConfig, FederationJournalAppendOutcome, FederationMintQuotePaymentObservation,
-    FederationOperation, FederationOperationEnvelope, FederationPaymentObservationContext,
-    FederationPaymentObservationQuarantineReason, FederationRestMessageKind,
-    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    MemberConfigPrivate, MemberConfigPublic, MemberId,
+    FederationConfig, FederationJournalAppendOutcome, FederationKeysetRotationOperation,
+    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
+    FederationPaymentObservationContext, FederationPaymentObservationQuarantineReason,
+    FederationRestMessageKind, FederationSignedRequest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, MemberConfigPrivate, MemberConfigPublic, MemberId,
 };
 use cdk_common::QuoteId;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
@@ -34,6 +34,7 @@ const STANDARD_SMOKE_SEED: [u8; 64] = [7u8; 64];
 const PENDING_PAID_SMOKE_SEED: [u8; 64] = [8u8; 64];
 const PENDING_FAILED_SMOKE_SEED: [u8; 64] = [9u8; 64];
 const OFFLINE_MEMBER_SMOKE_SEED: [u8; 64] = [10u8; 64];
+const KEYSET_ROTATION_SMOKE_SEED: [u8; 64] = [11u8; 64];
 
 fn smoke_seed(base: [u8; 64], offset: u8) -> [u8; 64] {
     let mut seed = base;
@@ -168,6 +169,24 @@ pub(crate) async fn run_smoke_operations_command(
                 crate::read_federation_json(private_config_path, "private federation config")?;
             run_quarantine_mint_conflict(args, &public_config, unit, &private_config).await
         }
+        FederationSmokeScenario::KeysetRotation => {
+            let private_config_path = args
+                .private_config
+                .as_deref()
+                .context("--private-config is required for keyset-rotation")?;
+            let private_config: MemberConfigPrivate =
+                crate::read_federation_json(private_config_path, "private federation config")?;
+            run_keyset_rotation_smoke(
+                args,
+                &public_config,
+                unit,
+                &member_connectors,
+                connector,
+                smoke_seed(KEYSET_ROTATION_SMOKE_SEED, args.seed_offset),
+                &private_config,
+            )
+            .await
+        }
     }
 }
 
@@ -277,6 +296,197 @@ async fn run_standard_smoke(
         restored.unspent,
         restored.spent,
         restored.pending
+    );
+
+    Ok(())
+}
+
+async fn run_keyset_rotation_smoke(
+    args: &FederationSmokeOperationsArgs,
+    public_config: &FederationConfig,
+    unit: CurrencyUnit,
+    member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+    connector: Arc<FederatedMintConnector>,
+    seed: [u8; 64],
+    private_config: &MemberConfigPrivate,
+) -> Result<()> {
+    let old_keyset = public_config
+        .keysets
+        .iter()
+        .find(|keyset| keyset.active && keyset.unit == unit)
+        .context("keyset rotation smoke needs an active keyset for the requested unit")?
+        .clone();
+    let mut next_keyset = public_config
+        .keysets
+        .iter()
+        .find(|keyset| !keyset.active && keyset.unit == unit)
+        .context("keyset rotation smoke needs an inactive rotation keyset for the requested unit")?
+        .clone();
+    next_keyset.active = true;
+
+    let wallet = smoke_wallet(public_config, unit.clone(), seed, connector, None).await?;
+    let pre_rotation_amount = mint_smoke_funds(
+        &wallet,
+        public_config,
+        member_connectors,
+        args,
+        SmokeMemberExpectation::AllMembers,
+    )
+    .await?;
+
+    let runtime_config =
+        FederationRuntimeConfig::new(public_config.clone(), private_config.clone())
+            .context("private federation config does not match public federation config")?;
+    let target_member = public_config
+        .member(private_config.member_id)
+        .context("private federation member is missing from the public federation config")?;
+    let rotation = FederationKeysetRotationOperation {
+        keyset: next_keyset.clone(),
+    };
+    let envelope =
+        runtime_config.operation_envelope(FederationOperation::KeysetRotation(rotation.clone()));
+    let rotation_response = submit_smoke_operation(
+        &Async::default(),
+        public_config,
+        private_config,
+        target_member,
+        initial_smoke_sequence().saturating_add(1),
+        envelope,
+    )
+    .await?;
+    let rotated_public_config = public_config
+        .apply_keyset_rotation(&rotation)
+        .context("apply keyset rotation to smoke wallet config")?;
+
+    wait_for_keyset_rotation_visible(
+        member_connectors,
+        public_config,
+        old_keyset.id,
+        next_keyset.id,
+        args.quote_retries,
+        Duration::from_millis(args.quote_sleep_ms),
+        SmokeMemberExpectation::AllMembers,
+    )
+    .await?;
+
+    let rotated_connector = Arc::new(
+        FederatedMintConnector::new(rotated_public_config.clone(), member_connectors.clone())
+            .context("rotated federated wallet connector")?,
+    );
+    let restored_wallet = smoke_wallet(
+        &rotated_public_config,
+        unit.clone(),
+        seed,
+        rotated_connector.clone(),
+        None,
+    )
+    .await?;
+    let restored = restored_wallet
+        .restore()
+        .await
+        .context("restore pre-rotation proofs after keyset rotation")?;
+    if restored.unspent < pre_rotation_amount {
+        bail!(
+            "keyset rotation smoke restored {} old-keyset unspent, expected at least {}",
+            restored.unspent,
+            pre_rotation_amount
+        );
+    }
+
+    let old_proofs = restored_wallet
+        .get_unspent_proofs()
+        .await
+        .context("load restored old-keyset proofs")?;
+    let old_proof_amount = old_proofs.total_amount()?;
+    if old_proof_amount < pre_rotation_amount {
+        bail!(
+            "keyset rotation smoke loaded {} old-keyset proofs, expected at least {}",
+            old_proof_amount,
+            pre_rotation_amount
+        );
+    }
+    restored_wallet
+        .swap(
+            None,
+            SplitTarget::default(),
+            old_proofs.clone(),
+            None,
+            false,
+            false,
+        )
+        .await
+        .context("swap restored old-keyset proofs after rotation")?;
+    let spent_states = restored_wallet
+        .check_proofs_spent(old_proofs)
+        .await
+        .context("check restored old-keyset proofs spent after rotation")?;
+    if spent_states
+        .iter()
+        .any(|proof_state| proof_state.state != State::Spent)
+    {
+        bail!("keyset rotation smoke did not mark restored old-keyset inputs spent");
+    }
+
+    let post_rotation_amount = mint_smoke_funds(
+        &restored_wallet,
+        &rotated_public_config,
+        member_connectors,
+        args,
+        SmokeMemberExpectation::AllMembers,
+    )
+    .await?;
+    let melt_invoice = create_fake_invoice(1000, "federation rotation smoke melt".to_string());
+    let melt_quote = restored_wallet
+        .melt_quote(PaymentMethod::BOLT11, melt_invoice, None, None)
+        .await
+        .context("create keyset rotation smoke melt quote")?;
+    wait_for_melt_quote_visible(
+        member_connectors,
+        &rotated_public_config,
+        &melt_quote.id,
+        args.quote_retries,
+        Duration::from_millis(args.quote_sleep_ms),
+        SmokeMemberExpectation::AllMembers,
+    )
+    .await?;
+    let finalized = restored_wallet
+        .prepare_melt(&melt_quote.id, HashMap::new())
+        .await
+        .context("prepare keyset rotation smoke melt")?
+        .confirm()
+        .await
+        .context("confirm keyset rotation smoke melt")?;
+    if finalized.state() != MeltQuoteState::Paid {
+        bail!(
+            "keyset rotation smoke melt ended in state {}, expected paid",
+            finalized.state()
+        );
+    }
+
+    let final_wallet =
+        smoke_wallet(&rotated_public_config, unit, seed, rotated_connector, None).await?;
+    let final_restored = final_wallet
+        .restore()
+        .await
+        .context("restore rotated wallet after post-rotation operations")?;
+    if final_restored.unspent == Amount::ZERO
+        && final_restored.spent == Amount::ZERO
+        && final_restored.pending == Amount::ZERO
+    {
+        bail!("keyset rotation smoke final restore recovered no proofs");
+    }
+
+    println!(
+        "federation keyset rotation smoke passed: old_keyset={} new_keyset={} rotation={} restored_old={} post_rotation_minted={} melted={} final_unspent={} final_spent={} final_pending={}",
+        old_keyset.id,
+        next_keyset.id,
+        rotation_response.operation_id,
+        restored.unspent,
+        post_rotation_amount,
+        finalized.amount(),
+        final_restored.unspent,
+        final_restored.spent,
+        final_restored.pending
     );
 
     Ok(())
@@ -891,6 +1101,80 @@ async fn wait_for_melt_quote_visible(
     bail!(
         "federation smoke melt quote {} did not reach {} visible member observations after {} attempts",
         quote_id,
+        required,
+        retries
+    )
+}
+
+async fn wait_for_keyset_rotation_visible(
+    member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+    public_config: &FederationConfig,
+    old_keyset_id: Id,
+    next_keyset_id: Id,
+    retries: u16,
+    sleep: Duration,
+    member_expectation: SmokeMemberExpectation,
+) -> Result<()> {
+    let required = required_member_observations(public_config, member_expectation);
+    for _ in 0..retries {
+        let mut visible = 0usize;
+        for (member_id, connector) in member_connectors {
+            let active_keys = match connector.get_mint_keys().await {
+                Ok(keys) => keys,
+                Err(err) => {
+                    tracing::debug!(
+                        member_id = %member_id,
+                        "federation smoke active keyset view unavailable during rotation: {}",
+                        err
+                    );
+                    continue;
+                }
+            };
+            let keysets = match connector.get_mint_keysets().await {
+                Ok(keysets) => keysets,
+                Err(err) => {
+                    tracing::debug!(
+                        member_id = %member_id,
+                        "federation smoke keyset list unavailable during rotation: {}",
+                        err
+                    );
+                    continue;
+                }
+            };
+
+            let active_view_rotated = active_keys.iter().any(|keyset| keyset.id == next_keyset_id)
+                && !active_keys.iter().any(|keyset| keyset.id == old_keyset_id);
+            let old_retired = keysets
+                .keysets
+                .iter()
+                .any(|keyset| keyset.id == old_keyset_id && !keyset.active);
+            let next_active = keysets
+                .keysets
+                .iter()
+                .any(|keyset| keyset.id == next_keyset_id && keyset.active);
+            if active_view_rotated && old_retired && next_active {
+                visible = visible.saturating_add(1);
+            } else {
+                tracing::debug!(
+                    member_id = %member_id,
+                    %old_keyset_id,
+                    %next_keyset_id,
+                    active_view_rotated,
+                    old_retired,
+                    next_active,
+                    "federation smoke keyset rotation is not visible yet"
+                );
+            }
+        }
+        if visible >= required {
+            return Ok(());
+        }
+        tokio::time::sleep(sleep).await;
+    }
+
+    bail!(
+        "federation smoke keyset rotation to {} did not reach {} member views after {} attempts",
+        next_keyset_id,
         required,
         retries
     )

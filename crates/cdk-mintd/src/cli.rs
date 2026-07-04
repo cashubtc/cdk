@@ -276,6 +276,8 @@ pub enum FederationSmokeScenario {
     PendingMeltFailFinish,
     /// Submit a conflicting mint payment observation and quarantine it through private REST.
     QuarantineMintConflict,
+    /// Rotate to the inactive aggregate keyset and run wallet operations against the rotated view.
+    KeysetRotation,
 }
 
 #[cfg(feature = "federation")]
@@ -640,6 +642,35 @@ mod tests {
             smoke.scenario,
             FederationSmokeScenario::QuarantineMintConflict
         );
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[test]
+    fn parses_federation_keyset_rotation_smoke_operations_subcommand() {
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "smoke-operations",
+            "--public-config",
+            "federation-public.json",
+            "--private-config",
+            "member-1/federation-private.json",
+            "--scenario",
+            "keyset-rotation",
+        ])
+        .expect("keyset rotation smoke operations command parses");
+
+        let Some(CliCommand::Federation(federation)) = args.command else {
+            panic!("expected federation command");
+        };
+        let FederationCommand::SmokeOperations(smoke) = federation.command else {
+            panic!("expected federation smoke-operations command");
+        };
+        assert_eq!(
+            smoke.private_config,
+            Some(PathBuf::from("member-1/federation-private.json"))
+        );
+        assert_eq!(smoke.scenario, FederationSmokeScenario::KeysetRotation);
     }
 
     #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
