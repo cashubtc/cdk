@@ -518,15 +518,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated local federation smoke passed end to end, setup-only DKG route-probe smoke has dedicated helper recipes, and long-partition catch-up smoke passed with five offline batches</span>
+          <span class="value">Generated local federation smoke passed end to end, long-partition catch-up smoke passed with five offline batches, and materialized digests now have explicit quarantine-row coverage</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: add long partition smoke recipes</span>
+          <span class="value">test: cover quarantine digest rows</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Dedicated long-partition just recipes render cleanly, and the SQLite helper passed a 3-member/2-threshold smoke with five offline operation batches</span>
+          <span class="value">Accepted payment-observation quarantines are now covered by a focused materialized-state digest regression in the Axum federation suite</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -1341,6 +1341,10 @@
           <article class="item">
             <h3>Payment evidence digest rows covered</h3>
             <p>Materialized state digests now include redacted rows for accepted payment observations, keyed by operation and observer with hashed evidence, so unresolved real-backend observations can trigger convergence mismatch before quote finality.</p>
+          </article>
+          <article class="item">
+            <h3>Quarantine digest rows covered</h3>
+            <p>Accepted payment-observation quarantine operations now have a focused materialized-state digest regression, proving quarantine rows change the convergence digest in addition to the underlying observation evidence rows.</p>
           </article>
           <article class="item">
             <h3>Storage backend parity tightened</h3>
@@ -2562,6 +2566,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation materialized_state_digest_tracks_unfinalized_payment_observation_rows -- --test-threads 1` passed, proving a single real-policy payment observation leaves the quote unpaid while still changing the materialized digest. `cargo test -p cdk-axum --features federation materialized_state_digest -- --test-threads 1` passed all 6 digest regressions, and `cargo check -p cdk-axum --features federation` passed.</td>
               <td>Carry this evidence-row digest into live storage-backed mismatch drills and Postgres process smoke.</td>
+            </tr>
+            <tr>
+              <td>Quarantine materialized digest</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation materialized_state_digest_tracks_payment_observation_quarantine_rows -- --test-threads 1` passed, proving accepted quarantine rows affect the convergence digest after conflicting payment evidence. `cargo test -p cdk-axum --features federation materialized_state_digest -- --test-threads 1` passed all 8 digest regressions, `cargo fmt --all` exited successfully, and `git diff --check` passed.</td>
+              <td>Use this digest row in future storage-backed mismatch injection and Postgres process-smoke comparisons.</td>
             </tr>
             <tr>
               <td>Local federation helper recipes</td>

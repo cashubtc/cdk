@@ -6088,6 +6088,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn materialized_state_digest_tracks_payment_observation_quarantine_rows() {
+        let (state, _, _) = federation_route_state().await;
+        let config = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .clone();
+        let quote_id = QuoteId::new();
+        state
+            .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
+            .await
+            .expect("submit mint quote");
+        let first_response = state
+            .submit_federation_envelope(mint_payment_observation_envelope_for_member(
+                &state, &quote_id, 1, 1, "settled",
+            ))
+            .await
+            .expect("submit first observation");
+        let conflicting_response = state
+            .submit_federation_envelope(mint_payment_observation_envelope_for_member(
+                &state,
+                &quote_id,
+                2,
+                2,
+                "different-settlement",
+            ))
+            .await
+            .expect("submit conflicting observation");
+
+        let consensus = state.federation_consensus.as_ref().expect("consensus");
+        let before_entries = consensus.lock().await.journal().entries().to_vec();
+        let before_digest = materialized_state_digest(&state, &before_entries)
+            .await
+            .expect("digest before quarantine");
+
+        state
+            .submit_federation_envelope(config.payment_observation_quarantine(
+                cdk::federation::FederationPaymentObservationContext::MintQuote,
+                quote_id.clone(),
+                FederationPaymentObservationQuarantineReason::ConflictingEvidence,
+                vec![
+                    first_response.operation_id,
+                    conflicting_response.operation_id,
+                ],
+            ))
+            .await
+            .expect("submit quarantine");
+        let after_entries = consensus.lock().await.journal().entries().to_vec();
+        let after_digest = materialized_state_digest(&state, &after_entries)
+            .await
+            .expect("digest after quarantine");
+
+        assert_ne!(
+            before_digest, after_digest,
+            "accepted payment-observation quarantine rows must affect the materialized digest"
+        );
+        assert_ne!(after_digest, FederationStateDigest::genesis());
+    }
+
+    #[tokio::test]
     async fn materialized_state_digest_tracks_swap_spend_and_output_share_rows() {
         let (state, public_config, _) = federation_route_state().await;
         let config = state
