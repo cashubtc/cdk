@@ -722,6 +722,8 @@ print_dkg_record_runbook() {{
 DKG record recovery for member $member:
   Database-backed readiness:
     "$CDK_MINTD_BIN" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --from-database --require-ready
+  In-progress setup diagnostics:
+    The database-backed command prints setup_records with collected commitment, reveal, and secret-share member sets before finalization is ready.
   File-based readiness after exchanging completion records:
     "$CDK_MINTD_BIN" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --keyset-share <keyset-share.json> --transcript-signature <transcript-signature.json> --require-ready
   Combine --from-database with repeated --keyset-share and --transcript-signature flags while migrating records between members.
@@ -1183,6 +1185,7 @@ mod tests {
         assert!(smoke_script.contains("DKG record recovery for member"));
         assert!(smoke_script.contains("--keyset-share <keyset-share.json>"));
         assert!(smoke_script.contains("--transcript-signature <transcript-signature.json>"));
+        assert!(smoke_script.contains("setup_records with collected commitment"));
         assert!(smoke_script.contains("Combine --from-database"));
         assert!(smoke_script.contains("member_quorum_status_line()"));
         assert!(smoke_script.contains("--require-session-outcome-quorum"));

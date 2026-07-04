@@ -522,11 +522,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: report dkg setup record status</span>
+          <span class="value">docs: surface dkg setup status in runbook</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`federation dkg-status --from-database` now reports persisted commitment, reveal, and secret-share setup progress without exposing DKG secrets</span>
+          <span class="value">Generated DKG recovery runbooks now point operators at the non-secret `setup_records` line when setup is not finalized yet</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -1603,6 +1603,10 @@
             <p>`federation dkg-status --from-database` now also summarizes persisted setup-round commitments, reveals, and secret-share contributions by member ID, giving operators a non-secret view into where route-driven DKG setup is stuck before final keyset-share and transcript-signature records exist.</p>
           </article>
           <article class="item">
+            <h3>DKG setup-progress runbook hint added</h3>
+            <p>Generated local federation smoke scripts now tell operators that failed DKG readiness checks include a `setup_records` diagnostic line, connecting the route-driven setup records to actionable failure output.</p>
+          </article>
+          <article class="item">
             <h3>Generated setup readiness gate added</h3>
             <p>The local trusted-dealer smoke script now gates each member with `federation dkg-status --from-database --require-ready`, and the command treats already-finalized configs as ready without requiring DKG record files.</p>
           </article>
@@ -1874,7 +1878,7 @@
             <tr>
               <td>Generated setup DKG readiness gate</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1` and `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1` passed with generated smoke-script checks for `federation dkg-status`, `--from-database`, `member_dkg_status()`, and `wait_for_dkg_status()`.</td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1` and `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1` passed with generated smoke-script checks for `federation dkg-status`, `--from-database`, `member_dkg_status()`, `wait_for_dkg_status()`, and the `setup_records` recovery hint.</td>
               <td>Exercise this gate in the next live generated smoke run after route-driven DKG completion recovery is wired.</td>
             </tr>
             <tr>
