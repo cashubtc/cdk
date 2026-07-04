@@ -97,7 +97,7 @@ key shares. They do not require Bitcoin or Lightning services.
 just fed-regtest-generate          # Generate a 5-member, 3-threshold federation
 just fed-regtest                   # Generate and run the full local smoke
 just fed-regtest-start             # Start generated members and leave them running
-just fed-regtest-status            # Query signed status and require convergence
+just fed-regtest-status            # Query signed status, convergence, and catch-up quorum evidence
 just fed-regtest-stop-member 2     # Stop one member for catch-up testing
 just fed-regtest-start-member 2    # Restart one generated member
 just fed-regtest-stop              # Stop all generated members

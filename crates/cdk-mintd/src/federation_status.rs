@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
@@ -56,6 +57,9 @@ pub(crate) async fn run_status_command(
     }
     if args.require_converged {
         ensure_statuses_converged(&statuses)?;
+    }
+    if args.require_session_outcome_quorum {
+        ensure_statuses_session_outcome_quorum(&public_config, &statuses)?;
     }
 
     Ok(())
@@ -361,6 +365,56 @@ fn ensure_statuses_converged(statuses: &[FederationLocalStatusResponse]) -> Resu
                 first.peer_status.operation_count,
                 first.peer_status.latest_order_digest,
                 first.peer_status.state_digest
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_statuses_session_outcome_quorum(
+    public_config: &FederationConfig,
+    statuses: &[FederationLocalStatusResponse],
+) -> Result<()> {
+    let required = usize::from(public_config.threshold_params.consensus_threshold);
+    for status in statuses {
+        let operation_count = status.peer_status.operation_count;
+        if operation_count == 0 {
+            continue;
+        }
+        let Some(quorum_operation_count) = status.session_outcome_quorum_operation_count else {
+            bail!(
+                "federation member {} has {} operations but no session outcome quorum evidence",
+                status.peer_status.member_id,
+                operation_count
+            );
+        };
+        if quorum_operation_count < operation_count {
+            bail!(
+                "federation member {} has session outcome quorum evidence for {} operations, below current operation count {}",
+                status.peer_status.member_id,
+                quorum_operation_count,
+                operation_count
+            );
+        }
+
+        let mut distinct_signers = BTreeSet::new();
+        for signer in &status.session_outcome_quorum_signers {
+            if public_config.member(*signer).is_none() {
+                bail!(
+                    "federation member {} reports unknown session outcome quorum signer {}",
+                    status.peer_status.member_id,
+                    signer
+                );
+            }
+            distinct_signers.insert(*signer);
+        }
+        if distinct_signers.len() < required {
+            bail!(
+                "federation member {} has {} distinct session outcome quorum signers, required {}",
+                status.peer_status.member_id,
+                distinct_signers.len(),
+                required
             );
         }
     }
@@ -771,6 +825,98 @@ mod tests {
             ensure_statuses_converged(&statuses).expect_err("state digest mismatch should fail");
 
         assert!(err.to_string().contains("state digest"));
+    }
+
+    #[test]
+    fn status_session_outcome_quorum_guard_accepts_zero_operation_member_without_evidence() {
+        let (public_config, _) = status_fixture();
+        let statuses = vec![local_status(&public_config, 1, 0)];
+
+        ensure_statuses_session_outcome_quorum(&public_config, &statuses)
+            .expect("zero operation member needs no session evidence");
+    }
+
+    #[test]
+    fn status_session_outcome_quorum_guard_accepts_covered_current_height() {
+        let (public_config, _) = status_fixture();
+        let mut status = local_status(&public_config, 1, 3);
+        status.session_outcome_quorum_operation_count = Some(3);
+        status.session_outcome_quorum_signers = vec![
+            MemberId::new(1).expect("member one"),
+            MemberId::new(2).expect("member two"),
+            MemberId::new(3).expect("member three"),
+        ];
+
+        ensure_statuses_session_outcome_quorum(&public_config, &[status])
+            .expect("current height has quorum evidence");
+    }
+
+    #[test]
+    fn status_session_outcome_quorum_guard_rejects_missing_evidence() {
+        let (public_config, _) = status_fixture();
+        let status = local_status(&public_config, 1, 3);
+
+        let err = ensure_statuses_session_outcome_quorum(&public_config, &[status])
+            .expect_err("non-empty operation history needs quorum evidence");
+
+        assert!(err
+            .to_string()
+            .contains("no session outcome quorum evidence"));
+    }
+
+    #[test]
+    fn status_session_outcome_quorum_guard_rejects_short_coverage() {
+        let (public_config, _) = status_fixture();
+        let mut status = local_status(&public_config, 1, 3);
+        status.session_outcome_quorum_operation_count = Some(2);
+        status.session_outcome_quorum_signers = vec![
+            MemberId::new(1).expect("member one"),
+            MemberId::new(2).expect("member two"),
+            MemberId::new(3).expect("member three"),
+        ];
+
+        let err = ensure_statuses_session_outcome_quorum(&public_config, &[status])
+            .expect_err("short quorum coverage should fail");
+
+        assert!(err.to_string().contains("below current operation count"));
+    }
+
+    #[test]
+    fn status_session_outcome_quorum_guard_rejects_insufficient_distinct_signers() {
+        let (public_config, _) = status_fixture();
+        let mut status = local_status(&public_config, 1, 3);
+        status.session_outcome_quorum_operation_count = Some(3);
+        status.session_outcome_quorum_signers = vec![
+            MemberId::new(1).expect("member one"),
+            MemberId::new(1).expect("member one duplicate"),
+            MemberId::new(2).expect("member two"),
+        ];
+
+        let err = ensure_statuses_session_outcome_quorum(&public_config, &[status])
+            .expect_err("duplicate signers should not satisfy quorum");
+
+        assert!(err
+            .to_string()
+            .contains("distinct session outcome quorum signers"));
+    }
+
+    #[test]
+    fn status_session_outcome_quorum_guard_rejects_unknown_signer() {
+        let (public_config, _) = status_fixture();
+        let mut status = local_status(&public_config, 1, 3);
+        status.session_outcome_quorum_operation_count = Some(3);
+        status.session_outcome_quorum_signers = vec![
+            MemberId::new(1).expect("member one"),
+            MemberId::new(2).expect("member two"),
+            MemberId::new(9).expect("unknown member"),
+        ];
+
+        let err = ensure_statuses_session_outcome_quorum(&public_config, &[status])
+            .expect_err("unknown signer should fail");
+
+        assert!(err
+            .to_string()
+            .contains("unknown session outcome quorum signer"));
     }
 
     #[test]

@@ -252,6 +252,9 @@ pub struct FederationStatusArgs {
     /// Fail if queried members disagree on consensus height or latest order digest.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub require_converged: bool,
+    /// Fail if queried members with accepted operations lack quorum-backed session outcome evidence.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub require_session_outcome_quorum: bool,
 }
 
 #[cfg(all(test, feature = "federation"))]
@@ -550,6 +553,7 @@ mod tests {
             "3",
             "--require-ready",
             "--require-converged",
+            "--require-session-outcome-quorum",
         ])
         .expect("status command parses");
 
@@ -570,5 +574,6 @@ mod tests {
         assert_eq!(status.members, vec![1, 3]);
         assert!(status.require_ready);
         assert!(status.require_converged);
+        assert!(status.require_session_outcome_quorum);
     }
 }

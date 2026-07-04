@@ -601,7 +601,8 @@ fed-regtest-status dir="target/cdk-fed-regtest" signer="1":
     --public-config "{{dir}}/federation-public.json" \
     --private-config "{{dir}}/member-{{signer}}/federation-private.json" \
     --require-ready \
-    --require-converged
+    --require-converged \
+    --require-session-outcome-quorum
 
 # Remove generated local fake-wallet federation state
 fed-regtest-clean dir="target/cdk-fed-regtest":

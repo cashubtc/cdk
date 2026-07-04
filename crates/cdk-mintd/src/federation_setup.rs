@@ -628,6 +628,13 @@ member_status_line() {{
   "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready | awk '/^member / {{ print; exit }}'
 }}
 
+member_quorum_status_line() {{
+  local member="$1"
+  local private_config
+  private_config="$(member_private_config "$member")"
+  "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready --require-session-outcome-quorum | awk '/^member / {{ print; exit }}'
+}}
+
 member_payment_report_lines() {{
   local member="$1"
   local private_config
@@ -714,27 +721,13 @@ wait_for_session_outcome_quorum() {{
   local work_dir
   work_dir="$(member_work_dir "$member")"
   for _ in $(seq 1 "$STATUS_RETRIES"); do
-    local line
-    local operations
-    local quorum_operations
-    local quorum_signers
-    if line="$(member_status_line "$member" 2>/dev/null)" \
-      && operations="$(status_field "$line" operations)" \
-      && quorum_operations="$(status_field "$line" session_outcome_quorum_operations)" \
-      && quorum_signers="$(status_field "$line" session_outcome_quorum_signers)"; then
-      if [[ "$operations" =~ ^[0-9]+$ \
-        && "$quorum_operations" =~ ^[0-9]+$ \
-        && "$quorum_operations" -ge "$operations" \
-        && "$quorum_signers" != "none" ]]; then
-        return 0
-      fi
+    if member_quorum_status_line "$member" >/dev/null 2>&1; then
+      return 0
     fi
     sleep "$STATUS_SLEEP_SECONDS"
   done
   printf 'member %s did not report quorum-backed session outcome evidence\n' "$member" >&2
-  local private_config
-  private_config="$(member_private_config "$member")"
-  "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready >&2 || true
+  member_quorum_status_line "$member" >&2 || true
   tail -n 80 "$work_dir/mintd.log" >&2 || true
   return 1
 }}
@@ -812,8 +805,8 @@ for batch in $(seq 1 "$OFFLINE_OPERATION_BATCHES"); do
 done
 start_member "$RESTART_MEMBER"
 wait_for_status "$RESTART_MEMBER"
-wait_for_session_outcome_quorum "$RESTART_MEMBER"
 wait_for_converged
+wait_for_session_outcome_quorum "$RESTART_MEMBER"
 
 run_smoke_operations --scenario pending-melt-start --wallet-db "$PENDING_WALLET_DB"
 wait_for_converged
@@ -822,8 +815,8 @@ stop_member "$RESTART_MEMBER"
 run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario pending-melt-finish --wallet-db "$PENDING_WALLET_DB"
 start_member "$RESTART_MEMBER"
 wait_for_status "$RESTART_MEMBER"
-wait_for_session_outcome_quorum "$RESTART_MEMBER"
 wait_for_converged
+wait_for_session_outcome_quorum "$RESTART_MEMBER"
 
 run_smoke_operations --scenario pending-melt-fail-start --wallet-db "$FAILED_PENDING_WALLET_DB"
 wait_for_converged
@@ -832,8 +825,8 @@ stop_member "$RESTART_MEMBER"
 run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario pending-melt-fail-finish --wallet-db "$FAILED_PENDING_WALLET_DB"
 start_member "$RESTART_MEMBER"
 wait_for_status "$RESTART_MEMBER"
-wait_for_session_outcome_quorum "$RESTART_MEMBER"
 wait_for_converged
+wait_for_session_outcome_quorum "$RESTART_MEMBER"
 
 stop_member "$QUARANTINE_OFFLINE_MEMBER"
 run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario quarantine-mint-conflict
@@ -841,9 +834,9 @@ wait_for_quarantine_report "$PRIMARY_MEMBER"
 
 start_member "$QUARANTINE_OFFLINE_MEMBER"
 wait_for_status "$QUARANTINE_OFFLINE_MEMBER"
-wait_for_session_outcome_quorum "$QUARANTINE_OFFLINE_MEMBER"
 
 wait_for_converged
+wait_for_session_outcome_quorum "$QUARANTINE_OFFLINE_MEMBER"
 wait_for_quarantine_report "$QUARANTINE_OFFLINE_MEMBER"
 
 printf 'local federation smoke test passed\n'
@@ -936,6 +929,8 @@ mod tests {
         assert!(smoke_script.contains("federation smoke-operations"));
         assert!(smoke_script.contains("--require-ready"));
         assert!(smoke_script.contains("member_status_line()"));
+        assert!(smoke_script.contains("member_quorum_status_line()"));
+        assert!(smoke_script.contains("--require-session-outcome-quorum"));
         assert!(smoke_script.contains("private_config=\"$(member_private_config \"$member\")\""));
         assert!(!smoke_script
             .contains("private_config=\"$(member_private_config \"$PRIMARY_MEMBER\")\""));
@@ -959,8 +954,6 @@ mod tests {
         assert!(smoke_script.contains("member_payment_report_lines()"));
         assert!(smoke_script.contains("run_smoke_operations()"));
         assert!(smoke_script.contains("wait_for_session_outcome_quorum()"));
-        assert!(smoke_script.contains("session_outcome_quorum_operations"));
-        assert!(smoke_script.contains("session_outcome_quorum_signers"));
         assert!(smoke_script
             .contains("member %s did not report quorum-backed session outcome evidence"));
         assert!(smoke_script.contains("--quote-retries \"$SMOKE_QUOTE_RETRIES\""));
@@ -1000,6 +993,12 @@ mod tests {
         assert!(
             smoke_script.contains("wait_for_session_outcome_quorum \"$QUARANTINE_OFFLINE_MEMBER\"")
         );
+        assert!(smoke_script.contains(
+            "wait_for_status \"$RESTART_MEMBER\"\nwait_for_converged\nwait_for_session_outcome_quorum \"$RESTART_MEMBER\""
+        ));
+        assert!(smoke_script.contains(
+            "wait_for_status \"$QUARANTINE_OFFLINE_MEMBER\"\n\nwait_for_converged\nwait_for_session_outcome_quorum \"$QUARANTINE_OFFLINE_MEMBER\""
+        ));
         assert!(smoke_script.contains("wait_for_quarantine_report \"$QUARANTINE_OFFLINE_MEMBER\""));
         assert!(smoke_script.contains("local federation smoke test passed"));
         assert!(smoke_script.contains(&artifacts.public_config_path.to_string_lossy().to_string()));
