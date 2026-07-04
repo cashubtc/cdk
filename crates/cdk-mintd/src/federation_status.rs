@@ -218,8 +218,9 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
     let (payment_reports, payment_conflicts, payment_unresolved, payment_stale, payment_quarantine) =
         payment_report_counts(status);
     format!(
-        "member {}: sync={} ready={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} session_outcome_quorum_operations={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} message={}",
+        "member {}: consensus_backend={} sync={} ready={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} session_outcome_quorum_operations={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} message={}",
         peer.member_id,
+        peer.consensus_backend,
         status.sync_state,
         status.sync_ready,
         peer.operation_count,
@@ -370,16 +371,19 @@ fn ensure_statuses_converged(statuses: &[FederationLocalStatusResponse]) -> Resu
         if status.peer_status.operation_count != first.peer_status.operation_count
             || status.peer_status.latest_order_digest != first.peer_status.latest_order_digest
             || status.peer_status.state_digest != first.peer_status.state_digest
+            || status.peer_status.consensus_backend != first.peer_status.consensus_backend
         {
             bail!(
-                "federation status is not converged: member {} has operations {} order digest {} state digest {}, expected operations {} order digest {} state digest {}",
+                "federation status is not converged: member {} has operations {} order digest {} state digest {} consensus backend {}, expected operations {} order digest {} state digest {} consensus backend {}",
                 status.peer_status.member_id,
                 status.peer_status.operation_count,
                 status.peer_status.latest_order_digest,
                 status.peer_status.state_digest,
+                status.peer_status.consensus_backend,
                 first.peer_status.operation_count,
                 first.peer_status.latest_order_digest,
-                first.peer_status.state_digest
+                first.peer_status.state_digest,
+                first.peer_status.consensus_backend
             );
         }
     }
@@ -432,6 +436,15 @@ fn ensure_statuses_no_digest_alerts(statuses: &[FederationLocalStatusResponse]) 
 
     for (index, status) in statuses.iter().enumerate() {
         for other in statuses.iter().skip(index + 1) {
+            if status.peer_status.consensus_backend != other.peer_status.consensus_backend {
+                bail!(
+                    "federation status alert: members {} and {} disagree on consensus backend: {} vs {}",
+                    status.peer_status.member_id,
+                    other.peer_status.member_id,
+                    status.peer_status.consensus_backend,
+                    other.peer_status.consensus_backend
+                );
+            }
             if status.peer_status.operation_count != other.peer_status.operation_count {
                 continue;
             }
@@ -560,7 +573,7 @@ mod tests {
 
     use async_trait::async_trait;
     use cdk_common::federation::{
-        generate_trusted_dealer_configs, FederationJournalDigest,
+        generate_trusted_dealer_configs, FederationConsensusBackendKind, FederationJournalDigest,
         FederationPaymentObservationContext, FederationPaymentObservationEvidenceGroupSummary,
         FederationStateDigest, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
@@ -863,6 +876,16 @@ mod tests {
     }
 
     #[test]
+    fn status_line_prints_consensus_backend() {
+        let (public_config, _) = status_fixture();
+        let status = local_status(&public_config, 1, 2);
+
+        let line = member_status_line(&status);
+
+        assert!(line.contains("consensus_backend=in_memory"));
+    }
+
+    #[test]
     fn status_readiness_guard_redacts_sensitive_sync_message() {
         let (public_config, _) = status_fixture();
         let mut status = not_ready_status(&public_config, 1);
@@ -1096,6 +1119,20 @@ mod tests {
     }
 
     #[test]
+    fn status_convergence_guard_rejects_consensus_backend_mismatch() {
+        let (public_config, _) = status_fixture();
+        let first = local_status(&public_config, 1, 0);
+        let mut second = local_status(&public_config, 2, 0);
+        second.peer_status.consensus_backend = FederationConsensusBackendKind::AlephBft;
+        let statuses = vec![first, second];
+
+        let err = ensure_statuses_converged(&statuses)
+            .expect_err("consensus backend mismatch should fail");
+
+        assert!(err.to_string().contains("consensus backend"));
+    }
+
+    #[test]
     fn status_digest_alert_guard_accepts_height_mismatch() {
         let (public_config, _) = status_fixture();
         let statuses = vec![
@@ -1120,6 +1157,19 @@ mod tests {
 
         assert!(err.to_string().contains("digest alert"));
         assert!(err.to_string().contains("state digest"));
+    }
+
+    #[test]
+    fn status_alert_guard_rejects_consensus_backend_mismatch() {
+        let (public_config, _) = status_fixture();
+        let first = local_status(&public_config, 1, 2);
+        let mut second = local_status(&public_config, 2, 2);
+        second.peer_status.consensus_backend = FederationConsensusBackendKind::AlephBft;
+        let statuses = vec![first, second];
+
+        let err = ensure_statuses_no_digest_alerts(&statuses).expect_err("backend mismatch fails");
+
+        assert!(err.to_string().contains("consensus backend"));
     }
 
     #[test]

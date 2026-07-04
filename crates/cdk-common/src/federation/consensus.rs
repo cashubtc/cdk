@@ -238,6 +238,11 @@ impl FederationConsensusItemQueue {
 /// boundary: submit admissible items, expose accepted order, serve catch-up,
 /// replay peer catch-up, and update only local application status.
 pub trait FederationConsensusEngine: fmt::Debug + Send {
+    /// Return the backend kind used by this consensus engine.
+    fn backend_kind(&self) -> FederationConsensusBackendKind {
+        FederationConsensusBackendKind::InMemory
+    }
+
     /// Return this member's federation ID.
     fn federation_id(&self) -> FederationId;
 
@@ -390,6 +395,16 @@ impl FederationConsensusRuntime {
         }
     }
 
+    /// Return the backend selected for this runtime.
+    #[must_use]
+    pub fn backend_kind(&self) -> FederationConsensusBackendKind {
+        match &self.backend {
+            FederationConsensusRuntimeBackend::InMemory(_) => {
+                FederationConsensusBackendKind::InMemory
+            }
+        }
+    }
+
     /// Rebuild an in-memory runtime from persisted journal entries.
     pub fn in_memory_from_entries(
         federation_id: FederationId,
@@ -436,6 +451,10 @@ impl FederationConsensusRuntime {
 }
 
 impl FederationConsensusEngine for FederationConsensusRuntime {
+    fn backend_kind(&self) -> FederationConsensusBackendKind {
+        Self::backend_kind(self)
+    }
+
     fn federation_id(&self) -> FederationId {
         self.engine().federation_id()
     }
@@ -471,7 +490,9 @@ impl FederationConsensusEngine for FederationConsensusRuntime {
     }
 
     fn peer_status(&self) -> FederationPeerStatus {
-        self.engine().peer_status()
+        self.engine()
+            .peer_status()
+            .with_consensus_backend(self.backend_kind())
     }
 
     fn catch_up_request(&self) -> FederationJournalCatchUpRequest {
@@ -973,7 +994,12 @@ impl InMemoryFederationConsensus {
     /// Return this member's current peer status.
     #[must_use]
     pub fn peer_status(&self) -> FederationPeerStatus {
-        FederationPeerStatus::from_journal(self.federation_id, self.member_id, &self.journal)
+        FederationPeerStatus::from_journal_with_backend(
+            self.federation_id,
+            self.member_id,
+            &self.journal,
+            FederationConsensusBackendKind::InMemory,
+        )
     }
 
     /// Return a catch-up request for the next local missing operation.
@@ -1081,6 +1107,10 @@ impl InMemoryFederationConsensus {
 }
 
 impl FederationConsensusEngine for InMemoryFederationConsensus {
+    fn backend_kind(&self) -> FederationConsensusBackendKind {
+        FederationConsensusBackendKind::InMemory
+    }
+
     fn federation_id(&self) -> FederationId {
         Self::federation_id(self)
     }
@@ -1447,6 +1477,14 @@ mod tests {
         )
         .expect("replay runtime");
 
+        assert_eq!(
+            replayed.backend_kind(),
+            FederationConsensusBackendKind::InMemory
+        );
+        assert_eq!(
+            replayed.peer_status().consensus_backend,
+            FederationConsensusBackendKind::InMemory
+        );
         assert_eq!(replayed.peer_status().operation_count, 1);
         assert_eq!(
             replayed.peer_status().latest_order_digest,
