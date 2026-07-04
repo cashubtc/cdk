@@ -496,6 +496,60 @@ impl Mint {
         Ok(Verification { amount })
     }
 
+    pub(crate) fn verify_federation_change_outputs_with_config(
+        &self,
+        config: &FederationRuntimeConfig,
+        outputs: &[BlindedMessage],
+    ) -> Result<Verification, Error> {
+        if outputs.is_empty() {
+            tracing::debug!("verify_federation_change_outputs called with empty outputs");
+            return Err(Error::TransactionUnbalanced(0, 0, 0));
+        }
+
+        let outputs_count = outputs.len();
+        if outputs_count > self.max_outputs {
+            tracing::warn!(
+                "Federation request exceeds max outputs limit: {} > {}",
+                outputs_count,
+                self.max_outputs
+            );
+            return Err(Error::MaxOutputsExceeded {
+                actual: outputs_count,
+                max: self.max_outputs,
+            });
+        }
+
+        Self::check_outputs_unique(outputs)?;
+        let mut keyset_units = HashSet::new();
+        for output in outputs {
+            let keyset = config
+                .public_config()
+                .validate_blinded_change_output(output)?;
+            let keyset_info = super::keysets::federated_keyset_to_mint_keyset_info(keyset);
+            if keyset_info.is_expired() {
+                tracing::debug!(
+                    "Transaction attempted with expired federated keyset in change outputs: {}.",
+                    keyset.id
+                );
+                return Err(Error::ExpiredKeyset);
+            }
+            keyset_units.insert(keyset.unit.clone());
+        }
+
+        if keyset_units.len() != 1 {
+            tracing::debug!(
+                "Federation transaction attempted with multiple units in change outputs: {:?}.",
+                keyset_units
+            );
+            return Err(Error::MultipleUnits);
+        }
+
+        let unit = keyset_units.into_iter().next().ok_or(Error::Internal)?;
+        let amount = Amount::try_sum(outputs.iter().map(|output| output.amount))?.with_unit(unit);
+
+        Ok(Verification { amount })
+    }
+
     pub(crate) fn get_federation_proofs_fee_with_config(
         &self,
         config: &FederationRuntimeConfig,

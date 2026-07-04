@@ -225,7 +225,7 @@ impl MeltSaga<Initial> {
                 let output_verification = match self.mint.effective_federation_config().await? {
                     Some(config) => self
                         .mint
-                        .verify_federation_outputs_with_config(&config, outputs)?,
+                        .verify_federation_change_outputs_with_config(&config, outputs)?,
                     None => self.mint.verify_outputs(outputs)?,
                 };
                 #[cfg(not(feature = "federation"))]

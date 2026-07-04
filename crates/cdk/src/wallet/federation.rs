@@ -55,6 +55,7 @@ pub struct FederatedMintConnector {
 enum ShareAmountValidation {
     Exact,
     AllowZeroAmountPlaceholder,
+    Restore,
 }
 
 impl fmt::Debug for FederatedMintConnector {
@@ -330,6 +331,9 @@ impl FederatedMintConnector {
             ShareAmountValidation::AllowZeroAmountPlaceholder => self
                 .public_config
                 .validate_blinded_change_outputs(outputs)?,
+            ShareAmountValidation::Restore => self
+                .public_config
+                .validate_blinded_restore_outputs(outputs)?,
         }
 
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
@@ -354,7 +358,15 @@ impl FederatedMintConnector {
             let mut signed_output = output.clone();
             signed_output.amount = first_signature.amount;
             signed_output.keyset_id = first_signature.keyset_id;
-            let keyset = self.public_config.validate_blinded_output(&signed_output)?;
+            let keyset = match amount_validation {
+                ShareAmountValidation::Exact
+                | ShareAmountValidation::AllowZeroAmountPlaceholder => {
+                    self.public_config.validate_blinded_output(&signed_output)?
+                }
+                ShareAmountValidation::Restore => self
+                    .public_config
+                    .validate_blinded_restore_output(&signed_output)?,
+            };
             let blinded_message = output.blinded_secret.as_bls_g1()?;
             let mut shares = Vec::with_capacity(member_responses.len());
 
@@ -503,7 +515,7 @@ impl FederatedMintConnector {
         member_responses: &[(MemberId, RestoreResponse)],
     ) -> Result<RestoreResponse, Error> {
         self.public_config
-            .validate_blinded_change_outputs(requested_outputs)?;
+            .validate_blinded_restore_outputs(requested_outputs)?;
 
         let (first_member_id, first_response) = member_responses.first().ok_or_else(|| {
             Error::InvalidMintResponse("missing federation restore responses".to_string())
@@ -534,7 +546,7 @@ impl FederatedMintConnector {
         let aggregate = self.aggregate_member_responses(
             &first_response.outputs,
             &restore_share_responses,
-            ShareAmountValidation::AllowZeroAmountPlaceholder,
+            ShareAmountValidation::Restore,
         )?;
 
         Ok(RestoreResponse {
@@ -794,7 +806,7 @@ impl MintConnector for FederatedMintConnector {
 
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         self.public_config
-            .validate_blinded_change_outputs(&request.outputs)?;
+            .validate_blinded_restore_outputs(&request.outputs)?;
         self.validate_member_active_keysets().await?;
 
         let member_responses = self
@@ -850,7 +862,7 @@ fn validate_signature_metadata(
 ) -> Result<(), Error> {
     let amount_matches = match amount_validation {
         ShareAmountValidation::Exact => signature.amount == output.amount,
-        ShareAmountValidation::AllowZeroAmountPlaceholder => {
+        ShareAmountValidation::AllowZeroAmountPlaceholder | ShareAmountValidation::Restore => {
             output.amount == Amount::ZERO || signature.amount == output.amount
         }
     };
@@ -1076,7 +1088,9 @@ mod tests {
     use async_trait::async_trait;
     use bip39::Mnemonic;
     use cdk_common::federation::{
-        generate_trusted_dealer_configs, FederationError, FederationOperationId, MemberId,
+        generate_trusted_dealer_configs, FederatedKeyset, FederationConfig, FederationError,
+        FederationJournalEntry, FederationKeysetRotationOperation, FederationOperation,
+        FederationOperationEnvelope, FederationOperationId, InMemoryFederationJournal, MemberId,
         ThresholdParams, TrustedDealerConfigBundle, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     use cdk_common::mint::{MeltPaymentRequest, MeltQuote, MintQuote};
@@ -1088,7 +1102,7 @@ mod tests {
     use cdk_common::{
         Amount, BlindSignature, BlindedMessage, Bolt11Invoice, CurrencyUnit, Id,
         MeltQuoteBolt11Response, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse,
-        PublicKey, QuoteId,
+        MintQuoteBolt11Response, PublicKey, QuoteId,
     };
     use cdk_common::{MintQuoteRequest, MintQuoteResponse, MintResponse, SecretKey};
     use cdk_fake_wallet::{create_fake_invoice, FakeWallet};
@@ -1187,6 +1201,113 @@ mod tests {
         .expect("trusted dealer bundle")
     }
 
+    fn threshold_rotation_bundle() -> TrustedDealerConfigBundle {
+        generate_trusted_dealer_configs(
+            ThresholdParams::with_bft_consensus(3, 2).expect("params"),
+            vec![
+                member(member_id(1)),
+                member(member_id(2)),
+                member(member_id(3)),
+            ],
+            vec![
+                TrustedDealerKeysetSpec::new(
+                    CurrencyUnit::Sat,
+                    true,
+                    0,
+                    None,
+                    BTreeMap::from([
+                        (
+                            Amount::from(1),
+                            vec![
+                                BlsSecretKey::from_reduced_bytes(&[2; 32]),
+                                BlsSecretKey::from_reduced_bytes(&[3; 32]),
+                            ],
+                        ),
+                        (
+                            Amount::from(2),
+                            vec![
+                                BlsSecretKey::from_reduced_bytes(&[4; 32]),
+                                BlsSecretKey::from_reduced_bytes(&[5; 32]),
+                            ],
+                        ),
+                        (
+                            Amount::from(4),
+                            vec![
+                                BlsSecretKey::from_reduced_bytes(&[6; 32]),
+                                BlsSecretKey::from_reduced_bytes(&[7; 32]),
+                            ],
+                        ),
+                    ]),
+                ),
+                TrustedDealerKeysetSpec::new(
+                    CurrencyUnit::Sat,
+                    false,
+                    0,
+                    None,
+                    BTreeMap::from([
+                        (
+                            Amount::from(1),
+                            vec![
+                                BlsSecretKey::from_reduced_bytes(&[8; 32]),
+                                BlsSecretKey::from_reduced_bytes(&[9; 32]),
+                            ],
+                        ),
+                        (
+                            Amount::from(2),
+                            vec![
+                                BlsSecretKey::from_reduced_bytes(&[10; 32]),
+                                BlsSecretKey::from_reduced_bytes(&[11; 32]),
+                            ],
+                        ),
+                        (
+                            Amount::from(4),
+                            vec![
+                                BlsSecretKey::from_reduced_bytes(&[12; 32]),
+                                BlsSecretKey::from_reduced_bytes(&[13; 32]),
+                            ],
+                        ),
+                    ]),
+                ),
+            ],
+        )
+        .expect("trusted dealer rotation bundle")
+    }
+
+    fn active_keyset(bundle: &TrustedDealerConfigBundle) -> FederatedKeyset {
+        bundle
+            .public_config
+            .keysets
+            .iter()
+            .find(|keyset| keyset.active)
+            .expect("active keyset")
+            .clone()
+    }
+
+    fn inactive_rotation_keyset(bundle: &TrustedDealerConfigBundle) -> FederatedKeyset {
+        bundle
+            .public_config
+            .keysets
+            .iter()
+            .find(|keyset| !keyset.active)
+            .expect("inactive rotation keyset")
+            .clone()
+    }
+
+    fn activated_rotation_keyset(bundle: &TrustedDealerConfigBundle) -> FederatedKeyset {
+        let mut keyset = inactive_rotation_keyset(bundle);
+        keyset.active = true;
+        keyset
+    }
+
+    fn rotated_public_config(bundle: &TrustedDealerConfigBundle) -> FederationConfig {
+        bundle
+            .public_config
+            .apply_keyset_rotation(&FederationKeysetRotationOperation {
+                keyset: activated_rotation_keyset(bundle),
+            })
+            .expect("rotated public config")
+    }
+
     fn advertised_keyset(bundle: &cdk_common::federation::TrustedDealerConfigBundle) -> KeySet {
         let keyset = &bundle.public_config.keysets[0];
         KeySet {
@@ -1201,32 +1322,43 @@ mod tests {
 
     fn blinded_outputs(bundle: &TrustedDealerConfigBundle) -> Vec<BlindedMessage> {
         let keyset = &bundle.public_config.keysets[0];
+        blinded_outputs_for_keyset(keyset, b"federated wallet connector output")
+    }
+
+    fn blinded_outputs_for_keyset(keyset: &FederatedKeyset, label: &[u8]) -> Vec<BlindedMessage> {
+        let first_label = [label, b" 1".as_slice()].concat();
+        let second_label = [label, b" 2".as_slice()].concat();
+
         vec![
             BlindedMessage::new(
                 Amount::from(1),
                 keyset.id,
-                PublicKey::from(BlsG1PublicKey::hash_to_curve(
-                    b"federated wallet connector output 1",
-                )),
+                PublicKey::from(BlsG1PublicKey::hash_to_curve(&first_label)),
             ),
             BlindedMessage::new(
                 Amount::from(2),
                 keyset.id,
-                PublicKey::from(BlsG1PublicKey::hash_to_curve(
-                    b"federated wallet connector output 2",
-                )),
+                PublicKey::from(BlsG1PublicKey::hash_to_curve(&second_label)),
             ),
         ]
     }
 
-    fn blinded_change_outputs(bundle: &TrustedDealerConfigBundle) -> Vec<BlindedMessage> {
-        blinded_outputs(bundle)
+    fn blinded_change_outputs_for_keyset(
+        keyset: &FederatedKeyset,
+        label: &[u8],
+    ) -> Vec<BlindedMessage> {
+        blinded_outputs_for_keyset(keyset, label)
             .into_iter()
             .map(|mut output| {
                 output.amount = Amount::ZERO;
                 output
             })
             .collect()
+    }
+
+    fn blinded_change_outputs(bundle: &TrustedDealerConfigBundle) -> Vec<BlindedMessage> {
+        let keyset = &bundle.public_config.keysets[0];
+        blinded_change_outputs_for_keyset(keyset, b"federated wallet connector change")
     }
 
     fn signed_change_outputs(change_outputs: &[BlindedMessage]) -> Vec<BlindedMessage> {
@@ -1429,12 +1561,17 @@ mod tests {
             Self { mint }
         }
 
-        fn federation_config(&self) -> Result<&FederationRuntimeConfig, crate::Error> {
-            self.mint.federation_config().ok_or_else(|| {
-                crate::Error::InvalidMintResponse(
-                    "local test mint is not configured for federation".to_string(),
-                )
-            })
+        async fn effective_federation_config(
+            &self,
+        ) -> Result<FederationRuntimeConfig, crate::Error> {
+            self.mint
+                .effective_federation_config()
+                .await?
+                .ok_or_else(|| {
+                    crate::Error::InvalidMintResponse(
+                        "local test mint is not configured for federation".to_string(),
+                    )
+                })
         }
 
         fn quote_id(quote: &str) -> Result<QuoteId, crate::Error> {
@@ -1495,12 +1632,24 @@ mod tests {
         }
 
         async fn get_mint_keys(&self) -> Result<Vec<KeySet>, crate::Error> {
+            if let Some(pubkeys) = self.mint.effective_federation_pubkeys().await? {
+                return Ok(pubkeys.keysets);
+            }
+
             Ok(self.mint.pubkeys().keysets)
         }
 
         async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, crate::Error> {
-            self.mint
-                .keyset_pubkeys(&keyset_id)?
+            let pubkeys = match self
+                .mint
+                .effective_federation_keyset_pubkeys(&keyset_id)
+                .await?
+            {
+                Some(pubkeys) => pubkeys,
+                None => self.mint.keyset_pubkeys(&keyset_id)?,
+            };
+
+            pubkeys
                 .keysets
                 .into_iter()
                 .next()
@@ -1508,6 +1657,10 @@ mod tests {
         }
 
         async fn get_mint_keysets(&self) -> Result<KeysetResponse, crate::Error> {
+            if let Some(keysets) = self.mint.effective_federation_keysets().await? {
+                return Ok(keysets);
+            }
+
             Ok(self.mint.keysets())
         }
 
@@ -1530,7 +1683,7 @@ mod tests {
                 outputs: request.outputs,
                 signature: request.signature,
             });
-            let config = self.federation_config()?;
+            let config = self.effective_federation_config().await?;
             let operation_id = config.mint_operation(input.clone())?.operation_id()?;
             config.mint_share_response(operation_id, &input)
         }
@@ -1578,7 +1731,7 @@ mod tests {
                 outputs: request.outputs,
                 signatures: request.signatures,
             });
-            let config = self.federation_config()?;
+            let config = self.effective_federation_config().await?;
             let operation_id = config.mint_operation(input.clone())?.operation_id()?;
             config.mint_share_response(operation_id, &input)
         }
@@ -1624,7 +1777,7 @@ mod tests {
             let request: MeltRequest<QuoteId> = request.try_into()?;
             self.validate_melt_quote_method(request.quote_id(), method)
                 .await?;
-            let config = self.federation_config()?;
+            let config = self.effective_federation_config().await?;
             let operation_id = config.melt_operation(request.clone())?.operation_id()?;
 
             Ok(self
@@ -1635,7 +1788,7 @@ mod tests {
         }
 
         async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, crate::Error> {
-            let config = self.federation_config()?;
+            let config = self.effective_federation_config().await?;
             let operation_id = config.swap_operation(request.clone())?.operation_id()?;
             config.swap_share_response(operation_id, &request)
         }
@@ -1714,9 +1867,29 @@ mod tests {
         mint
     }
 
+    fn appended_entry(
+        journal: &mut InMemoryFederationJournal,
+        envelope: FederationOperationEnvelope,
+    ) -> FederationJournalEntry {
+        journal.append(envelope).expect("append").entry().clone()
+    }
+
+    async fn persist_and_apply_entry(mint: &Mint, entry: &FederationJournalEntry) {
+        let localstore = mint.localstore();
+        let mut tx = localstore.begin_transaction().await.expect("begin");
+        tx.add_federation_journal_entry(entry)
+            .await
+            .expect("persist journal entry");
+        tx.commit().await.expect("commit journal entry");
+
+        mint.apply_federation_journal_entries(std::slice::from_ref(entry))
+            .await
+            .expect("apply journal entry");
+    }
+
     async fn add_paid_bolt11_quote(mint: &Mint, quote_id: &QuoteId, amount: u64) {
         let amount = Amount::new(amount, CurrencyUnit::Sat);
-        let quote = MintQuote::new(
+        let mut quote = MintQuote::new(
             Some(quote_id.clone()),
             format!("invoice-{quote_id}"),
             CurrencyUnit::Sat,
@@ -1724,7 +1897,7 @@ mod tests {
             unix_time() + 10_000,
             PaymentIdentifier::QuoteId(quote_id.clone()),
             None,
-            amount,
+            Amount::new(0, CurrencyUnit::Sat),
             Amount::new(0, CurrencyUnit::Sat),
             PaymentMethod::Known(KnownMethod::Bolt11),
             unix_time(),
@@ -1732,10 +1905,65 @@ mod tests {
             Vec::new(),
             None,
         );
+        quote
+            .add_payment(amount, format!("payment-{quote_id}"), None)
+            .expect("add quote payment");
         let localstore = mint.localstore();
         let mut tx = localstore.begin_transaction().await.expect("begin tx");
         tx.add_mint_quote(quote).await.expect("add quote");
         tx.commit().await.expect("commit quote");
+    }
+
+    fn bolt11_quote_request(amount: u64) -> MintQuoteRequest {
+        MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
+            amount: Amount::from(amount),
+            unit: CurrencyUnit::Sat,
+            description: None,
+            pubkey: None,
+        })
+    }
+
+    fn bolt11_quote_response(quote: &QuoteId, amount: u64) -> MintQuoteResponse<String> {
+        MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
+            quote: quote.to_string(),
+            request: format!("invoice-{quote}"),
+            amount: Some(Amount::from(amount)),
+            unit: Some(CurrencyUnit::Sat),
+            state: MintQuoteState::Unpaid,
+            expiry: None,
+            pubkey: None,
+        })
+    }
+
+    async fn persist_paid_mint_quote(
+        mint: &Mint,
+        config: &FederationRuntimeConfig,
+        journal: &mut InMemoryFederationJournal,
+        quote_id: &QuoteId,
+        amount: u64,
+    ) {
+        let quote_entry = appended_entry(
+            journal,
+            config.mint_quote_operation(
+                quote_id.clone(),
+                bolt11_quote_request(amount),
+                bolt11_quote_response(quote_id, amount),
+            ),
+        );
+        persist_and_apply_entry(mint, &quote_entry).await;
+
+        let paid_entry = appended_entry(
+            journal,
+            config.mint_quote_payment_observation(
+                quote_id.clone(),
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintQuoteState::Paid,
+                Amount::from(amount),
+                Amount::ZERO,
+                Some(format!("payment-{quote_id}")),
+            ),
+        );
+        persist_and_apply_entry(mint, &paid_entry).await;
     }
 
     async fn add_unpaid_bolt11_melt_quote(
@@ -1800,16 +2028,84 @@ mod tests {
         connectors
     }
 
+    async fn rotated_fake_wallet_member_connectors_with_state(
+        bundle: &TrustedDealerConfigBundle,
+        old_mint_quote_id: &QuoteId,
+        new_mint_quote_id: &QuoteId,
+        old_restore_output: &BlindedMessage,
+        melt_quote_id: &QuoteId,
+        melt_invoice: &Bolt11Invoice,
+        melt_amount: u64,
+    ) -> BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>> {
+        let mut connectors = BTreeMap::new();
+        let melt_expiry = unix_time() + 10_000;
+        let rotation_keyset = activated_rotation_keyset(bundle);
+
+        for member_id in [member_id(1), member_id(2), member_id(3)] {
+            let mint = create_fake_wallet_member_mint(bundle, member_id).await;
+            let config = mint.federation_config().expect("federation config").clone();
+            let mut journal = InMemoryFederationJournal::new();
+            persist_paid_mint_quote(&mint, &config, &mut journal, old_mint_quote_id, 1).await;
+            persist_paid_mint_quote(&mint, &config, &mut journal, new_mint_quote_id, 3).await;
+            add_unpaid_bolt11_melt_quote(
+                &mint,
+                melt_quote_id,
+                melt_invoice,
+                melt_amount,
+                melt_expiry,
+            )
+            .await;
+
+            let old_mint_input = MintInput::Single(MintRequest {
+                quote: old_mint_quote_id.clone(),
+                outputs: vec![old_restore_output.clone()],
+                signature: None,
+            });
+            let old_mint_entry = appended_entry(
+                &mut journal,
+                config
+                    .mint_operation(old_mint_input)
+                    .expect("old mint operation"),
+            );
+            persist_and_apply_entry(&mint, &old_mint_entry).await;
+
+            let rotation_entry = appended_entry(
+                &mut journal,
+                config.operation_envelope(FederationOperation::KeysetRotation(
+                    FederationKeysetRotationOperation {
+                        keyset: rotation_keyset.clone(),
+                    },
+                )),
+            );
+            persist_and_apply_entry(&mint, &rotation_entry).await;
+
+            connectors.insert(
+                member_id,
+                Arc::new(LocalFederatedMemberConnector::new(Arc::new(mint)))
+                    as Arc<dyn MintConnector + Send + Sync>,
+            );
+        }
+
+        connectors
+    }
+
     fn assert_aggregate_response_valid(
         bundle: &TrustedDealerConfigBundle,
         outputs: &[BlindedMessage],
         response: &MintResponse,
     ) {
-        let keyset = advertised_keyset(bundle);
-
         assert_eq!(response.signatures.len(), outputs.len());
         for (signature, output) in response.signatures.iter().zip(outputs) {
-            let aggregate_key = keyset.keys.amount_key(output.amount).expect("amount key");
+            let keyset = bundle
+                .public_config
+                .keysets
+                .iter()
+                .find(|keyset| keyset.id == signature.keyset_id)
+                .expect("signature keyset");
+            let aggregate_key = keyset
+                .keys()
+                .amount_key(signature.amount)
+                .expect("amount key");
             verify_bls_blind_signature(aggregate_key, signature.c, output.blinded_secret)
                 .expect("aggregate signature verifies");
         }
@@ -2072,6 +2368,112 @@ mod tests {
             &bundle,
             &[signed_change_output],
             &MintResponse { signatures: change },
+        );
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_aggregates_rotated_fake_wallet_member_shares() {
+        let bundle = threshold_rotation_bundle();
+        let old_keyset = active_keyset(&bundle);
+        let next_keyset = activated_rotation_keyset(&bundle);
+        let old_mint_quote_id = QuoteId::new();
+        let new_mint_quote_id = QuoteId::new();
+        let melt_quote_id = QuoteId::new();
+        let melt_invoice = create_fake_invoice(1000, "".to_string());
+        let old_restore_output =
+            blinded_outputs_for_keyset(&old_keyset, b"rotated wallet old restore")
+                .into_iter()
+                .next()
+                .expect("old restore output");
+        let next_outputs = blinded_outputs_for_keyset(&next_keyset, b"rotated wallet output");
+        let next_change_outputs =
+            vec![
+                blinded_change_outputs_for_keyset(&next_keyset, b"rotated wallet melt change")
+                    .into_iter()
+                    .next()
+                    .expect("next change output"),
+            ];
+        let connector = FederatedMintConnector::new(
+            rotated_public_config(&bundle),
+            rotated_fake_wallet_member_connectors_with_state(
+                &bundle,
+                &old_mint_quote_id,
+                &new_mint_quote_id,
+                &old_restore_output,
+                &melt_quote_id,
+                &melt_invoice,
+                1,
+            )
+            .await,
+        )
+        .expect("rotated federated mint connector");
+
+        let advertised = connector.get_mint_keys().await.expect("active keysets");
+        assert_eq!(advertised.len(), 1);
+        assert_eq!(advertised[0].id, next_keyset.id);
+
+        let mint_response = connector
+            .post_mint(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                MintRequest {
+                    quote: new_mint_quote_id.to_string(),
+                    outputs: next_outputs.clone(),
+                    signature: None,
+                },
+            )
+            .await
+            .expect("rotated mint response");
+        assert_aggregate_response_valid(&bundle, &next_outputs, &mint_response);
+
+        let swap_response = connector
+            .post_swap(SwapRequest::new(
+                vec![proof_for_amount(&bundle, 4, "rotated-wallet-swap")],
+                next_outputs.clone(),
+            ))
+            .await
+            .expect("rotated swap response");
+        assert_aggregate_response_valid(
+            &bundle,
+            &next_outputs,
+            &MintResponse {
+                signatures: swap_response.signatures,
+            },
+        );
+
+        let melt_response = connector
+            .post_melt(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                MeltRequest::new(
+                    melt_quote_id.to_string(),
+                    vec![proof_for_amount(&bundle, 4, "rotated-wallet-melt")],
+                    Some(next_change_outputs.clone()),
+                ),
+            )
+            .await
+            .expect("rotated melt response");
+        let change = melt_response.change().cloned().expect("change signatures");
+        let mut signed_change_output = next_change_outputs[0].clone();
+        signed_change_output.amount = Amount::from(2);
+        assert_eq!(melt_response.state(), MeltQuoteState::Paid);
+        assert_aggregate_response_valid(
+            &bundle,
+            &[signed_change_output],
+            &MintResponse { signatures: change },
+        );
+
+        let restore_response = connector
+            .post_restore(RestoreRequest {
+                outputs: vec![old_restore_output.clone()],
+            })
+            .await
+            .expect("rotated restore response");
+        assert_eq!(restore_response.outputs, vec![old_restore_output.clone()]);
+        assert_aggregate_response_valid(
+            &bundle,
+            &[old_restore_output],
+            &MintResponse {
+                signatures: restore_response.signatures,
+            },
         );
     }
 
