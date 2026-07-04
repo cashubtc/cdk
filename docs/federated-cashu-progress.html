@@ -347,15 +347,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add failed pending melt process smoke</span>
+          <span class="value">test: cover failed pending melt catch-up rollback</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Generated process smoke pending melt failure coverage</span>
+          <span class="value">Staged offline catch-up for failed pending melt rollback</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Unsandboxed live paid/failed pending-melt smoke and broader BFT backend work</span>
+          <span class="value">Unsandboxed live paid/failed pending-melt smoke and broader storage/BFT work</span>
         </div>
       </aside>
     </header>
@@ -1055,6 +1055,10 @@
             <p>An offline member can now catch up a pending melt reserve first, serve it as pending without change shares, then catch up the later paid observation and serve the paid quote with spent inputs and change shares.</p>
           </article>
           <article class="item">
+            <h3>Failed pending melt catch-up covered</h3>
+            <p>An offline member can now catch up a pending melt reserve, later catch up a failed payment observation, roll the quote back to unpaid, release the reserved proofs, clear saga metadata, and avoid signing change outputs.</p>
+          </article>
+          <article class="item">
             <h3>Pending melt restart replay covered</h3>
             <p>A restarted member can replay a pending melt reserve from its persisted federation journal, keep the quote pending after boot, then catch up the later paid observation and finalize with spent inputs plus change shares.</p>
           </article>
@@ -1562,6 +1566,12 @@
               <td>Add restart/process-smoke coverage for pending melts that resolve after member restart.</td>
             </tr>
             <tr>
+              <td>Failed pending melt catch-up rollback</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation catch_up_rolls_back_pending_melt_after_later_failed_observation -- --test-threads 1` passed the staged failed-observation catch-up regression. `cargo test -p cdk-axum --features federation "pending_melt" -- --test-threads 1` passed 7 tests, `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 57 tests, `cargo check -p cdk-axum --features federation` passed, and `cargo fmt --all` completed successfully.</td>
+              <td>Add restart and SQLite-backed variants for failed pending-melt rollback, then exercise both paid and failed paths in generated process smoke outside the sandbox.</td>
+            </tr>
+            <tr>
               <td>Restart replay pending melt recovery</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation restart_replay_preserves_pending_melt_then_catches_up_paid_observation -- --test-threads 1` passed the restart replay regression. `cargo test -p cdk-axum --features federation "pending_melt" -- --test-threads 1` passed 5 tests, `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 55 tests, `cargo check -p cdk-axum --features federation` passed, and `cargo fmt --all` completed successfully.</td>
@@ -1582,7 +1592,7 @@
             <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, a replaceable consensus runtime boundary, a multi-node simulator for delayed, duplicated, reordered, and quorum-limited proposal delivery, explicit consensus item admission with bounded pending batches, operation acceptance notifications back to public handlers, a finalization loop for accepted-entry apply/notify delivery, an exported backend adapter for queued operation dispatch plus finalized responses, a live generated 5-member process smoke that verifies signed status, readiness, convergence, restart, and cleanup, a materialized-state digest scaffold for consensus-visible mint rows, database-backed private status plus catch-up evidence digests derived from applied mint rows, a live operation-bearing process smoke that drives wallet mint, swap, check-state, melt, restore, convergence, restart, and catch-up, focused fake-wallet melt tests for failed payments, pending-to-paid verification, unresolved pending status-check errors, delayed quote-check finalization, staged offline catch-up from pending melt reserve to paid melt observation, restart replay of pending melts before later paid-observation catch-up, fresh SQLite-backed mint restart replay across the same pending-to-paid melt path, and generated process smoke scenarios that restart a member between pending melt start and paid or failed pending melt finalization.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, a replaceable consensus runtime boundary, a multi-node simulator for delayed, duplicated, reordered, and quorum-limited proposal delivery, explicit consensus item admission with bounded pending batches, operation acceptance notifications back to public handlers, a finalization loop for accepted-entry apply/notify delivery, an exported backend adapter for queued operation dispatch plus finalized responses, a live generated 5-member process smoke that verifies signed status, readiness, convergence, restart, and cleanup, a materialized-state digest scaffold for consensus-visible mint rows, database-backed private status plus catch-up evidence digests derived from applied mint rows, a live operation-bearing process smoke that drives wallet mint, swap, check-state, melt, restore, convergence, restart, and catch-up, focused fake-wallet melt tests for failed payments, pending-to-paid verification, unresolved pending status-check errors, delayed quote-check finalization, staged offline catch-up from pending melt reserve to paid melt observation, staged offline catch-up from pending melt reserve to failed-observation rollback, restart replay of pending melts before later paid-observation catch-up, fresh SQLite-backed mint restart replay across the same pending-to-paid melt path, and generated process smoke scenarios that restart a member between pending melt start and paid or failed pending melt finalization.</td>
               <td>Broaden operation smoke to more federation sizes and storage backends, then replace the simulator ordering source with a real BFT backend.</td>
             </tr>
           </tbody>

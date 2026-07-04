@@ -3056,6 +3056,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn catch_up_rolls_back_pending_melt_after_later_failed_observation() {
+        let (state, public_config, _) = federation_route_state().await;
+        let config = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .clone();
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let fake_description = FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Pending,
+            check_payment_state: MeltQuoteState::Pending,
+            pay_err: false,
+            check_err: false,
+        };
+        let quote_id = melt_quote_with_description(
+            &state,
+            1000,
+            serde_json::to_string(&fake_description).expect("fake invoice description"),
+        )
+        .await;
+        let inputs = vec![
+            proof_for_amount(&state, 1, "late-failed-observation-a"),
+            proof_for_amount(&state, 1, "late-failed-observation-b"),
+            proof_for_amount(&state, 1, "late-failed-observation-c"),
+        ];
+        let input_ys = inputs
+            .iter()
+            .map(|proof| proof.y().expect("input y"))
+            .collect::<Vec<_>>();
+        let mut change_output = swap_output(&state, "late-failed-observation-change");
+        change_output.amount = Amount::ZERO;
+        let melt_request = cdk::nuts::MeltRequest::new(
+            quote_id.clone(),
+            inputs,
+            Some(vec![change_output.clone()]),
+        );
+        let melt_envelope = config.melt_operation(melt_request).expect("melt envelope");
+        let failed_envelope =
+            melt_payment_observation_envelope(&state, &quote_id, MeltQuoteState::Failed, None);
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+        peer_consensus
+            .submit_envelope(melt_envelope)
+            .expect("peer accepted pending melt");
+
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+        let pending_response = peer_consensus
+            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
+            .expect("pending catch-up response");
+        state
+            .apply_federation_catch_up_response(&pending_response)
+            .await
+            .expect("apply pending catch-up");
+
+        let pending_quote = state
+            .mint
+            .check_melt_quote(&quote_id)
+            .await
+            .expect("pending quote status");
+        assert_eq!(pending_quote.state(), MeltQuoteState::Pending);
+        assert!(pending_quote.change().is_none());
+        let pending_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("pending proof states");
+        assert_eq!(
+            pending_states,
+            vec![
+                Some(cdk::nuts::State::Pending),
+                Some(cdk::nuts::State::Pending),
+                Some(cdk::nuts::State::Pending),
+            ]
+        );
+
+        peer_consensus
+            .submit_envelope(failed_envelope)
+            .expect("peer accepted failed observation");
+        let failed_response = peer_consensus
+            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
+            .expect("failed catch-up response");
+        state
+            .apply_federation_catch_up_response(&failed_response)
+            .await
+            .expect("apply failed catch-up");
+
+        let failed_quote = state
+            .mint
+            .check_melt_quote(&quote_id)
+            .await
+            .expect("failed quote status");
+        assert_eq!(failed_quote.state(), MeltQuoteState::Unpaid);
+        assert!(failed_quote.payment_proof().is_none());
+        assert!(failed_quote.change().is_none());
+        let released_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("released proof states");
+        assert_eq!(released_states, vec![None, None, None]);
+        assert!(state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[change_output.blinded_secret])
+            .await
+            .expect("failed change signature lookup")[0]
+            .is_none());
+        assert!(
+            state
+                .mint
+                .localstore()
+                .get_melt_saga_by_quote_id(&quote_id)
+                .await
+                .expect("saga lookup")
+                .is_none(),
+            "failed observation catch-up should clear pending melt saga metadata"
+        );
+        assert_eq!(
+            local_consensus.lock().await.peer_status().operation_count,
+            2
+        );
+    }
+
+    #[tokio::test]
     async fn restart_replay_preserves_pending_melt_then_catches_up_paid_observation() {
         let (mut state, public_config, _) = federation_route_state().await;
         let config = state
