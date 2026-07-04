@@ -15,7 +15,7 @@ use tracing::instrument;
 use zeroize::Zeroize;
 
 use super::builder::WalletBuilder;
-use super::{Error, MintConnector};
+use super::{AuthMintConnector, Error, MintConnector};
 use crate::mint_url::MintUrl;
 use crate::nuts::CurrencyUnit;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
@@ -236,6 +236,28 @@ fn proxy_http_client(
     proxy_url: &url::Url,
     accept_invalid_certs: bool,
 ) -> Result<crate::wallet::HttpClient, Error> {
+    validate_proxy_url(proxy_url)?;
+
+    crate::wallet::HttpClient::with_proxy(mint_url, proxy_url.clone(), None, accept_invalid_certs)
+}
+
+fn proxy_auth_http_client(
+    mint_url: MintUrl,
+    proxy_url: &url::Url,
+    accept_invalid_certs: bool,
+) -> Result<crate::wallet::AuthHttpClient, Error> {
+    validate_proxy_url(proxy_url)?;
+
+    crate::wallet::AuthHttpClient::with_proxy(
+        mint_url,
+        proxy_url.clone(),
+        None,
+        accept_invalid_certs,
+        None,
+    )
+}
+
+fn validate_proxy_url(proxy_url: &url::Url) -> Result<(), Error> {
     match proxy_url.scheme() {
         "http" | "https" | "socks4" | "socks4a" | "socks5" | "socks5h" => {}
         scheme => {
@@ -246,7 +268,7 @@ fn proxy_http_client(
         }
     }
 
-    crate::wallet::HttpClient::with_proxy(mint_url, proxy_url.clone(), None, accept_invalid_certs)
+    Ok(())
 }
 
 /// Repository for managing Wallet instances by mint URL and currency unit
@@ -518,6 +540,10 @@ impl WalletRepository {
         unit: CurrencyUnit,
         config: Option<&WalletConfig>,
     ) -> Result<Wallet, Error> {
+        let target_proof_count = config.and_then(|c| c.target_proof_count).unwrap_or(3);
+        let metadata_cache_ttl = config.and_then(|c| c.metadata_cache_ttl);
+        let configured_auth_connector = config.and_then(|c| c.auth_connector.clone());
+
         // Check if custom connector is provided in config
         if let Some(cfg) = config {
             if let Some(custom_connector) = &cfg.mint_connector {
@@ -527,10 +553,14 @@ impl WalletRepository {
                     .unit(unit.clone())
                     .localstore(self.localstore.clone())
                     .seed(self.seed)
-                    .target_proof_count(cfg.target_proof_count.unwrap_or(3))
+                    .target_proof_count(target_proof_count)
                     .shared_client(custom_connector.clone());
 
-                if let Some(ttl) = cfg.metadata_cache_ttl {
+                if let Some(auth_connector) = configured_auth_connector.clone() {
+                    builder = builder.auth_connector(auth_connector);
+                }
+
+                if let Some(ttl) = metadata_cache_ttl {
                     builder = builder.set_metadata_cache_ttl(Some(ttl));
                 }
 
@@ -539,9 +569,6 @@ impl WalletRepository {
         }
 
         // Fall back to existing logic: proxy/Tor/default
-        let target_proof_count = config.and_then(|c| c.target_proof_count).unwrap_or(3);
-        let metadata_cache_ttl = config.and_then(|c| c.metadata_cache_ttl);
-
         let wallet = if let Some(proxy_url) = &self.proxy_config {
             // Create wallet with proxy-configured client
             let client = proxy_http_client(
@@ -549,13 +576,22 @@ impl WalletRepository {
                 proxy_url,
                 self.danger_accept_invalid_certs,
             )?;
+            let auth_connector = match configured_auth_connector.clone() {
+                Some(auth_connector) => auth_connector,
+                None => Arc::new(proxy_auth_http_client(
+                    mint_url.clone(),
+                    proxy_url,
+                    self.danger_accept_invalid_certs,
+                )?) as Arc<dyn AuthMintConnector + Send + Sync>,
+            };
             let mut builder = WalletBuilder::new()
                 .mint_url(mint_url.clone())
                 .unit(unit.clone())
                 .localstore(self.localstore.clone())
                 .seed(self.seed)
                 .target_proof_count(target_proof_count)
-                .client(client);
+                .client(client)
+                .auth_connector(auth_connector);
 
             if let Some(ttl) = metadata_cache_ttl {
                 builder = builder.set_metadata_cache_ttl(Some(ttl));
@@ -571,6 +607,13 @@ impl WalletRepository {
                     tor.clone(),
                     None,
                 );
+                let auth_connector = configured_auth_connector.clone().unwrap_or_else(|| {
+                    Arc::new(crate::wallet::TorAuthHttpClient::with_transport(
+                        mint_url.clone(),
+                        tor.clone(),
+                        None,
+                    )) as Arc<dyn AuthMintConnector + Send + Sync>
+                });
 
                 let mut builder = WalletBuilder::new()
                     .mint_url(mint_url.clone())
@@ -578,7 +621,8 @@ impl WalletRepository {
                     .localstore(self.localstore.clone())
                     .seed(self.seed)
                     .target_proof_count(target_proof_count)
-                    .client(client);
+                    .client(client)
+                    .auth_connector(auth_connector);
 
                 if let Some(ttl) = metadata_cache_ttl {
                     builder = builder.set_metadata_cache_ttl(Some(ttl));
@@ -587,33 +631,43 @@ impl WalletRepository {
                 builder.build()?
             } else {
                 // Create wallet with default client
-                let wallet = Wallet::new(
-                    &mint_url.to_string(),
-                    unit.clone(),
-                    self.localstore.clone(),
-                    self.seed,
-                    Some(target_proof_count),
-                )?;
-                if let Some(ttl) = metadata_cache_ttl {
-                    wallet.set_metadata_cache_ttl(Some(ttl));
+                let mut builder = WalletBuilder::new()
+                    .mint_url(mint_url.clone())
+                    .unit(unit.clone())
+                    .localstore(self.localstore.clone())
+                    .seed(self.seed)
+                    .target_proof_count(target_proof_count);
+
+                if let Some(auth_connector) = configured_auth_connector.clone() {
+                    builder = builder.auth_connector(auth_connector);
                 }
-                wallet
+
+                if let Some(ttl) = metadata_cache_ttl {
+                    builder = builder.set_metadata_cache_ttl(Some(ttl));
+                }
+
+                builder.build()?
             }
 
             #[cfg(not(all(feature = "tor", not(target_arch = "wasm32"))))]
             {
                 // Create wallet with default client
-                let wallet = Wallet::new(
-                    &mint_url.to_string(),
-                    unit.clone(),
-                    self.localstore.clone(),
-                    self.seed,
-                    Some(target_proof_count),
-                )?;
-                if let Some(ttl) = metadata_cache_ttl {
-                    wallet.set_metadata_cache_ttl(Some(ttl));
+                let mut builder = WalletBuilder::new()
+                    .mint_url(mint_url.clone())
+                    .unit(unit.clone())
+                    .localstore(self.localstore.clone())
+                    .seed(self.seed)
+                    .target_proof_count(target_proof_count);
+
+                if let Some(auth_connector) = configured_auth_connector.clone() {
+                    builder = builder.auth_connector(auth_connector);
                 }
-                wallet
+
+                if let Some(ttl) = metadata_cache_ttl {
+                    builder = builder.set_metadata_cache_ttl(Some(ttl));
+                }
+
+                builder.build()?
             }
         };
 

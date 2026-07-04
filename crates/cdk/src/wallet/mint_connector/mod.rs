@@ -25,6 +25,9 @@ pub mod transport;
 pub type AuthHttpClient = http_client::AuthHttpClient<transport::Async>;
 /// Default Http Client with async transport (non-Tor)
 pub type HttpClient = http_client::HttpClient<transport::Async>;
+/// Tor Auth HTTP Client with async transport (only when `tor` feature is enabled and not on wasm32)
+#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
+pub type TorAuthHttpClient = http_client::AuthHttpClient<transport::TorAsync>;
 /// Tor Http Client with async transport (only when `tor` feature is enabled and not on wasm32)
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 pub type TorHttpClient = http_client::HttpClient<transport::TorAsync>;
