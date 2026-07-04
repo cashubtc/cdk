@@ -3080,6 +3080,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rest_peer_client_tolerates_already_applied_catch_up_overlap() {
+        let (state, public_config, local_private, peer_private) =
+            federation_route_state_with_local_private().await;
+        let federation_id = public_config.federation_id;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let first = restore_envelope(
+            federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        let second = restore_envelope(
+            federation_id,
+            "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+        );
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
+        state
+            .submit_federation_envelope(first.clone())
+            .await
+            .expect("local first operation");
+        peer_consensus
+            .submit_envelope(first)
+            .expect("peer first operation");
+        peer_consensus
+            .submit_envelope(second.clone())
+            .expect("peer second operation");
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+        let catch_up_response = peer_consensus
+            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
+            .expect("peer catch-up response");
+
+        state
+            .submit_federation_envelope(second)
+            .await
+            .expect("background sync applied second operation first");
+        let transport = MockFederationTransport::default()
+            .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private));
+        let client =
+            FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
+                .expect("client");
+
+        let applied = client
+            .catch_up_state_from_member(&state, peer_member)
+            .await
+            .expect("stale catch-up response is idempotent");
+
+        assert!(applied.is_empty());
+        assert_eq!(
+            local_consensus.lock().await.peer_status().operation_count,
+            2
+        );
+        let persisted_outcomes = state
+            .mint
+            .localstore()
+            .get_federation_session_outcomes()
+            .await
+            .expect("persisted session outcomes");
+        assert_eq!(persisted_outcomes.len(), 1);
+        assert_eq!(persisted_outcomes[0].from_index, 1);
+        assert_eq!(persisted_outcomes[0].signer, peer_member.member_id);
+        assert_eq!(transport.catch_up_requests()[0].payload.next_index, 2);
+    }
+
+    #[tokio::test]
     async fn rest_peer_client_rejects_unsigned_nonempty_catch_up_response() {
         let (state, public_config, local_private, _) =
             federation_route_state_with_local_private().await;

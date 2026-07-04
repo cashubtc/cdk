@@ -17,10 +17,11 @@ use cache::HttpCache;
 use cdk::federation::{
     FederationConfig, FederationConsensusEngine, FederationConsensusRuntime,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSetupState, FederationDkgTranscriptSignatureRequest,
-    FederationJournalAppendOutcome, FederationJournalEntry, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationRestSequenceTracker,
-    FederationSessionOutcome, FederationSubmitOperationResponse, MemberId,
+    FederationDkgSetupState, FederationDkgTranscriptSignatureRequest, FederationError,
+    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationRestSequenceTracker, FederationSessionOutcome, FederationSubmitOperationResponse,
+    MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -99,6 +100,85 @@ impl FederationOperationNotifications {
             notified.await;
         }
     }
+}
+
+#[cfg(feature = "federation")]
+fn catch_up_response_suffix_for_local_journal(
+    local_entries: &[FederationJournalEntry],
+    response: &FederationJournalCatchUpResponse,
+) -> Result<Option<FederationJournalCatchUpResponse>, cdk::Error> {
+    let local_next_index = local_entries.len() as u64;
+    if response.from_index >= local_next_index {
+        return Ok(Some(response.clone()));
+    }
+
+    let mut suffix_start = 0usize;
+    for entry in &response.entries {
+        if entry.index >= local_next_index {
+            break;
+        }
+        let local_entry = local_entries.get(entry.index as usize).ok_or_else(|| {
+            cdk::Error::Federation(FederationError::CatchUpIndexMismatch {
+                expected: entry.index,
+                found: local_next_index,
+            })
+        })?;
+        ensure_catch_up_overlap_matches(local_entry, entry)?;
+        suffix_start = suffix_start.saturating_add(1);
+    }
+
+    if suffix_start >= response.entries.len() {
+        return Ok(None);
+    }
+
+    let mut suffix = response.clone();
+    suffix.from_index = local_next_index;
+    suffix.entries = response.entries[suffix_start..].to_vec();
+    Ok(Some(suffix))
+}
+
+#[cfg(feature = "federation")]
+fn ensure_catch_up_overlap_matches(
+    local_entry: &FederationJournalEntry,
+    peer_entry: &FederationJournalEntry,
+) -> Result<(), cdk::Error> {
+    if local_entry.index != peer_entry.index {
+        return Err(cdk::Error::Federation(
+            FederationError::CatchUpIndexMismatch {
+                expected: local_entry.index,
+                found: peer_entry.index,
+            },
+        ));
+    }
+    if local_entry.operation_id != peer_entry.operation_id {
+        return Err(cdk::Error::Federation(
+            FederationError::CatchUpOperationIdMismatch {
+                index: peer_entry.index,
+                expected: local_entry.operation_id,
+                found: peer_entry.operation_id,
+            },
+        ));
+    }
+    if local_entry.previous_order_digest != peer_entry.previous_order_digest {
+        return Err(cdk::Error::Federation(
+            FederationError::CatchUpDigestMismatch {
+                index: peer_entry.index,
+                expected: local_entry.previous_order_digest,
+                found: peer_entry.previous_order_digest,
+            },
+        ));
+    }
+    if local_entry.order_digest != peer_entry.order_digest {
+        return Err(cdk::Error::Federation(
+            FederationError::CatchUpDigestMismatch {
+                index: peer_entry.index.saturating_add(1),
+                expected: local_entry.order_digest,
+                found: peer_entry.order_digest,
+            },
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(feature = "federation")]
@@ -428,14 +508,21 @@ impl MintState {
 
     pub(crate) async fn apply_federation_catch_up_response(
         &self,
-        response: &cdk::federation::FederationJournalCatchUpResponse,
+        response: &FederationJournalCatchUpResponse,
     ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
         let consensus = self.federation_consensus.as_ref().ok_or_else(|| {
             cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
         })?;
         let mut consensus = consensus.lock().await;
         let mut next_consensus = consensus.clone();
-        let applied = next_consensus.apply_catch_up_response(response)?;
+        let response_to_apply = catch_up_response_suffix_for_local_journal(
+            next_consensus.journal().entries(),
+            response,
+        )?;
+        let applied = match response_to_apply.as_ref() {
+            Some(response) => next_consensus.apply_catch_up_response(response)?,
+            None => Vec::new(),
+        };
 
         self.persist_federation_journal_entries(&applied, response.session_outcome.as_ref(), None)
             .await?;

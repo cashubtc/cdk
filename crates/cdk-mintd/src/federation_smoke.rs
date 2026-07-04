@@ -184,6 +184,26 @@ pub(crate) async fn run_smoke_operations_command(
                 connector,
                 smoke_seed(KEYSET_ROTATION_SMOKE_SEED, args.seed_offset),
                 &private_config,
+                SmokeMemberExpectation::AllMembers,
+            )
+            .await
+        }
+        FederationSmokeScenario::OfflineMemberKeysetRotation => {
+            let private_config_path = args
+                .private_config
+                .as_deref()
+                .context("--private-config is required for offline-member-keyset-rotation")?;
+            let private_config: MemberConfigPrivate =
+                crate::read_federation_json(private_config_path, "private federation config")?;
+            run_keyset_rotation_smoke(
+                args,
+                &public_config,
+                unit,
+                &member_connectors,
+                connector,
+                smoke_seed(KEYSET_ROTATION_SMOKE_SEED, args.seed_offset),
+                &private_config,
+                SmokeMemberExpectation::ThresholdMembers,
             )
             .await
         }
@@ -309,6 +329,7 @@ async fn run_keyset_rotation_smoke(
     connector: Arc<FederatedMintConnector>,
     seed: [u8; 64],
     private_config: &MemberConfigPrivate,
+    member_expectation: SmokeMemberExpectation,
 ) -> Result<()> {
     let old_keyset = public_config
         .keysets
@@ -330,7 +351,7 @@ async fn run_keyset_rotation_smoke(
         public_config,
         member_connectors,
         args,
-        SmokeMemberExpectation::AllMembers,
+        member_expectation,
     )
     .await?;
 
@@ -365,7 +386,7 @@ async fn run_keyset_rotation_smoke(
         next_keyset.id,
         args.quote_retries,
         Duration::from_millis(args.quote_sleep_ms),
-        SmokeMemberExpectation::AllMembers,
+        member_expectation,
     )
     .await?;
 
@@ -432,7 +453,7 @@ async fn run_keyset_rotation_smoke(
         &rotated_public_config,
         member_connectors,
         args,
-        SmokeMemberExpectation::AllMembers,
+        member_expectation,
     )
     .await?;
     let melt_invoice = create_fake_invoice(1000, "federation rotation smoke melt".to_string());
@@ -446,7 +467,7 @@ async fn run_keyset_rotation_smoke(
         &melt_quote.id,
         args.quote_retries,
         Duration::from_millis(args.quote_sleep_ms),
-        SmokeMemberExpectation::AllMembers,
+        member_expectation,
     )
     .await?;
     let finalized = restored_wallet

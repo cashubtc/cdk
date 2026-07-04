@@ -934,8 +934,12 @@ wait_for_converged
 wait_for_session_outcome_quorum "$QUARANTINE_OFFLINE_MEMBER"
 wait_for_quarantine_report "$QUARANTINE_OFFLINE_MEMBER"
 
-run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario keyset-rotation
+stop_member "$RESTART_MEMBER"
+run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario offline-member-keyset-rotation
+start_member "$RESTART_MEMBER"
+wait_for_status "$RESTART_MEMBER"
 wait_for_converged
+wait_for_session_outcome_quorum "$RESTART_MEMBER"
 wait_for_prometheus_metrics
 
 printf 'local federation smoke test passed\n'
@@ -1120,7 +1124,7 @@ mod tests {
         assert!(smoke_script.contains("--scenario pending-melt-fail-start"));
         assert!(smoke_script.contains("--scenario pending-melt-fail-finish"));
         assert!(smoke_script.contains("--scenario quarantine-mint-conflict"));
-        assert!(smoke_script.contains("--scenario keyset-rotation"));
+        assert!(smoke_script.contains("--scenario offline-member-keyset-rotation"));
         assert!(smoke_script.contains("--wallet-db \"$PENDING_WALLET_DB\""));
         assert!(smoke_script.contains("--wallet-db \"$FAILED_PENDING_WALLET_DB\""));
         assert!(smoke_script.contains(
@@ -1149,7 +1153,10 @@ mod tests {
             smoke_script.contains("wait_for_session_outcome_quorum \"$QUARANTINE_OFFLINE_MEMBER\"")
         );
         assert!(smoke_script.contains(
-            "run_smoke_operations --private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\" --scenario keyset-rotation"
+            "run_smoke_operations --private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\" --scenario offline-member-keyset-rotation"
+        ));
+        assert!(smoke_script.contains(
+            "stop_member \"$RESTART_MEMBER\"\nrun_smoke_operations --private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\" --scenario offline-member-keyset-rotation"
         ));
         assert!(smoke_script.contains(
             "wait_for_status \"$RESTART_MEMBER\"\nwait_for_converged\nwait_for_session_outcome_quorum \"$RESTART_MEMBER\""

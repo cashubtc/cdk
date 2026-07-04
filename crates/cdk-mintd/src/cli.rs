@@ -278,6 +278,8 @@ pub enum FederationSmokeScenario {
     QuarantineMintConflict,
     /// Rotate to the inactive aggregate keyset and run wallet operations against the rotated view.
     KeysetRotation,
+    /// Rotate to the inactive aggregate keyset while one non-primary member is offline.
+    OfflineMemberKeysetRotation,
 }
 
 #[cfg(feature = "federation")]
@@ -671,6 +673,38 @@ mod tests {
             Some(PathBuf::from("member-1/federation-private.json"))
         );
         assert_eq!(smoke.scenario, FederationSmokeScenario::KeysetRotation);
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[test]
+    fn parses_federation_offline_keyset_rotation_smoke_operations_subcommand() {
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "smoke-operations",
+            "--public-config",
+            "federation-public.json",
+            "--private-config",
+            "member-1/federation-private.json",
+            "--scenario",
+            "offline-member-keyset-rotation",
+        ])
+        .expect("offline keyset rotation smoke operations command parses");
+
+        let Some(CliCommand::Federation(federation)) = args.command else {
+            panic!("expected federation command");
+        };
+        let FederationCommand::SmokeOperations(smoke) = federation.command else {
+            panic!("expected federation smoke-operations command");
+        };
+        assert_eq!(
+            smoke.private_config,
+            Some(PathBuf::from("member-1/federation-private.json"))
+        );
+        assert_eq!(
+            smoke.scenario,
+            FederationSmokeScenario::OfflineMemberKeysetRotation
+        );
     }
 
     #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
