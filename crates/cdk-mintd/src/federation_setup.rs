@@ -35,9 +35,15 @@ use crate::cli::{FederationTrustedDealerArgs, FederationTrustedDealerDatabaseEng
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 const PUBLIC_CONFIG_FILE: &str = "federation-public.json";
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
+const DKG_SETUP_PUBLIC_CONFIG_FILE: &str = "dkg-setup-public.json";
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
 const PRIVATE_CONFIG_FILE: &str = "federation-private.json";
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
+const DKG_SETUP_PRIVATE_CONFIG_FILE: &str = "dkg-setup-private.json";
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
 const MEMBER_CONFIG_FILE: &str = "config.toml";
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+const DKG_SETUP_MEMBER_CONFIG_FILE: &str = "dkg-setup-config.toml";
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 const GENERATED_GITIGNORE_FILE: &str = ".gitignore";
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
@@ -49,6 +55,7 @@ const DKG_SETUP_ROUTE_PROBE_DIR: &str = "dkg-setup-route-probe";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TrustedDealerArtifacts {
     pub(crate) public_config_path: PathBuf,
+    pub(crate) dkg_setup_public_config_path: PathBuf,
     pub(crate) smoke_script_path: PathBuf,
     pub(crate) member_artifacts: BTreeMap<MemberId, TrustedDealerMemberArtifacts>,
 }
@@ -57,8 +64,11 @@ pub(crate) struct TrustedDealerArtifacts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TrustedDealerMemberArtifacts {
     pub(crate) config_path: PathBuf,
+    pub(crate) dkg_setup_config_path: PathBuf,
     pub(crate) private_config_path: PathBuf,
+    pub(crate) dkg_setup_private_config_path: PathBuf,
     pub(crate) work_dir: PathBuf,
+    pub(crate) dkg_setup_work_dir: PathBuf,
     pub(crate) federation_api_url: String,
     pub(crate) dkg_setup_request_dir: PathBuf,
     pub(crate) prometheus_url: String,
@@ -137,6 +147,7 @@ pub(crate) fn generate_trusted_dealer_artifacts(
     )
     .context("failed to generate trusted-dealer federation configs")?;
     validate_bundle(&bundle)?;
+    let dkg_setup_public_config = dkg_setup_public_config(&bundle.public_config)?;
     let dkg_setup_request_dirs = write_dkg_setup_route_probe_requests(
         &output_dir,
         &bundle.public_config,
@@ -151,6 +162,12 @@ pub(crate) fn generate_trusted_dealer_artifacts(
 
     let public_config_path = output_dir.join(PUBLIC_CONFIG_FILE);
     write_json_file(&public_config_path, &bundle.public_config, args.force)?;
+    let dkg_setup_public_config_path = output_dir.join(DKG_SETUP_PUBLIC_CONFIG_FILE);
+    write_json_file(
+        &dkg_setup_public_config_path,
+        &dkg_setup_public_config,
+        args.force,
+    )?;
 
     let mut member_artifacts = BTreeMap::new();
     for (member_id, private_config) in &bundle.private_configs {
@@ -163,9 +180,19 @@ pub(crate) fn generate_trusted_dealer_artifacts(
             .with_context(|| format!("failed to create {}", member_dir.display()))?;
         let private_config_path = member_dir.join(PRIVATE_CONFIG_FILE);
         write_json_file(&private_config_path, private_config, args.force)?;
+        let dkg_setup_private_config =
+            dkg_setup_private_config(private_config, &dkg_setup_public_config)?;
+        let dkg_setup_private_config_path = member_dir.join(DKG_SETUP_PRIVATE_CONFIG_FILE);
+        write_json_file(
+            &dkg_setup_private_config_path,
+            &dkg_setup_private_config,
+            args.force,
+        )?;
 
         let work_dir = member_dir.join("work");
+        let dkg_setup_work_dir = member_dir.join("dkg-setup-work");
         let config_path = member_dir.join(MEMBER_CONFIG_FILE);
+        let dkg_setup_config_path = member_dir.join(DKG_SETUP_MEMBER_CONFIG_FILE);
         let member_url = member.public_mint_url.to_string();
         let federation_api_url = member.federation_api_url.to_string();
         let database_config = member_database_config(args, *member_id)?;
@@ -183,7 +210,7 @@ pub(crate) fn generate_trusted_dealer_artifacts(
             member_id,
             &args.host,
             &member_url,
-            &member_url,
+            &federation_api_url,
             listen_port,
             prometheus_port,
             &public_config_path,
@@ -194,13 +221,31 @@ pub(crate) fn generate_trusted_dealer_artifacts(
             &database_config,
         )?;
         write_text_file(&config_path, &config_toml, args.force)?;
+        let dkg_setup_config_toml = member_config_toml(
+            member_id,
+            &args.host,
+            &member_url,
+            &federation_api_url,
+            listen_port,
+            prometheus_port,
+            &dkg_setup_public_config_path,
+            &dkg_setup_private_config_path,
+            &dkg_setup_config_path,
+            &dkg_setup_work_dir,
+            &unit,
+            &database_config,
+        )?;
+        write_text_file(&dkg_setup_config_path, &dkg_setup_config_toml, args.force)?;
 
         member_artifacts.insert(
             *member_id,
             TrustedDealerMemberArtifacts {
                 config_path,
+                dkg_setup_config_path,
                 private_config_path,
+                dkg_setup_private_config_path,
                 work_dir,
+                dkg_setup_work_dir,
                 federation_api_url,
                 dkg_setup_request_dir: dkg_setup_request_dirs
                     .get(member_id)
@@ -212,14 +257,45 @@ pub(crate) fn generate_trusted_dealer_artifacts(
     }
 
     let smoke_script_path = output_dir.join(SMOKE_SCRIPT_FILE);
-    let smoke_script = local_smoke_script(&public_config_path, &member_artifacts, args)?;
+    let smoke_script = local_smoke_script(
+        &public_config_path,
+        &dkg_setup_public_config_path,
+        &member_artifacts,
+        args,
+    )?;
     write_executable_text_file(&smoke_script_path, &smoke_script, args.force)?;
 
     Ok(TrustedDealerArtifacts {
         public_config_path,
+        dkg_setup_public_config_path,
         smoke_script_path,
         member_artifacts,
     })
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn dkg_setup_public_config(public_config: &FederationConfig) -> Result<FederationConfig> {
+    let mut setup_public_config = public_config.clone();
+    setup_public_config.keysets.clear();
+    setup_public_config.setup_transcript = None;
+    setup_public_config
+        .validate()
+        .context("generated setup-only public federation config is invalid")?;
+    Ok(setup_public_config)
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn dkg_setup_private_config(
+    private_config: &MemberConfigPrivate,
+    setup_public_config: &FederationConfig,
+) -> Result<MemberConfigPrivate> {
+    let mut setup_private_config = private_config.clone();
+    setup_private_config.keyset_secret_shares.clear();
+    setup_private_config.setup_transcript_hash = None;
+    setup_private_config
+        .validate_against_public(setup_public_config)
+        .context("generated setup-only private federation config is invalid")?;
+    Ok(setup_private_config)
 }
 
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
@@ -884,6 +960,7 @@ fn write_executable_text_file(path: &Path, contents: &str, force: bool) -> Resul
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 fn local_smoke_script(
     public_config_path: &Path,
+    dkg_setup_public_config_path: &Path,
     member_artifacts: &BTreeMap<MemberId, TrustedDealerMemberArtifacts>,
     args: &FederationTrustedDealerArgs,
 ) -> Result<String> {
@@ -899,9 +976,16 @@ fn local_smoke_script(
     let restart_member = member_artifacts.keys().nth(1).unwrap_or(primary_member);
 
     let config_cases = member_path_cases(member_artifacts, |member| &member.config_path)?;
+    let dkg_setup_config_cases =
+        member_path_cases(member_artifacts, |member| &member.dkg_setup_config_path)?;
     let work_dir_cases = member_path_cases(member_artifacts, |member| &member.work_dir)?;
+    let dkg_setup_work_dir_cases =
+        member_path_cases(member_artifacts, |member| &member.dkg_setup_work_dir)?;
     let private_config_cases =
         member_path_cases(member_artifacts, |member| &member.private_config_path)?;
+    let dkg_setup_private_config_cases = member_path_cases(member_artifacts, |member| {
+        &member.dkg_setup_private_config_path
+    })?;
     let dkg_setup_request_dir_cases =
         member_path_cases(member_artifacts, |member| &member.dkg_setup_request_dir)?;
     let federation_url_cases =
@@ -909,6 +993,8 @@ fn local_smoke_script(
     let prometheus_url_cases =
         member_string_cases(member_artifacts, |member| &member.prometheus_url);
     let public_config_path = shell_single_quote(&path_to_string(public_config_path));
+    let dkg_setup_public_config_path =
+        shell_single_quote(&path_to_string(dkg_setup_public_config_path));
     let postgres_schema_reset_url = postgres_schema_reset_url(args)
         .map(|url| shell_single_quote(&url))
         .unwrap_or_else(|| "''".to_string());
@@ -920,6 +1006,7 @@ set -euo pipefail
 
 CDK_MINTD_BIN="${{CDK_MINTD_BIN:-cdk-mintd}}"
 PUBLIC_CONFIG={public_config_path}
+DKG_SETUP_PUBLIC_CONFIG={dkg_setup_public_config_path}
 POSTGRES_SCHEMA_RESET_URL={postgres_schema_reset_url}
 RESET_POSTGRES_SCHEMAS="${{RESET_POSTGRES_SCHEMAS:-0}}"
 MEMBERS=({members})
@@ -933,6 +1020,7 @@ PROBE_DKG_SETUP_ROUTES="${{PROBE_DKG_SETUP_ROUTES:-0}}"
 DKG_ROUTE_PROBE_ONLY="${{DKG_ROUTE_PROBE_ONLY:-0}}"
 if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
   PROBE_DKG_SETUP_ROUTES=1
+  PUBLIC_CONFIG="$DKG_SETUP_PUBLIC_CONFIG"
 fi
 SMOKE_QUOTE_RETRIES="${{SMOKE_QUOTE_RETRIES:-300}}"
 SMOKE_QUOTE_SLEEP_MS="${{SMOKE_QUOTE_SLEEP_MS:-100}}"
@@ -942,18 +1030,36 @@ FAILED_PENDING_WALLET_DB="${{FAILED_PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG
 PIDS=()
 
 member_config() {{
+  if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
+    case "$1" in
+{dkg_setup_config_cases}      *) return 1 ;;
+    esac
+    return 0
+  fi
   case "$1" in
 {config_cases}    *) return 1 ;;
   esac
 }}
 
 member_work_dir() {{
+  if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
+    case "$1" in
+{dkg_setup_work_dir_cases}      *) return 1 ;;
+    esac
+    return 0
+  fi
   case "$1" in
 {work_dir_cases}    *) return 1 ;;
   esac
 }}
 
 member_private_config() {{
+  if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
+    case "$1" in
+{dkg_setup_private_config_cases}      *) return 1 ;;
+    esac
+    return 0
+  fi
   case "$1" in
 {private_config_cases}    *) return 1 ;;
   esac
@@ -1441,6 +1547,9 @@ done
 probe_dkg_setup_routes
 wait_for_dkg_setup_records
 if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
+  for member in "${{MEMBERS[@]}}"; do
+    wait_for_dkg_status "$member"
+  done
   printf 'dkg setup route probe passed\n'
   exit 0
 fi
@@ -1506,12 +1615,16 @@ wait_for_prometheus_metrics
 printf 'local federation smoke test passed\n'
 "#,
         public_config_path = public_config_path,
+        dkg_setup_public_config_path = dkg_setup_public_config_path,
         members = members,
         primary_member = primary_member.get(),
         restart_member = restart_member.get(),
         config_cases = config_cases,
+        dkg_setup_config_cases = dkg_setup_config_cases,
         work_dir_cases = work_dir_cases,
+        dkg_setup_work_dir_cases = dkg_setup_work_dir_cases,
         private_config_cases = private_config_cases,
+        dkg_setup_private_config_cases = dkg_setup_private_config_cases,
         dkg_setup_request_dir_cases = dkg_setup_request_dir_cases,
         federation_url_cases = federation_url_cases,
         prometheus_url_cases = prometheus_url_cases,
@@ -1656,6 +1769,20 @@ mod tests {
             .setup_transcript
             .as_ref()
             .expect("setup transcript");
+        let dkg_setup_public_json =
+            std::fs::read_to_string(&artifacts.dkg_setup_public_config_path)
+                .expect("setup-only public config file");
+        let dkg_setup_public_config: FederationConfig =
+            serde_json::from_str(&dkg_setup_public_json).expect("setup-only public config json");
+        dkg_setup_public_config
+            .validate()
+            .expect("setup-only public config validates");
+        assert_eq!(
+            dkg_setup_public_config.federation_id,
+            public_config.federation_id
+        );
+        assert!(dkg_setup_public_config.keysets.is_empty());
+        assert!(dkg_setup_public_config.setup_transcript.is_none());
         let first_member = MemberId::new(1).expect("first member id");
         let second_member = MemberId::new(2).expect("second member id");
         let first_receiver_probe_dir = output_dir
@@ -1745,6 +1872,8 @@ mod tests {
             .contains("--work-dir \"$work_dir\" --config \"$config\" federation dkg-status"));
         assert!(smoke_script.contains("PROBE_DKG_SETUP_ROUTES"));
         assert!(smoke_script.contains("DKG_ROUTE_PROBE_ONLY"));
+        assert!(smoke_script.contains("DKG_SETUP_PUBLIC_CONFIG"));
+        assert!(smoke_script.contains("PUBLIC_CONFIG=\"$DKG_SETUP_PUBLIC_CONFIG\""));
         assert!(smoke_script.contains("PROBE_DKG_SETUP_ROUTES=1"));
         assert!(smoke_script.contains("dkg setup route probe passed"));
         assert!(smoke_script.contains("CDK_FEDERATION_DISABLE_PEER_SYNC=1"));
@@ -1764,6 +1893,7 @@ mod tests {
         assert!(smoke_script.contains(
             "probe_dkg_setup_routes\nwait_for_dkg_setup_records\nif [[ \"$DKG_ROUTE_PROBE_ONLY\" == \"1\" ]]; then"
         ));
+        assert!(smoke_script.contains("wait_for_dkg_status \"$member\""));
         assert!(smoke_script.contains("exit 0\nfi\n\nfor member in"));
         assert!(smoke_script.contains("wait_for_dkg_status()"));
         assert!(smoke_script.contains("print_dkg_record_runbook()"));
@@ -1866,6 +1996,12 @@ mod tests {
         assert!(smoke_script.contains("wait_for_quarantine_report \"$QUARANTINE_OFFLINE_MEMBER\""));
         assert!(smoke_script.contains("local federation smoke test passed"));
         assert!(smoke_script.contains(&artifacts.public_config_path.to_string_lossy().to_string()));
+        assert!(smoke_script.contains(
+            &artifacts
+                .dkg_setup_public_config_path
+                .to_string_lossy()
+                .to_string()
+        ));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1894,18 +2030,57 @@ mod tests {
             private_config
                 .validate_against_public(&public_config)
                 .expect("private config validates");
+            let dkg_setup_private_json =
+                std::fs::read_to_string(&member_artifacts.dkg_setup_private_config_path)
+                    .expect("setup-only private config file");
+            let dkg_setup_private_config: MemberConfigPrivate =
+                serde_json::from_str(&dkg_setup_private_json)
+                    .expect("setup-only private config json");
+            assert_eq!(dkg_setup_private_config.member_id, *member_id);
+            assert_eq!(
+                dkg_setup_private_config.federation_id,
+                Some(public_config.federation_id)
+            );
+            assert!(dkg_setup_private_config.keyset_secret_shares.is_empty());
+            assert!(dkg_setup_private_config.setup_transcript_hash.is_none());
+            dkg_setup_private_config
+                .validate_against_public(&dkg_setup_public_config)
+                .expect("setup-only private config validates");
 
             let config_text =
                 std::fs::read_to_string(&member_artifacts.config_path).expect("member config text");
+            let dkg_setup_config_text =
+                std::fs::read_to_string(&member_artifacts.dkg_setup_config_path)
+                    .expect("setup-only member config text");
             let expected_prometheus_port = 8085 + 3 + member_id.get() - 1;
             assert!(config_text.contains("[prometheus]"));
             assert!(config_text.contains("enabled = true"));
             assert!(config_text.contains("address = \"127.0.0.1\""));
             assert!(config_text.contains(&format!("port = {expected_prometheus_port}")));
+            assert!(config_text.contains(&member_artifacts.federation_api_url));
+            assert!(dkg_setup_config_text.contains(
+                &artifacts
+                    .dkg_setup_public_config_path
+                    .to_string_lossy()
+                    .to_string()
+            ));
+            assert!(dkg_setup_config_text.contains(
+                &member_artifacts
+                    .dkg_setup_private_config_path
+                    .to_string_lossy()
+                    .to_string()
+            ));
 
             let settings = config::Settings::try_new(Some(&member_artifacts.config_path))
                 .expect("member config toml");
+            let dkg_setup_settings =
+                config::Settings::try_new(Some(&member_artifacts.dkg_setup_config_path))
+                    .expect("setup-only member config toml");
             assert_eq!(settings.database.engine, config::DatabaseEngine::Sqlite);
+            assert_eq!(
+                dkg_setup_settings.database.engine,
+                config::DatabaseEngine::Sqlite
+            );
             assert!(
                 settings
                     .federation
@@ -1913,7 +2088,15 @@ mod tests {
                     .expect("federation settings")
                     .enabled
             );
+            assert!(
+                dkg_setup_settings
+                    .federation
+                    .as_ref()
+                    .expect("setup-only federation settings")
+                    .enabled
+            );
             assert_eq!(settings.info.listen_port, 8084 + member_id.get());
+            assert_eq!(dkg_setup_settings.info.listen_port, 8084 + member_id.get());
             #[cfg(feature = "prometheus")]
             {
                 let prometheus = settings.prometheus.expect("prometheus settings");
@@ -1926,11 +2109,29 @@ mod tests {
             );
             assert!(smoke_script.contains(
                 &member_artifacts
+                    .dkg_setup_config_path
+                    .to_string_lossy()
+                    .to_string()
+            ));
+            assert!(smoke_script.contains(
+                &member_artifacts
                     .private_config_path
                     .to_string_lossy()
                     .to_string()
             ));
+            assert!(smoke_script.contains(
+                &member_artifacts
+                    .dkg_setup_private_config_path
+                    .to_string_lossy()
+                    .to_string()
+            ));
             assert!(smoke_script.contains(&member_artifacts.work_dir.to_string_lossy().to_string()));
+            assert!(smoke_script.contains(
+                &member_artifacts
+                    .dkg_setup_work_dir
+                    .to_string_lossy()
+                    .to_string()
+            ));
             assert!(smoke_script.contains(&member_artifacts.prometheus_url));
         }
 
