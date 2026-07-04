@@ -3261,6 +3261,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn federated_mint_connector_aggregates_melt_quote_status_change_shares() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let change_outputs = blinded_change_outputs(&bundle);
+        let connectors = [member_id(1), member_id(2), member_id(3)]
+            .into_iter()
+            .map(|member_id| {
+                let connector = MockMintConnector::new();
+                connector.set_active_keyset(advertised.clone());
+                let status = match melt_response(&bundle, member_id, &change_outputs) {
+                    MeltQuoteResponse::Bolt11(response) => response,
+                    _ => panic!("expected bolt11 melt response"),
+                };
+                connector.set_melt_quote_status_response(Ok(status));
+                (
+                    member_id,
+                    Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+                )
+            })
+            .collect();
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let response = connector
+            .get_melt_quote_status(PaymentMethod::Known(KnownMethod::Bolt11), "melt-quote")
+            .await
+            .expect("melt quote status");
+
+        let change = response.change().cloned().expect("change signatures");
+        assert_eq!(response.state(), MeltQuoteState::Paid);
+        assert_aggregate_response_valid(
+            &bundle,
+            &signed_change_outputs(&change_outputs),
+            &MintResponse { signatures: change },
+        );
+    }
+
+    #[tokio::test]
     async fn federated_mint_connector_falls_back_to_primary_melt_quote_status() {
         let bundle = threshold_bundle();
         let advertised = advertised_keyset(&bundle);

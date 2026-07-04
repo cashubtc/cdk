@@ -522,11 +522,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: preserve primary melt status fallback</span>
+          <span class="value">test: cover federated melt status change aggregation</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Wallet federation signing paths now fan out concurrently, melt status uses a threshold view once available, and fresh primary-created melt quotes still have a primary fallback until quote propagation is fully consensus-backed</span>
+          <span class="value">Wallet federation signing paths now fan out concurrently, melt status can use threshold member views, aggregate persisted change shares for recovery, and fall back to primary-only status for fresh quotes until quote propagation is fully consensus-backed</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -1484,7 +1484,7 @@
           </article>
           <article class="item">
             <h3>Wallet signing fanout is threshold-first</h3>
-            <p>Federated wallet mint, batch mint, swap, melt, and restore calls now launch against members concurrently and return once a signing threshold replies. Melt quote status accepts a threshold view after propagation, while still falling back to the primary for freshly created quotes that have not reached a quorum yet.</p>
+            <p>Federated wallet mint, batch mint, swap, melt, and restore calls now launch against members concurrently and return once a signing threshold replies. Melt quote status accepts a threshold view after propagation, aggregates persisted change shares for recovery, and still falls back to the primary for freshly created quotes that have not reached a quorum yet.</p>
           </article>
           <article class="item">
             <h3>Offline pending-melt finalization verified</h3>
@@ -2714,7 +2714,7 @@
             <tr>
               <td>Wallet federation signing fanout</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk --features wallet,mint,federation federated_mint_connector_fans_out_mint_members_concurrently -- --test-threads 1` passed the barrier-backed signing fanout regression. `cargo test -p cdk --features wallet,mint,federation federated_mint_connector_uses_threshold_melt_quote_status -- --test-threads 1` passed primary-unavailable melt-status quorum coverage, and `cargo test -p cdk --features wallet,mint,federation federated_mint_connector_falls_back_to_primary_melt_quote_status -- --test-threads 1` passed primary-only quote-status fallback coverage. `cargo test -p cdk --features wallet,mint,federation federated_mint_connector -- --test-threads 1` passed all 22 wallet federation connector tests, covering mint, batch mint, swap, melt, restore, keyset validation, check-state quorum views, HTTP wrapper rotation, threshold melt-status reads, and primary fallback.</td>
+              <td>`cargo test -p cdk --features wallet,mint,federation federated_mint_connector_fans_out_mint_members_concurrently -- --test-threads 1` passed the barrier-backed signing fanout regression. `cargo test -p cdk --features wallet,mint,federation federated_mint_connector_uses_threshold_melt_quote_status -- --test-threads 1` passed primary-unavailable melt-status quorum coverage, `cargo test -p cdk --features wallet,mint,federation federated_mint_connector_falls_back_to_primary_melt_quote_status -- --test-threads 1` passed primary-only quote-status fallback coverage, and `cargo test -p cdk --features wallet,mint,federation federated_mint_connector_aggregates_melt_quote_status_change_shares -- --test-threads 1` passed status-change aggregation recovery coverage. `cargo test -p cdk --features wallet,mint,federation federated_mint_connector -- --test-threads 1` passed all 23 wallet federation connector tests, covering mint, batch mint, swap, melt, restore, keyset validation, check-state quorum views, HTTP wrapper rotation, threshold melt-status reads, primary fallback, and status change aggregation.</td>
               <td>Move mint quote creation and quote-status propagation from primary-only behavior into explicit consensus-backed federation operations.</td>
             </tr>
             <tr>
