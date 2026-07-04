@@ -522,15 +522,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">chore: add local postgres helper recipes</span>
+          <span class="value">fix: refresh peer digest recheck status</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Repo-level Postgres helper recipes now start, preflight, stop, and idempotently re-stop an isolated local database for federation smoke setup</span>
+          <span class="value">Five-member, three-threshold Postgres long-partition smoke now passes eight offline wallet-operation batches, pending melt recovery, quarantine catch-up, offline keyset rotation, restarted-member quorum evidence, and final digest convergence</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Repeat longer partition windows against larger federation sizes and choose the first production BFT ordering backend path</span>
+          <span class="value">Broaden long-partition runs to larger rosters, tighten slow polling hot paths, and choose the first production BFT ordering backend path</span>
         </div>
       </aside>
     </header>
@@ -1515,6 +1515,14 @@
             <p>A disposable local Postgres service backed the setup-only DKG route probe and the full generated federation smoke, covering member schemas, restart catch-up, baseline wallet operations, offline threshold signing, pending melts, quarantine replay, offline keyset rotation, and final convergence.</p>
           </article>
           <article class="item">
+            <h3>Stale peer digest recheck fixed</h3>
+            <p>Equal-height materialized digest rechecks now refresh both local and peer status before declaring divergence, so a peer that has accepted the same order but is still materializing rows does not falsely halt an otherwise converging quorum.</p>
+          </article>
+          <article class="item">
+            <h3>Five-member Postgres long partition verified</h3>
+            <p>A five-member, three-threshold Postgres-backed smoke now passes baseline mint, swap, check-state, melt, and restore; eight offline wallet-operation batches; paid and failed pending-melt finalization while one member is offline; quarantine catch-up; offline keyset rotation; restarted-member session-outcome quorum evidence; digest comparison; and clean shutdown.</p>
+          </article>
+          <article class="item">
             <h3>Payment observation admin view added</h3>
             <p>`cdk-mintd federation payment-observations` signs local-status probes, targets selected members or the full roster, filters by mint or melt quote, and prints only redacted payment report and evidence-group summaries.</p>
           </article>
@@ -1549,6 +1557,10 @@
           <article class="item">
             <h3>Materialized digest race hardened</h3>
             <p>Peer sync now rechecks equal-height materialized state digests for a bounded window before marking a mismatch, preventing journal-first/materialization-second timing from latching a stale unsafe state while still preserving hard stops for real divergence.</p>
+          </article>
+          <article class="item">
+            <h3>Peer materialization snapshots refresh</h3>
+            <p>The equal-height recheck loop now refetches the peer's signed status while local materialization catches up, closing a false-positive mismatch found during the five-member Postgres long-partition smoke.</p>
           </article>
           <article class="item">
             <h3>Full offline smoke passes again</h3>
@@ -2677,7 +2689,13 @@
               <td>Postgres-backed process smoke</td>
               <td><span class="status done">Passed</span></td>
               <td>`just fed-regtest-postgres-dkg-setup` passed with three members, two-threshold setup-only DKG route probing, member restart, and activated keyset exposure backed by Postgres member schemas. `CHECK_PROMETHEUS_METRICS=0 OFFLINE_OPERATION_BATCHES=1 just fed-regtest-postgres` then passed baseline wallet mint/swap/check-state/melt/restore, offline threshold operations, paid and failed pending-melt recovery, quarantine injection and replay, offline keyset rotation, restored old-keyset spend, post-rotation mint/melt, restarted-member catch-up, signed status evidence, digest comparison gates, and clean process shutdown.</td>
-              <td>Repeat the same storage-backed process smoke with longer offline windows and the default five-member topology.</td>
+              <td>Keep this shorter Postgres helper as the quick storage-backed smoke while the long-partition helper covers heavier offline windows.</td>
+            </tr>
+            <tr>
+              <td>Five-member Postgres long-partition smoke</td>
+              <td><span class="status done">Passed</span></td>
+              <td>A five-member, three-threshold Postgres-backed long-partition smoke passed with eight offline wallet-operation batches, paid and failed pending-melt terminal observations while a member was offline, quarantine replay after restart, offline keyset rotation, old-keyset restore and spend, post-rotation mint and melt, restarted-member session-outcome quorum evidence, signed status checks, digest comparison gates, and clean process shutdown. The run first exposed a stale equal-height materialized peer-status snapshot; the peer sync recheck now refreshes peer status during the bounded recheck window, and the full smoke then passed.</td>
+              <td>Repeat with larger rosters, longer partition windows, and targeted performance work on slow sequential status and keyset polling paths.</td>
             </tr>
             <tr>
               <td>Offline keyset rotation process smoke</td>
@@ -2768,11 +2786,11 @@
         <div class="stack">
           <article class="item">
             <h3>Extended Postgres partitions</h3>
-            <p>Repeat the Postgres-backed smoke with longer offline windows and the default five-member topology, then compare digest convergence and signed status evidence with the SQLite-backed long-partition helper.</p>
+            <p>Extend the now-passing five-member Postgres long-partition smoke to larger rosters, longer offline windows, and repeated runs that can expose slow polling, storage contention, or convergence flakiness.</p>
           </article>
           <article class="item">
             <h3>Longer partition windows</h3>
-            <p>Repeat the long-partition helper with the default five-member topology and with Postgres-backed storage, then compare digest convergence and signed status evidence.</p>
+            <p>Compare longer SQLite and Postgres partition windows side by side, then promote the most useful matrix into a regular regtest smoke schedule.</p>
           </article>
           <article class="item">
             <h3>Broader materialized digest coverage</h3>

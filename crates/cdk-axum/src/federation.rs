@@ -1350,7 +1350,7 @@ where
         state: &MintState,
         member: &MemberConfigPublic,
     ) -> anyhow::Result<FederationPeerStatus> {
-        let peer_status = self.peer_status(member).await?;
+        let mut peer_status = self.peer_status(member).await?;
         let mut local_status = local_peer_status(state).await?;
         let mut recovered_from_peer = false;
 
@@ -1396,10 +1396,11 @@ where
         }
 
         local_status = local_peer_status(state).await?;
-        local_status = recheck_equal_height_materialized_digest(
+        (local_status, peer_status) = recheck_equal_height_materialized_digest(
+            self,
             state,
-            member.member_id,
-            &peer_status,
+            member,
+            peer_status,
             local_status,
         )
         .await?;
@@ -1568,37 +1569,47 @@ async fn local_peer_status(state: &MintState) -> anyhow::Result<FederationPeerSt
     Ok(status)
 }
 
-async fn recheck_equal_height_materialized_digest(
+async fn recheck_equal_height_materialized_digest<T>(
+    client: &FederationRestPeerClient<T>,
     state: &MintState,
-    peer: MemberId,
-    peer_status: &FederationPeerStatus,
+    member: &MemberConfigPublic,
+    mut peer_status: FederationPeerStatus,
     mut local_status: FederationPeerStatus,
-) -> anyhow::Result<FederationPeerStatus> {
+) -> anyhow::Result<(FederationPeerStatus, FederationPeerStatus)>
+where
+    T: Transport,
+{
     if local_status.operation_count != peer_status.operation_count
         || local_status.latest_order_digest != peer_status.latest_order_digest
         || local_status.state_digest == peer_status.state_digest
     {
-        return Ok(local_status);
+        return Ok((local_status, peer_status));
     }
 
     for attempt in 1..=FEDERATION_STATE_DIGEST_RECHECK_ATTEMPTS {
         time::sleep(FEDERATION_STATE_DIGEST_RECHECK_DELAY).await;
         local_status = local_peer_status(state).await?;
+        if local_status.operation_count == peer_status.operation_count
+            && local_status.latest_order_digest == peer_status.latest_order_digest
+            && local_status.state_digest != peer_status.state_digest
+        {
+            peer_status = client.peer_status(member).await?;
+        }
         if local_status.operation_count != peer_status.operation_count
             || local_status.latest_order_digest != peer_status.latest_order_digest
             || local_status.state_digest == peer_status.state_digest
         {
             tracing::debug!(
-                member_id = %peer,
+                member_id = %member.member_id,
                 operation_count = peer_status.operation_count,
                 attempt,
                 "Federation peer sync materialized digest converged after recheck"
             );
-            return Ok(local_status);
+            return Ok((local_status, peer_status));
         }
     }
 
-    Ok(local_status)
+    Ok((local_status, peer_status))
 }
 
 async fn local_peer_status_with_materialized_rows(
@@ -4140,6 +4151,52 @@ mod tests {
             state.federation_sync_status().await,
             Some(crate::FederationSyncStatus::Healthy)
         ));
+    }
+
+    #[tokio::test]
+    async fn rest_peer_client_rechecks_equal_height_digest_while_peer_materializing() {
+        let (state, public_config, local_private, _) =
+            federation_route_state_with_local_private().await;
+        let federation_id = public_config.federation_id;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let local_status = local_peer_status(&state).await.expect("local status");
+        let stale_peer_status = FederationPeerStatus::new_with_state_digest(
+            federation_id,
+            peer_member.member_id,
+            local_status.operation_count,
+            local_status.latest_index,
+            local_status.latest_order_digest,
+            cdk::federation::FederationStateDigest::from_bytes([9; 32]),
+        );
+        let converged_peer_status = FederationPeerStatus::new_with_state_digest(
+            federation_id,
+            peer_member.member_id,
+            local_status.operation_count,
+            local_status.latest_index,
+            local_status.latest_order_digest,
+            local_status.state_digest,
+        );
+        let transport = MockFederationTransport::default().with_status_response(stale_peer_status);
+        let delayed_transport = transport.clone();
+        let updater = tokio::spawn(async move {
+            time::sleep(Duration::from_millis(250)).await;
+            delayed_transport.with_status_response(converged_peer_status);
+        });
+        let client =
+            FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
+                .expect("client");
+
+        client
+            .sync_once_from_member(&state, peer_member)
+            .await
+            .expect("sync rechecks until peer materialization converges");
+        updater.await.expect("peer status updater");
+
+        assert!(matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Healthy)
+        ));
+        assert!(transport.status_requests().len() > 1);
     }
 
     #[tokio::test]
