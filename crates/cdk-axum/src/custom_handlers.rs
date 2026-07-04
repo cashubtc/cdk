@@ -1019,8 +1019,9 @@ mod tests {
     #[cfg(feature = "federation")]
     use cdk::federation::{
         generate_trusted_dealer_configs, FederationConfig, FederationConsensusEngine,
-        MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerConfigBundle,
-        TrustedDealerKeysetSpec, TrustedDealerMember,
+        FederationJournalEntry, FederationKeysetRotationOperation, FederationOperation,
+        FederationOperationEnvelope, InMemoryFederationJournal, MemberConfigPrivate, MemberId,
+        ThresholdParams, TrustedDealerConfigBundle, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     use cdk::mint::{Mint, MintBuilder, MintMeltLimits, MintQuoteResponse};
     use cdk::nuts::nut00::KnownMethod;
@@ -1034,7 +1035,8 @@ mod tests {
     use cdk::nuts::SecretKey;
     use cdk::nuts::{
         BatchMintRequest, BlindSignature, BlindedMessage, CheckStateRequest, CurrencyUnit,
-        MeltRequest, MintQuoteState, PaymentMethod, Proof, RestoreRequest, SwapRequest,
+        MeltRequest, MintQuoteState, MintRequest, PaymentMethod, Proof, RestoreRequest,
+        SwapRequest,
     };
     #[cfg(feature = "federation")]
     use cdk::secret::Secret;
@@ -1651,6 +1653,123 @@ mod tests {
     }
 
     #[cfg(feature = "federation")]
+    fn threshold_rotation_bundle(
+        member_urls: &[(MemberId, cdk::mint_url::MintUrl)],
+    ) -> TrustedDealerConfigBundle {
+        let members = member_urls
+            .iter()
+            .map(|(member_id, url)| threshold_member(*member_id, url.clone(), url.clone()))
+            .collect::<Vec<_>>();
+
+        generate_trusted_dealer_configs(
+            ThresholdParams::with_bft_consensus(3, 2).expect("threshold params"),
+            members,
+            vec![
+                TrustedDealerKeysetSpec::new(
+                    CurrencyUnit::Sat,
+                    true,
+                    0,
+                    None,
+                    BTreeMap::from([
+                        (
+                            Amount::from(1),
+                            vec![
+                                BlsSecretKey::from_reduced_bytes(&[2; 32]),
+                                BlsSecretKey::from_reduced_bytes(&[12; 32]),
+                            ],
+                        ),
+                        (
+                            Amount::from(2),
+                            vec![
+                                BlsSecretKey::from_reduced_bytes(&[3; 32]),
+                                BlsSecretKey::from_reduced_bytes(&[13; 32]),
+                            ],
+                        ),
+                        (
+                            Amount::from(4),
+                            vec![
+                                BlsSecretKey::from_reduced_bytes(&[4; 32]),
+                                BlsSecretKey::from_reduced_bytes(&[14; 32]),
+                            ],
+                        ),
+                    ]),
+                ),
+                TrustedDealerKeysetSpec::new(
+                    CurrencyUnit::Sat,
+                    false,
+                    0,
+                    None,
+                    BTreeMap::from([
+                        (
+                            Amount::from(1),
+                            vec![
+                                BlsSecretKey::from_reduced_bytes(&[5; 32]),
+                                BlsSecretKey::from_reduced_bytes(&[15; 32]),
+                            ],
+                        ),
+                        (
+                            Amount::from(2),
+                            vec![
+                                BlsSecretKey::from_reduced_bytes(&[6; 32]),
+                                BlsSecretKey::from_reduced_bytes(&[16; 32]),
+                            ],
+                        ),
+                        (
+                            Amount::from(4),
+                            vec![
+                                BlsSecretKey::from_reduced_bytes(&[7; 32]),
+                                BlsSecretKey::from_reduced_bytes(&[17; 32]),
+                            ],
+                        ),
+                    ]),
+                ),
+            ],
+        )
+        .expect("trusted dealer threshold rotation bundle")
+    }
+
+    #[cfg(feature = "federation")]
+    fn active_keyset(bundle: &TrustedDealerConfigBundle) -> cdk::federation::FederatedKeyset {
+        bundle
+            .public_config
+            .keysets
+            .iter()
+            .find(|keyset| keyset.active)
+            .expect("active keyset")
+            .clone()
+    }
+
+    #[cfg(feature = "federation")]
+    fn inactive_keyset(bundle: &TrustedDealerConfigBundle) -> cdk::federation::FederatedKeyset {
+        bundle
+            .public_config
+            .keysets
+            .iter()
+            .find(|keyset| !keyset.active)
+            .expect("inactive keyset")
+            .clone()
+    }
+
+    #[cfg(feature = "federation")]
+    fn activated_rotation_keyset(
+        bundle: &TrustedDealerConfigBundle,
+    ) -> cdk::federation::FederatedKeyset {
+        let mut keyset = inactive_keyset(bundle);
+        keyset.active = true;
+        keyset
+    }
+
+    #[cfg(feature = "federation")]
+    fn rotated_public_config(bundle: &TrustedDealerConfigBundle) -> FederationConfig {
+        bundle
+            .public_config
+            .apply_keyset_rotation(&FederationKeysetRotationOperation {
+                keyset: activated_rotation_keyset(bundle),
+            })
+            .expect("rotated public config")
+    }
+
+    #[cfg(feature = "federation")]
     async fn build_threshold_member_mint(
         public_config: FederationConfig,
         private_config: MemberConfigPrivate,
@@ -1694,20 +1813,85 @@ mod tests {
     }
 
     #[cfg(feature = "federation")]
+    async fn local_member_listeners() -> (
+        Vec<tokio::net::TcpListener>,
+        Vec<(MemberId, cdk::mint_url::MintUrl)>,
+    ) {
+        let mut listeners = Vec::new();
+        let mut member_urls = Vec::new();
+        for id in 1..=3 {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind local member listener");
+            let url = cdk::mint_url::MintUrl::from_str(&format!(
+                "http://{}/",
+                listener.local_addr().expect("local address")
+            ))
+            .expect("member URL");
+            member_urls.push((threshold_member_id(id), url));
+            listeners.push(listener);
+        }
+        (listeners, member_urls)
+    }
+
+    #[cfg(feature = "federation")]
+    async fn spawn_member_routers(
+        mints: &[Arc<Mint>],
+        listeners: Vec<tokio::net::TcpListener>,
+    ) -> Vec<tokio::task::JoinHandle<()>> {
+        let mut handles = Vec::new();
+        for (mint, listener) in mints.iter().cloned().zip(listeners) {
+            let router = crate::create_mint_router(mint, vec![KnownMethod::Bolt11.to_string()])
+                .await
+                .expect("mint router");
+            handles.push(tokio::spawn(async move {
+                axum::serve(listener, router).await.expect("member router");
+            }));
+        }
+        handles
+    }
+
+    #[cfg(feature = "federation")]
+    fn appended_entry(
+        journal: &mut InMemoryFederationJournal,
+        envelope: FederationOperationEnvelope,
+    ) -> FederationJournalEntry {
+        journal.append(envelope).expect("append").entry().clone()
+    }
+
+    #[cfg(feature = "federation")]
+    async fn persist_and_apply_entry(mint: &Mint, entry: &FederationJournalEntry) {
+        let mut tx = mint
+            .localstore()
+            .begin_transaction()
+            .await
+            .expect("begin tx");
+        tx.add_federation_journal_entry(entry)
+            .await
+            .expect("persist journal entry");
+        tx.commit().await.expect("commit journal entry");
+
+        mint.apply_federation_journal_entries(std::slice::from_ref(entry))
+            .await
+            .expect("apply journal entry");
+    }
+
+    #[cfg(feature = "federation")]
     async fn add_paid_bolt11_quote_to_mint(mint: &Mint, quote_id: &QuoteId, amount: u64) {
         let amount = Amount::new(amount, CurrencyUnit::Sat);
+        let created_time = 1_700_000_000;
         let mut quote = cdk::mint::MintQuote::new(
             Some(quote_id.clone()),
             format!("invoice-{quote_id}"),
             CurrencyUnit::Sat,
             Some(amount.clone()),
-            cdk::util::unix_time() + 10_000,
+            created_time + 10_000,
             cdk::cdk_payment::PaymentIdentifier::QuoteId(quote_id.clone()),
             None,
             Amount::new(0, CurrencyUnit::Sat),
             Amount::new(0, CurrencyUnit::Sat),
             PaymentMethod::Known(KnownMethod::Bolt11),
-            cdk::util::unix_time(),
+            created_time,
             Vec::new(),
             Vec::new(),
             None,
@@ -2420,21 +2604,7 @@ mod tests {
     #[cfg(feature = "federation")]
     #[tokio::test]
     async fn federated_wallet_connector_aggregates_real_axum_member_routes() {
-        let mut listeners = Vec::new();
-        let mut member_urls = Vec::new();
-        for id in 1..=3 {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-                .await
-                .expect("bind local member listener");
-            let url = cdk::mint_url::MintUrl::from_str(&format!(
-                "http://{}/",
-                listener.local_addr().expect("local address")
-            ))
-            .expect("member URL");
-            member_urls.push((threshold_member_id(id), url));
-            listeners.push(listener);
-        }
-
+        let (listeners, member_urls) = local_member_listeners().await;
         let bundle = threshold_bundle(&member_urls);
         let mut mints = Vec::new();
         for member_id in [1, 2, 3].map(threshold_member_id) {
@@ -2468,15 +2638,7 @@ mod tests {
         };
         clone_primary_melt_quote_to_members(&mints, &melt_quote_id).await;
 
-        let mut handles = Vec::new();
-        for (mint, listener) in mints.iter().cloned().zip(listeners) {
-            let router = crate::create_mint_router(mint, vec![KnownMethod::Bolt11.to_string()])
-                .await
-                .expect("mint router");
-            handles.push(tokio::spawn(async move {
-                axum::serve(listener, router).await.expect("member router");
-            }));
-        }
+        let handles = spawn_member_routers(&mints, listeners).await;
 
         let connector = FederatedMintConnector::new(
             bundle.public_config.clone(),
@@ -2577,6 +2739,172 @@ mod tests {
         assert_eq!(restore_response.outputs, mint_outputs);
         assert_aggregate_signatures_verify(
             &bundle.public_config,
+            &restore_response.outputs,
+            &restore_response.signatures,
+        );
+
+        for handle in handles {
+            handle.abort();
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn federated_wallet_connector_aggregates_rotated_real_axum_member_routes() {
+        let (listeners, member_urls) = local_member_listeners().await;
+        let bundle = threshold_rotation_bundle(&member_urls);
+        let rotated_public_config = rotated_public_config(&bundle);
+        let old_keyset = active_keyset(&bundle);
+        let new_keyset = activated_rotation_keyset(&bundle);
+        let new_mint_quote_id = QuoteId::new();
+
+        let mut mints = Vec::new();
+        for member_id in [1, 2, 3].map(threshold_member_id) {
+            let private_config = bundle
+                .private_configs
+                .get(&member_id)
+                .expect("private member config")
+                .clone();
+            let mint =
+                build_threshold_member_mint(bundle.public_config.clone(), private_config).await;
+            add_paid_bolt11_quote_to_mint(&mint, &new_mint_quote_id, 3).await;
+
+            let config = mint.federation_config().expect("federation config").clone();
+            let mut journal = InMemoryFederationJournal::new();
+            let rotation_entry = appended_entry(
+                &mut journal,
+                config.operation_envelope(FederationOperation::KeysetRotation(
+                    FederationKeysetRotationOperation {
+                        keyset: new_keyset.clone(),
+                    },
+                )),
+            );
+            persist_and_apply_entry(&mint, &rotation_entry).await;
+
+            mints.push(mint);
+        }
+
+        let melt_invoice = create_fake_invoice(1000, "axum rotated http melt".to_string());
+        let melt_quote_id = match mints[0]
+            .get_melt_quote(cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+                request: melt_invoice,
+                unit: CurrencyUnit::Sat,
+                options: None,
+            }))
+            .await
+            .expect("melt quote")
+        {
+            cdk::MeltQuoteCreateResponse::Bolt11(response) => response.quote,
+            _ => panic!("expected bolt11 melt quote"),
+        };
+        clone_primary_melt_quote_to_members(&mints, &melt_quote_id).await;
+
+        let handles = spawn_member_routers(&mints, listeners).await;
+        let connector = FederatedMintConnector::new(
+            rotated_public_config.clone(),
+            threshold_http_member_connectors(&rotated_public_config),
+        )
+        .expect("rotated federated HTTP connector");
+        wait_for_federated_http_members(&connector).await;
+
+        let active_keysets = connector.get_mint_keys().await.expect("active keys");
+        assert_eq!(active_keysets.len(), 1);
+        assert_eq!(active_keysets[0].id, new_keyset.id);
+
+        let keysets = connector.get_mint_keysets().await.expect("keysets");
+        let old_keyset_info = keysets
+            .keysets
+            .iter()
+            .find(|keyset| keyset.id == old_keyset.id)
+            .expect("old keyset info");
+        let new_keyset_info = keysets
+            .keysets
+            .iter()
+            .find(|keyset| keyset.id == new_keyset.id)
+            .expect("new keyset info");
+        assert_eq!(old_keyset_info.active, false);
+        assert_eq!(new_keyset_info.active, true);
+
+        let mint_outputs = vec![
+            blinded_output(&new_keyset, 1, "axum-http-rotated-mint-output-1"),
+            blinded_output(&new_keyset, 2, "axum-http-rotated-mint-output-2"),
+        ];
+        let mint_response = connector
+            .post_batch_mint(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                BatchMintRequest {
+                    quotes: vec![new_mint_quote_id.to_string()],
+                    quote_amounts: None,
+                    outputs: mint_outputs.clone(),
+                    signatures: None,
+                },
+            )
+            .await
+            .expect("rotated threshold HTTP batch mint");
+        assert_aggregate_signatures_verify(
+            &rotated_public_config,
+            &mint_outputs,
+            &mint_response.signatures,
+        );
+
+        let swap_input = proof_for_keyset(&old_keyset, 2, "rotated-swap-input");
+        let swap_y = swap_input.y().expect("swap proof y");
+        let swap_outputs = vec![blinded_output(
+            &new_keyset,
+            2,
+            "axum-http-rotated-swap-output",
+        )];
+        let swap_response = connector
+            .post_swap(SwapRequest::new(vec![swap_input], swap_outputs.clone()))
+            .await
+            .expect("rotated threshold HTTP swap");
+        assert_aggregate_signatures_verify(
+            &rotated_public_config,
+            &swap_outputs,
+            &swap_response.signatures,
+        );
+        let spent_after_swap = connector
+            .post_check_state(CheckStateRequest { ys: vec![swap_y] })
+            .await
+            .expect("rotated swap check-state");
+        assert_eq!(spent_after_swap.states[0].state, cdk::nuts::State::Spent);
+
+        let melt_input = proof_for_keyset(&old_keyset, 4, "rotated-melt-input");
+        let melt_y = melt_input.y().expect("melt proof y");
+        let melt_change_outputs = vec![blinded_change_output(
+            &new_keyset,
+            "axum-http-rotated-melt-change",
+        )];
+        let melt_response = connector
+            .post_melt(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                MeltRequest::new(
+                    melt_quote_id.to_string(),
+                    vec![melt_input],
+                    Some(melt_change_outputs.clone()),
+                ),
+            )
+            .await
+            .expect("rotated threshold HTTP melt");
+        assert_eq!(melt_response.state(), MeltQuoteState::Paid);
+        let change = melt_response.change().expect("rotated melt change");
+        assert_aggregate_signatures_verify(&rotated_public_config, &melt_change_outputs, change);
+
+        let spent_after_melt = connector
+            .post_check_state(CheckStateRequest { ys: vec![melt_y] })
+            .await
+            .expect("rotated melt check-state");
+        assert_eq!(spent_after_melt.states[0].state, cdk::nuts::State::Spent);
+
+        let restore_response = connector
+            .post_restore(RestoreRequest {
+                outputs: mint_outputs.clone(),
+            })
+            .await
+            .expect("rotated threshold HTTP restore");
+        assert_eq!(restore_response.outputs, mint_outputs);
+        assert_aggregate_signatures_verify(
+            &rotated_public_config,
             &restore_response.outputs,
             &restore_response.signatures,
         );
