@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated local federation smoke passed end to end, long-partition catch-up smoke passed with five offline batches, lagging members fail closed before primary forwarding, and digest comparison now classifies convergence failures</span>
+          <span class="value">Generated local federation smoke passed end to end, long-partition catch-up smoke passed with five offline batches, lagging members fail closed before primary forwarding, and digest comparison now includes redacted row-level mismatch evidence</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: classify digest divergence</span>
+          <span class="value">feat: add materialized row diff evidence</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`compare-digests` emits `digest_diagnostic` lines for height, order, materialized-state, and reported digest-alert divergence</span>
+          <span class="value">Signed local status now exports redacted materialized-row fingerprints, and `compare-digests` prints `materialized_row_diff` lines for same-order state divergence</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Add row-level consensus-visible mismatch export and diffing, then run setup-only DKG, long-partition, and full process smoke against a real Postgres-backed local process environment when Postgres is available</span>
+          <span class="value">Run setup-only DKG, long-partition, and full process smoke against a real Postgres-backed local process environment when Postgres is available</span>
         </div>
       </aside>
     </header>
@@ -1521,6 +1521,10 @@
           <article class="item">
             <h3>Digest divergence diagnostics classified</h3>
             <p>`compare-digests` now emits `digest_diagnostic` lines that distinguish member height lag, accepted-order digest mismatch, materialized-state mismatch, and reported digest alerts.</p>
+          </article>
+          <article class="item">
+            <h3>Redacted materialized-row diff evidence added</h3>
+            <p>Private local status now includes redacted materialized-row fingerprints, normal status output reports the row count, and `compare-digests` prints `materialized_row_diff` lines when members share the same accepted order but disagree on materialized database state.</p>
           </article>
           <article class="item">
             <h3>Setup transcript scaffold added</h3>
@@ -2550,6 +2554,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_digest_compare -- --test-threads 1` passed 5 tests covering matching groups, digest-alert rejection, height mismatch, order-digest mismatch, and materialized-state mismatch. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
               <td>Add row-level consensus-visible mismatch export and diffing once the materialized snapshot API is exposed.</td>
+            </tr>
+            <tr>
+              <td>Materialized row diff evidence</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation materialized_state_row_fingerprint -- --test-threads 1` passed 2 redaction and field-change tests. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_digest_compare -- --test-threads 1` passed 6 digest comparison tests including redacted `materialized_row_diff` output, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_status -- --test-threads 1` passed 31 status tests, and `cargo test -p cdk-axum --features federation private_local_status_route_returns_consensus_and_sync_state -- --test-threads 1` passed the signed local-status route regression. `cargo check -p cdk-common --features federation`, `cargo check -p cdk-axum --features federation`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Use row diff evidence in operator runbooks and repeat the convergence checks against Postgres-backed member storage when a service is available.</td>
             </tr>
             <tr>
               <td>Payment observation admin CLI</td>

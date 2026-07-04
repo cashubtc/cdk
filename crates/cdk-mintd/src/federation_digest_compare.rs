@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{bail, Context, Result};
-use cdk_common::federation::{FederationConfig, MemberConfigPrivate, MemberId};
+use cdk_common::federation::{
+    FederationConfig, FederationMaterializedStateRowFingerprint, MemberConfigPrivate, MemberId,
+};
 use cdk_http_client::Async;
 
 use crate::cli::{CLIArgs, FederationCompareDigestsArgs};
@@ -60,6 +62,9 @@ fn print_digest_comparison(
     for diagnostic in &report.diagnostics {
         println!("{}", digest_diagnostic_line(diagnostic));
     }
+    for row_diff in &report.row_diffs {
+        println!("{}", materialized_row_diff_line(row_diff));
+    }
 }
 
 fn digest_group_line(group: &DigestComparisonGroup) -> String {
@@ -81,6 +86,7 @@ struct DigestComparisonReport {
     groups: Vec<DigestComparisonGroup>,
     digest_alert_members: Vec<MemberId>,
     diagnostics: Vec<DigestComparisonDiagnostic>,
+    row_diffs: Vec<DigestComparisonRowDiff>,
 }
 
 impl DigestComparisonReport {
@@ -114,12 +120,14 @@ impl DigestComparisonReport {
 
         let groups = groups.into_values().collect::<Vec<_>>();
         let diagnostics = digest_comparison_diagnostics(&groups, &digest_alert_members);
+        let row_diffs = materialized_row_diffs(statuses);
 
         Self {
             queried_members: statuses.len(),
             groups,
             digest_alert_members,
             diagnostics,
+            row_diffs,
         }
     }
 
@@ -168,6 +176,20 @@ struct DigestComparisonDiagnostic {
     kind: DigestComparisonDiagnosticKind,
     members: Vec<MemberId>,
     detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DigestComparisonRowDiff {
+    table: String,
+    key_digest: String,
+    variants: Vec<DigestComparisonRowVariant>,
+    missing_members: Vec<MemberId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DigestComparisonRowVariant {
+    row_digest: String,
+    members: Vec<MemberId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -285,6 +307,125 @@ fn digest_diagnostic_line(diagnostic: &DigestComparisonDiagnostic) -> String {
     )
 }
 
+fn materialized_row_diffs(
+    statuses: &[FederationLocalStatusResponse],
+) -> Vec<DigestComparisonRowDiff> {
+    let mut groups = BTreeMap::<(u64, String), Vec<&FederationLocalStatusResponse>>::new();
+    for status in statuses {
+        groups
+            .entry((
+                status.peer_status.operation_count,
+                status.peer_status.latest_order_digest.to_string(),
+            ))
+            .or_default()
+            .push(status);
+    }
+
+    let mut diffs = Vec::new();
+    for group in groups.into_values() {
+        if group.len() <= 1 {
+            continue;
+        }
+
+        let state_digests = group
+            .iter()
+            .map(|status| status.peer_status.state_digest.to_string())
+            .collect::<BTreeSet<_>>();
+        if state_digests.len() <= 1 {
+            continue;
+        }
+
+        let identities = group
+            .iter()
+            .flat_map(|status| status.materialized_state_rows.iter())
+            .map(row_identity)
+            .collect::<BTreeSet<_>>();
+        for identity in identities {
+            let mut variants = BTreeMap::<String, Vec<MemberId>>::new();
+            let mut missing_members = Vec::new();
+            for status in &group {
+                match member_row_digest_value(status, &identity) {
+                    Some(row_digest) => variants
+                        .entry(row_digest)
+                        .or_default()
+                        .push(status.peer_status.member_id),
+                    None => missing_members.push(status.peer_status.member_id),
+                }
+            }
+
+            if variants.len() <= 1 && missing_members.is_empty() {
+                continue;
+            }
+
+            diffs.push(DigestComparisonRowDiff {
+                table: identity.table,
+                key_digest: identity.key_digest,
+                variants: variants
+                    .into_iter()
+                    .map(|(row_digest, members)| DigestComparisonRowVariant {
+                        row_digest,
+                        members,
+                    })
+                    .collect(),
+                missing_members,
+            });
+        }
+    }
+
+    diffs
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct MaterializedRowIdentity {
+    table: String,
+    key_digest: String,
+}
+
+fn row_identity(row: &FederationMaterializedStateRowFingerprint) -> MaterializedRowIdentity {
+    MaterializedRowIdentity {
+        table: row.table.clone(),
+        key_digest: row.key_digest.to_string(),
+    }
+}
+
+fn member_row_digest_value(
+    status: &FederationLocalStatusResponse,
+    identity: &MaterializedRowIdentity,
+) -> Option<String> {
+    let digests = status
+        .materialized_state_rows
+        .iter()
+        .filter(|row| {
+            row.table == identity.table && row.key_digest.to_string() == identity.key_digest
+        })
+        .map(|row| row.row_digest.to_string())
+        .collect::<Vec<_>>();
+    if digests.is_empty() {
+        return None;
+    }
+
+    Some(digests.join("+"))
+}
+
+fn materialized_row_diff_line(diff: &DigestComparisonRowDiff) -> String {
+    let variants = if diff.variants.is_empty() {
+        "none".to_string()
+    } else {
+        diff.variants
+            .iter()
+            .map(|variant| format!("{}:{}", variant.row_digest, display_list(&variant.members)))
+            .collect::<Vec<_>>()
+            .join("|")
+    };
+    format!(
+        "materialized_row_diff table={} key_digest={} variants={} missing_members={}",
+        diff.table,
+        diff.key_digest,
+        variants,
+        display_list(&diff.missing_members)
+    )
+}
+
 fn grouped_members(groups: &[DigestComparisonGroup]) -> Vec<MemberId> {
     sorted_member_list(
         groups
@@ -335,8 +476,8 @@ fn display_set(values: &BTreeSet<String>) -> String {
 #[cfg(test)]
 mod tests {
     use cdk_common::federation::{
-        FederationId, FederationJournalDigest, FederationPeerStatus, FederationStateDigest,
-        FEDERATION_REST_API_VERSION,
+        FederationId, FederationJournalDigest, FederationMaterializedStateRow,
+        FederationPeerStatus, FederationStateDigest, FEDERATION_REST_API_VERSION,
     };
 
     use super::*;
@@ -363,8 +504,20 @@ mod tests {
             session_outcome_quorum_operation_count: None,
             session_outcome_quorum_signers: Vec::new(),
             payment_observation_reports: Vec::new(),
+            materialized_state_rows: Vec::new(),
         }
         .with_state_digest(state_digest)
+    }
+
+    fn materialized_row(
+        table: &str,
+        key: &str,
+        field_value: &str,
+    ) -> FederationMaterializedStateRowFingerprint {
+        FederationMaterializedStateRow::new(table, key)
+            .with_field("state", field_value)
+            .fingerprint()
+            .expect("row fingerprint")
     }
 
     trait StatusFixtureExt {
@@ -514,5 +667,30 @@ mod tests {
         assert!(report.diagnostics[0].detail.contains("operation_count=4"));
         assert!(digest_diagnostic_line(&report.diagnostics[0])
             .contains("kind=materialized_state_mismatch"));
+    }
+
+    #[test]
+    fn digest_comparison_prints_materialized_row_diffs() {
+        let order_digest = FederationJournalDigest::from_bytes([1; 32]);
+        let first_state_digest = FederationStateDigest::from_bytes([2; 32]);
+        let second_state_digest = FederationStateDigest::from_bytes([3; 32]);
+        let mut first = local_status(1, 4, order_digest, first_state_digest);
+        first.materialized_state_rows = vec![materialized_row(
+            "proof_states",
+            "secret-proof-y",
+            "PENDING",
+        )];
+        let mut second = local_status(2, 4, order_digest, second_state_digest);
+        second.materialized_state_rows =
+            vec![materialized_row("proof_states", "secret-proof-y", "SPENT")];
+        let statuses = vec![first, second];
+
+        let report = DigestComparisonReport::from_statuses(&statuses);
+
+        assert_eq!(report.row_diffs.len(), 1);
+        let line = materialized_row_diff_line(&report.row_diffs[0]);
+        assert!(line.contains("table=proof_states"));
+        assert!(line.contains("missing_members=none"));
+        assert!(!line.contains("secret-proof-y"));
     }
 }

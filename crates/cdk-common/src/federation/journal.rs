@@ -24,6 +24,10 @@ const FEDERATION_STATE_GENESIS_VERSION: &[u8] = b"cdk-federation-state-genesis-v
 const FEDERATION_STATE_ENTRY_VERSION: &[u8] = b"cdk-federation-state-entry-v1";
 const FEDERATION_MATERIALIZED_STATE_ROW_VERSION: &[u8] =
     b"cdk-federation-materialized-state-row-v1";
+const FEDERATION_MATERIALIZED_STATE_ROW_KEY_FINGERPRINT_VERSION: &[u8] =
+    b"cdk-federation-materialized-state-row-key-fingerprint-v1";
+const FEDERATION_MATERIALIZED_STATE_ROW_FINGERPRINT_VERSION: &[u8] =
+    b"cdk-federation-materialized-state-row-fingerprint-v1";
 
 /// Digest of the accepted federation operation order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -276,6 +280,51 @@ impl FederationMaterializedStateRow {
     {
         self.fields.insert(name.into(), value.into());
     }
+
+    /// Return a compact fingerprint for operator-side row diffing.
+    ///
+    /// The fingerprint exposes the logical table name plus digests of the row
+    /// key and the complete row. It intentionally does not expose the key or
+    /// field values, because those may contain invoices, payment proofs, proof
+    /// identifiers, or blinded messages.
+    pub fn fingerprint(&self) -> Result<FederationMaterializedStateRowFingerprint> {
+        let mut key_transcript = Vec::new();
+        append_hash_bytes(
+            &mut key_transcript,
+            FEDERATION_MATERIALIZED_STATE_ROW_KEY_FINGERPRINT_VERSION,
+        );
+        append_hash_bytes(&mut key_transcript, self.table.as_bytes());
+        append_hash_bytes(&mut key_transcript, self.key.as_bytes());
+
+        let row = serde_json::to_vec(self)?;
+        let mut row_transcript = Vec::new();
+        append_hash_bytes(
+            &mut row_transcript,
+            FEDERATION_MATERIALIZED_STATE_ROW_FINGERPRINT_VERSION,
+        );
+        append_hash_bytes(&mut row_transcript, &row);
+
+        Ok(FederationMaterializedStateRowFingerprint {
+            table: self.table.clone(),
+            key_digest: FederationStateDigest::from_bytes(
+                Sha256Hash::hash(&key_transcript).to_byte_array(),
+            ),
+            row_digest: FederationStateDigest::from_bytes(
+                Sha256Hash::hash(&row_transcript).to_byte_array(),
+            ),
+        })
+    }
+}
+
+/// Redacted fingerprint for one materialized-state row.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct FederationMaterializedStateRowFingerprint {
+    /// Logical table or state collection name.
+    pub table: String,
+    /// Digest of the row table and key.
+    pub key_digest: FederationStateDigest,
+    /// Digest of the complete deterministic row.
+    pub row_digest: FederationStateDigest,
 }
 
 /// Deterministic materialized-state snapshot used for federation convergence checks.
@@ -317,6 +366,15 @@ impl FederationMaterializedStateSnapshot {
     #[must_use]
     pub fn into_rows(self) -> Vec<FederationMaterializedStateRow> {
         self.rows
+    }
+
+    /// Return compact fingerprints for all rows in deterministic order.
+    pub fn row_fingerprints(&self) -> Result<Vec<FederationMaterializedStateRowFingerprint>> {
+        let mut rows = self.rows.clone();
+        rows.sort();
+        rows.iter()
+            .map(FederationMaterializedStateRow::fingerprint)
+            .collect()
     }
 
     /// Compute a deterministic digest over all materialized rows.
@@ -935,6 +993,43 @@ mod tests {
             first.digest().expect("first digest"),
             FederationStateDigest::genesis()
         );
+    }
+
+    #[test]
+    fn materialized_state_row_fingerprints_are_redacted_and_ordered() {
+        let snapshot = FederationMaterializedStateSnapshot::from_rows([
+            FederationMaterializedStateRow::new("proof_states", "secret-proof-y")
+                .with_field("state", "SPENT"),
+            FederationMaterializedStateRow::new("mint_quotes", "secret-quote-id")
+                .with_field("state", "ISSUED"),
+        ]);
+
+        let fingerprints = snapshot
+            .row_fingerprints()
+            .expect("materialized row fingerprints");
+        let json = serde_json::to_string(&fingerprints).expect("fingerprint json");
+
+        assert_eq!(fingerprints.len(), 2);
+        assert_eq!(fingerprints[0].table, "mint_quotes");
+        assert_eq!(fingerprints[1].table, "proof_states");
+        assert!(!json.contains("secret-proof-y"));
+        assert!(!json.contains("secret-quote-id"));
+    }
+
+    #[test]
+    fn materialized_state_row_fingerprint_changes_when_field_changes() {
+        let pending = FederationMaterializedStateRow::new("proof_states", "proof-y-1")
+            .with_field("state", "PENDING")
+            .fingerprint()
+            .expect("pending fingerprint");
+        let spent = FederationMaterializedStateRow::new("proof_states", "proof-y-1")
+            .with_field("state", "SPENT")
+            .fingerprint()
+            .expect("spent fingerprint");
+
+        assert_eq!(pending.table, spent.table);
+        assert_eq!(pending.key_digest, spent.key_digest);
+        assert_ne!(pending.row_digest, spent.row_digest);
     }
 
     #[test]

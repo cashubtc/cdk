@@ -4,10 +4,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
     redact_federation_operator_message, FederationConfig, FederationId,
-    FederationPaymentObservationReportAction, FederationPaymentObservationReportStatus,
-    FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
-    FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic,
-    MemberId, FEDERATION_REST_API_VERSION,
+    FederationMaterializedStateRowFingerprint, FederationPaymentObservationReportAction,
+    FederationPaymentObservationReportStatus, FederationPaymentObservationReportSummary,
+    FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
+    FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic, MemberId,
+    FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,8 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) session_outcome_quorum_signers: Vec<MemberId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
 }
 
 pub(crate) async fn run_status_command(
@@ -215,7 +218,7 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
     let (payment_reports, payment_conflicts, payment_unresolved, payment_stale, payment_quarantine) =
         payment_report_counts(status);
     format!(
-        "member {}: sync={} ready={} operations={} latest_index={} order_digest={} state_digest={} session_outcome_quorum_operations={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} message={}",
+        "member {}: sync={} ready={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} session_outcome_quorum_operations={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} message={}",
         peer.member_id,
         status.sync_state,
         status.sync_ready,
@@ -223,6 +226,7 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         latest_index,
         peer.latest_order_digest,
         peer.state_digest,
+        status.materialized_state_rows.len(),
         session_outcome_quorum_operations,
         session_outcome_quorum_signers,
         payment_reports,
@@ -709,6 +713,7 @@ mod tests {
             session_outcome_quorum_operation_count: None,
             session_outcome_quorum_signers: Vec::new(),
             payment_observation_reports: Vec::new(),
+            materialized_state_rows: Vec::new(),
         }
     }
 
@@ -935,6 +940,7 @@ mod tests {
         }];
 
         let member_line = member_status_line(&status);
+        assert!(member_line.contains("materialized_rows=0"));
         assert!(member_line.contains("session_outcome_quorum_operations=none"));
         assert!(member_line.contains("session_outcome_quorum_signers=none"));
         assert!(member_line.contains("payment_reports=1"));

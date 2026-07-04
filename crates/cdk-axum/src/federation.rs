@@ -17,14 +17,15 @@ use cdk::federation::{
     FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest, FederationError,
     FederationId, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
     FederationJournalDigest, FederationJournalEntry, FederationMaterializedStateRow,
-    FederationMaterializedStateSnapshot, FederationOperation, FederationOperationEnvelope,
-    FederationOperationId, FederationPaymentObservationQuarantineRecord,
-    FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
-    FederationRestMessageKind, FederationRestSequenceTracker, FederationSessionOutcome,
-    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationStateDigest,
-    FederationSubmitOperationRequest, FederationSubmitOperationResponse, MemberConfigPrivate,
-    MemberConfigPublic, MemberId, FEDERATION_REST_API_VERSION,
+    FederationMaterializedStateRowFingerprint, FederationMaterializedStateSnapshot,
+    FederationOperation, FederationOperationEnvelope, FederationOperationId,
+    FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
+    FederationPaymentObservationReport, FederationPaymentObservationReportSummary,
+    FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
+    FederationRestSequenceTracker, FederationSessionOutcome, FederationSessionOutcomeQuorum,
+    FederationSignedRequest, FederationStateDigest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, MemberConfigPrivate, MemberConfigPublic, MemberId,
+    FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
 use serde::{Deserialize, Serialize};
@@ -437,7 +438,9 @@ async fn post_local_status(
         .persist_federation_sequence(verified.sender, verified.sequence)
         .await
         .map_err(cdk_error_response)?;
-    let peer_status = local_peer_status(&state).await.map_err(anyhow_response)?;
+    let (peer_status, materialized_state_rows) = local_peer_status_with_materialized_rows(&state)
+        .await
+        .map_err(anyhow_response)?;
     let sync_status = state.federation_sync_status().await.unwrap_or_default();
     let session_outcome_quorum = session_outcome_quorum_status(&state)
         .await
@@ -450,6 +453,7 @@ async fn post_local_status(
         sync_status,
         session_outcome_quorum,
         payment_observation_reports,
+        materialized_state_rows,
     );
     #[cfg(feature = "prometheus")]
     record_federation_local_status_metrics(&response);
@@ -709,6 +713,8 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) session_outcome_quorum_signers: Vec<cdk::federation::MemberId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
 }
 
 impl FederationLocalStatusResponse {
@@ -717,6 +723,7 @@ impl FederationLocalStatusResponse {
         sync_status: crate::FederationSyncStatus,
         session_outcome_quorum: Option<SessionOutcomeQuorumStatus>,
         payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
+        materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
     ) -> Self {
         let session_outcome_quorum_operation_count = session_outcome_quorum
             .as_ref()
@@ -733,6 +740,7 @@ impl FederationLocalStatusResponse {
             session_outcome_quorum_operation_count,
             session_outcome_quorum_signers,
             payment_observation_reports,
+            materialized_state_rows,
         }
     }
 }
@@ -1544,25 +1552,54 @@ fn validate_peer_status(
 }
 
 async fn local_peer_status(state: &MintState) -> anyhow::Result<FederationPeerStatus> {
+    let (mut status, entries) = local_peer_status_and_entries(state).await?;
+    status.state_digest = materialized_state_digest(state, &entries).await?;
+    Ok(status)
+}
+
+async fn local_peer_status_with_materialized_rows(
+    state: &MintState,
+) -> anyhow::Result<(
+    FederationPeerStatus,
+    Vec<FederationMaterializedStateRowFingerprint>,
+)> {
+    let (mut status, entries) = local_peer_status_and_entries(state).await?;
+    let snapshot = materialized_state_snapshot(state, &entries).await?;
+    status.state_digest = snapshot.digest()?;
+    let materialized_state_rows = snapshot.row_fingerprints()?;
+    Ok((status, materialized_state_rows))
+}
+
+async fn local_peer_status_and_entries(
+    state: &MintState,
+) -> anyhow::Result<(FederationPeerStatus, Vec<FederationJournalEntry>)> {
     let consensus = state
         .federation_consensus
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("mint is not configured as a federation member"))?;
-    let (mut status, entries) = {
+    let (status, entries) = {
         let consensus = consensus.lock().await;
         (
             consensus.peer_status(),
             consensus.journal().entries().to_vec(),
         )
     };
-    status.state_digest = materialized_state_digest(state, &entries).await?;
-    Ok(status)
+    Ok((status, entries))
 }
 
 async fn materialized_state_digest(
     state: &MintState,
     entries: &[FederationJournalEntry],
 ) -> anyhow::Result<FederationStateDigest> {
+    Ok(materialized_state_snapshot(state, entries)
+        .await?
+        .digest()?)
+}
+
+async fn materialized_state_snapshot(
+    state: &MintState,
+    entries: &[FederationJournalEntry],
+) -> anyhow::Result<FederationMaterializedStateSnapshot> {
     let db = state.mint.localstore();
     let mut snapshot = FederationMaterializedStateSnapshot::new();
     let mut mint_quotes = BTreeSet::new();
@@ -1788,7 +1825,7 @@ async fn materialized_state_digest(
         }
     }
 
-    Ok(snapshot.digest()?)
+    Ok(snapshot)
 }
 
 fn federation_keyset_materialized_row(
@@ -6596,6 +6633,10 @@ mod tests {
         assert_eq!(response.session_outcome_quorum_operation_count, None);
         assert!(response.session_outcome_quorum_signers.is_empty());
         assert!(response.payment_observation_reports.is_empty());
+        assert!(!response.materialized_state_rows.is_empty());
+        let status_json = serde_json::to_string(&response).expect("status json");
+        assert!(!status_json
+            .contains("0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41"));
     }
 
     #[tokio::test]
