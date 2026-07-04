@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Durable DKG records can now assemble final member configs</span>
+          <span class="value">Mint startup can activate finalized DKG configs from durable records</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: assemble DKG final member configs</span>
+          <span class="value">feat: activate DKG final configs on startup</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Common DKG completion logic turns durable keyset-share records and durable transcript signatures into a validated public federation config plus local private member config</span>
+          <span class="value">MintBuilder reloads completed DKG keyset shares and transcript signatures, promotes setup-only configs after validation, leaves incomplete setup resumable, and fails closed on mismatched local records</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Load DKG completion records from mint storage at startup and activate the finalized runtime config after restart-safe validation</span>
+          <span class="value">Drive completed DKG setup through member route recovery and operator tooling, then prepare key rotation and federation upgrade steps</span>
         </div>
       </aside>
     </header>
@@ -1111,6 +1111,10 @@
             <p>The common layer can now combine a setup roster, local DKG keyset-share records, and transcript-signature approvals into the exact public config and local private config a member needs after DKG completion.</p>
           </article>
           <article class="item">
+            <h3>Startup activates final DKG configs</h3>
+            <p>A setup-only federation member can now restart, reload durable DKG keyset shares plus transcript approvals, and switch to the finalized public/private runtime config only after validation succeeds.</p>
+          </article>
+          <article class="item">
             <h3>Accepted order survives storage</h3>
             <p>The federation journal row shape now preserves consensus order, digest continuity, local application status, quote conflict metadata, and member sequence watermarks across SQL round trips.</p>
           </article>
@@ -1543,6 +1547,10 @@
             <p>Durable DKG keyset shares and durable transcript-signature records can now materialize a final public federation config with setup transcript plus a local private config with secret shares and transcript-hash binding.</p>
           </article>
           <article class="item">
+            <h3>Restart-safe DKG activation ready</h3>
+            <p>Mint startup now promotes setup-only configs from stored DKG completion records, keeps partial transcript collection resumable, and rejects mismatched local member records before the mint starts signing.</p>
+          </article>
+          <article class="item">
             <h3>State convergence certification planned</h3>
             <p>The implementation plan now has Milestone 16A, an explicit gate for consensus-visible database equality, canonical snapshots, quorum-backed catch-up evidence, safe catch-up mode, digest comparison, and row-level mismatch diagnostics.</p>
           </article>
@@ -1566,7 +1574,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG scaffolding now covers commitments, reveals, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, and durable transcript-signature approvals. The remaining setup work is final config assembly, restart recovery, and key rotation.</p>
+            <p>The DKG scaffolding now covers commitments, reveals, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, and startup activation. The remaining setup work is route-driven completion recovery, operator tooling, and key rotation.</p>
           </article>
         </div>
       </section>
@@ -1708,6 +1716,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation dkg_finalized_member_config -- --test-threads 1` passed final public/private config assembly from durable records and missing-transcript-signature rejection. `cargo test -p cdk-common --features federation federation -- --test-threads 1` passed 108 federation tests, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed.</td>
               <td>Load stored DKG completion records during mint startup and activate the finalized runtime config only after validation succeeds.</td>
+            </tr>
+            <tr>
+              <td>DKG startup activation</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --lib --features federation mint::builder -- --test-threads 1` passed 19 builder tests, including finalized config activation from completed DKG records, resumable incomplete transcript signatures, and mismatched local-member record rejection. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Drive completed DKG setup through private member route recovery and generated operator flows, then add key-rotation and federation-upgrade tests.</td>
             </tr>
             <tr>
               <td>State convergence certification plan</td>
@@ -2337,8 +2351,8 @@
             <p>Add storage-backed process variants and explicit mismatch injection so every consensus-visible digest row, including unresolved payment observations, is proven across replay and restart paths.</p>
           </article>
           <article class="item">
-            <h3>DKG completion wiring</h3>
-            <p>Load durable setup transcript signatures and DKG member keyset-share records during mint startup, activate the finalized public/private runtime config, and prove restart recovery does not change accepted setup state.</p>
+            <h3>DKG route recovery and rotation</h3>
+            <p>Drive completed DKG setup records through private REST and mintd recovery flows, then plan v3/BLS-only key rotation and federation upgrade tests around the finalized runtime config.</p>
           </article>
           <article class="item">
             <h3>BFT backend selection</h3>

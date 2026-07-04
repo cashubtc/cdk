@@ -6,6 +6,8 @@ use std::sync::Arc;
 use bitcoin::bip32::DerivationPath;
 use cdk_common::database::{DynMintAuthDatabase, DynMintDatabase, MintKeysDatabase};
 use cdk_common::error::Error;
+#[cfg(feature = "federation")]
+use cdk_common::federation::{FederationDkgFinalizedMemberConfig, FederationError};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut02::KeySetVersion;
 use cdk_common::nut04::MintMethodOptions;
@@ -165,6 +167,74 @@ impl MintBuilder {
     #[must_use]
     pub fn federation_config(&self) -> Option<&FederationRuntimeConfig> {
         self.federation_config.as_ref()
+    }
+
+    #[cfg(feature = "federation")]
+    async fn activate_federation_dkg_records_if_complete(&mut self) -> Result<(), Error> {
+        let Some(runtime_config) = self.federation_config.as_ref() else {
+            return Ok(());
+        };
+        if !runtime_config.public_config().keysets.is_empty()
+            || runtime_config.public_config().setup_transcript.is_some()
+        {
+            return Ok(());
+        }
+
+        let setup_public_config = runtime_config.public_config().clone();
+        let local_private_config = runtime_config.private_config().clone();
+        let keyset_shares = self
+            .localstore
+            .get_federation_dkg_member_keyset_shares()
+            .await?;
+        let transcript_signatures = self
+            .localstore
+            .get_federation_dkg_transcript_signatures()
+            .await?;
+
+        if keyset_shares.is_empty() && transcript_signatures.is_empty() {
+            return Ok(());
+        }
+        if keyset_shares.is_empty() {
+            tracing::info!("Federation DKG startup activation waiting for keyset shares");
+            return Ok(());
+        }
+        if transcript_signatures.is_empty() {
+            tracing::info!("Federation DKG startup activation waiting for transcript signatures");
+            return Ok(());
+        }
+
+        match FederationDkgFinalizedMemberConfig::from_records(
+            &setup_public_config,
+            &local_private_config,
+            &keyset_shares,
+            &transcript_signatures,
+        ) {
+            Ok(finalized) => {
+                let member_id = finalized.private_config.member_id;
+                let keyset_count = finalized.public_config.keysets.len();
+                self.federation_config = Some(FederationRuntimeConfig::new(
+                    finalized.public_config,
+                    finalized.private_config,
+                )?);
+                self.federation_mode = FederationMode::Member;
+                tracing::info!(
+                    %member_id,
+                    keyset_count,
+                    "Activated finalized federation DKG config from durable records"
+                );
+                Ok(())
+            }
+            Err(FederationError::DkgTranscriptMismatch { reason })
+                if reason.contains("missing transcript signature") =>
+            {
+                tracing::info!(
+                    %reason,
+                    "Federation DKG startup activation waiting for complete transcript signatures"
+                );
+                Ok(())
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Set use keyset v2
@@ -640,6 +710,9 @@ impl MintBuilder {
         signatory: Arc<dyn Signatory + Send + Sync>,
     ) -> Result<Mint, Error> {
         #[cfg(feature = "federation")]
+        self.activate_federation_dkg_records_if_complete().await?;
+
+        #[cfg(feature = "federation")]
         let federation_mode = self.federation_mode;
 
         // Check active keysets and rotate if necessary
@@ -858,18 +931,38 @@ impl MintMeltLimits {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "federation")]
+    use std::collections::BTreeMap;
     use std::collections::HashMap;
     use std::pin::Pin;
+    #[cfg(feature = "federation")]
+    use std::str::FromStr;
     use std::sync::Arc;
 
     use async_trait::async_trait;
     use bip39::Mnemonic;
+    #[cfg(feature = "federation")]
+    use cdk_common::database::MintDatabase;
+    #[cfg(feature = "federation")]
+    use cdk_common::federation::{
+        generate_trusted_dealer_configs, FederatedKeyset, FederationConfig,
+        FederationDkgMemberKeysetShare, FederationDkgSetupMethod, FederationDkgTranscript,
+        FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest,
+        MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
+        TrustedDealerMember,
+    };
+    #[cfg(feature = "federation")]
+    use cdk_common::mint_url::MintUrl;
     use cdk_common::nut21::{Method, RoutePath};
+    #[cfg(feature = "federation")]
+    use cdk_common::nuts::nut01::BlsSecretKey;
     use cdk_common::payment::{
         Bolt11Settings, Bolt12Settings, CreateIncomingPaymentResponse, Event,
         IncomingPaymentOptions, MakePaymentResponse, OnchainSettings, OutgoingPaymentOptions,
         PaymentIdentifier, PaymentQuoteResponse, SettingsResponse,
     };
+    #[cfg(feature = "federation")]
+    use cdk_common::SecretKey;
     use cdk_sqlite::mint::{memory, MintSqliteAuthDatabase, MintSqliteDatabase};
     use futures::Stream;
     use KnownMethod;
@@ -975,6 +1068,176 @@ mod tests {
             .to_vec()
     }
 
+    #[cfg(feature = "federation")]
+    struct DkgCompletionFixture {
+        setup_runtime_config: FederationRuntimeConfig,
+        final_public_config: FederationConfig,
+        keyset_share: FederationDkgMemberKeysetShare,
+        transcript_signatures: Vec<FederationDkgTranscriptSignatureRequest>,
+    }
+
+    #[cfg(feature = "federation")]
+    fn member_id(id: u16) -> MemberId {
+        MemberId::new(id).expect("member id")
+    }
+
+    #[cfg(feature = "federation")]
+    fn identity_secret(member_id: MemberId) -> SecretKey {
+        let mut bytes = [0u8; 32];
+        bytes[31] = member_id.get() as u8;
+        SecretKey::from_slice(&bytes).expect("identity secret")
+    }
+
+    #[cfg(feature = "federation")]
+    fn member(member_id: MemberId) -> TrustedDealerMember {
+        TrustedDealerMember::new(
+            member_id,
+            MintUrl::from_str(&format!("https://mint{}.example.com", member_id.get()))
+                .expect("public mint url"),
+            MintUrl::from_str(&format!("https://fed{}.example.com", member_id.get()))
+                .expect("federation api url"),
+            identity_secret(member_id),
+        )
+    }
+
+    #[cfg(feature = "federation")]
+    fn bls_key(byte: u8) -> BlsSecretKey {
+        BlsSecretKey::from_reduced_bytes(&[byte; 32])
+    }
+
+    #[cfg(feature = "federation")]
+    fn dkg_completion_fixture(local_member: MemberId) -> DkgCompletionFixture {
+        let bundle = generate_trusted_dealer_configs(
+            ThresholdParams::with_bft_consensus(3, 2).expect("params"),
+            vec![
+                member(member_id(1)),
+                member(member_id(2)),
+                member(member_id(3)),
+            ],
+            vec![TrustedDealerKeysetSpec::new(
+                CurrencyUnit::Sat,
+                true,
+                0,
+                None,
+                BTreeMap::from([
+                    (Amount::from(1), vec![bls_key(11), bls_key(12)]),
+                    (Amount::from(2), vec![bls_key(21), bls_key(22)]),
+                ]),
+            )],
+        )
+        .expect("trusted dealer bundle");
+
+        let mut final_public_config = bundle.public_config.clone();
+        final_public_config.setup_transcript = None;
+        let transcript_hash = FederationDkgTranscript::hash_for_config(
+            FederationDkgSetupMethod::PedersenDkg,
+            &final_public_config,
+        )
+        .expect("pedersen transcript hash");
+        let transcript_signatures = bundle
+            .private_configs
+            .values()
+            .map(|private_config| {
+                FederationDkgTranscriptSignatureRequest::new(
+                    final_public_config.federation_id,
+                    private_config.member_id,
+                    transcript_hash,
+                    FederationDkgTranscriptSignature::sign(transcript_hash, private_config)
+                        .expect("transcript signature"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let transcript = FederationDkgTranscript::from_signatures(
+            FederationDkgSetupMethod::PedersenDkg,
+            &final_public_config,
+            transcript_signatures
+                .iter()
+                .map(|signature| (signature.signer, signature.signature))
+                .collect(),
+        )
+        .expect("pedersen transcript");
+        final_public_config.setup_transcript = Some(transcript);
+        final_public_config.validate().expect("final public config");
+
+        let final_keyset = final_public_config
+            .keysets
+            .first()
+            .expect("federated keyset")
+            .clone();
+        let local_private_config = bundle
+            .private_configs
+            .get(&local_member)
+            .expect("local private config");
+        let keyset_share = keyset_share_from_private(
+            final_public_config.federation_id,
+            local_member,
+            &final_keyset,
+            local_private_config,
+        );
+
+        let mut setup_public_config = final_public_config.clone();
+        setup_public_config.keysets.clear();
+        setup_public_config.setup_transcript = None;
+        setup_public_config.validate().expect("setup public config");
+
+        let mut setup_private_config = local_private_config.clone();
+        setup_private_config.keyset_secret_shares.clear();
+        setup_private_config.setup_transcript_hash = None;
+        setup_private_config
+            .validate_against_public(&setup_public_config)
+            .expect("setup private config");
+
+        let setup_runtime_config =
+            FederationRuntimeConfig::new(setup_public_config, setup_private_config)
+                .expect("setup runtime config");
+
+        DkgCompletionFixture {
+            setup_runtime_config,
+            final_public_config,
+            keyset_share,
+            transcript_signatures,
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    fn keyset_share_from_private(
+        federation_id: cdk_common::federation::FederationId,
+        local_member: MemberId,
+        keyset: &FederatedKeyset,
+        private_config: &MemberConfigPrivate,
+    ) -> FederationDkgMemberKeysetShare {
+        FederationDkgMemberKeysetShare {
+            federation_id,
+            member_id: local_member,
+            keyset: keyset.clone(),
+            secret_shares: private_config
+                .keyset_secret_shares
+                .get(&keyset.id)
+                .expect("local keyset secret shares")
+                .clone(),
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    async fn persist_dkg_completion_records(
+        localstore: &Arc<MintSqliteDatabase>,
+        keyset_share: &FederationDkgMemberKeysetShare,
+        transcript_signatures: &[FederationDkgTranscriptSignatureRequest],
+    ) {
+        let mut tx = MintDatabase::begin_transaction(localstore.as_ref())
+            .await
+            .expect("begin dkg records");
+        tx.add_federation_dkg_member_keyset_share(keyset_share)
+            .await
+            .expect("persist dkg keyset share");
+        for signature in transcript_signatures {
+            tx.add_federation_dkg_transcript_signature(signature)
+                .await
+                .expect("persist dkg transcript signature");
+        }
+        tx.commit().await.expect("commit dkg records");
+    }
+
     #[tokio::test]
     async fn test_mint_builder_default_nuts_support() {
         let localstore = Arc::new(memory::empty().await.unwrap());
@@ -1057,6 +1320,112 @@ mod tests {
             assert_eq!(keysets.len(), 1);
             assert_eq!(keysets[0].id.get_version(), expected_version);
         }
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn dkg_completion_records_activate_federation_config_on_build() {
+        let (builder, localstore) = builder_with_bolt11_processor().await;
+        let fixture = dkg_completion_fixture(member_id(2));
+        persist_dkg_completion_records(
+            &localstore,
+            &fixture.keyset_share,
+            &fixture.transcript_signatures,
+        )
+        .await;
+
+        let mint = builder
+            .with_federation_config(fixture.setup_runtime_config)
+            .build_with_seed(localstore, &seed())
+            .await
+            .expect("mint starts with completed DKG records");
+        let runtime_config = mint
+            .federation_config()
+            .expect("activated federation config");
+        let setup_transcript = runtime_config
+            .public_config()
+            .setup_transcript
+            .as_ref()
+            .expect("setup transcript");
+
+        assert_eq!(runtime_config.public_config(), &fixture.final_public_config);
+        assert_eq!(
+            setup_transcript.payload.setup_method,
+            FederationDkgSetupMethod::PedersenDkg
+        );
+        assert_eq!(
+            runtime_config
+                .private_config()
+                .keyset_secret_shares
+                .get(&fixture.keyset_share.keyset.id),
+            Some(&fixture.keyset_share.secret_shares)
+        );
+        assert_eq!(
+            runtime_config.private_config().setup_transcript_hash,
+            Some(setup_transcript.transcript_hash)
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn dkg_completion_records_can_remain_incomplete_on_build() {
+        let (builder, localstore) = builder_with_bolt11_processor().await;
+        let mut fixture = dkg_completion_fixture(member_id(2));
+        fixture
+            .transcript_signatures
+            .retain(|signature| signature.signer != member_id(3));
+        persist_dkg_completion_records(
+            &localstore,
+            &fixture.keyset_share,
+            &fixture.transcript_signatures,
+        )
+        .await;
+
+        let mint = builder
+            .with_federation_config(fixture.setup_runtime_config)
+            .build_with_seed(localstore, &seed())
+            .await
+            .expect("mint starts while DKG records are incomplete");
+        let runtime_config = mint
+            .federation_config()
+            .expect("setup federation config remains attached");
+
+        assert!(runtime_config.public_config().keysets.is_empty());
+        assert!(runtime_config.public_config().setup_transcript.is_none());
+        assert!(runtime_config
+            .private_config()
+            .keyset_secret_shares
+            .is_empty());
+        assert!(runtime_config
+            .private_config()
+            .setup_transcript_hash
+            .is_none());
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn dkg_completion_records_reject_mismatched_local_member_on_build() {
+        let (builder, localstore) = builder_with_bolt11_processor().await;
+        let mut fixture = dkg_completion_fixture(member_id(2));
+        fixture.keyset_share.member_id = member_id(3);
+        persist_dkg_completion_records(
+            &localstore,
+            &fixture.keyset_share,
+            &fixture.transcript_signatures,
+        )
+        .await;
+
+        let err = builder
+            .with_federation_config(fixture.setup_runtime_config)
+            .build_with_seed(localstore, &seed())
+            .await
+            .expect_err("mismatched DKG records fail startup");
+
+        assert!(matches!(
+            err,
+            Error::Federation(FederationError::MemberIdMismatch { expected, found })
+                if expected == member_id(2) && found == member_id(3)
+        ));
     }
 
     #[tokio::test]
