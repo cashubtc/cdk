@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated local federation smoke passed end to end, Postgres smoke cleanup resets generated member schemas, and setup-only DKG route-probe smoke now has dedicated helper recipes</span>
+          <span class="value">Generated local federation smoke passed end to end, setup-only DKG route-probe smoke has dedicated helper recipes, and long-partition catch-up smoke passed with five offline batches</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: add dkg setup smoke recipes</span>
+          <span class="value">test: add long partition smoke recipes</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Dedicated setup-only DKG just recipes render cleanly, and the SQLite helper passed a fresh 3-member/2-threshold restart activation smoke</span>
+          <span class="value">Dedicated long-partition just recipes render cleanly, and the SQLite helper passed a 3-member/2-threshold smoke with five offline operation batches</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Run the setup-only DKG helper and the longer process smoke against a real Postgres-backed local process environment when Postgres is available</span>
+          <span class="value">Run setup-only DKG, long-partition, and full process smoke against a real Postgres-backed local process environment when Postgres is available</span>
         </div>
       </aside>
     </header>
@@ -1441,6 +1441,10 @@
           <article class="item">
             <h3>Multi-batch partition smoke verified</h3>
             <p>The generated local smoke can now keep one member offline across several deterministic wallet-operation batches, using distinct wallet seeds per batch, then restart the member and require signed status plus digest convergence.</p>
+          </article>
+          <article class="item">
+            <h3>Long-partition helper smoke verified</h3>
+            <p>`fed-regtest-long-partition` now provides a named regtest entrypoint for extended offline windows, and a live 3-member/2-threshold run passed five offline batches plus pending melt recovery, quarantine catch-up, and offline keyset rotation.</p>
           </article>
           <article class="item">
             <h3>Catch-up quorum evidence visible</h3>
@@ -2572,6 +2576,12 @@
               <td>Run the default five-member helper smoke periodically and reuse the quorum-gated recipe for future Postgres-backed process smoke once a service is available.</td>
             </tr>
             <tr>
+              <td>Long-partition helper smoke</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`just --show fed-regtest-long-partition`, `just --show fed-regtest-postgres-long-partition`, and `git diff --check` passed. `just fed-regtest-long-partition &lt;generated-dir&gt; 3 2 25885 5` passed with baseline wallet operations, five offline wallet-operation batches, restarted-member catch-up, session-outcome quorum evidence, paid and failed pending-melt recovery, quarantine catch-up, offline keyset rotation, restored old-keyset spend, post-rotation mint/melt, and clean shutdown.</td>
+              <td>Repeat the long-partition helper against five members and Postgres-backed member storage when a local Postgres service is available.</td>
+            </tr>
+            <tr>
               <td>Backend smoke config matrix</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation -- --test-threads 1` passed 33 mintd federation tests, including Postgres trusted-dealer CLI parsing, distinct per-member Postgres URL generation, shared-base URL schema generation, and invalid option rejection. `cargo build -p cdk-mintd --features federation,fakewallet,sqlite,postgres` passed, and a generated Postgres-backed federation config bundle produced one shared database URL with distinct member schemas. A local Postgres probe found no listening service, so the live process smoke remains pending.</td>
@@ -2670,7 +2680,7 @@
           </article>
           <article class="item">
             <h3>Longer partition windows</h3>
-            <p>Keep a member offline across several operation batches and payment-observation phases before catch-up, then compare digest convergence and signed status evidence.</p>
+            <p>Repeat the long-partition helper with the default five-member topology and with Postgres-backed storage, then compare digest convergence and signed status evidence.</p>
           </article>
           <article class="item">
             <h3>Broader materialized digest coverage</h3>
@@ -2678,7 +2688,7 @@
           </article>
           <article class="item">
             <h3>Rotation state transition</h3>
-            <p>Keep one member offline across the keyset rotation operation and verify restart catch-up converges, then repeat the generated smoke with Postgres-backed storage.</p>
+            <p>Repeat the offline keyset-rotation smoke with Postgres-backed storage and larger federation sizes.</p>
           </article>
           <article class="item">
             <h3>BFT backend selection</h3>
