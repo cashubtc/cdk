@@ -217,6 +217,14 @@ where
 /// methods share most field names, and the structs tolerate unknown fields
 /// for forward compatibility, so untagged trial-and-error would pick the
 /// wrong variant.
+fn fill_response_method(value: &mut serde_json::Value, method: &str) {
+    if let serde_json::Value::Object(object) = value {
+        object
+            .entry("method".to_string())
+            .or_insert_with(|| serde_json::Value::String(method.to_string()));
+    }
+}
+
 fn deserialize_payload<T, E>(value: serde_json::Value) -> Result<NotificationPayload<T>, E>
 where
     T: Clone + Serialize + DeserializeOwned,
@@ -241,6 +249,10 @@ where
             }
 
             if fields.contains_key("fee_reserve") {
+                if fields.get("method").and_then(serde_json::Value::as_str) == Some("bolt12") {
+                    return from_value(value).map(NotificationPayload::MeltQuoteBolt12Response);
+                }
+
                 return from_value(value).map(NotificationPayload::MeltQuoteBolt11Response);
             }
 
@@ -255,19 +267,34 @@ where
             from_value(value).map(NotificationPayload::MintQuoteOnchainResponse)
         }
         serde_json::Value::Array(items) if items.len() == 2 => {
+            let method = items
+                .first()
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| E::custom("custom notification method must be a string"))?
+                .to_owned();
             let response = items
                 .get(1)
                 .ok_or_else(|| E::custom("custom notification payload is missing response"))?;
-            match response.as_object() {
-                Some(fields) if fields.contains_key("state") => {
-                    from_value(value).map(|(method, response)| {
-                        NotificationPayload::CustomMeltQuoteResponse(method, response)
-                    })
+            let is_melt_quote = match response.as_object() {
+                Some(fields) => fields.contains_key("state"),
+                None => return Err(E::custom("custom notification response must be an object")),
+            };
+
+            let mut value = value;
+            if let serde_json::Value::Array(items) = &mut value {
+                if let Some(response) = items.get_mut(1) {
+                    fill_response_method(response, &method);
                 }
-                Some(_) => from_value(value).map(|(method, response)| {
+            }
+
+            if is_melt_quote {
+                from_value(value).map(|(method, response)| {
+                    NotificationPayload::CustomMeltQuoteResponse(method, response)
+                })
+            } else {
+                from_value(value).map(|(method, response)| {
                     NotificationPayload::CustomMintQuoteResponse(method, response)
-                }),
-                None => Err(E::custom("custom notification response must be an object")),
+                })
             }
         }
         _ => Err(E::custom("invalid notification payload")),
@@ -494,6 +521,34 @@ mod tests {
     }
 
     #[test]
+    fn notification_payload_bolt12_melt_roundtrip() {
+        let resp: MeltQuoteBolt12Response<String> = MeltQuoteBolt12Response {
+            quote: "abc".to_string(),
+            amount: Amount::from(100_000),
+            fee_reserve: Amount::from(10),
+            state: MeltQuoteState::Pending,
+            expiry: 1701704757,
+            payment_preimage: None,
+            change: None,
+            request: Some("lno1...".to_string()),
+            unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Known(KnownMethod::Bolt12),
+        };
+        let payload: NotificationPayload<String> =
+            NotificationPayload::MeltQuoteBolt12Response(resp.clone());
+
+        let encoded = serde_json::to_string(&payload).unwrap();
+        let decoded: NotificationPayload<String> = serde_json::from_str(&encoded).unwrap();
+
+        match decoded {
+            NotificationPayload::MeltQuoteBolt12Response(r) => {
+                assert_eq!(r, resp);
+            }
+            other => panic!("expected MeltQuoteBolt12Response, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn notification_payload_custom_arrays_require_method_and_object_response() {
         let custom_mint = r#"[
             "paypal",
@@ -512,6 +567,7 @@ mod tests {
             NotificationPayload::CustomMintQuoteResponse(method, response) => {
                 assert_eq!(method, "paypal");
                 assert_eq!(response.quote, "abc");
+                assert_eq!(response.method, PaymentMethod::Custom("paypal".to_string()));
             }
             other => panic!("expected CustomMintQuoteResponse, got {:?}", other),
         }
@@ -533,6 +589,7 @@ mod tests {
             NotificationPayload::CustomMeltQuoteResponse(method, response) => {
                 assert_eq!(method, "paypal");
                 assert_eq!(response.quote, "abc");
+                assert_eq!(response.method, PaymentMethod::Custom("paypal".to_string()));
             }
             other => panic!("expected CustomMeltQuoteResponse, got {:?}", other),
         }

@@ -27,6 +27,7 @@ use cdk_common::{
     MeltQuoteOnchainResponse, Method, MintQuoteBolt11Response, MintQuoteBolt12Response,
     MintQuoteCustomResponse, MintQuoteOnchainResponse, PaymentMethod, ProofState, RoutePath,
 };
+use serde::de::DeserializeOwned;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -52,6 +53,35 @@ enum RawWsMessageOrResponse<I> {
 
 /// Notification Payload
 pub type NotificationPayload = crate::nuts::NotificationPayload<String>;
+
+fn fill_response_method(value: &mut serde_json::Value, method: &str) {
+    if let serde_json::Value::Object(object) = value {
+        object
+            .entry("method".to_string())
+            .or_insert_with(|| serde_json::Value::String(method.to_string()));
+    }
+}
+
+fn deserialize_custom_quote_payload<R>(
+    mut payload: serde_json::Value,
+    kind: &str,
+    suffix: &str,
+) -> Result<R, PubsubError>
+where
+    R: DeserializeOwned,
+{
+    let method = kind
+        .strip_suffix(suffix)
+        .filter(|method| !method.is_empty())
+        .ok_or_else(|| {
+            PubsubError::ParsingError(format!(
+                "Invalid custom websocket notification kind: {kind}"
+            ))
+        })?;
+
+    fill_response_method(&mut payload, method);
+    serde_json::from_value(payload).map_err(|err| PubsubError::ParsingError(err.to_string()))
+}
 
 /// Type alias
 pub type ActiveSubscription = RemoteActiveConsumer<SubscriptionClient>;
@@ -270,16 +300,22 @@ fn decode_notification_payload(
                 .map(NotificationPayload::MeltQuoteOnchainResponse)
                 .map_err(|err| PubsubError::ParsingError(err.to_string()))
         }
-        Kind::Custom(method) if method.ends_with("_mint_quote") => serde_json::from_value::<
-            MintQuoteCustomResponse<String>,
-        >(payload)
-        .map(|response| NotificationPayload::CustomMintQuoteResponse(method.clone(), response))
-        .map_err(|err| PubsubError::ParsingError(err.to_string())),
-        Kind::Custom(method) if method.ends_with("_melt_quote") => serde_json::from_value::<
-            MeltQuoteCustomResponse<String>,
-        >(payload)
-        .map(|response| NotificationPayload::CustomMeltQuoteResponse(method.clone(), response))
-        .map_err(|err| PubsubError::ParsingError(err.to_string())),
+        Kind::Custom(method) if method.ends_with("_mint_quote") => {
+            deserialize_custom_quote_payload::<MintQuoteCustomResponse<String>>(
+                payload,
+                method,
+                "_mint_quote",
+            )
+            .map(|response| NotificationPayload::CustomMintQuoteResponse(method.clone(), response))
+        }
+        Kind::Custom(method) if method.ends_with("_melt_quote") => {
+            deserialize_custom_quote_payload::<MeltQuoteCustomResponse<String>>(
+                payload,
+                method,
+                "_melt_quote",
+            )
+            .map(|response| NotificationPayload::CustomMeltQuoteResponse(method.clone(), response))
+        }
         Kind::Custom(method) => Err(PubsubError::ParsingError(format!(
             "Unsupported custom websocket notification kind: {method}"
         ))),
@@ -750,7 +786,7 @@ mod tests {
 
     #[test]
     fn decode_bolt12_notification() {
-        let payload = json!({
+        let mint_payload = json!({
             "quote": "quote-id",
             "request": "lni1...",
             "amount": null,
@@ -762,13 +798,31 @@ mod tests {
             "amount_paid": 0,
             "amount_issued": 0
         });
+        let melt_payload = json!({
+            "quote": "melt-quote",
+            "amount": 21,
+            "fee_reserve": 1,
+            "state": "PAID",
+            "expiry": 1234,
+            "request": "lni1...",
+            "unit": "sat"
+        });
 
-        let decoded = decode_notification_payload(&Kind::Bolt12MintQuote, payload).unwrap();
+        let mint_decoded =
+            decode_notification_payload(&Kind::Bolt12MintQuote, mint_payload).unwrap();
+        let melt_decoded =
+            decode_notification_payload(&Kind::Bolt12MeltQuote, melt_payload).unwrap();
 
         assert!(matches!(
-            decoded,
+            mint_decoded,
             NotificationPayload::MintQuoteBolt12Response(_)
         ));
+        match melt_decoded {
+            NotificationPayload::MeltQuoteBolt12Response(response) => {
+                assert_eq!(response.method, PaymentMethod::BOLT12);
+            }
+            _ => panic!("expected bolt12 melt response"),
+        }
     }
 
     #[test]
@@ -778,7 +832,6 @@ mod tests {
         let mint_payload = json!({
             "quote": "mint-custom",
             "request": "custom-request",
-            "method": "foo",
             "amount": 42,
             "unit": "sat",
             "amount_paid": 0,
@@ -791,7 +844,6 @@ mod tests {
             "quote": "melt-custom",
             "amount": 42,
             "fee_reserve": 1,
-            "method": "foo",
             "state": "PAID",
             "expiry": 1234,
             "payment_proof": null,
@@ -807,11 +859,13 @@ mod tests {
 
         assert!(matches!(
             mint_decoded,
-            NotificationPayload::CustomMintQuoteResponse(method, _) if method == mint_method
+            NotificationPayload::CustomMintQuoteResponse(method, response)
+                if method == mint_method && response.method == "foo"
         ));
         assert!(matches!(
             melt_decoded,
-            NotificationPayload::CustomMeltQuoteResponse(method, _) if method == melt_method
+            NotificationPayload::CustomMeltQuoteResponse(method, response)
+                if method == melt_method && response.method == "foo"
         ));
     }
 

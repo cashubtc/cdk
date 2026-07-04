@@ -1,8 +1,9 @@
 //! Bolt12
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::{CurrencyUnit, MeltOptions, PaymentMethod, PublicKey};
+use super::{BlindSignature, CurrencyUnit, MeltOptions, MeltQuoteState, PaymentMethod, PublicKey};
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteId;
 use crate::Amount;
@@ -110,7 +111,74 @@ pub struct MeltQuoteBolt12Request {
 }
 
 /// Melt quote response [NUT-25]
-pub type MeltQuoteBolt12Response<Q> = crate::nuts::nut23::MeltQuoteBolt11Response<Q>;
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(bound = "Q: Serialize + DeserializeOwned")]
+pub struct MeltQuoteBolt12Response<Q> {
+    /// Quote Id
+    pub quote: Q,
+    /// The amount that needs to be provided
+    pub amount: Amount,
+    /// The fee reserve that is required
+    pub fee_reserve: Amount,
+    /// Quote State
+    pub state: MeltQuoteState,
+    /// Unix timestamp until the quote is valid
+    pub expiry: u64,
+    /// Payment preimage
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payment_preimage: Option<String>,
+    /// Change
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub change: Option<Vec<BlindSignature>>,
+    /// Payment request to fulfill
+    // REVIEW: This is now required in the spec, we should remove the option once all mints update
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
+    /// Unit
+    // REVIEW: This is now required in the spec, we should remove the option once all mints update
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<CurrencyUnit>,
+    /// Payment method
+    #[serde(default = "default_bolt12_method")]
+    pub method: PaymentMethod,
+}
+
+impl<Q: ToString> MeltQuoteBolt12Response<Q> {
+    /// Convert a `MeltQuoteBolt12Response` with type Q (generic/unknown) to a
+    /// `MeltQuoteBolt12Response` with `String`
+    pub fn to_string_id(self) -> MeltQuoteBolt12Response<String> {
+        MeltQuoteBolt12Response {
+            quote: self.quote.to_string(),
+            amount: self.amount,
+            fee_reserve: self.fee_reserve,
+            state: self.state,
+            expiry: self.expiry,
+            payment_preimage: self.payment_preimage,
+            change: self.change,
+            request: self.request,
+            unit: self.unit,
+            method: self.method,
+        }
+    }
+}
+
+#[cfg(feature = "mint")]
+impl From<MeltQuoteBolt12Response<QuoteId>> for MeltQuoteBolt12Response<String> {
+    fn from(value: MeltQuoteBolt12Response<QuoteId>) -> Self {
+        Self {
+            quote: value.quote.to_string(),
+            amount: value.amount,
+            fee_reserve: value.fee_reserve,
+            state: value.state,
+            expiry: value.expiry,
+            payment_preimage: value.payment_preimage,
+            change: value.change,
+            request: value.request,
+            unit: value.unit,
+            method: value.method,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -158,6 +226,46 @@ mod tests {
         });
 
         let decoded: MintQuoteBolt12Response<String> =
+            from_value(value).expect("deserialize response");
+        assert_eq!(decoded.method, PaymentMethod::Known(KnownMethod::Bolt12));
+    }
+
+    #[test]
+    fn melt_quote_bolt12_response_serializes_method() {
+        let response = MeltQuoteBolt12Response {
+            quote: "quote-id".to_string(),
+            amount: Amount::from(10),
+            fee_reserve: Amount::from(2),
+            state: MeltQuoteState::Unpaid,
+            expiry: 1_701_704_757,
+            payment_preimage: None,
+            change: None,
+            request: Some("lno1...".to_string()),
+            unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Known(KnownMethod::Bolt12),
+        };
+
+        let value = to_value(&response).expect("serialize response");
+        assert_eq!(value["method"], json!("bolt12"));
+
+        let decoded: MeltQuoteBolt12Response<String> =
+            from_value(value).expect("deserialize response");
+        assert_eq!(decoded.method, PaymentMethod::Known(KnownMethod::Bolt12));
+    }
+
+    #[test]
+    fn melt_quote_bolt12_response_defaults_method() {
+        let value = json!({
+            "quote": "quote-id",
+            "amount": 10,
+            "fee_reserve": 2,
+            "state": "UNPAID",
+            "expiry": 1_701_704_757,
+            "request": "lno1...",
+            "unit": "sat"
+        });
+
+        let decoded: MeltQuoteBolt12Response<String> =
             from_value(value).expect("deserialize response");
         assert_eq!(decoded.method, PaymentMethod::Known(KnownMethod::Bolt12));
     }

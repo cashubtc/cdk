@@ -9,9 +9,10 @@ use cashu::nuts::nut30::MeltQuoteOnchainFeeOption;
 use cashu::quote_id::QuoteId;
 use cashu::util::unix_time;
 use cashu::{
-    Bolt11Invoice, MeltOptions, MeltQuoteBolt11Response, MeltQuoteCustomResponse,
-    MeltQuoteOnchainResponse, MintQuoteBolt11Response, MintQuoteBolt12Response,
-    MintQuoteCustomResponse, MintQuoteOnchainResponse, PaymentMethod, Proofs, State,
+    Bolt11Invoice, MeltOptions, MeltQuoteBolt11Response, MeltQuoteBolt12Response,
+    MeltQuoteCustomResponse, MeltQuoteOnchainResponse, MintQuoteBolt11Response,
+    MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteOnchainResponse, PaymentMethod,
+    Proofs, State,
 };
 use lightning::offers::offer::Offer;
 use serde::{Deserialize, Serialize};
@@ -1044,9 +1045,7 @@ impl MeltQuote {
     /// response with the provided signatures.
     ///
     /// Dispatches to the per-variant `From<MeltQuote>` conversions so that
-    /// field mapping stays centralized. Note that `MeltQuoteBolt12Response`
-    /// is a type alias for `MeltQuoteBolt11Response`, so both Bolt11 and
-    /// Bolt12 go through the same conversion.
+    /// field mapping stays centralized.
     pub fn into_response(
         self,
         change: Option<Vec<cashu::nuts::BlindSignature>>,
@@ -1058,7 +1057,7 @@ impl MeltQuote {
                 crate::MeltQuoteResponse::Bolt11(response)
             }
             PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt12) => {
-                let mut response: MeltQuoteBolt11Response<QuoteId> = self.into();
+                let mut response: MeltQuoteBolt12Response<QuoteId> = self.into();
                 response.change = change;
                 crate::MeltQuoteResponse::Bolt12(response)
             }
@@ -1342,6 +1341,41 @@ impl From<MeltQuote> for crate::nuts::MeltQuoteCustomResponse<QuoteId> {
         }
     }
 }
+
+impl From<&MeltQuote> for MeltQuoteBolt12Response<QuoteId> {
+    fn from(melt_quote: &MeltQuote) -> MeltQuoteBolt12Response<QuoteId> {
+        MeltQuoteBolt12Response {
+            quote: melt_quote.id.clone(),
+            payment_preimage: None,
+            change: None,
+            state: melt_quote.state,
+            expiry: melt_quote.expiry,
+            amount: melt_quote.amount().into(),
+            fee_reserve: melt_quote.fee_reserve().into(),
+            request: None,
+            unit: Some(melt_quote.unit.clone()),
+            method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt12),
+        }
+    }
+}
+
+impl From<MeltQuote> for MeltQuoteBolt12Response<QuoteId> {
+    fn from(melt_quote: MeltQuote) -> MeltQuoteBolt12Response<QuoteId> {
+        MeltQuoteBolt12Response {
+            quote: melt_quote.id.clone(),
+            amount: melt_quote.amount().into(),
+            fee_reserve: melt_quote.fee_reserve().into(),
+            state: melt_quote.state,
+            expiry: melt_quote.expiry,
+            payment_preimage: melt_quote.payment_proof,
+            change: None,
+            request: Some(melt_quote.request.to_string()),
+            unit: Some(melt_quote.unit.clone()),
+            method: PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt12),
+        }
+    }
+}
+
 impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
     type Error = Error;
 

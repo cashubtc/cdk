@@ -423,7 +423,7 @@ impl Mint {
     async fn get_melt_bolt12_quote_impl(
         &self,
         melt_request: &MeltQuoteBolt12Request,
-    ) -> Result<MeltQuoteBolt11Response<QuoteId>, Error> {
+    ) -> Result<MeltQuoteBolt12Response<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
         let metrics = super::MintMetricGuard::new("get_melt_bolt12_quote");
 

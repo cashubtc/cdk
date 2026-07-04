@@ -618,7 +618,18 @@ mod tests {
     }
 
     fn melt_bolt12_response(quote: &str, state: MeltQuoteState) -> MeltQuoteBolt12Response<String> {
-        melt_bolt11_response(quote, state)
+        MeltQuoteBolt12Response {
+            quote: quote.to_string(),
+            amount: Amount::from(100u64),
+            fee_reserve: Amount::from(1u64),
+            state,
+            expiry: 1234,
+            payment_preimage: None,
+            change: None,
+            request: Some("test_request".to_string()),
+            unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT12,
+        }
     }
 
     fn melt_onchain_response(
