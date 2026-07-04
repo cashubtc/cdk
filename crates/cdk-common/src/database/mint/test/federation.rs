@@ -9,7 +9,9 @@ use crate::federation::{
     FederationJournalCatchUpResponse, FederationJournalEntry, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, InMemoryFederationJournal, MemberConfigPrivate, MemberId,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationPaymentObservationReportStatus, InMemoryFederationJournal, MemberConfigPrivate,
+    MemberId,
 };
 use crate::nuts::nut00::KnownMethod;
 use crate::{
@@ -312,6 +314,32 @@ where
         quorum.conflicting_observers,
         vec![MemberId::new(3).expect("member three")]
     );
+
+    let report = FederationPaymentObservationReport::from_records(
+        FederationPaymentObservationContext::MintQuote,
+        "quote-1",
+        2,
+        &persisted,
+    );
+    assert_eq!(
+        report.status,
+        FederationPaymentObservationReportStatus::Conflicting
+    );
+    assert_eq!(report.total_observations, 3);
+    assert_eq!(report.groups.len(), 2);
+    assert_eq!(
+        report.groups[0].observers,
+        vec![
+            MemberId::new(1).expect("member one"),
+            MemberId::new(2).expect("member two")
+        ]
+    );
+    assert!(report.groups[0].quorum_reached);
+    assert_eq!(
+        report.groups[0].conflicting_observers,
+        vec![MemberId::new(3).expect("member three")]
+    );
+    assert!(report.has_conflicts());
 
     let unrelated_persisted = db
         .get_federation_payment_observations(

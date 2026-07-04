@@ -76,7 +76,12 @@ state, context, and typed JSON evidence. The mint state machine evaluates those
 stored rows before mutating `amount_paid`: a single real-backend observation is
 stored and marked applied but does not mark the quote paid, matching quorum
 evidence finalizes the quote, and conflicting evidence remains stored without
-silently increasing the paid amount.
+silently increasing the paid amount. A shared
+`FederationPaymentObservationReport` helper can now summarize the stored rows
+for one quote, group matching evidence, mark whether any group reached quorum,
+and identify conflicting observers for operator-facing surfaces. Mint quote
+reports treat unpaid observations as unresolved progress, while paid or issued
+evidence can conflict with other terminal evidence.
 
 ## Melt Quote Observations
 
@@ -102,8 +107,10 @@ Melt observations are persisted and evaluated against stored quorum evidence
 before quote state transitions. Focused mint-side regressions now prove that a
 single real-backend observation leaves a pending melt saga untouched, a matching
 paid quorum finalizes the saga and spends inputs, and a matching failed quorum
-rolls the quote back to unpaid and releases inputs. The idempotent real payment
-executor remains future work.
+rolls the quote back to unpaid and releases inputs. The observation report
+helper treats pending melt observations as non-terminal progress, while
+competing terminal paid, failed, or unpaid observations are marked as
+conflicting evidence. The idempotent real payment executor remains future work.
 
 ## Pending And Stale Quotes
 
@@ -115,13 +122,17 @@ The policy includes operator-facing limits:
   stale.
 
 These limits are validated as non-zero config values. The next admin work should
-expose unresolved observations by quote ID, member ID, state, and age without
-logging secrets, invoices, local paths, private keys, or proof secrets.
+expose unresolved observations by quote ID, member ID, state, report status,
+and age without logging secrets, invoices, local paths, private keys, or proof
+secrets.
 
 ## Required Follow-Up
 
-- Add explicit conflict quarantine for mismatched amounts, payment proofs,
-  states, or backend-specific settlement references.
-- Add admin tooling to inspect unresolved, conflicting, and stale observations.
+- Wire payment observation reports into private REST and `cdk-mintd` status
+  tooling so operators can inspect unresolved, conflicting, and stale
+  observations.
+- Add explicit state-machine quarantine actions for mismatched amounts, payment
+  proofs, states, or backend-specific settlement references where policy should
+  halt instead of only reporting the conflict.
 - Add tests proving stale pending quotes remain visible without blocking
   consensus.

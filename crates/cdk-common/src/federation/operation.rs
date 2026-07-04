@@ -427,6 +427,23 @@ impl FederationPaymentObservation {
         }
     }
 
+    /// Return true when this observation describes a terminal quote state.
+    #[must_use]
+    pub fn is_terminal_state(&self) -> bool {
+        match self {
+            Self::MintQuote(observation) => {
+                matches!(
+                    observation.state,
+                    MintQuoteState::Paid | MintQuoteState::Issued
+                )
+            }
+            Self::MeltQuote(observation) => matches!(
+                observation.state,
+                MeltQuoteState::Paid | MeltQuoteState::Failed | MeltQuoteState::Unpaid
+            ),
+        }
+    }
+
     /// Return true when two observations describe the same payment evidence.
     #[must_use]
     pub fn matches_payment_evidence(&self, other: &Self) -> bool {
@@ -497,6 +514,155 @@ impl FederationPaymentObservationRecord {
     }
 }
 
+/// Operator-facing status for stored payment observation evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationPaymentObservationReportStatus {
+    /// No stored observations were found for the requested quote and context.
+    Empty,
+    /// Observations exist, but no matching group has reached the required quorum.
+    AwaitingQuorum,
+    /// At least one matching evidence group reached quorum and no conflicts were found.
+    QuorumReached,
+    /// Conflicting evidence or competing terminal states were found.
+    Conflicting,
+}
+
+/// One group of payment observations that all describe the same evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationPaymentObservationEvidenceGroup {
+    /// Representative observation for this evidence group.
+    pub representative: FederationPaymentObservation,
+    /// Members whose observations match the representative evidence.
+    pub observers: Vec<MemberId>,
+    /// Operation IDs that carried matching observations.
+    pub operation_ids: Vec<FederationOperationId>,
+    /// Consensus order indices that carried matching observations.
+    pub operation_indices: Vec<u64>,
+    /// Members that reported a different evidence payload for the same quote and state.
+    pub conflicting_observers: Vec<MemberId>,
+    /// Whether this matching evidence group satisfies the configured quorum.
+    pub quorum_reached: bool,
+}
+
+/// Summary of stored payment observations for one quote and context.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationPaymentObservationReport {
+    /// Observation context being summarized.
+    pub context: FederationPaymentObservationContext,
+    /// Quote ID being summarized.
+    pub quote: String,
+    /// Required matching observer count for quorum.
+    pub required: u16,
+    /// Number of matching records included in this report.
+    pub total_observations: usize,
+    /// Evidence groups found among stored observations.
+    pub groups: Vec<FederationPaymentObservationEvidenceGroup>,
+    /// Distinct members whose observations conflict with another evidence group.
+    pub conflicting_observers: Vec<MemberId>,
+    /// Distinct members participating in competing terminal-state observations.
+    pub competing_terminal_state_observers: Vec<MemberId>,
+    /// High-level report status for operator and admin surfaces.
+    pub status: FederationPaymentObservationReportStatus,
+}
+
+impl FederationPaymentObservationReport {
+    /// Build a report from stored observations for one quote and context.
+    #[must_use]
+    pub fn from_records(
+        context: FederationPaymentObservationContext,
+        quote: &str,
+        required: u16,
+        records: &[FederationPaymentObservationRecord],
+    ) -> Self {
+        let matching_records = records
+            .iter()
+            .filter(|record| {
+                record.observation.context() == context && record.observation.quote() == quote
+            })
+            .collect::<Vec<_>>();
+        let observations = matching_records
+            .iter()
+            .map(|record| &record.observation)
+            .collect::<Vec<_>>();
+        let mut groups = Vec::<FederationPaymentObservationEvidenceGroup>::new();
+
+        for record in matching_records.iter().copied() {
+            match groups.iter_mut().find(|group| {
+                group
+                    .representative
+                    .matches_payment_evidence(&record.observation)
+            }) {
+                Some(group) => {
+                    group.observers.push(record.observation.observer());
+                    group.operation_ids.push(record.operation_id);
+                    group.operation_indices.push(record.operation_index);
+                }
+                None => groups.push(FederationPaymentObservationEvidenceGroup {
+                    representative: record.observation.clone(),
+                    observers: vec![record.observation.observer()],
+                    operation_ids: vec![record.operation_id],
+                    operation_indices: vec![record.operation_index],
+                    conflicting_observers: Vec::new(),
+                    quorum_reached: false,
+                }),
+            }
+        }
+
+        for group in &mut groups {
+            let quorum = group
+                .representative
+                .quorum(observations.iter().copied(), required);
+            let quorum_reached = quorum.is_reached();
+            group.conflicting_observers = quorum.conflicting_observers;
+            group.quorum_reached = quorum_reached;
+            group.observers.sort_unstable();
+            group.observers.dedup();
+        }
+
+        let mut conflicting_observers = groups
+            .iter()
+            .flat_map(|group| group.conflicting_observers.iter().copied())
+            .collect::<BTreeSet<_>>();
+        let competing_terminal_state_observers = competing_terminal_state_observers(&groups);
+        conflicting_observers.extend(competing_terminal_state_observers.iter().copied());
+        let conflicting_observers = conflicting_observers.into_iter().collect::<Vec<_>>();
+        let status = if groups.is_empty() {
+            FederationPaymentObservationReportStatus::Empty
+        } else if !conflicting_observers.is_empty() {
+            FederationPaymentObservationReportStatus::Conflicting
+        } else if groups.iter().any(|group| group.quorum_reached) {
+            FederationPaymentObservationReportStatus::QuorumReached
+        } else {
+            FederationPaymentObservationReportStatus::AwaitingQuorum
+        };
+
+        Self {
+            context,
+            quote: quote.to_string(),
+            required,
+            total_observations: matching_records.len(),
+            groups,
+            conflicting_observers,
+            competing_terminal_state_observers,
+            status,
+        }
+    }
+
+    /// Return true when the report contains any conflicting evidence.
+    #[must_use]
+    pub fn has_conflicts(&self) -> bool {
+        self.status == FederationPaymentObservationReportStatus::Conflicting
+    }
+
+    /// Return true when observations exist but no non-conflicting quorum is available.
+    #[must_use]
+    pub fn is_unresolved(&self) -> bool {
+        self.status == FederationPaymentObservationReportStatus::AwaitingQuorum
+            || self.status == FederationPaymentObservationReportStatus::Conflicting
+    }
+}
+
 /// Result of evaluating matching payment observations against a quorum policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederationPaymentObservationQuorum {
@@ -554,6 +720,26 @@ impl FederationPaymentObservationQuorum {
     pub fn has_conflicts(&self) -> bool {
         !self.conflicting_observers.is_empty()
     }
+}
+
+fn competing_terminal_state_observers(
+    groups: &[FederationPaymentObservationEvidenceGroup],
+) -> Vec<MemberId> {
+    let terminal_groups = groups
+        .iter()
+        .filter(|group| group.representative.is_terminal_state())
+        .collect::<Vec<_>>();
+
+    if terminal_groups.len() <= 1 {
+        return Vec::new();
+    }
+
+    terminal_groups
+        .into_iter()
+        .flat_map(|group| group.observers.iter().copied())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 /// Request to spend proofs against a melt quote.
@@ -772,6 +958,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::federation::InMemoryFederationJournal;
     use crate::{
         BatchMintRequest, BlindedMessage, CurrencyUnit, Id, MeltQuoteCustomRequest,
         MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteCustomResponse,
@@ -845,6 +1032,21 @@ mod tests {
 
     fn envelope(operation: FederationOperation) -> FederationOperationEnvelope {
         FederationOperationEnvelope::new(federation_id(), operation)
+    }
+
+    fn payment_record(
+        operation_index: u64,
+        operation: FederationOperation,
+    ) -> FederationPaymentObservationRecord {
+        let mut journal = InMemoryFederationJournal::new();
+        let response = journal
+            .append(envelope(operation))
+            .expect("append operation");
+        let mut record = FederationPaymentObservationRecord::from_journal_entry(response.entry())
+            .expect("payment observation record");
+        record.operation_index = operation_index;
+
+        record
     }
 
     fn oversized_mint_quote_envelope() -> FederationOperationEnvelope {
@@ -1145,6 +1347,205 @@ mod tests {
         assert!(quorum.has_conflicts());
         assert_eq!(quorum.matching_observers, vec![member_id(1), member_id(2)]);
         assert_eq!(quorum.conflicting_observers, vec![member_id(3)]);
+    }
+
+    #[test]
+    fn payment_observation_report_flags_conflicts_and_unresolved_evidence() {
+        let first = payment_record(
+            0,
+            FederationOperation::MintQuotePayment(FederationMintQuotePaymentObservation {
+                quote: "mint-quote".to_string(),
+                observer: member_id(1),
+                method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Bolt11),
+                state: MintQuoteState::Paid,
+                amount_paid: Amount::from(10),
+                amount_issued: Amount::ZERO,
+                payment_proof: Some("settled".to_string()),
+            }),
+        );
+        let matching_second = payment_record(
+            1,
+            FederationOperation::MintQuotePayment(FederationMintQuotePaymentObservation {
+                quote: "mint-quote".to_string(),
+                observer: member_id(2),
+                method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Bolt11),
+                state: MintQuoteState::Paid,
+                amount_paid: Amount::from(10),
+                amount_issued: Amount::ZERO,
+                payment_proof: Some("settled".to_string()),
+            }),
+        );
+        let conflicting_third = payment_record(
+            2,
+            FederationOperation::MintQuotePayment(FederationMintQuotePaymentObservation {
+                quote: "mint-quote".to_string(),
+                observer: member_id(3),
+                method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Bolt11),
+                state: MintQuoteState::Paid,
+                amount_paid: Amount::from(11),
+                amount_issued: Amount::ZERO,
+                payment_proof: Some("different-settlement".to_string()),
+            }),
+        );
+
+        let report = FederationPaymentObservationReport::from_records(
+            FederationPaymentObservationContext::MintQuote,
+            "mint-quote",
+            2,
+            &[first.clone(), matching_second.clone(), conflicting_third],
+        );
+        assert_eq!(
+            report.status,
+            FederationPaymentObservationReportStatus::Conflicting
+        );
+        assert!(report.has_conflicts());
+        assert_eq!(report.total_observations, 3);
+        assert_eq!(report.groups.len(), 2);
+        assert_eq!(report.groups[0].observers, vec![member_id(1), member_id(2)]);
+        assert!(report.groups[0].quorum_reached);
+        assert_eq!(report.groups[0].conflicting_observers, vec![member_id(3)]);
+        assert_eq!(
+            report.conflicting_observers,
+            vec![member_id(1), member_id(2), member_id(3)]
+        );
+
+        let unresolved = FederationPaymentObservationReport::from_records(
+            FederationPaymentObservationContext::MintQuote,
+            "mint-quote",
+            2,
+            &[first],
+        );
+        assert_eq!(
+            unresolved.status,
+            FederationPaymentObservationReportStatus::AwaitingQuorum
+        );
+        assert!(unresolved.is_unresolved());
+
+        let quorum = FederationPaymentObservationReport::from_records(
+            FederationPaymentObservationContext::MintQuote,
+            "mint-quote",
+            2,
+            &[matching_second],
+        );
+        assert_eq!(
+            quorum.status,
+            FederationPaymentObservationReportStatus::AwaitingQuorum
+        );
+    }
+
+    #[test]
+    fn payment_observation_report_allows_mint_unpaid_to_paid_progression() {
+        let unpaid = payment_record(
+            0,
+            FederationOperation::MintQuotePayment(FederationMintQuotePaymentObservation {
+                quote: "mint-quote".to_string(),
+                observer: member_id(1),
+                method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Bolt11),
+                state: MintQuoteState::Unpaid,
+                amount_paid: Amount::ZERO,
+                amount_issued: Amount::ZERO,
+                payment_proof: None,
+            }),
+        );
+        let paid = payment_record(
+            1,
+            FederationOperation::MintQuotePayment(FederationMintQuotePaymentObservation {
+                quote: "mint-quote".to_string(),
+                observer: member_id(2),
+                method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Bolt11),
+                state: MintQuoteState::Paid,
+                amount_paid: Amount::from(10),
+                amount_issued: Amount::ZERO,
+                payment_proof: Some("settled".to_string()),
+            }),
+        );
+
+        let report = FederationPaymentObservationReport::from_records(
+            FederationPaymentObservationContext::MintQuote,
+            "mint-quote",
+            2,
+            &[unpaid, paid],
+        );
+        assert_eq!(
+            report.status,
+            FederationPaymentObservationReportStatus::AwaitingQuorum
+        );
+        assert!(report.conflicting_observers.is_empty());
+        assert!(report.competing_terminal_state_observers.is_empty());
+    }
+
+    #[test]
+    fn payment_observation_report_flags_competing_terminal_states() {
+        let pending = payment_record(
+            0,
+            FederationOperation::MeltQuotePayment(FederationMeltQuotePaymentObservation {
+                quote: "melt-quote".to_string(),
+                observer: member_id(1),
+                method: PaymentMethod::Custom("custom".to_string()),
+                state: MeltQuoteState::Pending,
+                amount: Amount::from(10),
+                fee_reserve: Amount::from(1),
+                payment_proof: None,
+                failure_reason: None,
+            }),
+        );
+        let paid = payment_record(
+            1,
+            FederationOperation::MeltQuotePayment(FederationMeltQuotePaymentObservation {
+                quote: "melt-quote".to_string(),
+                observer: member_id(2),
+                method: PaymentMethod::Custom("custom".to_string()),
+                state: MeltQuoteState::Paid,
+                amount: Amount::from(10),
+                fee_reserve: Amount::from(1),
+                payment_proof: Some("preimage".to_string()),
+                failure_reason: None,
+            }),
+        );
+        let failed = payment_record(
+            2,
+            FederationOperation::MeltQuotePayment(FederationMeltQuotePaymentObservation {
+                quote: "melt-quote".to_string(),
+                observer: member_id(3),
+                method: PaymentMethod::Custom("custom".to_string()),
+                state: MeltQuoteState::Failed,
+                amount: Amount::from(10),
+                fee_reserve: Amount::from(1),
+                payment_proof: None,
+                failure_reason: Some("route failed".to_string()),
+            }),
+        );
+
+        let progression = FederationPaymentObservationReport::from_records(
+            FederationPaymentObservationContext::MeltQuote,
+            "melt-quote",
+            1,
+            &[pending.clone(), paid.clone()],
+        );
+        assert_eq!(
+            progression.status,
+            FederationPaymentObservationReportStatus::QuorumReached
+        );
+        assert!(progression.competing_terminal_state_observers.is_empty());
+
+        let conflict = FederationPaymentObservationReport::from_records(
+            FederationPaymentObservationContext::MeltQuote,
+            "melt-quote",
+            1,
+            &[pending, paid, failed],
+        );
+        assert_eq!(
+            conflict.status,
+            FederationPaymentObservationReportStatus::Conflicting
+        );
+        assert_eq!(
+            conflict.competing_terminal_state_observers,
+            vec![member_id(2), member_id(3)]
+        );
+        assert_eq!(
+            conflict.conflicting_observers,
+            vec![member_id(2), member_id(3)]
+        );
     }
 
     #[test]

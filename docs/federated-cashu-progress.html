@@ -362,15 +362,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover federated melt payment quorum</span>
+          <span class="value">feat: summarize federation payment conflicts</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">DB-backed melt payment quorum finalizer coverage</span>
+          <span class="value">Payment observation conflict and unresolved evidence reports</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Conflict quarantine and unresolved observation admin views</span>
+          <span class="value">Private REST and mintd unresolved observation admin views</span>
         </div>
       </aside>
     </header>
@@ -1163,6 +1163,10 @@
             <h3>Stored quorum gates melt payments</h3>
             <p>Focused mint-side regressions now prove a single real-backend melt observation leaves the pending saga and proofs untouched, matching paid quorum finalizes the saga and spends inputs, matching failed quorum rolls back to unpaid and releases inputs, and conflicting later evidence is stored without changing settled state.</p>
           </article>
+          <article class="item">
+            <h3>Payment conflict reports scaffolded</h3>
+            <p>Stored mint and melt payment observations can now be summarized into operator-facing reports that group matching evidence, flag missing quorum, identify conflicting observers, and distinguish normal unpaid or pending progress from competing terminal outcomes.</p>
+          </article>
         </div>
       </section>
 
@@ -1179,7 +1183,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations, and a fresh SQLite-backed mint state can restart through a pending melt reserve before catching up the paid observation. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, local sync plus materialized state-digest health is queryable from mintd over signed private REST, and the generated process smoke now drives live wallet mint, swap, proof-state check, melt, restore, convergence, restart, and catch-up. Payment observations are now durable SQL rows, mint quote payments can finalize from stored real-policy quorum evidence, and melt paid/failed observations have focused stored-quorum saga coverage; remaining work is explicit conflict quarantine, stronger BFT ordering, unresolved-observation admin views, and broader storage-backed process coverage.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations, and a fresh SQLite-backed mint state can restart through a pending melt reserve before catching up the paid observation. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, local sync plus materialized state-digest health is queryable from mintd over signed private REST, and the generated process smoke now drives live wallet mint, swap, proof-state check, melt, restore, convergence, restart, and catch-up. Payment observations are now durable SQL rows, mint quote payments can finalize from stored real-policy quorum evidence, melt paid/failed observations have focused stored-quorum saga coverage, and stored observations can be summarized into conflict/unresolved reports; remaining work is wiring those reports into admin surfaces, explicit conflict quarantine, stronger BFT ordering, and broader storage-backed process coverage.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -1707,8 +1711,8 @@
             <tr>
               <td>Payment observation policy</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk --lib --features federation real_policy -- --test-threads 1` passed the mint, paid-melt, and failed-melt stored-quorum regressions. The melt tests prove a single real-backend observation leaves pending saga state unchanged, matching paid quorum spends inputs and clears saga metadata, matching failed quorum releases inputs and rolls the quote back to unpaid, and conflicting later evidence remains stored without changing settled state. `cargo test -p cdk --lib --features federation mint::federation -- --test-threads 1` passed 19 tests.</td>
-              <td>Add explicit conflict quarantine, stale quote inspection, and admin-facing unresolved observation views.</td>
+              <td>`cargo test -p cdk --lib --features federation real_policy -- --test-threads 1` passed the mint, paid-melt, and failed-melt stored-quorum regressions. `cargo test -p cdk-common --features federation payment_observation -- --test-threads 1` and `cargo test -p cdk-common --features federation federation -- --test-threads 1` passed the report and shared federation suites. `cargo test -p cdk-sqlite --features "mint federation" federation_payment_observation_persistence -- --test-threads 1` passed the persisted report regression, and `cargo test -p cdk-postgres --features federation federation_payment_observation_persistence --no-run` compiled the shared Postgres target.</td>
+              <td>Wire conflict and unresolved observation reports into private REST and mintd admin status, then add stale quote inspection and explicit conflict quarantine.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
