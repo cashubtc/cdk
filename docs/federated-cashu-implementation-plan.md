@@ -846,21 +846,21 @@ Objective: move beyond fake wallet without centralizing payment trust accidental
 
 Implementation checklist:
 
-- [ ] Write a payment trust model document before enabling real funds.
-- [ ] For mint quotes, decide whether payment verification is independently verifiable, shared-backend, or origin-custodied.
-- [ ] For Lightning BOLT11/BOLT12, define how members verify invoice settlement:
-  - [ ] shared node with read-only credentials for all members.
-  - [ ] origin member proves settlement to other members.
-  - [ ] threshold gateway or payment processor service.
-- [ ] For onchain quotes, use consensus block height and transaction proof observations.
-- [ ] Define observation quorum and conflict handling for each method.
-- [ ] Add limits for pending quotes and stale observations.
+- [x] Write a payment trust model document before enabling real funds.
+- [x] For mint quotes, decide whether payment verification is independently verifiable, shared-backend, or origin-custodied.
+- [x] For Lightning BOLT11/BOLT12, define how members verify invoice settlement:
+  - [x] shared node with read-only credentials for all members.
+  - [x] origin member proves settlement to other members.
+  - [x] threshold gateway or payment processor service.
+- [x] For onchain quotes, use consensus block height and transaction proof observations.
+- [x] Define observation quorum and conflict handling for each method.
+- [x] Add limits for pending quotes and stale observations.
 - [ ] Add admin tooling to inspect unresolved payment observations.
 
 Tests and success criteria:
 
-- [ ] Fake wallet policy and real backend policy are separate code paths.
-- [ ] A single malicious observation cannot mark a quote paid.
+- [x] Fake wallet policy and real backend policy are separate code paths.
+- [x] A single malicious observation cannot mark a quote paid.
 - [ ] Conflicting payment amounts do not silently update quote state.
 - [ ] Stale pending quotes are visible to operators and do not block consensus.
 

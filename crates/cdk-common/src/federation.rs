@@ -119,6 +119,40 @@ pub enum FederationError {
         /// Configured consensus threshold.
         consensus_threshold: u16,
     },
+    /// A real payment observation policy must require a safe member quorum.
+    #[error(
+        "Invalid federation payment observation quorum for {context}: required={required}, members={members}, consensus_threshold={consensus_threshold}"
+    )]
+    InvalidPaymentObservationQuorum {
+        /// Payment observation context being validated.
+        context: FederationPaymentObservationContext,
+        /// Required matching observations.
+        required: u16,
+        /// Configured federation member count.
+        members: u16,
+        /// Configured consensus threshold.
+        consensus_threshold: u16,
+    },
+    /// Payment observation limits must be non-zero.
+    #[error("Invalid federation payment observation limit {field}: value={value}")]
+    InvalidPaymentObservationLimit {
+        /// Configured limit field.
+        field: &'static str,
+        /// Invalid value.
+        value: u64,
+    },
+    /// A single-member payment observation cannot finalize under the configured policy.
+    #[error(
+        "Federation payment observation quorum not satisfied for {context}: required={required}, found={found}"
+    )]
+    PaymentObservationQuorumNotSatisfied {
+        /// Payment observation context being checked.
+        context: FederationPaymentObservationContext,
+        /// Required matching observations.
+        required: u16,
+        /// Matching observations currently available.
+        found: u16,
+    },
     /// A consensus step requires more reachable members than are currently online.
     #[error("Federation consensus quorum unavailable: reachable={reachable}, required={required}")]
     ConsensusQuorumUnavailable {
@@ -746,6 +780,224 @@ impl ThresholdParams {
     }
 }
 
+const DEFAULT_MAX_PENDING_PAYMENT_QUOTES: u32 = 10_000;
+const DEFAULT_PAYMENT_QUOTE_PENDING_TTL_SECS: u64 = 60 * 60;
+const DEFAULT_STALE_PAYMENT_OBSERVATION_SECS: u64 = 15 * 60;
+
+fn default_max_pending_payment_quotes() -> u32 {
+    DEFAULT_MAX_PENDING_PAYMENT_QUOTES
+}
+
+fn default_payment_quote_pending_ttl_secs() -> u64 {
+    DEFAULT_PAYMENT_QUOTE_PENDING_TTL_SECS
+}
+
+fn default_stale_payment_observation_secs() -> u64 {
+    DEFAULT_STALE_PAYMENT_OBSERVATION_SECS
+}
+
+/// Payment-observation context with separate mint and melt policies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FederationPaymentObservationContext {
+    /// Incoming payment observation for a mint quote.
+    MintQuote,
+    /// Outgoing payment observation for a melt quote.
+    MeltQuote,
+}
+
+impl fmt::Display for FederationPaymentObservationContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MintQuote => f.write_str("mint_quote"),
+            Self::MeltQuote => f.write_str("melt_quote"),
+        }
+    }
+}
+
+/// Public policy for deciding when payment observations can mutate quote state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationPaymentObservationPolicy {
+    /// Incoming mint quote payment verification policy.
+    #[serde(default = "FederationPaymentVerificationPolicy::fake_wallet_for_testing")]
+    pub mint_quotes: FederationPaymentVerificationPolicy,
+    /// Outgoing melt quote payment verification policy.
+    #[serde(default = "FederationPaymentVerificationPolicy::fake_wallet_for_testing")]
+    pub melt_quotes: FederationPaymentVerificationPolicy,
+    /// Maximum pending quotes operators expect before back-pressure or alerting.
+    #[serde(default = "default_max_pending_payment_quotes")]
+    pub max_pending_quotes: u32,
+    /// Seconds a quote may remain pending before operator inspection is expected.
+    #[serde(default = "default_payment_quote_pending_ttl_secs")]
+    pub pending_quote_ttl_secs: u64,
+    /// Seconds after which an unresolved observation is considered stale.
+    #[serde(default = "default_stale_payment_observation_secs")]
+    pub stale_observation_secs: u64,
+}
+
+impl Default for FederationPaymentObservationPolicy {
+    fn default() -> Self {
+        Self::fake_wallet_for_testing()
+    }
+}
+
+impl FederationPaymentObservationPolicy {
+    /// Create the current fake-wallet MVP policy.
+    #[must_use]
+    pub fn fake_wallet_for_testing() -> Self {
+        Self {
+            mint_quotes: FederationPaymentVerificationPolicy::fake_wallet_for_testing(),
+            melt_quotes: FederationPaymentVerificationPolicy::fake_wallet_for_testing(),
+            max_pending_quotes: DEFAULT_MAX_PENDING_PAYMENT_QUOTES,
+            pending_quote_ttl_secs: DEFAULT_PAYMENT_QUOTE_PENDING_TTL_SECS,
+            stale_observation_secs: DEFAULT_STALE_PAYMENT_OBSERVATION_SECS,
+        }
+    }
+
+    /// Create a real-backend policy requiring matching member observations.
+    #[must_use]
+    pub fn member_quorum(required: u16, trust_model: FederationPaymentTrustModel) -> Self {
+        let policy = FederationPaymentVerificationPolicy::member_quorum(required, trust_model);
+        Self {
+            mint_quotes: policy,
+            melt_quotes: policy,
+            max_pending_quotes: DEFAULT_MAX_PENDING_PAYMENT_QUOTES,
+            pending_quote_ttl_secs: DEFAULT_PAYMENT_QUOTE_PENDING_TTL_SECS,
+            stale_observation_secs: DEFAULT_STALE_PAYMENT_OBSERVATION_SECS,
+        }
+    }
+
+    /// Return the policy for one payment observation context.
+    #[must_use]
+    pub fn policy_for(
+        &self,
+        context: FederationPaymentObservationContext,
+    ) -> &FederationPaymentVerificationPolicy {
+        match context {
+            FederationPaymentObservationContext::MintQuote => &self.mint_quotes,
+            FederationPaymentObservationContext::MeltQuote => &self.melt_quotes,
+        }
+    }
+
+    /// Validate this policy against federation threshold parameters.
+    pub fn validate(&self, threshold_params: ThresholdParams) -> Result<()> {
+        if self.max_pending_quotes == 0 {
+            return Err(FederationError::InvalidPaymentObservationLimit {
+                field: "max_pending_quotes",
+                value: u64::from(self.max_pending_quotes),
+            });
+        }
+        if self.pending_quote_ttl_secs == 0 {
+            return Err(FederationError::InvalidPaymentObservationLimit {
+                field: "pending_quote_ttl_secs",
+                value: self.pending_quote_ttl_secs,
+            });
+        }
+        if self.stale_observation_secs == 0 {
+            return Err(FederationError::InvalidPaymentObservationLimit {
+                field: "stale_observation_secs",
+                value: self.stale_observation_secs,
+            });
+        }
+
+        self.mint_quotes.validate(
+            FederationPaymentObservationContext::MintQuote,
+            threshold_params,
+        )?;
+        self.melt_quotes.validate(
+            FederationPaymentObservationContext::MeltQuote,
+            threshold_params,
+        )?;
+
+        Ok(())
+    }
+}
+
+/// How members are expected to verify an external payment observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationPaymentTrustModel {
+    /// Every member can independently read settlement from the same backend.
+    SharedBackendReadOnly,
+    /// The origin member proves settlement and other members acknowledge it.
+    OriginMemberProof,
+    /// A threshold gateway or payment processor emits payment observations.
+    ThresholdGateway,
+    /// Members verify onchain proofs against a consensus block-height view.
+    OnchainProof,
+}
+
+/// Policy for one class of payment observations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FederationPaymentVerificationPolicy {
+    /// Test-only policy for the fake wallet backend where one observation finalizes.
+    FakeWallet,
+    /// Real-backend policy requiring matching observations from a member quorum.
+    MemberQuorum {
+        /// Required number of matching member observations.
+        required: u16,
+        /// Trust model describing how members verify the backend event.
+        trust_model: FederationPaymentTrustModel,
+    },
+}
+
+impl FederationPaymentVerificationPolicy {
+    /// Create the fake-wallet testing policy.
+    #[must_use]
+    pub fn fake_wallet_for_testing() -> Self {
+        Self::FakeWallet
+    }
+
+    /// Create a real-backend member-quorum policy.
+    #[must_use]
+    pub fn member_quorum(required: u16, trust_model: FederationPaymentTrustModel) -> Self {
+        Self::MemberQuorum {
+            required,
+            trust_model,
+        }
+    }
+
+    /// Return true when one accepted observation may finalize quote state.
+    #[must_use]
+    pub fn permits_single_observation_finality(self) -> bool {
+        matches!(self, Self::FakeWallet)
+    }
+
+    /// Number of matching observations required by this policy.
+    #[must_use]
+    pub fn required_matching_observations(self) -> u16 {
+        match self {
+            Self::FakeWallet => 1,
+            Self::MemberQuorum { required, .. } => required,
+        }
+    }
+
+    fn validate(
+        self,
+        context: FederationPaymentObservationContext,
+        threshold_params: ThresholdParams,
+    ) -> Result<()> {
+        match self {
+            Self::FakeWallet => Ok(()),
+            Self::MemberQuorum { required, .. } => {
+                if required == 0
+                    || required > threshold_params.member_count
+                    || required < threshold_params.consensus_threshold
+                {
+                    return Err(FederationError::InvalidPaymentObservationQuorum {
+                        context,
+                        required,
+                        members: threshold_params.member_count,
+                        consensus_threshold: threshold_params.consensus_threshold,
+                    });
+                }
+
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Public configuration for one federation member.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberConfigPublic {
@@ -997,6 +1249,9 @@ pub struct FederationConfig {
     pub members: BTreeMap<MemberId, MemberConfigPublic>,
     /// Federated aggregate keysets.
     pub keysets: Vec<FederatedKeyset>,
+    /// Policy for mint and melt payment observations.
+    #[serde(default)]
+    pub payment_observation_policy: FederationPaymentObservationPolicy,
 }
 
 impl FederationConfig {
@@ -1012,6 +1267,7 @@ impl FederationConfig {
             threshold_params,
             members,
             keysets,
+            payment_observation_policy: FederationPaymentObservationPolicy::default(),
         };
         config.validate()?;
         Ok(config)
@@ -1062,6 +1318,9 @@ impl FederationConfig {
         for keyset in &self.keysets {
             keyset.validate(self.threshold_params, &self.members)?;
         }
+
+        self.payment_observation_policy
+            .validate(self.threshold_params)?;
 
         Ok(())
     }
@@ -1187,6 +1446,32 @@ impl FederationConfig {
         }
 
         Ok(())
+    }
+
+    /// Return the payment verification policy for one observation context.
+    #[must_use]
+    pub fn payment_verification_policy(
+        &self,
+        context: FederationPaymentObservationContext,
+    ) -> &FederationPaymentVerificationPolicy {
+        self.payment_observation_policy.policy_for(context)
+    }
+
+    /// Ensure the configured policy allows the fake-wallet single-observation path.
+    pub fn ensure_single_payment_observation_can_finalize(
+        &self,
+        context: FederationPaymentObservationContext,
+    ) -> Result<()> {
+        let policy = *self.payment_verification_policy(context);
+        if policy.permits_single_observation_finality() {
+            return Ok(());
+        }
+
+        Err(FederationError::PaymentObservationQuorumNotSatisfied {
+            context,
+            required: policy.required_matching_observations(),
+            found: 1,
+        })
     }
 
     /// Return a member by ID.
@@ -1475,6 +1760,113 @@ mod tests {
                 .validate_against_public(&config)
                 .expect("private config");
         }
+    }
+
+    #[test]
+    fn federation_payment_policy_defaults_to_fake_wallet_for_legacy_configs() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let (keyset, _) = test_keyset(&members);
+        let config = FederationConfig::new(params, members, vec![keyset]).expect("config");
+        assert_eq!(
+            config.payment_observation_policy,
+            FederationPaymentObservationPolicy::fake_wallet_for_testing()
+        );
+        config
+            .ensure_single_payment_observation_can_finalize(
+                FederationPaymentObservationContext::MintQuote,
+            )
+            .expect("fake wallet mint observations can finalize singly");
+        config
+            .ensure_single_payment_observation_can_finalize(
+                FederationPaymentObservationContext::MeltQuote,
+            )
+            .expect("fake wallet melt observations can finalize singly");
+
+        let mut legacy_json = serde_json::to_value(&config).expect("config json");
+        legacy_json
+            .as_object_mut()
+            .expect("config object")
+            .remove("payment_observation_policy");
+
+        let decoded =
+            serde_json::from_value::<FederationConfig>(legacy_json).expect("legacy config");
+        assert_eq!(
+            decoded.payment_observation_policy,
+            FederationPaymentObservationPolicy::fake_wallet_for_testing()
+        );
+        decoded.validate().expect("legacy config validates");
+    }
+
+    #[test]
+    fn federation_payment_policy_validates_real_backend_quorum() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let (keyset, _) = test_keyset(&members);
+        let mut config = FederationConfig::new(params, members, vec![keyset]).expect("config");
+
+        config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(
+            params.consensus_threshold,
+            FederationPaymentTrustModel::SharedBackendReadOnly,
+        );
+        config.validate().expect("consensus quorum policy");
+
+        assert!(matches!(
+            config.ensure_single_payment_observation_can_finalize(
+                FederationPaymentObservationContext::MintQuote
+            ),
+            Err(FederationError::PaymentObservationQuorumNotSatisfied {
+                context: FederationPaymentObservationContext::MintQuote,
+                required,
+                found: 1,
+            }) if required == params.consensus_threshold
+        ));
+
+        config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(
+            params.consensus_threshold - 1,
+            FederationPaymentTrustModel::OriginMemberProof,
+        );
+        assert!(matches!(
+            config.validate(),
+            Err(FederationError::InvalidPaymentObservationQuorum {
+                context: FederationPaymentObservationContext::MintQuote,
+                required,
+                members: 3,
+                consensus_threshold,
+            }) if required == params.consensus_threshold - 1
+                && consensus_threshold == params.consensus_threshold
+        ));
+
+        config.payment_observation_policy = FederationPaymentObservationPolicy::member_quorum(
+            params.member_count + 1,
+            FederationPaymentTrustModel::ThresholdGateway,
+        );
+        assert!(matches!(
+            config.validate(),
+            Err(FederationError::InvalidPaymentObservationQuorum {
+                context: FederationPaymentObservationContext::MintQuote,
+                required,
+                members,
+                ..
+            }) if required == params.member_count + 1 && members == params.member_count
+        ));
+    }
+
+    #[test]
+    fn federation_payment_policy_rejects_zero_operator_limits() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let (keyset, _) = test_keyset(&members);
+        let mut config = FederationConfig::new(params, members, vec![keyset]).expect("config");
+
+        config.payment_observation_policy.max_pending_quotes = 0;
+        assert!(matches!(
+            config.validate(),
+            Err(FederationError::InvalidPaymentObservationLimit {
+                field: "max_pending_quotes",
+                value: 0,
+            })
+        ));
     }
 
     #[test]

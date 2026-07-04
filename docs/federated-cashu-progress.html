@@ -352,6 +352,7 @@
           <a class="link-pill" href="./federated-cashu-implementation-plan.md">Implementation plan</a>
           <a class="link-pill" href="./federated-cashu-codex-goal-prompt.md">Goal prompt</a>
           <a class="link-pill" href="./federated-cashu-rfc.md">Milestone 0 RFC</a>
+          <a class="link-pill" href="./federated-cashu-payment-trust-model.md">Payment trust model</a>
         </div>
       </div>
       <aside class="summary panel" aria-label="Current summary">
@@ -361,15 +362,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: list federation milestones individually</span>
+          <span class="value">feat: add federation payment policy</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Full milestone index expanded</span>
+          <span class="value">Payment observation policy scaffold</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Live Postgres storage run and BFT ordering work</span>
+          <span class="value">Payment observation quorum accumulator</span>
         </div>
       </aside>
     </header>
@@ -568,7 +569,7 @@
               <p>Objective: move beyond fake wallet without centralizing payment trust accidentally.</p>
               <p class="test-gate"><strong>Test gate:</strong> fake-wallet and real-backend policies are separate, a single malicious observation cannot mark a quote paid, conflicting amounts are not silently accepted, and stale pending payments are operator-visible.</p>
             </div>
-            <span class="status pending">Pending</span>
+            <span class="status progress">In progress</span>
           </li>
           <li class="milestone">
             <div>
@@ -1138,6 +1139,10 @@
             <h3>Concurrent federation metadata covered</h3>
             <p>A shared storage regression now exercises concurrent member sequence watermark updates and signed session-outcome persistence, proving stale sequence updates do not overwrite newer ones and range reads stay ordered.</p>
           </article>
+          <article class="item">
+            <h3>Payment policy scaffolded</h3>
+            <p>Federation public config now carries separate fake-wallet and real-backend payment observation policies, validates real quorum thresholds, and fails closed when a real policy would otherwise use the single-observation fake-wallet finality path.</p>
+          </article>
         </div>
       </section>
 
@@ -1154,7 +1159,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations, and a fresh SQLite-backed mint state can restart through a pending melt reserve before catching up the paid observation. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, local sync plus materialized state-digest health is queryable from mintd over signed private REST, and the generated process smoke now drives live wallet mint, swap, proof-state check, melt, restore, convergence, restart, and catch-up. The remaining work is process-level pending melt restart coverage, stronger BFT ordering, and real payment-backend policy.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations, and a fresh SQLite-backed mint state can restart through a pending melt reserve before catching up the paid observation. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, local sync plus materialized state-digest health is queryable from mintd over signed private REST, and the generated process smoke now drives live wallet mint, swap, proof-state check, melt, restore, convergence, restart, and catch-up. The remaining work is process-level pending melt restart coverage, stronger BFT ordering, and real payment-backend observation aggregation.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -1680,6 +1685,12 @@
               <td>Run the metadata stress test against a live Postgres instance and add larger mixed journal/metadata stress runs if storage contention appears in process smoke.</td>
             </tr>
             <tr>
+              <td>Payment observation policy</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federation_payment_policy -- --test-threads 1` passed fake-wallet default, legacy JSON defaulting, real quorum validation, single-observation rejection, and non-zero operator-limit checks. `cargo test -p cdk-common --features federation federation -- --test-threads 1` passed 77 tests. `cargo test -p cdk --lib --features federation mint::federation -- --test-threads 1`, `cargo check -p cdk --lib --features federation`, `cargo check -p cdk-axum --features federation`, and `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"` passed with the mint apply-path guard.</td>
+              <td>Add the per-member observation accumulator, conflict quarantine, stale quote inspection, and runtime tests proving real policies finalize only after quorum evidence.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
               <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; SQLite and Postgres migrations now have parity coverage, with Postgres compiling shared journal persistence/concurrency regressions and SQLite proving indexed plans plus concurrent writer progress for federation journal entries, sequence watermarks, and session outcomes. Runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, a replaceable consensus runtime boundary, a multi-node simulator for delayed, duplicated, reordered, and quorum-limited proposal delivery, explicit consensus item admission with bounded pending batches, operation acceptance notifications back to public handlers, a finalization loop for accepted-entry apply/notify delivery, an exported backend adapter for queued operation dispatch plus finalized responses, a live generated 5-member process smoke that verifies signed status, readiness, convergence, restart, and cleanup, a materialized-state digest scaffold for consensus-visible mint rows, database-backed private status plus catch-up evidence digests derived from applied mint rows, a live operation-bearing process smoke that drives wallet mint, swap, check-state, melt, restore, convergence, restart, and catch-up, focused fake-wallet melt tests for failed payments, pending-to-paid verification, unresolved pending status-check errors, delayed quote-check finalization, staged offline catch-up from pending melt reserve to paid melt observation, staged offline catch-up from pending melt reserve to failed-observation rollback, restart replay of pending melts before later paid-observation catch-up, restart replay of pending melts before later failed-observation rollback, fresh SQLite-backed mint restart replay across the same pending-to-paid and pending-to-failed melt paths, and generated process smoke scenarios that restart a member between pending melt start and paid or failed pending melt finalization.</td>
@@ -1737,6 +1748,10 @@
             <p>Aggregate federation keysets use Cashu keyset v3 IDs and BLS public keys exclusively; v1/v2 keysets remain standalone-only unless a future protocol explicitly adds support.</p>
           </article>
           <article class="item">
+            <h3>Real payment observations fail closed</h3>
+            <p>Fake-wallet testing keeps one-observation finality, while real-backend policies require a configured quorum and currently reject single-observation finality until the observation accumulator is implemented.</p>
+          </article>
+          <article class="item">
             <h3>Feature-off compatibility</h3>
             <p>The first Rust scaffold is gated so normal standalone builds do not see federation mint fields or APIs.</p>
           </article>
@@ -1750,6 +1765,10 @@
       <section class="panel span-6">
         <h2>Next Work</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Payment observation accumulator</h3>
+            <p>Persist one observation per member, match evidence deterministically, quarantine conflicts, and finalize mint or melt quotes only when the configured payment policy reaches quorum.</p>
+          </article>
           <article class="item">
             <h3>Broader process smoke matrix</h3>
             <p>Run the generated paid and failed pending-melt restart smoke in an environment with local listener permissions, then add delayed and offline fake-wallet observation variants across generated member processes.</p>

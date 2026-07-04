@@ -16,7 +16,7 @@ use cdk_common::federation::{
     FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationSwapOperation, MemberConfigPrivate, MemberId,
+    FederationPaymentObservationContext, FederationSwapOperation, MemberConfigPrivate, MemberId,
 };
 use cdk_common::mint::{MeltQuote, MintQuote, Operation, OperationKind};
 use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
@@ -498,6 +498,13 @@ impl Mint {
             .checked_sub(&quote.amount_paid())
             .map_err(|_| Error::AmountOverflow)?;
         if additional_amount.value() > 0 {
+            let config = self.federation_config().ok_or(Error::Internal)?;
+            config
+                .public_config()
+                .ensure_single_payment_observation_can_finalize(
+                    FederationPaymentObservationContext::MintQuote,
+                )?;
+
             let payment_id = observation.payment_proof.clone().unwrap_or_else(|| {
                 format!(
                     "federation:{}:{}",
@@ -770,6 +777,13 @@ impl Mint {
         ensure_melt_quote_matches_payment_observation(&quote, observation)?;
 
         if quote.state != observation.state {
+            let config = self.federation_config().ok_or(Error::Internal)?;
+            config
+                .public_config()
+                .ensure_single_payment_observation_can_finalize(
+                    FederationPaymentObservationContext::MeltQuote,
+                )?;
+
             match observation.state {
                 cdk_common::MeltQuoteState::Paid => {
                     self.apply_paid_melt_quote_payment_observation(
