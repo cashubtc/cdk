@@ -347,15 +347,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover federation storage parity</span>
+          <span class="value">test: cover federation sqlite indexes</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">SQLite/Postgres federation journal storage parity</span>
+          <span class="value">SQLite federation journal hot-path index coverage</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Live pending-melt process smoke, storage stress, and BFT ordering work</span>
+          <span class="value">Live Postgres persistence, storage stress, and BFT ordering work</span>
         </div>
       </aside>
     </header>
@@ -1086,6 +1086,10 @@
             <h3>Storage backend parity tightened</h3>
             <p>Postgres now wires the same federation journal persistence test as SQLite, and SQL common has a DB-free migration parity check for saga federation IDs, journal entries, member sequences, and signed session outcomes.</p>
           </article>
+          <article class="item">
+            <h3>SQLite federation index plans covered</h3>
+            <p>A migrated SQLite mint database now has explicit planner coverage for federation journal catch-up by operation index, status updates by operation ID, and signed session-outcome range reads.</p>
+          </article>
         </div>
       </section>
 
@@ -1610,10 +1614,16 @@
               <td>Run the Postgres journal persistence test against a live Postgres instance, then broaden storage stress and hot-path index coverage.</td>
             </tr>
             <tr>
+              <td>SQLite federation journal indexes</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-sqlite --features "mint federation" federation_journal_hot_path_indexes_are_used -- --test-threads 1`, `cargo test -p cdk-sqlite --features "mint federation" federation_journal -- --test-threads 1`, `cargo check -p cdk-sqlite --features "mint federation"`, `cargo fmt --all`, and `git diff --check` passed, proving the migrated database creates the federation journal and session-outcome indexes and that SQLite uses indexed plans for operation-index catch-up, operation-id status updates, and session-outcome range reads.</td>
+              <td>Add live Postgres persistence/index coverage and concurrent federation journal storage stress.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; SQLite and Postgres migrations now have parity coverage, with Postgres compiling the shared journal persistence regression. Runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, a replaceable consensus runtime boundary, a multi-node simulator for delayed, duplicated, reordered, and quorum-limited proposal delivery, explicit consensus item admission with bounded pending batches, operation acceptance notifications back to public handlers, a finalization loop for accepted-entry apply/notify delivery, an exported backend adapter for queued operation dispatch plus finalized responses, a live generated 5-member process smoke that verifies signed status, readiness, convergence, restart, and cleanup, a materialized-state digest scaffold for consensus-visible mint rows, database-backed private status plus catch-up evidence digests derived from applied mint rows, a live operation-bearing process smoke that drives wallet mint, swap, check-state, melt, restore, convergence, restart, and catch-up, focused fake-wallet melt tests for failed payments, pending-to-paid verification, unresolved pending status-check errors, delayed quote-check finalization, staged offline catch-up from pending melt reserve to paid melt observation, staged offline catch-up from pending melt reserve to failed-observation rollback, restart replay of pending melts before later paid-observation catch-up, restart replay of pending melts before later failed-observation rollback, fresh SQLite-backed mint restart replay across the same pending-to-paid and pending-to-failed melt paths, and generated process smoke scenarios that restart a member between pending melt start and paid or failed pending melt finalization.</td>
-              <td>Broaden operation smoke to more federation sizes and storage backends, run live Postgres persistence coverage, then replace the simulator ordering source with a real BFT backend.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, and signed catch-up session outcomes; SQLite and Postgres migrations now have parity coverage, with Postgres compiling the shared journal persistence regression and SQLite proving indexed plans for federation journal catch-up and session-outcome reads. Runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, a replaceable consensus runtime boundary, a multi-node simulator for delayed, duplicated, reordered, and quorum-limited proposal delivery, explicit consensus item admission with bounded pending batches, operation acceptance notifications back to public handlers, a finalization loop for accepted-entry apply/notify delivery, an exported backend adapter for queued operation dispatch plus finalized responses, a live generated 5-member process smoke that verifies signed status, readiness, convergence, restart, and cleanup, a materialized-state digest scaffold for consensus-visible mint rows, database-backed private status plus catch-up evidence digests derived from applied mint rows, a live operation-bearing process smoke that drives wallet mint, swap, check-state, melt, restore, convergence, restart, and catch-up, focused fake-wallet melt tests for failed payments, pending-to-paid verification, unresolved pending status-check errors, delayed quote-check finalization, staged offline catch-up from pending melt reserve to paid melt observation, staged offline catch-up from pending melt reserve to failed-observation rollback, restart replay of pending melts before later paid-observation catch-up, restart replay of pending melts before later failed-observation rollback, fresh SQLite-backed mint restart replay across the same pending-to-paid and pending-to-failed melt paths, and generated process smoke scenarios that restart a member between pending melt start and paid or failed pending melt finalization.</td>
+              <td>Broaden operation smoke to more federation sizes and storage backends, run live Postgres persistence/index coverage, then replace the simulator ordering source with a real BFT backend.</td>
             </tr>
           </tbody>
         </table>

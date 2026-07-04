@@ -15,12 +15,14 @@ pub type MintSqliteAuthDatabase = SQLMintAuthDatabase<SqliteConnectionManager>;
 
 #[cfg(test)]
 mod test {
+    use std::collections::BTreeSet;
     use std::fs::remove_file;
     use std::time::Duration;
 
     use cdk_common::mint_db_test;
     use cdk_sql_common::pool::Pool;
     use cdk_sql_common::stmt::query;
+    use cdk_sql_common::value::Value;
 
     use super::*;
     use crate::common::Config;
@@ -38,6 +40,148 @@ mod test {
             provide_db("federation_journal_persistence".to_string()).await,
         )
         .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn federation_journal_hot_path_indexes_are_used() {
+        let path = std::env::temp_dir().to_path_buf().join(format!(
+            "cdk-test-federation-indexes-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+
+        #[cfg(feature = "sqlcipher")]
+        let db = MintSqliteDatabase::new((path.clone(), "password".to_string()))
+            .await
+            .expect("migrated sqlite database");
+
+        #[cfg(not(feature = "sqlcipher"))]
+        let db = MintSqliteDatabase::new(path.clone())
+            .await
+            .expect("migrated sqlite database");
+
+        drop(db);
+
+        #[cfg(feature = "sqlcipher")]
+        let config: Config = (path.clone(), "password".to_string()).into();
+        #[cfg(not(feature = "sqlcipher"))]
+        let config: Config = (&path).into();
+
+        let pool = Pool::<SqliteConnectionManager>::new(config);
+        let conn = pool.get().await.expect("valid connection");
+
+        let index_rows = query(
+            r#"
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'index'
+              AND tbl_name IN ('federation_journal_entries', 'federation_session_outcomes')
+            "#,
+        )
+        .expect("index query")
+        .fetch_all(&*conn)
+        .await
+        .expect("federation index rows");
+        let index_names = index_rows
+            .into_iter()
+            .map(|row| text_column(&row, 0))
+            .collect::<BTreeSet<_>>();
+        assert!(
+            index_names.contains("idx_federation_journal_operation_id"),
+            "missing federation operation-id index"
+        );
+        assert!(
+            index_names.contains("idx_federation_session_outcomes_from_index"),
+            "missing federation session-outcome range index"
+        );
+
+        let journal_range_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT operation_index, operation_id
+                FROM federation_journal_entries
+                WHERE operation_index >= 1
+                ORDER BY operation_index ASC
+                "#,
+            )
+            .expect("journal range plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("journal range query plan"),
+        );
+        assert!(
+            journal_range_plan
+                .iter()
+                .any(|detail| detail.contains("USING INTEGER PRIMARY KEY")),
+            "journal range catch-up should use the operation_index primary key: {journal_range_plan:?}"
+        );
+
+        let operation_id_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                UPDATE federation_journal_entries
+                SET status = 'applied'
+                WHERE operation_id = '0000000000000000000000000000000000000000000000000000000000000000'
+                "#,
+            )
+            .expect("operation-id plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("operation-id query plan"),
+        );
+        assert_uses_indexed_search(&operation_id_plan, "federation_journal_entries");
+
+        let session_outcome_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT outcome_json
+                FROM federation_session_outcomes
+                WHERE from_index >= 1
+                ORDER BY from_index ASC, signer_member_id ASC
+                "#,
+            )
+            .expect("session-outcome plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("session-outcome query plan"),
+        );
+        assert_uses_indexed_search(&session_outcome_plan, "federation_session_outcomes");
+
+        drop(conn);
+        drop(pool);
+        let _ = remove_file(path);
+    }
+
+    #[cfg(feature = "federation")]
+    fn explain_details(rows: Vec<Vec<Value>>) -> Vec<String> {
+        rows.into_iter().map(|row| text_column(&row, 3)).collect()
+    }
+
+    #[cfg(feature = "federation")]
+    fn text_column(row: &[Value], index: usize) -> String {
+        match row.get(index).expect("query column") {
+            Value::Text(value) => value.clone(),
+            _ => panic!("expected text column"),
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    fn assert_uses_indexed_search(plan: &[String], table: &str) {
+        assert!(
+            plan.iter().any(|detail| detail.contains(table)
+                && detail.contains("SEARCH")
+                && detail.contains("USING")),
+            "{table} query should use an indexed search: {plan:?}"
+        );
+        assert!(
+            !plan
+                .iter()
+                .any(|detail| detail.contains(&format!("SCAN {table}"))),
+            "{table} query should not fall back to a table scan: {plan:?}"
+        );
     }
 
     #[tokio::test]
