@@ -13,6 +13,7 @@ use super::{DbTransactionFinalizer, Error};
 #[cfg(feature = "federation")]
 use crate::federation::{
     FederationJournalEntry, FederationOperationId, FederationOperationStatus,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
     FederationSessionOutcome, MemberId,
 };
 use crate::mint::{
@@ -637,6 +638,12 @@ pub trait FederationJournalTransaction {
         &mut self,
         outcome: &FederationSessionOutcome,
     ) -> Result<(), Self::Err>;
+
+    /// Persist one payment observation extracted from an accepted federation operation.
+    async fn add_federation_payment_observation(
+        &mut self,
+        observation: &FederationPaymentObservationRecord,
+    ) -> Result<(), Self::Err>;
 }
 
 #[cfg(feature = "federation")]
@@ -670,6 +677,13 @@ pub trait FederationJournalDatabase {
         &self,
         from_index: u64,
     ) -> Result<Vec<FederationSessionOutcome>, Self::Err>;
+
+    /// Get payment observations for one quote and context in consensus order.
+    async fn get_federation_payment_observations(
+        &self,
+        context: FederationPaymentObservationContext,
+        quote: &str,
+    ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err>;
 }
 
 #[cfg(not(feature = "federation"))]

@@ -38,7 +38,8 @@ pub use self::operation::{
     FederationMintOperation, FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
     FederationMintRequest, FederationOperation, FederationOperationConflictKey,
     FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationPaymentObservationQuorum, FederationRestoreOperation, FederationSwapOperation,
+    FederationPaymentObservation, FederationPaymentObservationQuorum,
+    FederationPaymentObservationRecord, FederationRestoreOperation, FederationSwapOperation,
     FEDERATION_MAX_OPERATION_ENVELOPE_BYTES, FEDERATION_OPERATION_VERSION,
 };
 pub use self::signing::{FederationBlindSignatureShare, FederationBlindSignatureShareSet};

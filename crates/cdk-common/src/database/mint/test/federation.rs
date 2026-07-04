@@ -8,7 +8,8 @@ use crate::federation::{
     FederationId, FederationJournalAppendOutcome, FederationJournalCatchUpRequest,
     FederationJournalCatchUpResponse, FederationJournalEntry, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-    FederationOperationStatus, InMemoryFederationJournal, MemberConfigPrivate, MemberId,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, InMemoryFederationJournal, MemberConfigPrivate, MemberId,
 };
 use crate::nuts::nut00::KnownMethod;
 use crate::{
@@ -45,16 +46,25 @@ fn mint_quote_envelope(quote: &str, amount: u64) -> FederationOperationEnvelope 
 }
 
 fn payment_observation_envelope(quote: &str) -> FederationOperationEnvelope {
+    payment_observation_envelope_for_member(quote, 1, 21, "fake-wallet-paid")
+}
+
+fn payment_observation_envelope_for_member(
+    quote: &str,
+    member_id: u16,
+    amount_paid: u64,
+    payment_proof: &str,
+) -> FederationOperationEnvelope {
     FederationOperationEnvelope::new(
         federation_id(),
         FederationOperation::MintQuotePayment(FederationMintQuotePaymentObservation {
             quote: quote.to_string(),
-            observer: MemberId::new(1).expect("member id"),
+            observer: MemberId::new(member_id).expect("member id"),
             method: PaymentMethod::Known(KnownMethod::Bolt11),
             state: MintQuoteState::Paid,
-            amount_paid: Amount::from(21),
+            amount_paid: Amount::from(amount_paid),
             amount_issued: Amount::ZERO,
-            payment_proof: Some("fake-wallet-paid".to_string()),
+            payment_proof: Some(payment_proof.to_string()),
         }),
     )
 }
@@ -195,6 +205,132 @@ where
         .expect("session outcomes from");
     assert_eq!(session_outcomes_from.len(), 1);
     assert_eq!(session_outcomes_from[0].from_index, 1);
+}
+
+/// Assert payment observations persist as durable per-member quorum evidence.
+pub async fn federation_payment_observation_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let mut journal = InMemoryFederationJournal::new();
+    let first = appended(
+        journal
+            .append(payment_observation_envelope_for_member(
+                "quote-1", 1, 21, "settled",
+            ))
+            .expect("append first observation"),
+    );
+    let matching_second = appended(
+        journal
+            .append(payment_observation_envelope_for_member(
+                "quote-1", 2, 21, "settled",
+            ))
+            .expect("append matching second observation"),
+    );
+    let conflicting_third = appended(
+        journal
+            .append(payment_observation_envelope_for_member(
+                "quote-1",
+                3,
+                22,
+                "different-settlement",
+            ))
+            .expect("append conflicting third observation"),
+    );
+    let unrelated = appended(
+        journal
+            .append(payment_observation_envelope_for_member(
+                "quote-2",
+                1,
+                7,
+                "other-settlement",
+            ))
+            .expect("append unrelated observation"),
+    );
+
+    let entries = [
+        first.clone(),
+        matching_second.clone(),
+        conflicting_third.clone(),
+        unrelated.clone(),
+    ];
+    let records = entries
+        .iter()
+        .map(|entry| {
+            FederationPaymentObservationRecord::from_journal_entry(entry)
+                .expect("payment observation record")
+        })
+        .collect::<Vec<_>>();
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin");
+    for entry in &entries {
+        tx.add_federation_journal_entry(entry)
+            .await
+            .expect("persist journal entry");
+    }
+    for record in &records {
+        tx.add_federation_payment_observation(record)
+            .await
+            .expect("persist payment observation");
+    }
+    tx.add_federation_payment_observation(&records[0])
+        .await
+        .expect("idempotent payment observation persistence");
+    tx.commit().await.expect("commit");
+
+    let persisted = db
+        .get_federation_payment_observations(
+            FederationPaymentObservationContext::MintQuote,
+            "quote-1",
+        )
+        .await
+        .expect("payment observations");
+    assert_eq!(persisted.len(), 3);
+    assert_eq!(persisted[0].operation_id, first.operation_id);
+    assert_eq!(persisted[0].operation_index, first.index);
+    assert_eq!(persisted[1].operation_id, matching_second.operation_id);
+    assert_eq!(persisted[2].operation_id, conflicting_third.operation_id);
+
+    let mint_observations = persisted
+        .iter()
+        .map(|record| match &record.observation {
+            FederationPaymentObservation::MintQuote(observation) => observation,
+            FederationPaymentObservation::MeltQuote(_) => panic!("expected mint observation"),
+        })
+        .collect::<Vec<_>>();
+    let quorum = mint_observations[0].quorum(mint_observations.iter().skip(1).copied(), 2);
+    assert!(quorum.is_reached());
+    assert!(quorum.has_conflicts());
+    assert_eq!(
+        quorum.matching_observers,
+        vec![
+            MemberId::new(1).expect("member one"),
+            MemberId::new(2).expect("member two")
+        ]
+    );
+    assert_eq!(
+        quorum.conflicting_observers,
+        vec![MemberId::new(3).expect("member three")]
+    );
+
+    let unrelated_persisted = db
+        .get_federation_payment_observations(
+            FederationPaymentObservationContext::MintQuote,
+            "quote-2",
+        )
+        .await
+        .expect("unrelated payment observations");
+    assert_eq!(unrelated_persisted.len(), 1);
+    assert_eq!(unrelated_persisted[0].operation_id, unrelated.operation_id);
+
+    let wrong_context = db
+        .get_federation_payment_observations(
+            FederationPaymentObservationContext::MeltQuote,
+            "quote-1",
+        )
+        .await
+        .expect("wrong-context payment observations");
+    assert!(wrong_context.is_empty());
 }
 
 /// Assert concurrent federation journal writes do not deadlock or reorder reads.

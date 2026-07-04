@@ -10,8 +10,10 @@ The central rule is:
 
 The current implementation keeps fake-wallet testing on the existing
 single-observation path and makes real-backend policies explicit in the public
-federation config. Until the observation accumulator is implemented, real
-policies fail closed instead of silently using fake-wallet finality.
+federation config. Durable per-member observation rows now persist ordered
+evidence by quote and context. Until the DB-backed quorum finalizer is wired
+into quote state transitions, real policies fail closed instead of silently
+using fake-wallet finality.
 
 ## Policy Surface
 
@@ -69,7 +71,8 @@ For real backends:
 - Conflicting amount or proof observations must be quarantined or rejected by
   the observation accumulator before any mint signatures are produced.
 
-The next implementation step is to persist the per-member observations and
+The storage layer now persists per-member observations with quote, observer,
+state, context, and typed JSON evidence. The next implementation step is to
 finalize the quote only after the configured quorum is satisfied by stored
 evidence.
 
@@ -93,9 +96,10 @@ For real backends:
 - Outgoing payment attempts need idempotency keys so catch-up and restart cannot
   trigger duplicate external payments.
 
-The current guard rejects single-observation state changes for real policies
-until the quorum accumulator is backed by storage and the idempotent real
-payment executor exists.
+The current guard rejects single-observation state changes for real policies.
+The next implementation step is to evaluate the stored quorum evidence before
+finalizing melts, while the idempotent real payment executor remains future
+work.
 
 ## Pending And Stale Quotes
 
@@ -106,17 +110,14 @@ The policy includes operator-facing limits:
 - `stale_observation_secs`: age after which unresolved observation evidence is
   stale.
 
-These limits are validated as non-zero config values. The next storage and admin
-work should expose unresolved observations by quote ID, member ID, state, and
-age without logging secrets, invoices, local paths, private keys, or proof
-secrets.
+These limits are validated as non-zero config values. The next admin work should
+expose unresolved observations by quote ID, member ID, state, and age without
+logging secrets, invoices, local paths, private keys, or proof secrets.
 
 ## Required Follow-Up
 
-- Persist one row per member payment observation and evaluate the stored rows
-  before finalizing quote state.
-- Use the deterministic matching rules from the pure helper inside the
-  DB-backed finalizer.
+- Use the persisted per-member payment observation rows and deterministic
+  matching rules from the pure helper inside the DB-backed finalizer.
 - Add conflict quarantine for mismatched amounts, payment proofs, states, or
   backend-specific settlement references.
 - Add admin tooling to inspect unresolved, conflicting, and stale observations.

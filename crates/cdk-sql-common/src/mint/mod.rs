@@ -470,6 +470,12 @@ mod federation_migration_tests {
             include_str!("migrations/sqlite/20260703133000_add_federation_session_outcomes.sql");
         let postgres_outcomes =
             include_str!("migrations/postgres/20260703133000_add_federation_session_outcomes.sql");
+        let sqlite_payment_observations = include_str!(
+            "migrations/sqlite/20260703140000_add_federation_payment_observations.sql"
+        );
+        let postgres_payment_observations = include_str!(
+            "migrations/postgres/20260703140000_add_federation_payment_observations.sql"
+        );
 
         for migration in [sqlite_saga, postgres_saga] {
             assert_contains_all(
@@ -510,6 +516,24 @@ mod federation_migration_tests {
                     "operation_count",
                     "outcome_json",
                     "idx_federation_session_outcomes_from_index",
+                ],
+            );
+        }
+
+        for migration in [sqlite_payment_observations, postgres_payment_observations] {
+            assert_contains_all(
+                migration,
+                &[
+                    "federation_payment_observations",
+                    "operation_id",
+                    "operation_index",
+                    "context",
+                    "quote",
+                    "observer_member_id",
+                    "state",
+                    "observation_json",
+                    "idx_federation_payment_observations_member_state",
+                    "idx_federation_payment_observations_quote",
                 ],
             );
         }

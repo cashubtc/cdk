@@ -5,7 +5,8 @@ use cdk_common::database::mint::{FederationJournalDatabase, FederationJournalTra
 use cdk_common::database::Error;
 use cdk_common::federation::{
     FederationJournalEntry, FederationOperationConflictKey, FederationOperationId,
-    FederationOperationStatus, FederationSessionOutcome, MemberId,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationSessionOutcome, MemberId,
 };
 
 use super::{SQLMintDatabase, SQLTransaction};
@@ -33,6 +34,15 @@ fn status_from_str(status: &str) -> Result<FederationOperationStatus, Error> {
         other => Err(Error::Internal(format!(
             "Invalid federation operation status: {other}"
         ))),
+    }
+}
+
+fn payment_observation_context_to_str(
+    context: FederationPaymentObservationContext,
+) -> &'static str {
+    match context {
+        FederationPaymentObservationContext::MintQuote => "mint_quote",
+        FederationPaymentObservationContext::MeltQuote => "melt_quote",
     }
 }
 
@@ -92,6 +102,27 @@ fn sql_row_to_federation_journal_entry(row: Vec<Column>) -> Result<FederationJou
         previous_order_digest,
         order_digest,
         status,
+    })
+}
+
+fn sql_row_to_federation_payment_observation_record(
+    row: Vec<Column>,
+) -> Result<FederationPaymentObservationRecord, Error> {
+    unpack_into!(let (operation_id, operation_index, observation_json) = row);
+
+    let operation_id = FederationOperationId::from_hex(column_as_string!(&operation_id))
+        .map_err(|e| Error::Internal(format!("Invalid federation operation id: {e}")))?;
+    let operation_index: u64 = column_as_number!(operation_index);
+    let observation =
+        serde_json::from_str::<FederationPaymentObservation>(&column_as_string!(&observation_json))
+            .map_err(|e| {
+                Error::Internal(format!("Invalid federation payment observation JSON: {e}"))
+            })?;
+
+    Ok(FederationPaymentObservationRecord {
+        operation_id,
+        operation_index,
+        observation,
     })
 }
 
@@ -207,6 +238,45 @@ where
         .bind("latest_index", outcome.latest_index as i64)
         .bind("operation_count", outcome.operation_count as i64)
         .bind("outcome_json", serde_json::to_string(outcome)?)
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn add_federation_payment_observation(
+        &mut self,
+        observation: &FederationPaymentObservationRecord,
+    ) -> Result<(), Self::Err> {
+        query(
+            r#"
+            INSERT INTO federation_payment_observations
+            (operation_id, operation_index, context, quote, observer_member_id, state, observation_json)
+            VALUES
+            (:operation_id, :operation_index, :context, :quote, :observer_member_id, :state, :observation_json)
+            ON CONFLICT (operation_id)
+            DO UPDATE SET
+                operation_index = EXCLUDED.operation_index,
+                context = EXCLUDED.context,
+                quote = EXCLUDED.quote,
+                observer_member_id = EXCLUDED.observer_member_id,
+                state = EXCLUDED.state,
+                observation_json = EXCLUDED.observation_json
+            "#,
+        )?
+        .bind("operation_id", observation.operation_id.to_string())
+        .bind("operation_index", observation.operation_index as i64)
+        .bind(
+            "context",
+            payment_observation_context_to_str(observation.observation.context()),
+        )
+        .bind("quote", observation.observation.quote())
+        .bind(
+            "observer_member_id",
+            i64::from(observation.observation.observer().get()),
+        )
+        .bind("state", observation.observation.state_label())
+        .bind("observation_json", serde_json::to_string(&observation.observation)?)
         .execute(&self.inner)
         .await?;
 
@@ -359,6 +429,34 @@ where
         .await?
         .into_iter()
         .map(sql_row_to_federation_session_outcome)
+        .collect()
+    }
+
+    async fn get_federation_payment_observations(
+        &self,
+        context: FederationPaymentObservationContext,
+        quote: &str,
+    ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT operation_id, operation_index, observation_json
+            FROM federation_payment_observations
+            WHERE context = :context
+              AND quote = :quote
+            ORDER BY operation_index ASC, observer_member_id ASC
+            "#,
+        )?
+        .bind("context", payment_observation_context_to_str(context))
+        .bind("quote", quote)
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_payment_observation_record)
         .collect()
     }
 }

@@ -44,6 +44,15 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_payment_observation_persistence() {
+        cdk_common::database::mint::test::federation_payment_observation_persistence(
+            provide_db("federation_payment_observation_persistence".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_journal_concurrent_writes() {
         let path = std::env::temp_dir().to_path_buf().join(format!(
             "cdk-test-federation-concurrent-{}.sqlite",
@@ -121,7 +130,11 @@ mod test {
             SELECT name
             FROM sqlite_master
             WHERE type = 'index'
-              AND tbl_name IN ('federation_journal_entries', 'federation_session_outcomes')
+              AND tbl_name IN (
+                  'federation_journal_entries',
+                  'federation_session_outcomes',
+                  'federation_payment_observations'
+              )
             "#,
         )
         .expect("index query")
@@ -139,6 +152,14 @@ mod test {
         assert!(
             index_names.contains("idx_federation_session_outcomes_from_index"),
             "missing federation session-outcome range index"
+        );
+        assert!(
+            index_names.contains("idx_federation_payment_observations_member_state"),
+            "missing federation payment-observation member-state index"
+        );
+        assert!(
+            index_names.contains("idx_federation_payment_observations_quote"),
+            "missing federation payment-observation quote index"
         );
 
         let journal_range_plan = explain_details(
@@ -195,6 +216,24 @@ mod test {
             .expect("session-outcome query plan"),
         );
         assert_uses_indexed_search(&session_outcome_plan, "federation_session_outcomes");
+
+        let payment_observation_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT operation_id, operation_index, observation_json
+                FROM federation_payment_observations
+                WHERE context = 'mint_quote'
+                  AND quote = 'quote-1'
+                ORDER BY operation_index ASC, observer_member_id ASC
+                "#,
+            )
+            .expect("payment-observation plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("payment-observation query plan"),
+        );
+        assert_uses_indexed_search(&payment_observation_plan, "federation_payment_observations");
 
         drop(conn);
         drop(pool);

@@ -14,6 +14,7 @@ use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use super::journal::FederationJournalEntry;
 use super::{FederationError, FederationId, FederationPaymentObservationContext, MemberId, Result};
 use crate::{
     Amount, BatchMintRequest, MeltQuoteRequest, MeltQuoteState, MeltRequest, MintQuoteRequest,
@@ -188,7 +189,7 @@ pub struct FederationMintQuoteOperation {
 }
 
 /// Observed incoming mint quote payment state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationMintQuotePaymentObservation {
     /// Quote ID being observed.
     pub quote: String,
@@ -291,7 +292,7 @@ pub struct FederationMeltQuoteOperation {
 }
 
 /// Observed outgoing melt payment state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationMeltQuotePaymentObservation {
     /// Quote ID being observed.
     pub quote: String,
@@ -357,6 +358,110 @@ impl FederationMeltQuotePaymentObservation {
             matching,
             conflicting,
         )
+    }
+}
+
+/// Payment observation extracted from an accepted federation operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum FederationPaymentObservation {
+    /// Incoming mint quote payment observation.
+    MintQuote(FederationMintQuotePaymentObservation),
+    /// Outgoing melt quote payment observation.
+    MeltQuote(FederationMeltQuotePaymentObservation),
+}
+
+impl FederationPaymentObservation {
+    /// Extract a durable payment observation from a consensus operation.
+    #[must_use]
+    pub fn from_operation(operation: &FederationOperation) -> Option<Self> {
+        match operation {
+            FederationOperation::MintQuotePayment(observation) => {
+                Some(Self::MintQuote(observation.clone()))
+            }
+            FederationOperation::MeltQuotePayment(observation) => {
+                Some(Self::MeltQuote(observation.clone()))
+            }
+            FederationOperation::MintQuote(_)
+            | FederationOperation::Mint(_)
+            | FederationOperation::MeltQuote(_)
+            | FederationOperation::Melt(_)
+            | FederationOperation::Swap(_)
+            | FederationOperation::Restore(_) => None,
+        }
+    }
+
+    /// Return the observation context.
+    #[must_use]
+    pub fn context(&self) -> FederationPaymentObservationContext {
+        match self {
+            Self::MintQuote(_) => FederationPaymentObservationContext::MintQuote,
+            Self::MeltQuote(_) => FederationPaymentObservationContext::MeltQuote,
+        }
+    }
+
+    /// Return the quote ID observed.
+    #[must_use]
+    pub fn quote(&self) -> &str {
+        match self {
+            Self::MintQuote(observation) => observation.quote.as_str(),
+            Self::MeltQuote(observation) => observation.quote.as_str(),
+        }
+    }
+
+    /// Return the observing member.
+    #[must_use]
+    pub fn observer(&self) -> MemberId {
+        match self {
+            Self::MintQuote(observation) => observation.observer,
+            Self::MeltQuote(observation) => observation.observer,
+        }
+    }
+
+    /// Return the observed state as a stable label.
+    #[must_use]
+    pub fn state_label(&self) -> String {
+        match self {
+            Self::MintQuote(observation) => observation.state.to_string(),
+            Self::MeltQuote(observation) => observation.state.to_string(),
+        }
+    }
+
+    /// Return true when two observations describe the same payment evidence.
+    #[must_use]
+    pub fn matches_payment_evidence(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::MintQuote(left), Self::MintQuote(right)) => left.matches_payment_evidence(right),
+            (Self::MeltQuote(left), Self::MeltQuote(right)) => left.matches_payment_evidence(right),
+            (Self::MintQuote(_), Self::MeltQuote(_)) | (Self::MeltQuote(_), Self::MintQuote(_)) => {
+                false
+            }
+        }
+    }
+}
+
+/// Durable payment observation plus the consensus entry that produced it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationPaymentObservationRecord {
+    /// Stable operation ID for the consensus observation.
+    pub operation_id: FederationOperationId,
+    /// Consensus order index of the observation.
+    pub operation_index: u64,
+    /// Typed payment observation evidence.
+    pub observation: FederationPaymentObservation,
+}
+
+impl FederationPaymentObservationRecord {
+    /// Extract a durable observation record from a federation journal entry.
+    #[must_use]
+    pub fn from_journal_entry(entry: &FederationJournalEntry) -> Option<Self> {
+        FederationPaymentObservation::from_operation(&entry.envelope.operation).map(|observation| {
+            Self {
+                operation_id: entry.operation_id,
+                operation_index: entry.index,
+                observation,
+            }
+        })
     }
 }
 
