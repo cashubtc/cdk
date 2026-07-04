@@ -358,19 +358,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Signed member digest comparison now has a dedicated admin command</span>
+          <span class="value">Trusted-dealer setup now emits a signed setup transcript scaffold</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add federation digest comparison command</span>
+          <span class="value">feat: add federation setup transcript scaffold</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk-mintd federation compare-digests` groups signed member status by operation height, order digest, and state digest, failing unless all queried members match</span>
+          <span class="value">Trusted-dealer federation bundles bind federation ID, participant order, identity keys, aggregate keysets, public BLS shares, and member identity signatures into one transcript hash</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue Postgres-backed federation smoke once a database service is available, then broaden storage-backed digest mismatch drills</span>
+          <span class="value">Continue Milestone 20 by turning the transcript scaffold into real dealer-free DKG once the remaining MVP federation correctness gates are stable</span>
         </div>
       </aside>
     </header>
@@ -406,7 +406,7 @@
           <li>Milestone 17: cdk-mintd integration and regtest tooling. <span class="status progress">In progress</span></li>
           <li>Milestone 18: storage backend coverage. <span class="status progress">In progress</span></li>
           <li>Milestone 19: real payment backend policy. <span class="status progress">In progress</span></li>
-          <li>Milestone 20: distributed key generation. <span class="status pending">Pending</span></li>
+          <li>Milestone 20: distributed key generation. <span class="status progress">In progress</span></li>
           <li>Milestone 21: key rotation and federation upgrades. <span class="status pending">Pending</span></li>
           <li>Milestone 22: observability and operator safety. <span class="status progress">In progress</span></li>
           <li>Milestone 23: security review checklist. <span class="status progress">In progress</span></li>
@@ -578,7 +578,7 @@
               <p>Objective: replace trusted-dealer setup with dealer-free DKG.</p>
               <p class="test-gate"><strong>Test gate:</strong> DKG behaves like trusted-dealer keygen, rejects unknown or reassigned participants, verifies transcript signatures, detects invalid shares, survives setup restart, rotates keys, and preserves old proof verification.</p>
             </div>
-            <span class="status pending">Pending</span>
+            <span class="status progress">In progress</span>
           </li>
           <li class="milestone">
             <div>
@@ -1292,6 +1292,10 @@
             <h3>Digest comparison admin command added</h3>
             <p>`cdk-mintd federation compare-digests` signs local-status probes, groups members by operation count plus order and state digest, and exits non-zero on divergence unless an operator explicitly asks to inspect divergent groups.</p>
           </article>
+          <article class="item">
+            <h3>Setup transcript scaffold added</h3>
+            <p>Trusted-dealer config generation now signs a public setup transcript covering federation ID, participant order, identity public keys, aggregate keysets, and public BLS shares; private member configs pin the resulting transcript hash.</p>
+          </article>
         </div>
       </section>
 
@@ -1382,6 +1386,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation federation` now passes 10 tests, including duplicate-member, bad-coefficient, and BLS-identity rejection.</td>
               <td>Use generated configs in multi-member startup tests.</td>
+            </tr>
+            <tr>
+              <td>Setup transcript scaffold</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation trusted_dealer -- --test-threads 1` passed 9 trusted-dealer tests, including setup transcript generation, private transcript-hash binding, missing-hash rejection, tampered payload rejection, invalid member-signature rejection, and unknown signer rejection. `cargo test -p cdk-common --features federation transcript -- --test-threads 1`, `cargo test -p cdk-common --features federation federation -- --test-threads 1`, `cargo check -p cdk-common --features federation --lib`, `cargo test -p cdk-axum --features federation transport_config -- --test-threads 1`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Use this signed transcript as the compatibility bridge for real dealer-free DKG transcript verification and restart-safe setup recovery.</td>
             </tr>
             <tr>
               <td>Mintd federation config wiring</td>

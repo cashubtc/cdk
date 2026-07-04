@@ -1795,6 +1795,7 @@ mod tests {
             identity_secret_key: SecretKey::from_slice(&[value as u8; 32])
                 .expect("identity secret"),
             keyset_secret_shares: BTreeMap::new(),
+            setup_transcript_hash: None,
         }
     }
 

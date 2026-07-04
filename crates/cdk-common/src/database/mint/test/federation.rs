@@ -80,6 +80,7 @@ fn private_member(id: u16) -> MemberConfigPrivate {
         member_id: MemberId::new(id).expect("member id"),
         identity_secret_key: SecretKey::from_slice(&[id as u8; 32]).expect("identity secret"),
         keyset_secret_shares: BTreeMap::new(),
+        setup_transcript_hash: None,
     }
 }
 

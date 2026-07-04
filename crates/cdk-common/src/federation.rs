@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::schnorr::Signature;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
@@ -71,6 +72,9 @@ use crate::{
 };
 
 const FEDERATION_ROSTER_HASH_VERSION: &[u8] = b"cdk-federation-roster-v1";
+const FEDERATION_DKG_TRANSCRIPT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-transcript-v1";
+const FEDERATION_DKG_TRANSCRIPT_SIGNATURE_VERSION: &[u8] =
+    b"cdk-federation-dkg-transcript-signature-v1";
 
 /// Result alias for federation configuration validation.
 pub type Result<T> = std::result::Result<T, FederationError>;
@@ -516,6 +520,39 @@ pub enum FederationError {
     /// A federation REST signature could not be decoded as a Schnorr signature.
     #[error("Invalid federation REST signature encoding")]
     InvalidRestSignature,
+    /// A federation DKG transcript hash must be exactly 32 bytes.
+    #[error("Invalid federation DKG transcript hash size: expected={expected}, found={found}")]
+    InvalidDkgTranscriptHashSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
+    /// A federation DKG transcript signature must be exactly 64 bytes.
+    #[error(
+        "Invalid federation DKG transcript signature size: expected={expected}, found={found}"
+    )]
+    InvalidDkgTranscriptSignatureSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
+    /// A federation DKG transcript signature could not be decoded as a Schnorr signature.
+    #[error("Invalid federation DKG transcript signature encoding")]
+    InvalidDkgTranscriptSignature,
+    /// A federation DKG transcript does not match the public config.
+    #[error("Federation DKG transcript mismatch: {reason}")]
+    DkgTranscriptMismatch {
+        /// Human-readable mismatch reason.
+        reason: String,
+    },
+    /// A federation DKG transcript had an invalid member identity signature.
+    #[error("Federation DKG transcript signature verification failed for member {member_id}")]
+    DkgTranscriptSignatureVerificationFailed {
+        /// Member whose signature failed.
+        member_id: MemberId,
+    },
     /// Signed REST request used an unsupported payload version.
     #[error("Federation REST version mismatch: expected={expected}, found={found}")]
     RestVersionMismatch {
@@ -1279,6 +1316,385 @@ impl FederatedKeyset {
     }
 }
 
+/// Stable hash of the public federation DKG/setup transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FederationDkgTranscriptHash([u8; 32]);
+
+impl FederationDkgTranscriptHash {
+    /// Create a transcript hash from raw bytes.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Parse a transcript hash from a byte slice.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
+        let bytes: [u8; 32] =
+            bytes
+                .try_into()
+                .map_err(|_| FederationError::InvalidDkgTranscriptHashSize {
+                    expected: 32,
+                    found: bytes.len(),
+                })?;
+        Ok(Self(bytes))
+    }
+
+    /// Parse a transcript hash from hex.
+    pub fn from_hex<S>(hex: S) -> Result<Self>
+    where
+        S: AsRef<str>,
+    {
+        let bytes = crate::util::hex::decode(hex.as_ref())?;
+        Self::from_slice(&bytes)
+    }
+
+    /// Return this transcript hash as bytes.
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    /// Return this transcript hash as hex.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        crate::util::hex::encode(self.0)
+    }
+
+    fn for_payload(payload: &FederationDkgTranscriptPayload) -> Result<Self> {
+        let canonical = serde_json::to_vec(payload)?;
+        let mut transcript = Vec::new();
+        append_bytes(&mut transcript, FEDERATION_DKG_TRANSCRIPT_HASH_VERSION);
+        append_bytes(&mut transcript, &canonical);
+        Ok(Self(Sha256Hash::hash(&transcript).to_byte_array()))
+    }
+}
+
+impl fmt::Display for FederationDkgTranscriptHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
+
+impl FromStr for FederationDkgTranscriptHash {
+    type Err = FederationError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Self::from_hex(value)
+    }
+}
+
+impl Serialize for FederationDkgTranscriptHash {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for FederationDkgTranscriptHash {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::from_hex(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Schnorr identity signature over a DKG/setup transcript hash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FederationDkgTranscriptSignature([u8; 64]);
+
+impl FederationDkgTranscriptSignature {
+    /// Create a transcript signature from raw Schnorr bytes.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
+        let bytes: [u8; 64] =
+            bytes
+                .try_into()
+                .map_err(|_| FederationError::InvalidDkgTranscriptSignatureSize {
+                    expected: 64,
+                    found: bytes.len(),
+                })?;
+        Ok(Self(bytes))
+    }
+
+    /// Parse a transcript signature from hex.
+    pub fn from_hex<S>(hex: S) -> Result<Self>
+    where
+        S: AsRef<str>,
+    {
+        let bytes = crate::util::hex::decode(hex.as_ref())?;
+        Self::from_slice(&bytes)
+    }
+
+    /// Return this signature as bytes.
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; 64] {
+        self.0
+    }
+
+    /// Return this signature as hex.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        crate::util::hex::encode(self.0)
+    }
+
+    fn sign(
+        transcript_hash: FederationDkgTranscriptHash,
+        private_config: &MemberConfigPrivate,
+    ) -> Result<Self> {
+        let signature = private_config
+            .identity_secret_key
+            .sign(&dkg_signature_transcript(transcript_hash))?;
+        Ok(Self(signature.serialize()))
+    }
+
+    fn verify(
+        self,
+        transcript_hash: FederationDkgTranscriptHash,
+        member: &MemberConfigPublic,
+    ) -> Result<()> {
+        let signature = Signature::from_slice(&self.0)
+            .map_err(|_| FederationError::InvalidDkgTranscriptSignature)?;
+        member
+            .identity_public_key
+            .verify(&dkg_signature_transcript(transcript_hash), &signature)
+            .map_err(
+                |_| FederationError::DkgTranscriptSignatureVerificationFailed {
+                    member_id: member.member_id,
+                },
+            )
+    }
+}
+
+impl fmt::Display for FederationDkgTranscriptSignature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
+
+impl FromStr for FederationDkgTranscriptSignature {
+    type Err = FederationError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Self::from_hex(value)
+    }
+}
+
+impl Serialize for FederationDkgTranscriptSignature {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for FederationDkgTranscriptSignature {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::from_hex(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Key generation method recorded by a federation setup transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationDkgSetupMethod {
+    /// Test/development setup where one process locally generated all shares.
+    TrustedDealer,
+    /// Future dealer-free Pedersen DKG setup.
+    PedersenDkg,
+}
+
+/// Public keyset material committed by a DKG/setup transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationDkgKeysetTranscript {
+    /// Federated keyset ID.
+    pub keyset_id: Id,
+    /// Aggregate BLS public key per amount.
+    pub aggregate_keys: BTreeMap<Amount, BlsAggregatePublicKey>,
+    /// Public BLS shares per member and amount.
+    pub public_shares: BTreeMap<MemberId, BTreeMap<Amount, BlsPublicKeyShare>>,
+}
+
+/// Public, signed DKG/setup transcript payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationDkgTranscriptPayload {
+    /// Setup method used to derive the public key material.
+    pub setup_method: FederationDkgSetupMethod,
+    /// Federation ID bound by this transcript.
+    pub federation_id: FederationId,
+    /// Threshold parameters bound by this transcript.
+    pub threshold_params: ThresholdParams,
+    /// Deterministic member order used as DKG participant order.
+    pub participant_order: Vec<MemberId>,
+    /// Member identity public keys bound by this transcript.
+    pub member_identity_public_keys: BTreeMap<MemberId, PublicKey>,
+    /// Public aggregate keysets and public member shares.
+    pub keysets: Vec<FederationDkgKeysetTranscript>,
+}
+
+/// Signed public DKG/setup transcript for audit and recovery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationDkgTranscript {
+    /// Public transcript payload.
+    pub payload: FederationDkgTranscriptPayload,
+    /// Canonical hash of the public payload.
+    pub transcript_hash: FederationDkgTranscriptHash,
+    /// Identity signatures over the transcript hash.
+    pub signatures: BTreeMap<MemberId, FederationDkgTranscriptSignature>,
+}
+
+impl FederationDkgTranscript {
+    /// Build an unsigned public transcript payload from a public config.
+    pub fn payload_from_config(
+        setup_method: FederationDkgSetupMethod,
+        public_config: &FederationConfig,
+    ) -> FederationDkgTranscriptPayload {
+        FederationDkgTranscriptPayload {
+            setup_method,
+            federation_id: public_config.federation_id,
+            threshold_params: public_config.threshold_params,
+            participant_order: public_config.members.keys().copied().collect(),
+            member_identity_public_keys: public_config
+                .members
+                .iter()
+                .map(|(member_id, member)| (*member_id, member.identity_public_key))
+                .collect(),
+            keysets: public_config
+                .keysets
+                .iter()
+                .map(|keyset| FederationDkgKeysetTranscript {
+                    keyset_id: keyset.id,
+                    aggregate_keys: keyset.aggregate_keys.clone(),
+                    public_shares: keyset.public_shares.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Create a signed transcript from already-generated trusted-dealer material.
+    pub fn trusted_dealer(
+        public_config: &FederationConfig,
+        private_configs: &BTreeMap<MemberId, MemberConfigPrivate>,
+    ) -> Result<Self> {
+        let payload =
+            Self::payload_from_config(FederationDkgSetupMethod::TrustedDealer, public_config);
+        let transcript_hash = FederationDkgTranscriptHash::for_payload(&payload)?;
+        let mut signatures = BTreeMap::new();
+        for member_id in payload.member_identity_public_keys.keys() {
+            let private_config =
+                private_configs
+                    .get(member_id)
+                    .ok_or(FederationError::MissingMember {
+                        member_id: *member_id,
+                    })?;
+            signatures.insert(
+                *member_id,
+                FederationDkgTranscriptSignature::sign(transcript_hash, private_config)?,
+            );
+        }
+
+        let transcript = Self {
+            payload,
+            transcript_hash,
+            signatures,
+        };
+        transcript.validate_against_config(public_config)?;
+        Ok(transcript)
+    }
+
+    /// Validate this transcript against a public federation config.
+    pub fn validate_against_config(&self, public_config: &FederationConfig) -> Result<()> {
+        let expected_hash = FederationDkgTranscriptHash::for_payload(&self.payload)?;
+        if expected_hash != self.transcript_hash {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "transcript hash does not match payload".to_string(),
+            });
+        }
+        if self.payload.federation_id != public_config.federation_id {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "federation id mismatch".to_string(),
+            });
+        }
+        if self.payload.threshold_params != public_config.threshold_params {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "threshold parameter mismatch".to_string(),
+            });
+        }
+
+        let expected_order = public_config.members.keys().copied().collect::<Vec<_>>();
+        if self.payload.participant_order != expected_order {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "participant order mismatch".to_string(),
+            });
+        }
+        let expected_identity_keys = public_config
+            .members
+            .iter()
+            .map(|(member_id, member)| (*member_id, member.identity_public_key))
+            .collect::<BTreeMap<_, _>>();
+        if self.payload.member_identity_public_keys != expected_identity_keys {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "member identity public keys mismatch".to_string(),
+            });
+        }
+
+        let expected_keysets = public_config
+            .keysets
+            .iter()
+            .map(|keyset| FederationDkgKeysetTranscript {
+                keyset_id: keyset.id,
+                aggregate_keys: keyset.aggregate_keys.clone(),
+                public_shares: keyset.public_shares.clone(),
+            })
+            .collect::<Vec<_>>();
+        if self.payload.keysets != expected_keysets {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "keyset public material mismatch".to_string(),
+            });
+        }
+
+        for member_id in public_config.members.keys() {
+            let member =
+                public_config
+                    .members
+                    .get(member_id)
+                    .ok_or(FederationError::MissingMember {
+                        member_id: *member_id,
+                    })?;
+            let signature =
+                self.signatures
+                    .get(member_id)
+                    .ok_or(FederationError::DkgTranscriptMismatch {
+                        reason: format!("missing transcript signature for member {member_id}"),
+                    })?;
+            signature.verify(self.transcript_hash, member)?;
+        }
+        for member_id in self.signatures.keys() {
+            if !public_config.members.contains_key(member_id) {
+                return Err(FederationError::UnknownMember {
+                    member_id: *member_id,
+                });
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn dkg_signature_transcript(transcript_hash: FederationDkgTranscriptHash) -> Vec<u8> {
+    let mut transcript = Vec::new();
+    append_bytes(&mut transcript, FEDERATION_DKG_TRANSCRIPT_SIGNATURE_VERSION);
+    append_bytes(&mut transcript, &transcript_hash.to_bytes());
+    transcript
+}
+
 /// Public federation config shared by every member.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationConfig {
@@ -1290,6 +1706,9 @@ pub struct FederationConfig {
     pub members: BTreeMap<MemberId, MemberConfigPublic>,
     /// Federated aggregate keysets.
     pub keysets: Vec<FederatedKeyset>,
+    /// Signed public setup transcript for audit and later DKG compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_transcript: Option<FederationDkgTranscript>,
     /// Policy for mint and melt payment observations.
     #[serde(default)]
     pub payment_observation_policy: FederationPaymentObservationPolicy,
@@ -1308,6 +1727,7 @@ impl FederationConfig {
             threshold_params,
             members,
             keysets,
+            setup_transcript: None,
             payment_observation_policy: FederationPaymentObservationPolicy::default(),
         };
         config.validate()?;
@@ -1358,6 +1778,10 @@ impl FederationConfig {
 
         for keyset in &self.keysets {
             keyset.validate(self.threshold_params, &self.members)?;
+        }
+
+        if let Some(transcript) = &self.setup_transcript {
+            transcript.validate_against_config(self)?;
         }
 
         self.payment_observation_policy
@@ -1531,6 +1955,9 @@ pub struct MemberConfigPrivate {
     pub identity_secret_key: SecretKey,
     /// Local secret BLS shares by keyset ID and amount.
     pub keyset_secret_shares: BTreeMap<Id, BTreeMap<Amount, BlsSecretKeyShare>>,
+    /// Hash of the public setup transcript used to derive this member's shares.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_transcript_hash: Option<FederationDkgTranscriptHash>,
 }
 
 impl fmt::Debug for MemberConfigPrivate {
@@ -1538,6 +1965,7 @@ impl fmt::Debug for MemberConfigPrivate {
         f.debug_struct("MemberConfigPrivate")
             .field("member_id", &self.member_id)
             .field("keyset_secret_shares", &self.keyset_secret_shares.keys())
+            .field("setup_transcript_hash", &self.setup_transcript_hash)
             .finish_non_exhaustive()
     }
 }
@@ -1562,6 +1990,26 @@ impl MemberConfigPrivate {
             return Err(FederationError::PrivateIdentityMismatch {
                 member_id: self.member_id,
             });
+        }
+
+        match (&public_config.setup_transcript, self.setup_transcript_hash) {
+            (Some(transcript), Some(hash)) if transcript.transcript_hash != hash => {
+                return Err(FederationError::DkgTranscriptMismatch {
+                    reason: "private setup transcript hash mismatch".to_string(),
+                });
+            }
+            (Some(_), None) => {
+                return Err(FederationError::DkgTranscriptMismatch {
+                    reason: "private config missing setup transcript hash".to_string(),
+                });
+            }
+            (None, Some(_)) => {
+                return Err(FederationError::DkgTranscriptMismatch {
+                    reason: "private config has setup transcript hash but public config has no transcript"
+                        .to_string(),
+                });
+            }
+            (Some(_), Some(_)) | (None, None) => {}
         }
 
         for keyset_id in self.keyset_secret_shares.keys() {
@@ -1796,6 +2244,7 @@ mod tests {
                 member_id: *member_id,
                 identity_secret_key: identity_secret(*member_id),
                 keyset_secret_shares,
+                setup_transcript_hash: None,
             };
             private
                 .validate_against_public(&config)

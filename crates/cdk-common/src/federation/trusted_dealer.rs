@@ -11,8 +11,8 @@ use crate::nuts::nut01::{trusted_dealer_keygen, BlsSecretKey};
 use crate::{mint_url::MintUrl, Amount, CurrencyUnit, SecretKey};
 
 use super::{
-    FederatedKeyset, FederationConfig, FederationError, MemberConfigPrivate, MemberConfigPublic,
-    MemberId, Result, ThresholdParams,
+    FederatedKeyset, FederationConfig, FederationDkgTranscript, FederationError,
+    MemberConfigPrivate, MemberConfigPublic, MemberId, Result, ThresholdParams,
 };
 
 /// Member input for trusted-dealer config generation.
@@ -147,6 +147,7 @@ pub fn generate_trusted_dealer_configs(
                 member_id: member.member_id,
                 identity_secret_key: member.identity_secret_key,
                 keyset_secret_shares: BTreeMap::new(),
+                setup_transcript_hash: None,
             },
         );
     }
@@ -219,8 +220,18 @@ pub fn generate_trusted_dealer_configs(
         federated_keysets.push(federated_keyset);
     }
 
-    let public_config = FederationConfig::new(threshold_params, public_members, federated_keysets)?;
+    let mut public_config =
+        FederationConfig::new(threshold_params, public_members, federated_keysets)?;
     for private_config in private_configs.values() {
+        private_config.validate_against_public(&public_config)?;
+    }
+    let setup_transcript =
+        FederationDkgTranscript::trusted_dealer(&public_config, &private_configs)?;
+    let setup_transcript_hash = setup_transcript.transcript_hash;
+    public_config.setup_transcript = Some(setup_transcript);
+    public_config.validate()?;
+    for private_config in private_configs.values_mut() {
+        private_config.setup_transcript_hash = Some(setup_transcript_hash);
         private_config.validate_against_public(&public_config)?;
     }
 
@@ -250,6 +261,8 @@ fn validate_coefficient_count(
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
+
+    use crate::federation::{FederationDkgSetupMethod, FederationDkgTranscriptHash};
 
     use super::*;
 
@@ -310,7 +323,32 @@ mod tests {
         assert_eq!(bundle.public_config.members.len(), 3);
         assert_eq!(bundle.public_config.keysets.len(), 1);
         assert_eq!(bundle.private_configs.len(), 3);
+        let setup_transcript = bundle
+            .public_config
+            .setup_transcript
+            .as_ref()
+            .expect("setup transcript");
+        assert_eq!(
+            setup_transcript.payload.setup_method,
+            FederationDkgSetupMethod::TrustedDealer
+        );
+        assert_eq!(
+            setup_transcript.payload.federation_id,
+            bundle.public_config.federation_id
+        );
+        assert_eq!(
+            setup_transcript.payload.participant_order,
+            vec![member_id(1), member_id(2), member_id(3)]
+        );
+        assert_eq!(setup_transcript.signatures.len(), 3);
+        setup_transcript
+            .validate_against_config(&bundle.public_config)
+            .expect("setup transcript validates");
         for private_config in bundle.private_configs.values() {
+            assert_eq!(
+                private_config.setup_transcript_hash,
+                Some(setup_transcript.transcript_hash)
+            );
             private_config
                 .validate_against_public(&bundle.public_config)
                 .expect("private config");
@@ -330,6 +368,164 @@ mod tests {
                 .expect("private config from json"),
             *bundle.private_configs.get(&member_id(1)).expect("private")
         );
+    }
+
+    #[test]
+    fn trusted_dealer_rejects_private_transcript_hash_mismatch() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let bundle = generate_trusted_dealer_configs(
+            params,
+            vec![
+                member(member_id(1)),
+                member(member_id(2)),
+                member(member_id(3)),
+            ],
+            vec![keyset_spec()],
+        )
+        .expect("trusted dealer bundle");
+
+        let mut private_config = bundle
+            .private_configs
+            .get(&member_id(1))
+            .expect("private config")
+            .clone();
+        private_config.setup_transcript_hash =
+            Some(FederationDkgTranscriptHash::from_bytes([9; 32]));
+
+        assert!(matches!(
+            private_config.validate_against_public(&bundle.public_config),
+            Err(FederationError::DkgTranscriptMismatch { reason })
+                if reason == "private setup transcript hash mismatch"
+        ));
+    }
+
+    #[test]
+    fn trusted_dealer_rejects_private_config_missing_transcript_hash() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let bundle = generate_trusted_dealer_configs(
+            params,
+            vec![
+                member(member_id(1)),
+                member(member_id(2)),
+                member(member_id(3)),
+            ],
+            vec![keyset_spec()],
+        )
+        .expect("trusted dealer bundle");
+
+        let mut private_config = bundle
+            .private_configs
+            .get(&member_id(1))
+            .expect("private config")
+            .clone();
+        private_config.setup_transcript_hash = None;
+
+        assert!(matches!(
+            private_config.validate_against_public(&bundle.public_config),
+            Err(FederationError::DkgTranscriptMismatch { reason })
+                if reason == "private config missing setup transcript hash"
+        ));
+    }
+
+    #[test]
+    fn trusted_dealer_rejects_tampered_setup_transcript_payload() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let bundle = generate_trusted_dealer_configs(
+            params,
+            vec![
+                member(member_id(1)),
+                member(member_id(2)),
+                member(member_id(3)),
+            ],
+            vec![keyset_spec()],
+        )
+        .expect("trusted dealer bundle");
+
+        let mut public_config = bundle.public_config;
+        public_config
+            .setup_transcript
+            .as_mut()
+            .expect("setup transcript")
+            .payload
+            .participant_order
+            .swap(0, 1);
+
+        assert!(matches!(
+            public_config.validate(),
+            Err(FederationError::DkgTranscriptMismatch { reason })
+                if reason == "transcript hash does not match payload"
+        ));
+    }
+
+    #[test]
+    fn trusted_dealer_rejects_tampered_setup_transcript_signature() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let bundle = generate_trusted_dealer_configs(
+            params,
+            vec![
+                member(member_id(1)),
+                member(member_id(2)),
+                member(member_id(3)),
+            ],
+            vec![keyset_spec()],
+        )
+        .expect("trusted dealer bundle");
+
+        let mut public_config = bundle.public_config;
+        let replacement_signature = *public_config
+            .setup_transcript
+            .as_ref()
+            .expect("setup transcript")
+            .signatures
+            .get(&member_id(2))
+            .expect("replacement signature");
+        public_config
+            .setup_transcript
+            .as_mut()
+            .expect("setup transcript")
+            .signatures
+            .insert(member_id(1), replacement_signature);
+
+        assert!(matches!(
+            public_config.validate(),
+            Err(FederationError::DkgTranscriptSignatureVerificationFailed { member_id: id })
+                if id == member_id(1)
+        ));
+    }
+
+    #[test]
+    fn trusted_dealer_rejects_unknown_setup_transcript_signer() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let bundle = generate_trusted_dealer_configs(
+            params,
+            vec![
+                member(member_id(1)),
+                member(member_id(2)),
+                member(member_id(3)),
+            ],
+            vec![keyset_spec()],
+        )
+        .expect("trusted dealer bundle");
+
+        let mut public_config = bundle.public_config;
+        let extra_signature = *public_config
+            .setup_transcript
+            .as_ref()
+            .expect("setup transcript")
+            .signatures
+            .get(&member_id(1))
+            .expect("extra signature");
+        public_config
+            .setup_transcript
+            .as_mut()
+            .expect("setup transcript")
+            .signatures
+            .insert(member_id(99), extra_signature);
+
+        assert!(matches!(
+            public_config.validate(),
+            Err(FederationError::UnknownMember { member_id: id }) if id == member_id(99)
+        ));
     }
 
     #[test]

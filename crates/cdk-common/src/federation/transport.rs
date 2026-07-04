@@ -1044,6 +1044,7 @@ mod tests {
             member_id: roster_member_id(id),
             identity_secret_key: identity_secret,
             keyset_secret_shares: BTreeMap::new(),
+            setup_transcript_hash: None,
         }
     }
 
