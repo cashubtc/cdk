@@ -3344,6 +3344,161 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restart_replay_preserves_pending_melt_then_catches_up_failed_observation() {
+        let (mut state, public_config, _) = federation_route_state().await;
+        let config = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .clone();
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let fake_description = FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Pending,
+            check_payment_state: MeltQuoteState::Pending,
+            pay_err: false,
+            check_err: false,
+        };
+        let quote_id = melt_quote_with_description(
+            &state,
+            1000,
+            serde_json::to_string(&fake_description).expect("fake invoice description"),
+        )
+        .await;
+        let inputs = vec![
+            proof_for_amount(&state, 1, "restart-failed-observation-a"),
+            proof_for_amount(&state, 1, "restart-failed-observation-b"),
+            proof_for_amount(&state, 1, "restart-failed-observation-c"),
+        ];
+        let input_ys = inputs
+            .iter()
+            .map(|proof| proof.y().expect("input y"))
+            .collect::<Vec<_>>();
+        let mut change_output = swap_output(&state, "restart-failed-observation-change");
+        change_output.amount = Amount::ZERO;
+        let melt_request = cdk::nuts::MeltRequest::new(
+            quote_id.clone(),
+            inputs,
+            Some(vec![change_output.clone()]),
+        );
+        let melt_envelope = config.melt_operation(melt_request).expect("melt envelope");
+        let failed_envelope =
+            melt_payment_observation_envelope(&state, &quote_id, MeltQuoteState::Failed, None);
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+        peer_consensus
+            .submit_envelope(melt_envelope)
+            .expect("peer accepted pending melt");
+
+        let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+        let pending_response = peer_consensus
+            .catch_up_checked(&local_consensus.lock().await.catch_up_request())
+            .expect("pending catch-up response");
+        state
+            .apply_federation_catch_up_response(&pending_response)
+            .await
+            .expect("apply pending catch-up");
+
+        let pending_quote = state
+            .mint
+            .check_melt_quote(&quote_id)
+            .await
+            .expect("pending quote status before replay");
+        assert_eq!(pending_quote.state(), MeltQuoteState::Pending);
+        assert!(pending_quote.change().is_none());
+        assert!(state
+            .mint
+            .localstore()
+            .get_melt_saga_by_quote_id(&quote_id)
+            .await
+            .expect("saga lookup before replay")
+            .is_some());
+
+        let (replayed_consensus, replayed_sequences) =
+            crate::create_federation_runtime_state(&state.mint)
+                .await
+                .expect("recreate federation runtime state");
+        state.federation_consensus = replayed_consensus;
+        state.federation_sequences = replayed_sequences;
+        assert_eq!(
+            state
+                .federation_consensus
+                .as_ref()
+                .expect("replayed consensus")
+                .lock()
+                .await
+                .peer_status()
+                .operation_count,
+            1
+        );
+        let replayed_pending_quote = state
+            .mint
+            .check_melt_quote(&quote_id)
+            .await
+            .expect("pending quote status after replay");
+        assert_eq!(replayed_pending_quote.state(), MeltQuoteState::Pending);
+        assert!(replayed_pending_quote.change().is_none());
+
+        peer_consensus
+            .submit_envelope(failed_envelope)
+            .expect("peer accepted failed observation");
+        let replayed_consensus = state
+            .federation_consensus
+            .as_ref()
+            .expect("replayed consensus");
+        let failed_response = peer_consensus
+            .catch_up_checked(&replayed_consensus.lock().await.catch_up_request())
+            .expect("failed catch-up response after replay");
+        state
+            .apply_federation_catch_up_response(&failed_response)
+            .await
+            .expect("apply failed catch-up after replay");
+
+        let rolled_back_quote = state
+            .mint
+            .check_melt_quote(&quote_id)
+            .await
+            .expect("rolled back quote status after replay");
+        assert_eq!(rolled_back_quote.state(), MeltQuoteState::Unpaid);
+        assert!(rolled_back_quote.payment_proof().is_none());
+        assert!(rolled_back_quote.change().is_none());
+        let proof_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("proof state lookup after rollback");
+        assert_eq!(proof_states, vec![None, None, None]);
+        assert!(state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[change_output.blinded_secret])
+            .await
+            .expect("failed change signature lookup after replay")[0]
+            .is_none());
+        assert!(
+            state
+                .mint
+                .localstore()
+                .get_melt_saga_by_quote_id(&quote_id)
+                .await
+                .expect("saga lookup after failed catch-up")
+                .is_none(),
+            "failed observation after replay should clear pending melt saga metadata"
+        );
+        assert_eq!(
+            state
+                .federation_consensus
+                .as_ref()
+                .expect("final consensus")
+                .lock()
+                .await
+                .peer_status()
+                .operation_count,
+            2
+        );
+    }
+
+    #[tokio::test]
     async fn sqlite_restart_replays_pending_melt_then_catches_up_paid_observation() {
         let (public_config, local_private, _) = transport_config();
         let db_file = TempMintDbFile::new("cdk-axum-fed-pending-melt-restart");
@@ -3533,6 +3688,202 @@ mod tests {
                 .expect("saga lookup after paid catch-up")
                 .is_none(),
             "paid observation after sqlite restart should clear pending melt saga metadata"
+        );
+        assert_eq!(
+            restarted_state
+                .federation_consensus
+                .as_ref()
+                .expect("final consensus")
+                .lock()
+                .await
+                .peer_status()
+                .operation_count,
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_restart_replays_pending_melt_then_catches_up_failed_observation() {
+        let (public_config, local_private, _) = transport_config();
+        let db_file = TempMintDbFile::new("cdk-axum-fed-pending-melt-failed-restart");
+        let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        let seed = mnemonic.to_seed_normalized("");
+        let db = Arc::new(
+            cdk_sqlite::MintSqliteDatabase::new(db_file.path())
+                .await
+                .expect("mint db"),
+        );
+        let state = federation_route_state_for_private_with_db(
+            public_config.clone(),
+            local_private.clone(),
+            db,
+            &seed,
+        )
+        .await;
+        let config = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .clone();
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let fake_description = FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Pending,
+            check_payment_state: MeltQuoteState::Pending,
+            pay_err: false,
+            check_err: false,
+        };
+        let quote_id = melt_quote_with_description(
+            &state,
+            1000,
+            serde_json::to_string(&fake_description).expect("fake invoice description"),
+        )
+        .await;
+        let inputs = vec![
+            proof_for_amount(&state, 1, "sqlite-restart-failed-observation-a"),
+            proof_for_amount(&state, 1, "sqlite-restart-failed-observation-b"),
+            proof_for_amount(&state, 1, "sqlite-restart-failed-observation-c"),
+        ];
+        let input_ys = inputs
+            .iter()
+            .map(|proof| proof.y().expect("input y"))
+            .collect::<Vec<_>>();
+        let mut change_output = swap_output(&state, "sqlite-restart-failed-observation-change");
+        change_output.amount = Amount::ZERO;
+        let melt_request = cdk::nuts::MeltRequest::new(
+            quote_id.clone(),
+            inputs,
+            Some(vec![change_output.clone()]),
+        );
+        let melt_envelope = config.melt_operation(melt_request).expect("melt envelope");
+        let failed_envelope =
+            melt_payment_observation_envelope(&state, &quote_id, MeltQuoteState::Failed, None);
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
+        peer_consensus
+            .submit_envelope(melt_envelope)
+            .expect("peer accepted pending melt");
+
+        let pending_response = {
+            let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+            peer_consensus
+                .catch_up_checked(&local_consensus.lock().await.catch_up_request())
+                .expect("pending catch-up response")
+        };
+        state
+            .apply_federation_catch_up_response(&pending_response)
+            .await
+            .expect("apply pending catch-up");
+        assert_eq!(
+            state
+                .mint
+                .check_melt_quote(&quote_id)
+                .await
+                .expect("pending quote before restart")
+                .state(),
+            MeltQuoteState::Pending
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_melt_saga_by_quote_id(&quote_id)
+            .await
+            .expect("saga lookup before restart")
+            .is_some());
+        drop(state);
+
+        let restarted_db = Arc::new(
+            cdk_sqlite::MintSqliteDatabase::new(db_file.path())
+                .await
+                .expect("restarted mint db"),
+        );
+        let mut restarted_state = federation_route_state_for_private_with_db(
+            public_config.clone(),
+            local_private,
+            restarted_db,
+            &seed,
+        )
+        .await;
+        let (replayed_consensus, replayed_sequences) =
+            crate::create_federation_runtime_state(&restarted_state.mint)
+                .await
+                .expect("recreate federation runtime state from sqlite");
+        restarted_state.federation_consensus = replayed_consensus;
+        restarted_state.federation_sequences = replayed_sequences;
+        assert_eq!(
+            restarted_state
+                .federation_consensus
+                .as_ref()
+                .expect("replayed consensus")
+                .lock()
+                .await
+                .peer_status()
+                .operation_count,
+            1
+        );
+
+        let restarted_pending_quote = restarted_state
+            .mint
+            .check_melt_quote(&quote_id)
+            .await
+            .expect("pending quote after sqlite restart");
+        assert_eq!(restarted_pending_quote.state(), MeltQuoteState::Pending);
+        assert!(restarted_pending_quote.change().is_none());
+        assert!(restarted_state
+            .mint
+            .localstore()
+            .get_melt_saga_by_quote_id(&quote_id)
+            .await
+            .expect("saga lookup after sqlite restart")
+            .is_some());
+
+        peer_consensus
+            .submit_envelope(failed_envelope)
+            .expect("peer accepted failed observation");
+        let failed_response = {
+            let replayed_consensus = restarted_state
+                .federation_consensus
+                .as_ref()
+                .expect("replayed consensus");
+            peer_consensus
+                .catch_up_checked(&replayed_consensus.lock().await.catch_up_request())
+                .expect("failed catch-up response after sqlite restart")
+        };
+        restarted_state
+            .apply_federation_catch_up_response(&failed_response)
+            .await
+            .expect("apply failed catch-up after sqlite restart");
+
+        let rolled_back_quote = restarted_state
+            .mint
+            .check_melt_quote(&quote_id)
+            .await
+            .expect("rolled back quote after sqlite restart");
+        assert_eq!(rolled_back_quote.state(), MeltQuoteState::Unpaid);
+        assert!(rolled_back_quote.payment_proof().is_none());
+        assert!(rolled_back_quote.change().is_none());
+        let proof_states = restarted_state
+            .mint
+            .localstore()
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("proof state lookup after sqlite restart");
+        assert_eq!(proof_states, vec![None, None, None]);
+        assert!(restarted_state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[change_output.blinded_secret])
+            .await
+            .expect("failed change signature lookup after sqlite restart")[0]
+            .is_none());
+        assert!(
+            restarted_state
+                .mint
+                .localstore()
+                .get_melt_saga_by_quote_id(&quote_id)
+                .await
+                .expect("saga lookup after failed catch-up")
+                .is_none(),
+            "failed observation after sqlite restart should clear pending melt saga metadata"
         );
         assert_eq!(
             restarted_state
