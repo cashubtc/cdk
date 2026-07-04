@@ -1949,6 +1949,9 @@ impl FederationConfig {
 /// Private federation config stored by one local member.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemberConfigPrivate {
+    /// Final federation roster hash this private config belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub federation_id: Option<FederationId>,
     /// Local member ID.
     pub member_id: MemberId,
     /// Private secp256k1 identity key used to authenticate peer traffic.
@@ -1963,6 +1966,7 @@ pub struct MemberConfigPrivate {
 impl fmt::Debug for MemberConfigPrivate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MemberConfigPrivate")
+            .field("federation_id", &self.federation_id)
             .field("member_id", &self.member_id)
             .field("keyset_secret_shares", &self.keyset_secret_shares.keys())
             .field("setup_transcript_hash", &self.setup_transcript_hash)
@@ -1990,6 +1994,21 @@ impl MemberConfigPrivate {
             return Err(FederationError::PrivateIdentityMismatch {
                 member_id: self.member_id,
             });
+        }
+
+        match self.federation_id {
+            Some(federation_id) if federation_id != public_config.federation_id => {
+                return Err(FederationError::FederationIdMismatch {
+                    expected: public_config.federation_id,
+                    found: federation_id,
+                });
+            }
+            None if public_config.setup_transcript.is_some() => {
+                return Err(FederationError::DkgTranscriptMismatch {
+                    reason: "private config missing federation id".to_string(),
+                });
+            }
+            Some(_) | None => {}
         }
 
         match (&public_config.setup_transcript, self.setup_transcript_hash) {
@@ -2241,6 +2260,7 @@ mod tests {
                     .clone(),
             );
             let private = MemberConfigPrivate {
+                federation_id: None,
                 member_id: *member_id,
                 identity_secret_key: identity_secret(*member_id),
                 keyset_secret_shares,

@@ -1791,6 +1791,7 @@ mod tests {
 
     fn private_member(value: u16) -> MemberConfigPrivate {
         MemberConfigPrivate {
+            federation_id: None,
             member_id: member_id(value),
             identity_secret_key: SecretKey::from_slice(&[value as u8; 32])
                 .expect("identity secret"),

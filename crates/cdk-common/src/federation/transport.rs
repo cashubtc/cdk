@@ -1041,6 +1041,7 @@ mod tests {
 
     fn private_member(id: u16, identity_secret: SecretKey) -> MemberConfigPrivate {
         MemberConfigPrivate {
+            federation_id: None,
             member_id: roster_member_id(id),
             identity_secret_key: identity_secret,
             keyset_secret_shares: BTreeMap::new(),

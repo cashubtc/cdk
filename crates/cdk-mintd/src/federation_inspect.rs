@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
-use cdk_common::federation::{FederationConfig, MemberConfigPrivate};
+use cdk_common::federation::{FederationConfig, FederationDkgSetupMethod, MemberConfigPrivate};
 use cdk_common::nuts::nut02::KeySetVersion;
 
 use crate::cli::{CLIArgs, FederationInspectArgs};
@@ -80,6 +80,19 @@ fn inspect_report(
         public_config.threshold_params.signature_threshold,
         public_config.threshold_params.consensus_threshold
     ));
+    match &public_config.setup_transcript {
+        Some(transcript) => {
+            report.push_str(&format!(
+                "setup_transcript={} hash={} signatures={}\n",
+                setup_method_label(transcript.payload.setup_method),
+                transcript.transcript_hash,
+                transcript.signatures.len()
+            ));
+        }
+        None => {
+            report.push_str("setup_transcript=none\n");
+        }
+    }
 
     report.push_str("\nMembers\n");
     for member in public_config.members.values() {
@@ -121,8 +134,16 @@ fn inspect_report(
         Some(private_config) => {
             report.push_str("\nLocal member config\n");
             report.push_str(&format!(
-                "- valid=true member={} keysets={} total_amounts={}\n",
+                "- valid=true member={} federation_id={} setup_transcript_hash={} keysets={} total_amounts={}\n",
                 private_config.member_id,
+                private_config
+                    .federation_id
+                    .map(|federation_id| federation_id.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                private_config
+                    .setup_transcript_hash
+                    .map(|transcript_hash| transcript_hash.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
                 private_config.keyset_secret_shares.len(),
                 private_config
                     .keyset_secret_shares
@@ -137,6 +158,13 @@ fn inspect_report(
     }
 
     Ok(report)
+}
+
+fn setup_method_label(setup_method: FederationDkgSetupMethod) -> &'static str {
+    match setup_method {
+        FederationDkgSetupMethod::TrustedDealer => "trusted_dealer",
+        FederationDkgSetupMethod::PedersenDkg => "pedersen_dkg",
+    }
 }
 
 fn keyset_version_label(version: KeySetVersion) -> &'static str {
@@ -228,6 +256,17 @@ mod tests {
             bundle.public_config.federation_id
         )));
         assert!(report.contains("members=3 signature_threshold=2 consensus_threshold=3"));
+        assert!(report.contains("setup_transcript=trusted_dealer"));
+        assert!(report.contains(&format!(
+            "hash={}",
+            bundle
+                .public_config
+                .setup_transcript
+                .as_ref()
+                .expect("setup transcript")
+                .transcript_hash
+        )));
+        assert!(report.contains("signatures=3"));
         assert!(report.contains("member 1 public_mint_url=https://mint1.example.com"));
         assert!(report.contains("federation_api_url=https://fed1.example.com"));
         assert!(report.contains(&format!("keyset {}", keyset.id)));
@@ -247,8 +286,22 @@ mod tests {
             inspect_report(&bundle.public_config, Some(private_config)).expect("inspect report");
 
         assert!(report.contains("Local member config\n- valid=true member=1"));
+        assert!(report.contains(&format!(
+            "federation_id={}",
+            bundle.public_config.federation_id
+        )));
+        assert!(report.contains(&format!(
+            "setup_transcript_hash={}",
+            bundle
+                .public_config
+                .setup_transcript
+                .as_ref()
+                .expect("setup transcript")
+                .transcript_hash
+        )));
         assert!(report.contains("keysets=1 total_amounts=2"));
         assert!(!report.contains("identity_secret_key"));
+        assert!(!report.contains("identity secret"));
         assert!(!report.contains("keyset_secret_shares"));
         assert!(!report.contains("BlsSecretKeyShare"));
     }

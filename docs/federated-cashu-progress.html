@@ -358,19 +358,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Trusted-dealer setup now emits a signed setup transcript scaffold</span>
+          <span class="value">Generated private member configs now pin the final federation roster hash</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add federation setup transcript scaffold</span>
+          <span class="value">feat: bind private federation setup configs</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Trusted-dealer federation bundles bind federation ID, participant order, identity keys, aggregate keysets, public BLS shares, and member identity signatures into one transcript hash</span>
+          <span class="value">Trusted-dealer private configs store the public federation ID plus setup transcript hash, reject mismatches, and expose both non-secret bindings through federation inspect</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue Milestone 20 by turning the transcript scaffold into real dealer-free DKG once the remaining MVP federation correctness gates are stable</span>
+          <span class="value">Add the first real DKG message/transcript skeleton with committed participant setup material, then keep trusted-dealer as the deterministic test path</span>
         </div>
       </aside>
     </header>
@@ -1296,6 +1296,10 @@
             <h3>Setup transcript scaffold added</h3>
             <p>Trusted-dealer config generation now signs a public setup transcript covering federation ID, participant order, identity public keys, aggregate keysets, and public BLS shares; private member configs pin the resulting transcript hash.</p>
           </article>
+          <article class="item">
+            <h3>Private setup bindings added</h3>
+            <p>Generated private member configs now persist the final federation roster hash alongside the setup transcript hash, reject missing or mismatched bindings, and let `federation inspect` show those non-secret anchors without dumping private keys or BLS shares.</p>
+          </article>
         </div>
       </section>
 
@@ -1390,8 +1394,8 @@
             <tr>
               <td>Setup transcript scaffold</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-common --features federation trusted_dealer -- --test-threads 1` passed 9 trusted-dealer tests, including setup transcript generation, private transcript-hash binding, missing-hash rejection, tampered payload rejection, invalid member-signature rejection, and unknown signer rejection. `cargo test -p cdk-common --features federation transcript -- --test-threads 1`, `cargo test -p cdk-common --features federation federation -- --test-threads 1`, `cargo check -p cdk-common --features federation --lib`, `cargo test -p cdk-axum --features federation transport_config -- --test-threads 1`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
-              <td>Use this signed transcript as the compatibility bridge for real dealer-free DKG transcript verification and restart-safe setup recovery.</td>
+              <td>`cargo test -p cdk-common --features federation trusted_dealer -- --test-threads 1` now passes 11 trusted-dealer tests, including setup transcript generation, private federation-ID binding, private transcript-hash binding, missing-binding rejection, tampered payload rejection, invalid member-signature rejection, and unknown signer rejection. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite inspect_report -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1`, `cargo test -p cdk-common --features federation federation -- --test-threads 1`, `cargo test -p cdk-axum --features federation transport_config -- --test-threads 1`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Use these signed public/private anchors as the compatibility bridge for real dealer-free DKG transcript verification and restart-safe setup recovery.</td>
             </tr>
             <tr>
               <td>Mintd federation config wiring</td>

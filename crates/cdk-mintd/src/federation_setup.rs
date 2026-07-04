@@ -1023,6 +1023,10 @@ mod tests {
         assert_eq!(public_config.threshold_params.member_count, 3);
         assert_eq!(public_config.threshold_params.signature_threshold, 2);
         assert_eq!(public_config.keysets.len(), 1);
+        let setup_transcript = public_config
+            .setup_transcript
+            .as_ref()
+            .expect("setup transcript");
 
         let smoke_script =
             std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
@@ -1136,6 +1140,14 @@ mod tests {
             let private_config: MemberConfigPrivate =
                 serde_json::from_str(&private_json).expect("private config json");
             assert_eq!(private_config.member_id, *member_id);
+            assert_eq!(
+                private_config.federation_id,
+                Some(public_config.federation_id)
+            );
+            assert_eq!(
+                private_config.setup_transcript_hash,
+                Some(setup_transcript.transcript_hash)
+            );
             private_config
                 .validate_against_public(&public_config)
                 .expect("private config validates");
