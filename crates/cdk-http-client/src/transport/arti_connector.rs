@@ -74,10 +74,7 @@ impl FlushOnRead {
     }
 
     /// Flush the underlying stream if any writes are pending.
-    fn poll_flush_if_dirty(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), std::io::Error>> {
+    fn poll_flush_if_dirty(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
         if self.dirty {
             match Pin::new(&mut self.inner).poll_flush(cx) {
                 Poll::Ready(Ok(())) => self.dirty = false,
@@ -129,10 +126,7 @@ impl AsyncWrite for FlushOnRead {
         res
     }
 
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), std::io::Error>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
         let me = self.get_mut();
         let res = Pin::new(&mut me.inner).poll_flush(cx);
         if let Poll::Ready(Ok(())) = &res {
@@ -229,10 +223,7 @@ impl<TC: TlsConn> AsyncWrite for ArtiHttpConnection<TC> {
         }
     }
 
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), std::io::Error>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
         match &mut self.get_mut().inner {
             MaybeHttpsStream::Http(ds) => Pin::new(ds).poll_flush(cx),
             MaybeHttpsStream::Https(t) => Pin::new(t).poll_flush(cx),
