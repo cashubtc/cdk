@@ -38,6 +38,7 @@ type ConsensusHandle = std::sync::Arc<tokio::sync::Mutex<FederationConsensusRunt
 type SequenceHandle = std::sync::Arc<tokio::sync::Mutex<FederationRestSequenceTracker>>;
 
 const FEDERATION_PEER_SYNC_INTERVAL: Duration = Duration::from_secs(5);
+const FEDERATION_DISABLE_PEER_SYNC_ENV_VAR: &str = "CDK_FEDERATION_DISABLE_PEER_SYNC";
 const FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT: usize = 1000;
 static FEDERATION_REST_SEQUENCE_SEED: AtomicU64 = AtomicU64::new(0);
 
@@ -57,6 +58,11 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
 }
 
 pub(crate) fn spawn_federation_peer_sync_loop(state: MintState) {
+    if federation_peer_sync_disabled_by_env() {
+        tracing::warn!("Federation peer sync loop disabled by environment");
+        return;
+    }
+
     let Some(config) = state.mint.federation_config().cloned() else {
         return;
     };
@@ -91,6 +97,20 @@ pub(crate) fn spawn_federation_peer_sync_loop(state: MintState) {
             run_federation_peer_sync_round(&state, &client, &peers).await;
         }
     });
+}
+
+fn federation_peer_sync_disabled_by_env() -> bool {
+    match std::env::var(FEDERATION_DISABLE_PEER_SYNC_ENV_VAR) {
+        Ok(value) => federation_peer_sync_disabled_value(&value),
+        Err(_) => false,
+    }
+}
+
+fn federation_peer_sync_disabled_value(value: &str) -> bool {
+    matches!(
+        value,
+        "1" | "true" | "TRUE" | "True" | "yes" | "YES" | "Yes" | "on" | "ON" | "On"
+    )
 }
 
 async fn run_federation_peer_sync_round<T>(
@@ -1902,6 +1922,19 @@ mod tests {
     use serde::Serialize;
 
     use super::*;
+
+    #[test]
+    fn federation_peer_sync_disable_value_accepts_truthy_values() {
+        for value in [
+            "1", "true", "TRUE", "True", "yes", "YES", "Yes", "on", "ON", "On",
+        ] {
+            assert!(federation_peer_sync_disabled_value(value));
+        }
+
+        for value in ["", "0", "false", "no", "off"] {
+            assert!(!federation_peer_sync_disabled_value(value));
+        }
+    }
 
     #[derive(Debug, Default)]
     struct MockFederationTransportState {

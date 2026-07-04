@@ -899,7 +899,11 @@ start_member() {{
   config="$(member_config "$member")"
   work_dir="$(member_work_dir "$member")"
   mkdir -p "$work_dir"
-  "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
+  if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
+    CDK_FEDERATION_DISABLE_PEER_SYNC=1 "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
+  else
+    "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
+  fi
   PIDS[$member]=$!
   printf 'started member %s with pid %s\n' "$member" "${{PIDS[$member]}}"
 }}
@@ -986,25 +990,37 @@ member_status_line() {{
 member_dkg_status() {{
   local member="$1"
   local private_config
+  local config
+  local work_dir
   private_config="$(member_private_config "$member")"
-  "$CDK_MINTD_BIN" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --from-database --require-ready | awk '/^finalized_ready=true/ {{ print; exit }}'
+  config="$(member_config "$member")"
+  work_dir="$(member_work_dir "$member")"
+  "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --from-database --require-ready | awk '/^finalized_ready=true/ {{ print; exit }}'
 }}
 
 member_dkg_setup_records_line() {{
   local member="$1"
   local private_config
+  local config
+  local work_dir
   private_config="$(member_private_config "$member")"
-  "$CDK_MINTD_BIN" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --from-database | awk '/^setup_records / {{ print; exit }}'
+  config="$(member_config "$member")"
+  work_dir="$(member_work_dir "$member")"
+  "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --from-database | awk '/^setup_records / {{ print; exit }}'
 }}
 
 print_dkg_record_runbook() {{
   local member="$1"
   local private_config
+  local config
+  local work_dir
   private_config="$(member_private_config "$member")"
+  config="$(member_config "$member")"
+  work_dir="$(member_work_dir "$member")"
   cat >&2 <<RUNBOOK
 DKG record recovery for member $member:
   Database-backed readiness:
-    "$CDK_MINTD_BIN" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --from-database --require-ready
+    "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --from-database --require-ready
   In-progress setup diagnostics:
     The database-backed command prints setup_records with collected commitment, reveal, and secret-share member sets before finalization is ready.
   File-based readiness after exchanging completion records:
@@ -1599,10 +1615,13 @@ mod tests {
         assert!(smoke_script.contains("--from-database"));
         assert!(smoke_script.contains("member_status_line()"));
         assert!(smoke_script.contains("member_dkg_status()"));
+        assert!(smoke_script
+            .contains("--work-dir \"$work_dir\" --config \"$config\" federation dkg-status"));
         assert!(smoke_script.contains("PROBE_DKG_SETUP_ROUTES"));
         assert!(smoke_script.contains("DKG_ROUTE_PROBE_ONLY"));
         assert!(smoke_script.contains("PROBE_DKG_SETUP_ROUTES=1"));
         assert!(smoke_script.contains("dkg setup route probe passed"));
+        assert!(smoke_script.contains("CDK_FEDERATION_DISABLE_PEER_SYNC=1"));
         assert!(smoke_script.contains("member_dkg_setup_request_dir()"));
         assert!(smoke_script.contains("member_federation_url()"));
         assert!(smoke_script.contains("probe_dkg_setup_routes()"));
