@@ -108,6 +108,107 @@ test-units:
   # run doc tests
   cargo test --doc
 
+# Initialize and start the local PostgreSQL instance used by cdk-postgres tests
+start-postgres:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  data_dir="${CDK_POSTGRES_DATA_DIR:-.pg_data}"
+  host="${CDK_POSTGRES_HOST:-127.0.0.1}"
+  port="${CDK_POSTGRES_PORT:-5432}"
+  db="${CDK_POSTGRES_DB:-cdk_mint}"
+  user="${CDK_POSTGRES_USER:-cdk}"
+  password="${CDK_POSTGRES_PASSWORD:-cdk}"
+  log_file="${CDK_POSTGRES_LOG:-${data_dir}/postgres.log}"
+  for cmd in initdb pg_ctl pg_isready psql createuser createdb; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      echo "$cmd is required to start the local PostgreSQL helper" >&2
+      echo "enter the regtest shell with: nix develop .#regtest" >&2
+      exit 1
+    fi
+  done
+  if [[ ! "$user" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    echo "CDK_POSTGRES_USER must be a simple PostgreSQL identifier" >&2
+    exit 1
+  fi
+  if [[ ! "$db" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    echo "CDK_POSTGRES_DB must be a simple PostgreSQL identifier" >&2
+    exit 1
+  fi
+  escaped_password="${password//\'/\'\'}"
+  if [ ! -s "${data_dir}/PG_VERSION" ]; then
+    initdb -D "$data_dir" --auth=trust --no-locale
+  fi
+  mkdir -p "$(dirname "$log_file")"
+  if ! pg_ctl -D "$data_dir" status >/dev/null 2>&1; then
+    pg_ctl -D "$data_dir" -l "$log_file" -o "-h ${host} -p ${port}" start
+  fi
+  for _ in {1..30}; do
+    if pg_isready -h "$host" -p "$port" -d postgres >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+  if ! pg_isready -h "$host" -p "$port" -d postgres >/dev/null 2>&1; then
+    echo "PostgreSQL did not become ready on ${host}:${port}; see ${log_file}" >&2
+    exit 1
+  fi
+  if [ "$(psql -h "$host" -p "$port" -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname = '${user}';")" != "1" ]; then
+    createuser -h "$host" -p "$port" "$user"
+  fi
+  psql -h "$host" -p "$port" -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE \"${user}\" WITH LOGIN PASSWORD '${escaped_password}';" >/dev/null
+  if [ "$(psql -h "$host" -p "$port" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = '${db}';")" != "1" ]; then
+    createdb -h "$host" -p "$port" -O "$user" "$db"
+  fi
+  echo "PostgreSQL is ready at postgresql://${user}:***@${host}:${port}/${db}"
+
+# Stop the local PostgreSQL helper instance
+stop-postgres:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  data_dir="${CDK_POSTGRES_DATA_DIR:-.pg_data}"
+  if [ ! -s "${data_dir}/PG_VERSION" ]; then
+    echo "No local PostgreSQL data directory found at ${data_dir}"
+    exit 0
+  fi
+  if ! pg_ctl -D "$data_dir" status >/dev/null 2>&1; then
+    echo "Local PostgreSQL helper is not running"
+    exit 0
+  fi
+  pg_ctl -D "$data_dir" stop -m fast
+
+# Show local PostgreSQL helper status
+pg-status:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  data_dir="${CDK_POSTGRES_DATA_DIR:-.pg_data}"
+  host="${CDK_POSTGRES_HOST:-127.0.0.1}"
+  port="${CDK_POSTGRES_PORT:-5432}"
+  db="${CDK_POSTGRES_DB:-cdk_mint}"
+  pg_ctl -D "$data_dir" status || true
+  pg_isready -h "$host" -p "$port" -d "$db" || true
+
+# Open psql against the local PostgreSQL helper database
+pg-connect:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  host="${CDK_POSTGRES_HOST:-127.0.0.1}"
+  port="${CDK_POSTGRES_PORT:-5432}"
+  db="${CDK_POSTGRES_DB:-cdk_mint}"
+  user="${CDK_POSTGRES_USER:-cdk}"
+  psql -h "$host" -p "$port" -U "$user" -d "$db"
+
 coverage:
   #!/usr/bin/env bash
   set -euo pipefail
@@ -119,7 +220,7 @@ coverage:
 
   # Start PostgreSQL for cdk-postgres tests
   echo "Starting PostgreSQL for coverage..."
-  start-postgres
+  just start-postgres
 
   # Run unit tests with coverage (all workspace crates including cdk-postgres)
   echo "Running unit tests coverage..."
@@ -550,7 +651,7 @@ fed-regtest-postgres-preflight postgres_base_url="postgresql://cdk:cdk@127.0.0.1
   fi
   if ! pg_isready -d "{{postgres_base_url}}" -t 2 >/dev/null 2>&1; then
     echo "PostgreSQL is not ready for federation smoke at ${redacted_url}" >&2
-    echo "inside the regtest shell, start it with: start-postgres" >&2
+    echo "inside the regtest shell, start it with: just start-postgres" >&2
     exit 1
   fi
   echo "PostgreSQL is ready for federation smoke at ${redacted_url}"

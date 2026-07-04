@@ -522,11 +522,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: verify postgres federation smoke</span>
+          <span class="value">chore: add local postgres helper recipes</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Setup-only DKG and full wallet/payment/key-rotation process smoke now have live Postgres-backed evidence using per-member schemas and signed convergence gates</span>
+          <span class="value">Repo-level Postgres helper recipes now start, preflight, stop, and idempotently re-stop an isolated local database for federation smoke setup</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -1504,7 +1504,11 @@
           </article>
           <article class="item">
             <h3>Postgres smoke preflight added</h3>
-            <p>The Postgres smoke and start helpers now run `pg_isready` first, redact connection credentials in operator output, and point regtest users at `start-postgres` before launching member processes.</p>
+            <p>The Postgres smoke and start helpers now run `pg_isready` first, redact connection credentials in operator output, and point regtest users at `just start-postgres` before launching member processes.</p>
+          </article>
+          <article class="item">
+            <h3>Local Postgres helper lifecycle verified</h3>
+            <p>The repository now has `just start-postgres`, `just stop-postgres`, `just pg-status`, and `just pg-connect` recipes with configurable data directory, host, port, database, user, password, and log path. An isolated non-default-port cycle started cleanly, passed the federation Postgres preflight, stopped cleanly, and re-stopped idempotently.</p>
           </article>
           <article class="item">
             <h3>Postgres process smoke verified</h3>
@@ -2662,6 +2666,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`just --show fed-regtest-postgres-generate`, `just --show fed-regtest-postgres-preflight`, `just --show fed-regtest-postgres`, `just --show fed-regtest-postgres-start`, `just --show fed-regtest-postgres-status`, `just --show fed-regtest-postgres-stop`, `just --show fed-regtest-postgres-clean`, and `just --summary` passed. `cargo build -p cdk-mintd --features federation,fakewallet,sqlite,postgres,prometheus` passed. `just fed-regtest-postgres-generate` produced a three-member config bundle with Postgres engines, distinct member schemas, Prometheus-enabled member configs, and a smoke script that passes `bash -n`; focused mintd tests for Postgres base-url parsing and artifact generation passed. A disposable local Postgres service also passed the helper preflight with redacted credential output.</td>
               <td>Use the helper recipes for periodic Postgres smoke drills and longer storage-backed partition windows.</td>
+            </tr>
+            <tr>
+              <td>Local Postgres lifecycle helpers</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`CDK_POSTGRES_DATA_DIR=target/cdk-postgres-helper-test/pgdata CDK_POSTGRES_PORT=55433 just stop-postgres` passed when the helper was already stopped. The same isolated settings then passed `just start-postgres`, `just fed-regtest-postgres-preflight postgresql://cdk:cdk@127.0.0.1:55433/cdk_mint`, `just stop-postgres`, and a final `pg_isready` no-response check. `just --show start-postgres`, `just --show stop-postgres`, `just --show pg-status`, and `just --show pg-connect` expanded successfully.</td>
+              <td>Use `just start-postgres` before local Postgres-backed federation smoke, and keep the helper lifecycle in future runbooks.</td>
             </tr>
             <tr>
               <td>Postgres-backed process smoke</td>

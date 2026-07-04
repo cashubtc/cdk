@@ -140,12 +140,14 @@ CDK uses Nix flakes to provide reproducible development environments. We offer a
 
 ### PostgreSQL Helpers
 
-All CDK shells come with a built-in PostgreSQL instance and helper scripts to manage it locally within your project directory:
+All CDK shells come with PostgreSQL tooling, and the repository includes `just` recipes to manage a local database instance within your project directory:
 
-- `start-postgres`: Initialize and start a local PostgreSQL instance (data stored in `.pg_data/`).
-- `stop-postgres`: Safely shut down the local database.
-- `pg-status`: Check if the database is running.
-- `pg-connect`: Open an interactive `psql` session to the local database.
+- `just start-postgres`: Initialize and start a local PostgreSQL instance.
+- `just stop-postgres`: Safely shut down the local database. This is idempotent when no helper is running.
+- `just pg-status`: Check if the helper process and configured database are reachable.
+- `just pg-connect`: Open an interactive `psql` session to the local database.
+
+By default, the helper stores data in `.pg_data/` and serves `postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint`. Override `CDK_POSTGRES_DATA_DIR`, `CDK_POSTGRES_HOST`, `CDK_POSTGRES_PORT`, `CDK_POSTGRES_DB`, `CDK_POSTGRES_USER`, `CDK_POSTGRES_PASSWORD`, or `CDK_POSTGRES_LOG` for isolated test runs.
 
 ### Direct Flake Commands
 
