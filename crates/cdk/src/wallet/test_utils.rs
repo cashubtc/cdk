@@ -460,6 +460,9 @@ pub struct MockMintConnector {
     pub restore_response: Mutex<Option<Result<RestoreResponse, Error>>>,
     /// Response for get_mint_quote_status calls
     pub mint_quote_status_response: Mutex<Option<Result<MintQuoteBolt11Response<String>, Error>>>,
+    /// Response for post_batch_check_mint_quote_status calls
+    pub batch_mint_quote_status_response:
+        Mutex<Option<Result<Vec<MintQuoteResponse<String>>, Error>>>,
     /// Response for get_melt_quote_status calls
     pub melt_quote_status_response: Mutex<Option<Result<MeltQuoteBolt11Response<String>, Error>>>,
     /// Queue of responses for successive get_melt_quote_status calls.
@@ -520,6 +523,7 @@ impl MockMintConnector {
             check_state_barrier: Mutex::new(None),
             restore_response: Mutex::new(None),
             mint_quote_status_response: Mutex::new(None),
+            batch_mint_quote_status_response: Mutex::new(None),
             melt_quote_status_response: Mutex::new(None),
             melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
             post_mint_response: Mutex::new(None),
@@ -621,6 +625,13 @@ impl MockMintConnector {
         response: Result<MintQuoteBolt11Response<String>, Error>,
     ) {
         *self.mint_quote_status_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn set_batch_mint_quote_status_response(
+        &self,
+        response: Result<Vec<MintQuoteResponse<String>>, Error>,
+    ) {
+        *self.batch_mint_quote_status_response.lock().unwrap() = Some(response);
     }
 
     pub fn set_melt_quote_status_response(
@@ -909,7 +920,13 @@ impl MintConnector for MockMintConnector {
         _method: &PaymentMethod,
         _request: BatchCheckMintQuoteRequest<String>,
     ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
-        unimplemented!()
+        self.batch_mint_quote_status_response
+            .lock()
+            .unwrap()
+            .take()
+            .expect(
+                "MockMintConnector: post_batch_check_mint_quote_status called without configured response",
+            )
     }
 
     async fn post_batch_mint(

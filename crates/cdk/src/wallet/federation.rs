@@ -415,6 +415,57 @@ impl FederatedMintConnector {
         )))
     }
 
+    async fn collect_batch_mint_quote_status_responses<F, Fut>(
+        &self,
+        mut call_member: F,
+    ) -> Result<Vec<(MemberId, Vec<MintQuoteResponse<String>>)>, Error>
+    where
+        F: FnMut(Arc<dyn MintConnector + Send + Sync>) -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<MintQuoteResponse<String>>, Error>>,
+    {
+        let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
+        let mut responses = Vec::new();
+        let mut failures = Vec::new();
+        let mut primary_response = None;
+        let mut pending = FuturesUnordered::new();
+
+        for (member_id, connector) in &self.member_connectors {
+            let member_id = *member_id;
+            let fut = call_member(connector.clone());
+            pending.push(async move { (member_id, fut.await) });
+        }
+
+        while let Some((member_id, result)) = pending.next().await {
+            match result {
+                Ok(response) => {
+                    if member_id == self.primary_member_id {
+                        primary_response = Some(response.clone());
+                    }
+                    responses.push((member_id, response));
+                    if responses.len() >= threshold {
+                        return Ok(responses);
+                    }
+                }
+                Err(err) => failures.push(format!("member {}: {}", member_id, err)),
+            }
+        }
+
+        if responses.len() >= threshold {
+            return Ok(responses);
+        }
+
+        if let Some(response) = primary_response {
+            return Ok(vec![(self.primary_member_id, response)]);
+        }
+
+        Err(Error::InvalidMintResponse(format!(
+            "insufficient federation batch mint quote status responses: required {}, received {}, failures: {}",
+            threshold,
+            responses.len(),
+            failures.join("; ")
+        )))
+    }
+
     async fn collect_check_state_responses<F, Fut>(
         &self,
         mut call_member: F,
@@ -694,6 +745,80 @@ impl FederatedMintConnector {
             .ok_or_else(|| {
                 Error::InvalidMintResponse(format!(
                     "insufficient matching federation mint quote status responses: required {}",
+                    threshold
+                ))
+            })
+    }
+
+    fn aggregate_batch_mint_quote_status_response(
+        &self,
+        expected_count: usize,
+        member_responses: &[(MemberId, Vec<MintQuoteResponse<String>>)],
+    ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
+        let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
+
+        if member_responses.len() == 1 {
+            let response = member_responses
+                .first()
+                .map(|(_, response)| response.clone())
+                .ok_or_else(|| {
+                    Error::InvalidMintResponse(
+                        "missing federation batch mint quote status responses".to_string(),
+                    )
+                })?;
+            if response.len() != expected_count {
+                return Err(Error::InvalidMintResponse(format!(
+                    "primary member returned {} batch mint quote statuses for {} requested quotes",
+                    response.len(),
+                    expected_count
+                )));
+            }
+            return Ok(response);
+        }
+
+        let mut matching_views = Vec::<(
+            serde_json::Value,
+            Vec<MintQuoteResponse<String>>,
+            Vec<MemberId>,
+        )>::new();
+
+        for (member_id, response) in member_responses {
+            if response.len() != expected_count {
+                return Err(Error::InvalidMintResponse(format!(
+                    "member {} returned {} batch mint quote statuses for {} requested quotes",
+                    member_id,
+                    response.len(),
+                    expected_count
+                )));
+            }
+            let view = serde_json::to_value(response).map_err(|err| {
+                Error::InvalidMintResponse(format!(
+                    "member {} returned unserializable batch mint quote status response: {}",
+                    member_id, err
+                ))
+            })?;
+
+            match matching_views
+                .iter_mut()
+                .find(|(candidate, _, _)| *candidate == view)
+            {
+                Some((_, _, members)) => members.push(*member_id),
+                None => matching_views.push((view, response.clone(), vec![*member_id])),
+            }
+        }
+
+        matching_views
+            .into_iter()
+            .find_map(|(_, response, members)| {
+                if members.len() >= threshold {
+                    Some(response)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| {
+                Error::InvalidMintResponse(format!(
+                    "insufficient matching federation batch mint quote status responses: required {}",
                     threshold
                 ))
             })
@@ -988,9 +1113,20 @@ impl MintConnector for FederatedMintConnector {
         method: &PaymentMethod,
         request: BatchCheckMintQuoteRequest<String>,
     ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
-        self.primary_connector()?
-            .post_batch_check_mint_quote_status(method, request)
-            .await
+        let expected_count = request.quotes.len();
+        let member_responses = self
+            .collect_batch_mint_quote_status_responses(|connector| {
+                let method = method.clone();
+                let request = request.clone();
+                async move {
+                    connector
+                        .post_batch_check_mint_quote_status(&method, request)
+                        .await
+                }
+            })
+            .await?;
+
+        self.aggregate_batch_mint_quote_status_response(expected_count, &member_responses)
     }
 
     async fn post_batch_mint(
@@ -1814,8 +1950,15 @@ mod tests {
     }
 
     fn mint_quote_status_response(state: MintQuoteState) -> MintQuoteBolt11Response<String> {
+        mint_quote_status_response_for("mint-quote", state)
+    }
+
+    fn mint_quote_status_response_for(
+        quote: &str,
+        state: MintQuoteState,
+    ) -> MintQuoteBolt11Response<String> {
         MintQuoteBolt11Response {
-            quote: "mint-quote".to_string(),
+            quote: quote.to_string(),
             request: "bolt11-invoice".to_string(),
             amount: Some(Amount::from(3)),
             unit: Some(CurrencyUnit::Sat),
@@ -3412,6 +3555,108 @@ mod tests {
             .expect("mint quote status");
 
         assert_eq!(response.state(), Some(MintQuoteState::Paid));
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_uses_threshold_batch_mint_quote_status() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let statuses = vec![
+            MintQuoteResponse::Bolt11(mint_quote_status_response_for(
+                "mint-quote-1",
+                MintQuoteState::Paid,
+            )),
+            MintQuoteResponse::Bolt11(mint_quote_status_response_for(
+                "mint-quote-2",
+                MintQuoteState::Unpaid,
+            )),
+        ];
+        let mut connectors = BTreeMap::new();
+
+        let failing_member = MockMintConnector::new();
+        failing_member.set_active_keyset(advertised.clone());
+        failing_member.set_batch_mint_quote_status_response(Err(crate::Error::Custom(
+            "primary unavailable".to_string(),
+        )));
+        connectors.insert(
+            member_id(1),
+            Arc::new(failing_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        for member_id in [member_id(2), member_id(3)] {
+            let connector = MockMintConnector::new();
+            connector.set_active_keyset(advertised.clone());
+            connector.set_batch_mint_quote_status_response(Ok(statuses.clone()));
+            connectors.insert(
+                member_id,
+                Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+            );
+        }
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let response = connector
+            .post_batch_check_mint_quote_status(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                BatchCheckMintQuoteRequest {
+                    quotes: vec!["mint-quote-1".to_string(), "mint-quote-2".to_string()],
+                },
+            )
+            .await
+            .expect("batch mint quote status");
+
+        assert_eq!(response[0].state(), Some(MintQuoteState::Paid));
+        assert_eq!(response[1].state(), Some(MintQuoteState::Unpaid));
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_falls_back_to_primary_batch_mint_quote_status() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let statuses = vec![
+            MintQuoteResponse::Bolt11(mint_quote_status_response_for(
+                "mint-quote-1",
+                MintQuoteState::Paid,
+            )),
+            MintQuoteResponse::Bolt11(mint_quote_status_response_for(
+                "mint-quote-2",
+                MintQuoteState::Unpaid,
+            )),
+        ];
+        let mut connectors = BTreeMap::new();
+
+        let primary_member = MockMintConnector::new();
+        primary_member.set_active_keyset(advertised.clone());
+        primary_member.set_batch_mint_quote_status_response(Ok(statuses));
+        connectors.insert(
+            member_id(1),
+            Arc::new(primary_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        for member_id in [member_id(2), member_id(3)] {
+            let connector = MockMintConnector::new();
+            connector.set_active_keyset(advertised.clone());
+            connector.set_batch_mint_quote_status_response(Err(crate::Error::UnknownQuote));
+            connectors.insert(
+                member_id,
+                Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+            );
+        }
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let response = connector
+            .post_batch_check_mint_quote_status(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                BatchCheckMintQuoteRequest {
+                    quotes: vec!["mint-quote-1".to_string(), "mint-quote-2".to_string()],
+                },
+            )
+            .await
+            .expect("batch mint quote status");
+
+        assert_eq!(response[0].state(), Some(MintQuoteState::Paid));
+        assert_eq!(response[1].state(), Some(MintQuoteState::Unpaid));
     }
 
     #[tokio::test]
