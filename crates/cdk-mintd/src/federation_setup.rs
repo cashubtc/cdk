@@ -454,6 +454,7 @@ PUBLIC_CONFIG={public_config_path}
 MEMBERS=({members})
 PRIMARY_MEMBER="${{PRIMARY_MEMBER:-{primary_member}}}"
 RESTART_MEMBER="${{RESTART_MEMBER:-{restart_member}}}"
+QUARANTINE_OFFLINE_MEMBER="${{QUARANTINE_OFFLINE_MEMBER:-$RESTART_MEMBER}}"
 STATUS_RETRIES="${{STATUS_RETRIES:-60}}"
 STATUS_SLEEP_SECONDS="${{STATUS_SLEEP_SECONDS:-1}}"
 PENDING_WALLET_DB="${{PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/pending-melt-wallet.sqlite}}"
@@ -546,7 +547,7 @@ member_payment_report_lines() {{
   local member="$1"
   local private_config
   private_config="$(member_private_config "$member")"
-  "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready | awk '/^  payment_report / {{ print }}'
+  "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" | awk '/^  payment_report / {{ print }}'
 }}
 
 status_field() {{
@@ -630,8 +631,24 @@ wait_for_quarantine_report() {{
   return 1
 }}
 
+validate_quarantine_members() {{
+  member_config "$PRIMARY_MEMBER" >/dev/null || {{
+    printf 'unknown PRIMARY_MEMBER %s\n' "$PRIMARY_MEMBER" >&2
+    return 1
+  }}
+  member_config "$QUARANTINE_OFFLINE_MEMBER" >/dev/null || {{
+    printf 'unknown QUARANTINE_OFFLINE_MEMBER %s\n' "$QUARANTINE_OFFLINE_MEMBER" >&2
+    return 1
+  }}
+  if [[ "$PRIMARY_MEMBER" == "$QUARANTINE_OFFLINE_MEMBER" ]]; then
+    printf 'QUARANTINE_OFFLINE_MEMBER must differ from PRIMARY_MEMBER for offline catch-up smoke\n' >&2
+    return 1
+  fi
+}}
+
 trap cleanup EXIT INT TERM
 
+validate_quarantine_members
 reset_member_work_dirs
 
 for member in "${{MEMBERS[@]}}"; do
@@ -668,16 +685,15 @@ wait_for_converged
 "$CDK_MINTD_BIN" federation smoke-operations --public-config "$PUBLIC_CONFIG" --scenario pending-melt-fail-finish --wallet-db "$FAILED_PENDING_WALLET_DB"
 wait_for_converged
 
+stop_member "$QUARANTINE_OFFLINE_MEMBER"
 "$CDK_MINTD_BIN" federation smoke-operations --public-config "$PUBLIC_CONFIG" --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario quarantine-mint-conflict
-wait_for_converged
 wait_for_quarantine_report "$PRIMARY_MEMBER"
 
-stop_member "$RESTART_MEMBER"
-start_member "$RESTART_MEMBER"
-wait_for_status "$RESTART_MEMBER"
+start_member "$QUARANTINE_OFFLINE_MEMBER"
+wait_for_status "$QUARANTINE_OFFLINE_MEMBER"
 
 wait_for_converged
-wait_for_quarantine_report "$RESTART_MEMBER"
+wait_for_quarantine_report "$QUARANTINE_OFFLINE_MEMBER"
 
 printf 'local federation smoke test passed\n'
 "#,
@@ -773,10 +789,12 @@ mod tests {
         assert!(smoke_script.contains("rm -rf \"$work_dir\""));
         assert!(smoke_script.contains("PRIMARY_MEMBER"));
         assert!(smoke_script.contains("RESTART_MEMBER"));
+        assert!(smoke_script.contains("QUARANTINE_OFFLINE_MEMBER"));
         assert!(smoke_script.contains("PENDING_WALLET_DB"));
         assert!(smoke_script.contains("FAILED_PENDING_WALLET_DB"));
         assert!(smoke_script.contains("member_payment_report_lines()"));
         assert!(smoke_script.contains("wait_for_quarantine_report()"));
+        assert!(smoke_script.contains("validate_quarantine_members()"));
         assert!(smoke_script.contains("--scenario pending-melt-start"));
         assert!(smoke_script.contains("--scenario pending-melt-finish"));
         assert!(smoke_script.contains("--scenario pending-melt-fail-start"));
@@ -787,7 +805,10 @@ mod tests {
         assert!(smoke_script
             .contains("--private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\""));
         assert!(smoke_script.contains("wait_for_quarantine_report \"$PRIMARY_MEMBER\""));
-        assert!(smoke_script.contains("wait_for_quarantine_report \"$RESTART_MEMBER\""));
+        assert!(smoke_script.contains("stop_member \"$QUARANTINE_OFFLINE_MEMBER\""));
+        assert!(smoke_script.contains("start_member \"$QUARANTINE_OFFLINE_MEMBER\""));
+        assert!(smoke_script.contains("wait_for_status \"$QUARANTINE_OFFLINE_MEMBER\""));
+        assert!(smoke_script.contains("wait_for_quarantine_report \"$QUARANTINE_OFFLINE_MEMBER\""));
         assert!(smoke_script.contains("local federation smoke test passed"));
         assert!(smoke_script.contains(&artifacts.public_config_path.to_string_lossy().to_string()));
         #[cfg(unix)]
