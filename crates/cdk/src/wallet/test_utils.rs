@@ -24,7 +24,8 @@ use tokio::sync::Barrier;
 
 use crate::nuts::{
     nut17, nut19, BatchCheckMintQuoteRequest, BatchMintRequest, MeltQuoteBolt11Response,
-    MeltQuoteState, NUT04Settings, NUT05Settings, PaymentMethod, SecretKey, State,
+    MeltQuoteState, MintQuoteBolt11Response, NUT04Settings, NUT05Settings, PaymentMethod,
+    SecretKey, State,
 };
 use crate::secret::Secret;
 use crate::wallet::{MintConnector, Wallet};
@@ -457,6 +458,8 @@ pub struct MockMintConnector {
     pub check_state_barrier: Mutex<Option<Arc<Barrier>>>,
     /// Response for post_restore calls
     pub restore_response: Mutex<Option<Result<RestoreResponse, Error>>>,
+    /// Response for get_mint_quote_status calls
+    pub mint_quote_status_response: Mutex<Option<Result<MintQuoteBolt11Response<String>, Error>>>,
     /// Response for get_melt_quote_status calls
     pub melt_quote_status_response: Mutex<Option<Result<MeltQuoteBolt11Response<String>, Error>>>,
     /// Queue of responses for successive get_melt_quote_status calls.
@@ -516,6 +519,7 @@ impl MockMintConnector {
             check_state_response: Mutex::new(None),
             check_state_barrier: Mutex::new(None),
             restore_response: Mutex::new(None),
+            mint_quote_status_response: Mutex::new(None),
             melt_quote_status_response: Mutex::new(None),
             melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
             post_mint_response: Mutex::new(None),
@@ -610,6 +614,13 @@ impl MockMintConnector {
 
     pub fn _set_restore_response(&self, response: Result<RestoreResponse, Error>) {
         *self.restore_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn set_mint_quote_status_response(
+        &self,
+        response: Result<MintQuoteBolt11Response<String>, Error>,
+    ) {
+        *self.mint_quote_status_response.lock().unwrap() = Some(response);
     }
 
     pub fn set_melt_quote_status_response(
@@ -777,7 +788,15 @@ impl MintConnector for MockMintConnector {
         _method: PaymentMethod,
         _quote_id: &str,
     ) -> Result<MintQuoteResponse<String>, Error> {
-        unimplemented!()
+        let response = self
+            .mint_quote_status_response
+            .lock()
+            .unwrap()
+            .take()
+            .expect(
+                "MockMintConnector: get_mint_quote_status called without configured response",
+            )?;
+        Ok(MintQuoteResponse::Bolt11(response))
     }
 
     async fn post_mint(
