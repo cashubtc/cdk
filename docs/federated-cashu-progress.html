@@ -358,19 +358,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Local fake-wallet federation tooling is now available through repo-level just recipes</span>
+          <span class="value">Repo-level federation helper smoke now drives the full local fake-wallet federation recovery drill</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add federation regtest helpers</span>
+          <span class="value">test: verify federation regtest helper smoke</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Justfile helpers generate, start, stop, status-check, smoke, and clean local federations</span>
+          <span class="value">`just fed-regtest` live smoke passed with offline batches, pending melts, quarantine, restart, and convergence</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Use local helper recipes to compare longer process runs and future storage-backend smokes</span>
+          <span class="value">Use the helper path for default five-member drills and future storage-backend smoke comparisons</span>
         </div>
       </aside>
     </header>
@@ -1223,6 +1223,10 @@
             <p>The repo now has `just fed-regtest` recipes to generate trusted-dealer fake-wallet federations, run the generated smoke, start and stop members, query signed status, and clean generated local state.</p>
           </article>
           <article class="item">
+            <h3>Federation regtest helper smoke verified</h3>
+            <p>The `just fed-regtest` recipe now has live evidence for the full local smoke: baseline wallet operations, three offline wallet-operation batches, paid and failed pending melts, quarantine injection, restart catch-up, and final convergence.</p>
+          </article>
+          <article class="item">
             <h3>Wallet key discovery tolerates outages</h3>
             <p>The federated wallet connector now rejects any responding member that advertises mismatched keysets, while allowing operations to continue when unreachable members are below the configured signing threshold.</p>
           </article>
@@ -1798,6 +1802,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`just --summary` lists `fed-regtest`, `fed-regtest-generate`, `fed-regtest-start`, `fed-regtest-start-member`, `fed-regtest-stop-member`, `fed-regtest-stop`, `fed-regtest-status`, and `fed-regtest-clean`. `just --show` passed for the smoke, start, status, stop, and clean recipes. `just fed-regtest-generate` produced a three-member, two-threshold fake-wallet federation bundle, and the generated smoke script passed `bash -n`.</td>
               <td>Use these helpers for repeatable live smoke drills and add storage-backed variants once Postgres is available.</td>
+            </tr>
+            <tr>
+              <td>Repo-level federation helper smoke</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`just fed-regtest` passed with a three-member, two-threshold fake-wallet federation. The helper path built `cdk-mintd`, generated member configs, ran standard wallet mint/swap/check-state/melt/restore, kept one member offline across three wallet-operation batches, restarted it, finalized paid and failed pending melts through the remaining threshold, injected a quarantine while a member was offline, and ended with signed convergence plus clean process shutdown.</td>
+              <td>Run the default five-member helper smoke periodically and reuse the recipe for future Postgres-backed process smoke once a service is available.</td>
             </tr>
             <tr>
               <td>Backend smoke config matrix</td>
