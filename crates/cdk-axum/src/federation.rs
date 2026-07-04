@@ -26,6 +26,7 @@ use cdk::federation::{
 };
 use cdk_http_client::{Async, Transport};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::time::{self, Duration, MissedTickBehavior};
 use tracing::instrument;
 
@@ -1296,6 +1297,7 @@ async fn materialized_state_digest(
     let mut snapshot = FederationMaterializedStateSnapshot::new();
     let mut mint_quotes = BTreeSet::new();
     let mut melt_quotes = BTreeSet::new();
+    let mut payment_observation_quotes = BTreeSet::new();
     let mut payment_quarantines = BTreeSet::new();
     let mut proof_ys = BTreeSet::new();
     let mut blinded_messages = BTreeSet::new();
@@ -1307,6 +1309,10 @@ async fn materialized_state_digest(
             }
             FederationOperation::MintQuotePayment(observation) => {
                 mint_quotes.insert(observation.quote.clone());
+                payment_observation_quotes.insert((
+                    cdk::federation::FederationPaymentObservationContext::MintQuote,
+                    observation.quote.clone(),
+                ));
             }
             FederationOperation::Mint(operation) => {
                 mint_quotes.extend(
@@ -1332,8 +1338,13 @@ async fn materialized_state_digest(
             }
             FederationOperation::MeltQuotePayment(observation) => {
                 melt_quotes.insert(observation.quote.clone());
+                payment_observation_quotes.insert((
+                    cdk::federation::FederationPaymentObservationContext::MeltQuote,
+                    observation.quote.clone(),
+                ));
             }
             FederationOperation::PaymentObservationQuarantine(operation) => {
+                payment_observation_quotes.insert((operation.context, operation.quote.clone()));
                 payment_quarantines.insert((operation.context, operation.quote.clone()));
                 match operation.context {
                     cdk::federation::FederationPaymentObservationContext::MintQuote => {
@@ -1429,6 +1440,42 @@ async fn materialized_state_digest(
         );
     }
 
+    for (context, quote) in payment_observation_quotes {
+        let records = db
+            .get_federation_payment_observations(context, &quote)
+            .await?;
+        if records.is_empty() {
+            snapshot.push(
+                FederationMaterializedStateRow::new(
+                    "payment_observations",
+                    format!("{context}:{quote}"),
+                )
+                .with_field("missing", "true"),
+            );
+            continue;
+        }
+
+        for record in records {
+            let key = format!(
+                "{}:{}:{}:{}",
+                record.observation.context(),
+                record.observation.quote(),
+                record.operation_index,
+                record.operation_id
+            );
+            snapshot.push(
+                FederationMaterializedStateRow::new("payment_observations", key)
+                    .with_field("context", record.observation.context().to_string())
+                    .with_field("quote", record.observation.quote().to_string())
+                    .with_field("operation_index", record.operation_index.to_string())
+                    .with_field("operation_id", record.operation_id.to_string())
+                    .with_field("observer", record.observation.observer().to_string())
+                    .with_field("state", record.observation.state_label())
+                    .with_field("evidence_hash", payment_observation_evidence_hash(&record)?),
+            );
+        }
+    }
+
     if !proof_ys.is_empty() {
         let proof_ys = proof_ys.into_iter().collect::<Vec<_>>();
         let proof_states = db.get_proofs_states(&proof_ys).await?;
@@ -1466,6 +1513,23 @@ fn optional_amount_value(amount: Option<&cdk::Amount<cdk::nuts::CurrencyUnit>>) 
     amount
         .map(|amount| amount.value().to_string())
         .unwrap_or_default()
+}
+
+fn payment_observation_evidence_hash(
+    record: &FederationPaymentObservationRecord,
+) -> anyhow::Result<String> {
+    let canonical = serde_json::to_vec(&record.observation)?;
+    Ok(hex_encode(&Sha256::digest(canonical)))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 fn verify_session_outcome_evidence_entries(
@@ -5050,6 +5114,63 @@ mod tests {
             .expect("second digest");
 
         assert_eq!(first_digest, second_digest);
+    }
+
+    #[tokio::test]
+    async fn materialized_state_digest_tracks_unfinalized_payment_observation_rows() {
+        let (mut public_config, local_private, _) = transport_config();
+        public_config.payment_observation_policy =
+            FederationPaymentObservationPolicy::member_quorum(
+                2,
+                FederationPaymentTrustModel::SharedBackendReadOnly,
+            );
+        let state = federation_route_state_for_private(public_config, local_private).await;
+        let quote_id = QuoteId::new();
+        state
+            .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
+            .await
+            .expect("submit mint quote");
+
+        let consensus = state.federation_consensus.as_ref().expect("consensus");
+        let before_entries = consensus.lock().await.journal().entries().to_vec();
+        let before_digest = materialized_state_digest(&state, &before_entries)
+            .await
+            .expect("digest before observation");
+
+        state
+            .submit_federation_envelope(paid_observation_envelope(&state, &quote_id))
+            .await
+            .expect("submit unfinalized observation");
+        let after_entries = consensus.lock().await.journal().entries().to_vec();
+        let after_digest = materialized_state_digest(&state, &after_entries)
+            .await
+            .expect("digest after observation");
+
+        assert_ne!(
+            before_digest, after_digest,
+            "accepted payment-observation evidence must affect the materialized digest before quote finality"
+        );
+
+        let quote = state
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .expect("quote persisted");
+        assert_eq!(quote.state(), MintQuoteState::Unpaid);
+        assert_eq!(quote.amount_paid(), Amount::new(0, CurrencyUnit::Sat));
+
+        let observations = state
+            .mint
+            .localstore()
+            .get_federation_payment_observations(
+                cdk::federation::FederationPaymentObservationContext::MintQuote,
+                &quote_id.to_string(),
+            )
+            .await
+            .expect("payment observations");
+        assert_eq!(observations.len(), 1);
     }
 
     #[tokio::test]

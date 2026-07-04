@@ -358,19 +358,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Federation status now has an operator-visible digest-alert guard</span>
+          <span class="value">Materialized state digests now cover unresolved payment-observation evidence</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add federation digest alert guard</span>
+          <span class="value">feat: digest payment observation evidence</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk-mintd federation status --require-no-digest-alerts` catches reported mismatch states and equal-height digest divergence</span>
+          <span class="value">Accepted payment observations affect the materialized digest even before real-backend quorum finalizes a quote</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Broaden storage-backed smoke comparisons and keep tightening materialized digest coverage</span>
+          <span class="value">Run or further script storage-backed process smoke, especially Postgres-backed federation drills</span>
         </div>
       </aside>
     </header>
@@ -1136,6 +1136,10 @@
             <p>`cdk-mintd federation status --require-no-digest-alerts` now fails on reported materialized-state mismatch, halted digest mismatch, or equal-height order/state digest divergence while leaving ordinary member lag to the lag and convergence guards.</p>
           </article>
           <article class="item">
+            <h3>Payment evidence digest rows covered</h3>
+            <p>Materialized state digests now include redacted rows for accepted payment observations, keyed by operation and observer with hashed evidence, so unresolved real-backend observations can trigger convergence mismatch before quote finality.</p>
+          </article>
+          <article class="item">
             <h3>Storage backend parity tightened</h3>
             <p>Postgres now wires the same federation journal persistence test as SQLite, and SQL common has a DB-free migration parity check for saga federation IDs, journal entries, member sequences, and signed session outcomes.</p>
           </article>
@@ -1845,6 +1849,12 @@
               <td>Use the guard in live process drills and add storage-backed mismatch injection once Postgres smoke is available.</td>
             </tr>
             <tr>
+              <td>Payment evidence materialized digest</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation materialized_state_digest_tracks_unfinalized_payment_observation_rows -- --test-threads 1` passed, proving a single real-policy payment observation leaves the quote unpaid while still changing the materialized digest. `cargo test -p cdk-axum --features federation materialized_state_digest -- --test-threads 1` passed all 6 digest regressions, and `cargo check -p cdk-axum --features federation` passed.</td>
+              <td>Carry this evidence-row digest into live storage-backed mismatch drills and Postgres process smoke.</td>
+            </tr>
+            <tr>
               <td>Local federation helper recipes</td>
               <td><span class="status done">Passed</span></td>
               <td>`just --summary` lists `fed-regtest`, `fed-regtest-generate`, `fed-regtest-start`, `fed-regtest-start-member`, `fed-regtest-stop-member`, `fed-regtest-stop`, `fed-regtest-status`, and `fed-regtest-clean`. `fed-regtest-status` now requires readiness, convergence, session-outcome quorum evidence, and no digest alerts. `just --show` passed for the smoke, start, status, stop, and clean recipes. `just fed-regtest-generate` produced a three-member, two-threshold fake-wallet federation bundle, and the generated smoke script passed `bash -n`.</td>
@@ -1947,7 +1957,7 @@
           </article>
           <article class="item">
             <h3>Broader materialized digest coverage</h3>
-            <p>Add more storage-backend variants so every consensus-visible table covered by the digest has explicit mutation evidence across replay and restart paths.</p>
+            <p>Add storage-backed process variants and explicit mismatch injection so every consensus-visible digest row, including unresolved payment observations, is proven across replay and restart paths.</p>
           </article>
           <article class="item">
             <h3>BFT backend selection</h3>
