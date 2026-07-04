@@ -1,19 +1,23 @@
 //! Federation journal storage tests.
 
 use std::collections::BTreeMap;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use crate::database::mint::{Database, FederationJournalDatabase};
 use crate::federation::{
-    FederationId, FederationJournalAppendOutcome, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationJournalEntry, FederationMintQuoteOperation,
-    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationPaymentObservationReportStatus, InMemoryFederationJournal, MemberConfigPrivate,
-    MemberId,
+    FederationConfig, FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgSetupState, FederationId, FederationJournalAppendOutcome,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalEntry,
+    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationOperation,
+    FederationOperationEnvelope, FederationOperationStatus, FederationPaymentObservation,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationPaymentObservationReport, FederationPaymentObservationReportStatus,
+    InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
 };
+use crate::mint_url::MintUrl;
 use crate::nuts::nut00::KnownMethod;
+use crate::nuts::nut01::BlsSecretKey;
 use crate::{
     Amount, CurrencyUnit, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteRequest,
     MintQuoteResponse, MintQuoteState, PaymentMethod, SecretKey,
@@ -83,6 +87,76 @@ fn private_member(id: u16) -> MemberConfigPrivate {
         keyset_secret_shares: BTreeMap::new(),
         setup_transcript_hash: None,
     }
+}
+
+fn member_public(id: u16) -> MemberConfigPublic {
+    let identity_secret = SecretKey::from_slice(&[id as u8; 32]).expect("identity secret");
+    MemberConfigPublic {
+        member_id: MemberId::new(id).expect("member id"),
+        public_mint_url: MintUrl::from_str(&format!("https://mint{id}.example.com"))
+            .expect("public mint url"),
+        federation_api_url: MintUrl::from_str(&format!("https://fed{id}.example.com"))
+            .expect("federation api url"),
+        identity_public_key: identity_secret.public_key(),
+    }
+}
+
+fn dkg_public_config() -> FederationConfig {
+    let members = BTreeMap::from([
+        (member_id(1), member_public(1)),
+        (member_id(2), member_public(2)),
+    ]);
+    FederationConfig::new(
+        ThresholdParams::new(2, 2, 2).expect("threshold params"),
+        members,
+        Vec::new(),
+    )
+    .expect("dkg federation config")
+}
+
+fn member_id(id: u16) -> MemberId {
+    MemberId::new(id).expect("member id")
+}
+
+fn bls_key(byte: u8) -> BlsSecretKey {
+    BlsSecretKey::from_reduced_bytes(&[byte; 32])
+}
+
+fn dkg_reveal(
+    public_config: &FederationConfig,
+    member_id: MemberId,
+    seed: u8,
+) -> FederationDkgParticipantCommitmentReveal {
+    FederationDkgParticipantCommitmentReveal {
+        federation_id: public_config.federation_id,
+        member_id,
+        coefficient_commitments: BTreeMap::from([(
+            Amount::from(1),
+            vec![
+                bls_key(seed).public_key_g2(),
+                bls_key(seed + 10).public_key_g2(),
+            ],
+        )]),
+    }
+}
+
+fn dkg_setup_state_from_db_records(
+    public_config: &FederationConfig,
+    commitments: Vec<FederationDkgParticipantCommitment>,
+    reveals: Vec<FederationDkgParticipantCommitmentReveal>,
+) -> FederationDkgSetupState {
+    let mut state = FederationDkgSetupState::new(public_config);
+    for commitment in commitments {
+        state
+            .insert_commitment(public_config, commitment)
+            .expect("stored commitment validates");
+    }
+    for reveal in reveals {
+        state
+            .insert_reveal(public_config, reveal)
+            .expect("stored reveal validates");
+    }
+    state
 }
 
 /// Assert federation journal entries, operation statuses, and member sequences are persisted.
@@ -361,6 +435,98 @@ where
         .await
         .expect("wrong-context payment observations");
     assert!(wrong_context.is_empty());
+}
+
+/// Assert DKG setup state persists as idempotent replayable setup material.
+pub async fn federation_dkg_setup_state_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let public_config = dkg_public_config();
+    let first_reveal = dkg_reveal(&public_config, member_id(1), 11);
+    let second_reveal = dkg_reveal(&public_config, member_id(2), 21);
+    let conflicting_first_reveal = dkg_reveal(&public_config, member_id(1), 91);
+    let first_commitment =
+        FederationDkgParticipantCommitment::from_reveal(&first_reveal).expect("first commitment");
+    let second_commitment =
+        FederationDkgParticipantCommitment::from_reveal(&second_reveal).expect("second commitment");
+    let conflicting_first_commitment =
+        FederationDkgParticipantCommitment::from_reveal(&conflicting_first_reveal)
+            .expect("conflicting first commitment");
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin");
+    tx.add_federation_dkg_commitment(&first_commitment)
+        .await
+        .expect("persist first commitment");
+    tx.add_federation_dkg_commitment(&first_commitment)
+        .await
+        .expect("idempotent duplicate commitment replay");
+    tx.add_federation_dkg_commitment(&second_commitment)
+        .await
+        .expect("persist second commitment");
+    tx.add_federation_dkg_reveal(&first_reveal)
+        .await
+        .expect("persist first reveal");
+    tx.add_federation_dkg_reveal(&first_reveal)
+        .await
+        .expect("idempotent duplicate reveal replay");
+    tx.commit().await.expect("commit");
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin conflicting commitment");
+    assert!(tx
+        .add_federation_dkg_commitment(&conflicting_first_commitment)
+        .await
+        .is_err());
+    tx.rollback()
+        .await
+        .expect("rollback conflicting commitment");
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin conflicting reveal");
+    assert!(tx
+        .add_federation_dkg_reveal(&conflicting_first_reveal)
+        .await
+        .is_err());
+    tx.rollback().await.expect("rollback conflicting reveal");
+
+    let commitments = db
+        .get_federation_dkg_commitments()
+        .await
+        .expect("dkg commitments");
+    let reveals = db.get_federation_dkg_reveals().await.expect("dkg reveals");
+    assert_eq!(commitments, vec![first_commitment, second_commitment]);
+    assert_eq!(reveals, vec![first_reveal.clone()]);
+
+    let partial_state = dkg_setup_state_from_db_records(&public_config, commitments, reveals);
+    assert!(partial_state
+        .complete_round(&public_config)
+        .expect("partial setup state")
+        .is_none());
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin second");
+    tx.add_federation_dkg_reveal(&second_reveal)
+        .await
+        .expect("persist second reveal");
+    tx.commit().await.expect("commit second");
+
+    let complete_state = dkg_setup_state_from_db_records(
+        &public_config,
+        db.get_federation_dkg_commitments()
+            .await
+            .expect("complete commitments"),
+        db.get_federation_dkg_reveals()
+            .await
+            .expect("complete reveals"),
+    );
+    assert!(complete_state
+        .complete_round(&public_config)
+        .expect("complete setup state")
+        .is_some());
 }
 
 /// Assert concurrent federation journal writes do not deadlock or reorder reads.

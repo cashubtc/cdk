@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">DKG setup now has an idempotent setup-state scaffold</span>
+          <span class="value">DKG setup is now durable and route-enforced</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add federation DKG setup state scaffold</span>
+          <span class="value">feat: persist federation DKG setup state</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The common federation layer can now collect DKG commitments and reveals idempotently, reject conflicts, require commit-before-reveal ordering, and produce a fully validated round once all members are present</span>
+          <span class="value">SQL mint storage now persists DKG commitments and reveals with replay-safe duplicates, conflict rejection, and private DKG routes replay durable setup state before advancing signed sequence watermarks</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Back the DKG setup state with durable mint storage and connect the private setup routes to replayable state</span>
+          <span class="value">Use complete persisted DKG rounds to validate setup transcripts and drive member key-share material for dealer-free setup</span>
         </div>
       </aside>
     </header>
@@ -1083,6 +1083,10 @@
             <p>Route tests now prove that tampered operation payloads, unknown senders, wrong message kinds, and stale sequence numbers fail before the local consensus journal changes.</p>
           </article>
           <article class="item">
+            <h3>DKG setup replay is no longer memory-only</h3>
+            <p>Private DKG commitment and reveal routes now validate against persisted setup material, so restart or duplicate delivery cannot lose the commit-before-reveal guard or silently accept different setup material for the same member.</p>
+          </article>
+          <article class="item">
             <h3>Accepted order survives storage</h3>
             <p>The federation journal row shape now preserves consensus order, digest continuity, local application status, quote conflict metadata, and member sequence watermarks across SQL round trips.</p>
           </article>
@@ -1487,6 +1491,10 @@
             <p>The common federation layer now has an idempotent setup-state collector that accepts replayed commitments/reveals, rejects conflicting setup material, enforces commit-before-reveal, and returns a validated complete round.</p>
           </article>
           <article class="item">
+            <h3>Durable DKG setup state ready</h3>
+            <p>SQLite and Postgres migrations now persist DKG commitments and reveals, route handlers rebuild setup state from storage before accepting new setup messages, and conflicting or reveal-before-commit payloads fail before sequence advancement.</p>
+          </article>
+          <article class="item">
             <h3>State convergence certification planned</h3>
             <p>The implementation plan now has Milestone 16A, an explicit gate for consensus-visible database equality, canonical snapshots, quorum-backed catch-up evidence, safe catch-up mode, digest comparison, and row-level mismatch diagnostics.</p>
           </article>
@@ -1610,6 +1618,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation dkg -- --test-threads 1` passed 11 DKG tests, including idempotent commitment/reveal replay, conflicting commitment and reveal rejection, reveal-before-commit rejection, complete-round validation, and setup-state JSON round-trip. `cargo test -p cdk-common --features federation federation -- --test-threads 1` passed 101 tests. `cargo check -p cdk-common --features federation --lib`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, and `cargo fmt --all` passed.</td>
               <td>Persist this setup state in mint storage and make private DKG routes replay it after restart.</td>
+            </tr>
+            <tr>
+              <td>DKG setup persistence</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-sqlite --features federation federation_dkg_setup_state_persistence -- --test-threads 1`, `cargo test -p cdk-sql-common --features federation federation_mint_migrations_cover_sqlite_and_postgres -- --test-threads 1`, `cargo test -p cdk-axum --features federation dkg -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_journal_hot_path_indexes_are_used -- --test-threads 1`, `cargo check -p cdk-common --features federation --lib`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Use complete persisted DKG rounds to validate setup transcripts, derive member key-share material, and add restart-specific setup recovery coverage.</td>
             </tr>
             <tr>
               <td>State convergence certification plan</td>
@@ -2237,6 +2251,10 @@
           <article class="item">
             <h3>Broader materialized digest coverage</h3>
             <p>Add storage-backed process variants and explicit mismatch injection so every consensus-visible digest row, including unresolved payment observations, is proven across replay and restart paths.</p>
+          </article>
+          <article class="item">
+            <h3>DKG completion wiring</h3>
+            <p>Feed complete persisted DKG commitment rounds into setup transcript validation and member key-share material, then prove restart recovery does not change accepted setup state.</p>
           </article>
           <article class="item">
             <h3>BFT backend selection</h3>

@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use cdk_common::database::mint::{FederationJournalDatabase, FederationJournalTransaction};
 use cdk_common::database::Error;
 use cdk_common::federation::{
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationJournalEntry, FederationOperationConflictKey, FederationOperationId,
     FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationSessionOutcome, MemberId,
@@ -13,6 +14,9 @@ use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
 use crate::{column_as_number, column_as_string, unpack_into};
+
+const FEDERATION_DKG_COMMITMENT_PHASE: &str = "commitment";
+const FEDERATION_DKG_REVEAL_PHASE: &str = "reveal";
 
 fn status_to_str(status: FederationOperationStatus) -> &'static str {
     match status {
@@ -124,6 +128,56 @@ fn sql_row_to_federation_payment_observation_record(
         operation_index,
         observation,
     })
+}
+
+fn sql_member_id(column: Column) -> Result<MemberId, Error> {
+    let member_id_raw: u64 = column_as_number!(column);
+    MemberId::new(member_id_raw as u16)
+        .map_err(|e| Error::Internal(format!("Invalid federation member id: {e}")))
+}
+
+fn sql_row_to_federation_dkg_commitment(
+    row: Vec<Column>,
+) -> Result<FederationDkgParticipantCommitment, Error> {
+    unpack_into!(let (member_id, payload_json) = row);
+    let member_id = sql_member_id(member_id)?;
+    let commitment = serde_json::from_str::<FederationDkgParticipantCommitment>(
+        &column_as_string!(&payload_json),
+    )
+    .map_err(|e| Error::Internal(format!("Invalid federation DKG commitment JSON: {e}")))?;
+    if commitment.member_id != member_id {
+        return Err(Error::Internal(format!(
+            "Federation DKG commitment member mismatch: expected={member_id}, found={}",
+            commitment.member_id
+        )));
+    }
+
+    Ok(commitment)
+}
+
+fn sql_row_to_federation_dkg_reveal(
+    row: Vec<Column>,
+) -> Result<FederationDkgParticipantCommitmentReveal, Error> {
+    unpack_into!(let (member_id, payload_json) = row);
+    let member_id = sql_member_id(member_id)?;
+    let reveal = serde_json::from_str::<FederationDkgParticipantCommitmentReveal>(
+        &column_as_string!(&payload_json),
+    )
+    .map_err(|e| Error::Internal(format!("Invalid federation DKG reveal JSON: {e}")))?;
+    if reveal.member_id != member_id {
+        return Err(Error::Internal(format!(
+            "Federation DKG reveal member mismatch: expected={member_id}, found={}",
+            reveal.member_id
+        )));
+    }
+
+    Ok(reveal)
+}
+
+fn federation_dkg_conflict_error(phase: &str, member_id: MemberId) -> Error {
+    Error::Internal(format!(
+        "Conflicting federation DKG {phase} for member {member_id}"
+    ))
 }
 
 #[async_trait]
@@ -279,6 +333,66 @@ where
         .bind("observation_json", serde_json::to_string(&observation.observation)?)
         .execute(&self.inner)
         .await?;
+
+        Ok(())
+    }
+
+    async fn add_federation_dkg_commitment(
+        &mut self,
+        commitment: &FederationDkgParticipantCommitment,
+    ) -> Result<(), Self::Err> {
+        let rows_affected = query(
+            r#"
+            INSERT INTO federation_dkg_setup_messages
+            (phase, member_id, payload_json)
+            VALUES
+            (:phase, :member_id, :payload_json)
+            ON CONFLICT (phase, member_id)
+            DO UPDATE SET payload_json = EXCLUDED.payload_json
+            WHERE federation_dkg_setup_messages.payload_json = EXCLUDED.payload_json
+            "#,
+        )?
+        .bind("phase", FEDERATION_DKG_COMMITMENT_PHASE)
+        .bind("member_id", i64::from(commitment.member_id.get()))
+        .bind("payload_json", serde_json::to_string(commitment)?)
+        .execute(&self.inner)
+        .await?;
+        if rows_affected == 0 {
+            return Err(federation_dkg_conflict_error(
+                FEDERATION_DKG_COMMITMENT_PHASE,
+                commitment.member_id,
+            ));
+        }
+
+        Ok(())
+    }
+
+    async fn add_federation_dkg_reveal(
+        &mut self,
+        reveal: &FederationDkgParticipantCommitmentReveal,
+    ) -> Result<(), Self::Err> {
+        let rows_affected = query(
+            r#"
+            INSERT INTO federation_dkg_setup_messages
+            (phase, member_id, payload_json)
+            VALUES
+            (:phase, :member_id, :payload_json)
+            ON CONFLICT (phase, member_id)
+            DO UPDATE SET payload_json = EXCLUDED.payload_json
+            WHERE federation_dkg_setup_messages.payload_json = EXCLUDED.payload_json
+            "#,
+        )?
+        .bind("phase", FEDERATION_DKG_REVEAL_PHASE)
+        .bind("member_id", i64::from(reveal.member_id.get()))
+        .bind("payload_json", serde_json::to_string(reveal)?)
+        .execute(&self.inner)
+        .await?;
+        if rows_affected == 0 {
+            return Err(federation_dkg_conflict_error(
+                FEDERATION_DKG_REVEAL_PHASE,
+                reveal.member_id,
+            ));
+        }
 
         Ok(())
     }
@@ -480,6 +594,54 @@ where
         .await?
         .into_iter()
         .map(sql_row_to_federation_payment_observation_record)
+        .collect()
+    }
+
+    async fn get_federation_dkg_commitments(
+        &self,
+    ) -> Result<Vec<FederationDkgParticipantCommitment>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT member_id, payload_json
+            FROM federation_dkg_setup_messages
+            WHERE phase = :phase
+            ORDER BY member_id ASC
+            "#,
+        )?
+        .bind("phase", FEDERATION_DKG_COMMITMENT_PHASE)
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_dkg_commitment)
+        .collect()
+    }
+
+    async fn get_federation_dkg_reveals(
+        &self,
+    ) -> Result<Vec<FederationDkgParticipantCommitmentReveal>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT member_id, payload_json
+            FROM federation_dkg_setup_messages
+            WHERE phase = :phase
+            ORDER BY member_id ASC
+            "#,
+        )?
+        .bind("phase", FEDERATION_DKG_REVEAL_PHASE)
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_dkg_reveal)
         .collect()
     }
 }

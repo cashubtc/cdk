@@ -15,10 +15,12 @@ use axum::Router;
 use cache::HttpCache;
 #[cfg(feature = "federation")]
 use cdk::federation::{
-    FederationConsensusEngine, FederationConsensusRuntime, FederationJournalAppendOutcome,
-    FederationJournalEntry, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, FederationRestSequenceTracker, FederationSessionOutcome,
-    FederationSubmitOperationResponse, MemberId,
+    FederationConfig, FederationConsensusEngine, FederationConsensusRuntime,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgSetupState, FederationJournalAppendOutcome, FederationJournalEntry,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationRestSequenceTracker, FederationSessionOutcome, FederationSubmitOperationResponse,
+    MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -453,6 +455,70 @@ impl MintState {
             .await?;
         self.record_federation_sequence(sender, sequence).await;
         Ok(())
+    }
+
+    pub(crate) async fn persist_federation_dkg_commitment(
+        &self,
+        commitment: &FederationDkgParticipantCommitment,
+        sender: MemberId,
+        sequence: u64,
+    ) -> Result<(), cdk::Error> {
+        let public_config = self.federation_public_config()?;
+        let mut setup_state = self.load_federation_dkg_setup_state(&public_config).await?;
+        setup_state.insert_commitment(&public_config, *commitment)?;
+
+        let db = self.mint.localstore();
+        let mut tx = db.begin_transaction().await?;
+        tx.add_federation_dkg_commitment(commitment).await?;
+        tx.set_federation_member_sequence(sender, sequence).await?;
+        tx.commit().await?;
+        self.record_federation_sequence(sender, sequence).await;
+        Ok(())
+    }
+
+    pub(crate) async fn persist_federation_dkg_reveal(
+        &self,
+        reveal: &FederationDkgParticipantCommitmentReveal,
+        sender: MemberId,
+        sequence: u64,
+    ) -> Result<(), cdk::Error> {
+        let public_config = self.federation_public_config()?;
+        let mut setup_state = self.load_federation_dkg_setup_state(&public_config).await?;
+        setup_state.insert_reveal(&public_config, reveal.clone())?;
+
+        let db = self.mint.localstore();
+        let mut tx = db.begin_transaction().await?;
+        tx.add_federation_dkg_reveal(reveal).await?;
+        tx.set_federation_member_sequence(sender, sequence).await?;
+        tx.commit().await?;
+        self.record_federation_sequence(sender, sequence).await;
+        Ok(())
+    }
+
+    fn federation_public_config(&self) -> Result<FederationConfig, cdk::Error> {
+        self.mint
+            .federation_config()
+            .map(|config| config.public_config().clone())
+            .ok_or_else(|| {
+                cdk::Error::Custom("federation mint is missing its runtime config".to_string())
+            })
+    }
+
+    async fn load_federation_dkg_setup_state(
+        &self,
+        public_config: &FederationConfig,
+    ) -> Result<FederationDkgSetupState, cdk::Error> {
+        let db = self.mint.localstore();
+        let commitments = db.get_federation_dkg_commitments().await?;
+        let reveals = db.get_federation_dkg_reveals().await?;
+        let mut setup_state = FederationDkgSetupState::new(public_config);
+        for commitment in commitments {
+            setup_state.insert_commitment(public_config, commitment)?;
+        }
+        for reveal in reveals {
+            setup_state.insert_reveal(public_config, reveal)?;
+        }
+        Ok(setup_state)
     }
 
     pub(crate) async fn persist_federation_session_outcome(

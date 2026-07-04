@@ -53,6 +53,15 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_dkg_setup_state_persistence() {
+        cdk_common::database::mint::test::federation_dkg_setup_state_persistence(
+            provide_db("federation_dkg_setup_state_persistence".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_journal_concurrent_writes() {
         let path = std::env::temp_dir().to_path_buf().join(format!(
             "cdk-test-federation-concurrent-{}.sqlite",
@@ -133,7 +142,8 @@ mod test {
               AND tbl_name IN (
                   'federation_journal_entries',
                   'federation_session_outcomes',
-                  'federation_payment_observations'
+                  'federation_payment_observations',
+                  'federation_dkg_setup_messages'
               )
             "#,
         )
@@ -160,6 +170,10 @@ mod test {
         assert!(
             index_names.contains("idx_federation_payment_observations_quote"),
             "missing federation payment-observation quote index"
+        );
+        assert!(
+            index_names.contains("idx_federation_dkg_setup_member"),
+            "missing federation DKG setup member index"
         );
 
         let journal_range_plan = explain_details(

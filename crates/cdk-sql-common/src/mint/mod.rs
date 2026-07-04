@@ -476,6 +476,10 @@ mod federation_migration_tests {
         let postgres_payment_observations = include_str!(
             "migrations/postgres/20260703140000_add_federation_payment_observations.sql"
         );
+        let sqlite_dkg_setup =
+            include_str!("migrations/sqlite/20260703143000_add_federation_dkg_setup.sql");
+        let postgres_dkg_setup =
+            include_str!("migrations/postgres/20260703143000_add_federation_dkg_setup.sql");
 
         for migration in [sqlite_saga, postgres_saga] {
             assert_contains_all(
@@ -534,6 +538,19 @@ mod federation_migration_tests {
                     "observation_json",
                     "idx_federation_payment_observations_member_state",
                     "idx_federation_payment_observations_quote",
+                ],
+            );
+        }
+
+        for migration in [sqlite_dkg_setup, postgres_dkg_setup] {
+            assert_contains_all(
+                migration,
+                &[
+                    "federation_dkg_setup_messages",
+                    "phase",
+                    "member_id",
+                    "payload_json",
+                    "idx_federation_dkg_setup_member",
                 ],
             );
         }

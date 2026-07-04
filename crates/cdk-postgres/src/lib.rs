@@ -464,6 +464,15 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_dkg_setup_state_persistence() {
+        cdk_common::database::mint::test::federation_dkg_setup_state_persistence(
+            provide_mint_db("federation_dkg_setup_state_persistence".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_journal_concurrent_writes() {
         cdk_common::database::mint::test::federation_journal_concurrent_writes(
             provide_mint_db("federation_journal_concurrent_writes".to_string()).await,

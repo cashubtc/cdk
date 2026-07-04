@@ -12,6 +12,7 @@ use cashu::Amount;
 use super::{DbTransactionFinalizer, Error};
 #[cfg(feature = "federation")]
 use crate::federation::{
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationJournalEntry, FederationOperationId, FederationOperationStatus,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
     FederationSessionOutcome, MemberId,
@@ -645,6 +646,18 @@ pub trait FederationJournalTransaction {
         observation: &FederationPaymentObservationRecord,
     ) -> Result<(), Self::Err>;
 
+    /// Persist one DKG pre-reveal commitment.
+    async fn add_federation_dkg_commitment(
+        &mut self,
+        commitment: &FederationDkgParticipantCommitment,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist one DKG public commitment reveal.
+    async fn add_federation_dkg_reveal(
+        &mut self,
+        reveal: &FederationDkgParticipantCommitmentReveal,
+    ) -> Result<(), Self::Err>;
+
     /// Get payment observations for one quote and context inside this transaction.
     async fn get_federation_payment_observations(
         &mut self,
@@ -691,6 +704,16 @@ pub trait FederationJournalDatabase {
         context: FederationPaymentObservationContext,
         quote: &str,
     ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err>;
+
+    /// Get all persisted DKG pre-reveal commitments.
+    async fn get_federation_dkg_commitments(
+        &self,
+    ) -> Result<Vec<FederationDkgParticipantCommitment>, Self::Err>;
+
+    /// Get all persisted DKG public commitment reveals.
+    async fn get_federation_dkg_reveals(
+        &self,
+    ) -> Result<Vec<FederationDkgParticipantCommitmentReveal>, Self::Err>;
 }
 
 #[cfg(not(feature = "federation"))]

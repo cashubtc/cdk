@@ -447,7 +447,11 @@ async fn post_dkg_commitment(
     let federation_id = runtime_config.federation_id();
     let local_member = runtime_config.member_id();
     state
-        .persist_federation_sequence(verified.sender, verified.sequence)
+        .persist_federation_dkg_commitment(
+            &payload.payload.commitment,
+            verified.sender,
+            verified.sequence,
+        )
         .await
         .map_err(cdk_error_response)?;
 
@@ -474,7 +478,7 @@ async fn post_dkg_reveal(
     let federation_id = runtime_config.federation_id();
     let local_member = runtime_config.member_id();
     state
-        .persist_federation_sequence(verified.sender, verified.sequence)
+        .persist_federation_dkg_reveal(&payload.payload.reveal, verified.sender, verified.sequence)
         .await
         .map_err(cdk_error_response)?;
 
@@ -6219,19 +6223,23 @@ mod tests {
             .federation_config()
             .expect("federation config")
             .member_id();
+        let commitment_payload = dkg_commitment_request(&public_config, peer_private.member_id, 21);
+        let expected_commitment = commitment_payload.commitment;
+        let reveal_payload = dkg_reveal_request(&public_config, peer_private.member_id, 21);
+        let expected_reveal = reveal_payload.reveal.clone();
         let commitment_request = signed_dkg_commitment_request(
             &public_config,
             &peer_private,
             local_member,
             1,
-            dkg_commitment_request(&public_config, peer_private.member_id, 21),
+            commitment_payload,
         );
         let reveal_request = signed_dkg_reveal_request(
             &public_config,
             &peer_private,
             local_member,
             2,
-            dkg_reveal_request(&public_config, peer_private.member_id, 21),
+            reveal_payload,
         );
 
         let commitment_response =
@@ -6267,6 +6275,20 @@ mod tests {
             .await
             .expect("persisted sequences");
         assert_eq!(sequences.get(&peer_private.member_id), Some(&2));
+        let commitments = state
+            .mint
+            .localstore()
+            .get_federation_dkg_commitments()
+            .await
+            .expect("persisted commitments");
+        let reveals = state
+            .mint
+            .localstore()
+            .get_federation_dkg_reveals()
+            .await
+            .expect("persisted reveals");
+        assert_eq!(commitments, vec![expected_commitment]);
+        assert_eq!(reveals, vec![expected_reveal]);
     }
 
     #[tokio::test]
@@ -6297,6 +6319,92 @@ mod tests {
             .await
             .expect("persisted sequences");
         assert!(sequences.is_empty());
+    }
+
+    #[tokio::test]
+    async fn private_dkg_reveal_route_rejects_missing_commitment_before_sequence_persistence() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let local_member = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .member_id();
+        let reveal_request = signed_dkg_reveal_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            1,
+            dkg_reveal_request(&public_config, peer_private.member_id, 21),
+        );
+
+        let response = post_dkg_reveal(State(state.clone()), Json(reveal_request))
+            .await
+            .expect_err("reveal before commitment must fail");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let sequences = state
+            .mint
+            .localstore()
+            .get_federation_member_sequences()
+            .await
+            .expect("persisted sequences");
+        let reveals = state
+            .mint
+            .localstore()
+            .get_federation_dkg_reveals()
+            .await
+            .expect("persisted reveals");
+        assert!(sequences.is_empty());
+        assert!(reveals.is_empty());
+    }
+
+    #[tokio::test]
+    async fn private_dkg_commitment_route_rejects_conflict_before_sequence_persistence() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let local_member = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .member_id();
+        let first_payload = dkg_commitment_request(&public_config, peer_private.member_id, 21);
+        let first_commitment = first_payload.commitment;
+        let first_request = signed_dkg_commitment_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            1,
+            first_payload,
+        );
+        let conflicting_request = signed_dkg_commitment_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            2,
+            dkg_commitment_request(&public_config, peer_private.member_id, 31),
+        );
+
+        let _ = post_dkg_commitment(State(state.clone()), Json(first_request))
+            .await
+            .expect("first commitment accepted");
+        let response = post_dkg_commitment(State(state.clone()), Json(conflicting_request))
+            .await
+            .expect_err("conflicting commitment must fail");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let sequences = state
+            .mint
+            .localstore()
+            .get_federation_member_sequences()
+            .await
+            .expect("persisted sequences");
+        let commitments = state
+            .mint
+            .localstore()
+            .get_federation_dkg_commitments()
+            .await
+            .expect("persisted commitments");
+        assert_eq!(sequences.get(&peer_private.member_id), Some(&1));
+        assert_eq!(commitments, vec![first_commitment]);
     }
 
     #[tokio::test]
