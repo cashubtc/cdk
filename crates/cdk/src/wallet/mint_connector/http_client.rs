@@ -910,6 +910,35 @@ where
             )),
         }
     }
+
+    /// Create new [`AuthHttpClient`] with a provided transport implementation.
+    pub fn with_transport(mint_url: MintUrl, transport: T, cat: Option<AuthToken>) -> Self {
+        Self {
+            transport: transport.into(),
+            mint_url,
+            cat: Arc::new(RwLock::new(
+                cat.unwrap_or(AuthToken::ClearAuth("".to_string())),
+            )),
+        }
+    }
+
+    /// Create new [`AuthHttpClient`] with a proxy for specific TLDs.
+    /// Specifying `None` for `host_matcher` will use the proxy for all
+    /// requests.
+    pub fn with_proxy(
+        mint_url: MintUrl,
+        proxy: Url,
+        host_matcher: Option<&str>,
+        accept_invalid_certs: bool,
+        cat: Option<AuthToken>,
+    ) -> Result<Self, Error> {
+        let mut transport = T::default();
+        transport
+            .with_proxy(proxy, host_matcher, accept_invalid_certs)
+            .map_err(HttpClient::<T>::map_http_error)?;
+
+        Ok(Self::with_transport(mint_url, transport, cat))
+    }
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]

@@ -10,7 +10,7 @@ use crate::cdk_database::WalletDatabase;
 use crate::error::Error;
 use crate::mint_url::MintUrl;
 use crate::nuts::CurrencyUnit;
-use crate::wallet::auth::AuthWallet;
+use crate::wallet::auth::{AuthMintConnector, AuthWallet};
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::wallet::{HttpClient, MintConnector, SubscriptionManager, Wallet};
 
@@ -21,6 +21,7 @@ pub struct WalletBuilder {
     localstore: Option<Arc<dyn WalletDatabase<database::Error> + Send + Sync>>,
     target_proof_count: Option<usize>,
     auth_wallet: Option<AuthWallet>,
+    auth_connector: Option<Arc<dyn AuthMintConnector + Send + Sync>>,
     seed: Option<[u8; 64]>,
     use_http_subscription: bool,
     client: Option<Arc<dyn MintConnector + Send + Sync>>,
@@ -47,6 +48,7 @@ impl Default for WalletBuilder {
             localstore: None,
             target_proof_count: Some(3),
             auth_wallet: None,
+            auth_connector: None,
             seed: None,
             client: None,
             metadata_cache_ttl: Some(Duration::from_secs(3600)),
@@ -125,6 +127,15 @@ impl WalletBuilder {
     /// Set the auth wallet
     pub fn auth_wallet(mut self, auth_wallet: AuthWallet) -> Self {
         self.auth_wallet = Some(auth_wallet);
+        self
+    }
+
+    /// Set the auth connector used when an auth wallet is created from mint info
+    pub fn auth_connector(
+        mut self,
+        auth_connector: Arc<dyn AuthMintConnector + Send + Sync>,
+    ) -> Self {
+        self.auth_connector = Some(auth_connector);
         self
     }
 
@@ -249,6 +260,7 @@ impl WalletBuilder {
             metadata_cache,
             target_proof_count: self.target_proof_count.unwrap_or(3),
             auth_wallet: Arc::new(TokioRwLock::new(auth_wallet)),
+            auth_connector: self.auth_connector.take(),
             #[cfg(feature = "npubcash")]
             npubcash_client: Arc::new(TokioRwLock::new(None)),
             seed,
