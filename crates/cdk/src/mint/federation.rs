@@ -251,7 +251,7 @@ impl FederationRuntimeConfig {
     pub fn validate_restore_outputs(&self, request: &RestoreRequest) -> Result<(), Error> {
         Ok(self
             .public_config
-            .validate_blinded_change_outputs(&request.outputs)?)
+            .validate_blinded_restore_outputs(&request.outputs)?)
     }
 
     /// Validate change outputs from a melt request.
@@ -444,7 +444,7 @@ impl Mint {
         Ok(Some(effective))
     }
 
-    fn verify_federation_outputs_with_config(
+    pub(crate) fn verify_federation_outputs_with_config(
         &self,
         config: &FederationRuntimeConfig,
         outputs: &[BlindedMessage],
@@ -496,7 +496,7 @@ impl Mint {
         Ok(Verification { amount })
     }
 
-    fn get_federation_proofs_fee_with_config(
+    pub(crate) fn get_federation_proofs_fee_with_config(
         &self,
         config: &FederationRuntimeConfig,
         proofs: &Proofs,
@@ -2466,6 +2466,168 @@ mod tests {
             .await
             .expect("input states");
         assert_eq!(input_states.states[0].state, State::Spent);
+    }
+
+    #[tokio::test]
+    async fn process_federation_melt_change_signs_rotated_keyset() {
+        let runtime_config = runtime_config_with_inactive_rotation_keyset();
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let mut next_keyset = runtime_config
+            .public_config()
+            .keysets
+            .iter()
+            .find(|keyset| !keyset.active)
+            .expect("inactive rotation keyset")
+            .clone();
+        next_keyset.active = true;
+        let rotation_entry = appended_entry(
+            &mut journal,
+            runtime_config.operation_envelope(FederationOperation::KeysetRotation(
+                FederationKeysetRotationOperation {
+                    keyset: next_keyset.clone(),
+                },
+            )),
+        );
+        persist_and_apply_entry(&mint, &rotation_entry).await;
+
+        let effective = mint
+            .effective_federation_config()
+            .await
+            .expect("effective config")
+            .expect("federation config");
+        let quote = QuoteId::new();
+        let change_output = output_for_keyset(&next_keyset, b"rotated melt change");
+        let change_secret = change_output.blinded_secret;
+        let operation_id = effective
+            .melt_operation(MeltRequest::new(
+                quote.clone(),
+                Vec::new(),
+                Some(vec![change_output.clone()]),
+            ))
+            .expect("melt operation")
+            .operation_id()
+            .expect("operation id");
+
+        let db = mint.localstore();
+        let (change_sigs, tx) = super::super::melt::shared::process_federation_melt_change(
+            &mint,
+            &db,
+            &quote,
+            operation_id,
+            Amount::new(3, CurrencyUnit::Sat),
+            Amount::new(2, CurrencyUnit::Sat),
+            Amount::ZERO.with_unit(CurrencyUnit::Sat),
+            vec![change_output],
+        )
+        .await
+        .expect("process federated change");
+        tx.commit().await.expect("commit change signatures");
+
+        let signatures = localstore
+            .get_blind_signatures(&[change_secret])
+            .await
+            .expect("stored change signature");
+        let signature = signatures
+            .first()
+            .and_then(Option::as_ref)
+            .expect("rotated melt change signature");
+        assert_eq!(signature.keyset_id, next_keyset.id);
+        assert_eq!(signature.amount, Amount::from(1));
+        assert_eq!(
+            change_sigs.expect("change response")[0].keyset_id,
+            next_keyset.id
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_returns_old_keyset_signature_after_rotation() {
+        let runtime_config = runtime_config_with_inactive_rotation_keyset();
+        let (mint, _) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let old_keyset = runtime_config
+            .public_config()
+            .keysets
+            .iter()
+            .find(|keyset| keyset.active)
+            .expect("old active keyset")
+            .clone();
+        let mut next_keyset = runtime_config
+            .public_config()
+            .keysets
+            .iter()
+            .find(|keyset| !keyset.active)
+            .expect("inactive rotation keyset")
+            .clone();
+        next_keyset.active = true;
+
+        let quote = QuoteId::new();
+        let quote_entry = appended_entry(
+            &mut journal,
+            runtime_config.mint_quote_operation(
+                quote.clone(),
+                bolt11_quote_request(1),
+                bolt11_quote_response(&quote, 1),
+            ),
+        );
+        persist_and_apply_entry(&mint, &quote_entry).await;
+        let paid_entry = appended_entry(
+            &mut journal,
+            runtime_config.mint_quote_payment_observation(
+                quote.clone(),
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintQuoteState::Paid,
+                Amount::from(1),
+                Amount::ZERO,
+                Some("old-restore-payment".to_string()),
+            ),
+        );
+        persist_and_apply_entry(&mint, &paid_entry).await;
+
+        let old_output = output_for_keyset(&old_keyset, b"old restore output");
+        let input = MintInput::Single(MintRequest {
+            quote: quote.clone(),
+            outputs: vec![old_output.clone()],
+            signature: None,
+        });
+        let mint_entry = appended_entry(
+            &mut journal,
+            runtime_config
+                .mint_operation(input)
+                .expect("old mint operation"),
+        );
+        persist_and_apply_entry(&mint, &mint_entry).await;
+
+        let rotation_entry = appended_entry(
+            &mut journal,
+            runtime_config.operation_envelope(FederationOperation::KeysetRotation(
+                FederationKeysetRotationOperation {
+                    keyset: next_keyset,
+                },
+            )),
+        );
+        persist_and_apply_entry(&mint, &rotation_entry).await;
+        let effective = mint
+            .effective_federation_config()
+            .await
+            .expect("effective config")
+            .expect("federation config");
+        assert!(matches!(
+            effective.validate_output_keysets(std::slice::from_ref(&old_output)),
+            Err(cdk_common::Error::Federation(
+                FederationError::InactiveFederatedKeyset { .. }
+            ))
+        ));
+
+        let restored = mint
+            .restore(RestoreRequest {
+                outputs: vec![old_output.clone()],
+            })
+            .await
+            .expect("restore old signature");
+        assert_eq!(restored.outputs, vec![old_output]);
+        assert_eq!(restored.signatures.len(), 1);
+        assert_eq!(restored.signatures[0].keyset_id, old_keyset.id);
     }
 
     #[tokio::test]

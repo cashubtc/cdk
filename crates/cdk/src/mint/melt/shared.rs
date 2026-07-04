@@ -53,6 +53,36 @@ pub fn get_keyset_fee_and_amounts(
         .unwrap_or_else(|| (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into())
 }
 
+#[cfg(feature = "federation")]
+fn get_federation_keyset_fee_and_amounts(
+    config: &crate::mint::FederationRuntimeConfig,
+    outputs: &[BlindedMessage],
+) -> cdk_common::amount::FeeAndAmounts {
+    config
+        .public_config()
+        .keysets
+        .iter()
+        .filter_map(|keyset| {
+            if keyset.active && Some(keyset.id) == outputs.first().map(|output| output.keyset_id) {
+                Some(
+                    (
+                        keyset.input_fee_ppk,
+                        keyset
+                            .aggregate_keys
+                            .keys()
+                            .map(|amount| amount.to_u64())
+                            .collect::<Vec<_>>(),
+                    )
+                        .into(),
+                )
+            } else {
+                None
+            }
+        })
+        .next()
+        .unwrap_or_else(|| (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into())
+}
+
 #[cfg(feature = "prometheus")]
 fn amount_as_sats(amount: &Amount<CurrencyUnit>) -> Option<f64> {
     amount.to_msat().ok().map(|msats| msats as f64 / 1000.0)
@@ -400,7 +430,11 @@ pub async fn process_federation_melt_change(
         return Ok((None, tx));
     }
 
-    let fee_and_amounts = get_keyset_fee_and_amounts(&mint.keysets, &change_outputs);
+    let config = mint
+        .effective_federation_config()
+        .await?
+        .ok_or(Error::Internal)?;
+    let fee_and_amounts = get_federation_keyset_fee_and_amounts(&config, &change_outputs);
     let mut amounts: Vec<Amount> = change_target.split(&fee_and_amounts)?;
 
     if change_outputs.len() < amounts.len() {
@@ -418,7 +452,6 @@ pub async fn process_federation_melt_change(
         blinded_messages_to_sign.push(blinded_message);
     }
 
-    let config = mint.federation_config().ok_or(Error::Internal)?;
     let share_set = config.private_config().sign_blinded_messages(
         config.public_config(),
         federation_operation_id,
@@ -897,6 +930,17 @@ async fn finalize_melt_quote_inner(
         (proofs, quote)
     };
 
+    #[cfg(feature = "federation")]
+    let federation_fee_breakdown = if operation_id.is_some() && federation_operation_id.is_some() {
+        let config = mint
+            .effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?;
+        Some(mint.get_federation_proofs_fee_with_config(&config, &proofs)?)
+    } else {
+        None
+    };
+
     // Process change (if needed) - opens new transaction.
     #[cfg(feature = "federation")]
     let (change_sigs, mut tx) = if let Some(federation_operation_id) = federation_operation_id {
@@ -939,13 +983,30 @@ async fn finalize_melt_quote_inner(
     // We reuse the cloned proofs from TX1 / recovery so TX2 can atomically
     // persist the completed operation with the rest of the post-payment work.
     let fee_breakdown = if operation_id.is_some() {
-        Some(match mint.get_proofs_fee(&proofs).await {
-            Ok(fee_breakdown) => fee_breakdown,
-            Err(err) => {
-                tx.rollback().await?;
-                return Err(err);
+        #[cfg(feature = "federation")]
+        {
+            if let Some(fee_breakdown) = federation_fee_breakdown.as_ref() {
+                Some(fee_breakdown.clone())
+            } else {
+                Some(match mint.get_proofs_fee(&proofs).await {
+                    Ok(fee_breakdown) => fee_breakdown,
+                    Err(err) => {
+                        tx.rollback().await?;
+                        return Err(err);
+                    }
+                })
             }
-        })
+        }
+        #[cfg(not(feature = "federation"))]
+        {
+            Some(match mint.get_proofs_fee(&proofs).await {
+                Ok(fee_breakdown) => fee_breakdown,
+                Err(err) => {
+                    tx.rollback().await?;
+                    return Err(err);
+                }
+            })
+        }
     } else {
         None
     };

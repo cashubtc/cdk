@@ -1219,7 +1219,9 @@ impl Mint {
 
         let result = async {
             #[cfg(feature = "federation")]
-            if let Some(config) = self.federation_config() {
+            let effective_federation_config = self.effective_federation_config().await?;
+            #[cfg(feature = "federation")]
+            if let Some(config) = effective_federation_config.as_ref() {
                 config.validate_restore_outputs(&request)?;
             }
 
@@ -1265,7 +1267,20 @@ impl Mint {
                 request.outputs.into_iter().zip(blinded_signatures)
             {
                 if let Some(blinded_signature) = blinded_signature {
-                    if let Some(keyset_info) = self.get_keyset_info(&blinded_signature.keyset_id) {
+                    #[cfg(feature = "federation")]
+                    let keyset_info = match effective_federation_config.as_ref() {
+                        Some(config) => config
+                            .public_config()
+                            .keysets
+                            .iter()
+                            .find(|keyset| keyset.id == blinded_signature.keyset_id)
+                            .map(keysets::federated_keyset_to_mint_keyset_info),
+                        None => self.get_keyset_info(&blinded_signature.keyset_id),
+                    };
+                    #[cfg(not(feature = "federation"))]
+                    let keyset_info = self.get_keyset_info(&blinded_signature.keyset_id);
+
+                    if let Some(keyset_info) = keyset_info {
                         if keyset_info.is_expired() {
                             tracing::debug!(
                                 "Skipping restore for expired keyset {}",

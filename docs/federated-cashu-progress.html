@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Replay-derived key rotation views now feed public keyset responses plus federated mint and swap signing</span>
+          <span class="value">Replay-derived key rotation views now cover public keyset responses plus federated mint, swap, melt change, and restore paths</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: wire federated keyset rotation runtime views</span>
+          <span class="value">feat: extend rotated keyset views to melt and restore</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Mint members derive effective runtime configs from applied key-rotation journal entries, expose rotated active keysets to wallet keyset routes, mint to the new active keyset, and swap old proofs into new-keyset outputs</span>
+          <span class="value">Federated melt change signing derives denominations and shares from effective configs, restore can recover old inactive v3/BLS keyset signatures, and melt fee recording avoids deriving federation state while a write transaction is open</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Extend replay-derived keyset views through melt saga change signing, restore/status lookups, and wallet HTTP federation aggregation tests</span>
+          <span class="value">Add wallet HTTP federation aggregation tests across mint, swap, melt, and restore after key rotation, then cover zero-amount melt change placeholders in full saga recovery</span>
         </div>
       </aside>
     </header>
@@ -1567,6 +1567,10 @@
             <p>Mint runtime helpers now replay applied key-rotation journal entries into effective configs used by public keyset responses and federated mint/swap signing, with tests showing old proofs remain spendable while new outputs target the rotated keyset.</p>
           </article>
           <article class="item">
+            <h3>Key rotation melt and restore paths ready</h3>
+            <p>Federated melt change signing now uses replay-derived keysets, restore can recover stored signatures for old inactive v3/BLS keysets, and melt fee recording no longer derives federation config while a write transaction is open.</p>
+          </article>
+          <article class="item">
             <h3>State convergence certification planned</h3>
             <p>The implementation plan now has Milestone 16A, an explicit gate for consensus-visible database equality, canonical snapshots, quorum-backed catch-up evidence, safe catch-up mode, digest comparison, and row-level mismatch diagnostics.</p>
           </article>
@@ -1762,6 +1766,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --lib --features federation mint::federation -- --test-threads 1` passed 28 tests, including effective keyset replay, rotated public keyset responses, mint signing to the new keyset, and swapping old proofs into rotated outputs. `cargo test -p cdk-axum --features federation federated_mint_advertises_aggregate_keysets -- --test-threads 1`, `cargo test -p cdk-axum --features federation submit_batch_mint_records_federation_mint_operation -- --test-threads 1`, `cargo check -p cdk-axum --features federation`, `cargo fmt --all`, and `git diff --check` passed.</td>
               <td>Carry the effective keyset view through melt saga change signing, restore/status lookups, and wallet HTTP aggregation tests.</td>
+            </tr>
+            <tr>
+              <td>Key rotation melt and restore</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation keyset_rotation -- --test-threads 1` passed 7 tests. `cargo test -p cdk --lib --features federation mint::federation -- --test-threads 1` passed 30 tests, including rotated melt change signing, old inactive keyset restore, real-policy melt finalization, and stale payment-observation recovery. `cargo check -p cdk --lib --features federation`, `cargo check -p cdk-axum --features federation`, and `git diff --check` passed.</td>
+              <td>Run wallet HTTP federation aggregation tests across rotated mint/swap/melt/restore, then cover zero-amount melt change placeholders in full saga recovery.</td>
             </tr>
             <tr>
               <td>State convergence certification plan</td>
@@ -2392,7 +2402,7 @@
           </article>
           <article class="item">
             <h3>Rotation state transition</h3>
-            <p>Carry the derived keyset view into melt saga change signing, restore/status lookups, and wallet HTTP aggregation tests so every wallet-facing operation sees the rotated active keyset consistently.</p>
+            <p>Run wallet HTTP federation aggregation tests across rotated mint, swap, melt, and restore, then cover zero-amount melt change placeholders in full saga recovery.</p>
           </article>
           <article class="item">
             <h3>BFT backend selection</h3>

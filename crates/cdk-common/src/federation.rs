@@ -2744,9 +2744,18 @@ impl FederationConfig {
         Ok(())
     }
 
+    /// Validate restore outputs without requiring the keyset to still be active.
+    pub fn validate_blinded_restore_outputs(&self, outputs: &[BlindedMessage]) -> Result<()> {
+        for output in outputs {
+            self.validate_blinded_restore_output(output)?;
+        }
+
+        Ok(())
+    }
+
     /// Validate one blinded output and return the aggregate keyset it targets.
     pub fn validate_blinded_output(&self, output: &BlindedMessage) -> Result<&FederatedKeyset> {
-        self.validate_blinded_output_with_amount_policy(output, false)
+        self.validate_blinded_output_with_amount_policy(output, false, true)
     }
 
     /// Validate one melt change output and return the aggregate keyset it targets.
@@ -2754,13 +2763,22 @@ impl FederationConfig {
         &self,
         output: &BlindedMessage,
     ) -> Result<&FederatedKeyset> {
-        self.validate_blinded_output_with_amount_policy(output, true)
+        self.validate_blinded_output_with_amount_policy(output, true, true)
+    }
+
+    /// Validate one restore output and return the aggregate keyset it targets.
+    pub fn validate_blinded_restore_output(
+        &self,
+        output: &BlindedMessage,
+    ) -> Result<&FederatedKeyset> {
+        self.validate_blinded_output_with_amount_policy(output, true, false)
     }
 
     fn validate_blinded_output_with_amount_policy(
         &self,
         output: &BlindedMessage,
         allow_zero_amount_placeholder: bool,
+        require_active_keyset: bool,
     ) -> Result<&FederatedKeyset> {
         if output.keyset_id.get_version() != KeySetVersion::Version02 {
             return Err(FederationError::InvalidFederatedKeysetVersion {
@@ -2775,7 +2793,7 @@ impl FederationConfig {
             .ok_or(FederationError::UnknownFederatedKeyset {
                 keyset_id: output.keyset_id,
             })?;
-        if !keyset.active {
+        if require_active_keyset && !keyset.active {
             return Err(FederationError::InactiveFederatedKeyset {
                 keyset_id: keyset.id,
             });
@@ -4106,9 +4124,12 @@ mod tests {
                 .active
         );
         assert!(matches!(
-            rotated.validate_blinded_outputs(&[old_output]),
+            rotated.validate_blinded_outputs(std::slice::from_ref(&old_output)),
             Err(FederationError::InactiveFederatedKeyset { .. })
         ));
+        rotated
+            .validate_blinded_restore_outputs(&[old_output])
+            .expect("old keyset remains restorable after rotation");
         rotated
             .validate_blinded_outputs(&[new_output])
             .expect("new keyset active after rotation");

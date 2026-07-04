@@ -221,7 +221,16 @@ impl MeltSaga<Initial> {
 
         if let Some(outputs) = melt_request.outputs() {
             if !outputs.is_empty() {
+                #[cfg(feature = "federation")]
+                let output_verification = match self.mint.effective_federation_config().await? {
+                    Some(config) => self
+                        .mint
+                        .verify_federation_outputs_with_config(&config, outputs)?,
+                    None => self.mint.verify_outputs(outputs)?,
+                };
+                #[cfg(not(feature = "federation"))]
                 let output_verification = self.mint.verify_outputs(outputs)?;
+
                 if input_unit.as_ref() != Some(output_verification.amount.unit()) {
                     return Err(Error::UnitMismatch);
                 }
