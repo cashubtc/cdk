@@ -69,6 +69,7 @@ pub(crate) struct TrustedDealerMemberArtifacts {
     pub(crate) dkg_setup_private_config_path: PathBuf,
     pub(crate) work_dir: PathBuf,
     pub(crate) dkg_setup_work_dir: PathBuf,
+    pub(crate) public_mint_url: String,
     pub(crate) federation_api_url: String,
     pub(crate) dkg_setup_request_dir: PathBuf,
     pub(crate) prometheus_url: String,
@@ -246,6 +247,7 @@ pub(crate) fn generate_trusted_dealer_artifacts(
                 dkg_setup_private_config_path,
                 work_dir,
                 dkg_setup_work_dir,
+                public_mint_url: member_url,
                 federation_api_url,
                 dkg_setup_request_dir: dkg_setup_request_dirs
                     .get(member_id)
@@ -988,6 +990,8 @@ fn local_smoke_script(
     })?;
     let dkg_setup_request_dir_cases =
         member_path_cases(member_artifacts, |member| &member.dkg_setup_request_dir)?;
+    let public_mint_url_cases =
+        member_string_cases(member_artifacts, |member| &member.public_mint_url);
     let federation_url_cases =
         member_string_cases(member_artifacts, |member| &member.federation_api_url);
     let prometheus_url_cases =
@@ -1068,6 +1072,12 @@ member_private_config() {{
 member_dkg_setup_request_dir() {{
   case "$1" in
 {dkg_setup_request_dir_cases}    *) return 1 ;;
+  esac
+}}
+
+member_mint_url() {{
+  case "$1" in
+{public_mint_url_cases}    *) return 1 ;;
   esac
 }}
 
@@ -1468,6 +1478,24 @@ wait_for_dkg_setup_records() {{
   return 0
 }}
 
+wait_for_runtime_keysets() {{
+  local member="$1"
+  local work_dir
+  local mint_url
+  work_dir="$(member_work_dir "$member")"
+  mint_url="$(member_mint_url "$member")"
+  for _ in $(seq 1 "$STATUS_RETRIES"); do
+    if curl -fsS "$mint_url/v1/keysets" 2>/dev/null | grep -q '"id"'; then
+      return 0
+    fi
+    sleep "$STATUS_SLEEP_SECONDS"
+  done
+  printf 'member %s did not expose activated DKG keysets after restart\n' "$member" >&2
+  curl -fsS "$mint_url/v1/keysets" >&2 || true
+  tail -n 80 "$work_dir/mintd.log" >&2 || true
+  return 1
+}}
+
 wait_for_session_outcome_quorum() {{
   local member="$1"
   local work_dir
@@ -1550,6 +1578,15 @@ if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
   for member in "${{MEMBERS[@]}}"; do
     wait_for_dkg_status "$member"
   done
+  for member in "${{MEMBERS[@]}}"; do
+    stop_member "$member"
+  done
+  for member in "${{MEMBERS[@]}}"; do
+    start_member "$member"
+  done
+  for member in "${{MEMBERS[@]}}"; do
+    wait_for_runtime_keysets "$member"
+  done
   printf 'dkg setup route probe passed\n'
   exit 0
 fi
@@ -1626,6 +1663,7 @@ printf 'local federation smoke test passed\n'
         private_config_cases = private_config_cases,
         dkg_setup_private_config_cases = dkg_setup_private_config_cases,
         dkg_setup_request_dir_cases = dkg_setup_request_dir_cases,
+        public_mint_url_cases = public_mint_url_cases,
         federation_url_cases = federation_url_cases,
         prometheus_url_cases = prometheus_url_cases,
         postgres_schema_reset_url = postgres_schema_reset_url,
@@ -1878,10 +1916,14 @@ mod tests {
         assert!(smoke_script.contains("dkg setup route probe passed"));
         assert!(smoke_script.contains("CDK_FEDERATION_DISABLE_PEER_SYNC=1"));
         assert!(smoke_script.contains("member_dkg_setup_request_dir()"));
+        assert!(smoke_script.contains("member_mint_url()"));
         assert!(smoke_script.contains("member_federation_url()"));
         assert!(smoke_script.contains("probe_dkg_setup_routes()"));
         assert!(smoke_script.contains("post_dkg_setup_request()"));
         assert!(smoke_script.contains("wait_for_dkg_setup_records()"));
+        assert!(smoke_script.contains("wait_for_runtime_keysets()"));
+        assert!(smoke_script.contains("$mint_url/v1/keysets"));
+        assert!(smoke_script.contains("did not expose activated DKG keysets after restart"));
         assert!(smoke_script.contains("member_dkg_completion_records_line()"));
         assert!(smoke_script.contains("could not post DKG setup route-probe request"));
         assert!(smoke_script.contains("/federation/v1/dkg/commitments"));
@@ -1894,6 +1936,10 @@ mod tests {
             "probe_dkg_setup_routes\nwait_for_dkg_setup_records\nif [[ \"$DKG_ROUTE_PROBE_ONLY\" == \"1\" ]]; then"
         ));
         assert!(smoke_script.contains("wait_for_dkg_status \"$member\""));
+        assert!(smoke_script.contains(
+            "stop_member \"$member\"\n  done\n  for member in \"${MEMBERS[@]}\"; do\n    start_member \"$member\""
+        ));
+        assert!(smoke_script.contains("wait_for_runtime_keysets \"$member\""));
         assert!(smoke_script.contains("exit 0\nfi\n\nfor member in"));
         assert!(smoke_script.contains("wait_for_dkg_status()"));
         assert!(smoke_script.contains("print_dkg_record_runbook()"));
@@ -2058,6 +2104,7 @@ mod tests {
             assert!(config_text.contains("address = \"127.0.0.1\""));
             assert!(config_text.contains(&format!("port = {expected_prometheus_port}")));
             assert!(config_text.contains(&member_artifacts.federation_api_url));
+            assert!(config_text.contains(&member_artifacts.public_mint_url));
             assert!(dkg_setup_config_text.contains(
                 &artifacts
                     .dkg_setup_public_config_path
@@ -2132,6 +2179,7 @@ mod tests {
                     .to_string_lossy()
                     .to_string()
             ));
+            assert!(smoke_script.contains(&member_artifacts.public_mint_url));
             assert!(smoke_script.contains(&member_artifacts.prometheus_url));
         }
 

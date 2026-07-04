@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated local federation smoke passed end to end, Postgres smoke cleanup resets generated member schemas, and setup-only DKG route-probe smoke reaches database-backed readiness</span>
+          <span class="value">Generated local federation smoke passed end to end, Postgres smoke cleanup resets generated member schemas, and setup-only DKG route-probe smoke proves restart activation</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add setup-only dkg smoke configs</span>
+          <span class="value">test: verify setup dkg restart activation</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`DKG_ROUTE_PROBE_ONLY=1` generated smoke now starts setup-only member configs, posts DKG setup traffic, and proves `dkg-status --from-database --require-ready` from route-derived records</span>
+          <span class="value">`DKG_ROUTE_PROBE_ONLY=1` generated smoke restarts setup-only members after DKG completion and requires `/v1/keysets` to expose the activated route-derived keyset</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Restart setup-only members after DKG completion and prove runtime activation from route-derived records</span>
+          <span class="value">Broaden setup-only DKG process coverage across storage backends and fold it into the longer generated smoke path</span>
         </div>
       </aside>
     </header>
@@ -1635,6 +1635,10 @@
             <p>The generator now writes setup-only public, private, and member configs. The fast live DKG smoke uses those configs, starts with no public keysets, and reaches `finalized_ready=true` from route-derived keyset-share and transcript-signature records.</p>
           </article>
           <article class="item">
+            <h3>Setup-only restart activation passed</h3>
+            <p>The fast setup-only DKG smoke now restarts members after DKG completion and waits for public `/v1/keysets` to expose the activated route-derived keyset, proving startup activation from durable records in a live process run.</p>
+          </article>
+          <article class="item">
             <h3>Key rotation operation scaffold ready</h3>
             <p>Federation consensus can now encode proposed aggregate keysets, hash them canonically, dedupe conflicting payloads by keyset ID, and validate that rotation targets are v3/BLS keysets for the current roster.</p>
           </article>
@@ -1702,7 +1706,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, durable secret-share contribution storage, secret-share private REST exchange, a real HTTP setup-message bridge, generated route-probe request artifacts, route-probe-only smoke mode, live route-probe-only process smoke, route-driven local member keyset-share derivation, route-derived transcript-signature route probes, setup-only generated configs, database-backed setup-only readiness, route-derived restart activation, generated record-recovery runbook guidance, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed setup-progress reads, generated setup readiness gates, and the key-rotation runtime path. The remaining setup work is live restart/runtime activation from setup-only records and broader storage-backed setup coverage.</p>
+            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, durable secret-share contribution storage, secret-share private REST exchange, a real HTTP setup-message bridge, generated route-probe request artifacts, route-probe-only smoke mode, live route-probe-only process smoke, route-driven local member keyset-share derivation, route-derived transcript-signature route probes, setup-only generated configs, database-backed setup-only readiness, live restart/runtime activation from setup-only records, generated record-recovery runbook guidance, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed setup-progress reads, generated setup readiness gates, and the key-rotation runtime path. The remaining setup work is broader storage-backed setup coverage and integration into the longer generated smoke path.</p>
           </article>
         </div>
       </section>
@@ -1934,6 +1938,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`DKG_ROUTE_PROBE_ONLY=1 STATUS_RETRIES=45 STATUS_SLEEP_SECONDS=1 CDK_MINTD_BIN=target/debug/cdk-mintd bash <generated-smoke-script>` passed using setup-only generated member configs. A sample `federation dkg-status --from-database --require-ready` showed `setup_transcript=none`, `setup_keysets=0`, `keyset_share_records=1`, `transcript_signature_records=3`, `finalized_ready=true`, `final_keysets=1`, and `local_keysets=1`. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1`, `cargo build -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
               <td>Restart the setup-only member processes after records are durable and prove the runtime exposes the activated route-derived keyset.</td>
+            </tr>
+            <tr>
+              <td>Setup-only DKG restart activation smoke</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`DKG_ROUTE_PROBE_ONLY=1 STATUS_RETRIES=45 STATUS_SLEEP_SECONDS=1 CDK_MINTD_BIN=target/debug/cdk-mintd bash <generated-smoke-script>` passed after stopping and restarting setup-only members, then waiting for `/v1/keysets` to expose an activated keyset. The restarted member log included `Activated finalized federation DKG config from durable records` with `keyset_count=1`. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1`, `cargo build -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Run the setup-only DKG restart path against additional storage configurations and decide how it should compose with full wallet/payment smoke.</td>
             </tr>
             <tr>
               <td>Key rotation operation scaffold</td>
