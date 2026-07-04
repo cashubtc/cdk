@@ -1020,8 +1020,9 @@ mod tests {
     use cdk::federation::{
         generate_trusted_dealer_configs, FederationConfig, FederationConsensusEngine,
         FederationJournalEntry, FederationKeysetRotationOperation, FederationOperation,
-        FederationOperationEnvelope, InMemoryFederationJournal, MemberConfigPrivate, MemberId,
-        ThresholdParams, TrustedDealerConfigBundle, TrustedDealerKeysetSpec, TrustedDealerMember,
+        FederationOperationEnvelope, FederationOperationId, InMemoryFederationJournal,
+        MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerConfigBundle,
+        TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     use cdk::mint::{Mint, MintBuilder, MintMeltLimits, MintQuoteResponse};
     use cdk::nuts::nut00::KnownMethod;
@@ -1874,6 +1875,38 @@ mod tests {
         mint.apply_federation_journal_entries(std::slice::from_ref(entry))
             .await
             .expect("apply journal entry");
+    }
+
+    #[cfg(feature = "federation")]
+    async fn add_restore_signature_share_to_mint(
+        mint: &Mint,
+        public_config: &FederationConfig,
+        private_config: &MemberConfigPrivate,
+        operation_id: FederationOperationId,
+        output: &BlindedMessage,
+    ) {
+        let share_set = private_config
+            .sign_blinded_messages(public_config, operation_id, std::slice::from_ref(output))
+            .expect("restore signature share set");
+        let signatures = share_set
+            .shares
+            .into_iter()
+            .map(|share| BlindSignature {
+                amount: share.amount,
+                keyset_id: share.keyset_id,
+                c: cdk::nuts::PublicKey::from(share.share.signature()),
+                dleq: None,
+            })
+            .collect::<Vec<_>>();
+        let mut tx = mint
+            .localstore()
+            .begin_transaction()
+            .await
+            .expect("begin tx");
+        tx.add_blind_signatures(&[output.blinded_secret], &signatures, None)
+            .await
+            .expect("add restore signature share");
+        tx.commit().await.expect("commit restore signature share");
     }
 
     #[cfg(feature = "federation")]
@@ -2757,6 +2790,9 @@ mod tests {
         let old_keyset = active_keyset(&bundle);
         let new_keyset = activated_rotation_keyset(&bundle);
         let new_mint_quote_id = QuoteId::new();
+        let old_restore_output =
+            blinded_output(&old_keyset, 2, "axum-http-rotated-old-restore-output");
+        let old_restore_operation_id = FederationOperationId::from_bytes([42; 32]);
 
         let mut mints = Vec::new();
         for member_id in [1, 2, 3].map(threshold_member_id) {
@@ -2768,6 +2804,17 @@ mod tests {
             let mint =
                 build_threshold_member_mint(bundle.public_config.clone(), private_config).await;
             add_paid_bolt11_quote_to_mint(&mint, &new_mint_quote_id, 3).await;
+            add_restore_signature_share_to_mint(
+                &mint,
+                &bundle.public_config,
+                bundle
+                    .private_configs
+                    .get(&member_id)
+                    .expect("private member config"),
+                old_restore_operation_id,
+                &old_restore_output,
+            )
+            .await;
 
             let config = mint.federation_config().expect("federation config").clone();
             let mut journal = InMemoryFederationJournal::new();
@@ -2907,6 +2954,19 @@ mod tests {
             &rotated_public_config,
             &restore_response.outputs,
             &restore_response.signatures,
+        );
+
+        let old_restore_response = connector
+            .post_restore(RestoreRequest {
+                outputs: vec![old_restore_output.clone()],
+            })
+            .await
+            .expect("rotated old inactive restore");
+        assert_eq!(old_restore_response.outputs, vec![old_restore_output]);
+        assert_aggregate_signatures_verify(
+            &rotated_public_config,
+            &old_restore_response.outputs,
+            &old_restore_response.signatures,
         );
 
         for handle in handles {

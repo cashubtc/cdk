@@ -522,15 +522,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover rotated federated axum routes</span>
+          <span class="value">test: restore inactive federated axum keysets</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">A three-member threshold federation now applies a keyset rotation, serves active/inactive keyset views over local Axum routers, and lets the wallet connector aggregate real HTTP member shares after rotation</span>
+          <span class="value">A three-member threshold federation now applies a keyset rotation, serves active/inactive keyset views over local Axum routers, and restores old inactive keyset signatures through wallet HTTP aggregation</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Lift the rotated route proof into generated process/storage-backed smoke and reintroduce old inactive restore route coverage once the digest fixture is stable</span>
+          <span class="value">Lift the rotated route proof into generated process/storage-backed smoke, then compare restart and catch-up behavior across stored rotated keysets</span>
         </div>
       </aside>
     </header>
@@ -1588,7 +1588,7 @@
           </article>
           <article class="item">
             <h3>Rotated real Axum route smoke ready</h3>
-            <p>The real Axum route smoke now applies an accepted v3/BLS keyset rotation before startup, verifies public active/inactive keyset views, and aggregates rotated mint, swap, melt-change, and restore shares through wallet HTTP connectors.</p>
+            <p>The real Axum route smoke now applies an accepted v3/BLS keyset rotation before startup, verifies public active/inactive keyset views, aggregates rotated mint, swap, melt-change, and restore shares, and restores stored old inactive keyset signatures through wallet HTTP connectors.</p>
           </article>
           <article class="item">
             <h3>State convergence certification planned</h3>
@@ -1820,8 +1820,8 @@
             <tr>
               <td>Rotated real Axum member routes</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-axum --features federation federated_wallet_connector_aggregates_rotated_real_axum_member_routes -- --test-threads 1` passed with accepted keyset rotation, active-only `/keys`, old-inactive plus new-active `/keysets`, old-proof spendability, new-output signing, mint, swap, melt-change, restore, and check-state assertions. `cargo test -p cdk-axum --features federation custom_handlers::tests -- --test-threads 1` passed 34 tests. `cargo check -p cdk-axum --features federation`, `cargo check -p cdk --lib --features federation`, and `cargo fmt --all` passed.</td>
-              <td>Lift the rotated route smoke into generated process/storage-backed coverage and add digest-safe old inactive restore coverage through real routes.</td>
+              <td>`cargo test -p cdk-axum --features federation federated_wallet_connector_aggregates_rotated_real_axum_member_routes -- --test-threads 1` passed with accepted keyset rotation, active-only `/keys`, old-inactive plus new-active `/keysets`, old-proof spendability, new-output signing, mint, swap, melt-change, new-output restore, old inactive restore, and check-state assertions. `cargo test -p cdk-axum --features federation custom_handlers::tests -- --test-threads 1` passed 34 tests. `cargo check -p cdk-axum --features federation`, `cargo check -p cdk --lib --features federation`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Lift the rotated route smoke into generated process/storage-backed coverage with restart and catch-up checks.</td>
             </tr>
             <tr>
               <td>State convergence certification plan</td>
@@ -2452,7 +2452,7 @@
           </article>
           <article class="item">
             <h3>Rotation state transition</h3>
-            <p>Lift the rotated real Axum wallet route smoke into generated process/storage-backed coverage, then reintroduce old inactive restore route coverage once the fixture keeps materialized digests deterministic.</p>
+            <p>Lift the rotated real Axum wallet route smoke into generated process/storage-backed coverage, then compare restart and catch-up behavior across stored rotated keysets.</p>
           </article>
           <article class="item">
             <h3>BFT backend selection</h3>
