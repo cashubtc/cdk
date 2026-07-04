@@ -522,11 +522,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: reset postgres federation smoke schemas</span>
+          <span class="value">chore: add postgres federation schema cleanup</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Generated Postgres/base-url smoke scripts can drop and recreate only their generated per-member schemas, while direct script runs require an explicit reset opt-in</span>
+          <span class="value">Repo-level Postgres smoke cleanup now drops generated member schemas as well as generated process files</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -1551,6 +1551,10 @@
             <p>Generated Postgres/base-url smoke scripts now know the deterministic per-member schemas they own, refuse schema resets unless `RESET_POSTGRES_SCHEMAS=1` is set, and the `just fed-regtest-postgres` wrapper opts in for clean local process-smoke runs.</p>
           </article>
           <article class="item">
+            <h3>Postgres cleanup helper ready</h3>
+            <p>The repo-level `fed-regtest-postgres-clean` path now calls a dedicated schema-reset helper before removing generated process files, so local Postgres smoke cleanup covers both database state and filesystem state.</p>
+          </article>
+          <article class="item">
             <h3>DKG setup private routes added</h3>
             <p>Federation members now expose signed private REST endpoints for DKG commitments and reveals, the peer client can submit both messages, and accepted setup payloads persist the sender sequence watermark.</p>
           </article>
@@ -1930,9 +1934,9 @@
               <td>Keep one member offline across the keyset rotation operation and verify restart catch-up converges, then repeat the generated smoke with Postgres-backed storage.</td>
             </tr>
             <tr>
-              <td>Postgres smoke schema reset</td>
+              <td>Postgres smoke schema reset and cleanup</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_support_postgres_schema_base_url -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_support_postgres_database_template -- --test-threads 1`, and `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1` passed. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite,postgres,prometheus` and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed.</td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_support_postgres_schema_base_url -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_support_postgres_database_template -- --test-threads 1`, and `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1` passed. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite,postgres,prometheus` and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed. `just --show fed-regtest-postgres-reset-schemas`, `just --show fed-regtest-postgres-clean`, and `just --summary` passed.</td>
               <td>Run `just fed-regtest-postgres` against a live local Postgres service and compare convergence, restart, catch-up, schema reset behavior, and session-outcome evidence with the SQLite smoke.</td>
             </tr>
             <tr>

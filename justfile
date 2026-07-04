@@ -594,6 +594,18 @@ fed-regtest-postgres-status dir="target/cdk-fed-regtest-postgres" signer="1":
     --require-session-outcome-quorum \
     --require-no-digest-alerts
 
+# Drop generated PostgreSQL member schemas for fake-wallet federation smoke
+fed-regtest-postgres-reset-schemas members="5" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  just fed-regtest-postgres-preflight "{{postgres_base_url}}"
+  redacted_url="$(printf '%s' "{{postgres_base_url}}" | sed -E 's#(postgres(ql)?://[^:/@]+):[^@]*@#\1:***@#')"
+  for member in $(seq 1 "{{members}}"); do
+    schema="cdk_federation_member_${member}"
+    psql "{{postgres_base_url}}" -v ON_ERROR_STOP=1 -c "DROP SCHEMA IF EXISTS \"${schema}\" CASCADE;" >/dev/null
+    echo "removed PostgreSQL schema ${schema} at ${redacted_url}"
+  done
+
 # Stop generated PostgreSQL-backed fake-wallet federation members
 fed-regtest-postgres-stop dir="target/cdk-fed-regtest-postgres":
   #!/usr/bin/env bash
@@ -601,9 +613,10 @@ fed-regtest-postgres-stop dir="target/cdk-fed-regtest-postgres":
   just fed-regtest-stop "{{dir}}"
 
 # Remove generated PostgreSQL-backed fake-wallet federation state
-fed-regtest-postgres-clean dir="target/cdk-fed-regtest-postgres":
+fed-regtest-postgres-clean dir="target/cdk-fed-regtest-postgres" members="5" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":
   #!/usr/bin/env bash
   set -euo pipefail
+  just fed-regtest-postgres-reset-schemas "{{members}}" "{{postgres_base_url}}"
   just fed-regtest-clean "{{dir}}"
 
 # Start generated fake-wallet federation members and leave them running
