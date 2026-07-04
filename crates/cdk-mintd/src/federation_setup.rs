@@ -879,6 +879,56 @@ mod tests {
     }
 
     #[test]
+    fn trusted_dealer_smoke_script_supports_five_member_matrix() {
+        let output_dir = temp_output_dir("five_member_matrix");
+        let _ = std::fs::remove_dir_all(&output_dir);
+        let mut args = generator_args(output_dir.clone());
+        args.members = 5;
+        args.threshold = 3;
+        args.port_start = 19_565;
+
+        let artifacts =
+            generate_trusted_dealer_artifacts(&args).expect("five member trusted dealer artifacts");
+        let public_json =
+            std::fs::read_to_string(&artifacts.public_config_path).expect("public config file");
+        let public_config: FederationConfig =
+            serde_json::from_str(&public_json).expect("public config json");
+        public_config.validate().expect("public config validates");
+        assert_eq!(public_config.threshold_params.member_count, 5);
+        assert_eq!(public_config.threshold_params.signature_threshold, 3);
+        assert_eq!(artifacts.member_artifacts.len(), 5);
+
+        let smoke_script =
+            std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
+        assert!(smoke_script.contains("MEMBERS=(1 2 3 4 5)"));
+        assert!(smoke_script.contains("PRIMARY_MEMBER=\"${PRIMARY_MEMBER:-1}\""));
+        assert!(smoke_script.contains("RESTART_MEMBER=\"${RESTART_MEMBER:-2}\""));
+        assert!(smoke_script.contains(
+            "QUARANTINE_OFFLINE_MEMBER=\"${QUARANTINE_OFFLINE_MEMBER:-$RESTART_MEMBER}\""
+        ));
+        assert!(smoke_script.contains("for member in \"${MEMBERS[@]}\"; do"));
+        assert!(smoke_script.contains("wait_for_converged"));
+        assert!(smoke_script.contains("--scenario pending-melt-fail-finish"));
+        assert!(smoke_script.contains("--scenario quarantine-mint-conflict"));
+
+        for (member_id, member_artifacts) in &artifacts.member_artifacts {
+            assert!(smoke_script.contains(&format!("    {}) printf", member_id.get())));
+            assert!(
+                smoke_script.contains(&member_artifacts.config_path.to_string_lossy().to_string())
+            );
+            assert!(smoke_script.contains(
+                &member_artifacts
+                    .private_config_path
+                    .to_string_lossy()
+                    .to_string()
+            ));
+            assert!(smoke_script.contains(&member_artifacts.work_dir.to_string_lossy().to_string()));
+        }
+
+        let _ = std::fs::remove_dir_all(&output_dir);
+    }
+
+    #[test]
     fn trusted_dealer_artifacts_refuse_to_overwrite_without_force() {
         let output_dir = temp_output_dir("overwrite");
         let _ = std::fs::remove_dir_all(&output_dir);

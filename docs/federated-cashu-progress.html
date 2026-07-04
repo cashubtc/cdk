@@ -358,19 +358,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated 3-member federation smoke now passes standard, pending-melt, failed-melt, and quarantine catch-up paths</span>
+          <span class="value">Generated 3-member and 5-member federation smokes pass standard, pending-melt, failed-melt, and quarantine catch-up paths</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: stabilize federation process smoke</span>
+          <span class="value">test: cover five-member federation smoke</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Primary REST admission, pending melt recovery, and quarantine replay converge in live smoke</span>
+          <span class="value">3-of-5 wallet aggregation and member catch-up converge in live process smoke</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Broaden process smoke across federation sizes and storage backends</span>
+          <span class="value">Add storage-backend process variants and longer restart windows</span>
         </div>
       </aside>
     </header>
@@ -1202,6 +1202,10 @@
             <h3>End-to-end quarantine smoke verified</h3>
             <p>The generated three-member, two-threshold local smoke passed live member startup, standard wallet mint/swap/melt/restore, paid and failed pending-melt restart recovery, quarantine injection while one member was offline, restart catch-up, and final convergence.</p>
           </article>
+          <article class="item">
+            <h3>Five-member operation smoke verified</h3>
+            <p>The generated five-member, three-threshold local smoke passed the same standard wallet, paid pending-melt, failed pending-melt, offline quarantine injection, restart catch-up, signed status, and convergence checks.</p>
+          </article>
         </div>
       </section>
 
@@ -1752,8 +1756,8 @@
             <tr>
               <td>Live quarantine process smoke drill</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1`, `cargo build -p cdk-mintd --features federation,fakewallet,sqlite`, and the generated three-member local smoke passed. The live run covered standard wallet mint, swap, check-state, melt, restore, paid pending-melt restart recovery, failed pending-melt compensation to unpaid with restored proofs, conflicting mint payment observations, quarantine submission while one member was offline, restart catch-up, signed status, and final convergence.</td>
-              <td>Repeat the live smoke for five-member and larger generated federations, then add storage-backend variants.</td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer -- --test-threads 1`, `cargo build -p cdk-mintd --features federation,fakewallet,sqlite`, the generated three-member local smoke, and the generated five-member local smoke passed. The live runs covered standard wallet mint, swap, check-state, melt, restore, paid pending-melt restart recovery, failed pending-melt compensation to unpaid with restored proofs, conflicting mint payment observations, quarantine submission while one member was offline, restart catch-up, signed status, and final convergence. The five-member run specifically exercised 3-of-5 aggregate signing and catch-up.</td>
+              <td>Repeat the process smoke with storage-backend variants and longer restart windows.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
@@ -1831,8 +1835,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Five-member smoke matrix</h3>
-            <p>Repeat the generated standard, pending-melt, failed-melt, and quarantine smoke against a five-member federation and compare convergence behavior with the three-member baseline.</p>
+            <h3>Longer restart windows</h3>
+            <p>Extend process smoke to keep restarted members offline across more operation batches before catch-up, then compare digest convergence and signed status evidence.</p>
           </article>
           <article class="item">
             <h3>Backend-backed smoke matrix</h3>
