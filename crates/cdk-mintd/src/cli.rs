@@ -247,6 +247,9 @@ pub struct FederationTrustedDealerArgs {
     /// PostgreSQL base URL used when --database-engine postgres. Generates one schema per member.
     #[arg(long)]
     pub postgres_base_url: Option<String>,
+    /// Generate signed setup-route probe request fixtures for DKG route testing.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub dkg_setup_route_probes: bool,
     /// Overwrite files previously generated at the target paths.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub force: bool,
@@ -423,6 +426,7 @@ mod tests {
         );
         assert_eq!(trusted_dealer.postgres_url_template, None);
         assert_eq!(trusted_dealer.postgres_base_url, None);
+        assert!(!trusted_dealer.dkg_setup_route_probes);
     }
 
     #[test]

@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 406 checked items and 107 remaining items. Current code work is focused on opt-in DKG setup route probes, trusted-dealer setup timing, and finer mint-smoke stage timing.</span>
+          <span class="value">The implementation plan audit now tracks 406 checked items and 107 remaining items. Default local smoke setup now skips heavyweight DKG route-probe fixtures, DKG setup smokes keep them opt-in, and seven-member profiling reaches the mint request fanout stage.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">update impl plan</span>
+          <span class="value">feat: streamline federation smoke setup</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The implementation plan now splits code-confirmed partial work into explicit done and remaining checklist items. The working tree adds `--dkg-setup-route-probes`, skips heavy DKG probe fixture generation by default, keeps DKG setup smokes opt-in, validates generated probe shares against public commitments, and prints timing markers for trusted-dealer setup plus mint quote, paid, ready-member, and request substages.</span>
+          <span class="value">The implementation plan now splits code-confirmed partial work into explicit done and remaining checklist items. The generator adds `--dkg-setup-route-probes`, skips heavy DKG probe fixture generation by default, keeps DKG setup smokes opt-in, validates generated probe shares against public commitments, and prints timing markers for trusted-dealer setup plus mint quote, paid, ready-member, and request substages.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Run targeted mintd federation setup and smoke tests for the default no-probe generator and opt-in DKG probe path, then profile the seven-member process smoke driver and continue the production BFT backend decision.</span>
+          <span class="value">Profile and optimize seven-member mint request fanout/share aggregation, then rerun the bounded process smoke past mint into swap, melt, restore, and catch-up stages.</span>
         </div>
       </aside>
     </header>
@@ -786,11 +786,11 @@
           </article>
           <article class="item">
             <h3>DKG probe generation made opt-in</h3>
-            <p>The current working tree adds a `--dkg-setup-route-probes` generator switch, keeps DKG route probe fixtures out of default smoke bundles, and preserves the dedicated DKG setup smoke path.</p>
+            <p>The generator adds a `--dkg-setup-route-probes` switch, keeps DKG route probe fixtures out of default smoke bundles, and preserves the dedicated DKG setup smoke path.</p>
           </article>
           <article class="item">
             <h3>Setup and mint timing exposed</h3>
-            <p>The current working tree prints trusted-dealer setup stages and mint quote, payment, readiness, and request substages so long smoke runs can be profiled without guessing where time went.</p>
+            <p>Trusted-dealer setup now prints phase timings, and the standard operation smoke prints mint quote, payment visibility, readiness, and request substages so long runs can be profiled without guessing where time went.</p>
           </article>
           <article class="item">
             <h3>Implementation plan committed</h3>
@@ -2770,6 +2770,18 @@
               <td><span class="status done">Passed</span></td>
               <td>The standard smoke path now emits `federation smoke stage` lines with elapsed milliseconds before and after wallet setup, mint, swap, check-state, melt quote creation, melt quote visibility, melt confirmation, and restore. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite smoke_operations -- --test-threads 1` and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed.</td>
               <td>Run the bounded seven-member process smoke again and use the last emitted stage to choose the first performance optimization target.</td>
+            </tr>
+            <tr>
+              <td>Trusted-dealer setup probe split</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer -- --test-threads 1` passed 10 trusted-dealer and parser tests, including the default no-probe generator and opt-in route-probe fixture path. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite smoke_operations -- --test-threads 1`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite,prometheus`, `cargo fmt --all`, and `git diff --check` passed. A seven-member/five-threshold trusted-dealer generation without route probes completed in about nine seconds in a debug build.</td>
+              <td>Keep DKG setup route probes in the dedicated DKG smoke path, and keep default process smokes focused on mint, swap, melt, restore, catch-up, and convergence.</td>
+            </tr>
+            <tr>
+              <td>Seven-member mint request profiling</td>
+              <td><span class="status progress">In progress</span></td>
+              <td>A bounded seven-member/five-threshold process smoke now reaches standard wallet setup and mint quote processing. The latest run completed wallet setup, mint quote creation, paid visibility, and ready-member convergence, then timed out during `standard.mint.request`, identifying mint request fanout/share aggregation as the next runtime target.</td>
+              <td>Profile the federated wallet `post_mint` fanout and mint-side share generation path, then rerun the same bounded smoke until it reaches swap and melt stages.</td>
             </tr>
             <tr>
               <td>Wallet federation probe concurrency</td>

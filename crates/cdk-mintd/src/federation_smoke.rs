@@ -251,6 +251,11 @@ fn print_smoke_stage(stage: &str, started_at: Instant) {
     let _ = io::stdout().flush();
 }
 
+fn print_smoke_substage(stage_prefix: &str, suffix: &str, started_at: Instant) {
+    let stage = format!("{stage_prefix}.{suffix}");
+    print_smoke_stage(&stage, started_at);
+}
+
 async fn run_standard_smoke(
     args: &FederationSmokeOperationsArgs,
     public_config: &FederationConfig,
@@ -272,6 +277,8 @@ async fn run_standard_smoke(
         member_connectors,
         args,
         member_expectation,
+        "standard.mint",
+        smoke_started_at,
     )
     .await?;
     print_smoke_stage("standard.mint.done", smoke_started_at);
@@ -389,6 +396,7 @@ async fn run_keyset_rotation_smoke(
     private_config: &MemberConfigPrivate,
     member_expectation: SmokeMemberExpectation,
 ) -> Result<()> {
+    let smoke_started_at = Instant::now();
     let old_keyset = public_config
         .keysets
         .iter()
@@ -410,6 +418,8 @@ async fn run_keyset_rotation_smoke(
         member_connectors,
         args,
         member_expectation,
+        "keyset-rotation.pre-mint",
+        smoke_started_at,
     )
     .await?;
 
@@ -512,6 +522,8 @@ async fn run_keyset_rotation_smoke(
         member_connectors,
         args,
         member_expectation,
+        "keyset-rotation.post-mint",
+        smoke_started_at,
     )
     .await?;
     let melt_invoice = create_fake_invoice(1000, "federation rotation smoke melt".to_string());
@@ -581,6 +593,7 @@ async fn run_pending_melt_start(
     wallet_db: &Path,
     terminal_state: MeltQuoteState,
 ) -> Result<()> {
+    let smoke_started_at = Instant::now();
     let wallet = smoke_wallet(public_config, unit, seed, connector, Some(wallet_db)).await?;
     let minted_amount = mint_smoke_funds(
         &wallet,
@@ -588,6 +601,8 @@ async fn run_pending_melt_start(
         member_connectors,
         args,
         SmokeMemberExpectation::AllMembers,
+        "pending-melt.mint",
+        smoke_started_at,
     )
     .await?;
 
@@ -841,7 +856,10 @@ async fn mint_smoke_funds(
     member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
     args: &FederationSmokeOperationsArgs,
     member_expectation: SmokeMemberExpectation,
+    stage_prefix: &str,
+    started_at: Instant,
 ) -> Result<Amount> {
+    print_smoke_substage(stage_prefix, "quote.start", started_at);
     let quote = wallet
         .mint_quote(
             PaymentMethod::BOLT11,
@@ -851,6 +869,8 @@ async fn mint_smoke_funds(
         )
         .await
         .context("create federation mint quote")?;
+    print_smoke_substage(stage_prefix, "quote.done", started_at);
+    print_smoke_substage(stage_prefix, "quote-paid.start", started_at);
     wait_for_mint_quote_paid(
         member_connectors,
         public_config,
@@ -860,6 +880,8 @@ async fn mint_smoke_funds(
         member_expectation,
     )
     .await?;
+    print_smoke_substage(stage_prefix, "quote-paid.done", started_at);
+    print_smoke_substage(stage_prefix, "ready-members.start", started_at);
     wait_for_ready_members_after_consensus(
         public_config,
         args,
@@ -867,11 +889,14 @@ async fn mint_smoke_funds(
         "mint quote payment",
     )
     .await?;
+    print_smoke_substage(stage_prefix, "ready-members.done", started_at);
 
+    print_smoke_substage(stage_prefix, "request.start", started_at);
     let minted = wallet
         .mint(&quote.id, SplitTarget::default(), None)
         .await
         .context("mint through federation connector")?;
+    print_smoke_substage(stage_prefix, "request.done", started_at);
     let minted_amount = minted.total_amount()?;
     if minted_amount != Amount::from(args.mint_amount) {
         bail!(

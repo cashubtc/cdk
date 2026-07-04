@@ -1,9 +1,13 @@
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 use std::collections::BTreeMap;
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
+use std::io::{self, Write};
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
 use std::path::{Path, PathBuf};
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 use std::str::FromStr;
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+use std::time::Instant;
 
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 use anyhow::{anyhow, Context};
@@ -25,7 +29,10 @@ use cdk_common::federation::{
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 use cdk_common::mint_url::MintUrl;
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
-use cdk_common::nuts::nut01::{evaluate_secret_key_coefficients, BlsSecretKey};
+use cdk_common::nuts::nut01::{
+    aggregate_secret_key_shares, evaluate_public_key_commitments, evaluate_secret_key_coefficients,
+    BlsSecretKey, BlsSecretKeyShare,
+};
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
 
@@ -75,6 +82,16 @@ pub(crate) struct TrustedDealerMemberArtifacts {
     pub(crate) prometheus_url: String,
 }
 
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn print_trusted_dealer_stage(stage: &str, started_at: Instant) {
+    println!(
+        "federation trusted-dealer stage: stage={} elapsed_ms={}",
+        stage,
+        started_at.elapsed().as_millis()
+    );
+    let _ = io::stdout().flush();
+}
+
 #[cfg(feature = "federation")]
 pub(crate) fn run_trusted_dealer_command(args: &FederationTrustedDealerArgs) -> Result<()> {
     #[cfg(not(feature = "fakewallet"))]
@@ -115,15 +132,23 @@ pub(crate) fn run_trusted_dealer_command(args: &FederationTrustedDealerArgs) -> 
 pub(crate) fn generate_trusted_dealer_artifacts(
     args: &FederationTrustedDealerArgs,
 ) -> Result<TrustedDealerArtifacts> {
+    let setup_started_at = Instant::now();
+    print_trusted_dealer_stage("setup.start", setup_started_at);
     validate_trusted_dealer_args(args)?;
 
+    print_trusted_dealer_stage("setup.output-dir.start", setup_started_at);
     let output_dir = create_output_dir(&args.output_dir)?;
     write_generated_gitignore(&output_dir, args.force)?;
+    print_trusted_dealer_stage("setup.output-dir.done", setup_started_at);
 
+    print_trusted_dealer_stage("setup.roster.start", setup_started_at);
     let threshold_params = ThresholdParams::with_bft_consensus(args.members, args.threshold)?;
     let unit = CurrencyUnit::from_str(&args.unit)
         .with_context(|| format!("invalid federation unit {}", args.unit))?;
     let members = trusted_dealer_members(args.members, &args.host, args.port_start)?;
+    print_trusted_dealer_stage("setup.roster.done", setup_started_at);
+
+    print_trusted_dealer_stage("setup.active-keyset.start", setup_started_at);
     let keyset_spec = trusted_dealer_keyset_spec(
         unit.clone(),
         true,
@@ -132,6 +157,9 @@ pub(crate) fn generate_trusted_dealer_artifacts(
         args.threshold,
         &args.amounts,
     )?;
+    print_trusted_dealer_stage("setup.active-keyset.done", setup_started_at);
+
+    print_trusted_dealer_stage("setup.rotation-keyset.start", setup_started_at);
     let rotation_keyset_spec = trusted_dealer_keyset_spec(
         unit.clone(),
         false,
@@ -140,27 +168,43 @@ pub(crate) fn generate_trusted_dealer_artifacts(
         args.threshold,
         &args.amounts,
     )?;
+    print_trusted_dealer_stage("setup.rotation-keyset.done", setup_started_at);
 
+    print_trusted_dealer_stage("setup.bundle.start", setup_started_at);
     let bundle = generate_trusted_dealer_configs(
         threshold_params,
         members,
         vec![keyset_spec, rotation_keyset_spec],
     )
     .context("failed to generate trusted-dealer federation configs")?;
+    print_trusted_dealer_stage("setup.bundle.done", setup_started_at);
+
+    print_trusted_dealer_stage("setup.validate.start", setup_started_at);
     validate_bundle(&bundle)?;
     let dkg_setup_public_config = dkg_setup_public_config(&bundle.public_config)?;
-    let dkg_setup_request_dirs = write_dkg_setup_route_probe_requests(
-        &output_dir,
-        &bundle.public_config,
-        &bundle.private_configs,
-        &unit,
-        args.input_fee_ppk,
-        args.final_expiry,
-        args.threshold,
-        &args.amounts,
-        args.force,
-    )?;
+    print_trusted_dealer_stage("setup.validate.done", setup_started_at);
 
+    let dkg_setup_request_dirs = if args.dkg_setup_route_probes {
+        print_trusted_dealer_stage("setup.dkg-probes.start", setup_started_at);
+        let request_dirs = write_dkg_setup_route_probe_requests(
+            &output_dir,
+            &bundle.public_config,
+            &bundle.private_configs,
+            &unit,
+            args.input_fee_ppk,
+            args.final_expiry,
+            args.threshold,
+            &args.amounts,
+            args.force,
+        )?;
+        print_trusted_dealer_stage("setup.dkg-probes.done", setup_started_at);
+        request_dirs
+    } else {
+        print_trusted_dealer_stage("setup.dkg-probes.skipped", setup_started_at);
+        dkg_setup_route_probe_dirs(&output_dir, &bundle.public_config)
+    };
+
+    print_trusted_dealer_stage("setup.public-files.start", setup_started_at);
     let public_config_path = output_dir.join(PUBLIC_CONFIG_FILE);
     write_json_file(&public_config_path, &bundle.public_config, args.force)?;
     let dkg_setup_public_config_path = output_dir.join(DKG_SETUP_PUBLIC_CONFIG_FILE);
@@ -169,7 +213,9 @@ pub(crate) fn generate_trusted_dealer_artifacts(
         &dkg_setup_public_config,
         args.force,
     )?;
+    print_trusted_dealer_stage("setup.public-files.done", setup_started_at);
 
+    print_trusted_dealer_stage("setup.member-files.start", setup_started_at);
     let mut member_artifacts = BTreeMap::new();
     for (member_id, private_config) in &bundle.private_configs {
         let member = bundle
@@ -257,7 +303,9 @@ pub(crate) fn generate_trusted_dealer_artifacts(
             },
         );
     }
+    print_trusted_dealer_stage("setup.member-files.done", setup_started_at);
 
+    print_trusted_dealer_stage("setup.smoke-script.start", setup_started_at);
     let smoke_script_path = output_dir.join(SMOKE_SCRIPT_FILE);
     let smoke_script = local_smoke_script(
         &public_config_path,
@@ -266,6 +314,8 @@ pub(crate) fn generate_trusted_dealer_artifacts(
         args,
     )?;
     write_executable_text_file(&smoke_script_path, &smoke_script, args.force)?;
+    print_trusted_dealer_stage("setup.smoke-script.done", setup_started_at);
+    print_trusted_dealer_stage("setup.done", setup_started_at);
 
     Ok(TrustedDealerArtifacts {
         public_config_path,
@@ -449,6 +499,25 @@ fn random_bls_coefficients(threshold: u16) -> Result<Vec<BlsSecretKey>> {
 }
 
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn dkg_setup_route_probe_dirs(
+    output_dir: &Path,
+    public_config: &FederationConfig,
+) -> BTreeMap<MemberId, PathBuf> {
+    public_config
+        .members
+        .keys()
+        .map(|member_id| {
+            (
+                *member_id,
+                output_dir
+                    .join(DKG_SETUP_ROUTE_PROBE_DIR)
+                    .join(format!("receiver-{}", member_id.get())),
+            )
+        })
+        .collect()
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
 fn write_dkg_setup_route_probe_requests(
     output_dir: &Path,
     public_config: &FederationConfig,
@@ -485,9 +554,9 @@ fn write_dkg_setup_route_probe_requests(
         .validate_reveals(public_config, &reveals)
         .context("generated DKG route-probe reveals are invalid")?;
 
-    let mut derived_keysets = BTreeMap::new();
+    let mut secret_share_payloads = BTreeMap::new();
     for receiver_id in public_config.members.keys().copied() {
-        let mut participant_secret_shares = BTreeMap::new();
+        let mut receiver_payloads = BTreeMap::new();
         for sender_id in public_config.members.keys().copied() {
             let secret_share_payload = dkg_probe_secret_share_request(
                 public_config,
@@ -495,26 +564,38 @@ fn write_dkg_setup_route_probe_requests(
                 sender_id,
                 receiver_id,
             )?;
-            participant_secret_shares.insert(sender_id, secret_share_payload.secret_shares);
+            receiver_payloads.insert(sender_id, secret_share_payload);
         }
-
-        let keyset_share = round
-            .derive_member_keyset_share(
-                public_config,
-                &reveals,
-                receiver_id,
-                &participant_secret_shares,
-                unit.clone(),
-                true,
-                input_fee_ppk,
-                final_expiry,
-            )
-            .with_context(|| {
-                format!("generated DKG route-probe shares for member {receiver_id} are invalid")
-            })?;
-        derived_keysets.insert(receiver_id, keyset_share.keyset);
+        secret_share_payloads.insert(receiver_id, receiver_payloads);
     }
-    let route_probe_keyset = shared_dkg_probe_keyset(&derived_keysets)?;
+
+    let route_probe_keyset = round
+        .derive_federated_keyset(
+            public_config,
+            &reveals,
+            unit.clone(),
+            true,
+            input_fee_ppk,
+            final_expiry,
+        )
+        .context("generated DKG route-probe final keyset is invalid")?;
+    for (receiver_id, receiver_payloads) in &secret_share_payloads {
+        let participant_secret_shares = receiver_payloads
+            .iter()
+            .map(|(sender_id, payload)| (*sender_id, payload.secret_shares.clone()))
+            .collect::<BTreeMap<_, _>>();
+        validate_dkg_probe_member_secret_shares(
+            public_config,
+            &round,
+            &reveals,
+            &route_probe_keyset,
+            *receiver_id,
+            &participant_secret_shares,
+        )
+        .with_context(|| {
+            format!("generated DKG route-probe shares for member {receiver_id} are invalid")
+        })?;
+    }
     let final_public_config = FederationConfig::new(
         public_config.threshold_params,
         public_config.members.clone(),
@@ -598,12 +679,15 @@ fn write_dkg_setup_route_probe_requests(
                 force,
             )?;
 
-            let secret_share_payload = dkg_probe_secret_share_request(
-                public_config,
-                &coefficients,
-                sender_id,
-                receiver_id,
-            )?;
+            let secret_share_payload = secret_share_payloads
+                .get(&receiver_id)
+                .and_then(|receiver_payloads| receiver_payloads.get(&sender_id))
+                .ok_or_else(|| {
+                    anyhow!(
+                        "missing DKG route-probe secret-share payload from member {sender_id} to member {receiver_id}"
+                    )
+                })?
+                .clone();
             write_signed_dkg_probe_request(
                 public_config,
                 private_config,
@@ -637,19 +721,72 @@ fn write_dkg_setup_route_probe_requests(
 }
 
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
-fn shared_dkg_probe_keyset(
-    derived_keysets: &BTreeMap<MemberId, FederatedKeyset>,
-) -> Result<FederatedKeyset> {
-    let first = derived_keysets
-        .values()
-        .next()
-        .ok_or_else(|| anyhow!("generated DKG route-probe has no derived keysets"))?;
-    for (member_id, keyset) in derived_keysets {
-        if keyset != first {
-            bail!("generated DKG route-probe keyset for member {member_id} differs");
+fn validate_dkg_probe_member_secret_shares(
+    public_config: &FederationConfig,
+    round: &FederationDkgCommitmentRound,
+    reveals: &BTreeMap<MemberId, FederationDkgParticipantCommitmentReveal>,
+    keyset: &FederatedKeyset,
+    member_id: MemberId,
+    participant_secret_shares: &BTreeMap<MemberId, BTreeMap<Amount, BlsSecretKeyShare>>,
+) -> Result<()> {
+    if !public_config.members.contains_key(&member_id) {
+        bail!("generated DKG route-probe is missing member {member_id}");
+    }
+    let signer_id = member_id.to_bls_signer_id();
+    let public_member_shares = keyset.public_shares.get(&member_id).ok_or_else(|| {
+        anyhow!("generated DKG route-probe keyset is missing public shares for member {member_id}")
+    })?;
+
+    for amount in keyset.aggregate_keys.keys() {
+        let mut participant_shares = Vec::with_capacity(round.participant_order.len());
+        for participant_id in &round.participant_order {
+            let participant_amounts = participant_secret_shares.get(participant_id).ok_or_else(|| {
+                anyhow!(
+                    "generated DKG route-probe is missing local secret contributions from member {participant_id}"
+                )
+            })?;
+            let secret_share = participant_amounts.get(amount).ok_or_else(|| {
+                anyhow!(
+                    "generated DKG route-probe is missing local secret contribution from member {participant_id} for amount {amount}"
+                )
+            })?;
+            if secret_share.signer_id() != signer_id {
+                bail!(
+                    "generated DKG route-probe secret contribution signer mismatch from member {participant_id} for receiver {member_id} amount {amount}"
+                );
+            }
+
+            let commitments = reveals
+                .get(participant_id)
+                .and_then(|reveal| reveal.coefficient_commitments.get(amount))
+                .ok_or_else(|| {
+                    anyhow!(
+                        "generated DKG route-probe is missing public commitments from member {participant_id} for amount {amount}"
+                    )
+                })?;
+            let expected_public_share = evaluate_public_key_commitments(signer_id, commitments)?;
+            if secret_share.public_key_share() != expected_public_share {
+                bail!(
+                    "generated DKG route-probe local secret contribution mismatch from member {participant_id} for receiver {member_id} amount {amount}"
+                );
+            }
+            participant_shares.push(secret_share.clone());
+        }
+
+        let secret_share = aggregate_secret_key_shares(signer_id, &participant_shares)?;
+        let public_share = public_member_shares.get(amount).ok_or_else(|| {
+            anyhow!(
+                "generated DKG route-probe keyset is missing public share for member {member_id} amount {amount}"
+            )
+        })?;
+        if secret_share.public_key_share() != *public_share {
+            bail!(
+                "generated DKG route-probe aggregate secret share mismatch for member {member_id} amount {amount}"
+            );
         }
     }
-    Ok(first.clone())
+
+    Ok(())
 }
 
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
@@ -1800,6 +1937,7 @@ mod tests {
             database_engine: FederationTrustedDealerDatabaseEngine::Sqlite,
             postgres_url_template: None,
             postgres_base_url: None,
+            dkg_setup_route_probes: false,
             force: false,
         }
     }
@@ -1808,8 +1946,9 @@ mod tests {
     fn trusted_dealer_artifacts_are_written_and_validated() {
         let output_dir = temp_output_dir("artifacts");
         let _ = std::fs::remove_dir_all(&output_dir);
-        let artifacts = generate_trusted_dealer_artifacts(&generator_args(output_dir.clone()))
-            .expect("trusted dealer artifacts");
+        let mut args = generator_args(output_dir.clone());
+        args.dkg_setup_route_probes = true;
+        let artifacts = generate_trusted_dealer_artifacts(&args).expect("trusted dealer artifacts");
 
         let public_json =
             std::fs::read_to_string(&artifacts.public_config_path).expect("public config file");
@@ -2229,6 +2368,28 @@ mod tests {
             assert!(smoke_script.contains(&member_artifacts.public_mint_url));
             assert!(smoke_script.contains(&member_artifacts.prometheus_url));
         }
+
+        let _ = std::fs::remove_dir_all(&output_dir);
+    }
+
+    #[test]
+    fn trusted_dealer_artifacts_skip_dkg_route_probes_by_default() {
+        let output_dir = temp_output_dir("artifacts_without_dkg_probes");
+        let _ = std::fs::remove_dir_all(&output_dir);
+        let artifacts = generate_trusted_dealer_artifacts(&generator_args(output_dir.clone()))
+            .expect("trusted dealer artifacts");
+
+        let first_member = MemberId::new(1).expect("first member id");
+        let first_probe_path = artifacts
+            .member_artifacts
+            .get(&first_member)
+            .expect("first member artifacts")
+            .dkg_setup_request_dir
+            .join("from-1-commitment.json");
+        assert!(!first_probe_path.exists());
+        let smoke_script =
+            std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script");
+        assert!(smoke_script.contains("PROBE_DKG_SETUP_ROUTES"));
 
         let _ = std::fs::remove_dir_all(&output_dir);
     }

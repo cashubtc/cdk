@@ -578,11 +578,15 @@ regtest db="sqlite" host="127.0.0.1":
   bash ./misc/interactive_regtest_mprocs.sh {{db}} "{{host}}"
 
 # Generate local fake-wallet federation configs for process smoke testing
-fed-regtest-generate dir="target/cdk-fed-regtest" members="5" threshold="3" port_start="21885":
+fed-regtest-generate dir="target/cdk-fed-regtest" members="5" threshold="3" port_start="21885" dkg_setup_route_probes="0":
   #!/usr/bin/env bash
   set -euo pipefail
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
+  fi
+  dkg_probe_arg=""
+  if [[ "{{dkg_setup_route_probes}}" == "1" ]]; then
+    dkg_probe_arg="--dkg-setup-route-probes"
   fi
   cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus
   target/debug/cdk-mintd federation trusted-dealer \
@@ -590,7 +594,8 @@ fed-regtest-generate dir="target/cdk-fed-regtest" members="5" threshold="3" port
     --force \
     --members "{{members}}" \
     --threshold "{{threshold}}" \
-    --port-start "{{port_start}}"
+    --port-start "{{port_start}}" \
+    ${dkg_probe_arg:+$dkg_probe_arg}
 
 # Run the generated local fake-wallet federation smoke
 fed-regtest dir="target/cdk-fed-regtest" members="5" threshold="3" port_start="21885":
@@ -619,15 +624,19 @@ fed-regtest-dkg-setup dir="target/cdk-fed-regtest-dkg" members="5" threshold="3"
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
+  just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "1"
   DKG_ROUTE_PROBE_ONLY=1 CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
 
 # Generate local fake-wallet federation configs backed by PostgreSQL member schemas
-fed-regtest-postgres-generate dir="target/cdk-fed-regtest-postgres" members="5" threshold="3" port_start="22885" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":
+fed-regtest-postgres-generate dir="target/cdk-fed-regtest-postgres" members="5" threshold="3" port_start="22885" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint" dkg_setup_route_probes="0":
   #!/usr/bin/env bash
   set -euo pipefail
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
+  fi
+  dkg_probe_arg=""
+  if [[ "{{dkg_setup_route_probes}}" == "1" ]]; then
+    dkg_probe_arg="--dkg-setup-route-probes"
   fi
   cargo build -p cdk-mintd --features federation,fakewallet,sqlite,postgres,prometheus
   target/debug/cdk-mintd federation trusted-dealer \
@@ -637,7 +646,8 @@ fed-regtest-postgres-generate dir="target/cdk-fed-regtest-postgres" members="5" 
     --threshold "{{threshold}}" \
     --port-start "{{port_start}}" \
     --database-engine postgres \
-    --postgres-base-url "{{postgres_base_url}}"
+    --postgres-base-url "{{postgres_base_url}}" \
+    ${dkg_probe_arg:+$dkg_probe_arg}
 
 # Check that the PostgreSQL service for Postgres-backed federation smoke is reachable
 fed-regtest-postgres-preflight postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":
@@ -686,7 +696,7 @@ fed-regtest-postgres-dkg-setup dir="target/cdk-fed-regtest-postgres-dkg" members
     cd {{invocation_directory()}}
   fi
   just fed-regtest-postgres-preflight "{{postgres_base_url}}"
-  just fed-regtest-postgres-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{postgres_base_url}}"
+  just fed-regtest-postgres-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{postgres_base_url}}" "1"
   RESET_POSTGRES_SCHEMAS=1 DKG_ROUTE_PROBE_ONLY=1 CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
 
 # Start generated PostgreSQL-backed fake-wallet federation members and leave them running
