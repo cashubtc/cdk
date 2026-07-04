@@ -1,6 +1,7 @@
 //! Federation journal storage tests.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::database::mint::{Database, FederationJournalDatabase};
 use crate::federation::{
@@ -193,4 +194,85 @@ where
         .expect("session outcomes from");
     assert_eq!(session_outcomes_from.len(), 1);
     assert_eq!(session_outcomes_from[0].from_index, 1);
+}
+
+/// Assert concurrent federation journal writes do not deadlock or reorder reads.
+pub async fn federation_journal_concurrent_writes<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>
+        + FederationJournalDatabase<Err = crate::database::Error>
+        + Send
+        + Sync
+        + 'static,
+{
+    const ENTRY_COUNT: u64 = 16;
+
+    let mut journal = InMemoryFederationJournal::new();
+    let entries = (0..ENTRY_COUNT)
+        .map(|index| {
+            appended(
+                journal
+                    .append(mint_quote_envelope(
+                        &format!("concurrent-quote-{index}"),
+                        index + 1,
+                    ))
+                    .expect("append concurrent entry"),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let db = Arc::new(db);
+    let mut tasks = Vec::new();
+    for entry in entries.clone() {
+        let db = Arc::clone(&db);
+        tasks.push(tokio::spawn(async move {
+            let mut tx = Database::begin_transaction(db.as_ref())
+                .await
+                .expect("begin concurrent transaction");
+            tx.add_federation_journal_entry(&entry)
+                .await
+                .expect("persist concurrent entry");
+            tx.update_federation_operation_status(
+                entry.operation_id,
+                FederationOperationStatus::Applied,
+            )
+            .await
+            .expect("update concurrent status");
+            tx.commit().await.expect("commit concurrent transaction");
+        }));
+    }
+
+    for task in tasks {
+        task.await.expect("concurrent writer task");
+    }
+
+    let persisted = db
+        .as_ref()
+        .get_federation_journal_entries()
+        .await
+        .expect("concurrent journal entries");
+    assert_eq!(persisted.len(), entries.len());
+
+    for (index, (persisted, expected)) in persisted.iter().zip(entries.iter()).enumerate() {
+        assert_eq!(persisted.index, index as u64);
+        assert_eq!(persisted.operation_id, expected.operation_id);
+        assert_eq!(
+            persisted.previous_order_digest,
+            expected.previous_order_digest
+        );
+        assert_eq!(persisted.order_digest, expected.order_digest);
+        assert_eq!(persisted.status, FederationOperationStatus::Applied);
+    }
+
+    let catch_up_from = ENTRY_COUNT / 2;
+    let catch_up_entries = db
+        .as_ref()
+        .get_federation_journal_entries_from(catch_up_from)
+        .await
+        .expect("concurrent catch-up entries");
+    assert_eq!(
+        catch_up_entries.len(),
+        (ENTRY_COUNT - catch_up_from) as usize
+    );
+    assert_eq!(catch_up_entries[0].index, catch_up_from);
 }

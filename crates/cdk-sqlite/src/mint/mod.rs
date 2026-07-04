@@ -44,6 +44,29 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_journal_concurrent_writes() {
+        let path = std::env::temp_dir().to_path_buf().join(format!(
+            "cdk-test-federation-concurrent-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+
+        #[cfg(feature = "sqlcipher")]
+        let db = MintSqliteDatabase::new((path.clone(), "password".to_string()))
+            .await
+            .expect("migrated sqlite database");
+
+        #[cfg(not(feature = "sqlcipher"))]
+        let db = MintSqliteDatabase::new(path.clone())
+            .await
+            .expect("migrated sqlite database");
+
+        cdk_common::database::mint::test::federation_journal_concurrent_writes(db).await;
+
+        let _ = remove_file(path);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_journal_hot_path_indexes_are_used() {
         let path = std::env::temp_dir().to_path_buf().join(format!(
             "cdk-test-federation-indexes-{}.sqlite",
