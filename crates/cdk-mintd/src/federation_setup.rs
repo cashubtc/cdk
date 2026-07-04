@@ -845,6 +845,10 @@ STATUS_RETRIES="${{STATUS_RETRIES:-60}}"
 STATUS_SLEEP_SECONDS="${{STATUS_SLEEP_SECONDS:-1}}"
 CHECK_PROMETHEUS_METRICS="${{CHECK_PROMETHEUS_METRICS:-1}}"
 PROBE_DKG_SETUP_ROUTES="${{PROBE_DKG_SETUP_ROUTES:-0}}"
+DKG_ROUTE_PROBE_ONLY="${{DKG_ROUTE_PROBE_ONLY:-0}}"
+if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
+  PROBE_DKG_SETUP_ROUTES=1
+fi
 SMOKE_QUOTE_RETRIES="${{SMOKE_QUOTE_RETRIES:-300}}"
 SMOKE_QUOTE_SLEEP_MS="${{SMOKE_QUOTE_SLEEP_MS:-100}}"
 OFFLINE_OPERATION_BATCHES="${{OFFLINE_OPERATION_BATCHES:-3}}"
@@ -1314,6 +1318,10 @@ done
 
 probe_dkg_setup_routes
 wait_for_dkg_setup_records
+if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
+  printf 'dkg setup route probe passed\n'
+  exit 0
+fi
 
 for member in "${{MEMBERS[@]}}"; do
   wait_for_status "$member"
@@ -1592,6 +1600,9 @@ mod tests {
         assert!(smoke_script.contains("member_status_line()"));
         assert!(smoke_script.contains("member_dkg_status()"));
         assert!(smoke_script.contains("PROBE_DKG_SETUP_ROUTES"));
+        assert!(smoke_script.contains("DKG_ROUTE_PROBE_ONLY"));
+        assert!(smoke_script.contains("PROBE_DKG_SETUP_ROUTES=1"));
+        assert!(smoke_script.contains("dkg setup route probe passed"));
         assert!(smoke_script.contains("member_dkg_setup_request_dir()"));
         assert!(smoke_script.contains("member_federation_url()"));
         assert!(smoke_script.contains("probe_dkg_setup_routes()"));
@@ -1601,8 +1612,10 @@ mod tests {
         assert!(smoke_script.contains("/federation/v1/dkg/commitments"));
         assert!(smoke_script.contains("/federation/v1/dkg/reveals"));
         assert!(smoke_script.contains("/federation/v1/dkg/secret-shares"));
-        assert!(smoke_script
-            .contains("probe_dkg_setup_routes\nwait_for_dkg_setup_records\n\nfor member in"));
+        assert!(smoke_script.contains(
+            "probe_dkg_setup_routes\nwait_for_dkg_setup_records\nif [[ \"$DKG_ROUTE_PROBE_ONLY\" == \"1\" ]]; then"
+        ));
+        assert!(smoke_script.contains("exit 0\nfi\n\nfor member in"));
         assert!(smoke_script.contains("wait_for_dkg_status()"));
         assert!(smoke_script.contains("print_dkg_record_runbook()"));
         assert!(smoke_script.contains("DKG record recovery for member"));
