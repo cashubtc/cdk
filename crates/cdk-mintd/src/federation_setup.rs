@@ -1272,6 +1272,13 @@ member_payment_report_lines() {{
   "$CDK_MINTD_BIN" federation payment-observations --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --context mint-quote | awk '/^  payment_report / {{ print }}'
 }}
 
+compare_digests() {{
+  local signer="${{MEMBERS[0]}}"
+  local private_config
+  private_config="$(member_private_config "$signer")"
+  "$CDK_MINTD_BIN" federation compare-digests --public-config "$PUBLIC_CONFIG" --private-config "$private_config"
+}}
+
 wait_for_prometheus_metrics() {{
   if [[ "$CHECK_PROMETHEUS_METRICS" != "1" ]]; then
     return 0
@@ -1426,7 +1433,9 @@ wait_for_converged() {{
       fi
     done
     if [[ "$converged" == "1" ]]; then
-      return 0
+      if compare_digests >/dev/null 2>&1; then
+        return 0
+      fi
     fi
     sleep "$STATUS_SLEEP_SECONDS"
   done
@@ -1434,6 +1443,7 @@ wait_for_converged() {{
   for member in "${{MEMBERS[@]}}"; do
     member_status_line "$member" >&2 || true
   done
+  compare_digests >&2 || true
   return 1
 }}
 
@@ -1906,6 +1916,12 @@ mod tests {
         assert!(smoke_script.contains("--from-database"));
         assert!(smoke_script.contains("member_status_line()"));
         assert!(smoke_script.contains("member_dkg_status()"));
+        assert!(smoke_script.contains("compare_digests()"));
+        assert!(smoke_script.contains("local signer=\"${MEMBERS[0]}\""));
+        assert!(smoke_script.contains("private_config=\"$(member_private_config \"$signer\")\""));
+        assert!(smoke_script.contains("federation compare-digests"));
+        assert!(smoke_script.contains("compare_digests >/dev/null 2>&1"));
+        assert!(smoke_script.contains("compare_digests >&2 || true"));
         assert!(smoke_script
             .contains("--work-dir \"$work_dir\" --config \"$config\" federation dkg-status"));
         assert!(smoke_script.contains("PROBE_DKG_SETUP_ROUTES"));

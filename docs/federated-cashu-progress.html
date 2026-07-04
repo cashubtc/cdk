@@ -518,15 +518,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated local federation smoke passed end to end, long-partition catch-up smoke passed with five offline batches, lagging members fail closed before primary forwarding, and digest comparison now includes redacted row-level mismatch evidence</span>
+          <span class="value">Generated local federation smoke passed end to end, long-partition catch-up smoke passed with five offline batches, lagging members fail closed before primary forwarding, digest comparison includes redacted row-level mismatch evidence, and generated smoke now gates convergence with `compare-digests`</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add materialized row diff evidence</span>
+          <span class="value">test: gate smoke with digest comparison</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Signed local status now exports redacted materialized-row fingerprints, and `compare-digests` prints `materialized_row_diff` lines for same-order state divergence</span>
+          <span class="value">Generated fake-regtest smoke requires `cdk-mintd federation compare-digests` to pass before each convergence gate succeeds, and prints digest diagnostics on failure</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -564,7 +564,7 @@
           <li>Milestone 14: melt reserve and payment finalization. <span class="status progress">In progress</span></li>
           <li>Milestone 15: networking and peer authentication. <span class="status progress">In progress</span></li>
           <li>Milestone 16: member startup, catch-up, and recovery. <span class="status progress">In progress</span></li>
-          <li>Milestone 16A: state convergence and catch-up certification. <span class="status pending">Pending</span></li>
+          <li>Milestone 16A: state convergence and catch-up certification. <span class="status progress">In progress</span></li>
           <li>Milestone 17: cdk-mintd integration and regtest tooling. <span class="status progress">In progress</span></li>
           <li>Milestone 18: storage backend coverage. <span class="status progress">In progress</span></li>
           <li>Milestone 19: real payment backend policy. <span class="status progress">In progress</span></li>
@@ -716,7 +716,7 @@
               <p>Objective: prove offline, restarted, or lagging members replay consensus history into the same consensus-visible mint state before serving unsafe requests.</p>
               <p class="test-gate"><strong>Test gate:</strong> canonical state snapshots and digests match across members after long offline windows, catch-up rejects tampered ranges, lagging members refuse authority, and row-level diffing identifies consensus-visible mismatches.</p>
             </div>
-            <span class="status pending">Pending</span>
+            <span class="status progress">In progress</span>
           </li>
           <li class="milestone">
             <div>
@@ -1525,6 +1525,10 @@
           <article class="item">
             <h3>Redacted materialized-row diff evidence added</h3>
             <p>Private local status now includes redacted materialized-row fingerprints, normal status output reports the row count, and `compare-digests` prints `materialized_row_diff` lines when members share the same accepted order but disagree on materialized database state.</p>
+          </article>
+          <article class="item">
+            <h3>Generated smoke gates digest comparison</h3>
+            <p>The generated fake-regtest smoke script now calls `cdk-mintd federation compare-digests` inside `wait_for_converged`, retrying until the signed digest comparison passes and printing digest diagnostics on failure.</p>
           </article>
           <article class="item">
             <h3>Setup transcript scaffold added</h3>
@@ -2560,6 +2564,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation materialized_state_row_fingerprint -- --test-threads 1` passed 2 redaction and field-change tests. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_digest_compare -- --test-threads 1` passed 6 digest comparison tests including redacted `materialized_row_diff` output, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_status -- --test-threads 1` passed 31 status tests, and `cargo test -p cdk-axum --features federation private_local_status_route_returns_consensus_and_sync_state -- --test-threads 1` passed the signed local-status route regression. `cargo check -p cdk-common --features federation`, `cargo check -p cdk-axum --features federation`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
               <td>Use row diff evidence in operator runbooks and repeat the convergence checks against Postgres-backed member storage when a service is available.</td>
+            </tr>
+            <tr>
+              <td>Generated digest comparison smoke gate</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1` and `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" federation_setup -- --test-threads 1` each passed 6 generator tests proving the smoke script contains the `compare_digests` helper, requires `compare-digests` during convergence polling, prints digest comparison diagnostics on failure, and avoids the forbidden primary-member private-config signer pattern. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Run the generated live smoke again once local process ports are free, and repeat the same gate against Postgres-backed member storage when a service is available.</td>
             </tr>
             <tr>
               <td>Payment observation admin CLI</td>
