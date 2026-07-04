@@ -89,6 +89,28 @@ just regtest-status   # Check all components
 just regtest-logs     # Show recent logs
 ```
 
+### Federated Fake-Wallet Mint Operations
+These commands generate a local fake-wallet federation with trusted-dealer test
+key shares. They do not require Bitcoin or Lightning services.
+
+```bash
+just fed-regtest-generate          # Generate a 5-member, 3-threshold federation
+just fed-regtest                   # Generate and run the full local smoke
+just fed-regtest-start             # Start generated members and leave them running
+just fed-regtest-status            # Query signed status and require convergence
+just fed-regtest-stop-member 2     # Stop one member for catch-up testing
+just fed-regtest-start-member 2    # Restart one generated member
+just fed-regtest-stop              # Stop all generated members
+just fed-regtest-clean             # Stop members and remove generated local state
+```
+
+Pass a custom output directory, member count, threshold, or port start when
+needed, for example:
+
+```bash
+just fed-regtest target/cdk-fed-regtest-4 4 3 22885
+```
+
 ## mprocs TUI Interface
 
 The `mprocs` interface shows all component logs in real-time:

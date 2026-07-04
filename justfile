@@ -476,6 +476,147 @@ regtest db="sqlite" host="127.0.0.1":
   set -euo pipefail
   bash ./misc/interactive_regtest_mprocs.sh {{db}} "{{host}}"
 
+# Generate local fake-wallet federation configs for process smoke testing
+fed-regtest-generate dir="target/cdk-fed-regtest" members="5" threshold="3" port_start="21885":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  cargo build -p cdk-mintd --features federation,fakewallet,sqlite
+  target/debug/cdk-mintd federation trusted-dealer \
+    --output-dir "{{dir}}" \
+    --force \
+    --members "{{members}}" \
+    --threshold "{{threshold}}" \
+    --port-start "{{port_start}}"
+
+# Run the generated local fake-wallet federation smoke
+fed-regtest dir="target/cdk-fed-regtest" members="5" threshold="3" port_start="21885":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
+  CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
+
+# Start generated fake-wallet federation members and leave them running
+fed-regtest-start dir="target/cdk-fed-regtest" members="5" threshold="3" port_start="21885":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  if [ ! -f "{{dir}}/federation-public.json" ]; then
+    just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
+  else
+    cargo build -p cdk-mintd --features federation,fakewallet,sqlite
+  fi
+  for member in $(seq 1 "{{members}}"); do
+    work_dir="{{dir}}/member-${member}/work"
+    config="{{dir}}/member-${member}/config.toml"
+    pid_file="${work_dir}/mintd.pid"
+    if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+      echo "member ${member} already running with pid $(cat "$pid_file")"
+      continue
+    fi
+    mkdir -p "$work_dir"
+    target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
+    echo "$!" > "$pid_file"
+    echo "started member ${member} with pid $(cat "$pid_file")"
+  done
+
+# Start one generated fake-wallet federation member
+fed-regtest-start-member member dir="target/cdk-fed-regtest":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  work_dir="{{dir}}/member-{{member}}/work"
+  config="{{dir}}/member-{{member}}/config.toml"
+  pid_file="${work_dir}/mintd.pid"
+  if [ ! -f "$config" ]; then
+    echo "missing member config: $config" >&2
+    echo "run: just fed-regtest-generate" >&2
+    exit 1
+  fi
+  if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+    echo "member {{member}} already running with pid $(cat "$pid_file")"
+    exit 0
+  fi
+  mkdir -p "$work_dir"
+  cargo build -p cdk-mintd --features federation,fakewallet,sqlite
+  target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
+  echo "$!" > "$pid_file"
+  echo "started member {{member}} with pid $(cat "$pid_file")"
+
+# Stop one generated fake-wallet federation member
+fed-regtest-stop-member member dir="target/cdk-fed-regtest":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  pid_file="{{dir}}/member-{{member}}/work/mintd.pid"
+  if [ ! -f "$pid_file" ]; then
+    echo "member {{member}} has no pid file"
+    exit 0
+  fi
+  pid="$(cat "$pid_file")"
+  kill "$pid" 2>/dev/null || true
+  rm -f "$pid_file"
+  echo "stopped member {{member}}"
+
+# Stop all generated fake-wallet federation members
+fed-regtest-stop dir="target/cdk-fed-regtest":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  for pid_file in "{{dir}}"/member-*/work/mintd.pid; do
+    [ -e "$pid_file" ] || continue
+    pid="$(cat "$pid_file")"
+    kill "$pid" 2>/dev/null || true
+    rm -f "$pid_file"
+    echo "stopped $(basename "$(dirname "$(dirname "$pid_file")")")"
+  done
+
+# Show signed status for generated fake-wallet federation members
+fed-regtest-status dir="target/cdk-fed-regtest" signer="1":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  cargo build -p cdk-mintd --features federation,fakewallet,sqlite
+  if [ ! -f "{{dir}}/federation-public.json" ]; then
+    echo "missing federation public config: {{dir}}/federation-public.json" >&2
+    echo "run: just fed-regtest-generate" >&2
+    exit 1
+  fi
+  target/debug/cdk-mintd federation status \
+    --public-config "{{dir}}/federation-public.json" \
+    --private-config "{{dir}}/member-{{signer}}/federation-private.json" \
+    --require-ready \
+    --require-converged
+
+# Remove generated local fake-wallet federation state
+fed-regtest-clean dir="target/cdk-fed-regtest":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  case "{{dir}}" in
+    ""|"/"|"/tmp"|"/private/tmp"|".")
+      echo "refusing to remove unsafe federation regtest dir: {{dir}}" >&2
+      exit 1
+      ;;
+  esac
+  just fed-regtest-stop "{{dir}}" || true
+  rm -rf -- "{{dir}}"
+  echo "removed {{dir}}"
+
 # Lightning Network Commands (require regtest environment to be running)
 
 # Get CLN node 1 info
