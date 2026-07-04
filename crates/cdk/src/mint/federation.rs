@@ -16,7 +16,8 @@ use cdk_common::federation::{
     FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservationContext, FederationSwapOperation, MemberConfigPrivate, MemberId,
+    FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationSwapOperation, MemberConfigPrivate, MemberId,
 };
 use cdk_common::mint::{MeltQuote, MintQuote, Operation, OperationKind};
 use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
@@ -417,7 +418,7 @@ impl Mint {
                 Ok(true)
             }
             FederationOperation::MintQuotePayment(observation) => {
-                self.apply_federation_mint_quote_payment(entry.operation_id, observation)
+                self.apply_federation_mint_quote_payment(entry, observation)
                     .await?;
                 Ok(true)
             }
@@ -432,7 +433,7 @@ impl Mint {
                 Ok(true)
             }
             FederationOperation::MeltQuotePayment(observation) => {
-                self.apply_federation_melt_quote_payment(entry.operation_id, observation)
+                self.apply_federation_melt_quote_payment(entry, observation)
                     .await?;
                 Ok(true)
             }
@@ -447,6 +448,30 @@ impl Mint {
                 Ok(true)
             }
             FederationOperation::Restore(_) => Ok(false),
+        }
+    }
+
+    fn federation_payment_observation_can_finalize(
+        &self,
+        candidate: &FederationPaymentObservation,
+        observations: &[FederationPaymentObservationRecord],
+    ) -> Result<bool, Error> {
+        let config = self.federation_config().ok_or(Error::Internal)?;
+        let policy = *config
+            .public_config()
+            .payment_verification_policy(candidate.context());
+        let quorum = candidate.quorum(
+            observations.iter().map(|record| &record.observation),
+            policy.required_matching_observations(),
+        );
+
+        match policy.evaluate_quorum(&quorum) {
+            Ok(()) => Ok(true),
+            Err(
+                FederationError::PaymentObservationQuorumNotSatisfied { .. }
+                | FederationError::PaymentObservationConflict { .. },
+            ) => Ok(false),
+            Err(err) => Err(err.into()),
         }
     }
 
@@ -475,10 +500,12 @@ impl Mint {
 
     async fn apply_federation_mint_quote_payment(
         &self,
-        operation_id: FederationOperationId,
+        entry: &FederationJournalEntry,
         observation: &FederationMintQuotePaymentObservation,
     ) -> Result<(), Error> {
+        let operation_id = entry.operation_id;
         let quote_id = quote_id_from_federation(&observation.quote)?;
+        let record = payment_observation_record_from_entry(entry)?;
         let mut tx = self.localstore.begin_transaction().await?;
         let mut quote = tx
             .get_mint_quote(&quote_id)
@@ -489,24 +516,21 @@ impl Mint {
             return Err(Error::InvalidPaymentMethod);
         }
 
+        tx.add_federation_payment_observation(&record).await?;
+        let observations = tx
+            .get_federation_payment_observations(
+                FederationPaymentObservationContext::MintQuote,
+                &observation.quote,
+            )
+            .await?;
+        let can_finalize =
+            self.federation_payment_observation_can_finalize(&record.observation, &observations)?;
+
         let observed_paid = observation.amount_paid.with_unit(quote.unit.clone());
-        if observed_paid < quote.amount_paid() {
-            return Err(Error::Custom(
-                "federation mint quote payment observation would reduce amount_paid".to_string(),
-            ));
-        }
-
-        let additional_amount = observed_paid
-            .checked_sub(&quote.amount_paid())
-            .map_err(|_| Error::AmountOverflow)?;
-        if additional_amount.value() > 0 {
-            let config = self.federation_config().ok_or(Error::Internal)?;
-            config
-                .public_config()
-                .ensure_single_payment_observation_can_finalize(
-                    FederationPaymentObservationContext::MintQuote,
-                )?;
-
+        if can_finalize && observed_paid > quote.amount_paid() {
+            let additional_amount = observed_paid
+                .checked_sub(&quote.amount_paid())
+                .map_err(|_| Error::AmountOverflow)?;
             let payment_id = observation.payment_proof.clone().unwrap_or_else(|| {
                 format!(
                     "federation:{}:{}",
@@ -766,10 +790,12 @@ impl Mint {
 
     async fn apply_federation_melt_quote_payment(
         &self,
-        operation_id: FederationOperationId,
+        entry: &FederationJournalEntry,
         observation: &FederationMeltQuotePaymentObservation,
     ) -> Result<(), Error> {
+        let operation_id = entry.operation_id;
         let quote_id = quote_id_from_federation(&observation.quote)?;
+        let record = payment_observation_record_from_entry(entry)?;
         let mut quote = self
             .localstore
             .get_melt_quote(&quote_id)
@@ -778,48 +804,62 @@ impl Mint {
 
         ensure_melt_quote_matches_payment_observation(&quote, observation)?;
 
-        if quote.state != observation.state {
-            let config = self.federation_config().ok_or(Error::Internal)?;
-            config
-                .public_config()
-                .ensure_single_payment_observation_can_finalize(
+        let can_finalize = {
+            let mut tx = self.localstore.begin_transaction().await?;
+            tx.add_federation_payment_observation(&record).await?;
+            let observations = tx
+                .get_federation_payment_observations(
                     FederationPaymentObservationContext::MeltQuote,
-                )?;
+                    &observation.quote,
+                )
+                .await?;
+            let can_finalize = self
+                .federation_payment_observation_can_finalize(&record.observation, &observations)?;
+            tx.commit().await?;
+            can_finalize
+        };
 
-            match observation.state {
-                cdk_common::MeltQuoteState::Paid => {
-                    self.apply_paid_melt_quote_payment_observation(
-                        operation_id,
-                        &mut quote,
-                        observation,
-                    )
-                    .await?;
-                }
-                cdk_common::MeltQuoteState::Unpaid | cdk_common::MeltQuoteState::Failed => {
-                    if let Some(saga) = self.localstore.get_melt_saga_by_quote_id(&quote_id).await?
-                    {
-                        let payment_response =
-                            melt_quote_payment_response(operation_id, &quote, observation)?;
-                        super::saga_recovery::process_melt_saga_outcome(
-                            &saga,
+        if quote.state != observation.state {
+            if can_finalize {
+                match observation.state {
+                    cdk_common::MeltQuoteState::Paid => {
+                        self.apply_paid_melt_quote_payment_observation(
+                            operation_id,
                             &mut quote,
-                            &payment_response,
-                            &self.localstore,
-                            &self.pubsub_manager,
-                            self,
+                            observation,
                         )
                         .await?;
-                    } else {
+                    }
+                    cdk_common::MeltQuoteState::Unpaid | cdk_common::MeltQuoteState::Failed => {
+                        if let Some(saga) =
+                            self.localstore.get_melt_saga_by_quote_id(&quote_id).await?
+                        {
+                            let payment_response =
+                                melt_quote_payment_response(operation_id, &quote, observation)?;
+                            super::saga_recovery::process_melt_saga_outcome(
+                                &saga,
+                                &mut quote,
+                                &payment_response,
+                                &self.localstore,
+                                &self.pubsub_manager,
+                                self,
+                            )
+                            .await?;
+                        } else {
+                            self.update_melt_quote_payment_observation_state(
+                                &quote_id,
+                                observation,
+                            )
+                            .await?;
+                        }
+                    }
+                    _ => {
                         self.update_melt_quote_payment_observation_state(&quote_id, observation)
                             .await?;
                     }
                 }
-                _ => {
-                    self.update_melt_quote_payment_observation_state(&quote_id, observation)
-                        .await?;
-                }
             }
-        } else {
+        } else if can_finalize {
             ensure_melt_quote_payment_proof_matches(&quote, observation)?;
         }
 
@@ -968,6 +1008,12 @@ fn federation_operation_uuid(operation_id: FederationOperationId) -> Uuid {
     let mut uuid = [0_u8; 16];
     uuid.copy_from_slice(&bytes[..16]);
     Uuid::from_bytes(uuid)
+}
+
+fn payment_observation_record_from_entry(
+    entry: &FederationJournalEntry,
+) -> Result<FederationPaymentObservationRecord, Error> {
+    FederationPaymentObservationRecord::from_journal_entry(entry).ok_or(Error::Internal)
 }
 
 fn mint_request_from_input(input: MintInput) -> FederationMintRequest {
@@ -1264,13 +1310,19 @@ fn mint_quote_state_label(state: MintQuoteState) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap, HashSet};
     use std::str::FromStr;
+    use std::sync::Arc;
 
+    use cdk_common::common::FeeReserve;
+    use cdk_common::database::{MintFederationJournalDatabase, MintQuotesDatabase};
     use cdk_common::federation::{
-        generate_trusted_dealer_configs, FederationError, FederationMintRequest,
-        FederationOperation, InMemoryFederationConsensus, ThresholdParams, TrustedDealerKeysetSpec,
-        TrustedDealerMember,
+        generate_trusted_dealer_configs, FederationError, FederationJournalEntry,
+        FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
+        FederationOperationEnvelope, FederationPaymentObservationContext,
+        FederationPaymentObservationPolicy, FederationPaymentTrustModel,
+        InMemoryFederationConsensus, InMemoryFederationJournal, MemberId, ThresholdParams,
+        TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     use cdk_common::mint_url::MintUrl;
     use cdk_common::nuts::nut00::KnownMethod;
@@ -1283,6 +1335,9 @@ mod tests {
         MintQuoteState, MintRequest, PaymentMethod, Proof, PublicKey, RestoreRequest, SecretKey,
         SwapRequest,
     };
+    use cdk_sqlite::mint::{memory, MintSqliteDatabase};
+
+    use crate::mint::{Mint, MintBuilder, MintMeltLimits};
 
     use super::{FederationMode, FederationRuntimeConfig};
 
@@ -1317,6 +1372,123 @@ mod tests {
 
         FederationRuntimeConfig::new(bundle.public_config.clone(), private_config)
             .expect("runtime config")
+    }
+
+    fn runtime_config_with_payment_policy(
+        policy: FederationPaymentObservationPolicy,
+    ) -> FederationRuntimeConfig {
+        let members = (1..=3)
+            .map(|id| {
+                TrustedDealerMember::new(
+                    MemberId::new(id).expect("member id"),
+                    MintUrl::from_str(&format!("https://mint{id}.example.com"))
+                        .expect("public mint url"),
+                    MintUrl::from_str(&format!("https://fed{id}.example.com"))
+                        .expect("federation api url"),
+                    SecretKey::from_slice(&[id as u8; 32]).expect("identity secret"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let keyset = TrustedDealerKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            BTreeMap::from([(
+                Amount::from(1),
+                vec![
+                    BlsSecretKey::from_reduced_bytes(&[2; 32]),
+                    BlsSecretKey::from_reduced_bytes(&[3; 32]),
+                ],
+            )]),
+        );
+        let mut bundle = generate_trusted_dealer_configs(
+            ThresholdParams::new(3, 2, 2).expect("params"),
+            members,
+            vec![keyset],
+        )
+        .expect("trusted dealer bundle");
+        bundle.public_config.payment_observation_policy = policy;
+        let private_config = bundle
+            .private_configs
+            .get(&MemberId::new(1).expect("member id"))
+            .expect("private config")
+            .clone();
+
+        FederationRuntimeConfig::new(bundle.public_config, private_config).expect("runtime config")
+    }
+
+    async fn federated_test_mint(
+        runtime_config: FederationRuntimeConfig,
+    ) -> (Mint, Arc<MintSqliteDatabase>) {
+        let localstore = Arc::new(memory::empty().await.expect("mint db"));
+        let mut builder =
+            MintBuilder::new(localstore.clone()).with_federation_config(runtime_config);
+        let fake_wallet = cdk_fake_wallet::FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: Amount::from(1),
+                percent_fee_reserve: 1.0,
+            },
+            HashMap::new(),
+            HashSet::new(),
+            0,
+            CurrencyUnit::Sat,
+        );
+        builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintMeltLimits::new(1, 10_000),
+                Arc::new(fake_wallet),
+            )
+            .await
+            .expect("payment processor");
+        let mint = builder
+            .build_with_seed(localstore.clone(), &[9; 64])
+            .await
+            .expect("mint");
+
+        (mint, localstore)
+    }
+
+    fn appended_entry(
+        journal: &mut InMemoryFederationJournal,
+        envelope: FederationOperationEnvelope,
+    ) -> FederationJournalEntry {
+        journal.append(envelope).expect("append").entry().clone()
+    }
+
+    async fn persist_and_apply_entry(mint: &Mint, entry: &FederationJournalEntry) {
+        let localstore = mint.localstore();
+        let mut tx = localstore.begin_transaction().await.expect("begin");
+        tx.add_federation_journal_entry(entry)
+            .await
+            .expect("persist journal entry");
+        tx.commit().await.expect("commit journal entry");
+
+        mint.apply_federation_journal_entries(std::slice::from_ref(entry))
+            .await
+            .expect("apply journal entry");
+    }
+
+    fn mint_payment_observation_envelope(
+        runtime_config: &FederationRuntimeConfig,
+        quote: &QuoteId,
+        observer: u16,
+        amount_paid: u64,
+        payment_proof: &str,
+    ) -> FederationOperationEnvelope {
+        runtime_config.operation_envelope(FederationOperation::MintQuotePayment(
+            FederationMintQuotePaymentObservation {
+                quote: quote.to_string(),
+                observer: MemberId::new(observer).expect("observer"),
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                state: MintQuoteState::Paid,
+                amount_paid: Amount::from(amount_paid),
+                amount_issued: Amount::ZERO,
+                payment_proof: Some(payment_proof.to_string()),
+            },
+        ))
     }
 
     fn output_for_runtime(
@@ -1477,6 +1649,103 @@ mod tests {
             consensus.submit_envelope(conflicting_paid),
             Err(FederationError::ConflictingOperation { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn real_policy_mint_payment_observations_finalize_from_stored_quorum() {
+        let policy = FederationPaymentObservationPolicy::member_quorum(
+            2,
+            FederationPaymentTrustModel::SharedBackendReadOnly,
+        );
+        let runtime_config = runtime_config_with_payment_policy(policy);
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let quote = QuoteId::new();
+
+        let quote_entry = appended_entry(
+            &mut journal,
+            runtime_config.mint_quote_operation(
+                quote.clone(),
+                bolt11_quote_request(10),
+                bolt11_quote_response(&quote, 10),
+            ),
+        );
+        persist_and_apply_entry(&mint, &quote_entry).await;
+
+        let first_observation = appended_entry(
+            &mut journal,
+            mint_payment_observation_envelope(&runtime_config, &quote, 1, 10, "settled"),
+        );
+        persist_and_apply_entry(&mint, &first_observation).await;
+        let quote_after_single = localstore
+            .get_mint_quote(&quote)
+            .await
+            .expect("quote lookup")
+            .expect("quote");
+        assert_eq!(quote_after_single.state(), MintQuoteState::Unpaid);
+        assert_eq!(
+            quote_after_single.amount_paid(),
+            Amount::new(0, CurrencyUnit::Sat)
+        );
+
+        let observations_after_single = localstore
+            .get_federation_payment_observations(
+                FederationPaymentObservationContext::MintQuote,
+                &quote.to_string(),
+            )
+            .await
+            .expect("single observation rows");
+        assert_eq!(observations_after_single.len(), 1);
+
+        let matching_second = appended_entry(
+            &mut journal,
+            mint_payment_observation_envelope(&runtime_config, &quote, 2, 10, "settled"),
+        );
+        persist_and_apply_entry(&mint, &matching_second).await;
+        let quote_after_quorum = localstore
+            .get_mint_quote(&quote)
+            .await
+            .expect("quote lookup")
+            .expect("quote");
+        assert_eq!(quote_after_quorum.state(), MintQuoteState::Paid);
+        assert_eq!(
+            quote_after_quorum.amount_paid(),
+            Amount::new(10, CurrencyUnit::Sat)
+        );
+
+        let conflicting_third = appended_entry(
+            &mut journal,
+            mint_payment_observation_envelope(
+                &runtime_config,
+                &quote,
+                3,
+                11,
+                "different-settlement",
+            ),
+        );
+        persist_and_apply_entry(&mint, &conflicting_third).await;
+        let quote_after_conflict = localstore
+            .get_mint_quote(&quote)
+            .await
+            .expect("quote lookup")
+            .expect("quote");
+        assert_eq!(
+            quote_after_conflict.amount_paid(),
+            Amount::new(10, CurrencyUnit::Sat)
+        );
+
+        let observations_after_conflict = localstore
+            .get_federation_payment_observations(
+                FederationPaymentObservationContext::MintQuote,
+                &quote.to_string(),
+            )
+            .await
+            .expect("conflicting observation rows");
+        assert_eq!(observations_after_conflict.len(), 3);
+        assert_eq!(
+            observations_after_conflict[2].observation.observer(),
+            MemberId::new(3).expect("member three")
+        );
     }
 
     #[test]

@@ -11,9 +11,9 @@ The central rule is:
 The current implementation keeps fake-wallet testing on the existing
 single-observation path and makes real-backend policies explicit in the public
 federation config. Durable per-member observation rows now persist ordered
-evidence by quote and context. Until the DB-backed quorum finalizer is wired
-into quote state transitions, real policies fail closed instead of silently
-using fake-wallet finality.
+evidence by quote and context. Mint quote payment observations now finalize
+only after stored evidence satisfies the configured policy; melt observations
+are also persisted and policy-gated before state transitions.
 
 ## Policy Surface
 
@@ -72,9 +72,11 @@ For real backends:
   the observation accumulator before any mint signatures are produced.
 
 The storage layer now persists per-member observations with quote, observer,
-state, context, and typed JSON evidence. The next implementation step is to
-finalize the quote only after the configured quorum is satisfied by stored
-evidence.
+state, context, and typed JSON evidence. The mint state machine evaluates those
+stored rows before mutating `amount_paid`: a single real-backend observation is
+stored and marked applied but does not mark the quote paid, matching quorum
+evidence finalizes the quote, and conflicting evidence remains stored without
+silently increasing the paid amount.
 
 ## Melt Quote Observations
 
@@ -96,10 +98,11 @@ For real backends:
 - Outgoing payment attempts need idempotency keys so catch-up and restart cannot
   trigger duplicate external payments.
 
-The current guard rejects single-observation state changes for real policies.
-The next implementation step is to evaluate the stored quorum evidence before
-finalizing melts, while the idempotent real payment executor remains future
-work.
+Melt observations are persisted and evaluated against stored quorum evidence
+before quote state transitions. The next implementation step is focused melt
+saga coverage proving pending-to-paid and pending-to-failed real-policy
+transitions only finalize after stored quorum evidence, while the idempotent
+real payment executor remains future work.
 
 ## Pending And Stale Quotes
 
@@ -116,12 +119,9 @@ logging secrets, invoices, local paths, private keys, or proof secrets.
 
 ## Required Follow-Up
 
-- Use the persisted per-member payment observation rows and deterministic
-  matching rules from the pure helper inside the DB-backed finalizer.
-- Add conflict quarantine for mismatched amounts, payment proofs, states, or
-  backend-specific settlement references.
+- Add focused melt saga tests for the DB-backed payment finalizer.
+- Add explicit conflict quarantine for mismatched amounts, payment proofs,
+  states, or backend-specific settlement references.
 - Add admin tooling to inspect unresolved, conflicting, and stale observations.
-- Add tests proving fake-wallet and real-backend policies use separate code
-  paths, single real observations do not mark quotes paid, conflicting amounts
-  do not silently update state, and stale pending quotes remain visible without
-  blocking consensus.
+- Add tests proving stale pending quotes remain visible without blocking
+  consensus.

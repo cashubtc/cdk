@@ -282,6 +282,29 @@ where
 
         Ok(())
     }
+
+    async fn get_federation_payment_observations(
+        &mut self,
+        context: FederationPaymentObservationContext,
+        quote: &str,
+    ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err> {
+        query(
+            r#"
+            SELECT operation_id, operation_index, observation_json
+            FROM federation_payment_observations
+            WHERE context = :context
+              AND quote = :quote
+            ORDER BY operation_index ASC, observer_member_id ASC
+            "#,
+        )?
+        .bind("context", payment_observation_context_to_str(context))
+        .bind("quote", quote)
+        .fetch_all(&self.inner)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_payment_observation_record)
+        .collect()
+    }
 }
 
 #[async_trait]

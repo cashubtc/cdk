@@ -644,6 +644,13 @@ pub trait FederationJournalTransaction {
         &mut self,
         observation: &FederationPaymentObservationRecord,
     ) -> Result<(), Self::Err>;
+
+    /// Get payment observations for one quote and context inside this transaction.
+    async fn get_federation_payment_observations(
+        &mut self,
+        context: FederationPaymentObservationContext,
+        quote: &str,
+    ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err>;
 }
 
 #[cfg(feature = "federation")]

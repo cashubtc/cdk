@@ -438,6 +438,38 @@ impl FederationPaymentObservation {
             }
         }
     }
+
+    /// Count matching and conflicting observations from distinct members.
+    #[must_use]
+    pub fn quorum<'a, I>(
+        &self,
+        observations: I,
+        required: u16,
+    ) -> FederationPaymentObservationQuorum
+    where
+        I: IntoIterator<Item = &'a Self>,
+    {
+        match self {
+            Self::MintQuote(candidate) => candidate.quorum(
+                observations
+                    .into_iter()
+                    .filter_map(|observation| match observation {
+                        Self::MintQuote(observation) => Some(observation),
+                        Self::MeltQuote(_) => None,
+                    }),
+                required,
+            ),
+            Self::MeltQuote(candidate) => candidate.quorum(
+                observations
+                    .into_iter()
+                    .filter_map(|observation| match observation {
+                        Self::MintQuote(_) => None,
+                        Self::MeltQuote(observation) => Some(observation),
+                    }),
+                required,
+            ),
+        }
+    }
 }
 
 /// Durable payment observation plus the consensus entry that produced it.
