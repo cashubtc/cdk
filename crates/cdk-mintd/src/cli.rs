@@ -131,6 +131,15 @@ pub enum FederationPaymentObservationQuarantineReasonArg {
 }
 
 #[cfg(feature = "federation")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum FederationTrustedDealerDatabaseEngine {
+    /// Generate member configs backed by per-member SQLite files.
+    Sqlite,
+    /// Generate member configs backed by per-member PostgreSQL databases.
+    Postgres,
+}
+
+#[cfg(feature = "federation")]
 #[derive(Debug, Clone, Args)]
 pub struct FederationTrustedDealerArgs {
     /// Directory that will receive the generated public config and member folders.
@@ -160,6 +169,12 @@ pub struct FederationTrustedDealerArgs {
     /// First member port. Later members increment this port by member ID order.
     #[arg(long, default_value_t = 8085)]
     pub port_start: u16,
+    /// Mint database engine for generated member configs.
+    #[arg(long, value_enum, default_value = "sqlite")]
+    pub database_engine: FederationTrustedDealerDatabaseEngine,
+    /// PostgreSQL URL template used when --database-engine postgres. Must contain {member}.
+    #[arg(long)]
+    pub postgres_url_template: Option<String>,
     /// Overwrite files previously generated at the target paths.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub force: bool,
@@ -263,6 +278,42 @@ mod tests {
         assert_eq!(trusted_dealer.members, 5);
         assert_eq!(trusted_dealer.threshold, 3);
         assert_eq!(trusted_dealer.amounts, vec![1, 2, 4]);
+        assert_eq!(
+            trusted_dealer.database_engine,
+            FederationTrustedDealerDatabaseEngine::Sqlite
+        );
+        assert_eq!(trusted_dealer.postgres_url_template, None);
+    }
+
+    #[test]
+    fn parses_federation_trusted_dealer_postgres_database_options() {
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "trusted-dealer",
+            "--output-dir",
+            "fed-local",
+            "--database-engine",
+            "postgres",
+            "--postgres-url-template",
+            "postgresql://cdk:cdk@localhost:5432/cdk_member_{member}",
+        ])
+        .expect("trusted-dealer postgres command parses");
+
+        let Some(CliCommand::Federation(federation)) = args.command else {
+            panic!("expected federation command");
+        };
+        let FederationCommand::TrustedDealer(trusted_dealer) = federation.command else {
+            panic!("expected federation trusted-dealer command");
+        };
+        assert_eq!(
+            trusted_dealer.database_engine,
+            FederationTrustedDealerDatabaseEngine::Postgres
+        );
+        assert_eq!(
+            trusted_dealer.postgres_url_template,
+            Some("postgresql://cdk:cdk@localhost:5432/cdk_member_{member}".to_string())
+        );
     }
 
     #[test]
