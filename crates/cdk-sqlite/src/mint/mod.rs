@@ -71,6 +71,15 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_dkg_transcript_signature_persistence() {
+        cdk_common::database::mint::test::federation_dkg_transcript_signature_persistence(
+            provide_db("federation_dkg_transcript_signature_persistence".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_journal_concurrent_writes() {
         let path = std::env::temp_dir().to_path_buf().join(format!(
             "cdk-test-federation-concurrent-{}.sqlite",
@@ -153,7 +162,8 @@ mod test {
                   'federation_session_outcomes',
                   'federation_payment_observations',
                   'federation_dkg_setup_messages',
-                  'federation_dkg_member_keyset_shares'
+                  'federation_dkg_member_keyset_shares',
+                  'federation_dkg_transcript_signatures'
               )
             "#,
         )
@@ -188,6 +198,10 @@ mod test {
         assert!(
             index_names.contains("idx_federation_dkg_member_keyset_shares_member"),
             "missing federation DKG member keyset-share member index"
+        );
+        assert!(
+            index_names.contains("idx_federation_dkg_transcript_signatures_member"),
+            "missing federation DKG transcript-signature member index"
         );
 
         let journal_range_plan = explain_details(

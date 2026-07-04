@@ -5,7 +5,8 @@ use cdk_common::database::mint::{FederationJournalDatabase, FederationJournalTra
 use cdk_common::database::Error;
 use cdk_common::federation::{
     FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationJournalEntry,
+    FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignatureRequest, FederationJournalEntry,
     FederationOperationConflictKey, FederationOperationId, FederationOperationStatus,
     FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationSessionOutcome, MemberId,
@@ -201,6 +202,38 @@ fn sql_row_to_federation_dkg_member_keyset_share(
     Ok(share)
 }
 
+fn sql_row_to_federation_dkg_transcript_signature(
+    row: Vec<Column>,
+) -> Result<FederationDkgTranscriptSignatureRequest, Error> {
+    unpack_into!(let (transcript_hash, member_id, payload_json) = row);
+    let transcript_hash =
+        FederationDkgTranscriptHash::from_hex(column_as_string!(&transcript_hash))
+            .map_err(|e| Error::Internal(format!("Invalid federation DKG transcript hash: {e}")))?;
+    let member_id = sql_member_id(member_id)?;
+    let signature = serde_json::from_str::<FederationDkgTranscriptSignatureRequest>(
+        &column_as_string!(&payload_json),
+    )
+    .map_err(|e| {
+        Error::Internal(format!(
+            "Invalid federation DKG transcript signature JSON: {e}"
+        ))
+    })?;
+    if signature.transcript_hash != transcript_hash {
+        return Err(Error::Internal(format!(
+            "Federation DKG transcript signature hash mismatch: expected={transcript_hash}, found={}",
+            signature.transcript_hash
+        )));
+    }
+    if signature.signer != member_id {
+        return Err(Error::Internal(format!(
+            "Federation DKG transcript signature member mismatch: expected={member_id}, found={}",
+            signature.signer
+        )));
+    }
+
+    Ok(signature)
+}
+
 fn federation_dkg_conflict_error(phase: &str, member_id: MemberId) -> Error {
     Error::Internal(format!(
         "Conflicting federation DKG {phase} for member {member_id}"
@@ -213,6 +246,15 @@ fn federation_dkg_member_keyset_share_conflict_error(
     Error::Internal(format!(
         "Conflicting federation DKG keyset share for member {} keyset {}",
         share.member_id, share.keyset.id
+    ))
+}
+
+fn federation_dkg_transcript_signature_conflict_error(
+    signature: &FederationDkgTranscriptSignatureRequest,
+) -> Error {
+    Error::Internal(format!(
+        "Conflicting federation DKG transcript signature for member {} transcript {}",
+        signature.signer, signature.transcript_hash
     ))
 }
 
@@ -458,6 +500,35 @@ where
         .await?;
         if rows_affected == 0 {
             return Err(federation_dkg_member_keyset_share_conflict_error(share));
+        }
+
+        Ok(())
+    }
+
+    async fn add_federation_dkg_transcript_signature(
+        &mut self,
+        signature: &FederationDkgTranscriptSignatureRequest,
+    ) -> Result<(), Self::Err> {
+        let rows_affected = query(
+            r#"
+            INSERT INTO federation_dkg_transcript_signatures
+            (transcript_hash, member_id, payload_json)
+            VALUES
+            (:transcript_hash, :member_id, :payload_json)
+            ON CONFLICT (transcript_hash, member_id)
+            DO UPDATE SET payload_json = EXCLUDED.payload_json
+            WHERE federation_dkg_transcript_signatures.payload_json = EXCLUDED.payload_json
+            "#,
+        )?
+        .bind("transcript_hash", signature.transcript_hash.to_string())
+        .bind("member_id", i64::from(signature.signer.get()))
+        .bind("payload_json", serde_json::to_string(signature)?)
+        .execute(&self.inner)
+        .await?;
+        if rows_affected == 0 {
+            return Err(federation_dkg_transcript_signature_conflict_error(
+                signature,
+            ));
         }
 
         Ok(())
@@ -730,6 +801,28 @@ where
         .await?
         .into_iter()
         .map(sql_row_to_federation_dkg_member_keyset_share)
+        .collect()
+    }
+
+    async fn get_federation_dkg_transcript_signatures(
+        &self,
+    ) -> Result<Vec<FederationDkgTranscriptSignatureRequest>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT transcript_hash, member_id, payload_json
+            FROM federation_dkg_transcript_signatures
+            ORDER BY transcript_hash ASC, member_id ASC
+            "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_dkg_transcript_signature)
         .collect()
     }
 }

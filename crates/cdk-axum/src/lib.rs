@@ -17,10 +17,10 @@ use cache::HttpCache;
 use cdk::federation::{
     FederationConfig, FederationConsensusEngine, FederationConsensusRuntime,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSetupState, FederationJournalAppendOutcome, FederationJournalEntry,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationRestSequenceTracker, FederationSessionOutcome, FederationSubmitOperationResponse,
-    MemberId,
+    FederationDkgSetupState, FederationDkgTranscriptSignatureRequest,
+    FederationJournalAppendOutcome, FederationJournalEntry, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationStatus, FederationRestSequenceTracker,
+    FederationSessionOutcome, FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -489,6 +489,25 @@ impl MintState {
         let db = self.mint.localstore();
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_dkg_reveal(reveal).await?;
+        tx.set_federation_member_sequence(sender, sequence).await?;
+        tx.commit().await?;
+        self.record_federation_sequence(sender, sequence).await;
+        Ok(())
+    }
+
+    pub(crate) async fn persist_federation_dkg_transcript_signature(
+        &self,
+        signature: &FederationDkgTranscriptSignatureRequest,
+        sender: MemberId,
+        sequence: u64,
+    ) -> Result<(), cdk::Error> {
+        let public_config = self.federation_public_config()?;
+        signature.validate_sender(&public_config, sender)?;
+
+        let db = self.mint.localstore();
+        let mut tx = db.begin_transaction().await?;
+        tx.add_federation_dkg_transcript_signature(signature)
+            .await?;
         tx.set_federation_member_sequence(sender, sequence).await?;
         tx.commit().await?;
         self.record_federation_sequence(sender, sequence).await;

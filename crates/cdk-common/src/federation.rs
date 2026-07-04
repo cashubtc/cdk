@@ -2322,6 +2322,32 @@ impl FederationDkgTranscript {
         }
     }
 
+    /// Derive the transcript hash that members must sign for this setup method and config.
+    pub fn hash_for_config(
+        setup_method: FederationDkgSetupMethod,
+        public_config: &FederationConfig,
+    ) -> Result<FederationDkgTranscriptHash> {
+        let payload = Self::payload_from_config(setup_method, public_config);
+        FederationDkgTranscriptHash::for_payload(&payload)
+    }
+
+    /// Create a transcript from externally collected member signatures.
+    pub fn from_signatures(
+        setup_method: FederationDkgSetupMethod,
+        public_config: &FederationConfig,
+        signatures: BTreeMap<MemberId, FederationDkgTranscriptSignature>,
+    ) -> Result<Self> {
+        let payload = Self::payload_from_config(setup_method, public_config);
+        let transcript_hash = FederationDkgTranscriptHash::for_payload(&payload)?;
+        let transcript = Self {
+            payload,
+            transcript_hash,
+            signatures,
+        };
+        transcript.validate_against_config(public_config)?;
+        Ok(transcript)
+    }
+
     /// Create a signed transcript from already-generated trusted-dealer material.
     pub fn trusted_dealer(
         public_config: &FederationConfig,

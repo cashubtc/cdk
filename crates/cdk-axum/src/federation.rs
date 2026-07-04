@@ -513,7 +513,11 @@ async fn post_dkg_transcript_signature(
     let federation_id = runtime_config.federation_id();
     let local_member = runtime_config.member_id();
     state
-        .persist_federation_sequence(verified.sender, verified.sequence)
+        .persist_federation_dkg_transcript_signature(
+            &payload.payload,
+            verified.sender,
+            verified.sequence,
+        )
         .await
         .map_err(cdk_error_response)?;
 
@@ -6475,6 +6479,13 @@ mod tests {
             .await
             .expect("persisted sequences");
         assert_eq!(sequences.get(&peer_private.member_id), Some(&1));
+        let signatures = state
+            .mint
+            .localstore()
+            .get_federation_dkg_transcript_signatures()
+            .await
+            .expect("persisted transcript signatures");
+        assert_eq!(signatures, vec![payload]);
     }
 
     #[tokio::test]
@@ -6518,6 +6529,13 @@ mod tests {
             .await
             .expect("persisted sequences");
         assert!(sequences.is_empty());
+        let signatures = state
+            .mint
+            .localstore()
+            .get_federation_dkg_transcript_signatures()
+            .await
+            .expect("persisted transcript signatures");
+        assert!(signatures.is_empty());
     }
 
     #[tokio::test]

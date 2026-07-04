@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">DKG transcript signatures can now move over signed private REST</span>
+          <span class="value">DKG transcript signatures are now durable and transcript-ready</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add DKG transcript signature exchange</span>
+          <span class="value">feat: persist DKG transcript signatures</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Members can sign setup transcript hashes, submit those signatures over roster-authenticated private REST, and reject bad transcript signatures before advancing sender sequence watermarks</span>
+          <span class="value">SQL storage persists member setup-transcript signatures idempotently, Axum stores accepted signatures with sequence watermarks atomically, and stored signatures can assemble a validated DKG transcript</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Persist exchanged setup transcript signatures and assemble restart-safe final DKG setup transcripts from durable completion records</span>
+          <span class="value">Bind durable DKG transcript signatures and member keyset shares into final restart-safe public/private federation configs</span>
         </div>
       </aside>
     </header>
@@ -1103,6 +1103,10 @@
             <p>A member can no longer hand peers an unsigned or misattributed setup-transcript approval: the private REST envelope must verify against the roster sender, and the transcript signature must verify against the same member's identity key before the receiver advances its sequence watermark.</p>
           </article>
           <article class="item">
+            <h3>Transcript approvals survive restart</h3>
+            <p>Setup transcript approvals now have a durable SQL row shape, so restart recovery can reload the collected member signatures and rebuild the public transcript instead of requiring all setup peers to be online again.</p>
+          </article>
+          <article class="item">
             <h3>Accepted order survives storage</h3>
             <p>The federation journal row shape now preserves consensus order, digest continuity, local application status, quote conflict metadata, and member sequence watermarks across SQL round trips.</p>
           </article>
@@ -1527,6 +1531,10 @@
             <p>Members can now sign a derived setup transcript hash with their identity key, submit that signature through a dedicated signed private REST route, and have peers validate both the REST sender and transcript signer before recording the sender sequence.</p>
           </article>
           <article class="item">
+            <h3>Durable DKG transcript signatures ready</h3>
+            <p>SQLite and Postgres storage now persist setup-transcript signature approvals per transcript hash and member, route handlers store accepted approvals with sender sequence watermarks, and stored approvals can rebuild a validated Pedersen-DKG transcript.</p>
+          </article>
+          <article class="item">
             <h3>State convergence certification planned</h3>
             <p>The implementation plan now has Milestone 16A, an explicit gate for consensus-visible database equality, canonical snapshots, quorum-backed catch-up evidence, safe catch-up mode, digest comparison, and row-level mismatch diagnostics.</p>
           </article>
@@ -1550,7 +1558,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG scaffolding now covers commitments, reveals, public keyset derivation, private share derivation, durable local keyset-share storage, and transcript-signature transport. The remaining setup work is durable transcript-signature storage, final config assembly, restart recovery, and key rotation.</p>
+            <p>The DKG scaffolding now covers commitments, reveals, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, and durable transcript-signature approvals. The remaining setup work is final config assembly, restart recovery, and key rotation.</p>
           </article>
         </div>
       </section>
@@ -1680,6 +1688,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation signed_dkg -- --test-threads 1` passed 5 signed DKG transport tests, including transcript-signature sender/signature validation. `cargo test -p cdk-axum --features federation dkg_transcript_signature -- --test-threads 1` passed the accepted-route and bad-signature-before-sequence tests. `cargo test -p cdk-axum --features federation rest_peer_client_submits_dkg_setup_messages -- --test-threads 1`, `cargo test -p cdk-common --features federation federation -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation -- --test-threads 1`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, and `cargo fmt --all` passed.</td>
               <td>Persist exchanged transcript signatures, rebuild them after restart, and assemble final setup transcripts from durable signature records.</td>
+            </tr>
+            <tr>
+              <td>DKG transcript-signature persistence</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-sqlite --features federation federation_dkg_transcript_signature_persistence -- --test-threads 1` passed idempotent replay, conflict rejection, deterministic readback, and transcript assembly from stored signatures. `cargo test -p cdk-postgres --features federation federation_dkg_transcript_signature_persistence --no-run`, `cargo test -p cdk-sql-common --features federation federation_mint_migrations_cover_sqlite_and_postgres -- --test-threads 1`, `cargo test -p cdk-axum --features federation dkg_transcript_signature -- --test-threads 1`, `cargo test -p cdk-common --features federation federation -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_journal_hot_path_indexes_are_used -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation -- --test-threads 1`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, and `cargo fmt --all` passed.</td>
+              <td>Use durable transcript signatures and keyset-share records to materialize final public/private DKG configs at startup.</td>
             </tr>
             <tr>
               <td>State convergence certification plan</td>
@@ -2310,7 +2324,7 @@
           </article>
           <article class="item">
             <h3>DKG completion wiring</h3>
-            <p>Persist exchanged setup transcript signatures, rebuild them on startup, assemble final public setup transcripts from durable signature records, bind persisted DKG member keyset shares to final public/private configs, and prove restart recovery does not change accepted setup state.</p>
+            <p>Use durable setup transcript signatures and DKG member keyset-share records to materialize final public/private configs, reload them on startup, and prove restart recovery does not change accepted setup state.</p>
           </article>
           <article class="item">
             <h3>BFT backend selection</h3>

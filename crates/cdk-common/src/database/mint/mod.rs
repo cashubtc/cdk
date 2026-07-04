@@ -13,9 +13,10 @@ use super::{DbTransactionFinalizer, Error};
 #[cfg(feature = "federation")]
 use crate::federation::{
     FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationJournalEntry, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationSessionOutcome, MemberId,
+    FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptSignatureRequest,
+    FederationJournalEntry, FederationOperationId, FederationOperationStatus,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationSessionOutcome, MemberId,
 };
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
@@ -664,6 +665,12 @@ pub trait FederationJournalTransaction {
         share: &FederationDkgMemberKeysetShare,
     ) -> Result<(), Self::Err>;
 
+    /// Persist one member signature over a DKG/setup transcript hash.
+    async fn add_federation_dkg_transcript_signature(
+        &mut self,
+        signature: &FederationDkgTranscriptSignatureRequest,
+    ) -> Result<(), Self::Err>;
+
     /// Get payment observations for one quote and context inside this transaction.
     async fn get_federation_payment_observations(
         &mut self,
@@ -725,6 +732,11 @@ pub trait FederationJournalDatabase {
     async fn get_federation_dkg_member_keyset_shares(
         &self,
     ) -> Result<Vec<FederationDkgMemberKeysetShare>, Self::Err>;
+
+    /// Get all persisted member signatures over DKG/setup transcript hashes.
+    async fn get_federation_dkg_transcript_signatures(
+        &self,
+    ) -> Result<Vec<FederationDkgTranscriptSignatureRequest>, Self::Err>;
 }
 
 #[cfg(not(feature = "federation"))]

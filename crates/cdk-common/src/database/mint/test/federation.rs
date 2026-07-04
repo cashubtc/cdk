@@ -8,13 +8,15 @@ use crate::database::mint::{Database, FederationJournalDatabase};
 use crate::federation::{
     FederatedKeyset, FederationConfig, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSetupState, FederationId, FederationJournalAppendOutcome,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationOperation,
-    FederationOperationEnvelope, FederationOperationStatus, FederationPaymentObservation,
-    FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationPaymentObservationReportStatus,
-    InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
+    FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
+    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, FederationId,
+    FederationJournalAppendOutcome, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationJournalEntry, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationPaymentObservationReportStatus, InMemoryFederationJournal, MemberConfigPrivate,
+    MemberConfigPublic, MemberId, ThresholdParams,
 };
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::KnownMethod;
@@ -199,6 +201,25 @@ fn dkg_member_keyset_share(local_member_id: MemberId) -> FederationDkgMemberKeys
         keyset,
         secret_shares,
     }
+}
+
+fn dkg_transcript_signature_request(
+    public_config: &FederationConfig,
+    private_config: &MemberConfigPrivate,
+) -> FederationDkgTranscriptSignatureRequest {
+    let transcript_hash = FederationDkgTranscript::hash_for_config(
+        FederationDkgSetupMethod::PedersenDkg,
+        public_config,
+    )
+    .expect("transcript hash");
+    let signature = FederationDkgTranscriptSignature::sign(transcript_hash, private_config)
+        .expect("transcript signature");
+    FederationDkgTranscriptSignatureRequest::new(
+        public_config.federation_id,
+        private_config.member_id,
+        transcript_hash,
+        signature,
+    )
 }
 
 /// Assert federation journal entries, operation statuses, and member sequences are persisted.
@@ -609,6 +630,70 @@ where
         .await
         .expect("member keyset shares after conflict");
     assert_eq!(shares, vec![share]);
+}
+
+/// Assert DKG transcript signatures persist idempotently and can rebuild a transcript.
+pub async fn federation_dkg_transcript_signature_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let public_config = dkg_public_config();
+    let first_private = private_member(1);
+    let second_private = private_member(2);
+    let first_signature = dkg_transcript_signature_request(&public_config, &first_private);
+    let second_signature = dkg_transcript_signature_request(&public_config, &second_private);
+    let mut conflicting_signature = first_signature;
+    conflicting_signature.federation_id = FederationId::from_bytes([99; 32]);
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin");
+    tx.add_federation_dkg_transcript_signature(&first_signature)
+        .await
+        .expect("persist first transcript signature");
+    tx.add_federation_dkg_transcript_signature(&first_signature)
+        .await
+        .expect("idempotent duplicate transcript signature replay");
+    tx.add_federation_dkg_transcript_signature(&second_signature)
+        .await
+        .expect("persist second transcript signature");
+    tx.commit().await.expect("commit");
+
+    let signatures = db
+        .get_federation_dkg_transcript_signatures()
+        .await
+        .expect("transcript signatures");
+    assert_eq!(signatures, vec![first_signature, second_signature]);
+
+    let transcript_signatures = signatures
+        .iter()
+        .map(|signature| (signature.signer, signature.signature))
+        .collect::<BTreeMap<_, _>>();
+    let transcript = FederationDkgTranscript::from_signatures(
+        FederationDkgSetupMethod::PedersenDkg,
+        &public_config,
+        transcript_signatures,
+    )
+    .expect("assembled DKG transcript");
+    assert_eq!(transcript.transcript_hash, first_signature.transcript_hash);
+    transcript
+        .validate_against_config(&public_config)
+        .expect("stored signatures validate");
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin conflicting transcript signature");
+    assert!(tx
+        .add_federation_dkg_transcript_signature(&conflicting_signature)
+        .await
+        .is_err());
+    tx.rollback()
+        .await
+        .expect("rollback conflicting transcript signature");
+
+    let signatures = db
+        .get_federation_dkg_transcript_signatures()
+        .await
+        .expect("transcript signatures after conflict");
+    assert_eq!(signatures, vec![first_signature, second_signature]);
 }
 
 /// Assert concurrent federation journal writes do not deadlock or reorder reads.
