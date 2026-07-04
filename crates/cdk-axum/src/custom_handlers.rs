@@ -994,9 +994,13 @@ pub async fn cache_post_batch_mint(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "federation")]
+    use std::collections::BTreeMap;
     use std::collections::{HashMap, HashSet};
     #[cfg(feature = "federation")]
     use std::pin::Pin;
+    #[cfg(feature = "federation")]
+    use std::str::FromStr;
     #[cfg(feature = "federation")]
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -1013,17 +1017,30 @@ mod tests {
         SettingsResponse, WaitPaymentResponse,
     };
     #[cfg(feature = "federation")]
-    use cdk::federation::FederationConsensusEngine;
-    use cdk::mint::{MintBuilder, MintMeltLimits, MintQuoteResponse};
+    use cdk::federation::{
+        generate_trusted_dealer_configs, FederationConfig, FederationConsensusEngine,
+        MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerConfigBundle,
+        TrustedDealerKeysetSpec, TrustedDealerMember,
+    };
+    use cdk::mint::{Mint, MintBuilder, MintMeltLimits, MintQuoteResponse};
     use cdk::nuts::nut00::KnownMethod;
     #[cfg(feature = "federation")]
-    use cdk::nuts::nut01::{verify_blind_signature_share, BlsBlindSignatureShare};
+    use cdk::nuts::nut01::{
+        verify_blind_signature_share, BlsBlindSignatureShare, BlsG1PublicKey, BlsSecretKey,
+    };
     #[cfg(feature = "federation")]
     use cdk::nuts::MeltQuoteState;
     #[cfg(feature = "federation")]
     use cdk::nuts::SecretKey;
-    use cdk::nuts::{BlindedMessage, CurrencyUnit, MintQuoteState, PaymentMethod};
+    use cdk::nuts::{
+        BatchMintRequest, BlindSignature, BlindedMessage, CheckStateRequest, CurrencyUnit,
+        MeltRequest, MintQuoteState, PaymentMethod, Proof, RestoreRequest, SwapRequest,
+    };
+    #[cfg(feature = "federation")]
+    use cdk::secret::Secret;
     use cdk::types::{FeeReserve, QuoteTTL};
+    #[cfg(feature = "federation")]
+    use cdk::wallet::{FederatedMintConnector, MintConnector};
     use cdk::Amount;
     use cdk_fake_wallet::FakeWallet;
     #[cfg(feature = "federation")]
@@ -1560,6 +1577,275 @@ mod tests {
             secret,
             cdk::nuts::PublicKey::from(signature),
         )
+    }
+
+    #[cfg(feature = "federation")]
+    fn threshold_member_id(id: u16) -> MemberId {
+        MemberId::new(id).expect("member id")
+    }
+
+    #[cfg(feature = "federation")]
+    fn threshold_identity_secret(member_id: MemberId) -> SecretKey {
+        let mut bytes = [0u8; 32];
+        bytes[31] = member_id.get() as u8;
+        SecretKey::from_slice(&bytes).expect("identity secret")
+    }
+
+    #[cfg(feature = "federation")]
+    fn threshold_member(
+        member_id: MemberId,
+        public_mint_url: cdk::mint_url::MintUrl,
+        federation_api_url: cdk::mint_url::MintUrl,
+    ) -> TrustedDealerMember {
+        TrustedDealerMember::new(
+            member_id,
+            public_mint_url,
+            federation_api_url,
+            threshold_identity_secret(member_id),
+        )
+    }
+
+    #[cfg(feature = "federation")]
+    fn threshold_bundle(
+        member_urls: &[(MemberId, cdk::mint_url::MintUrl)],
+    ) -> TrustedDealerConfigBundle {
+        let members = member_urls
+            .iter()
+            .map(|(member_id, url)| threshold_member(*member_id, url.clone(), url.clone()))
+            .collect::<Vec<_>>();
+
+        generate_trusted_dealer_configs(
+            ThresholdParams::with_bft_consensus(3, 2).expect("threshold params"),
+            members,
+            vec![TrustedDealerKeysetSpec::new(
+                CurrencyUnit::Sat,
+                true,
+                0,
+                None,
+                BTreeMap::from([
+                    (
+                        Amount::from(1),
+                        vec![
+                            BlsSecretKey::from_reduced_bytes(&[2; 32]),
+                            BlsSecretKey::from_reduced_bytes(&[12; 32]),
+                        ],
+                    ),
+                    (
+                        Amount::from(2),
+                        vec![
+                            BlsSecretKey::from_reduced_bytes(&[3; 32]),
+                            BlsSecretKey::from_reduced_bytes(&[13; 32]),
+                        ],
+                    ),
+                    (
+                        Amount::from(4),
+                        vec![
+                            BlsSecretKey::from_reduced_bytes(&[4; 32]),
+                            BlsSecretKey::from_reduced_bytes(&[14; 32]),
+                        ],
+                    ),
+                ]),
+            )],
+        )
+        .expect("trusted dealer threshold bundle")
+    }
+
+    #[cfg(feature = "federation")]
+    async fn build_threshold_member_mint(
+        public_config: FederationConfig,
+        private_config: MemberConfigPrivate,
+    ) -> Arc<Mint> {
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let runtime_config = cdk::mint::FederationRuntimeConfig::new(public_config, private_config)
+            .expect("runtime config");
+        let mut builder = MintBuilder::new(db.clone())
+            .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]))
+            .with_federation_config(runtime_config);
+        let fake = FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 0.0,
+            },
+            HashMap::default(),
+            HashSet::default(),
+            0,
+            CurrencyUnit::Sat,
+        );
+        builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintMeltLimits::new(1, 10_000),
+                Arc::new(fake),
+            )
+            .await
+            .expect("payment processor");
+
+        let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        let mint = builder
+            .build_with_seed(db, &mnemonic.to_seed_normalized(""))
+            .await
+            .expect("mint");
+        mint.set_quote_ttl(QuoteTTL::new(10_000, 10_000))
+            .await
+            .expect("quote ttl");
+        mint.start().await.expect("mint start");
+        Arc::new(mint)
+    }
+
+    #[cfg(feature = "federation")]
+    async fn add_paid_bolt11_quote_to_mint(mint: &Mint, quote_id: &QuoteId, amount: u64) {
+        let amount = Amount::new(amount, CurrencyUnit::Sat);
+        let mut quote = cdk::mint::MintQuote::new(
+            Some(quote_id.clone()),
+            format!("invoice-{quote_id}"),
+            CurrencyUnit::Sat,
+            Some(amount.clone()),
+            cdk::util::unix_time() + 10_000,
+            cdk::cdk_payment::PaymentIdentifier::QuoteId(quote_id.clone()),
+            None,
+            Amount::new(0, CurrencyUnit::Sat),
+            Amount::new(0, CurrencyUnit::Sat),
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            cdk::util::unix_time(),
+            Vec::new(),
+            Vec::new(),
+            None,
+        );
+        quote
+            .add_payment(amount, format!("payment-{quote_id}"), None)
+            .expect("add payment");
+        let mut tx = mint
+            .localstore()
+            .begin_transaction()
+            .await
+            .expect("begin tx");
+        let mut quote = tx.add_mint_quote(quote).await.expect("add mint quote");
+        tx.update_mint_quote(&mut quote)
+            .await
+            .expect("update paid mint quote");
+        tx.commit().await.expect("commit quote");
+    }
+
+    #[cfg(feature = "federation")]
+    async fn clone_primary_melt_quote_to_members(mints: &[Arc<Mint>], quote_id: &QuoteId) {
+        let quote = mints[0]
+            .localstore()
+            .get_melt_quote(quote_id)
+            .await
+            .expect("melt quote lookup")
+            .expect("primary melt quote");
+
+        for mint in mints.iter().skip(1) {
+            let mut tx = mint
+                .localstore()
+                .begin_transaction()
+                .await
+                .expect("begin tx");
+            tx.add_melt_quote(quote.clone())
+                .await
+                .expect("add melt quote");
+            tx.commit().await.expect("commit melt quote");
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    fn blinded_output(
+        keyset: &cdk::federation::FederatedKeyset,
+        amount: u64,
+        label: &str,
+    ) -> BlindedMessage {
+        BlindedMessage::new(
+            Amount::from(amount),
+            keyset.id,
+            cdk::nuts::PublicKey::from(BlsG1PublicKey::hash_to_curve(label.as_bytes())),
+        )
+    }
+
+    #[cfg(feature = "federation")]
+    fn blinded_change_output(
+        keyset: &cdk::federation::FederatedKeyset,
+        amount_label: &str,
+    ) -> BlindedMessage {
+        let mut output = blinded_output(keyset, 2, amount_label);
+        output.amount = Amount::ZERO;
+        output
+    }
+
+    #[cfg(feature = "federation")]
+    fn proof_for_keyset(
+        keyset: &cdk::federation::FederatedKeyset,
+        amount: u64,
+        label: &str,
+    ) -> Proof {
+        let secret = Secret::new(format!("federated-axum-http-proof-{label}"));
+        let signature = BlsG1PublicKey::hash_to_curve(secret.as_bytes())
+            .mul(&aggregate_secret_for_amount(amount));
+
+        Proof::new(
+            Amount::from(amount),
+            keyset.id,
+            secret,
+            cdk::nuts::PublicKey::from(signature),
+        )
+    }
+
+    #[cfg(feature = "federation")]
+    fn assert_aggregate_signatures_verify(
+        public_config: &FederationConfig,
+        outputs: &[BlindedMessage],
+        signatures: &[BlindSignature],
+    ) {
+        assert_eq!(signatures.len(), outputs.len());
+        for (signature, output) in signatures.iter().zip(outputs) {
+            let keyset = public_config
+                .keysets
+                .iter()
+                .find(|keyset| keyset.id == signature.keyset_id)
+                .expect("signature keyset");
+            let aggregate_key = keyset
+                .keys()
+                .amount_key(signature.amount)
+                .expect("amount key");
+            cdk::dhke::verify_bls_blind_signature(
+                aggregate_key,
+                signature.c,
+                output.blinded_secret,
+            )
+            .expect("aggregate signature verifies");
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    fn threshold_http_member_connectors(
+        public_config: &FederationConfig,
+    ) -> BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>> {
+        public_config
+            .members
+            .iter()
+            .map(|(member_id, member)| {
+                (
+                    *member_id,
+                    Arc::new(cdk::HttpClient::new(member.public_mint_url.clone(), None))
+                        as Arc<dyn MintConnector + Send + Sync>,
+                )
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "federation")]
+    async fn wait_for_federated_http_members(connector: &FederatedMintConnector) {
+        for _ in 0..100 {
+            if connector.get_mint_keys().await.is_ok() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        connector
+            .get_mint_keys()
+            .await
+            .expect("federated HTTP members ready");
     }
 
     #[cfg(feature = "federation")]
@@ -2129,6 +2415,175 @@ mod tests {
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::Melt]
         );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn federated_wallet_connector_aggregates_real_axum_member_routes() {
+        let mut listeners = Vec::new();
+        let mut member_urls = Vec::new();
+        for id in 1..=3 {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind local member listener");
+            let url = cdk::mint_url::MintUrl::from_str(&format!(
+                "http://{}/",
+                listener.local_addr().expect("local address")
+            ))
+            .expect("member URL");
+            member_urls.push((threshold_member_id(id), url));
+            listeners.push(listener);
+        }
+
+        let bundle = threshold_bundle(&member_urls);
+        let mut mints = Vec::new();
+        for member_id in [1, 2, 3].map(threshold_member_id) {
+            let private_config = bundle
+                .private_configs
+                .get(&member_id)
+                .expect("private member config")
+                .clone();
+            let mint =
+                build_threshold_member_mint(bundle.public_config.clone(), private_config).await;
+            mints.push(mint);
+        }
+
+        let mint_quote_id = QuoteId::new();
+        for mint in &mints {
+            add_paid_bolt11_quote_to_mint(mint, &mint_quote_id, 3).await;
+        }
+
+        let melt_invoice = create_fake_invoice(1000, "axum threshold http melt".to_string());
+        let melt_quote_id = match mints[0]
+            .get_melt_quote(cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+                request: melt_invoice,
+                unit: CurrencyUnit::Sat,
+                options: None,
+            }))
+            .await
+            .expect("melt quote")
+        {
+            cdk::MeltQuoteCreateResponse::Bolt11(response) => response.quote,
+            _ => panic!("expected bolt11 melt quote"),
+        };
+        clone_primary_melt_quote_to_members(&mints, &melt_quote_id).await;
+
+        let mut handles = Vec::new();
+        for (mint, listener) in mints.iter().cloned().zip(listeners) {
+            let router = crate::create_mint_router(mint, vec![KnownMethod::Bolt11.to_string()])
+                .await
+                .expect("mint router");
+            handles.push(tokio::spawn(async move {
+                axum::serve(listener, router).await.expect("member router");
+            }));
+        }
+
+        let connector = FederatedMintConnector::new(
+            bundle.public_config.clone(),
+            threshold_http_member_connectors(&bundle.public_config),
+        )
+        .expect("federated HTTP connector");
+        wait_for_federated_http_members(&connector).await;
+
+        let keyset = &bundle.public_config.keysets[0];
+        let mint_outputs = vec![
+            blinded_output(keyset, 1, "axum-http-mint-output-1"),
+            blinded_output(keyset, 2, "axum-http-mint-output-2"),
+        ];
+        let mint_response = connector
+            .post_batch_mint(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                BatchMintRequest {
+                    quotes: vec![mint_quote_id.to_string()],
+                    quote_amounts: None,
+                    outputs: mint_outputs.clone(),
+                    signatures: None,
+                },
+            )
+            .await
+            .expect("threshold HTTP batch mint");
+        assert_aggregate_signatures_verify(
+            &bundle.public_config,
+            &mint_outputs,
+            &mint_response.signatures,
+        );
+
+        let mint_status = connector
+            .get_mint_quote_status(
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                &mint_quote_id.to_string(),
+            )
+            .await
+            .expect("mint quote status");
+        assert_eq!(mint_status.state(), Some(MintQuoteState::Issued));
+
+        let swap_input = proof_for_keyset(keyset, 2, "swap-input");
+        let swap_y = swap_input.y().expect("swap proof y");
+        let swap_outputs = vec![blinded_output(keyset, 2, "axum-http-swap-output")];
+        let swap_response = connector
+            .post_swap(SwapRequest::new(vec![swap_input], swap_outputs.clone()))
+            .await
+            .expect("threshold HTTP swap");
+        assert_aggregate_signatures_verify(
+            &bundle.public_config,
+            &swap_outputs,
+            &swap_response.signatures,
+        );
+
+        let spent_after_swap = connector
+            .post_check_state(CheckStateRequest { ys: vec![swap_y] })
+            .await
+            .expect("swap check-state");
+        assert_eq!(spent_after_swap.states[0].state, cdk::nuts::State::Spent);
+
+        let melt_input = proof_for_keyset(keyset, 4, "melt-input");
+        let melt_y = melt_input.y().expect("melt proof y");
+        let melt_change_outputs = vec![blinded_change_output(keyset, "axum-http-melt-change")];
+        let melt_response = connector
+            .post_melt(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                MeltRequest::new(
+                    melt_quote_id.to_string(),
+                    vec![melt_input],
+                    Some(melt_change_outputs.clone()),
+                ),
+            )
+            .await
+            .expect("threshold HTTP melt");
+        assert_eq!(melt_response.state(), MeltQuoteState::Paid);
+        let change = melt_response.change().expect("melt change");
+        assert_aggregate_signatures_verify(&bundle.public_config, &melt_change_outputs, change);
+
+        let melt_status = connector
+            .get_melt_quote_status(
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                &melt_quote_id.to_string(),
+            )
+            .await
+            .expect("melt quote status");
+        assert_eq!(melt_status.state(), MeltQuoteState::Paid);
+        let spent_after_melt = connector
+            .post_check_state(CheckStateRequest { ys: vec![melt_y] })
+            .await
+            .expect("melt check-state");
+        assert_eq!(spent_after_melt.states[0].state, cdk::nuts::State::Spent);
+
+        let restore_response = connector
+            .post_restore(RestoreRequest {
+                outputs: mint_outputs.clone(),
+            })
+            .await
+            .expect("threshold HTTP restore");
+        assert_eq!(restore_response.outputs, mint_outputs);
+        assert_aggregate_signatures_verify(
+            &bundle.public_config,
+            &restore_response.outputs,
+            &restore_response.signatures,
+        );
+
+        for handle in handles {
+            handle.abort();
+        }
     }
 
     #[cfg(feature = "federation")]

@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Replay-derived key rotation now reaches wallet HttpClient aggregation, melt quote status, and check-state views</span>
+          <span class="value">Wallet federation aggregation now crosses real Axum public and private REST member routes for mint, swap, melt, restore, status, and check-state</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover rotated wallet HTTP status views</span>
+          <span class="value">test: cover federated wallet axum routes</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Rotated HttpClient member transports now expose melt quote status and check-state after a federated melt, proving the wallet can observe paid settlement and spent inputs through the same threshold member views</span>
+          <span class="value">A three-member threshold federation now runs local Axum routers, uses signed private REST forwarding and catch-up for non-primary members, and lets the wallet connector aggregate real HTTP member shares</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Move the rotated aggregation proof into a real Axum router or process-level multi-member smoke, then extend rotated status and check-state coverage</span>
+          <span class="value">Carry the rotated keyset aggregation proof into the same real Axum or generated process-level smoke, then broaden storage-backed route coverage</span>
         </div>
       </aside>
     </header>
@@ -1583,6 +1583,10 @@
             <p>The rotated HttpClient member smoke now checks melt quote status and proof state after melt, confirming paid settlement and spent-input views converge across threshold member responses.</p>
           </article>
           <article class="item">
+            <h3>Real Axum wallet route smoke ready</h3>
+            <p>A three-member threshold test now launches local Axum mint routers, uses wallet HTTP connectors, exercises signed private REST forwarding/catch-up for non-primary members, and aggregates mint, swap, melt-change, and restore signatures with status and check-state assertions.</p>
+          </article>
+          <article class="item">
             <h3>State convergence certification planned</h3>
             <p>The implementation plan now has Milestone 16A, an explicit gate for consensus-visible database equality, canonical snapshots, quorum-backed catch-up evidence, safe catch-up mode, digest comparison, and row-level mismatch diagnostics.</p>
           </article>
@@ -1802,6 +1806,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --lib --features federation federated_mint_connector_aggregates_rotated_http_member_shares -- --test-threads 1` passed with rotated melt quote status and spent-input check-state assertions. `cargo test -p cdk --lib --features federation wallet::federation -- --test-threads 1` passed 19 tests. `cargo check -p cdk --lib --features federation`, `cargo check -p cdk-axum --features federation`, `cargo fmt --all`, and `git diff --check` passed.</td>
               <td>Move the same rotated proof into a real Axum router or process-level multi-member smoke.</td>
+            </tr>
+            <tr>
+              <td>Wallet real Axum member routes</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation federated_wallet_connector_aggregates_real_axum_member_routes -- --test-threads 1` passed with three local Axum member routers, wallet HTTP connectors, signed private REST forwarding/catch-up, and aggregate mint, swap, melt-change, restore, quote-status, and check-state assertions. `cargo test -p cdk-axum --features federation custom_handlers::tests -- --test-threads 1` passed 33 tests. `cargo check -p cdk-axum --features federation` and `cargo check -p cdk --lib --features federation` passed.</td>
+              <td>Repeat this real route smoke with rotated active/inactive v3/BLS keysets and storage-backed process members.</td>
             </tr>
             <tr>
               <td>State convergence certification plan</td>
@@ -2432,7 +2442,7 @@
           </article>
           <article class="item">
             <h3>Rotation state transition</h3>
-            <p>Promote the rotated aggregation proof from wallet HttpClient transports to a real Axum router or process-level multi-member smoke, then add rotated status and check-state coverage.</p>
+            <p>Repeat the real Axum wallet route smoke with rotated active/inactive v3/BLS keysets, then lift that scenario into the generated process-level smoke.</p>
           </article>
           <article class="item">
             <h3>BFT backend selection</h3>
