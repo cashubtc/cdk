@@ -68,6 +68,8 @@ pub mod env_vars;
 #[cfg(feature = "federation")]
 mod federation_inspect;
 #[cfg(feature = "federation")]
+mod federation_quarantine;
+#[cfg(feature = "federation")]
 mod federation_setup;
 #[cfg(all(feature = "federation", feature = "fakewallet", feature = "sqlite"))]
 mod federation_smoke;
@@ -87,6 +89,12 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
             cli::CliCommand::Federation(federation) => match &federation.command {
                 cli::FederationCommand::Inspect(inspect) => {
                     federation_inspect::run_inspect_command(args, inspect)?;
+                }
+                cli::FederationCommand::QuarantinePaymentObservation(quarantine) => {
+                    federation_quarantine::run_quarantine_payment_observation_command(
+                        args, quarantine,
+                    )
+                    .await?;
                 }
                 cli::FederationCommand::TrustedDealer(args) => {
                     federation_setup::run_trusted_dealer_command(args)?;
@@ -575,6 +583,42 @@ where
         .with_context(|| format!("failed to read {label} from {}", path.display()))?;
     serde_json::from_str(&contents)
         .with_context(|| format!("failed to parse {label} JSON from {}", path.display()))
+}
+
+#[cfg(feature = "federation")]
+pub(crate) fn federation_config_paths(
+    cli_args: &CLIArgs,
+    public_config: &Option<PathBuf>,
+    private_config: &Option<PathBuf>,
+    command_name: &str,
+) -> Result<(PathBuf, PathBuf)> {
+    match (public_config, private_config) {
+        (Some(public_config), Some(private_config)) => {
+            Ok((public_config.clone(), private_config.clone()))
+        }
+        (None, None) => {
+            let config_path = cli_args.config.as_deref().ok_or_else(|| {
+                anyhow!(
+                    "{command_name} needs --public-config and --private-config, or a mintd --config with [federation] paths"
+                )
+            })?;
+            let settings = config::Settings::try_new(Some(config_path))
+                .with_context(|| format!("failed to load mint config {}", config_path.display()))?;
+            let federation = settings
+                .federation
+                .ok_or_else(|| anyhow!("mint config has no [federation] section"))?;
+            let public_config = federation
+                .public_config_path
+                .ok_or_else(|| anyhow!("mint config [federation] has no public_config_path"))?;
+            let private_config = federation
+                .private_config_path
+                .ok_or_else(|| anyhow!("mint config [federation] has no private_config_path"))?;
+            Ok((public_config, private_config))
+        }
+        _ => bail!(
+            "{command_name} requires --public-config and --private-config to be provided together"
+        ),
+    }
 }
 
 /// Configures basic mint information (name, contact info, descriptions, etc.)

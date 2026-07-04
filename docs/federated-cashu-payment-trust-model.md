@@ -89,7 +89,10 @@ quarantine reasons without returning backend proof material. The mint state
 machine applies accepted `PaymentObservationQuarantine` operations idempotently,
 skips later payment finalization for quarantined quotes, and rejects mint or
 melt operations that would spend a quarantined quote before writing signature
-shares or mutating proof state.
+shares or mutating proof state. Operators can now propose the same quarantine
+operation with `cdk-mintd federation quarantine-payment-observation`; the
+command signs a normal private REST operation submit request with the local
+member identity key and posts it to configured federation members.
 
 ## Melt Quote Observations
 
@@ -135,12 +138,12 @@ state, report status, quote age, stale classification, and a redacted operator
 action recommendation. `local-status` and `cdk-mintd federation status` mark old
 unresolved evidence as `stale=true` with `action=inspect`, and conflicting
 evidence as `action=quarantine`, without logging secrets, invoices, local paths,
-private keys, or proof secrets.
+private keys, or proof secrets. Operators can copy a conflicting report's
+context, quote ID, and evidence operation IDs into the quarantine command
+without exposing payment proof material on the command line.
 
 ## Required Follow-Up
 
-- Add an operator command or signed admin route that proposes quarantine
-  operations from the redacted report surface.
 - Add indexed storage for quarantine records if journal scans become expensive
   in large federations.
 - Add tests proving stale pending quotes remain visible without blocking

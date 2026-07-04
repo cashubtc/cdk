@@ -1,7 +1,6 @@
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
     FederationConfig, FederationId, FederationPaymentObservationReportAction,
     FederationPaymentObservationReportStatus, FederationPaymentObservationReportSummary,
@@ -13,7 +12,6 @@ use cdk_http_client::{Async, Transport};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{CLIArgs, FederationStatusArgs};
-use crate::config;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct FederationLocalStatusResponse {
@@ -30,7 +28,12 @@ pub(crate) async fn run_status_command(
     cli_args: &CLIArgs,
     args: &FederationStatusArgs,
 ) -> Result<()> {
-    let (public_config_path, private_config_path) = status_config_paths(cli_args, args)?;
+    let (public_config_path, private_config_path) = crate::federation_config_paths(
+        cli_args,
+        &args.public_config,
+        &args.private_config,
+        "federation status",
+    )?;
     let public_config: FederationConfig =
         crate::read_federation_json(&public_config_path, "public federation config")?;
     let private_config: MemberConfigPrivate =
@@ -52,39 +55,6 @@ pub(crate) async fn run_status_command(
     }
 
     Ok(())
-}
-
-fn status_config_paths(
-    cli_args: &CLIArgs,
-    args: &FederationStatusArgs,
-) -> Result<(PathBuf, PathBuf)> {
-    match (&args.public_config, &args.private_config) {
-        (Some(public_config), Some(private_config)) => {
-            Ok((public_config.clone(), private_config.clone()))
-        }
-        (None, None) => {
-            let config_path = cli_args.config.as_deref().ok_or_else(|| {
-                anyhow!(
-                    "federation status needs --public-config and --private-config, or a mintd --config with [federation] paths"
-                )
-            })?;
-            let settings = config::Settings::try_new(Some(config_path))
-                .with_context(|| format!("failed to load mint config {}", config_path.display()))?;
-            let federation = settings
-                .federation
-                .ok_or_else(|| anyhow!("mint config has no [federation] section"))?;
-            let public_config = federation.public_config_path.ok_or_else(|| {
-                anyhow!("mint config [federation] has no public_config_path")
-            })?;
-            let private_config = federation.private_config_path.ok_or_else(|| {
-                anyhow!("mint config [federation] has no private_config_path")
-            })?;
-            Ok((public_config, private_config))
-        }
-        _ => bail!(
-            "federation status requires --public-config and --private-config to be provided together"
-        ),
-    }
 }
 
 async fn query_local_statuses<T>(
@@ -152,10 +122,9 @@ fn status_targets(
         .iter()
         .map(|member_id| {
             let member_id = MemberId::new(*member_id)?;
-            public_config
-                .member(member_id)
-                .cloned()
-                .ok_or_else(|| anyhow!("federation public config has no member {}", member_id))
+            public_config.member(member_id).cloned().ok_or_else(|| {
+                anyhow::anyhow!("federation public config has no member {}", member_id)
+            })
         })
         .collect()
 }
