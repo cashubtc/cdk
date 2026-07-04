@@ -672,6 +672,49 @@ pub fn aggregate_public_key_shares(
     g2_from_projective(aggregate)
 }
 
+/// Sum public G2 commitments into one aggregate public key.
+///
+/// This is used by dealer-free DKG code after every participant reveals public
+/// polynomial commitments. It intentionally accepts plain public keys rather
+/// than threshold shares because each participant contributes one public point
+/// to the final aggregate key.
+#[cfg(feature = "federation")]
+pub fn aggregate_public_key_commitments(
+    commitments: &[BlsAggregatePublicKey],
+) -> Result<BlsAggregatePublicKey, Error> {
+    let mut aggregate = G2Projective::identity();
+    for commitment in commitments {
+        aggregate += G2Projective::from(commitment.point());
+    }
+
+    g2_from_projective(aggregate)
+}
+
+/// Evaluate public polynomial commitments at one signer ID.
+///
+/// If a participant reveals G2 commitments `[C_0, C_1, ...]`, this returns the
+/// public key share corresponding to `C_0 + x*C_1 + x^2*C_2 + ...`, where `x`
+/// is the non-zero signer ID. The secret scalar is never needed for this
+/// verification step.
+#[cfg(feature = "federation")]
+pub fn evaluate_public_key_commitments(
+    signer_id: BlsSignerId,
+    commitments: &[BlsAggregatePublicKey],
+) -> Result<BlsPublicKeyShare, Error> {
+    let x = signer_id.scalar();
+    let mut x_power = Scalar::one();
+    let mut public_share = G2Projective::identity();
+    for commitment in commitments {
+        public_share += G2Projective::from(commitment.point()) * x_power;
+        x_power *= x;
+    }
+
+    Ok(BlsPublicKeyShare::new(
+        signer_id,
+        g2_from_projective(public_share)?,
+    ))
+}
+
 #[cfg(feature = "federation")]
 fn validate_threshold_inputs(threshold: usize, signer_ids: &[BlsSignerId]) -> Result<(), Error> {
     if threshold == 0 || threshold > signer_ids.len() {
@@ -998,6 +1041,28 @@ mod tests {
             &blinded_message,
             &keyset.aggregate_public_key()
         ));
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn test_public_polynomial_commitments_match_trusted_dealer_shares() {
+        let coefficients = vec![bls_key(3), bls_key(5), bls_key(9)];
+        let signer_ids = signer_ids(&[1, 2, 3, 4, 5]);
+        let keyset = trusted_dealer_keygen(&coefficients, &signer_ids).expect("keyset");
+        let commitments = coefficients
+            .iter()
+            .map(BlsSecretKey::public_key_g2)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            aggregate_public_key_commitments(&[commitments[0]]).expect("aggregate commitment"),
+            keyset.aggregate_public_key()
+        );
+        for (signer_id, trusted_share) in signer_ids.iter().zip(keyset.public_shares()) {
+            let derived = evaluate_public_key_commitments(*signer_id, &commitments)
+                .expect("derived public share");
+            assert_eq!(derived, *trusted_share);
+        }
     }
 
     #[cfg(feature = "federation")]

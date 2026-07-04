@@ -17,7 +17,8 @@ mod secret_key;
 
 #[cfg(feature = "federation")]
 pub use self::bls::{
-    aggregate_blind_signature_shares, aggregate_public_key_shares, trusted_dealer_keygen,
+    aggregate_blind_signature_shares, aggregate_public_key_commitments,
+    aggregate_public_key_shares, evaluate_public_key_commitments, trusted_dealer_keygen,
     verify_blind_signature_share, BlsAggregatePublicKey, BlsBlindSignatureShare, BlsPublicKeyShare,
     BlsSecretKeyShare, BlsSignerId, BlsThresholdKeySet,
 };

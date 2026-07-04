@@ -7,7 +7,7 @@
 
 use core::fmt;
 use core::str::FromStr;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -64,8 +64,8 @@ pub use self::trusted_dealer::{
 };
 
 use crate::nuts::nut01::{
-    aggregate_public_key_shares, BlsAggregatePublicKey, BlsPublicKeyShare, BlsSecretKeyShare,
-    BlsSignerId,
+    aggregate_public_key_commitments, aggregate_public_key_shares, evaluate_public_key_commitments,
+    BlsAggregatePublicKey, BlsPublicKeyShare, BlsSecretKeyShare, BlsSignerId,
 };
 use crate::nuts::nut02::{KeySet, KeySetVersion};
 use crate::{
@@ -1659,6 +1659,127 @@ impl FederationDkgCommitmentRound {
 
         Ok(())
     }
+
+    /// Derive a federated aggregate keyset from a fully revealed DKG round.
+    ///
+    /// Every participant contributes a public polynomial commitment for each
+    /// amount. The final aggregate mint key for an amount is the sum of all
+    /// constant-term commitments, and each member's public share is the sum of
+    /// every participant polynomial evaluated at that member ID.
+    pub fn derive_federated_keyset(
+        &self,
+        public_config: &FederationConfig,
+        reveals: &BTreeMap<MemberId, FederationDkgParticipantCommitmentReveal>,
+        unit: CurrencyUnit,
+        active: bool,
+        input_fee_ppk: u64,
+        final_expiry: Option<u64>,
+    ) -> Result<FederatedKeyset> {
+        self.validate_reveals(public_config, reveals)?;
+        let first_member_id =
+            self.participant_order
+                .first()
+                .ok_or(FederationError::DkgCommitmentRoundMismatch {
+                    reason: "empty participant order".to_string(),
+                })?;
+        let first_reveal =
+            reveals
+                .get(first_member_id)
+                .ok_or(FederationError::DkgCommitmentRoundMismatch {
+                    reason: format!("missing reveal for member {first_member_id}"),
+                })?;
+        let amount_set = first_reveal
+            .coefficient_commitments
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        for (member_id, reveal) in reveals {
+            let member_amounts = reveal
+                .coefficient_commitments
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>();
+            if member_amounts != amount_set {
+                return Err(FederationError::DkgCommitmentMismatch {
+                    member_id: *member_id,
+                    reason: "amount commitment set mismatch".to_string(),
+                });
+            }
+        }
+
+        let mut aggregate_keys = BTreeMap::new();
+        let mut public_shares = public_config
+            .members
+            .keys()
+            .map(|member_id| (*member_id, BTreeMap::new()))
+            .collect::<BTreeMap<_, _>>();
+        for amount in amount_set {
+            let mut constant_commitments = Vec::with_capacity(self.participant_order.len());
+            for participant_id in &self.participant_order {
+                let commitments = dkg_reveal_amount_commitments(reveals, *participant_id, amount)?;
+                let constant_commitment =
+                    commitments
+                        .first()
+                        .ok_or(FederationError::DkgCommitmentMismatch {
+                            member_id: *participant_id,
+                            reason: format!("missing constant commitment for amount {amount}"),
+                        })?;
+                constant_commitments.push(*constant_commitment);
+            }
+            aggregate_keys.insert(
+                amount,
+                aggregate_public_key_commitments(&constant_commitments)?,
+            );
+
+            for member_id in public_config.members.keys() {
+                let signer_id = member_id.to_bls_signer_id();
+                let mut participant_public_shares =
+                    Vec::with_capacity(self.participant_order.len());
+                for participant_id in &self.participant_order {
+                    let commitments =
+                        dkg_reveal_amount_commitments(reveals, *participant_id, amount)?;
+                    participant_public_shares.push(
+                        evaluate_public_key_commitments(signer_id, commitments)?.public_key(),
+                    );
+                }
+                let public_key = aggregate_public_key_commitments(&participant_public_shares)?;
+                public_shares
+                    .get_mut(member_id)
+                    .expect("public share map initialized from roster")
+                    .insert(amount, BlsPublicKeyShare::new(signer_id, public_key));
+            }
+        }
+
+        let keyset = FederatedKeyset::new(
+            unit,
+            active,
+            input_fee_ppk,
+            final_expiry,
+            aggregate_keys,
+            public_shares,
+        );
+        keyset.validate(public_config.threshold_params, &public_config.members)?;
+        Ok(keyset)
+    }
+}
+
+fn dkg_reveal_amount_commitments(
+    reveals: &BTreeMap<MemberId, FederationDkgParticipantCommitmentReveal>,
+    member_id: MemberId,
+    amount: Amount,
+) -> Result<&[BlsAggregatePublicKey]> {
+    let reveal = reveals
+        .get(&member_id)
+        .ok_or(FederationError::DkgCommitmentRoundMismatch {
+            reason: format!("missing reveal for member {member_id}"),
+        })?;
+    let commitments = reveal.coefficient_commitments.get(&amount).ok_or(
+        FederationError::DkgCommitmentMismatch {
+            member_id,
+            reason: format!("missing coefficient commitments for amount {amount}"),
+        },
+    )?;
+    Ok(commitments)
 }
 
 /// In-memory DKG setup state collected from authenticated member setup messages.
@@ -2076,8 +2197,31 @@ impl FederationDkgTranscript {
         public_config: &FederationConfig,
         private_configs: &BTreeMap<MemberId, MemberConfigPrivate>,
     ) -> Result<Self> {
-        let payload =
-            Self::payload_from_config(FederationDkgSetupMethod::TrustedDealer, public_config);
+        Self::signed_setup(
+            FederationDkgSetupMethod::TrustedDealer,
+            public_config,
+            private_configs,
+        )
+    }
+
+    /// Create a signed transcript from dealer-free Pedersen DKG public material.
+    pub fn pedersen_dkg(
+        public_config: &FederationConfig,
+        private_configs: &BTreeMap<MemberId, MemberConfigPrivate>,
+    ) -> Result<Self> {
+        Self::signed_setup(
+            FederationDkgSetupMethod::PedersenDkg,
+            public_config,
+            private_configs,
+        )
+    }
+
+    fn signed_setup(
+        setup_method: FederationDkgSetupMethod,
+        public_config: &FederationConfig,
+        private_configs: &BTreeMap<MemberId, MemberConfigPrivate>,
+    ) -> Result<Self> {
+        let payload = Self::payload_from_config(setup_method, public_config);
         let transcript_hash = FederationDkgTranscriptHash::for_payload(&payload)?;
         let mut signatures = BTreeMap::new();
         for member_id in payload.member_identity_public_keys.keys() {
@@ -2731,6 +2875,27 @@ mod tests {
             .collect()
     }
 
+    fn dkg_transcript_private_configs(
+        public_config: &FederationConfig,
+    ) -> BTreeMap<MemberId, MemberConfigPrivate> {
+        public_config
+            .members
+            .keys()
+            .map(|member_id| {
+                (
+                    *member_id,
+                    MemberConfigPrivate {
+                        federation_id: Some(public_config.federation_id),
+                        member_id: *member_id,
+                        identity_secret_key: identity_secret(*member_id),
+                        keyset_secret_shares: BTreeMap::new(),
+                        setup_transcript_hash: None,
+                    },
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn member_id_rejects_zero_and_serializes() {
         assert!(matches!(
@@ -3049,6 +3214,79 @@ mod tests {
             state.insert_reveal(&config, reveal),
             Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
                 if id == member_id(1) && reason == "missing prior commitment"
+        ));
+    }
+
+    #[test]
+    fn dkg_commitment_round_derives_keyset_and_pedersen_transcript() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let setup_config =
+            FederationConfig::new(params, members.clone(), Vec::new()).expect("setup config");
+        let reveals = dkg_reveals(&setup_config);
+        let commitments = dkg_commitments(&reveals);
+        let round = FederationDkgCommitmentRound::new(&setup_config, commitments).expect("round");
+
+        let keyset = round
+            .derive_federated_keyset(&setup_config, &reveals, CurrencyUnit::Sat, true, 0, None)
+            .expect("derived federated keyset");
+        assert_eq!(keyset.id.get_version(), KeySetVersion::Version02);
+        assert_eq!(keyset.aggregate_keys.len(), 1);
+        assert_eq!(keyset.public_shares.len(), members.len());
+        keyset
+            .validate(params, &members)
+            .expect("derived keyset validates");
+
+        let mut public_config =
+            FederationConfig::new(params, members, vec![keyset.clone()]).expect("public config");
+        let transcript = FederationDkgTranscript::pedersen_dkg(
+            &public_config,
+            &dkg_transcript_private_configs(&public_config),
+        )
+        .expect("pedersen DKG transcript");
+        assert_eq!(
+            transcript.payload.setup_method,
+            FederationDkgSetupMethod::PedersenDkg
+        );
+        assert_eq!(transcript.payload.keysets.len(), 1);
+        assert_eq!(transcript.payload.keysets[0].keyset_id, keyset.id);
+        transcript
+            .validate_against_config(&public_config)
+            .expect("transcript validates");
+
+        public_config.setup_transcript = Some(transcript);
+        public_config.validate().expect("config with transcript");
+    }
+
+    #[test]
+    fn dkg_keyset_derivation_rejects_amount_set_mismatch() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let config =
+            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let mut reveals = dkg_reveals(&config);
+        reveals
+            .get_mut(&member_id(1))
+            .expect("first reveal")
+            .coefficient_commitments
+            .insert(
+                Amount::from(2),
+                vec![bls_key(41).public_key_g2(), bls_key(42).public_key_g2()],
+            );
+        let commitments = dkg_commitments(&reveals);
+        let round =
+            FederationDkgCommitmentRound::new(&config, commitments).expect("commitment round");
+
+        assert!(matches!(
+            round.derive_federated_keyset(
+                &config,
+                &reveals,
+                CurrencyUnit::Sat,
+                true,
+                0,
+                None,
+            ),
+            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+                if id == member_id(2) && reason == "amount commitment set mismatch"
         ));
     }
 
