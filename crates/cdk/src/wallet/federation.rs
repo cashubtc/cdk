@@ -324,6 +324,7 @@ impl FederatedMintConnector {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
         let mut responses = Vec::new();
         let mut failures = Vec::new();
+        let mut primary_response = None;
         let mut pending = FuturesUnordered::new();
 
         for (member_id, connector) in &self.member_connectors {
@@ -335,6 +336,9 @@ impl FederatedMintConnector {
         while let Some((member_id, result)) = pending.next().await {
             match result {
                 Ok(response) => {
+                    if member_id == self.primary_member_id {
+                        primary_response = Some(response.clone());
+                    }
                     responses.push((member_id, response));
                     if responses.len() >= threshold {
                         return Ok(responses);
@@ -346,6 +350,10 @@ impl FederatedMintConnector {
 
         if responses.len() >= threshold {
             return Ok(responses);
+        }
+
+        if let Some(response) = primary_response {
+            return Ok(vec![(self.primary_member_id, response)]);
         }
 
         Err(Error::InvalidMintResponse(format!(
@@ -3235,6 +3243,45 @@ mod tests {
             let connector = MockMintConnector::new();
             connector.set_active_keyset(advertised.clone());
             connector.set_melt_quote_status_response(Ok(status.clone()));
+            connectors.insert(
+                member_id,
+                Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+            );
+        }
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let response = connector
+            .get_melt_quote_status(PaymentMethod::Known(KnownMethod::Bolt11), "melt-quote")
+            .await
+            .expect("melt quote status");
+
+        assert_eq!(response.state(), MeltQuoteState::Paid);
+        assert!(response.change().is_none());
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_falls_back_to_primary_melt_quote_status() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let status = match melt_response_without_change() {
+            MeltQuoteResponse::Bolt11(response) => response,
+            _ => panic!("expected bolt11 melt response"),
+        };
+        let mut connectors = BTreeMap::new();
+
+        let primary_member = MockMintConnector::new();
+        primary_member.set_active_keyset(advertised.clone());
+        primary_member.set_melt_quote_status_response(Ok(status));
+        connectors.insert(
+            member_id(1),
+            Arc::new(primary_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        for member_id in [member_id(2), member_id(3)] {
+            let connector = MockMintConnector::new();
+            connector.set_active_keyset(advertised.clone());
+            connector.set_melt_quote_status_response(Err(crate::Error::UnknownQuote));
             connectors.insert(
                 member_id,
                 Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
