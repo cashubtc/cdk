@@ -1868,7 +1868,7 @@
             <tr>
               <td>DKG setup-record status</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite dkg_status -- --test-threads 1` passed 7 DKG-status tests, including the new non-secret setup-record summary for persisted commitments, reveals, and secret-share contributions. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation -- --test-threads 1` passed 72 mintd federation tests. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite,postgres,prometheus` passed.</td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite dkg_status -- --test-threads 1` passed 7 DKG-status tests, including the new non-secret setup-record summary for commitments, reveals, and secret-share contributions read back from a real SQLite mint database. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation -- --test-threads 1` passed 72 mintd federation tests. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite,postgres,prometheus` passed.</td>
               <td>Use these setup-progress lines in generated route-driven DKG smoke gates and failure runbooks.</td>
             </tr>
             <tr>

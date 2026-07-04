@@ -394,7 +394,7 @@ mod tests {
         TrustedDealerMember,
     };
     use cdk_common::mint_url::MintUrl;
-    use cdk_common::nuts::nut01::BlsSecretKey;
+    use cdk_common::nuts::nut01::{evaluate_secret_key_coefficients, BlsSecretKey};
     use cdk_common::{Amount, CurrencyUnit, SecretKey};
 
     use super::*;
@@ -429,6 +429,42 @@ mod tests {
 
     fn bls_key(byte: u8) -> BlsSecretKey {
         BlsSecretKey::from_reduced_bytes(&[byte; 32])
+    }
+
+    fn dkg_reveal_for_status(
+        public_config: &FederationConfig,
+        member_id: MemberId,
+        seed: u8,
+    ) -> FederationDkgParticipantCommitmentReveal {
+        let commitments = (0..public_config.threshold_params.signature_threshold)
+            .map(|offset| bls_key(seed + offset as u8).public_key_g2())
+            .collect::<Vec<_>>();
+        FederationDkgParticipantCommitmentReveal {
+            federation_id: public_config.federation_id,
+            member_id,
+            coefficient_commitments: BTreeMap::from([(Amount::from(1), commitments)]),
+        }
+    }
+
+    fn dkg_secret_share_request_for_status(
+        public_config: &FederationConfig,
+        sender: MemberId,
+        receiver: MemberId,
+        seed: u8,
+    ) -> FederationDkgSecretShareRequest {
+        let coefficients = (0..public_config.threshold_params.signature_threshold)
+            .map(|offset| bls_key(seed + offset as u8))
+            .collect::<Vec<_>>();
+        FederationDkgSecretShareRequest::new(
+            public_config.federation_id,
+            sender,
+            receiver,
+            BTreeMap::from([(
+                Amount::from(1),
+                evaluate_secret_key_coefficients(receiver.to_bls_signer_id(), &coefficients)
+                    .expect("secret share contribution"),
+            )]),
+        )
     }
 
     fn dkg_completion_fixture(local_member: MemberId) -> DkgCompletionFixture {
@@ -706,6 +742,15 @@ mod tests {
     #[tokio::test]
     async fn read_database_records_loads_persisted_dkg_completion_records() {
         let fixture = dkg_completion_fixture(member_id(2));
+        let reveal = dkg_reveal_for_status(&fixture.setup_public_config, member_id(1), 41);
+        let commitment =
+            FederationDkgParticipantCommitment::from_reveal(&reveal).expect("commitment");
+        let secret_share_contribution = dkg_secret_share_request_for_status(
+            &fixture.setup_public_config,
+            member_id(1),
+            member_id(2),
+            51,
+        );
         let work_dir =
             std::env::temp_dir().join(format!("cdk_mintd_dkg_status_db_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&work_dir);
@@ -716,6 +761,15 @@ mod tests {
             .await
             .expect("open test database");
         let mut tx = db.begin_transaction().await.expect("begin transaction");
+        tx.add_federation_dkg_commitment(&commitment)
+            .await
+            .expect("persist setup commitment");
+        tx.add_federation_dkg_reveal(&reveal)
+            .await
+            .expect("persist setup reveal");
+        tx.add_federation_dkg_secret_share_contribution(&secret_share_contribution)
+            .await
+            .expect("persist setup secret-share contribution");
         tx.add_federation_dkg_member_keyset_share(&fixture.keyset_share)
             .await
             .expect("persist keyset share");
@@ -731,8 +785,26 @@ mod tests {
             .await
             .expect("read DKG records from database");
 
+        assert_eq!(records.commitments, vec![commitment]);
+        assert_eq!(records.reveals, vec![reveal]);
+        assert_eq!(
+            records.secret_share_contributions,
+            vec![secret_share_contribution]
+        );
         assert_eq!(records.keyset_shares, vec![fixture.keyset_share]);
         assert_eq!(records.transcript_signatures, fixture.transcript_signatures);
+        let setup_summary = DkgSetupRecordSummary::from_records(&records);
+        let report = dkg_status_report_with_setup_records(
+            &fixture.setup_public_config,
+            &fixture.setup_private_config,
+            &records.keyset_shares,
+            &records.transcript_signatures,
+            &setup_summary,
+        );
+        assert!(report
+            .text
+            .contains("setup_records commitments=1 reveals=1"));
+        assert!(report.text.contains("secret_share_contributions=1"));
         let _ = std::fs::remove_dir_all(&work_dir);
     }
 }
