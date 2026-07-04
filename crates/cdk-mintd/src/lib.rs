@@ -68,6 +68,8 @@ pub mod env_vars;
 #[cfg(feature = "federation")]
 mod federation_inspect;
 #[cfg(feature = "federation")]
+mod federation_payment_observations;
+#[cfg(feature = "federation")]
 mod federation_quarantine;
 #[cfg(feature = "federation")]
 mod federation_setup;
@@ -89,6 +91,13 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
             cli::CliCommand::Federation(federation) => match &federation.command {
                 cli::FederationCommand::Inspect(inspect) => {
                     federation_inspect::run_inspect_command(args, inspect)?;
+                }
+                cli::FederationCommand::PaymentObservations(observations) => {
+                    federation_payment_observations::run_payment_observations_command(
+                        args,
+                        observations,
+                    )
+                    .await?;
                 }
                 cli::FederationCommand::QuarantinePaymentObservation(quarantine) => {
                     federation_quarantine::run_quarantine_payment_observation_command(

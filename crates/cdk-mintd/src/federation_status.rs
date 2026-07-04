@@ -74,7 +74,7 @@ pub(crate) async fn run_status_command(
     Ok(())
 }
 
-async fn query_local_statuses<T>(
+pub(crate) async fn query_local_statuses<T>(
     transport: T,
     public_config: &FederationConfig,
     private_config: &MemberConfigPrivate,
@@ -283,7 +283,9 @@ fn print_payment_observation_report(report: &FederationPaymentObservationReportS
     }
 }
 
-fn payment_observation_report_line(report: &FederationPaymentObservationReportSummary) -> String {
+pub(crate) fn payment_observation_report_line(
+    report: &FederationPaymentObservationReportSummary,
+) -> String {
     let quote_age_secs = report
         .quote_age_secs
         .map(|age| age.to_string())
@@ -308,7 +310,7 @@ fn payment_observation_report_line(report: &FederationPaymentObservationReportSu
     )
 }
 
-fn payment_observation_group_line(
+pub(crate) fn payment_observation_group_line(
     group: &cdk_common::federation::FederationPaymentObservationEvidenceGroupSummary,
 ) -> String {
     format!(
