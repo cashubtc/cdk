@@ -20,6 +20,7 @@ use cdk_common::{
     MeltQuoteResponse, MeltRequest, MintQuoteRequest, MintQuoteResponse, MintRequest, MintResponse,
     RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
+use tokio::sync::Barrier;
 
 use crate::nuts::{
     nut17, nut19, BatchCheckMintQuoteRequest, BatchMintRequest, MeltQuoteBolt11Response,
@@ -446,10 +447,14 @@ pub struct MockMintConnector {
     pub keysets: Mutex<Vec<KeySet>>,
     /// Optional error returned by mint key discovery calls.
     pub mint_keys_error: Mutex<Option<String>>,
+    /// Optional barrier used by tests to assert concurrent key discovery.
+    pub mint_keys_barrier: Mutex<Option<Arc<Barrier>>>,
     /// Mock mint info state
     pub mint_info: Mutex<MintInfo>,
     /// Response for post_check_state calls
     pub check_state_response: Mutex<Option<Result<CheckStateResponse, Error>>>,
+    /// Optional barrier used by tests to assert concurrent check-state calls.
+    pub check_state_barrier: Mutex<Option<Arc<Barrier>>>,
     /// Response for post_restore calls
     pub restore_response: Mutex<Option<Result<RestoreResponse, Error>>>,
     /// Response for get_melt_quote_status calls
@@ -504,8 +509,10 @@ impl MockMintConnector {
         Self {
             keysets: Mutex::new(vec![keyset]),
             mint_keys_error: Mutex::new(None),
+            mint_keys_barrier: Mutex::new(None),
             mint_info: Mutex::new(mint_info),
             check_state_response: Mutex::new(None),
+            check_state_barrier: Mutex::new(None),
             restore_response: Mutex::new(None),
             melt_quote_status_response: Mutex::new(None),
             melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
@@ -539,6 +546,14 @@ impl MockMintConnector {
 
     pub fn set_mint_keys_error(&self, message: &str) {
         *self.mint_keys_error.lock().unwrap() = Some(message.to_string());
+    }
+
+    pub fn set_mint_keys_barrier(&self, barrier: Arc<Barrier>) {
+        *self.mint_keys_barrier.lock().unwrap() = Some(barrier);
+    }
+
+    pub fn set_check_state_barrier(&self, barrier: Arc<Barrier>) {
+        *self.check_state_barrier.lock().unwrap() = Some(barrier);
     }
 
     pub fn set_mint_keyset_response(&self, response: Result<KeySet, Error>) {
@@ -700,6 +715,11 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn get_mint_keys(&self) -> Result<Vec<crate::nuts::KeySet>, Error> {
+        let barrier = self.mint_keys_barrier.lock().unwrap().clone();
+        if let Some(barrier) = barrier {
+            barrier.wait().await;
+        }
+
         if let Some(message) = self.mint_keys_error.lock().unwrap().clone() {
             return Err(Error::Custom(message));
         }
@@ -814,6 +834,11 @@ impl MintConnector for MockMintConnector {
         &self,
         _request: CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
+        let barrier = self.check_state_barrier.lock().unwrap().clone();
+        if let Some(barrier) = barrier {
+            barrier.wait().await;
+        }
+
         self.check_state_response
             .lock()
             .unwrap()

@@ -522,15 +522,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: refresh peer digest recheck status</span>
+          <span class="value">fix: parallelize federation wallet probes</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Five-member, three-threshold Postgres long-partition smoke now passes eight offline wallet-operation batches, pending melt recovery, quarantine catch-up, offline keyset rotation, restarted-member quorum evidence, and final digest convergence</span>
+          <span class="value">Wallet federation keyset validation and check-state reads now poll members concurrently while still rejecting bad advertisements and mismatched proof-state views</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Broaden long-partition runs to larger rosters, tighten slow polling hot paths, and choose the first production BFT ordering backend path</span>
+          <span class="value">Broaden long-partition runs to larger rosters, keep tightening slow member fanout paths, and choose the first production BFT ordering backend path</span>
         </div>
       </aside>
     </header>
@@ -1477,6 +1477,10 @@
           <article class="item">
             <h3>Wallet key discovery tolerates outages</h3>
             <p>The federated wallet connector now rejects any responding member that advertises mismatched keysets, while allowing operations to continue when unreachable members are below the configured signing threshold.</p>
+          </article>
+          <article class="item">
+            <h3>Wallet read probes run concurrently</h3>
+            <p>Federated wallet keyset validation, single-keyset validation, and check-state collection now poll member connectors concurrently, so one slow or offline member no longer serializes every read before the wallet can find a threshold view.</p>
           </article>
           <article class="item">
             <h3>Offline pending-melt finalization verified</h3>
@@ -2696,6 +2700,12 @@
               <td><span class="status done">Passed</span></td>
               <td>A five-member, three-threshold Postgres-backed long-partition smoke passed with eight offline wallet-operation batches, paid and failed pending-melt terminal observations while a member was offline, quarantine replay after restart, offline keyset rotation, old-keyset restore and spend, post-rotation mint and melt, restarted-member session-outcome quorum evidence, signed status checks, digest comparison gates, and clean process shutdown. The run first exposed a stale equal-height materialized peer-status snapshot; the peer sync recheck now refreshes peer status during the bounded recheck window, and the full smoke then passed.</td>
               <td>Repeat with larger rosters, longer partition windows, and targeted performance work on slow sequential status and keyset polling paths.</td>
+            </tr>
+            <tr>
+              <td>Wallet federation probe concurrency</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --features wallet,mint,federation federated_mint_connector_polls -- --test-threads 1` passed the barrier-backed concurrency regressions for member keyset discovery and check-state polling. `cargo test -p cdk --features wallet,mint,federation federated_mint_connector -- --test-threads 1` passed all 19 wallet federation connector tests, covering mint, batch mint, swap, melt change, restore, check-state quorum views, member advertisement rejection, offline key discovery, and the new concurrent probe paths.</td>
+              <td>Apply the same fanout scrutiny to any remaining slow member reads before larger Postgres partition runs.</td>
             </tr>
             <tr>
               <td>Offline keyset rotation process smoke</td>
