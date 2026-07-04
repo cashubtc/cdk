@@ -4,9 +4,10 @@ use async_trait::async_trait;
 use cdk_common::database::mint::{FederationJournalDatabase, FederationJournalTransaction};
 use cdk_common::database::Error;
 use cdk_common::federation::{
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationJournalEntry, FederationOperationConflictKey, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationJournalEntry,
+    FederationOperationConflictKey, FederationOperationId, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationSessionOutcome, MemberId,
 };
 
@@ -174,9 +175,44 @@ fn sql_row_to_federation_dkg_reveal(
     Ok(reveal)
 }
 
+fn sql_row_to_federation_dkg_member_keyset_share(
+    row: Vec<Column>,
+) -> Result<FederationDkgMemberKeysetShare, Error> {
+    unpack_into!(let (keyset_id, member_id, payload_json) = row);
+    let keyset_id = column_as_string!(&keyset_id);
+    let member_id = sql_member_id(member_id)?;
+    let share = serde_json::from_str::<FederationDkgMemberKeysetShare>(&column_as_string!(
+        &payload_json
+    ))
+    .map_err(|e| Error::Internal(format!("Invalid federation DKG keyset share JSON: {e}")))?;
+    if share.keyset.id.to_string() != keyset_id {
+        return Err(Error::Internal(format!(
+            "Federation DKG keyset share id mismatch: expected={keyset_id}, found={}",
+            share.keyset.id
+        )));
+    }
+    if share.member_id != member_id {
+        return Err(Error::Internal(format!(
+            "Federation DKG keyset share member mismatch: expected={member_id}, found={}",
+            share.member_id
+        )));
+    }
+
+    Ok(share)
+}
+
 fn federation_dkg_conflict_error(phase: &str, member_id: MemberId) -> Error {
     Error::Internal(format!(
         "Conflicting federation DKG {phase} for member {member_id}"
+    ))
+}
+
+fn federation_dkg_member_keyset_share_conflict_error(
+    share: &FederationDkgMemberKeysetShare,
+) -> Error {
+    Error::Internal(format!(
+        "Conflicting federation DKG keyset share for member {} keyset {}",
+        share.member_id, share.keyset.id
     ))
 }
 
@@ -392,6 +428,36 @@ where
                 FEDERATION_DKG_REVEAL_PHASE,
                 reveal.member_id,
             ));
+        }
+
+        Ok(())
+    }
+
+    async fn add_federation_dkg_member_keyset_share(
+        &mut self,
+        share: &FederationDkgMemberKeysetShare,
+    ) -> Result<(), Self::Err> {
+        let rows_affected = query(
+            r#"
+            INSERT INTO federation_dkg_member_keyset_shares
+            (keyset_id, member_id, payload_json)
+            VALUES
+            (:keyset_id, :member_id, :payload_json)
+            ON CONFLICT (keyset_id)
+            DO UPDATE SET
+                member_id = EXCLUDED.member_id,
+                payload_json = EXCLUDED.payload_json
+            WHERE federation_dkg_member_keyset_shares.member_id = EXCLUDED.member_id
+              AND federation_dkg_member_keyset_shares.payload_json = EXCLUDED.payload_json
+            "#,
+        )?
+        .bind("keyset_id", share.keyset.id.to_string())
+        .bind("member_id", i64::from(share.member_id.get()))
+        .bind("payload_json", serde_json::to_string(share)?)
+        .execute(&self.inner)
+        .await?;
+        if rows_affected == 0 {
+            return Err(federation_dkg_member_keyset_share_conflict_error(share));
         }
 
         Ok(())
@@ -642,6 +708,28 @@ where
         .await?
         .into_iter()
         .map(sql_row_to_federation_dkg_reveal)
+        .collect()
+    }
+
+    async fn get_federation_dkg_member_keyset_shares(
+        &self,
+    ) -> Result<Vec<FederationDkgMemberKeysetShare>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT keyset_id, member_id, payload_json
+            FROM federation_dkg_member_keyset_shares
+            ORDER BY member_id ASC, keyset_id ASC
+            "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_dkg_member_keyset_share)
         .collect()
     }
 }

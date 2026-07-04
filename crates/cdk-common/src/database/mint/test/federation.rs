@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use crate::database::mint::{Database, FederationJournalDatabase};
 use crate::federation::{
-    FederationConfig, FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederatedKeyset, FederationConfig, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgSetupState, FederationId, FederationJournalAppendOutcome,
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalEntry,
     FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationOperation,
@@ -17,7 +18,7 @@ use crate::federation::{
 };
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::KnownMethod;
-use crate::nuts::nut01::BlsSecretKey;
+use crate::nuts::nut01::{trusted_dealer_keygen, BlsSecretKey};
 use crate::{
     Amount, CurrencyUnit, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteRequest,
     MintQuoteResponse, MintQuoteState, PaymentMethod, SecretKey,
@@ -157,6 +158,47 @@ fn dkg_setup_state_from_db_records(
             .expect("stored reveal validates");
     }
     state
+}
+
+fn dkg_member_keyset_share(local_member_id: MemberId) -> FederationDkgMemberKeysetShare {
+    let public_config = dkg_public_config();
+    let signer_ids = public_config
+        .members
+        .keys()
+        .map(|member_id| member_id.to_bls_signer_id())
+        .collect::<Vec<_>>();
+    let amount = Amount::from(1);
+    let threshold_keyset =
+        trusted_dealer_keygen(&[bls_key(7), bls_key(17)], &signer_ids).expect("threshold keyset");
+    let mut aggregate_keys = BTreeMap::new();
+    aggregate_keys.insert(amount, threshold_keyset.aggregate_public_key());
+    let mut public_shares = BTreeMap::new();
+    for share in threshold_keyset.public_shares() {
+        public_shares
+            .entry(MemberId::new(share.signer_id().get()).expect("member id"))
+            .or_insert_with(BTreeMap::new)
+            .insert(amount, *share);
+    }
+    let mut secret_shares = BTreeMap::new();
+    for share in threshold_keyset.secret_shares() {
+        if share.signer_id().get() == local_member_id.get() {
+            secret_shares.insert(amount, share.clone());
+        }
+    }
+    let keyset = FederatedKeyset::new(
+        CurrencyUnit::Sat,
+        true,
+        0,
+        None,
+        aggregate_keys,
+        public_shares,
+    );
+    FederationDkgMemberKeysetShare {
+        federation_id: public_config.federation_id,
+        member_id: local_member_id,
+        keyset,
+        secret_shares,
+    }
 }
 
 /// Assert federation journal entries, operation statuses, and member sequences are persisted.
@@ -527,6 +569,46 @@ where
         .complete_round(&public_config)
         .expect("complete setup state")
         .is_some());
+}
+
+/// Assert completed local DKG keyset shares persist idempotently.
+pub async fn federation_dkg_member_keyset_share_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let share = dkg_member_keyset_share(member_id(1));
+    let mut conflicting_share = share.clone();
+    conflicting_share.federation_id = FederationId::from_bytes([99; 32]);
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin");
+    tx.add_federation_dkg_member_keyset_share(&share)
+        .await
+        .expect("persist member keyset share");
+    tx.add_federation_dkg_member_keyset_share(&share)
+        .await
+        .expect("idempotent duplicate member keyset share replay");
+    tx.commit().await.expect("commit");
+
+    let shares = db
+        .get_federation_dkg_member_keyset_shares()
+        .await
+        .expect("member keyset shares");
+    assert_eq!(shares, vec![share.clone()]);
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin conflicting share");
+    assert!(tx
+        .add_federation_dkg_member_keyset_share(&conflicting_share)
+        .await
+        .is_err());
+    tx.rollback().await.expect("rollback conflicting share");
+
+    let shares = db
+        .get_federation_dkg_member_keyset_shares()
+        .await
+        .expect("member keyset shares after conflict");
+    assert_eq!(shares, vec![share]);
 }
 
 /// Assert concurrent federation journal writes do not deadlock or reorder reads.

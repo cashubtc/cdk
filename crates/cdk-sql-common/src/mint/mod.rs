@@ -480,6 +480,12 @@ mod federation_migration_tests {
             include_str!("migrations/sqlite/20260703143000_add_federation_dkg_setup.sql");
         let postgres_dkg_setup =
             include_str!("migrations/postgres/20260703143000_add_federation_dkg_setup.sql");
+        let sqlite_dkg_member_keyset_shares = include_str!(
+            "migrations/sqlite/20260703150000_add_federation_dkg_member_keyset_shares.sql"
+        );
+        let postgres_dkg_member_keyset_shares = include_str!(
+            "migrations/postgres/20260703150000_add_federation_dkg_member_keyset_shares.sql"
+        );
 
         for migration in [sqlite_saga, postgres_saga] {
             assert_contains_all(
@@ -551,6 +557,22 @@ mod federation_migration_tests {
                     "member_id",
                     "payload_json",
                     "idx_federation_dkg_setup_member",
+                ],
+            );
+        }
+
+        for migration in [
+            sqlite_dkg_member_keyset_shares,
+            postgres_dkg_member_keyset_shares,
+        ] {
+            assert_contains_all(
+                migration,
+                &[
+                    "federation_dkg_member_keyset_shares",
+                    "keyset_id",
+                    "member_id",
+                    "payload_json",
+                    "idx_federation_dkg_member_keyset_shares_member",
                 ],
             );
         }

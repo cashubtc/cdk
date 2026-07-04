@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Completed DKG rounds can now derive local member signing shares</span>
+          <span class="value">Completed DKG member keyset shares are now durable</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: derive DKG member keyset shares</span>
+          <span class="value">feat: persist DKG member keyset shares</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Cashu BLS can evaluate and aggregate DKG secret-share contributions, while CDK validates each private contribution against public commitments before deriving a local member keyset share</span>
+          <span class="value">SQL storage can persist and reload completed local DKG member keyset shares idempotently, reject conflicting payloads, and keep SQLite/Postgres migrations aligned</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Persist DKG completion artifacts and exchange/bind setup transcript signatures</span>
+          <span class="value">Exchange setup transcript signatures and bind persisted DKG completion artifacts to member configs</span>
         </div>
       </aside>
     </header>
@@ -1095,6 +1095,10 @@
             <p>A member's local DKG secret-share contributions are rejected unless they derive to the expected public share from the participant's reveal, preventing bad private setup material from becoming signing authority.</p>
           </article>
           <article class="item">
+            <h3>Completed DKG shares survive restart</h3>
+            <p>The completed local DKG keyset-share artifact now has a durable storage shape, so restart recovery can reload the same public keyset and private signing shares instead of recomputing or losing completion state.</p>
+          </article>
+          <article class="item">
             <h3>Accepted order survives storage</h3>
             <p>The federation journal row shape now preserves consensus order, digest continuity, local application status, quote conflict metadata, and member sequence watermarks across SQL round trips.</p>
           </article>
@@ -1511,6 +1515,10 @@
             <p>Members can now aggregate private DKG secret-share contributions into their final local signing share after checking every contribution against the sender's revealed public polynomial commitments.</p>
           </article>
           <article class="item">
+            <h3>Durable DKG member keyset shares ready</h3>
+            <p>SQLite and Postgres storage now persist completed local DKG member keyset shares with idempotent replay, conflict rejection, deterministic readback, and a dedicated member lookup index.</p>
+          </article>
+          <article class="item">
             <h3>State convergence certification planned</h3>
             <p>The implementation plan now has Milestone 16A, an explicit gate for consensus-visible database equality, canonical snapshots, quorum-backed catch-up evidence, safe catch-up mode, digest comparison, and row-level mismatch diagnostics.</p>
           </article>
@@ -1652,6 +1660,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cashu --features federation polynomial -- --test-threads 1`, `cargo test -p cashu --features federation secret_share_aggregation -- --test-threads 1`, `cargo test -p cdk-common --features federation dkg -- --test-threads 1`, `cargo test -p cdk-common --features federation federation -- --test-threads 1`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
               <td>Persist completed DKG public material plus local private shares, then exchange setup transcript signatures and bind member configs to the resulting transcript hash.</td>
+            </tr>
+            <tr>
+              <td>DKG member keyset-share persistence</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-sqlite --features federation federation_dkg_member_keyset_share_persistence -- --test-threads 1`, `cargo test -p cdk-sql-common --features federation federation_mint_migrations_cover_sqlite_and_postgres -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_dkg_setup_state_persistence -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_journal_hot_path_indexes_are_used -- --test-threads 1`, `cargo test -p cdk-common --features federation federation -- --test-threads 1`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Exchange member setup transcript signatures and bind the persisted completion artifact into final public/private member configs.</td>
             </tr>
             <tr>
               <td>State convergence certification plan</td>
@@ -2282,7 +2296,7 @@
           </article>
           <article class="item">
             <h3>DKG completion wiring</h3>
-            <p>Persist completed DKG public/private completion artifacts, exchange setup transcript signatures, bind private configs to the transcript hash, and prove restart recovery does not change accepted setup state.</p>
+            <p>Exchange setup transcript signatures, bind persisted DKG member keyset shares to final public/private configs, and prove restart recovery does not change accepted setup state.</p>
           </article>
           <article class="item">
             <h3>BFT backend selection</h3>

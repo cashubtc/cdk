@@ -12,10 +12,10 @@ use cashu::Amount;
 use super::{DbTransactionFinalizer, Error};
 #[cfg(feature = "federation")]
 use crate::federation::{
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationJournalEntry, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationSessionOutcome, MemberId,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationJournalEntry, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationSessionOutcome, MemberId,
 };
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
@@ -658,6 +658,12 @@ pub trait FederationJournalTransaction {
         reveal: &FederationDkgParticipantCommitmentReveal,
     ) -> Result<(), Self::Err>;
 
+    /// Persist one completed local member DKG keyset share.
+    async fn add_federation_dkg_member_keyset_share(
+        &mut self,
+        share: &FederationDkgMemberKeysetShare,
+    ) -> Result<(), Self::Err>;
+
     /// Get payment observations for one quote and context inside this transaction.
     async fn get_federation_payment_observations(
         &mut self,
@@ -714,6 +720,11 @@ pub trait FederationJournalDatabase {
     async fn get_federation_dkg_reveals(
         &self,
     ) -> Result<Vec<FederationDkgParticipantCommitmentReveal>, Self::Err>;
+
+    /// Get all persisted completed local member DKG keyset shares.
+    async fn get_federation_dkg_member_keyset_shares(
+        &self,
+    ) -> Result<Vec<FederationDkgMemberKeysetShare>, Self::Err>;
 }
 
 #[cfg(not(feature = "federation"))]

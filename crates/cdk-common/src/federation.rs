@@ -1156,8 +1156,12 @@ pub struct FederatedKeyset {
 }
 
 /// Public DKG-derived keyset plus one member's local secret BLS shares.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationDkgMemberKeysetShare {
+    /// Federation roster this completed DKG keyset belongs to.
+    pub federation_id: FederationId,
+    /// Local federation member that owns the secret shares.
+    pub member_id: MemberId,
     /// Public aggregate keyset derived from all revealed DKG commitments.
     pub keyset: FederatedKeyset,
     /// Final local secret BLS share per amount for one federation member.
@@ -1858,6 +1862,8 @@ impl FederationDkgCommitmentRound {
         }
 
         Ok(FederationDkgMemberKeysetShare {
+            federation_id: public_config.federation_id,
+            member_id,
             keyset,
             secret_shares,
         })
