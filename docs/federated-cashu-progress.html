@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated local federation smoke now passes baseline mint/swap/melt/restore, offline threshold operations, paid and failed pending melts, quarantine replay, offline keyset rotation, and final digest convergence; transient materialized-digest races are rechecked before latching mismatch</span>
+          <span class="value">Generated SQLite and Postgres federation smokes now pass baseline mint/swap/melt/restore, offline threshold operations, paid and failed pending melts, quarantine replay, offline keyset rotation, member catch-up, and final digest convergence</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: recheck materialized digest during catch-up</span>
+          <span class="value">test: verify postgres federation smoke</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Payment-observation quote checks can record evidence while members are catching up, wallet check-state aggregation accepts any threshold matching view, and equal-height state-digest checks wait briefly for accepted operations to finish materializing</span>
+          <span class="value">Setup-only DKG and full wallet/payment/key-rotation process smoke now have live Postgres-backed evidence using per-member schemas and signed convergence gates</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Run setup-only DKG, long-partition, and full process smoke against a real Postgres-backed local process environment when Postgres is available</span>
+          <span class="value">Repeat longer partition windows against larger federation sizes and choose the first production BFT ordering backend path</span>
         </div>
       </aside>
     </header>
@@ -1505,6 +1505,10 @@
           <article class="item">
             <h3>Postgres smoke preflight added</h3>
             <p>The Postgres smoke and start helpers now run `pg_isready` first, redact connection credentials in operator output, and point regtest users at `start-postgres` before launching member processes.</p>
+          </article>
+          <article class="item">
+            <h3>Postgres process smoke verified</h3>
+            <p>A disposable local Postgres service backed the setup-only DKG route probe and the full generated federation smoke, covering member schemas, restart catch-up, baseline wallet operations, offline threshold signing, pending melts, quarantine replay, offline keyset rotation, and final convergence.</p>
           </article>
           <article class="item">
             <h3>Payment observation admin view added</h3>
@@ -2650,14 +2654,20 @@
             <tr>
               <td>Backend smoke config matrix</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation -- --test-threads 1` passed 33 mintd federation tests, including Postgres trusted-dealer CLI parsing, distinct per-member Postgres URL generation, shared-base URL schema generation, and invalid option rejection. `cargo build -p cdk-mintd --features federation,fakewallet,sqlite,postgres` passed, and a generated Postgres-backed federation config bundle produced one shared database URL with distinct member schemas. A local Postgres probe found no listening service, so the live process smoke remains pending.</td>
-              <td>Start a live Postgres-backed local federation smoke once a Postgres service is available, then compare the same signed status and state digest gates against the SQLite smoke.</td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation -- --test-threads 1` passed 33 mintd federation tests, including Postgres trusted-dealer CLI parsing, distinct per-member Postgres URL generation, shared-base URL schema generation, and invalid option rejection. `cargo build -p cdk-mintd --features federation,fakewallet,sqlite,postgres` passed, and a generated Postgres-backed federation config bundle produced one shared database URL with distinct member schemas.</td>
+              <td>Keep the Postgres config matrix aligned with any future storage settings added for production federation deployments.</td>
             </tr>
             <tr>
               <td>Postgres federation helper recipes</td>
               <td><span class="status done">Passed</span></td>
-              <td>`just --show fed-regtest-postgres-generate`, `just --show fed-regtest-postgres-preflight`, `just --show fed-regtest-postgres`, `just --show fed-regtest-postgres-start`, `just --show fed-regtest-postgres-status`, `just --show fed-regtest-postgres-stop`, `just --show fed-regtest-postgres-clean`, and `just --summary` passed. `cargo build -p cdk-mintd --features federation,fakewallet,sqlite,postgres,prometheus` passed. `just fed-regtest-postgres-generate` produced a three-member config bundle with Postgres engines, distinct member schemas, Prometheus-enabled member configs, and a smoke script that passes `bash -n`; focused mintd tests for Postgres base-url parsing and artifact generation passed. In this shell, `just fed-regtest-postgres-preflight` correctly failed before member startup with a redacted URL and `start-postgres` hint because no Postgres service is listening.</td>
-              <td>Run `just fed-regtest-postgres` against a live Postgres service and compare convergence, restart, catch-up, metrics, and digest evidence with the SQLite helper smoke.</td>
+              <td>`just --show fed-regtest-postgres-generate`, `just --show fed-regtest-postgres-preflight`, `just --show fed-regtest-postgres`, `just --show fed-regtest-postgres-start`, `just --show fed-regtest-postgres-status`, `just --show fed-regtest-postgres-stop`, `just --show fed-regtest-postgres-clean`, and `just --summary` passed. `cargo build -p cdk-mintd --features federation,fakewallet,sqlite,postgres,prometheus` passed. `just fed-regtest-postgres-generate` produced a three-member config bundle with Postgres engines, distinct member schemas, Prometheus-enabled member configs, and a smoke script that passes `bash -n`; focused mintd tests for Postgres base-url parsing and artifact generation passed. A disposable local Postgres service also passed the helper preflight with redacted credential output.</td>
+              <td>Use the helper recipes for periodic Postgres smoke drills and longer storage-backed partition windows.</td>
+            </tr>
+            <tr>
+              <td>Postgres-backed process smoke</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`just fed-regtest-postgres-dkg-setup` passed with three members, two-threshold setup-only DKG route probing, member restart, and activated keyset exposure backed by Postgres member schemas. `CHECK_PROMETHEUS_METRICS=0 OFFLINE_OPERATION_BATCHES=1 just fed-regtest-postgres` then passed baseline wallet mint/swap/check-state/melt/restore, offline threshold operations, paid and failed pending-melt recovery, quarantine injection and replay, offline keyset rotation, restored old-keyset spend, post-rotation mint/melt, restarted-member catch-up, signed status evidence, digest comparison gates, and clean process shutdown.</td>
+              <td>Repeat the same storage-backed process smoke with longer offline windows and the default five-member topology.</td>
             </tr>
             <tr>
               <td>Offline keyset rotation process smoke</td>
@@ -2747,8 +2757,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Live Postgres smoke</h3>
-            <p>Run `fed-regtest-postgres-dkg-setup` and the longer generated process smoke against a Postgres-backed federation using member schemas, then compare convergence, restart, and catch-up evidence with the SQLite-backed smoke.</p>
+            <h3>Extended Postgres partitions</h3>
+            <p>Repeat the Postgres-backed smoke with longer offline windows and the default five-member topology, then compare digest convergence and signed status evidence with the SQLite-backed long-partition helper.</p>
           </article>
           <article class="item">
             <h3>Longer partition windows</h3>
@@ -2760,7 +2770,7 @@
           </article>
           <article class="item">
             <h3>Rotation state transition</h3>
-            <p>Repeat the offline keyset-rotation smoke with Postgres-backed storage and larger federation sizes.</p>
+            <p>Repeat offline keyset rotation with larger federation sizes and longer offline windows after the three-member SQLite and Postgres variants are now passing.</p>
           </article>
           <article class="item">
             <h3>BFT backend selection</h3>
