@@ -518,15 +518,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated local federation smoke passed end to end, long-partition catch-up smoke passed with five offline batches, and materialized digests now have explicit quarantine-row coverage</span>
+          <span class="value">Generated local federation smoke passed end to end, long-partition catch-up smoke passed with five offline batches, and lagging members now fail closed before primary forwarding</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover quarantine digest rows</span>
+          <span class="value">fix: block lagging public forwarding</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Accepted payment-observation quarantines are now covered by a focused materialized-state digest regression in the Axum federation suite</span>
+          <span class="value">Public federation submits now check local sync readiness before non-primary forwarding, with a regression for lagging members</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -1069,6 +1069,10 @@
           <article class="item">
             <h3>Offline replay has a consensus guard</h3>
             <p>Catch-up replay rejects wrong federation IDs, stale known digests, mismatched operation IDs, and broken journal digest chains before appending anything to the local order.</p>
+          </article>
+          <article class="item">
+            <h3>Lagging public forwarding blocked</h3>
+            <p>Public federation submissions now check local sync readiness before a non-primary member forwards to the deterministic primary, so lagging members fail closed instead of proxying wallet traffic from stale state.</p>
           </article>
           <article class="item">
             <h3>Payment observations use the peer API</h3>
@@ -2332,6 +2336,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation session_outcome_quorum -- --test-threads 1` passed strict quorum, insufficient-quorum, and mismatched-range checks. `cargo test -p cdk-axum --features federation session_outcome_quorum -- --test-threads 1` passed the signed local-status quorum evidence regression.</td>
               <td>Actively collect matching session outcomes from multiple peers after catch-up, then fail closed where policy requires quorum evidence.</td>
+            </tr>
+            <tr>
+              <td>Lagging public submit fail-closed</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation lagging_non_primary_refuses_public_submit_before_forwarding -- --test-threads 1` passed, proving a lagging non-primary member rejects public submits before forwarding to the primary. `cargo test -p cdk-axum --features federation lagging_member_refuses_public_federation_submit_until_healthy -- --test-threads 1` and `cargo test -p cdk-axum --features federation lagging -- --test-threads 1` also passed.</td>
+              <td>Carry the same fail-closed check into any future BFT backend adapter and process-level lag injection.</td>
             </tr>
             <tr>
               <td>Multi-peer session outcome collection</td>

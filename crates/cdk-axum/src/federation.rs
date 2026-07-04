@@ -3545,6 +3545,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lagging_non_primary_refuses_public_submit_before_forwarding() {
+        let (public_config, _, secondary_private) = transport_config();
+        let state =
+            federation_route_state_for_private(public_config.clone(), secondary_private).await;
+        let primary_member = public_config.member(member_id(1)).expect("primary member");
+        state
+            .mark_federation_lagging(primary_member.member_id, 0, 1)
+            .await;
+        let envelope = restore_envelope(
+            public_config.federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+
+        let err = state
+            .submit_federation_envelope(envelope)
+            .await
+            .expect_err("lagging non-primary member must not forward public submits");
+
+        assert!(
+            err.to_string().contains("lagging behind peer 1"),
+            "expected lagging readiness error before primary forwarding, got: {err}"
+        );
+    }
+
+    #[tokio::test]
     async fn rest_peer_client_sync_requires_quorum_evidence_before_public_submit() {
         let (state, public_config, local_private, peer_private) =
             federation_route_state_with_local_private().await;

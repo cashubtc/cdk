@@ -457,6 +457,8 @@ impl MintState {
         &self,
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
+        self.ensure_federation_ready_for_public_submit().await?;
+
         if let Some(response) =
             crate::federation::submit_operation_to_primary_if_needed(self, envelope.clone(), None)
                 .await?
@@ -464,7 +466,6 @@ impl MintState {
             return Ok(response);
         }
 
-        self.ensure_federation_ready_for_public_submit().await?;
         self.submit_federation_envelope_with_sequence(envelope, None)
             .await
     }
