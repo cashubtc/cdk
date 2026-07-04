@@ -518,15 +518,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Replay-derived key rotation now reaches wallet-side threshold aggregation through local connectors and wallet HttpClient transports</span>
+          <span class="value">Replay-derived key rotation now reaches wallet HttpClient aggregation, melt quote status, and check-state views</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover rotated wallet HTTP member aggregation</span>
+          <span class="value">test: cover rotated wallet HTTP status views</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Rotated fake-wallet federation members can now be wrapped in wallet HttpClient transports, exercising REST path serialization for mint, swap, melt-change, restore, and keyset discovery before threshold aggregation</span>
+          <span class="value">Rotated HttpClient member transports now expose melt quote status and check-state after a federated melt, proving the wallet can observe paid settlement and spent inputs through the same threshold member views</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -1579,6 +1579,10 @@
             <p>Rotated member connectors can now sit behind wallet HttpClient transports, proving the REST path serialization boundary for keyset discovery plus mint, swap, melt, and restore aggregation.</p>
           </article>
           <article class="item">
+            <h3>Wallet HTTP status views ready</h3>
+            <p>The rotated HttpClient member smoke now checks melt quote status and proof state after melt, confirming paid settlement and spent-input views converge across threshold member responses.</p>
+          </article>
+          <article class="item">
             <h3>State convergence certification planned</h3>
             <p>The implementation plan now has Milestone 16A, an explicit gate for consensus-visible database equality, canonical snapshots, quorum-backed catch-up evidence, safe catch-up mode, digest comparison, and row-level mismatch diagnostics.</p>
           </article>
@@ -1792,6 +1796,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --lib --features federation federated_mint_connector_aggregates_rotated_http_member_shares -- --test-threads 1` passed. `cargo test -p cdk --lib --features federation wallet::federation -- --test-threads 1` passed 19 tests, including rotated HttpClient member keyset discovery plus mint, swap, melt-change, and restore aggregation. `cargo check -p cdk --lib --features federation`, `cargo check -p cdk-axum --features federation`, `cargo fmt --all`, and `git diff --check` passed.</td>
               <td>Move the same rotated proof into a real Axum router or process-level multi-member smoke, then add rotated status and check-state coverage.</td>
+            </tr>
+            <tr>
+              <td>Wallet HTTP status and state views</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --lib --features federation federated_mint_connector_aggregates_rotated_http_member_shares -- --test-threads 1` passed with rotated melt quote status and spent-input check-state assertions. `cargo test -p cdk --lib --features federation wallet::federation -- --test-threads 1` passed 19 tests. `cargo check -p cdk --lib --features federation`, `cargo check -p cdk-axum --features federation`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Move the same rotated proof into a real Axum router or process-level multi-member smoke.</td>
             </tr>
             <tr>
               <td>State convergence certification plan</td>

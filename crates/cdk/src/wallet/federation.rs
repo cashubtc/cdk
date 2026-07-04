@@ -1925,6 +1925,32 @@ mod tests {
                 );
             }
 
+            if let Some(quote_id) = path.strip_prefix("/v1/mint/quote/bolt11/") {
+                let response = connector
+                    .get_mint_quote_status(PaymentMethod::Known(KnownMethod::Bolt11), quote_id)
+                    .await
+                    .map_err(Self::map_error)?;
+                return match response {
+                    MintQuoteResponse::Bolt11(response) => Self::encode_response(response),
+                    _ => Err(HttpError::Other(
+                        "local member returned non-bolt11 mint quote response".to_string(),
+                    )),
+                };
+            }
+
+            if let Some(quote_id) = path.strip_prefix("/v1/melt/quote/bolt11/") {
+                let response = connector
+                    .get_melt_quote_status(PaymentMethod::Known(KnownMethod::Bolt11), quote_id)
+                    .await
+                    .map_err(Self::map_error)?;
+                return match response {
+                    MeltQuoteResponse::Bolt11(response) => Self::encode_response(response),
+                    _ => Err(HttpError::Other(
+                        "local member returned non-bolt11 melt quote response".to_string(),
+                    )),
+                };
+            }
+
             Err(HttpError::Other(format!(
                 "unsupported local member GET path {path}"
             )))
@@ -1987,6 +2013,15 @@ mod tests {
                     Self::encode_response(
                         connector
                             .post_restore(request)
+                            .await
+                            .map_err(Self::map_error)?,
+                    )
+                }
+                "/v1/checkstate" => {
+                    let request = Self::decode_payload::<CheckStateRequest, _>(payload)?;
+                    Self::encode_response(
+                        connector
+                            .post_check_state(request)
                             .await
                             .map_err(Self::map_error)?,
                     )
@@ -2752,12 +2787,14 @@ mod tests {
             },
         );
 
+        let melt_proof = proof_for_amount(&bundle, 4, "rotated-http-melt");
+        let melt_y = melt_proof.y().expect("melt proof y");
         let melt_response = connector
             .post_melt(
                 &PaymentMethod::Known(KnownMethod::Bolt11),
                 MeltRequest::new(
                     melt_quote_id.to_string(),
-                    vec![proof_for_amount(&bundle, 4, "rotated-http-melt")],
+                    vec![melt_proof],
                     Some(next_change_outputs.clone()),
                 ),
             )
@@ -2772,6 +2809,20 @@ mod tests {
             &[signed_change_output],
             &MintResponse { signatures: change },
         );
+        let melt_status = connector
+            .get_melt_quote_status(
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                &melt_quote_id.to_string(),
+            )
+            .await
+            .expect("rotated HTTP melt status");
+        assert_eq!(melt_status.state(), MeltQuoteState::Paid);
+        let spent_state = connector
+            .post_check_state(CheckStateRequest { ys: vec![melt_y] })
+            .await
+            .expect("rotated HTTP check-state");
+        assert_eq!(spent_state.states.len(), 1);
+        assert_eq!(spent_state.states[0].state, State::Spent);
 
         let restore_response = connector
             .post_restore(RestoreRequest {
