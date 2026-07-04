@@ -103,6 +103,8 @@ Every implementation phase must preserve these invariants:
 - External payment status is never read directly inside deterministic consensus apply logic. It enters consensus as signed observations or designated payment events.
 - Standalone CDK behavior remains available and covered by existing tests.
 
+Database equality means equality of consensus-visible federation state, not byte-for-byte equality of each member's entire database file. Private member configuration, local peer state, local sequence trackers, logs, caches, metrics, and other node-local operational data must be excluded from state digests and row-level convergence checks. Any member whose consensus-visible state digest differs from quorum after deterministic replay must halt or enter manual inspection mode before serving signing shares, melt payment attempts, restore responses, or authoritative check-state responses.
+
 ## Compatibility strategy
 
 The public Cashu protocol should stay mostly unchanged:
@@ -780,6 +782,56 @@ Tests and success criteria:
 - [ ] Network partition heals and all non-faulty members converge or halt on digest mismatch.
 - [ ] State digest mismatch is detected and halts the member in tests.
 
+## Milestone 16A: state convergence and catch-up certification
+
+Objective: prove that any honest federation member that was offline, restarted, or lagging can replay consensus history and converge to the same consensus-visible mint state as the rest of the federation, while refusing unsafe service until catch-up is certified.
+
+Implementation checklist:
+
+- [ ] Define the exact consensus-visible database surface: tables and columns included in federation state equality.
+- [ ] Define the exact local-only database surface: private config, peer connection state, sequence trackers, logs, caches, local metrics, process metadata, and other fields excluded from equality.
+- [ ] Implement a canonical state snapshot/export over consensus-visible rows.
+- [ ] Implement a state digest over the canonical snapshot.
+- [ ] Store state digest history at consensus session boundaries.
+- [ ] Store last applied session, item index, operation hash, outcome hash, and state digest.
+- [ ] Implement an admin command to compare state digests across members.
+- [ ] Implement an optional admin command to diff consensus-visible rows when digests differ.
+- [ ] Require catch-up data to include quorum-signed session outcomes or equivalent authenticated evidence.
+- [ ] Reject catch-up ranges with missing, duplicated, reordered, tampered, or conflicting entries.
+- [ ] Replay accepted operations deterministically from the last durable local height.
+- [ ] Recompute state digest after replay and compare it to quorum-reported digest.
+- [ ] Put lagging members into safe catch-up mode.
+- [ ] In catch-up mode, reject signing shares, melt payment attempts, and authoritative wallet reads.
+- [ ] Exit catch-up mode only after local height and state digest match quorum evidence.
+- [ ] Halt or quarantine the member if local replay produces a digest mismatch.
+- [ ] Regenerate deterministic signature shares from accepted operations if local share rows are missing.
+- [ ] Ensure fake-wallet outgoing payment idempotency prevents duplicate payments after catch-up or restart.
+
+Tests and success criteria:
+
+- [ ] Member offline for 10 accepted operations catches up and reaches the same state digest.
+- [ ] Member offline for 100 or more accepted operations catches up and reaches the same state digest.
+- [ ] Member offline across minting catches up and can return the correct deterministic mint share.
+- [ ] Member offline across swapping catches up to spent input state and rejects conflicting swaps.
+- [ ] Member offline across melting catches up without attempting a duplicate outgoing payment.
+- [ ] Member offline across pending-to-paid melt finalization catches up to paid state.
+- [ ] Member offline across pending-to-failed melt finalization catches up to rolled-back state.
+- [ ] Member offline across payment-observation conflict or quarantine catches up to the quarantined state.
+- [ ] Restart after journal append but before apply replays cleanly.
+- [ ] Restart after apply but before HTTP response returns cached or regenerated outcome.
+- [ ] Restart after signing share but before storing share regenerates the same share.
+- [ ] Lagging member refuses mint, swap, melt, restore, and check-state authority until caught up.
+- [ ] Catch-up rejects tampered operation IDs.
+- [ ] Catch-up rejects reordered ranges.
+- [ ] Catch-up rejects missing entries.
+- [ ] Catch-up rejects duplicate entries.
+- [ ] Catch-up rejects ranges signed by insufficient quorum.
+- [ ] Catch-up rejects ranges signed by unknown members.
+- [ ] Catch-up halts on state digest mismatch.
+- [ ] SQLite and Postgres produce the same state digest from the same accepted operation log.
+- [ ] Optional row-level diff shows the exact consensus-visible row mismatch when digest comparison fails.
+- [ ] Generated regtest stops one member, runs many mint, swap, melt, restore, check-state, payment-observation, and quarantine operations, restarts the member, waits for catch-up, and verifies height plus state digest equality across all members.
+
 ## Milestone 17: `cdk-mintd` integration and regtest tooling
 
 Objective: make the federation easy to run locally.
@@ -1004,5 +1056,6 @@ MVP 3: payments and production hardening
 12. Add networked consensus and cdk-mintd fake federation harness.
 13. Add fake-wallet melt reserve, pending, failure, finalize, and change signing.
 14. Add restore/check-state.
-15. Add network chaos, catch-up, and payment-observation recovery tests.
-16. Add real payment observation policy and DKG.
+15. Add state convergence, catch-up certification, and database-equivalence gates.
+16. Add network chaos, catch-up, and payment-observation recovery tests.
+17. Add real payment observation policy and DKG.

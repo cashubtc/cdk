@@ -72,6 +72,7 @@ use crate::{
 };
 
 const FEDERATION_ROSTER_HASH_VERSION: &[u8] = b"cdk-federation-roster-v1";
+const FEDERATION_DKG_COMMITMENT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-commitment-v1";
 const FEDERATION_DKG_TRANSCRIPT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-transcript-v1";
 const FEDERATION_DKG_TRANSCRIPT_SIGNATURE_VERSION: &[u8] =
     b"cdk-federation-dkg-transcript-signature-v1";
@@ -520,6 +521,28 @@ pub enum FederationError {
     /// A federation REST signature could not be decoded as a Schnorr signature.
     #[error("Invalid federation REST signature encoding")]
     InvalidRestSignature,
+    /// A federation DKG commitment hash must be exactly 32 bytes.
+    #[error("Invalid federation DKG commitment hash size: expected={expected}, found={found}")]
+    InvalidDkgCommitmentHashSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
+    /// A federation DKG commitment message does not match the expected setup.
+    #[error("Federation DKG commitment mismatch for member {member_id}: {reason}")]
+    DkgCommitmentMismatch {
+        /// Member whose DKG commitment material did not match.
+        member_id: MemberId,
+        /// Human-readable mismatch reason.
+        reason: String,
+    },
+    /// A federation DKG commitment round does not match the public config.
+    #[error("Federation DKG commitment round mismatch: {reason}")]
+    DkgCommitmentRoundMismatch {
+        /// Human-readable mismatch reason.
+        reason: String,
+    },
     /// A federation DKG transcript hash must be exactly 32 bytes.
     #[error("Invalid federation DKG transcript hash size: expected={expected}, found={found}")]
     InvalidDkgTranscriptHashSize {
@@ -1310,6 +1333,327 @@ impl FederatedKeyset {
                     keyset_id: self.id,
                 });
             }
+        }
+
+        Ok(())
+    }
+}
+
+/// Stable hash of one member's revealed DKG polynomial commitments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FederationDkgCommitmentHash([u8; 32]);
+
+impl FederationDkgCommitmentHash {
+    /// Create a commitment hash from raw bytes.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Parse a commitment hash from a byte slice.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
+        let bytes: [u8; 32] =
+            bytes
+                .try_into()
+                .map_err(|_| FederationError::InvalidDkgCommitmentHashSize {
+                    expected: 32,
+                    found: bytes.len(),
+                })?;
+        Ok(Self(bytes))
+    }
+
+    /// Parse a commitment hash from hex.
+    pub fn from_hex<S>(hex: S) -> Result<Self>
+    where
+        S: AsRef<str>,
+    {
+        let bytes = crate::util::hex::decode(hex.as_ref())?;
+        Self::from_slice(&bytes)
+    }
+
+    /// Return this commitment hash as bytes.
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    /// Return this commitment hash as hex.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        crate::util::hex::encode(self.0)
+    }
+
+    fn for_reveal(reveal: &FederationDkgParticipantCommitmentReveal) -> Result<Self> {
+        let canonical = serde_json::to_vec(reveal)?;
+        let mut transcript = Vec::new();
+        append_bytes(&mut transcript, FEDERATION_DKG_COMMITMENT_HASH_VERSION);
+        append_bytes(&mut transcript, &canonical);
+        Ok(Self(Sha256Hash::hash(&transcript).to_byte_array()))
+    }
+}
+
+impl fmt::Display for FederationDkgCommitmentHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
+
+impl FromStr for FederationDkgCommitmentHash {
+    type Err = FederationError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Self::from_hex(value)
+    }
+}
+
+impl Serialize for FederationDkgCommitmentHash {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for FederationDkgCommitmentHash {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::from_hex(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// A member's pre-reveal DKG commitment hash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FederationDkgParticipantCommitment {
+    /// Federation roster hash this commitment belongs to.
+    pub federation_id: FederationId,
+    /// Member that committed to later reveal material.
+    pub member_id: MemberId,
+    /// Hash of the member's later public commitment reveal.
+    pub commitment_hash: FederationDkgCommitmentHash,
+}
+
+impl FederationDkgParticipantCommitment {
+    /// Build a commitment from a participant reveal.
+    pub fn from_reveal(reveal: &FederationDkgParticipantCommitmentReveal) -> Result<Self> {
+        Ok(Self {
+            federation_id: reveal.federation_id,
+            member_id: reveal.member_id,
+            commitment_hash: reveal.commitment_hash()?,
+        })
+    }
+
+    /// Validate this commitment against the federation roster.
+    pub fn validate_against_config(&self, public_config: &FederationConfig) -> Result<()> {
+        if self.federation_id != public_config.federation_id {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: self.member_id,
+                reason: "federation id mismatch".to_string(),
+            });
+        }
+        let member =
+            public_config
+                .member(self.member_id)
+                .ok_or(FederationError::UnknownMember {
+                    member_id: self.member_id,
+                })?;
+        if member.member_id != self.member_id {
+            return Err(FederationError::MemberIdMismatch {
+                expected: self.member_id,
+                found: member.member_id,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Validate that a reveal matches this earlier commitment.
+    pub fn validate_reveal(
+        &self,
+        reveal: &FederationDkgParticipantCommitmentReveal,
+        public_config: &FederationConfig,
+    ) -> Result<()> {
+        self.validate_against_config(public_config)?;
+        reveal.validate_against_config(public_config)?;
+        if reveal.member_id != self.member_id {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: self.member_id,
+                reason: "reveal member id mismatch".to_string(),
+            });
+        }
+        let reveal_hash = reveal.commitment_hash()?;
+        if reveal_hash != self.commitment_hash {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: self.member_id,
+                reason: "reveal hash mismatch".to_string(),
+            });
+        }
+
+        Ok(())
+    }
+}
+
+/// Revealed public DKG polynomial commitments for one participant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationDkgParticipantCommitmentReveal {
+    /// Federation roster hash this reveal belongs to.
+    pub federation_id: FederationId,
+    /// Member that reveals public polynomial commitments.
+    pub member_id: MemberId,
+    /// Per-amount public polynomial commitments in G2.
+    ///
+    /// The vector length for each amount must equal the signature threshold.
+    /// Entry 0 is the participant's public constant-term commitment.
+    pub coefficient_commitments: BTreeMap<Amount, Vec<BlsAggregatePublicKey>>,
+}
+
+impl FederationDkgParticipantCommitmentReveal {
+    /// Return the commitment hash that should have been announced before reveal.
+    pub fn commitment_hash(&self) -> Result<FederationDkgCommitmentHash> {
+        FederationDkgCommitmentHash::for_reveal(self)
+    }
+
+    /// Validate this reveal against the federation roster and threshold.
+    pub fn validate_against_config(&self, public_config: &FederationConfig) -> Result<()> {
+        if self.federation_id != public_config.federation_id {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: self.member_id,
+                reason: "federation id mismatch".to_string(),
+            });
+        }
+        if !public_config.members.contains_key(&self.member_id) {
+            return Err(FederationError::UnknownMember {
+                member_id: self.member_id,
+            });
+        }
+        if self.coefficient_commitments.is_empty() {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: self.member_id,
+                reason: "missing coefficient commitments".to_string(),
+            });
+        }
+
+        let expected_coefficients = usize::from(public_config.threshold_params.signature_threshold);
+        for (amount, commitments) in &self.coefficient_commitments {
+            if commitments.len() != expected_coefficients {
+                return Err(FederationError::DkgCommitmentMismatch {
+                    member_id: self.member_id,
+                    reason: format!(
+                        "coefficient commitment count mismatch for amount {amount}: expected={expected_coefficients}, found={}",
+                        commitments.len()
+                    ),
+                });
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// DKG commitment round collected before participants reveal public commitments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationDkgCommitmentRound {
+    /// Federation roster hash for this setup round.
+    pub federation_id: FederationId,
+    /// Deterministic participant order.
+    pub participant_order: Vec<MemberId>,
+    /// Pre-reveal commitment hashes by member.
+    pub commitments: BTreeMap<MemberId, FederationDkgParticipantCommitment>,
+}
+
+impl FederationDkgCommitmentRound {
+    /// Create and validate a commitment round for a public federation config.
+    pub fn new(
+        public_config: &FederationConfig,
+        commitments: BTreeMap<MemberId, FederationDkgParticipantCommitment>,
+    ) -> Result<Self> {
+        let round = Self {
+            federation_id: public_config.federation_id,
+            participant_order: public_config.members.keys().copied().collect(),
+            commitments,
+        };
+        round.validate_against_config(public_config)?;
+        Ok(round)
+    }
+
+    /// Validate this commitment round against the federation roster.
+    pub fn validate_against_config(&self, public_config: &FederationConfig) -> Result<()> {
+        if self.federation_id != public_config.federation_id {
+            return Err(FederationError::DkgCommitmentRoundMismatch {
+                reason: "federation id mismatch".to_string(),
+            });
+        }
+        let expected_order = public_config.members.keys().copied().collect::<Vec<_>>();
+        if self.participant_order != expected_order {
+            return Err(FederationError::DkgCommitmentRoundMismatch {
+                reason: "participant order mismatch".to_string(),
+            });
+        }
+        for member_id in self.commitments.keys() {
+            if !public_config.members.contains_key(member_id) {
+                return Err(FederationError::UnknownMember {
+                    member_id: *member_id,
+                });
+            }
+        }
+        if self.commitments.len() != public_config.members.len() {
+            return Err(FederationError::DkgCommitmentRoundMismatch {
+                reason: "commitment count mismatch".to_string(),
+            });
+        }
+        for member_id in public_config.members.keys() {
+            let commitment = self.commitments.get(member_id).ok_or(
+                FederationError::DkgCommitmentRoundMismatch {
+                    reason: format!("missing commitment for member {member_id}"),
+                },
+            )?;
+            if commitment.member_id != *member_id {
+                return Err(FederationError::MemberIdMismatch {
+                    expected: *member_id,
+                    found: commitment.member_id,
+                });
+            }
+            commitment.validate_against_config(public_config)?;
+        }
+
+        Ok(())
+    }
+
+    /// Validate revealed participant commitments against this earlier commitment round.
+    pub fn validate_reveals(
+        &self,
+        public_config: &FederationConfig,
+        reveals: &BTreeMap<MemberId, FederationDkgParticipantCommitmentReveal>,
+    ) -> Result<()> {
+        self.validate_against_config(public_config)?;
+        for member_id in reveals.keys() {
+            if !public_config.members.contains_key(member_id) {
+                return Err(FederationError::UnknownMember {
+                    member_id: *member_id,
+                });
+            }
+        }
+        if reveals.len() != public_config.members.len() {
+            return Err(FederationError::DkgCommitmentRoundMismatch {
+                reason: "reveal count mismatch".to_string(),
+            });
+        }
+        for member_id in public_config.members.keys() {
+            let reveal =
+                reveals
+                    .get(member_id)
+                    .ok_or(FederationError::DkgCommitmentRoundMismatch {
+                        reason: format!("missing reveal for member {member_id}"),
+                    })?;
+            let commitment = self.commitments.get(member_id).ok_or(
+                FederationError::DkgCommitmentRoundMismatch {
+                    reason: format!("missing commitment for member {member_id}"),
+                },
+            )?;
+            commitment.validate_reveal(reveal, public_config)?;
         }
 
         Ok(())
@@ -2193,6 +2537,51 @@ mod tests {
         )
     }
 
+    fn dkg_reveal(
+        public_config: &FederationConfig,
+        member_id: MemberId,
+        seed: u8,
+    ) -> FederationDkgParticipantCommitmentReveal {
+        FederationDkgParticipantCommitmentReveal {
+            federation_id: public_config.federation_id,
+            member_id,
+            coefficient_commitments: BTreeMap::from([(
+                Amount::from(1),
+                vec![
+                    bls_key(seed).public_key_g2(),
+                    bls_key(seed + 10).public_key_g2(),
+                ],
+            )]),
+        }
+    }
+
+    fn dkg_reveals(
+        public_config: &FederationConfig,
+    ) -> BTreeMap<MemberId, FederationDkgParticipantCommitmentReveal> {
+        [
+            (member_id(1), dkg_reveal(public_config, member_id(1), 11)),
+            (member_id(2), dkg_reveal(public_config, member_id(2), 21)),
+            (member_id(3), dkg_reveal(public_config, member_id(3), 31)),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    fn dkg_commitments(
+        reveals: &BTreeMap<MemberId, FederationDkgParticipantCommitmentReveal>,
+    ) -> BTreeMap<MemberId, FederationDkgParticipantCommitment> {
+        reveals
+            .iter()
+            .map(|(member_id, reveal)| {
+                (
+                    *member_id,
+                    FederationDkgParticipantCommitment::from_reveal(reveal)
+                        .expect("commitment from reveal"),
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn member_id_rejects_zero_and_serializes() {
         assert!(matches!(
@@ -2306,6 +2695,112 @@ mod tests {
             FederationPaymentObservationPolicy::fake_wallet_for_testing()
         );
         decoded.validate().expect("legacy config validates");
+    }
+
+    #[test]
+    fn dkg_commitment_round_validates_pre_reveal_hashes() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let config =
+            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let reveals = dkg_reveals(&config);
+        let commitments = dkg_commitments(&reveals);
+        let round =
+            FederationDkgCommitmentRound::new(&config, commitments).expect("commitment round");
+
+        round
+            .validate_reveals(&config, &reveals)
+            .expect("reveals match commitments");
+
+        let round_json = serde_json::to_string(&round).expect("round json");
+        assert_eq!(
+            serde_json::from_str::<FederationDkgCommitmentRound>(&round_json)
+                .expect("round from json"),
+            round
+        );
+        let commitment_hash = round
+            .commitments
+            .get(&member_id(1))
+            .expect("member commitment")
+            .commitment_hash;
+        let hash_json = serde_json::to_string(&commitment_hash).expect("hash json");
+        assert_eq!(
+            serde_json::from_str::<FederationDkgCommitmentHash>(&hash_json)
+                .expect("hash from json"),
+            commitment_hash
+        );
+    }
+
+    #[test]
+    fn dkg_commitment_round_rejects_changed_reveal_after_commitment() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let config =
+            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let mut reveals = dkg_reveals(&config);
+        let commitments = dkg_commitments(&reveals);
+        let round =
+            FederationDkgCommitmentRound::new(&config, commitments).expect("commitment round");
+        reveals
+            .get_mut(&member_id(1))
+            .expect("member reveal")
+            .coefficient_commitments
+            .get_mut(&Amount::from(1))
+            .expect("amount commitments")[0] = bls_key(99).public_key_g2();
+
+        assert!(matches!(
+            round.validate_reveals(&config, &reveals),
+            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+                if id == member_id(1) && reason == "reveal hash mismatch"
+        ));
+    }
+
+    #[test]
+    fn dkg_commitment_round_rejects_bad_reveal_coefficient_count() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let config =
+            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let mut reveals = dkg_reveals(&config);
+        let commitments = dkg_commitments(&reveals);
+        let round =
+            FederationDkgCommitmentRound::new(&config, commitments).expect("commitment round");
+        reveals
+            .get_mut(&member_id(1))
+            .expect("member reveal")
+            .coefficient_commitments
+            .get_mut(&Amount::from(1))
+            .expect("amount commitments")
+            .pop();
+
+        assert!(matches!(
+            round.validate_reveals(&config, &reveals),
+            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+                if id == member_id(1)
+                    && reason.contains("coefficient commitment count mismatch")
+        ));
+    }
+
+    #[test]
+    fn dkg_commitment_round_rejects_missing_or_unknown_participants() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let config =
+            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let reveals = dkg_reveals(&config);
+        let mut commitments = dkg_commitments(&reveals);
+        commitments.remove(&member_id(2));
+
+        assert!(matches!(
+            FederationDkgCommitmentRound::new(&config, commitments),
+            Err(FederationError::DkgCommitmentRoundMismatch { reason })
+                if reason == "commitment count mismatch"
+        ));
+
+        let mut reveals_with_unknown = dkg_reveals(&config);
+        reveals_with_unknown.remove(&member_id(2));
+        reveals_with_unknown.insert(member_id(99), dkg_reveal(&config, member_id(99), 41));
+        let commitments = dkg_commitments(&reveals_with_unknown);
+        assert!(matches!(
+            FederationDkgCommitmentRound::new(&config, commitments),
+            Err(FederationError::UnknownMember { member_id: id }) if id == member_id(99)
+        ));
     }
 
     #[test]

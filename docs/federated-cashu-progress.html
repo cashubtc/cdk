@@ -104,6 +104,7 @@
     }
 
     .panel {
+      min-width: 0;
       background: rgba(255, 255, 255, 0.92);
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -123,6 +124,7 @@
       gap: 16px;
       border-bottom: 1px solid var(--line);
       padding-bottom: 12px;
+      min-width: 0;
     }
 
     .summary-row:last-child {
@@ -140,6 +142,7 @@
     .value {
       text-align: right;
       font-weight: 700;
+      overflow-wrap: anywhere;
     }
 
     .grid {
@@ -149,6 +152,7 @@
     }
 
     section {
+      min-width: 0;
       padding: 20px;
     }
 
@@ -216,6 +220,11 @@
       font-size: 0.93rem;
     }
 
+    .milestone-index li {
+      padding-left: 2px;
+      overflow-wrap: anywhere;
+    }
+
     .milestone-index li::marker {
       color: var(--accent);
       font-weight: 700;
@@ -230,12 +239,18 @@
       border: 1px solid var(--line);
       border-radius: 8px;
       background: #fbfcfd;
+      min-width: 0;
+    }
+
+    .milestone > div {
+      min-width: 0;
     }
 
     .milestone p,
     .item p {
       color: var(--muted);
       font-size: 0.9rem;
+      overflow-wrap: anywhere;
     }
 
     .milestone .test-gate {
@@ -258,6 +273,7 @@
       border-left: 3px solid var(--accent);
       background: var(--surface-soft);
       border-radius: 6px;
+      min-width: 0;
     }
 
     .test-table {
@@ -274,6 +290,7 @@
       text-align: left;
       vertical-align: top;
       font-size: 0.9rem;
+      overflow-wrap: anywhere;
     }
 
     .test-table th {
@@ -305,6 +322,8 @@
       background: #fff;
       font-weight: 700;
       font-size: 0.88rem;
+      max-width: 100%;
+      white-space: normal;
     }
 
     footer {
@@ -334,6 +353,147 @@
         display: grid;
       }
     }
+
+    @media (max-width: 640px) {
+      .shell {
+        width: min(100% - 20px, 1180px);
+        padding: 20px 0 36px;
+      }
+
+      header {
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+
+      h1 {
+        font-size: clamp(1.85rem, 12vw, 2.55rem);
+        line-height: 1.02;
+      }
+
+      .lede {
+        font-size: 0.98rem;
+      }
+
+      section,
+      .summary {
+        padding: 14px;
+      }
+
+      .links {
+        gap: 8px;
+      }
+
+      .link-pill {
+        flex: 1 1 145px;
+        justify-content: center;
+        text-align: center;
+      }
+
+      .milestone {
+        grid-template-columns: 1fr;
+        align-items: start;
+      }
+
+      .milestone .status {
+        justify-self: start;
+      }
+
+      .test-table {
+        display: block;
+        border-radius: 0;
+        overflow: visible;
+      }
+
+      .test-table thead {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
+
+      .test-table tbody,
+      .test-table tr,
+      .test-table td {
+        display: block;
+        width: 100%;
+      }
+
+      .test-table tr {
+        margin-bottom: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fff;
+        overflow: hidden;
+      }
+
+      .test-table tr:last-child {
+        margin-bottom: 0;
+      }
+
+      .test-table td {
+        border-bottom: 1px solid var(--line);
+        padding: 10px 12px;
+      }
+
+      .test-table td:last-child {
+        border-bottom: 0;
+      }
+
+      .test-table td::before {
+        display: block;
+        margin-bottom: 3px;
+        color: var(--muted);
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .test-table td:nth-child(1)::before {
+        content: "Area";
+      }
+
+      .test-table td:nth-child(2)::before {
+        content: "Status";
+      }
+
+      .test-table td:nth-child(3)::before {
+        content: "Latest evidence";
+      }
+
+      .test-table td:nth-child(4)::before {
+        content: "Next test";
+      }
+    }
+
+    @media (max-width: 420px) {
+      .shell {
+        width: min(100% - 14px, 1180px);
+        padding-top: 14px;
+      }
+
+      section,
+      .summary {
+        padding: 12px;
+      }
+
+      .milestone,
+      .item {
+        padding: 10px;
+      }
+
+      .status {
+        min-height: 24px;
+        padding: 3px 8px;
+        font-size: 0.72rem;
+      }
+
+      .milestone-index {
+        padding-left: 18px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -358,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated private member configs now pin the final federation roster hash</span>
+          <span class="value">DKG setup now has a commit-before-reveal message skeleton</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: bind private federation setup configs</span>
+          <span class="value">feat: add federation DKG commitment round scaffold</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Trusted-dealer private configs store the public federation ID plus setup transcript hash, reject mismatches, and expose both non-secret bindings through federation inspect</span>
+          <span class="value">Federation DKG commitment rounds now hash participant polynomial commitments before reveal, validate roster participants, and reject changed reveals or bad threshold commitment counts</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Add the first real DKG message/transcript skeleton with committed participant setup material, then keep trusted-dealer as the deterministic test path</span>
+          <span class="value">Add signed DKG setup messages over private REST, then connect reveal validation to future share verification</span>
         </div>
       </aside>
     </header>
@@ -379,11 +539,12 @@
       <section class="panel span-8">
         <h2>Implementation Plan Milestones</h2>
         <p class="section-note">
-          The implementation plan has 24 milestones. The ordered list below names
-          them one by one with current status, and each milestone has a matching
-          objective and test-gate card. Each implementation-plan milestone is
-          represented as its own point; no list item or card stands in for a
-          summarized milestone range.
+          The implementation plan has 25 milestone points, including the
+          explicit Milestone 16A convergence certification gate. The ordered list
+          below names them one by one with current status, and each milestone has
+          a matching objective and test-gate card. Each implementation-plan
+          milestone is represented as its own point; no list item or card stands
+          in for a summarized milestone range.
         </p>
         <ol class="milestone-index" aria-label="Expanded milestone index with one point per implementation-plan milestone">
           <li>Milestone 0: written RFC and feature gate. <span class="status done">Done</span></li>
@@ -403,6 +564,7 @@
           <li>Milestone 14: melt reserve and payment finalization. <span class="status progress">In progress</span></li>
           <li>Milestone 15: networking and peer authentication. <span class="status progress">In progress</span></li>
           <li>Milestone 16: member startup, catch-up, and recovery. <span class="status progress">In progress</span></li>
+          <li>Milestone 16A: state convergence and catch-up certification. <span class="status pending">Pending</span></li>
           <li>Milestone 17: cdk-mintd integration and regtest tooling. <span class="status progress">In progress</span></li>
           <li>Milestone 18: storage backend coverage. <span class="status progress">In progress</span></li>
           <li>Milestone 19: real payment backend policy. <span class="status progress">In progress</span></li>
@@ -547,6 +709,14 @@
               <p class="test-gate"><strong>Test gate:</strong> crash-before and crash-after states replay cleanly, missing shares regenerate, lagging members refuse signing, offline members catch up without duplicate payments, and partitions converge or halt on digest mismatch.</p>
             </div>
             <span class="status progress">In progress</span>
+          </li>
+          <li class="milestone">
+            <div>
+              <h3>Milestone 16A: state convergence and catch-up certification</h3>
+              <p>Objective: prove offline, restarted, or lagging members replay consensus history into the same consensus-visible mint state before serving unsafe requests.</p>
+              <p class="test-gate"><strong>Test gate:</strong> canonical state snapshots and digests match across members after long offline windows, catch-up rejects tampered ranges, lagging members refuse authority, and row-level diffing identifies consensus-visible mismatches.</p>
+            </div>
+            <span class="status pending">Pending</span>
           </li>
           <li class="milestone">
             <div>
@@ -1300,6 +1470,14 @@
             <h3>Private setup bindings added</h3>
             <p>Generated private member configs now persist the final federation roster hash alongside the setup transcript hash, reject missing or mismatched bindings, and let `federation inspect` show those non-secret anchors without dumping private keys or BLS shares.</p>
           </article>
+          <article class="item">
+            <h3>DKG commitment round scaffolded</h3>
+            <p>Federation setup types now model pre-reveal DKG commitment hashes and later G2 polynomial commitment reveals, validating participant order, roster membership, threshold-sized coefficient commitments, and changed-reveal rejection.</p>
+          </article>
+          <article class="item">
+            <h3>State convergence certification planned</h3>
+            <p>The implementation plan now has Milestone 16A, an explicit gate for consensus-visible database equality, canonical snapshots, quorum-backed catch-up evidence, safe catch-up mode, digest comparison, and row-level mismatch diagnostics.</p>
+          </article>
         </div>
       </section>
 
@@ -1396,6 +1574,18 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation trusted_dealer -- --test-threads 1` now passes 11 trusted-dealer tests, including setup transcript generation, private federation-ID binding, private transcript-hash binding, missing-binding rejection, tampered payload rejection, invalid member-signature rejection, and unknown signer rejection. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite inspect_report -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1`, `cargo test -p cdk-common --features federation federation -- --test-threads 1`, `cargo test -p cdk-axum --features federation transport_config -- --test-threads 1`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
               <td>Use these signed public/private anchors as the compatibility bridge for real dealer-free DKG transcript verification and restart-safe setup recovery.</td>
+            </tr>
+            <tr>
+              <td>DKG commitment round scaffold</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation dkg -- --test-threads 1` passed the focused commitment-round tests for pre-reveal hash validation, changed reveal rejection, coefficient-count validation, missing participants, unknown participants, and commitment hash JSON round-trips. `cargo test -p cdk-common --features federation federation -- --test-threads 1` now passes 94 federation tests. `cargo check -p cdk-common --features federation --lib`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Carry these commitment and reveal types over signed private REST setup messages, then wire validated reveals into secret-share verification.</td>
+            </tr>
+            <tr>
+              <td>State convergence certification plan</td>
+              <td><span class="status done">Documented</span></td>
+              <td>The implementation plan now defines database equality as consensus-visible state equality, adds Milestone 16A for canonical state snapshots, state digests, quorum-signed catch-up evidence, safe catch-up mode, mismatch halt/quarantine behavior, and long-offline member recovery tests.</td>
+              <td>Implement the canonical snapshot, digest comparison, row-level diff, and generated regtest gates described by Milestone 16A.</td>
             </tr>
             <tr>
               <td>Mintd federation config wiring</td>
