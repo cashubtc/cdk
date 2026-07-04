@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Federation consensus can encode and validate proposed v3/BLS key rotations</span>
+          <span class="value">Accepted key rotations are validated, marked applied, and visible in materialized state digests</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add federated keyset rotation operation</span>
+          <span class="value">feat: materialize federated keyset rotations</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Canonical federation operations now include a keyset-rotation payload with keyset-ID conflict semantics, stable operation hashes, and v3/BLS roster validation before active-keyset switching is wired in</span>
+          <span class="value">Mint replay validates keyset-rotation operations against the local federation roster, marks them applied, and private status digests include deterministic federation-keyset rows for convergence checks</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Persist accepted key-rotation operations into materialized federation state, expose active keyset transitions, and keep old proofs spendable after rotation</span>
+          <span class="value">Derive updated public keyset lists through consensus replay, expose active-keyset transitions to wallets, and keep previous proofs spendable after rotation</span>
         </div>
       </aside>
     </header>
@@ -1555,6 +1555,10 @@
             <p>Federation consensus can now encode proposed aggregate keysets, hash them canonically, dedupe conflicting payloads by keyset ID, and validate that rotation targets are v3/BLS keysets for the current roster.</p>
           </article>
           <article class="item">
+            <h3>Key rotation replay and digest ready</h3>
+            <p>Accepted rotation operations now validate during mint replay, move to applied status, and contribute deterministic federation-keyset rows to private materialized-state digests.</p>
+          </article>
+          <article class="item">
             <h3>State convergence certification planned</h3>
             <p>The implementation plan now has Milestone 16A, an explicit gate for consensus-visible database equality, canonical snapshots, quorum-backed catch-up evidence, safe catch-up mode, digest comparison, and row-level mismatch diagnostics.</p>
           </article>
@@ -1732,6 +1736,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation keyset_rotation -- --test-threads 1` passed 4 tests covering v3/BLS roster validation, non-v3 rejection, keyset-ID conflict semantics, and deterministic operation IDs. `cargo test -p cdk-common --features federation federation -- --test-threads 1` passed 112 federation tests, and `cargo check -p cdk-common --features federation --lib` passed.</td>
               <td>Persist accepted rotation operations into materialized state, switch active signing keysets through consensus, and prove old proofs remain spendable.</td>
+            </tr>
+            <tr>
+              <td>Key rotation replay and digest</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --lib --features federation mint::federation -- --test-threads 1` passed 24 tests, including applied rotation replay. `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 74 tests, including federation-keyset materialized digest tracking. `cargo check -p cdk-axum --features federation` and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed.</td>
+              <td>Switch active signing keysets through consensus replay and verify old keysets remain accepted for proof spending.</td>
             </tr>
             <tr>
               <td>State convergence certification plan</td>
@@ -2362,7 +2372,7 @@
           </article>
           <article class="item">
             <h3>Rotation state transition</h3>
-            <p>Persist accepted key-rotation operations, derive the updated public keyset list through consensus replay, expose active-keyset transitions to wallets, and keep previous proofs spendable after rotation.</p>
+            <p>Derive the updated public keyset list through consensus replay, expose active-keyset transitions to wallets, and keep previous proofs spendable after rotation.</p>
           </article>
           <article class="item">
             <h3>BFT backend selection</h3>

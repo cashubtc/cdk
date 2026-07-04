@@ -12,11 +12,11 @@ use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::federation::{
     FederationBlindSignatureShareSet, FederationConfig, FederationError, FederationId,
-    FederationJournalEntry, FederationMeltOperation, FederationMeltQuoteOperation,
-    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
-    FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationJournalEntry, FederationKeysetRotationOperation, FederationMeltOperation,
+    FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
+    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
+    FederationOperation, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
     FederationSwapOperation, MemberConfigPrivate, MemberId,
@@ -474,6 +474,11 @@ impl Mint {
                 self.apply_federation_melt(entry, operation).await?;
                 Ok(true)
             }
+            FederationOperation::KeysetRotation(operation) => {
+                self.apply_federation_keyset_rotation(entry.operation_id, operation)
+                    .await?;
+                Ok(true)
+            }
             FederationOperation::Restore(_) => Ok(false),
         }
     }
@@ -547,6 +552,21 @@ impl Mint {
         operation: &FederationPaymentObservationQuarantine,
     ) -> Result<(), Error> {
         let _quote_id = quote_id_from_federation(&operation.quote)?;
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn apply_federation_keyset_rotation(
+        &self,
+        operation_id: FederationOperationId,
+        operation: &FederationKeysetRotationOperation,
+    ) -> Result<(), Error> {
+        let config = self.federation_config().ok_or(Error::Internal)?;
+        operation.validate_against_config(config.public_config())?;
+
         let mut tx = self.localstore.begin_transaction().await?;
         tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
             .await?;
@@ -1437,8 +1457,9 @@ mod tests {
     };
     use cdk_common::federation::{
         generate_trusted_dealer_configs, FederationError, FederationJournalEntry,
-        FederationMeltQuotePaymentObservation, FederationMintQuotePaymentObservation,
-        FederationMintRequest, FederationOperation, FederationOperationEnvelope,
+        FederationKeysetRotationOperation, FederationMeltQuotePaymentObservation,
+        FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
+        FederationOperationEnvelope, FederationOperationStatus,
         FederationPaymentObservationContext, FederationPaymentObservationPolicy,
         FederationPaymentObservationQuarantineReason, FederationPaymentTrustModel,
         InMemoryFederationConsensus, InMemoryFederationJournal, MemberId, ThresholdParams,
@@ -1877,6 +1898,36 @@ mod tests {
             consensus.submit_envelope(conflicting_paid),
             Err(FederationError::ConflictingOperation { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn apply_federation_keyset_rotation_marks_operation_applied() {
+        let runtime_config = runtime_config();
+        let (mint, _) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let keyset = runtime_config.public_config().keysets[0].clone();
+        let entry = appended_entry(
+            &mut journal,
+            runtime_config.operation_envelope(FederationOperation::KeysetRotation(
+                FederationKeysetRotationOperation { keyset },
+            )),
+        );
+
+        persist_and_apply_entry(&mint, &entry).await;
+
+        let persisted = mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal lookup");
+        assert_eq!(
+            persisted
+                .iter()
+                .find(|candidate| candidate.operation_id == entry.operation_id)
+                .expect("rotation entry")
+                .status,
+            FederationOperationStatus::Applied
+        );
     }
 
     #[tokio::test]

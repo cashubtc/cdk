@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 use cdk::federation::{
-    FederationConfig, FederationConsensusEngine, FederationConsensusRuntime,
+    FederatedKeyset, FederationConfig, FederationConsensusEngine, FederationConsensusRuntime,
     FederationDkgCommitmentRequest, FederationDkgRevealRequest, FederationDkgSetupResponse,
     FederationDkgTranscriptSignatureRequest, FederationError, FederationId,
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalDigest,
@@ -1482,6 +1482,7 @@ async fn materialized_state_digest(
     let mut payment_quarantines = BTreeSet::new();
     let mut proof_ys = BTreeSet::new();
     let mut blinded_messages = BTreeSet::new();
+    let mut keyset_rotations = Vec::new();
 
     for entry in entries {
         match &entry.envelope.operation {
@@ -1566,7 +1567,18 @@ async fn materialized_state_digest(
                         .map(|output| output.blinded_secret),
                 );
             }
+            FederationOperation::KeysetRotation(operation) => {
+                keyset_rotations.push((entry.index, entry.operation_id, operation.keyset.clone()));
+            }
         }
+    }
+
+    for (operation_index, operation_id, keyset) in keyset_rotations {
+        snapshot.push(federation_keyset_materialized_row(
+            operation_index,
+            operation_id,
+            &keyset,
+        )?);
     }
 
     for quote in mint_quotes {
@@ -1690,6 +1702,36 @@ async fn materialized_state_digest(
     Ok(snapshot.digest()?)
 }
 
+fn federation_keyset_materialized_row(
+    operation_index: u64,
+    operation_id: FederationOperationId,
+    keyset: &FederatedKeyset,
+) -> anyhow::Result<FederationMaterializedStateRow> {
+    Ok(
+        FederationMaterializedStateRow::new("federation_keysets", keyset.id.to_string())
+            .with_field("operation_index", operation_index.to_string())
+            .with_field("operation_id", operation_id.to_string())
+            .with_field("unit", keyset.unit.to_string())
+            .with_field("active", keyset.active.to_string())
+            .with_field("input_fee_ppk", keyset.input_fee_ppk.to_string())
+            .with_field(
+                "final_expiry",
+                keyset
+                    .final_expiry
+                    .map(|expiry| expiry.to_string())
+                    .unwrap_or_default(),
+            )
+            .with_field(
+                "aggregate_keys",
+                serde_json::to_string(&keyset.aggregate_keys)?,
+            )
+            .with_field(
+                "public_shares",
+                serde_json::to_string(&keyset.public_shares)?,
+            ),
+    )
+}
+
 fn optional_amount_value(amount: Option<&cdk::Amount<cdk::nuts::CurrencyUnit>>) -> String {
     amount
         .map(|amount| amount.value().to_string())
@@ -1764,9 +1806,9 @@ mod tests {
     use bip39::Mnemonic;
     use cdk::cdk_payment::PaymentIdentifier;
     use cdk::federation::{
-        generate_trusted_dealer_configs, FederationMintQuotePaymentObservation,
-        FederationOperation, FederationOperationEnvelope, FederationOperationKind,
-        FederationOperationStatus, FederationPaymentObservationPolicy,
+        generate_trusted_dealer_configs, FederationKeysetRotationOperation,
+        FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
+        FederationOperationKind, FederationOperationStatus, FederationPaymentObservationPolicy,
         FederationPaymentObservationQuarantineReason, FederationPaymentObservationReportAction,
         FederationPaymentTrustModel, FederationRestoreOperation, InMemoryFederationConsensus,
         MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
@@ -5489,6 +5531,49 @@ mod tests {
             "status digest should include applied mint database rows, not only the accepted journal"
         );
         assert_ne!(status.state_digest, FederationStateDigest::genesis());
+    }
+
+    #[tokio::test]
+    async fn materialized_state_digest_tracks_keyset_rotation_rows() {
+        let (state, public_config, _) = federation_route_state().await;
+        let consensus = state.federation_consensus.as_ref().expect("consensus");
+        let before_entries = consensus.lock().await.journal().entries().to_vec();
+        let before_digest = materialized_state_digest(&state, &before_entries)
+            .await
+            .expect("before digest");
+        let keyset = public_config.keysets[0].clone();
+        let envelope = FederationOperationEnvelope::new(
+            public_config.federation_id,
+            FederationOperation::KeysetRotation(FederationKeysetRotationOperation { keyset }),
+        );
+        let operation_id = envelope.operation_id().expect("operation id");
+
+        state
+            .submit_federation_envelope(envelope)
+            .await
+            .expect("submit keyset rotation");
+        let after_entries = consensus.lock().await.journal().entries().to_vec();
+        let after_digest = materialized_state_digest(&state, &after_entries)
+            .await
+            .expect("after digest");
+
+        assert_ne!(before_digest, after_digest);
+        assert_ne!(after_digest, FederationStateDigest::genesis());
+
+        let persisted = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal lookup");
+        assert_eq!(
+            persisted
+                .iter()
+                .find(|entry| entry.operation_id == operation_id)
+                .expect("rotation entry")
+                .status,
+            FederationOperationStatus::Applied
+        );
     }
 
     #[tokio::test]
