@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated local federation smoke passed end to end, Postgres smoke cleanup resets generated member schemas, and setup-only DKG route-probe smoke proves restart activation</span>
+          <span class="value">Generated local federation smoke passed end to end, Postgres smoke cleanup resets generated member schemas, and setup-only DKG route-probe smoke now has dedicated helper recipes</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover setup dkg postgres configs</span>
+          <span class="value">test: add dkg setup smoke recipes</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Generated setup-only DKG member configs now preserve both Postgres URL-template and schema-base storage settings in focused generator tests</span>
+          <span class="value">Dedicated setup-only DKG just recipes render cleanly, and the SQLite helper passed a fresh 3-member/2-threshold restart activation smoke</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Run setup-only DKG restart activation against a real Postgres-backed local process environment when Postgres is available</span>
+          <span class="value">Run the setup-only DKG helper and the longer process smoke against a real Postgres-backed local process environment when Postgres is available</span>
         </div>
       </aside>
     </header>
@@ -1643,6 +1643,10 @@
             <p>The Postgres generator tests now assert setup-only DKG member configs carry the same URL-template and schema-base storage settings as the normal generated member configs.</p>
           </article>
           <article class="item">
+            <h3>Setup-only DKG smoke helpers added</h3>
+            <p>`fed-regtest-dkg-setup` and `fed-regtest-postgres-dkg-setup` now provide repeatable setup-only route-probe smoke entrypoints; the SQLite helper passed a fresh 3-member/2-threshold restart activation run.</p>
+          </article>
+          <article class="item">
             <h3>Key rotation operation scaffold ready</h3>
             <p>Federation consensus can now encode proposed aggregate keysets, hash them canonically, dedupe conflicting payloads by keyset ID, and validate that rotation targets are v3/BLS keysets for the current roster.</p>
           </article>
@@ -1954,6 +1958,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1` passed all 6 generator tests, including setup-only DKG assertions for Postgres URL templates and schema-base URLs. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
               <td>Run a real Postgres-backed setup-only DKG restart smoke when a local Postgres service is available.</td>
+            </tr>
+            <tr>
+              <td>Setup-only DKG helper recipes</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`just --show fed-regtest-dkg-setup`, `just --show fed-regtest-postgres-dkg-setup`, and `git diff --check` passed. `just fed-regtest-dkg-setup &lt;generated-dir&gt; 3 2 23885` passed, including member generation, setup-only DKG route probing, member restart, and activated keyset exposure through `/v1/keysets`.</td>
+              <td>Run `just fed-regtest-postgres-dkg-setup` once the local Postgres service is available, then decide whether this fast helper should be chained into the longer wallet/payment smoke.</td>
             </tr>
             <tr>
               <td>Key rotation operation scaffold</td>
@@ -2656,7 +2666,7 @@
         <div class="stack">
           <article class="item">
             <h3>Live Postgres smoke</h3>
-            <p>Run the generated process smoke against a Postgres-backed federation using member schemas, then compare convergence, restart, and catch-up evidence with the SQLite-backed smoke.</p>
+            <p>Run `fed-regtest-postgres-dkg-setup` and the longer generated process smoke against a Postgres-backed federation using member schemas, then compare convergence, restart, and catch-up evidence with the SQLite-backed smoke.</p>
           </article>
           <article class="item">
             <h3>Longer partition windows</h3>
