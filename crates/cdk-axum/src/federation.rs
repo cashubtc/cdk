@@ -415,12 +415,15 @@ async fn post_local_status(
     let payment_observation_reports = payment_observation_report_summaries(&state)
         .await
         .map_err(cdk_error_response)?;
-    Ok(Json(FederationLocalStatusResponse::new(
+    let response = FederationLocalStatusResponse::new(
         peer_status,
         sync_status,
         session_outcome_quorum,
         payment_observation_reports,
-    )))
+    );
+    #[cfg(feature = "prometheus")]
+    record_federation_local_status_metrics(&response);
+    Ok(Json(response))
 }
 
 #[instrument(skip_all)]
@@ -571,6 +574,73 @@ impl FederationLocalStatusResponse {
             session_outcome_quorum_signers,
             payment_observation_reports,
         }
+    }
+}
+
+#[cfg(feature = "prometheus")]
+fn record_federation_local_status_metrics(response: &FederationLocalStatusResponse) {
+    const SYNC_STATES: &[&str] = &[
+        "healthy",
+        "lagging",
+        "catching_up",
+        "verifying_session_outcome",
+        "materialized_state_mismatch",
+        "halted",
+    ];
+    const PAYMENT_REPORT_STATUSES: &[&str] =
+        &["empty", "awaiting_quorum", "quorum_reached", "conflicting"];
+    const PAYMENT_REPORT_ACTIONS: &[&str] = &["none", "inspect", "quarantine"];
+
+    let member = response.peer_status.member_id.to_string();
+    cdk_prometheus::METRICS.set_federation_consensus_operation_count(
+        &member,
+        u64_to_i64_saturating(response.peer_status.operation_count),
+    );
+    cdk_prometheus::METRICS.set_federation_sync_ready(&member, response.sync_ready);
+    for state in SYNC_STATES {
+        cdk_prometheus::METRICS.set_federation_sync_state(
+            &member,
+            state,
+            *state == response.sync_state,
+        );
+    }
+    cdk_prometheus::METRICS.set_federation_session_outcome_quorum_operation_count(
+        &member,
+        response
+            .session_outcome_quorum_operation_count
+            .map(u64_to_i64_saturating)
+            .unwrap_or(0),
+    );
+
+    for status in PAYMENT_REPORT_STATUSES {
+        for action in PAYMENT_REPORT_ACTIONS {
+            cdk_prometheus::METRICS
+                .set_federation_payment_observation_report_count(&member, status, action, 0);
+        }
+    }
+
+    let mut report_counts = BTreeMap::<(String, String), i64>::new();
+    for report in &response.payment_observation_reports {
+        let status = report.status.to_string();
+        let action = report.recommended_action.to_string();
+        match report_counts.get_mut(&(status.clone(), action.clone())) {
+            Some(count) => *count += 1,
+            None => {
+                report_counts.insert((status, action), 1);
+            }
+        }
+    }
+    for ((status, action), count) in report_counts {
+        cdk_prometheus::METRICS
+            .set_federation_payment_observation_report_count(&member, &status, &action, count);
+    }
+}
+
+#[cfg(feature = "prometheus")]
+fn u64_to_i64_saturating(value: u64) -> i64 {
+    match i64::try_from(value) {
+        Ok(value) => value,
+        Err(_) => i64::MAX,
     }
 }
 

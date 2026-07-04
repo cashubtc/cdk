@@ -358,19 +358,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The dashboard now lists every implementation-plan milestone as its own explicit point</span>
+          <span class="value">Federation local-status now emits Prometheus gauges for consensus and operator health</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: expand milestone dashboard coverage</span>
+          <span class="value">feat: add federation status metrics</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">All 24 implementation milestones have explicit line items and matching cards</span>
+          <span class="value">Signed local-status records consensus height, sync readiness, sync state, quorum evidence, and redacted payment-observation report counts</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Resume federation status metrics, five-member drills, and storage-backend smoke comparisons</span>
+          <span class="value">Scrape metrics in fake regtest, add digest-mismatch alert coverage, and broaden storage-backed smoke comparisons</span>
         </div>
       </aside>
     </header>
@@ -1124,6 +1124,10 @@
             <p>The dashboard now renders every implementation-plan milestone as an individual index point plus a matching objective and test-gate card, so milestone coverage is visible without shorthand ranges.</p>
           </article>
           <article class="item">
+            <h3>Federation status metrics emitted</h3>
+            <p>Prometheus now exposes federation local-status gauges for per-member consensus operation count, sync readiness, one-hot sync state, session-outcome quorum coverage, and redacted payment-observation report counts.</p>
+          </article>
+          <article class="item">
             <h3>Storage backend parity tightened</h3>
             <p>Postgres now wires the same federation journal persistence test as SQLite, and SQL common has a DB-free migration parity check for saga federation IDs, journal entries, member sequences, and signed session outcomes.</p>
           </article>
@@ -1815,6 +1819,12 @@
               <td>Reuse the status-level lag, evidence, and payment-alert guards in five-member drills, storage-backend smoke comparisons, and future monitoring scripts.</td>
             </tr>
             <tr>
+              <td>Federation status metrics</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-prometheus` passed 7 unit tests plus 1 doc test, including federation member-status and payment-report gauge coverage. `cargo check -p cdk-axum --features federation,prometheus` passed, and `cargo test -p cdk-axum --features federation,prometheus private_local_status_route -- --test-threads 1` passed 6 signed local-status route regressions with the metrics hook enabled.</td>
+              <td>Scrape the Prometheus endpoint during generated fake-wallet regtest and add injected digest-mismatch alert coverage.</td>
+            </tr>
+            <tr>
               <td>Local federation helper recipes</td>
               <td><span class="status done">Passed</span></td>
               <td>`just --summary` lists `fed-regtest`, `fed-regtest-generate`, `fed-regtest-start`, `fed-regtest-start-member`, `fed-regtest-stop-member`, `fed-regtest-stop`, `fed-regtest-status`, and `fed-regtest-clean`. `fed-regtest-status` now requires readiness, convergence, and session-outcome quorum evidence. `just --show` passed for the smoke, start, status, stop, and clean recipes. `just fed-regtest-generate` produced a three-member, two-threshold fake-wallet federation bundle, and the generated smoke script passed `bash -n`.</td>
@@ -1907,6 +1917,10 @@
       <section class="panel span-6">
         <h2>Next Work</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Metrics scrape in fake regtest</h3>
+            <p>Enable Prometheus in the generated local federation smoke, scrape the metrics endpoint after status checks, and assert federation gauges are present without sensitive labels.</p>
+          </article>
           <article class="item">
             <h3>Live Postgres smoke</h3>
             <p>Run the generated process smoke against a Postgres-backed federation using member schemas, then compare convergence, restart, and catch-up evidence with the SQLite-backed smoke.</p>

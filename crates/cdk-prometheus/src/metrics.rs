@@ -80,6 +80,13 @@ pub struct CdkMetrics {
     mint_operations_total: IntCounterVec,
     mint_in_flight_requests: IntGaugeVec,
     mint_operation_duration: HistogramVec,
+
+    // Federation metrics
+    federation_consensus_operation_count: IntGaugeVec,
+    federation_sync_ready: IntGaugeVec,
+    federation_sync_state: IntGaugeVec,
+    federation_session_outcome_quorum_operation_count: IntGaugeVec,
+    federation_payment_observation_reports: IntGaugeVec,
 }
 
 impl CdkMetrics {
@@ -111,6 +118,15 @@ impl CdkMetrics {
         let (mint_operations_total, mint_operation_duration, mint_in_flight_requests) =
             Self::create_mint_metrics(&registry)?;
 
+        // Create and register federation metrics
+        let (
+            federation_consensus_operation_count,
+            federation_sync_ready,
+            federation_sync_state,
+            federation_session_outcome_quorum_operation_count,
+            federation_payment_observation_reports,
+        ) = Self::create_federation_metrics(&registry)?;
+
         Ok(Self {
             registry,
             http_requests_total,
@@ -127,6 +143,11 @@ impl CdkMetrics {
             mint_operations_total,
             mint_in_flight_requests,
             mint_operation_duration,
+            federation_consensus_operation_count,
+            federation_sync_ready,
+            federation_sync_state,
+            federation_session_outcome_quorum_operation_count,
+            federation_payment_observation_reports,
         })
     }
 
@@ -310,6 +331,75 @@ impl CdkMetrics {
         ))
     }
 
+    /// Create and register federation metrics
+    ///
+    /// # Errors
+    /// Returns an error if any of the metrics cannot be created or registered
+    fn create_federation_metrics(
+        registry: &Registry,
+    ) -> crate::Result<(
+        IntGaugeVec,
+        IntGaugeVec,
+        IntGaugeVec,
+        IntGaugeVec,
+        IntGaugeVec,
+    )> {
+        let federation_consensus_operation_count = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_consensus_operation_count",
+                "Number of consensus operations accepted by a federation member",
+            ),
+            &["member"],
+        )?;
+        registry.register(Box::new(federation_consensus_operation_count.clone()))?;
+
+        let federation_sync_ready = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_sync_ready",
+                "Whether a federation member reports it is ready to serve federation requests",
+            ),
+            &["member"],
+        )?;
+        registry.register(Box::new(federation_sync_ready.clone()))?;
+
+        let federation_sync_state = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_sync_state",
+                "Current sync state for a federation member, exported as one-hot gauges",
+            ),
+            &["member", "state"],
+        )?;
+        registry.register(Box::new(federation_sync_state.clone()))?;
+
+        let federation_session_outcome_quorum_operation_count = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_session_outcome_quorum_operation_count",
+                "Highest federation operation count covered by quorum session-outcome evidence",
+            ),
+            &["member"],
+        )?;
+        registry.register(Box::new(
+            federation_session_outcome_quorum_operation_count.clone(),
+        ))?;
+
+        let federation_payment_observation_reports = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_payment_observation_reports",
+                "Number of redacted payment observation reports grouped by status and recommended action",
+            ),
+            &["member", "status", "action"],
+        )?;
+        registry.register(Box::new(federation_payment_observation_reports.clone()))?;
+
+        Ok((
+            federation_consensus_operation_count,
+            federation_sync_ready,
+            federation_sync_state,
+            federation_session_outcome_quorum_operation_count,
+            federation_payment_observation_reports,
+        ))
+    }
+
     /// Get the metrics registry
     #[must_use]
     pub fn registry(&self) -> Arc<Registry> {
@@ -422,6 +512,47 @@ impl CdkMetrics {
             .with_label_values(&[operation])
             .dec();
     }
+
+    /// Set the observed federation consensus operation count for a member.
+    pub fn set_federation_consensus_operation_count(&self, member: &str, count: i64) {
+        self.federation_consensus_operation_count
+            .with_label_values(&[member])
+            .set(count);
+    }
+
+    /// Set whether a federation member reports that it is ready.
+    pub fn set_federation_sync_ready(&self, member: &str, ready: bool) {
+        self.federation_sync_ready
+            .with_label_values(&[member])
+            .set(if ready { 1 } else { 0 });
+    }
+
+    /// Set a one-hot federation sync-state gauge.
+    pub fn set_federation_sync_state(&self, member: &str, state: &str, active: bool) {
+        self.federation_sync_state
+            .with_label_values(&[member, state])
+            .set(if active { 1 } else { 0 });
+    }
+
+    /// Set the operation count covered by quorum session-outcome evidence.
+    pub fn set_federation_session_outcome_quorum_operation_count(&self, member: &str, count: i64) {
+        self.federation_session_outcome_quorum_operation_count
+            .with_label_values(&[member])
+            .set(count);
+    }
+
+    /// Set the count of redacted payment observation reports for a member.
+    pub fn set_federation_payment_observation_report_count(
+        &self,
+        member: &str,
+        status: &str,
+        action: &str,
+        count: i64,
+    ) {
+        self.federation_payment_observation_reports
+            .with_label_values(&[member, status, action])
+            .set(count);
+    }
 }
 
 impl Default for CdkMetrics {
@@ -435,7 +566,7 @@ mod tests {
     use std::sync::{Mutex, MutexGuard};
     use std::time::Duration;
 
-    use super::{MintMetricGuard, METRICS};
+    use super::{CdkMetrics, MintMetricGuard, METRICS};
 
     static METRICS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -568,5 +699,73 @@ mod tests {
         assert_eq!(payments.get(), payments_before + 1);
         assert_eq!(amount.get_sample_count(), amount_count_before + 1);
         assert_eq!(fee.get_sample_count(), fee_count_before + 1);
+    }
+
+    #[test]
+    fn federation_member_status_metrics_are_labeled_by_member() {
+        let metrics = CdkMetrics::new().expect("metrics should be created");
+        let member = "2";
+
+        metrics.set_federation_consensus_operation_count(member, 7);
+        metrics.set_federation_sync_ready(member, false);
+        metrics.set_federation_sync_state(member, "healthy", false);
+        metrics.set_federation_sync_state(member, "lagging", true);
+        metrics.set_federation_session_outcome_quorum_operation_count(member, 5);
+
+        assert_eq!(
+            metrics
+                .federation_consensus_operation_count
+                .with_label_values(&[member])
+                .get(),
+            7
+        );
+        assert_eq!(
+            metrics
+                .federation_sync_ready
+                .with_label_values(&[member])
+                .get(),
+            0
+        );
+        assert_eq!(
+            metrics
+                .federation_sync_state
+                .with_label_values(&[member, "healthy"])
+                .get(),
+            0
+        );
+        assert_eq!(
+            metrics
+                .federation_sync_state
+                .with_label_values(&[member, "lagging"])
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .federation_session_outcome_quorum_operation_count
+                .with_label_values(&[member])
+                .get(),
+            5
+        );
+    }
+
+    #[test]
+    fn federation_payment_report_metrics_are_labeled_by_status_and_action() {
+        let metrics = CdkMetrics::new().expect("metrics should be created");
+
+        metrics.set_federation_payment_observation_report_count(
+            "2",
+            "conflicting",
+            "quarantine",
+            3,
+        );
+
+        assert_eq!(
+            metrics
+                .federation_payment_observation_reports
+                .with_label_values(&["2", "conflicting", "quarantine"])
+                .get(),
+            3
+        );
     }
 }
