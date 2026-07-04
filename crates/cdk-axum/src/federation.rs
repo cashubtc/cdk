@@ -1875,12 +1875,14 @@ mod tests {
     use bip39::Mnemonic;
     use cdk::cdk_payment::PaymentIdentifier;
     use cdk::federation::{
-        generate_trusted_dealer_configs, FederationKeysetRotationOperation,
+        generate_trusted_dealer_configs, FederationDkgSetupMethod, FederationDkgTranscript,
+        FederationDkgTranscriptSignature, FederationKeysetRotationOperation,
         FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
         FederationOperationKind, FederationOperationStatus, FederationPaymentObservationPolicy,
         FederationPaymentObservationQuarantineReason, FederationPaymentObservationReportAction,
         FederationPaymentTrustModel, FederationRestoreOperation, InMemoryFederationConsensus,
-        MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+        MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
+        TrustedDealerMember,
     };
     use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
     use cdk::mint_url::MintUrl;
@@ -7021,6 +7023,152 @@ mod tests {
             .expect("persisted sequences");
         assert_eq!(sequences.get(&local_member), Some(&3));
         assert_eq!(sequences.get(&peer_private.member_id), Some(&2));
+    }
+
+    #[tokio::test]
+    async fn federation_restart_activates_route_derived_dkg_records() {
+        let (trusted_public_config, local_private, peer_private) = transport_config();
+        let mut setup_public_config = trusted_public_config.clone();
+        setup_public_config.keysets.clear();
+        setup_public_config.setup_transcript = None;
+        setup_public_config.validate().expect("setup public config");
+
+        let mut setup_local_private = local_private.clone();
+        setup_local_private.keyset_secret_shares.clear();
+        setup_local_private.setup_transcript_hash = None;
+        setup_local_private
+            .validate_against_public(&setup_public_config)
+            .expect("setup local private config");
+        let mut setup_peer_private = peer_private.clone();
+        setup_peer_private.keyset_secret_shares.clear();
+        setup_peer_private.setup_transcript_hash = None;
+
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+        let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        let seed = mnemonic.to_seed_normalized("");
+        let state = federation_route_state_for_private_with_db(
+            setup_public_config.clone(),
+            setup_local_private.clone(),
+            db.clone(),
+            &seed,
+        )
+        .await;
+        let local_member = setup_local_private.member_id;
+        persist_complete_dkg_round(
+            &state,
+            &setup_public_config,
+            &setup_local_private,
+            &setup_peer_private,
+        )
+        .await;
+        let local_contribution =
+            dkg_secret_share_request(&setup_public_config, local_member, local_member, 11);
+        state
+            .persist_federation_dkg_secret_share_contribution(&local_contribution, local_member, 3)
+            .await
+            .expect("persist local secret-share contribution");
+        let peer_contribution = dkg_secret_share_request(
+            &setup_public_config,
+            setup_peer_private.member_id,
+            local_member,
+            21,
+        );
+        let peer_request = signed_dkg_secret_share_request(
+            &setup_public_config,
+            &setup_peer_private,
+            local_member,
+            3,
+            peer_contribution,
+        );
+        let _ = post_dkg_secret_share(State(state.clone()), Json(peer_request))
+            .await
+            .expect("peer secret-share accepted");
+
+        let keyset_share = state
+            .mint
+            .localstore()
+            .get_federation_dkg_member_keyset_shares()
+            .await
+            .expect("route-derived keyset shares")
+            .into_iter()
+            .next()
+            .expect("route-derived keyset share");
+        let mut final_public_config = FederationConfig::new(
+            setup_public_config.threshold_params,
+            setup_public_config.members.clone(),
+            vec![keyset_share.keyset.clone()],
+        )
+        .expect("final public config");
+        let transcript_hash = FederationDkgTranscript::hash_for_config(
+            FederationDkgSetupMethod::PedersenDkg,
+            &final_public_config,
+        )
+        .expect("transcript hash");
+        let transcript_signatures = [&setup_local_private, &setup_peer_private]
+            .into_iter()
+            .map(|private_config| {
+                FederationDkgTranscriptSignatureRequest::new(
+                    final_public_config.federation_id,
+                    private_config.member_id,
+                    transcript_hash,
+                    FederationDkgTranscriptSignature::sign(transcript_hash, private_config)
+                        .expect("transcript signature"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let transcript = FederationDkgTranscript::from_signatures(
+            FederationDkgSetupMethod::PedersenDkg,
+            &final_public_config,
+            transcript_signatures
+                .iter()
+                .map(|signature| (signature.signer, signature.signature))
+                .collect(),
+        )
+        .expect("assembled transcript");
+        final_public_config.setup_transcript = Some(transcript);
+        final_public_config
+            .validate()
+            .expect("final public config with transcript");
+
+        let mut tx = state
+            .mint
+            .localstore()
+            .begin_transaction()
+            .await
+            .expect("begin transcript signatures");
+        for signature in &transcript_signatures {
+            tx.add_federation_dkg_transcript_signature(signature)
+                .await
+                .expect("persist transcript signature");
+        }
+        tx.commit().await.expect("commit transcript signatures");
+
+        let restarted = federation_route_state_for_private_with_db(
+            setup_public_config,
+            setup_local_private,
+            db,
+            &seed,
+        )
+        .await;
+        let runtime_config = restarted
+            .mint
+            .federation_config()
+            .expect("activated federation runtime config");
+        assert_eq!(
+            runtime_config.public_config().keysets,
+            final_public_config.keysets
+        );
+        assert_eq!(
+            runtime_config.public_config().setup_transcript,
+            final_public_config.setup_transcript
+        );
+        assert_eq!(
+            runtime_config
+                .private_config()
+                .keyset_secret_shares
+                .get(&keyset_share.keyset.id),
+            Some(&keyset_share.secret_shares)
+        );
     }
 
     #[tokio::test]
