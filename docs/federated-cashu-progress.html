@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">DKG setup messages now have authenticated private REST endpoints</span>
+          <span class="value">DKG setup now has an idempotent setup-state scaffold</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add federation DKG setup private routes</span>
+          <span class="value">feat: add federation DKG setup state scaffold</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Private member routes and the peer client now exchange signed DKG commitment/reveal setup messages, validate sender ownership, acknowledge accepted setup payloads, and persist accepted peer sequences</span>
+          <span class="value">The common federation layer can now collect DKG commitments and reveals idempotently, reject conflicts, require commit-before-reveal ordering, and produce a fully validated round once all members are present</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Persist DKG setup-round state so accepted commitments and reveals survive restart and can be replayed before share verification</span>
+          <span class="value">Back the DKG setup state with durable mint storage and connect the private setup routes to replayable state</span>
         </div>
       </aside>
     </header>
@@ -1483,6 +1483,10 @@
             <p>Federation members now expose signed private REST endpoints for DKG commitments and reveals, the peer client can submit both messages, and accepted setup payloads persist the sender sequence watermark.</p>
           </article>
           <article class="item">
+            <h3>DKG setup state scaffold added</h3>
+            <p>The common federation layer now has an idempotent setup-state collector that accepts replayed commitments/reveals, rejects conflicting setup material, enforces commit-before-reveal, and returns a validated complete round.</p>
+          </article>
+          <article class="item">
             <h3>State convergence certification planned</h3>
             <p>The implementation plan now has Milestone 16A, an explicit gate for consensus-visible database equality, canonical snapshots, quorum-backed catch-up evidence, safe catch-up mode, digest comparison, and row-level mismatch diagnostics.</p>
           </article>
@@ -1600,6 +1604,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation dkg -- --test-threads 1` passed 3 route/client tests covering signed DKG commitment and reveal submission, accepted-route acknowledgement, sender/body mismatch rejection, and no sequence persistence on invalid setup payloads. `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 69 tests, `cargo test -p cdk-common --features federation federation -- --test-threads 1` passed 98 tests, `cargo check -p cdk-common --features federation --lib`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, and `cargo fmt --all` passed.</td>
               <td>Persist DKG setup-round commitments and reveals, then expose restart/catch-up tests for setup-state replay.</td>
+            </tr>
+            <tr>
+              <td>DKG setup state scaffold</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation dkg -- --test-threads 1` passed 11 DKG tests, including idempotent commitment/reveal replay, conflicting commitment and reveal rejection, reveal-before-commit rejection, complete-round validation, and setup-state JSON round-trip. `cargo test -p cdk-common --features federation federation -- --test-threads 1` passed 101 tests. `cargo check -p cdk-common --features federation --lib`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, and `cargo fmt --all` passed.</td>
+              <td>Persist this setup state in mint storage and make private DKG routes replay it after restart.</td>
             </tr>
             <tr>
               <td>State convergence certification plan</td>

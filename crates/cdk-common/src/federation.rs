@@ -1661,6 +1661,154 @@ impl FederationDkgCommitmentRound {
     }
 }
 
+/// In-memory DKG setup state collected from authenticated member setup messages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationDkgSetupState {
+    /// Federation roster hash for this setup state.
+    pub federation_id: FederationId,
+    /// Deterministic participant order.
+    pub participant_order: Vec<MemberId>,
+    /// Pre-reveal commitment hashes collected by member.
+    pub commitments: BTreeMap<MemberId, FederationDkgParticipantCommitment>,
+    /// Revealed public polynomial commitments collected by member.
+    pub reveals: BTreeMap<MemberId, FederationDkgParticipantCommitmentReveal>,
+}
+
+impl FederationDkgSetupState {
+    /// Create an empty DKG setup state for a public federation config.
+    #[must_use]
+    pub fn new(public_config: &FederationConfig) -> Self {
+        Self {
+            federation_id: public_config.federation_id,
+            participant_order: public_config.members.keys().copied().collect(),
+            commitments: BTreeMap::new(),
+            reveals: BTreeMap::new(),
+        }
+    }
+
+    /// Validate this setup state against the federation roster.
+    pub fn validate_against_config(&self, public_config: &FederationConfig) -> Result<()> {
+        if self.federation_id != public_config.federation_id {
+            return Err(FederationError::DkgCommitmentRoundMismatch {
+                reason: "federation id mismatch".to_string(),
+            });
+        }
+        let expected_order = public_config.members.keys().copied().collect::<Vec<_>>();
+        if self.participant_order != expected_order {
+            return Err(FederationError::DkgCommitmentRoundMismatch {
+                reason: "participant order mismatch".to_string(),
+            });
+        }
+        for (member_id, commitment) in &self.commitments {
+            if commitment.member_id != *member_id {
+                return Err(FederationError::MemberIdMismatch {
+                    expected: *member_id,
+                    found: commitment.member_id,
+                });
+            }
+            commitment.validate_against_config(public_config)?;
+        }
+        for (member_id, reveal) in &self.reveals {
+            if reveal.member_id != *member_id {
+                return Err(FederationError::MemberIdMismatch {
+                    expected: *member_id,
+                    found: reveal.member_id,
+                });
+            }
+            reveal.validate_against_config(public_config)?;
+            let commitment =
+                self.commitments
+                    .get(member_id)
+                    .ok_or(FederationError::DkgCommitmentMismatch {
+                        member_id: *member_id,
+                        reason: "missing prior commitment".to_string(),
+                    })?;
+            commitment.validate_reveal(reveal, public_config)?;
+        }
+
+        Ok(())
+    }
+
+    /// Insert a member commitment.
+    ///
+    /// Returns `true` when the state changed and `false` for an idempotent duplicate.
+    pub fn insert_commitment(
+        &mut self,
+        public_config: &FederationConfig,
+        commitment: FederationDkgParticipantCommitment,
+    ) -> Result<bool> {
+        self.validate_against_config(public_config)?;
+        commitment.validate_against_config(public_config)?;
+        if let Some(existing) = self.commitments.get(&commitment.member_id) {
+            if existing == &commitment {
+                return Ok(false);
+            }
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: commitment.member_id,
+                reason: "conflicting commitment".to_string(),
+            });
+        }
+        self.commitments.insert(commitment.member_id, commitment);
+        Ok(true)
+    }
+
+    /// Insert a member reveal after its matching commitment is known.
+    ///
+    /// Returns `true` when the state changed and `false` for an idempotent duplicate.
+    pub fn insert_reveal(
+        &mut self,
+        public_config: &FederationConfig,
+        reveal: FederationDkgParticipantCommitmentReveal,
+    ) -> Result<bool> {
+        self.validate_against_config(public_config)?;
+        reveal.validate_against_config(public_config)?;
+        if let Some(existing) = self.reveals.get(&reveal.member_id) {
+            if existing == &reveal {
+                return Ok(false);
+            }
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: reveal.member_id,
+                reason: "conflicting reveal".to_string(),
+            });
+        }
+        let commitment = self.commitments.get(&reveal.member_id).ok_or(
+            FederationError::DkgCommitmentMismatch {
+                member_id: reveal.member_id,
+                reason: "missing prior commitment".to_string(),
+            },
+        )?;
+        commitment.validate_reveal(&reveal, public_config)?;
+        self.reveals.insert(reveal.member_id, reveal);
+        Ok(true)
+    }
+
+    /// Return whether all member commitments have been collected.
+    #[must_use]
+    pub fn commitments_complete(&self, public_config: &FederationConfig) -> bool {
+        self.commitments.len() == public_config.members.len()
+    }
+
+    /// Return whether all member reveals have been collected.
+    #[must_use]
+    pub fn reveals_complete(&self, public_config: &FederationConfig) -> bool {
+        self.reveals.len() == public_config.members.len()
+    }
+
+    /// Return the fully validated round once all commitments and reveals are present.
+    pub fn complete_round(
+        &self,
+        public_config: &FederationConfig,
+    ) -> Result<Option<FederationDkgCommitmentRound>> {
+        self.validate_against_config(public_config)?;
+        if !self.commitments_complete(public_config) || !self.reveals_complete(public_config) {
+            return Ok(None);
+        }
+        let round = FederationDkgCommitmentRound::new(public_config, self.commitments.clone())?;
+        round.validate_reveals(public_config, &self.reveals)?;
+        Ok(Some(round))
+    }
+}
+
 /// Stable hash of the public federation DKG/setup transcript.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationDkgTranscriptHash([u8; 32]);
@@ -2801,6 +2949,106 @@ mod tests {
         assert!(matches!(
             FederationDkgCommitmentRound::new(&config, commitments),
             Err(FederationError::UnknownMember { member_id: id }) if id == member_id(99)
+        ));
+    }
+
+    #[test]
+    fn dkg_setup_state_collects_commitments_and_reveals_idempotently() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let config =
+            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let reveals = dkg_reveals(&config);
+        let commitments = dkg_commitments(&reveals);
+        let mut state = FederationDkgSetupState::new(&config);
+
+        assert!(state
+            .complete_round(&config)
+            .expect("partial round")
+            .is_none());
+        for commitment in commitments.values() {
+            assert!(state
+                .insert_commitment(&config, *commitment)
+                .expect("insert commitment"));
+            assert!(!state
+                .insert_commitment(&config, *commitment)
+                .expect("duplicate commitment"));
+        }
+        assert!(state.commitments_complete(&config));
+        assert!(state
+            .complete_round(&config)
+            .expect("partial round")
+            .is_none());
+
+        for reveal in reveals.values() {
+            assert!(state
+                .insert_reveal(&config, reveal.clone())
+                .expect("insert reveal"));
+            assert!(!state
+                .insert_reveal(&config, reveal.clone())
+                .expect("duplicate reveal"));
+        }
+
+        assert!(state.reveals_complete(&config));
+        let round = state
+            .complete_round(&config)
+            .expect("complete round")
+            .expect("round complete");
+        round
+            .validate_reveals(&config, &reveals)
+            .expect("reveals validate");
+        let state_json = serde_json::to_string(&state).expect("state json");
+        assert_eq!(
+            serde_json::from_str::<FederationDkgSetupState>(&state_json).expect("state from json"),
+            state
+        );
+    }
+
+    #[test]
+    fn dkg_setup_state_rejects_conflicting_commitment_or_reveal() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let config =
+            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let reveals = dkg_reveals(&config);
+        let mut state = FederationDkgSetupState::new(&config);
+        let first_reveal = reveals.get(&member_id(1)).expect("first reveal").clone();
+        let first_commitment =
+            FederationDkgParticipantCommitment::from_reveal(&first_reveal).expect("commitment");
+        let conflicting_reveal = dkg_reveal(&config, member_id(1), 91);
+        let conflicting_commitment =
+            FederationDkgParticipantCommitment::from_reveal(&conflicting_reveal)
+                .expect("conflicting commitment");
+
+        state
+            .insert_commitment(&config, first_commitment)
+            .expect("insert commitment");
+        assert!(matches!(
+            state.insert_commitment(&config, conflicting_commitment),
+            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+                if id == member_id(1) && reason == "conflicting commitment"
+        ));
+
+        state
+            .insert_reveal(&config, first_reveal)
+            .expect("insert reveal");
+        assert!(matches!(
+            state.insert_reveal(&config, conflicting_reveal),
+            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+                if id == member_id(1) && reason == "conflicting reveal"
+        ));
+    }
+
+    #[test]
+    fn dkg_setup_state_rejects_reveal_without_prior_commitment() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let config =
+            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let reveal = dkg_reveal(&config, member_id(1), 11);
+        let mut state = FederationDkgSetupState::new(&config);
+
+        assert!(matches!(
+            state.insert_reveal(&config, reveal),
+            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+                if id == member_id(1) && reason == "missing prior commitment"
         ));
     }
 
