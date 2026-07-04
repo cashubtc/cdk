@@ -35,18 +35,18 @@ pub use self::journal::{
     FederationStateDigest, InMemoryFederationJournal,
 };
 pub use self::operation::{
-    FederationMeltOperation, FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation,
-    FederationMintOperation, FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
-    FederationMintRequest, FederationOperation, FederationOperationConflictKey,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationPaymentObservation, FederationPaymentObservationEvidenceGroup,
-    FederationPaymentObservationEvidenceGroupSummary, FederationPaymentObservationQuarantine,
-    FederationPaymentObservationQuarantineReason, FederationPaymentObservationQuarantineRecord,
-    FederationPaymentObservationQuorum, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationPaymentObservationReportAction,
-    FederationPaymentObservationReportStatus, FederationPaymentObservationReportSummary,
-    FederationRestoreOperation, FederationSwapOperation, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
-    FEDERATION_OPERATION_VERSION,
+    FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteOperation,
+    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
+    FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationKind, FederationPaymentObservation,
+    FederationPaymentObservationEvidenceGroup, FederationPaymentObservationEvidenceGroupSummary,
+    FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
+    FederationPaymentObservationQuarantineRecord, FederationPaymentObservationQuorum,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationPaymentObservationReportAction, FederationPaymentObservationReportStatus,
+    FederationPaymentObservationReportSummary, FederationRestoreOperation, FederationSwapOperation,
+    FEDERATION_MAX_OPERATION_ENVELOPE_BYTES, FEDERATION_OPERATION_VERSION,
 };
 pub use self::signing::{FederationBlindSignatureShare, FederationBlindSignatureShareSet};
 pub use self::transport::{

@@ -15,9 +15,12 @@ use bitcoin::hashes::Hash;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::journal::FederationJournalEntry;
-use super::{FederationError, FederationId, FederationPaymentObservationContext, MemberId, Result};
+use super::{
+    FederatedKeyset, FederationConfig, FederationError, FederationId,
+    FederationPaymentObservationContext, MemberId, Result,
+};
 use crate::{
-    Amount, BatchMintRequest, MeltQuoteRequest, MeltQuoteState, MeltRequest, MintQuoteRequest,
+    Amount, BatchMintRequest, Id, MeltQuoteRequest, MeltQuoteState, MeltRequest, MintQuoteRequest,
     MintQuoteResponse, MintQuoteState, MintRequest, PaymentMethod, RestoreRequest, SwapRequest,
 };
 
@@ -133,6 +136,8 @@ pub enum FederationOperationKind {
     Swap,
     /// Recreate signatures for previously signed blinded outputs.
     Restore,
+    /// Propose a new federated v3/BLS aggregate keyset.
+    KeysetRotation,
 }
 
 /// Semantic key used to reject mix-and-match duplicates before signing.
@@ -183,6 +188,11 @@ pub enum FederationOperationConflictKey {
         context: FederationPaymentObservationContext,
         /// Quote ID being quarantined.
         quote: String,
+    },
+    /// One aggregate keyset ID may only map to one exact rotation payload.
+    KeysetRotation {
+        /// Proposed aggregate keyset ID.
+        keyset_id: Id,
     },
 }
 
@@ -432,7 +442,8 @@ impl FederationPaymentObservation {
             | FederationOperation::PaymentObservationQuarantine(_)
             | FederationOperation::Melt(_)
             | FederationOperation::Swap(_)
-            | FederationOperation::Restore(_) => None,
+            | FederationOperation::Restore(_)
+            | FederationOperation::KeysetRotation(_) => None,
         }
     }
 
@@ -587,7 +598,8 @@ impl FederationPaymentObservationQuarantineRecord {
             | FederationOperation::MeltQuotePayment(_)
             | FederationOperation::Melt(_)
             | FederationOperation::Swap(_)
-            | FederationOperation::Restore(_) => None,
+            | FederationOperation::Restore(_)
+            | FederationOperation::KeysetRotation(_) => None,
         }
     }
 }
@@ -1040,6 +1052,21 @@ pub struct FederationRestoreOperation {
     pub request: RestoreRequest,
 }
 
+/// Request to add a new federated aggregate keyset through consensus.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationKeysetRotationOperation {
+    /// Proposed public aggregate keyset and every member's public BLS shares.
+    pub keyset: FederatedKeyset,
+}
+
+impl FederationKeysetRotationOperation {
+    /// Validate this proposed keyset against the current federation roster.
+    pub fn validate_against_config(&self, config: &FederationConfig) -> Result<()> {
+        self.keyset
+            .validate(config.threshold_params, &config.members)
+    }
+}
+
 /// Consensus operation payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
@@ -1062,6 +1089,8 @@ pub enum FederationOperation {
     Swap(FederationSwapOperation),
     /// Recreate signatures for previously signed blinded outputs.
     Restore(FederationRestoreOperation),
+    /// Add a new federated aggregate keyset after consensus.
+    KeysetRotation(FederationKeysetRotationOperation),
 }
 
 impl FederationOperation {
@@ -1080,6 +1109,7 @@ impl FederationOperation {
             Self::Melt(_) => FederationOperationKind::Melt,
             Self::Swap(_) => FederationOperationKind::Swap,
             Self::Restore(_) => FederationOperationKind::Restore,
+            Self::KeysetRotation(_) => FederationOperationKind::KeysetRotation,
         }
     }
 
@@ -1132,6 +1162,11 @@ impl FederationOperation {
             Self::Melt(operation) => vec![FederationOperationConflictKey::Melt {
                 quote: operation.request.quote().clone(),
             }],
+            Self::KeysetRotation(operation) => {
+                vec![FederationOperationConflictKey::KeysetRotation {
+                    keyset_id: operation.keyset.id,
+                }]
+            }
             Self::Swap(_) | Self::Restore(_) => Vec::new(),
         }
     }
@@ -1147,7 +1182,7 @@ impl FederationOperation {
             Self::MeltQuotePayment(observation) => Some(observation.quote.as_str()),
             Self::PaymentObservationQuarantine(operation) => Some(operation.quote.as_str()),
             Self::Melt(operation) => Some(operation.request.quote().as_str()),
-            Self::Swap(_) | Self::Restore(_) => None,
+            Self::Swap(_) | Self::Restore(_) | Self::KeysetRotation(_) => None,
         }
     }
 }
@@ -1244,16 +1279,20 @@ fn append_hash_bytes(transcript: &mut Vec<u8>, value: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
+    use std::{collections::BTreeMap, str::FromStr};
 
     use serde_json::json;
 
     use super::*;
-    use crate::federation::InMemoryFederationJournal;
+    use crate::federation::{
+        generate_trusted_dealer_configs, InMemoryFederationJournal, ThresholdParams,
+        TrustedDealerKeysetSpec, TrustedDealerMember,
+    };
+    use crate::nuts::nut01::BlsSecretKey;
     use crate::{
-        BatchMintRequest, BlindedMessage, CurrencyUnit, Id, MeltQuoteCustomRequest,
-        MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteCustomResponse,
-        MintQuoteResponse, Proof, PublicKey,
+        mint_url::MintUrl, BatchMintRequest, BlindedMessage, CurrencyUnit, Id,
+        MeltQuoteCustomRequest, MintQuoteBolt11Request, MintQuoteBolt11Response,
+        MintQuoteCustomResponse, MintQuoteResponse, Proof, PublicKey, SecretKey,
     };
 
     fn federation_id() -> FederationId {
@@ -1270,6 +1309,64 @@ mod tests {
 
     fn public_key(hex: &str) -> PublicKey {
         PublicKey::from_hex(hex).expect("public key")
+    }
+
+    fn identity_secret(member_id: MemberId) -> SecretKey {
+        let mut bytes = [0u8; 32];
+        bytes[31] = member_id.get() as u8;
+        SecretKey::from_slice(&bytes).expect("valid secp256k1 secret")
+    }
+
+    fn trusted_dealer_member(member_id: MemberId) -> TrustedDealerMember {
+        TrustedDealerMember::new(
+            member_id,
+            MintUrl::from_str(&format!("https://mint{}.example.com", member_id.get()))
+                .expect("public mint url"),
+            MintUrl::from_str(&format!("https://fed{}.example.com", member_id.get()))
+                .expect("federation api url"),
+            identity_secret(member_id),
+        )
+    }
+
+    fn bls_key(byte: u8) -> BlsSecretKey {
+        BlsSecretKey::from_reduced_bytes(&[byte; 32])
+    }
+
+    fn rotation_keyset_spec(seed: u8) -> TrustedDealerKeysetSpec {
+        TrustedDealerKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            BTreeMap::from([(Amount::from(1), vec![bls_key(seed), bls_key(seed + 10)])]),
+        )
+    }
+
+    fn federation_config_with_keyset(seed: u8) -> FederationConfig {
+        generate_trusted_dealer_configs(
+            ThresholdParams::with_bft_consensus(3, 2).expect("threshold params"),
+            vec![
+                trusted_dealer_member(member_id(1)),
+                trusted_dealer_member(member_id(2)),
+                trusted_dealer_member(member_id(3)),
+            ],
+            vec![rotation_keyset_spec(seed)],
+        )
+        .expect("trusted dealer config")
+        .public_config
+    }
+
+    fn keyset_rotation(seed: u8) -> FederationKeysetRotationOperation {
+        let keyset = federation_config_with_keyset(seed)
+            .keysets
+            .into_iter()
+            .next()
+            .expect("generated keyset");
+        FederationKeysetRotationOperation { keyset }
+    }
+
+    fn keyset_rotation_operation(seed: u8) -> FederationOperation {
+        FederationOperation::KeysetRotation(keyset_rotation(seed))
     }
 
     fn output(amount: u64, hex: &str) -> BlindedMessage {
@@ -1467,6 +1564,64 @@ mod tests {
         assert!(first
             .conflicts_with(&overlapping_conflict)
             .expect("conflict check"));
+    }
+
+    #[test]
+    fn keyset_rotation_validates_v3_bls_keyset() {
+        let config = federation_config_with_keyset(1);
+        let rotation = keyset_rotation(7);
+
+        rotation
+            .validate_against_config(&config)
+            .expect("rotation keyset validates against roster");
+    }
+
+    #[test]
+    fn keyset_rotation_rejects_non_v3_keyset() {
+        let config = federation_config_with_keyset(1);
+        let mut rotation = keyset_rotation(7);
+        rotation.keyset.id = keyset_id();
+
+        let err = rotation
+            .validate_against_config(&config)
+            .expect_err("non-v3 keyset should be rejected");
+
+        assert!(matches!(
+            err,
+            FederationError::InvalidFederatedKeysetVersion { .. }
+        ));
+    }
+
+    #[test]
+    fn keyset_rotation_conflicts_by_keyset_id() {
+        let first = envelope(keyset_rotation_operation(7));
+        let duplicate = envelope(keyset_rotation_operation(7));
+        let mut changed = keyset_rotation(7);
+        changed.keyset.active = !changed.keyset.active;
+        let changed = envelope(FederationOperation::KeysetRotation(changed));
+
+        assert_eq!(
+            first.operation.conflict_key(),
+            duplicate.operation.conflict_key()
+        );
+        assert!(!first.conflicts_with(&duplicate).expect("conflict check"));
+        assert!(first.conflicts_with(&changed).expect("conflict check"));
+    }
+
+    #[test]
+    fn keyset_rotation_operation_id_tracks_payload() {
+        let first = envelope(keyset_rotation_operation(7));
+        let duplicate = envelope(keyset_rotation_operation(7));
+        let second = envelope(keyset_rotation_operation(8));
+
+        assert_eq!(
+            first.operation_id().expect("operation id"),
+            duplicate.operation_id().expect("operation id")
+        );
+        assert_ne!(
+            first.operation_id().expect("operation id"),
+            second.operation_id().expect("operation id")
+        );
     }
 
     #[test]
@@ -1977,6 +2132,7 @@ mod tests {
                 )],
             },
         });
+        let rotation = keyset_rotation_operation(7);
         let quarantine = FederationOperation::PaymentObservationQuarantine(
             FederationPaymentObservationQuarantine {
                 context: FederationPaymentObservationContext::MintQuote,
@@ -2011,6 +2167,7 @@ mod tests {
             (melt, FederationOperationKind::Melt, Some("melt-quote")),
             (swap, FederationOperationKind::Swap, None),
             (restore, FederationOperationKind::Restore, None),
+            (rotation, FederationOperationKind::KeysetRotation, None),
         ];
 
         for (operation, expected_kind, expected_quote) in operations {
