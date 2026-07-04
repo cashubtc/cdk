@@ -104,6 +104,11 @@ just fed-regtest-stop              # Stop all generated members
 just fed-regtest-clean             # Stop members and remove generated local state
 ```
 
+`just fed-regtest-status` verifies readiness, convergence, and catch-up quorum
+evidence. For stricter monitoring, run `cdk-mintd federation status` with
+`--require-no-payment-observation-alerts` to fail when signed status includes
+stale, conflicting, or quarantined payment-observation reports.
+
 Pass a custom output directory, member count, threshold, or port start when
 needed, for example:
 

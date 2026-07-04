@@ -61,6 +61,9 @@ pub(crate) async fn run_status_command(
     if args.require_session_outcome_quorum {
         ensure_statuses_session_outcome_quorum(&public_config, &statuses)?;
     }
+    if args.require_no_payment_observation_alerts {
+        ensure_statuses_no_payment_observation_alerts(&statuses)?;
+    }
 
     Ok(())
 }
@@ -422,6 +425,40 @@ fn ensure_statuses_session_outcome_quorum(
     Ok(())
 }
 
+fn ensure_statuses_no_payment_observation_alerts(
+    statuses: &[FederationLocalStatusResponse],
+) -> Result<()> {
+    for status in statuses {
+        for report in &status.payment_observation_reports {
+            if payment_observation_report_is_alert(report) {
+                bail!(
+                    "federation member {} reports payment observation alert: context={} quote={} status={} action={} stale={} quarantined={} conflicts={} terminal_conflicts={}",
+                    status.peer_status.member_id,
+                    report.context,
+                    report.quote,
+                    report.status,
+                    report.recommended_action,
+                    report.stale,
+                    report.quarantined,
+                    report.conflicting_observers.len(),
+                    report.competing_terminal_state_observers.len()
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn payment_observation_report_is_alert(report: &FederationPaymentObservationReportSummary) -> bool {
+    report.recommended_action != FederationPaymentObservationReportAction::None
+        || report.status == FederationPaymentObservationReportStatus::Conflicting
+        || report.stale
+        || report.quarantined
+        || !report.conflicting_observers.is_empty()
+        || !report.competing_terminal_state_observers.is_empty()
+}
+
 fn initial_status_sequence() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -608,6 +645,31 @@ mod tests {
         status
     }
 
+    fn payment_report_summary(
+        status: FederationPaymentObservationReportStatus,
+        recommended_action: FederationPaymentObservationReportAction,
+        stale: bool,
+        quarantined: bool,
+    ) -> FederationPaymentObservationReportSummary {
+        FederationPaymentObservationReportSummary {
+            context: FederationPaymentObservationContext::MintQuote,
+            quote: "quote-1".to_string(),
+            required: 2,
+            total_observations: 1,
+            groups: Vec::new(),
+            conflicting_observers: Vec::new(),
+            competing_terminal_state_observers: Vec::new(),
+            status,
+            quote_age_secs: Some(60),
+            stale,
+            recommended_action,
+            quarantined,
+            quarantine_operation_ids: Vec::new(),
+            quarantine_operation_indices: Vec::new(),
+            quarantine_reasons: Vec::new(),
+        }
+    }
+
     #[tokio::test]
     async fn status_query_signs_local_status_requests_for_selected_members() {
         let (public_config, private_config) = status_fixture();
@@ -783,6 +845,85 @@ mod tests {
         assert!(group_line.contains("operation_indices=1,2"));
         assert!(group_line.contains("conflicts=3"));
         assert!(group_line.contains("terminal=true"));
+    }
+
+    #[test]
+    fn status_payment_observation_alert_guard_accepts_normal_reports() {
+        let (public_config, _) = status_fixture();
+        let mut status = local_status(&public_config, 1, 2);
+        status.payment_observation_reports = vec![
+            payment_report_summary(
+                FederationPaymentObservationReportStatus::QuorumReached,
+                FederationPaymentObservationReportAction::None,
+                false,
+                false,
+            ),
+            payment_report_summary(
+                FederationPaymentObservationReportStatus::AwaitingQuorum,
+                FederationPaymentObservationReportAction::None,
+                false,
+                false,
+            ),
+        ];
+
+        ensure_statuses_no_payment_observation_alerts(&[status])
+            .expect("normal payment observation progress has no alert");
+    }
+
+    #[test]
+    fn status_payment_observation_alert_guard_rejects_inspect_action() {
+        let (public_config, _) = status_fixture();
+        let mut status = local_status(&public_config, 1, 2);
+        status.payment_observation_reports = vec![payment_report_summary(
+            FederationPaymentObservationReportStatus::AwaitingQuorum,
+            FederationPaymentObservationReportAction::Inspect,
+            true,
+            false,
+        )];
+
+        let err = ensure_statuses_no_payment_observation_alerts(&[status])
+            .expect_err("stale inspect report should fail");
+
+        assert!(err.to_string().contains("payment observation alert"));
+        assert!(err.to_string().contains("action=inspect"));
+    }
+
+    #[test]
+    fn status_payment_observation_alert_guard_rejects_conflict_status() {
+        let (public_config, _) = status_fixture();
+        let mut status = local_status(&public_config, 1, 2);
+        let mut report = payment_report_summary(
+            FederationPaymentObservationReportStatus::Conflicting,
+            FederationPaymentObservationReportAction::None,
+            false,
+            false,
+        );
+        report.conflicting_observers = vec![MemberId::new(2).expect("member two")];
+        status.payment_observation_reports = vec![report];
+
+        let err = ensure_statuses_no_payment_observation_alerts(&[status])
+            .expect_err("conflicting report should fail");
+
+        assert!(err.to_string().contains("status=conflicting"));
+        assert!(err.to_string().contains("conflicts=1"));
+    }
+
+    #[test]
+    fn status_payment_observation_alert_guard_rejects_quarantine() {
+        let (public_config, _) = status_fixture();
+        let mut status = local_status(&public_config, 1, 2);
+        status.payment_observation_reports = vec![payment_report_summary(
+            FederationPaymentObservationReportStatus::QuorumReached,
+            FederationPaymentObservationReportAction::Quarantine,
+            false,
+            true,
+        )];
+
+        let err = ensure_statuses_no_payment_observation_alerts(&[status])
+            .expect_err("quarantined report should fail");
+
+        assert!(err.to_string().contains("action=quarantine"));
+        assert!(err.to_string().contains("quarantined=true"));
     }
 
     #[test]

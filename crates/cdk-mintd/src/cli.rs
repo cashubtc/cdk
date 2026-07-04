@@ -255,6 +255,9 @@ pub struct FederationStatusArgs {
     /// Fail if queried members with accepted operations lack quorum-backed session outcome evidence.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub require_session_outcome_quorum: bool,
+    /// Fail if queried members report stale, conflicting, or quarantined payment observations.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub require_no_payment_observation_alerts: bool,
 }
 
 #[cfg(all(test, feature = "federation"))]
@@ -554,6 +557,7 @@ mod tests {
             "--require-ready",
             "--require-converged",
             "--require-session-outcome-quorum",
+            "--require-no-payment-observation-alerts",
         ])
         .expect("status command parses");
 
@@ -575,5 +579,6 @@ mod tests {
         assert!(status.require_ready);
         assert!(status.require_converged);
         assert!(status.require_session_outcome_quorum);
+        assert!(status.require_no_payment_observation_alerts);
     }
 }
