@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated SQLite and Postgres federation smokes now pass baseline mint/swap/melt/restore, offline threshold operations, paid and failed pending melts, quarantine replay, offline keyset rotation, member catch-up, and final digest convergence</span>
+          <span class="value">The implementation plan audit now tracks 406 checked items and 107 remaining items. Current code work is focused on opt-in DKG setup route probes, trusted-dealer setup timing, and finer mint-smoke stage timing.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: trace federation smoke stages</span>
+          <span class="value">update impl plan</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Wallet federation signing paths now fan out concurrently, first-healthy-member quote and LNURL fallbacks are covered, auth wallet state propagates across all member connectors, seven-member/five-threshold consensus partition behavior has a fast simulator gate, generated process smokes now bound each smoke-operation scenario and print standard-flow stage timings, consensus backend identity is status-visible, the adapter selector has a backend-neutral runtime slot, live peer sync halts on backend mismatch, and digest-compare now treats equal digests from different consensus backends as divergence</span>
+          <span class="value">The implementation plan now splits code-confirmed partial work into explicit done and remaining checklist items. The working tree adds `--dkg-setup-route-probes`, skips heavy DKG probe fixture generation by default, keeps DKG setup smokes opt-in, validates generated probe shares against public commitments, and prints timing markers for trusted-dealer setup plus mint quote, paid, ready-member, and request substages.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Profile and optimize the seven-member process smoke operation driver, then start the first production BFT ordering adapter behind the status-visible backend selector</span>
+          <span class="value">Run targeted mintd federation setup and smoke tests for the default no-probe generator and opt-in DKG probe path, then profile the seven-member process smoke driver and continue the production BFT backend decision.</span>
         </div>
       </aside>
     </header>
@@ -540,34 +540,34 @@
         <h2>Implementation Plan Milestones</h2>
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
-          explicit Milestone 16A convergence certification gate. The ordered list
-          below names them one by one with current status, and each milestone has
-          a matching objective and test-gate card. Each implementation-plan
-          milestone is represented as its own point; no list item or card stands
-          in for a summarized milestone range.
+          explicit Milestone 16A convergence certification gate. The current
+          checklist has 406 checked entries and 107 remaining entries. The
+          ordered list below names the milestone points one by one with status
+          derived from the latest implementation plan; milestones with any
+          remaining checklist item stay in progress.
         </p>
         <ol class="milestone-index" aria-label="Expanded milestone index with one point per implementation-plan milestone">
-          <li>Milestone 0: written RFC and feature gate. <span class="status done">Done</span></li>
-          <li>Milestone 1: threshold BLS blind signature primitives. <span class="status done">Done</span></li>
-          <li>Milestone 2: federation configuration and trusted-dealer setup. <span class="status done">Done</span></li>
-          <li>Milestone 3: canonical operation encoding and hashes. <span class="status done">Done</span></li>
+          <li>Milestone 0: written RFC and feature gate. <span class="status progress">In progress</span></li>
+          <li>Milestone 1: threshold BLS blind signature primitives. <span class="status progress">In progress</span></li>
+          <li>Milestone 2: federation configuration and trusted-dealer setup. <span class="status progress">In progress</span></li>
+          <li>Milestone 3: canonical operation encoding and hashes. <span class="status progress">In progress</span></li>
           <li>Milestone 4: consensus engine abstraction. <span class="status progress">In progress</span></li>
           <li>Milestone 5: federation DB journal and state digests. <span class="status progress">In progress</span></li>
           <li>Milestone 6: deterministic mint state machine extraction. <span class="status progress">In progress</span></li>
-          <li>Milestone 7: federated key-share signatory. <span class="status done">Done</span></li>
-          <li>Milestone 8: federated mint quote creation and payment observations. <span class="status done">Done</span></li>
-          <li>Milestone 9: federated mint issuance. <span class="status done">Done</span></li>
-          <li>Milestone 10: federated wallet connector and aggregation. <span class="status done">Done</span></li>
-          <li>Milestone 11: federated swap. <span class="status done">Done</span></li>
-          <li>Milestone 12: explicit sliding-window attack regression suite. <span class="status done">Done</span></li>
-          <li>Milestone 13: restore and check-state. <span class="status done">Done</span></li>
+          <li>Milestone 7: federated key-share signatory. <span class="status progress">In progress</span></li>
+          <li>Milestone 8: federated mint quote creation and payment observations. <span class="status progress">In progress</span></li>
+          <li>Milestone 9: federated mint issuance. <span class="status progress">In progress</span></li>
+          <li>Milestone 10: federated wallet connector and aggregation. <span class="status progress">In progress</span></li>
+          <li>Milestone 11: federated swap. <span class="status progress">In progress</span></li>
+          <li>Milestone 12: explicit sliding-window attack regression suite. <span class="status progress">In progress</span></li>
+          <li>Milestone 13: restore and check-state. <span class="status progress">In progress</span></li>
           <li>Milestone 14: melt reserve and payment finalization. <span class="status progress">In progress</span></li>
           <li>Milestone 15: networking and peer authentication. <span class="status progress">In progress</span></li>
           <li>Milestone 16: member startup, catch-up, and recovery. <span class="status progress">In progress</span></li>
           <li>Milestone 16A: state convergence and catch-up certification. <span class="status progress">In progress</span></li>
           <li>Milestone 17: cdk-mintd integration and regtest tooling. <span class="status progress">In progress</span></li>
           <li>Milestone 18: storage backend coverage. <span class="status progress">In progress</span></li>
-          <li>Milestone 19: real payment backend policy. <span class="status progress">In progress</span></li>
+          <li>Milestone 19: real payment backend policy. <span class="status done">Done</span></li>
           <li>Milestone 20: distributed key generation. <span class="status progress">In progress</span></li>
           <li>Milestone 21: key rotation and federation upgrades. <span class="status progress">In progress</span></li>
           <li>Milestone 22: observability and operator safety. <span class="status progress">In progress</span></li>
@@ -580,7 +580,7 @@
               <p>Objective: make the safety model explicit before code paths start diverging.</p>
               <p class="test-gate"><strong>Test gate:</strong> feature-disabled workspace tests pass, feature-enabled federation stubs compile, and the future-PR review checklist exists.</p>
             </div>
-            <span class="status done">Done</span>
+            <span class="status progress">In progress</span>
           </li>
           <li class="milestone">
             <div>
@@ -588,7 +588,7 @@
               <p>Objective: add the cryptographic building blocks without touching mint state logic.</p>
               <p class="test-gate"><strong>Test gate:</strong> 1-of-1 matches standalone BLS, threshold subsets aggregate, duplicate or invalid shares fail, and randomized property tests pass.</p>
             </div>
-            <span class="status done">Done</span>
+            <span class="status progress">In progress</span>
           </li>
           <li class="milestone">
             <div>
@@ -596,7 +596,7 @@
               <p>Objective: create deterministic federation configs and local key shares for test federations.</p>
               <p class="test-gate"><strong>Test gate:</strong> generated members agree on federation identity, roster, and aggregate v3 keysets; identity keys and shares validate; malformed configs fail startup.</p>
             </div>
-            <span class="status done">Done</span>
+            <span class="status progress">In progress</span>
           </li>
           <li class="milestone">
             <div>
@@ -604,7 +604,7 @@
               <p>Objective: make every consensus operation uniquely and deterministically identified.</p>
               <p class="test-gate"><strong>Test gate:</strong> golden vectors stay stable, equivalent operations hash identically, changed request material changes the hash, and bad encodings are rejected.</p>
             </div>
-            <span class="status done">Done</span>
+            <span class="status progress">In progress</span>
           </li>
           <li class="milestone">
             <div>
@@ -636,7 +636,7 @@
               <p>Objective: let each member sign only with its own BLS share while advertising aggregate keys.</p>
               <p class="test-gate"><strong>Test gate:</strong> members never return final signatures, shares verify and aggregate, standalone signing is unchanged, and federation signing rejects non-v3 or non-BLS keysets.</p>
             </div>
-            <span class="status done">Done</span>
+            <span class="status progress">In progress</span>
           </li>
           <li class="milestone">
             <div>
@@ -644,7 +644,7 @@
               <p>Objective: make all members agree on mint quotes and paid status.</p>
               <p class="test-gate"><strong>Test gate:</strong> quotes created on one member appear on all members, fake-wallet payment observations mark them paid everywhere, duplicate observations do not double-count, conflicts are rejected, and digests match.</p>
             </div>
-            <span class="status done">Done</span>
+            <span class="status progress">In progress</span>
           </li>
           <li class="milestone">
             <div>
@@ -652,7 +652,7 @@
               <p>Objective: issue eCash from paid quotes only after the exact issuance request is accepted by consensus.</p>
               <p class="test-gate"><strong>Test gate:</strong> paid quotes mint through threshold members, batch minting updates all quotes, replays return stored shares, conflicting output sets fail, crash retries recover, and NUT-20 tests pass.</p>
             </div>
-            <span class="status done">Done</span>
+            <span class="status progress">In progress</span>
           </li>
           <li class="milestone">
             <div>
@@ -660,7 +660,7 @@
               <p>Objective: make the wallet see normal Cashu responses while the connector handles member fanout.</p>
               <p class="test-gate"><strong>Test gate:</strong> the connector mints valid aggregate proofs, tolerates offline or bad-share members when threshold remains reachable, and rejects mismatched or non-v3 aggregate keysets.</p>
             </div>
-            <span class="status done">Done</span>
+            <span class="status progress">In progress</span>
           </li>
           <li class="milestone">
             <div>
@@ -668,7 +668,7 @@
               <p>Objective: prevent double-spends and mix-and-match output attacks for swaps.</p>
               <p class="test-gate"><strong>Test gate:</strong> normal swaps succeed, concurrent double-spends accept only once, replays are idempotent, conflicting outputs fail, and P2PK, HTLC, and SIG_ALL tests pass.</p>
             </div>
-            <span class="status done">Done</span>
+            <span class="status progress">In progress</span>
           </li>
           <li class="milestone">
             <div>
@@ -676,7 +676,7 @@
               <p>Objective: prove that threshold shares cannot be mixed across different output sets.</p>
               <p class="test-gate"><strong>Test gate:</strong> only one exact operation receives enough shares, unpaid extra outputs cannot aggregate, conflicts are rejected before signing, digests match, and the same attack fails only against the intentionally naive test double.</p>
             </div>
-            <span class="status done">Done</span>
+            <span class="status progress">In progress</span>
           </li>
           <li class="milestone">
             <div>
@@ -684,7 +684,7 @@
               <p>Objective: support wallet recovery without reintroducing unsafe signing.</p>
               <p class="test-gate"><strong>Test gate:</strong> wallets restore from threshold member responses, unknown or never-consensus outputs receive no shares, and check-state answers match across honest members.</p>
             </div>
-            <span class="status done">Done</span>
+            <span class="status progress">In progress</span>
           </li>
           <li class="milestone">
             <div>
@@ -740,7 +740,7 @@
               <p>Objective: move beyond fake wallet without centralizing payment trust accidentally.</p>
               <p class="test-gate"><strong>Test gate:</strong> fake-wallet and real-backend policies are separate, a single malicious observation cannot mark a quote paid, conflicting amounts are not silently accepted, and stale pending payments are operator-visible.</p>
             </div>
-            <span class="status progress">In progress</span>
+            <span class="status done">Done</span>
           </li>
           <li class="milestone">
             <div>
@@ -780,6 +780,18 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Plan audit refreshed</h3>
+            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 406 checked items and 107 explicit next items.</p>
+          </article>
+          <article class="item">
+            <h3>DKG probe generation made opt-in</h3>
+            <p>The current working tree adds a `--dkg-setup-route-probes` generator switch, keeps DKG route probe fixtures out of default smoke bundles, and preserves the dedicated DKG setup smoke path.</p>
+          </article>
+          <article class="item">
+            <h3>Setup and mint timing exposed</h3>
+            <p>The current working tree prints trusted-dealer setup stages and mint quote, payment, readiness, and request substages so long smoke runs can be profiled without guessing where time went.</p>
+          </article>
           <article class="item">
             <h3>Implementation plan committed</h3>
             <p>The federation architecture, invariants, test ladder, fake-wallet matrix, and network strategy are available as a step-by-step checklist.</p>
@@ -2894,6 +2906,14 @@
       <section class="panel span-6">
         <h2>Next Work</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Probe opt-in regression</h3>
+            <p>Run the mintd federation setup tests proving default generated bundles skip DKG route probe fixtures, opt-in bundles still write them, and the generated DKG setup smoke passes.</p>
+          </article>
+          <article class="item">
+            <h3>Smoke timing validation</h3>
+            <p>Run the generated SQLite and Postgres smoke paths far enough to confirm trusted-dealer and mint substage timing markers appear around the slow paths without changing wallet behavior.</p>
+          </article>
           <article class="item">
             <h3>Extended Postgres partitions</h3>
             <p>Extend the now-passing five-member Postgres long-partition smoke to larger rosters, longer offline windows, and repeated runs that can expose slow polling, storage contention, or convergence flakiness.</p>
