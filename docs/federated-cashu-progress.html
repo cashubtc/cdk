@@ -522,11 +522,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: generate dkg setup route probe</span>
+          <span class="value">fix: run dkg route probe before status</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Trusted-dealer local artifacts now include signed DKG commitment, reveal, and secret-share route-probe JSON plus an opt-in smoke hook that posts them to private REST routes</span>
+          <span class="value">The opt-in DKG setup route probe now posts precomputed signed requests before signed status traffic and retries while member listeners come online</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -1616,7 +1616,7 @@
           </article>
           <article class="item">
             <h3>Generated DKG route probe ready</h3>
-            <p>The local federation generator now writes signed DKG setup request JSON for every sender/receiver pair, validates the generated commitment round and receiver shares, and adds an opt-in smoke hook that posts the files to private DKG REST routes and waits for setup-record counts.</p>
+            <p>The local federation generator now writes signed DKG setup request JSON for every sender/receiver pair, validates the generated commitment round and receiver shares, and adds an opt-in smoke hook that posts the files to private DKG REST routes before signed status checks consume sequence numbers.</p>
           </article>
           <article class="item">
             <h3>Key rotation operation scaffold ready</h3>
@@ -1898,7 +1898,7 @@
             <tr>
               <td>Generated DKG setup route probe</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1` passed with generated signed DKG commitment/reveal/secret-share JSON verification and smoke-script route-probe assertions. `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, and `git diff --check` passed.</td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1` passed with generated signed DKG commitment/reveal/secret-share JSON verification, retrying curl post assertions, and pre-status route-probe ordering checks. `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, and `git diff --check` passed.</td>
               <td>Run the generated local smoke with `PROBE_DKG_SETUP_ROUTES=1`, then promote this from a trusted-dealer route probe to setup-only DKG startup activation.</td>
             </tr>
             <tr>

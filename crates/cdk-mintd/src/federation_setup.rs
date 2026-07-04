@@ -1114,7 +1114,14 @@ run_smoke_operations() {{
 post_dkg_setup_request() {{
   local endpoint="$1"
   local request_file="$2"
-  curl -fsS -H 'content-type: application/json' --data-binary "@$request_file" "$endpoint" >/dev/null
+  for _ in $(seq 1 "$STATUS_RETRIES"); do
+    if curl -fsS -H 'content-type: application/json' --data-binary "@$request_file" "$endpoint" >/dev/null; then
+      return 0
+    fi
+    sleep "$STATUS_SLEEP_SECONDS"
+  done
+  printf 'could not post DKG setup route-probe request %s to %s\n' "$request_file" "$endpoint" >&2
+  return 1
 }}
 
 probe_dkg_setup_routes() {{
@@ -1305,13 +1312,13 @@ for member in "${{MEMBERS[@]}}"; do
   start_member "$member"
 done
 
+probe_dkg_setup_routes
+wait_for_dkg_setup_records
+
 for member in "${{MEMBERS[@]}}"; do
   wait_for_status "$member"
   wait_for_dkg_status "$member"
 done
-
-probe_dkg_setup_routes
-wait_for_dkg_setup_records
 
 wait_for_converged
 wait_for_prometheus_metrics
@@ -1590,9 +1597,12 @@ mod tests {
         assert!(smoke_script.contains("probe_dkg_setup_routes()"));
         assert!(smoke_script.contains("post_dkg_setup_request()"));
         assert!(smoke_script.contains("wait_for_dkg_setup_records()"));
+        assert!(smoke_script.contains("could not post DKG setup route-probe request"));
         assert!(smoke_script.contains("/federation/v1/dkg/commitments"));
         assert!(smoke_script.contains("/federation/v1/dkg/reveals"));
         assert!(smoke_script.contains("/federation/v1/dkg/secret-shares"));
+        assert!(smoke_script
+            .contains("probe_dkg_setup_routes\nwait_for_dkg_setup_records\n\nfor member in"));
         assert!(smoke_script.contains("wait_for_dkg_status()"));
         assert!(smoke_script.contains("print_dkg_record_runbook()"));
         assert!(smoke_script.contains("DKG record recovery for member"));
