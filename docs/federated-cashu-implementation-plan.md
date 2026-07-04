@@ -78,7 +78,7 @@ Current confirmed shape:
 - Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes, in-memory consensus scaffold, private REST peer envelopes, federation journal persistence, mint/swap/melt/restore/check-state apply paths, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
 - Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, exact deterministic binary operation encoding, a separate `federation_signature_share` table, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
 - Test-suite status: this audit read code and tests but did not run the full workspace test suite.
-- Latest checkpoint: seven-member/five-threshold in-memory consensus partition coverage now has a fast test gate, and generated live smoke scripts now pass a bounded `federation smoke-operations` timeout. A seven-member live smoke generated configs and started all members, but the baseline operation driver stayed CPU-bound long enough to require manual interruption, so profiling that hot path remains open before promoting seven-member live smokes to the regular matrix.
+- Latest checkpoint: seven-member/five-threshold in-memory consensus partition coverage now has a fast test gate, generated live smoke scripts now pass a bounded `federation smoke-operations` timeout, and the standard smoke path emits stage timing markers for wallet setup, mint, swap, check-state, melt quote, melt visibility, melt confirmation, and restore. A seven-member live smoke generated configs and started all members, but the baseline operation driver stayed CPU-bound long enough to require manual interruption, so profiling that hot path remains open before promoting seven-member live smokes to the regular matrix.
 
 ## Key observations
 
@@ -306,9 +306,9 @@ Implementation checklist:
 
 Tests and success criteria:
 
-- [ ] Existing `cargo test --lib --workspace --exclude cdk-postgres` passes with the feature disabled. Status: not re-run during the 2026-07-04 audit.
-- [ ] Enabling the feature compiles a stub crate or module with no behavior change. Status: implementation exists, but this broad compile check was not re-run during the audit.
-- [ ] A review checklist exists for all future federation PRs: determinism, consensus-before-signing, operation hashing, state digest, attack tests. Status: still needs a dedicated checklist document or PR template.
+- [ ] Re-run `cargo test --lib --workspace --exclude cdk-postgres` with the feature disabled and record the result.
+- [ ] Re-run a feature-enabled workspace compile/check and confirm standalone behavior remains unchanged.
+- [ ] Add a dedicated review checklist document or PR template for future federation PRs: determinism, consensus-before-signing, operation hashing, state digest, attack tests.
 
 ## Milestone 1: threshold BLS blind signature primitives
 
@@ -326,18 +326,21 @@ Implementation checklist:
 - [x] Verify aggregate blind signatures with existing `verify_bls_blind_signature`.
 - [x] Unblind aggregate signatures with existing BLS unblinding logic and verify final proofs with existing `verify_bls_message`.
 - [x] Add serialization for share types with explicit versioning and no secret key debug leakage.
-- [ ] Add zeroization for secret shares where practical. Status: no explicit zeroization implementation was found in the BLS share types during the audit.
+- [ ] Add zeroization for secret shares where practical.
 
 Tests and success criteria:
 
 - [x] Unit test 1-of-1 threshold produces the same final signature as the existing standalone BLS signer.
-- [ ] Unit test 3-of-5 and 4-of-7 aggregate signatures verify under aggregate public keys. Status: 3-of-5 and 4-of-6 coverage exists; add an explicit 4-of-7 case if that exact acceptance criterion matters.
+- [x] Unit test 3-of-5 aggregate signatures verify under aggregate public keys.
+- [x] Unit test multi-threshold and order-permutation aggregation, including a 4-of-6 case.
+- [ ] Add an explicit 4-of-7 aggregate signature test if that exact threshold/member count remains a release criterion.
 - [x] Unit test any valid threshold subset aggregates to the same final signature.
 - [x] Unit test insufficient shares cannot aggregate.
 - [x] Unit test duplicate signer IDs are rejected.
 - [x] Unit test invalid share fails verification before aggregation.
 - [x] Unit test share/order permutations produce identical aggregate signatures.
-- [ ] Property test random messages, thresholds, and subsets. Status: deterministic multi-case tests exist, but no randomized/property test was found.
+- [x] Add deterministic multi-case tests for messages, thresholds, and signer subsets.
+- [ ] Add randomized/property tests for random messages, thresholds, and signer subsets.
 - [x] Existing NUT-00 BLS proof verification passes for aggregate proofs.
 
 ## Milestone 2: federation configuration and trusted-dealer setup
@@ -347,9 +350,12 @@ Objective: create deterministic federation configs and local key shares for test
 Implementation checklist:
 
 - [x] Add `FederationConfig` with federation ID, member set, consensus params, signature threshold, keyset metadata, supported units, and protocol versions.
-- [ ] Add `MemberConfigPublic` with member ID, public API URL, private federation REST URL, P2P endpoint, federation identity public key, optional TLS/Noise/Iroh public key, and public BLS shares. Status: public wallet URL, private federation REST URL, identity key, and BLS public shares exist; P2P/TLS/Noise/Iroh identity fields remain deferred.
-- [ ] Add `MemberConfigPrivate` with member ID, federation identity private key, P2P private key, local secret BLS shares, payment backend config, and DB path. Status: member ID, identity secret, local secret BLS shares, and config-file wiring exist; P2P private key is not implemented.
-- [ ] Add `FederationRoster` mapping every member ID to its identity public key, endpoint set, and BLS public shares. Status: roster behavior is implemented as ordered maps in `FederationConfig`; no separate `FederationRoster` type was found.
+- [x] Add public member config data with member ID, public API URL, private federation REST URL, federation identity public key, and public BLS shares.
+- [ ] Extend public member config with P2P endpoint and optional TLS/Noise/Iroh identity fields when non-REST transports are added.
+- [x] Add private member config data with member ID, federation identity private key, local secret BLS shares, and config-file/runtime wiring.
+- [ ] Extend private member config with P2P private key, payment backend config, and DB path fields if those remain member-private rather than mintd runtime config.
+- [x] Represent the federation roster deterministically in `FederationConfig`, mapping member IDs to identity public keys, endpoint data, and BLS public shares.
+- [ ] Add a dedicated `FederationRoster` wrapper only if future code needs a stronger type boundary than the ordered maps in `FederationConfig`.
 - [x] Add `FederatedKeyset` with aggregate public keys per amount and public shares per member.
 - [x] Define deterministic member ordering and reject duplicate member IDs.
 - [x] Generate Cashu keyset IDs from aggregate public keys, not member share public keys.
@@ -374,7 +380,8 @@ Tests and success criteria:
 - [x] A config with mismatched member identity public key is rejected.
 - [x] A config missing a federation partner public key is rejected.
 - [x] A config with duplicate member IDs is rejected.
-- [ ] A config generated twice with the same deterministic test seed matches byte-for-byte except explicitly random fields. Status: trusted-dealer tests cover deterministic IDs and validation, but the generator currently creates fresh random identity/secret material for normal output.
+- [x] Trusted-dealer tests cover deterministic IDs and validation for generated federation material.
+- [ ] Add a deterministic test-seed mode where a config generated twice matches byte-for-byte except explicitly random fields.
 
 ## Milestone 3: canonical operation encoding and hashes
 
@@ -383,8 +390,10 @@ Objective: make every consensus operation uniquely and deterministically identif
 Implementation checklist:
 
 - [x] Define `FederatedMintOperation` enum with versioned variants.
-- [ ] Start with variants: `CreateMintQuote`, `ObserveMintQuotePayment`, `IssueMint`, `Swap`, `RestoreRequest`, `MeltReserve`, `ObserveMeltPayment`, `FinalizeMelt`, `RollbackMelt`. Status: implemented variants use CDK names (`MintQuote`, `MintQuotePayment`, `Mint`, `Swap`, `MeltQuote`, `MeltQuotePayment`, `Melt`, `Restore`, `PaymentObservationQuarantine`, `KeysetRotation`); exact reserve/finalize/rollback split remains partially represented through melt quote/payment states and saga recovery.
-- [ ] Use a deterministic binary encoding for consensus data. Avoid raw JSON and unordered maps. Status: deterministic canonical JSON is implemented and tested; binary encoding remains open.
+- [x] Add versioned federation operation variants for mint quote, mint quote payment, mint issuance, swap, melt quote, melt quote payment, melt, restore, payment-observation quarantine, and keyset rotation.
+- [ ] Decide whether to further split melt into explicit reserve/finalize/rollback operation variants instead of the current melt/payment-state plus saga-recovery representation.
+- [x] Implement deterministic canonical JSON encoding with sorted object keys for consensus operation IDs.
+- [ ] Replace or supplement canonical JSON with deterministic binary encoding if binary encoding remains a protocol requirement.
 - [x] Use `BTreeMap` and sorted vectors wherever ordering matters.
 - [x] Define `OperationHash = sha256("cdk-fed-op-v1" || encoded_operation)`.
 - [x] Define per-output hashes for blinded messages and per-input proof Y identifiers.
@@ -395,16 +404,18 @@ Implementation checklist:
   - [x] swap: input proof Ys and output blinded messages.
   - [x] melt reserve: quote ID plus input proof Ys.
   - [x] restore: blinded messages only.
-- [ ] Define a canonical `RequestTranscript` for NUT-20 and SIG_ALL verification. Status: no dedicated federation transcript type was found.
+- [ ] Define a canonical `RequestTranscript` for NUT-20 and SIG_ALL verification.
 
 Tests and success criteria:
 
-- [ ] Encoding of a golden operation matches committed test vectors. Status: unit tests cover canonical behavior, but no committed cross-version fixture vector was found.
+- [x] Unit tests cover canonical operation encoding behavior.
+- [ ] Commit cross-version golden fixture vectors for canonical operation encoding.
 - [x] Equivalent operations produce the same hash across processes.
 - [x] Reordered unordered fields still encode canonically.
 - [x] Changing one output blinded message changes the operation hash.
-- [ ] Changing an input witness changes the operation hash. Status: operation hashes include request payloads, but an explicit witness-mutation test was not found.
-- [ ] Fuzz decoding rejects unknown major versions and oversized payloads. Status: size-limit tests exist; fuzz coverage for decoding/version rejection remains open.
+- [ ] Add an explicit witness-mutation test proving that changing an input witness changes the operation hash.
+- [x] Add size-limit tests for oversized consensus payloads.
+- [ ] Add fuzz coverage proving operation decoding rejects unknown major versions and malformed payloads.
 
 ## Milestone 4: consensus engine abstraction
 
@@ -412,11 +423,13 @@ Objective: add an ordered log before integrating with mint business logic.
 
 Implementation checklist:
 
-- [ ] Create a `cdk-federation` consensus abstraction: `submit(item)`, `await_operation(hash)`, `accepted_stream()`, `state_digest()`. Status: a consensus abstraction exists in `cdk-common::federation::consensus`; it is not a separate `cdk-federation` crate and does not expose exactly this interface.
+- [x] Add a consensus abstraction in `cdk-common::federation::consensus` with submit, journal, catch-up, and state-digest boundaries.
+- [ ] Extract to a separate `cdk-federation` crate or add exact `await_operation`/`accepted_stream` APIs only if future integration needs that boundary.
 - [x] Add `ConsensusItem::{Operation(FederatedMintOperation), ModuleFact(...), SessionSignature(...), Default(...)}`.
 - [x] Add an in-memory single-node consensus engine for deterministic unit tests.
 - [x] Add an in-memory multi-node test engine that can reorder, duplicate, and delay messages.
-- [ ] Add AlephBFT-backed engine for multi-member BFT ordering. Status: backend kind exists, but selecting AlephBFT currently returns `UnsupportedConsensusBackend`.
+- [x] Add AlephBFT backend selector/configuration and an explicit `UnsupportedConsensusBackend` error.
+- [ ] Implement the AlephBFT-backed engine for multi-member BFT ordering.
 - [x] Add a `DataProvider` equivalent that batches pending items, deduplicates operation hashes, and enforces max item size.
 - [x] Add a `FinalizationHandler` equivalent that applies ordered items to the DB transactionally.
 - [x] Add session outcomes signed by member identity keys.
@@ -431,7 +444,7 @@ Tests and success criteria:
 - [x] Duplicate operation submissions are accepted once.
 - [x] Oversized consensus items are rejected before broadcast.
 - [x] Restarting a node mid-session replays accepted items without duplicating state changes.
-- [ ] AlephBFT integration test finalizes sessions for 4 nodes and 5 nodes. Status: not implemented.
+- [ ] AlephBFT integration test finalizes sessions for 4 nodes and 5 nodes.
 - [x] Consensus halts or rejects when fewer than the required quorum is reachable.
 
 ## Milestone 5: federation DB journal and state digests
@@ -440,32 +453,32 @@ Objective: keep replicated operation history separate from materialized mint sta
 
 Implementation checklist:
 
-- [x] Add DB traits for `FederationDatabase` and `FederationTransaction`. Status: implemented as `FederationJournalDatabase` and `FederationJournalTransaction`.
+- [x] Add DB traits for federation journal/database transactions, implemented as `FederationJournalDatabase` and `FederationJournalTransaction`.
 - [ ] Add SQL migrations for SQLite and Postgres:
-  - [ ] `federation_config`. Status: no dedicated table found; federation config remains file/runtime config.
-  - [x] `federation_session_outcome`. Status: implemented as `federation_session_outcomes`.
-  - [x] `federation_accepted_item`. Status: implemented as `federation_journal_entries`.
-  - [x] `federation_operation`. Status: operation envelopes are persisted in `federation_journal_entries`.
-  - [x] `federation_operation_outcome`. Status: operation application status is persisted in `federation_journal_entries`.
-  - [ ] `federation_signature_share`. Status: no separate table found; federated shares are currently stored through existing blind-signature rows.
-  - [x] `federation_payment_observation`. Status: implemented as `federation_payment_observations`.
-  - [ ] `federation_state_digest`. Status: state digests are computed and reported, but no dedicated digest-history table was found.
-  - [ ] `federation_member_status`. Status: private REST sequence watermarks are persisted in `federation_member_sequences`; member status is otherwise runtime/admin state.
+  - [ ] `federation_config`; federation config currently remains file/runtime config.
+  - [x] `federation_session_outcomes`.
+  - [x] `federation_journal_entries` for accepted items, operation envelopes, and operation outcomes.
+  - [ ] `federation_signature_share`; federated shares currently use existing blind-signature rows.
+  - [x] `federation_payment_observations`.
+  - [ ] `federation_state_digest`; current digests are computed and reported, but no dedicated digest-history table exists.
+  - [x] `federation_member_sequences` for private REST sequence watermarks.
+  - [ ] Dedicated `federation_member_status` table if runtime/admin state should become persistent.
 - [x] Keep existing mint tables as the materialized state used by existing APIs where possible.
-- [ ] Add `signature_share` rows instead of overloading final `blind_signature` semantics for federated members. Status: still open; current code reuses existing `blind_signature` storage for member shares.
+- [ ] Add `signature_share` rows instead of overloading final `blind_signature` semantics for federated members.
 - [x] Add state digest calculation over consensus-visible tables only.
 - [x] Exclude local private config, local connection status, logs, and caches from the digest.
-- [ ] Add an audit summary similar to Fedimint's balance audit after each accepted operation. Status: no balance-audit equivalent was found.
-- [x] Store DB checkpoints or lightweight digest history per session. Status: accepted order digests and signed session outcomes are persisted; a dedicated checkpoint-retention mechanism remains open.
+- [ ] Add an audit summary similar to Fedimint's balance audit after each accepted operation.
+- [x] Persist accepted order digests and signed session outcomes as lightweight replay/catch-up evidence.
+- [ ] Add configurable DB checkpoint retention and/or dedicated digest-history storage.
 
 Tests and success criteria:
 
-- [ ] Migrations apply cleanly on empty SQLite and Postgres databases. Status: migrations exist for both backends, but this audit did not run migration tests.
-- [ ] Migration tests cover rollback-compatible standalone mode. Status: not re-run during this audit.
+- [ ] Re-run migration tests proving migrations apply cleanly on empty SQLite and Postgres databases.
+- [ ] Re-run migration tests covering rollback-compatible standalone mode.
 - [x] Applying the same operation log to two DBs yields identical state digests.
 - [x] Local-only fields do not change state digest.
-- [ ] Negative balance audit causes a hard error in tests. Status: no balance-audit test found.
-- [ ] Signature shares can be retrieved by operation hash and output index. Status: no separate signature-share table/API found; existing blind-signature lookup is by blinded secret.
+- [ ] Negative balance audit causes a hard error in tests.
+- [ ] Signature shares can be retrieved by operation hash and output index from a dedicated federation share API/table.
 
 ## Milestone 6: deterministic mint state machine extraction
 
@@ -473,15 +486,18 @@ Objective: refactor CDK mint operations so consensus can call deterministic appl
 
 Implementation checklist:
 
-- [ ] Extract validation and apply logic from `process_mint_request` into `validate_issue_mint` and `apply_issue_mint`. Status: federation has `apply_federation_mint`, but the standalone method was not refactored into the exact proposed functions.
-- [ ] Extract validation and apply logic from `SwapSaga::setup_swap` and `finalize` into `validate_swap` and `apply_swap`. Status: federation has `apply_federation_swap`, but the standalone saga was not refactored into the exact proposed functions.
-- [ ] Ensure apply functions receive all nondeterministic values as inputs: accepted time, operation hash, quote IDs, and payment observations. Status: operation IDs/hashes, quote IDs, and payment observations are explicit; no dedicated consensus-provided accepted-time field was confirmed.
+- [x] Add deterministic federated mint apply path, implemented as `apply_federation_mint`.
+- [ ] Refactor standalone `process_mint_request` into shared `validate_issue_mint` and `apply_issue_mint` functions if shared standalone/federation code is still desired.
+- [x] Add deterministic federated swap apply path, implemented as `apply_federation_swap`.
+- [ ] Refactor standalone `SwapSaga::setup_swap` and `finalize` into shared `validate_swap` and `apply_swap` functions if shared standalone/federation code is still desired.
+- [x] Pass operation hashes/IDs, quote IDs, and payment observations explicitly into federation apply paths.
+- [ ] Add a consensus-provided accepted-time input if any apply path needs accepted time.
 - [ ] Remove calls to `unix_time()` from consensus apply paths except via consensus-provided accepted time.
 - [x] Remove UUID generation from consensus apply paths.
 - [x] Ensure apply paths do not spawn tasks or publish pubsub notifications until after commit.
-- [ ] Keep existing standalone methods calling the refactored functions through a standalone adapter. Status: standalone behavior remains, but no shared standalone adapter around the exact new functions was found.
-- [x] Make `apply_issue_mint` update quote issuance, blinded message records, completed operation, and output signature-share request in one DB transaction. Status: implemented as `apply_federation_mint`, using existing blind-signature storage for member shares.
-- [x] Make `apply_swap` verify inputs, verify spending conditions, check balance, mark inputs spent, record blinded outputs, record completed operation, and request signature shares in one DB transaction. Status: implemented as `apply_federation_swap`.
+- [ ] Keep existing standalone methods calling shared refactored functions through a standalone adapter if the shared functions are introduced.
+- [x] Make `apply_federation_mint` update quote issuance, blinded message records, completed operation, and output member-share records in one DB transaction using existing blind-signature storage.
+- [x] Make `apply_federation_swap` verify inputs, verify spending conditions, check balance, mark inputs spent, record blinded outputs, record completed operation, and request signature shares in one DB transaction.
 - [x] Decide how to represent `Pending` in federated mode:
   - [x] Swap should not use local pending state before consensus.
   - [x] Melt reserve can use consensus-visible pending state between reserve and finalization.
@@ -490,13 +506,14 @@ Implementation checklist:
 
 Tests and success criteria:
 
-- [ ] Standalone mint tests still pass using the refactored code. Status: not re-run during this audit.
+- [ ] Re-run standalone mint tests after the federation refactor.
 - [x] Applying a valid issue operation twice is idempotent.
 - [x] Applying a same-quote different-output issue after the first issue fails.
 - [x] Applying a swap with already spent inputs fails.
 - [x] Applying a swap with duplicate outputs fails.
 - [x] Applying operations in the same order on multiple DB instances produces identical materialized state.
-- [ ] Pubsub notifications fire only after commit in standalone and federation modes. Status: federation swap publishes after commit; no broad test covering all modes was found.
+- [x] Federation swap pubsub notifications fire after commit.
+- [ ] Add broad post-commit pubsub tests for standalone mode and all federation operations.
 
 ## Milestone 7: federated key-share signatory
 
@@ -504,7 +521,8 @@ Objective: let each member sign only with its own BLS share while advertising ag
 
 Implementation checklist:
 
-- [ ] Add a `FederatedSignatory` or split the existing `Signatory` trait into final-signer and share-signer responsibilities. Status: member-share signing exists on federation config/private config helpers; no split signatory trait or `FederatedSignatory` type was found.
+- [x] Add federation member-share signing helpers on federation config/private config data.
+- [ ] Introduce a `FederatedSignatory` type or split the existing `Signatory` trait if the helper approach becomes too implicit.
 - [x] `keysets()` must return aggregate public keys and aggregate keyset IDs.
 - [x] `verify_proofs()` must verify proofs against aggregate public keys.
 - [x] `blind_sign_share()` must return member share signatures plus member ID.
@@ -512,7 +530,7 @@ Implementation checklist:
 - [x] Prevent federated share signer from being used in standalone paths that expect final signatures.
 - [x] Ensure Cashu keyset v3 (`KeySetVersion::Version02`) BLS responses do not include DLEQ data.
 - [x] Reject all non-v3 keysets in federation signing paths unless a future protocol explicitly supports them.
-- [ ] Persist signature shares in `federation_signature_share`, keyed by operation hash, output index, member ID, blinded message, amount, and keyset ID. Status: no separate table exists; current persistence uses existing blind-signature rows.
+- [ ] Persist signature shares in `federation_signature_share`, keyed by operation hash, output index, member ID, blinded message, amount, and keyset ID.
 - [x] Return existing share for idempotent repeat requests.
 
 Tests and success criteria:
@@ -520,7 +538,7 @@ Tests and success criteria:
 - [x] A member cannot return a final signature in federation mode.
 - [x] A member's share verifies against its public share.
 - [x] Aggregate of shares returned by three members verifies as a normal Cashu blind signature when the configured threshold is three.
-- [ ] Existing standalone `DbSignatory` behavior is unchanged. Status: no federation code path appears to modify standalone signatory behavior, but this broad regression test was not re-run during the audit.
+- [ ] Re-run regression coverage proving existing standalone `DbSignatory` behavior is unchanged.
 - [x] A federated member rejects non-BLS keysets for federation signing unless explicitly supported later.
 - [x] A federated member rejects v1/v2 keysets even if they are otherwise valid standalone Cashu keysets.
 
@@ -530,11 +548,14 @@ Objective: make all members agree on mint quotes and paid status.
 
 Implementation checklist:
 
-- [x] In federation mode, `get_mint_quote` on the contacted member creates the payment request, then submits `CreateMintQuote` to consensus. Status: implemented as a `MintQuote` federation operation.
-- [x] `CreateMintQuote` includes quote ID, method, unit, amount, expiry, request string, request lookup ID, pubkey, extra JSON, origin member, and accepted time. Status: implemented through Cashu quote request/response payloads; accepted time is implicit in the accepted operation/journal rather than a dedicated field in this exact variant.
+- [x] In federation mode, `get_mint_quote` on the contacted member creates the payment request, then submits a `MintQuote` federation operation to consensus.
+- [x] `MintQuote` carries quote ID and Cashu quote request/response payloads, including method, unit, amount, expiry, request, lookup, pubkey, and extra fields carried by those types.
+- [ ] Add explicit origin-member and accepted-time fields to the mint quote operation if they are required outside the journal envelope.
 - [x] All members persist the same quote after consensus accepts it.
-- [ ] Add a payment observer task per member that watches unpaid quotes and submits `ObserveMintQuotePayment`. Status: payment observations exist and are submitted/processed; no always-on per-member unpaid-quote watcher task was found.
-- [x] `ObserveMintQuotePayment` includes quote ID, payment ID, amount, member ID, observed time, and optional backend proof. Status: implemented as `MintQuotePayment` with observer, state, paid/issued amounts, method, and optional payment proof; no dedicated observed-time field was found.
+- [x] Payment observation operations are submitted and processed through consensus.
+- [ ] Add an always-on payment observer task per member that watches unpaid quotes and submits mint quote payment observations.
+- [x] `MintQuotePayment` carries observer, method, state, amount paid, amount issued, and optional payment proof.
+- [ ] Add explicit payment ID and observed-time fields if optional payment proof plus journal ordering are insufficient.
 - [x] Mark quote paid only after the configured observation policy is satisfied.
 - [x] For fake wallet MVP, allow all members to observe paid deterministically.
 - [ ] For real Lightning/onchain, define observation policies:
@@ -559,10 +580,12 @@ Objective: issue eCash from paid quotes only after the exact issuance request is
 
 Implementation checklist:
 
-- [x] In federation mode, `process_mint_request` converts `MintInput` into an `IssueMint` operation and submits it to consensus. Status: implemented as a `Mint` federation operation.
-- [x] `IssueMint` includes all quote IDs, quote amounts, blinded outputs, NUT-20 signatures, and operation version. Status: quote IDs and blinded outputs are included through `MintRequest`/`BatchMintRequest`; quote amounts are validated from accepted quote state.
+- [x] In federation mode, `process_mint_request` converts `MintInput` into a `Mint` federation operation and submits it to consensus.
+- [x] `Mint` includes quote IDs and blinded outputs through `MintRequest`/`BatchMintRequest`; quote amounts are validated from accepted quote state.
+- [ ] Add explicit quote amount fields to the operation payload only if future review decides the current quote-state validation is insufficient.
 - [x] Consensus apply validates quote states, paid amounts, issued amounts, payment methods, units, v3/BLS output keysets, output uniqueness, and NUT-20 signatures.
-- [x] Consensus apply records issuance and signature-share rows in the same DB transaction. Status: signature shares are recorded via existing blind-signature rows, not a separate federation share table.
+- [x] Consensus apply records issuance and member signature shares in the same DB transaction via existing blind-signature storage.
+- [ ] Move member signature shares to a dedicated `federation_signature_share` table if that table is added.
 - [x] The public handler waits for the operation outcome and returns this member's signature shares as `MintResponse`.
 - [x] If the same operation was already accepted, return cached shares.
 - [x] If a conflicting operation spent the quote first, return the existing CDK error that best maps to issued or unbalanced quote.
@@ -577,7 +600,7 @@ Tests and success criteria:
 - [x] Same quote with different outputs cannot obtain threshold shares for both output sets.
 - [x] On member crash after consensus acceptance but before HTTP response, retry returns stored shares.
 - [x] On member crash before consensus acceptance, retry submits the same operation hash.
-- [ ] Existing NUT-20 locked quote tests pass in federated mode. Status: no explicit federated NUT-20 locked quote regression was confirmed during the audit.
+- [ ] Add or re-run explicit federated NUT-20 locked quote regression tests.
 
 ## Milestone 10: federated wallet connector and aggregation
 
@@ -586,16 +609,19 @@ Objective: make the wallet see normal Cashu responses while the connector handle
 Implementation checklist:
 
 - [x] Add `FederatedMintConnector` implementing `MintConnector`.
-- [ ] Load federation config from mint info, invite code, or explicit builder config. Status: explicit builder/config construction exists; automatic mint-info or invite loading remains open.
+- [x] Load federation config through explicit builder/config construction.
+- [ ] Load federation config automatically from mint info or invite codes.
 - [x] Wrap one `HttpClient` per member.
 - [x] `get_mint_keys`, `get_mint_keysets`, and `get_mint_info` should query multiple members and require matching federation ID and aggregate keysets.
-- [ ] `post_mint_quote` should create a quote through one healthy member, then optionally verify quorum visibility. Status: quote creation through first healthy member exists; quorum visibility verification remains open.
+- [x] `post_mint_quote` creates a quote through the first healthy member.
+- [ ] Optionally verify quorum visibility after quote creation.
 - [x] `post_mint` and `post_batch_mint` should fan out the exact same request to all members concurrently.
 - [x] Validate each returned share against the member public share and corresponding blinded output.
 - [x] Aggregate the first threshold valid shares per output.
 - [x] Return normal aggregate `MintResponse` to the wallet saga.
 - [x] `post_swap` should do the same for swap signatures.
-- [ ] Implement retry and timeout policy per member. Status: first-healthy fallback and threshold fanout exist; no explicit timeout/retry policy object was found.
+- [x] Implement first-healthy fallback and threshold fanout error collection.
+- [ ] Add an explicit retry and timeout policy per member.
 - [x] Track per-member errors without leaking them into proof construction unless threshold cannot be reached.
 - [x] Add a clear error when too few valid shares arrive.
 - [x] Ensure wallet-local `validate_mint_response_signatures` validates aggregate signatures under aggregate keys after aggregation.
@@ -623,13 +649,15 @@ Implementation checklist:
   - [x] input keysets are known and not expired.
   - [x] output keysets are active and not expired.
   - [x] proofs verify under aggregate public keys.
-  - [ ] P2PK, HTLC, and SIG_ALL spending conditions verify over the canonical transcript. Status: spending-condition verification is called; a dedicated federated canonical-transcript test was not confirmed.
+  - [x] Existing spending-condition verification is called inside federated swap apply.
+  - [ ] Add dedicated federated canonical-transcript tests for P2PK, HTLC, and SIG_ALL.
   - [x] input value equals output value plus fees.
   - [x] no input proof Y is already spent or pending in consensus state.
 - [x] Consensus apply marks inputs spent and records output signature shares in one DB transaction.
 - [x] Public handler waits for acceptance and returns this member's shares.
 - [x] Existing standalone saga remains available for non-federated mints.
-- [x] Add restore mapping from blinded output to operation hash and output index. Status: restore can recover accepted blind-signature rows by blinded output; no separate operation-hash/output-index share table exists.
+- [x] Restore can recover accepted blind-signature rows by blinded output.
+- [ ] Add explicit operation-hash/output-index restore mapping if the dedicated signature-share table is added.
 
 Tests and success criteria:
 
@@ -637,8 +665,8 @@ Tests and success criteria:
 - [x] Concurrent swaps spending the same input result in exactly one accepted swap.
 - [x] Replay of the same swap request is idempotent.
 - [x] Different output sets for the same inputs cannot both get threshold shares.
-- [ ] P2PK and HTLC tests pass in federated mode. Status: standalone spending-condition tests exist; federated-mode coverage was not confirmed.
-- [ ] SIG_ALL tests prove the signature commits to the exact canonical operation. Status: standalone SIG_ALL tests exist; federated canonical operation coverage remains open.
+- [ ] Add or re-run P2PK and HTLC tests in federated mode.
+- [ ] Add federated SIG_ALL tests proving the signature commits to the exact canonical operation.
 
 ## Milestone 12: explicit sliding-window attack regression suite
 
@@ -652,7 +680,7 @@ Implementation checklist:
 - [x] Ensure each member submits its request to consensus and signs only accepted operations.
 - [x] Record which operation hash won consensus.
 - [x] Attempt to aggregate shares per output across all responses.
-- [ ] Repeat the same test for swap inputs instead of mint quote issuance. Status: no explicit sliding-window swap attack regression was confirmed.
+- [ ] Repeat the same sliding-window attack test for swap inputs instead of mint quote issuance.
 - [x] Repeat with delayed members and duplicate submissions.
 
 Tests and success criteria:
@@ -671,7 +699,8 @@ Implementation checklist:
 
 - [x] `checkstate` can remain a read query over local consensus materialized state.
 - [x] `restore` should never sign new outputs. It should return signature shares only for blinded messages already signed by accepted operations.
-- [ ] Add `federation_signature_share` lookup by blinded message. Status: lookup uses existing blind-signature storage; no separate federation share table exists.
+- [x] Restore lookup uses existing blind-signature storage by blinded message.
+- [ ] Add `federation_signature_share` lookup by blinded message if the dedicated federation share table is added.
 - [x] If a member lacks a local share for an accepted output, it may regenerate it from the accepted operation and key share, then persist it.
 - [x] Federated connector calls restore on members, validates shares, aggregates threshold shares, and returns normal `RestoreResponse`.
 - [x] Recovery APIs must not leak member-specific private share data.
@@ -690,16 +719,18 @@ Objective: federate melts without losing funds or allowing proof reuse.
 Implementation checklist:
 
 - [x] Split melt into consensus-visible stages.
-- [x] `MeltQuoteCreate` persists the quote across members. Status: implemented as `MeltQuote`.
-- [x] `MeltReserve` consumes the wallet's melt request, validates inputs and change outputs, and marks inputs pending in consensus state. Status: implemented through `Melt` plus saga/pending state.
-- [ ] Exactly one payment actor should attempt the outgoing payment, selected deterministically from operation hash or configured as origin member. Status: fake-wallet happy path is covered; deterministic single-actor production policy remains open.
+- [x] `MeltQuote` persists the quote across members.
+- [x] Federated melt request validates inputs and change outputs and uses consensus-visible saga/pending state.
+- [ ] Rename or split the current federated melt request into an explicit `MeltReserve` operation if that remains the preferred protocol shape.
+- [x] Fake-wallet happy path covers outgoing payment completion.
+- [ ] Exactly one production payment actor should attempt the outgoing payment, selected deterministically from operation hash or configured as origin member.
 - [x] Before attempting payment, consensus must record `PaymentAttempted` or equivalent write-ahead state.
-- [x] Payment result enters consensus as `ObserveMeltPayment`. Status: implemented as `MeltQuotePayment`.
+- [x] Payment result enters consensus as `MeltQuotePayment`.
 - [x] `FinalizeMelt` after threshold paid observations marks inputs spent, records quote paid, signs change outputs, records completed operation, and deletes pending melt state.
 - [x] `RollbackMelt` after threshold failed observations releases pending inputs and records quote failed.
 - [x] Unknown or pending backend states keep inputs pending until resolved or an admin policy handles timeout.
 - [x] Existing `MeltSaga` recovery concepts should be reused, but consensus state replaces member-local saga state as the source of truth.
-- [ ] Internal melt-to-mint settlement must become a single consensus operation that updates both quote families atomically. Status: not confirmed.
+- [ ] Internal melt-to-mint settlement must become a single consensus operation that updates both quote families atomically.
 
 Tests and success criteria:
 
@@ -708,7 +739,7 @@ Tests and success criteria:
 - [x] Pending fake wallet melt keeps inputs pending and later finalizes after observation.
 - [x] Crash after payment attempt but before finalize recovers by checking observations and finalizing.
 - [x] Two concurrent melts of the same proofs cannot both pay.
-- [ ] Internal melt-to-mint updates the mint quote and melt quote in one accepted operation. Status: not confirmed.
+- [ ] Internal melt-to-mint updates the mint quote and melt quote in one accepted operation.
 
 ## Milestone 15: networking and peer authentication
 
@@ -716,9 +747,12 @@ Objective: run federation members as separate processes.
 
 Implementation checklist:
 
-- [ ] Add a P2P trait similar to Fedimint's `IP2PConnections`. Status: private REST client/server and `cdk_http_client::Transport` are used; no Fedimint-style P2P trait was found.
-- [x] Implement in-memory P2P for tests. Status: implemented as an in-memory consensus/network simulator, not a separate P2P transport.
-- [ ] Keep the transport behind a trait so in-memory, private REST, TCP/TLS or Noise, and Iroh can share consensus code. Status: HTTP transport is abstracted; no shared P2P transport abstraction for all listed transports was found.
+- [x] Use private REST client/server and `cdk_http_client::Transport` for MVP federation traffic.
+- [ ] Add a Fedimint-like P2P trait similar to `IP2PConnections` when adding non-REST transports.
+- [x] Implement an in-memory consensus/network simulator for tests.
+- [ ] Implement a separate in-memory P2P transport if future consensus code needs it.
+- [x] Abstract HTTP transport for the private REST peer client.
+- [ ] Add a shared transport abstraction spanning in-memory, REST, TCP/TLS or Noise, and Iroh if those transports share consensus code.
 - [x] Implement private REST transport first using Axum/Reqwest for local, regtest, and reachable-server deployments.
 - [x] Keep federation REST endpoints separate from public Cashu wallet endpoints, for example under `/federation/v1/*`.
 - [x] Use signed, canonical member-to-member envelopes on every REST message: federation ID, sender member ID, receiver member ID, message kind, consensus height, nonce or sequence number, body hash, and signature.
@@ -733,27 +767,33 @@ Implementation checklist:
 - [x] Treat Iroh as the recommended NAT/firewall traversal transport, following the same broad deployment motivation as Fedimint, but do not make the first correctness milestones depend on it.
 - [x] Document that private REST alone requires reachable member endpoints or an external connectivity solution such as VPN, reverse tunnel, relay, Tor, or Iroh.
 - [x] Authenticate every peer message by member ID.
-- [ ] Add bounded outbound and inbound queues. Status: consensus item size/admission limits exist; no general bounded REST queue/backpressure layer was confirmed.
-- [ ] Add reconnect with exponential backoff. Status: periodic sync loop exists; exponential backoff was not confirmed.
+- [x] Add consensus item size/admission limits.
+- [ ] Add bounded outbound and inbound REST queues and backpressure.
+- [x] Add a periodic peer sync loop.
+- [ ] Add reconnect with exponential backoff.
 - [x] Add periodic config-digest, consensus-height, and state-digest gossip between peers.
-- [ ] Add peer status metrics and admin status output. Status: admin status output exists; dedicated metrics coverage remains open.
+- [x] Add admin peer status output.
+- [ ] Add peer status metrics.
 - [x] Separate public HTTP API URL from private P2P URL.
 - [x] Reject messages from unknown members or wrong federation IDs.
 - [x] Define maximum message sizes and backpressure behavior for consensus proposals, signature-share responses, and catch-up data.
 
 Tests and success criteria:
 
-- [ ] Five local processes discover peers and form consensus over private REST. Status: local process tooling and smoke scripts exist, but this was not re-run during the audit.
+- [x] Local process tooling and smoke scripts exist for multi-member private REST federation runs.
+- [ ] Re-run and record a five-local-process private REST consensus smoke test.
 - [x] In-memory P2P test can deterministically simulate partitions, dropped messages, reordered messages, and reconnects.
 - [x] REST retry test proves duplicate HTTP deliveries are idempotent.
 - [x] REST authentication test rejects wrong federation ID, wrong sender ID, stale sequence, invalid signature, and body-hash mismatch.
 - [x] REST allowlist test rejects a well-formed message signed by a valid key that is not in the federation roster.
 - [x] REST claimed-sender test rejects a message signed by member A's key while claiming member B's ID.
-- [ ] Iroh adapter smoke test connects peers without direct inbound TCP reachability when the test environment supports it. Status: not implemented.
+- [ ] Iroh adapter smoke test connects peers without direct inbound TCP reachability when the test environment supports it.
 - [x] Restarted member reconnects and catches up.
 - [x] Unknown peer messages are rejected.
-- [ ] Queue overflow drops non-critical messages without crashing consensus. Status: size/admission tests exist; queue-overflow behavior was not confirmed.
-- [x] TLS, Noise, or signed-envelope identity mismatch prevents connection or message acceptance. Status: signed-envelope identity mismatch is tested; TLS/Noise transports are not implemented.
+- [x] Size/admission tests cover oversized consensus items.
+- [ ] Queue overflow drops non-critical messages without crashing consensus.
+- [x] Signed-envelope identity mismatch prevents message acceptance.
+- [ ] Add TLS/Noise identity mismatch tests if those transports are implemented.
 - [x] Peer status shows connected, disconnected, lagging, catching-up, and halted states.
 
 ## Milestone 16: member startup, catch-up, and recovery
@@ -763,7 +803,8 @@ Objective: make nodes durable and restart-safe.
 Implementation checklist:
 
 - [x] On startup, load federation config and validate key shares before serving HTTP.
-- [x] Start P2P and consensus before enabling signing endpoints. Status: implemented for private REST/consensus runtime, not a non-REST P2P transport.
+- [x] Start private REST/consensus runtime before enabling federation signing endpoints.
+- [ ] Revisit startup sequencing when non-REST P2P transports are implemented.
 - [x] Replay accepted items since last checkpoint if needed.
 - [x] Persist last applied consensus session, item index, operation hash, outcome hash, and state digest.
 - [x] Persist signed session outcomes so lagging members can verify catch-up data without trusting one peer.
@@ -773,7 +814,7 @@ Implementation checklist:
 - [x] Regenerate deterministic signature shares from accepted operations when local share rows are missing.
 - [x] Compare local state digest to quorum state digest at session boundaries.
 - [x] Expose admin endpoint or CLI to show consensus height, last digest, member lag, and pending operations.
-- [ ] Add DB checkpoint retention configuration. Status: no configurable checkpoint retention was confirmed.
+- [ ] Add DB checkpoint retention configuration.
 - [x] Add a safe read-only "catch-up" mode for lagging members.
 - [x] Prevent a lagging member from serving signing shares until it catches up to the operation's acceptance height.
 - [x] Prevent a lagging member from initiating fake-wallet outgoing payment attempts until it has replayed all accepted melt state.
@@ -803,7 +844,8 @@ Implementation checklist:
 - [x] Define the exact local-only database surface: private config, peer connection state, sequence trackers, logs, caches, local metrics, process metadata, and other fields excluded from equality.
 - [x] Implement a canonical state snapshot/export over consensus-visible rows.
 - [x] Implement a state digest over the canonical snapshot.
-- [ ] Store state digest history at consensus session boundaries. Status: signed session outcomes include digests and current digests are reported; no dedicated digest-history table or retention policy was confirmed.
+- [x] Include state digests in signed session outcomes and admin status reporting.
+- [ ] Add a dedicated digest-history table and retention policy for consensus session boundaries.
 - [x] Store last applied session, item index, operation hash, outcome hash, and state digest.
 - [x] Implement an admin command to compare state digests across members.
 - [x] Implement an optional admin command to diff consensus-visible rows when digests differ.
@@ -821,7 +863,8 @@ Implementation checklist:
 Tests and success criteria:
 
 - [x] Member offline for 10 accepted operations catches up and reaches the same state digest.
-- [ ] Member offline for 100 or more accepted operations catches up and reaches the same state digest. Status: long-partition tooling exists; no explicit 100+ operation test was confirmed.
+- [x] Long-partition tooling exists for extended offline/catch-up scenarios.
+- [ ] Add or re-run an explicit 100+ accepted-operation offline catch-up test.
 - [x] Member offline across minting catches up and can return the correct deterministic mint share.
 - [x] Member offline across swapping catches up to spent input state and rejects conflicting swaps.
 - [x] Member offline across melting catches up without attempting a duplicate outgoing payment.

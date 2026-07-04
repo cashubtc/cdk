@@ -522,11 +522,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: bound federation smoke operations</span>
+          <span class="value">feat: trace federation smoke stages</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Wallet federation signing paths now fan out concurrently, first-healthy-member quote and LNURL fallbacks are covered, auth wallet state propagates across all member connectors, seven-member/five-threshold consensus partition behavior has a fast simulator gate, generated process smokes now bound each smoke-operation scenario, consensus backend identity is status-visible, the adapter selector has a backend-neutral runtime slot, live peer sync halts on backend mismatch, and digest-compare now treats equal digests from different consensus backends as divergence</span>
+          <span class="value">Wallet federation signing paths now fan out concurrently, first-healthy-member quote and LNURL fallbacks are covered, auth wallet state propagates across all member connectors, seven-member/five-threshold consensus partition behavior has a fast simulator gate, generated process smokes now bound each smoke-operation scenario and print standard-flow stage timings, consensus backend identity is status-visible, the adapter selector has a backend-neutral runtime slot, live peer sync halts on backend mismatch, and digest-compare now treats equal digests from different consensus backends as divergence</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -1561,6 +1561,10 @@
           <article class="item">
             <h3>Smoke operation timeout added</h3>
             <p>`federation smoke-operations` now accepts a per-scenario timeout and generated smoke scripts pass `SMOKE_OPERATION_TIMEOUT_SECONDS`, turning larger-roster operation-driver hot loops into bounded failures with a clear scenario name.</p>
+          </article>
+          <article class="item">
+            <h3>Smoke stages are timed</h3>
+            <p>The standard federation operation smoke now prints start/done stage markers with elapsed milliseconds for wallet setup, mint, swap, check-state, melt quote, melt visibility, melt confirmation, and restore.</p>
           </article>
           <article class="item">
             <h3>Payment observation admin view added</h3>
@@ -2656,7 +2660,7 @@
             <tr>
               <td>Payment observation admin smoke</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1` and `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" federation_setup -- --test-threads 1` each passed 6 generated-artifact tests, including script assertions for `federation payment-observations --context mint-quote`. `just fed-regtest-generate target/cdk-fed-regtest-admin-view 3 2 23885` generated a three-member bundle, `bash -n target/cdk-fed-regtest-admin-view/smoke-local-federation.sh` passed, and `CHECK_PROMETHEUS_METRICS=0 OFFLINE_OPERATION_BATCHES=1 CDK_MINTD_BIN=target/debug/cdk-mintd bash target/cdk-fed-regtest-admin-view/smoke-local-federation.sh` passed outside the sandbox after the sandbox blocked localhost binding.</td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1` and `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" federation_setup -- --test-threads 1` each passed 6 generated-artifact tests, including script assertions for `federation payment-observations --context mint-quote`. A generated three-member bundle passed shell syntax checks and a one-batch local smoke outside the sandbox after sandboxed listener binding was unavailable.</td>
               <td>Repeat the default five-member smoke periodically and carry the same admin visibility check into Postgres-backed smoke when a service is available.</td>
             </tr>
             <tr>
@@ -2746,8 +2750,14 @@
             <tr>
               <td>Federation smoke operation timeout</td>
               <td><span class="status done">Passed</span></td>
-              <td>`just fed-regtest-long-partition target/cdk-fed-regtest-seven 7 5 31885 1` generated configs and started seven local members, then was manually interrupted after the baseline `federation smoke-operations` driver stayed CPU-bound for several minutes; cleanup stopped all seven members and a process check found no leftovers. The follow-up timeout guard passed `cargo test -p cdk-mintd --features federation,fakewallet,sqlite smoke_operations -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1`, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`.</td>
+              <td>A seven-member/five-threshold live smoke generated configs and started all members, then was manually interrupted after the baseline `federation smoke-operations` driver stayed CPU-bound for several minutes; cleanup stopped all members and a process check found no leftovers. The follow-up timeout guard passed `cargo test -p cdk-mintd --features federation,fakewallet,sqlite smoke_operations -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1`, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`.</td>
               <td>Profile the seven-member baseline operation driver and decide whether the bottleneck is share generation, REST fanout, quote polling, or restore/check-state aggregation before promoting it to a regular live smoke.</td>
+            </tr>
+            <tr>
+              <td>Federation smoke stage timing</td>
+              <td><span class="status done">Passed</span></td>
+              <td>The standard smoke path now emits `federation smoke stage` lines with elapsed milliseconds before and after wallet setup, mint, swap, check-state, melt quote creation, melt quote visibility, melt confirmation, and restore. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite smoke_operations -- --test-threads 1` and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed.</td>
+              <td>Run the bounded seven-member process smoke again and use the last emitted stage to choose the first performance optimization target.</td>
             </tr>
             <tr>
               <td>Wallet federation probe concurrency</td>

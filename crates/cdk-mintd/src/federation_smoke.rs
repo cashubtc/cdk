@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
+use std::io::{self, Write};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use cdk::amount::SplitTarget;
@@ -241,6 +242,15 @@ fn smoke_scenario_name(scenario: FederationSmokeScenario) -> &'static str {
     }
 }
 
+fn print_smoke_stage(stage: &str, started_at: Instant) {
+    println!(
+        "federation smoke stage: stage={} elapsed_ms={}",
+        stage,
+        started_at.elapsed().as_millis()
+    );
+    let _ = io::stdout().flush();
+}
+
 async fn run_standard_smoke(
     args: &FederationSmokeOperationsArgs,
     public_config: &FederationConfig,
@@ -250,8 +260,12 @@ async fn run_standard_smoke(
     seed: [u8; 64],
     member_expectation: SmokeMemberExpectation,
 ) -> Result<()> {
+    let smoke_started_at = Instant::now();
+    print_smoke_stage("standard.wallet.start", smoke_started_at);
     let wallet = smoke_wallet(public_config, unit.clone(), seed, connector.clone(), None).await?;
+    print_smoke_stage("standard.wallet.done", smoke_started_at);
 
+    print_smoke_stage("standard.mint.start", smoke_started_at);
     let minted_amount = mint_smoke_funds(
         &wallet,
         public_config,
@@ -260,7 +274,9 @@ async fn run_standard_smoke(
         member_expectation,
     )
     .await?;
+    print_smoke_stage("standard.mint.done", smoke_started_at);
 
+    print_smoke_stage("standard.swap.start", smoke_started_at);
     let proofs_before_swap = wallet
         .get_unspent_proofs()
         .await
@@ -280,6 +296,7 @@ async fn run_standard_smoke(
         .get_unspent_proofs()
         .await
         .context("load swapped proofs")?;
+    print_smoke_stage("standard.swap.done", smoke_started_at);
     let swapped_amount = proofs_after_swap.total_amount()?;
     if swapped_amount != minted_amount {
         bail!(
@@ -289,6 +306,7 @@ async fn run_standard_smoke(
         );
     }
 
+    print_smoke_stage("standard.check-state.start", smoke_started_at);
     let spent_states = wallet
         .check_proofs_spent(proofs_before_swap)
         .await
@@ -299,12 +317,16 @@ async fn run_standard_smoke(
     {
         bail!("federation smoke check-state did not mark swapped inputs spent");
     }
+    print_smoke_stage("standard.check-state.done", smoke_started_at);
 
+    print_smoke_stage("standard.melt-quote.start", smoke_started_at);
     let melt_invoice = create_fake_invoice(1000, "federation smoke melt".to_string());
     let melt_quote = wallet
         .melt_quote(PaymentMethod::BOLT11, melt_invoice, None, None)
         .await
         .context("create federation melt quote")?;
+    print_smoke_stage("standard.melt-quote.done", smoke_started_at);
+    print_smoke_stage("standard.melt-visibility.start", smoke_started_at);
     wait_for_melt_quote_visible(
         member_connectors,
         public_config,
@@ -314,7 +336,9 @@ async fn run_standard_smoke(
         member_expectation,
     )
     .await?;
+    print_smoke_stage("standard.melt-visibility.done", smoke_started_at);
 
+    print_smoke_stage("standard.melt-confirm.start", smoke_started_at);
     let finalized = wallet
         .prepare_melt(&melt_quote.id, HashMap::new())
         .await
@@ -328,7 +352,9 @@ async fn run_standard_smoke(
             finalized.state()
         );
     }
+    print_smoke_stage("standard.melt-confirm.done", smoke_started_at);
 
+    print_smoke_stage("standard.restore.start", smoke_started_at);
     let restored_wallet = smoke_wallet(public_config, unit, seed, connector, None).await?;
     let restored = restored_wallet.restore().await.context("restore wallet")?;
     if restored.unspent == Amount::ZERO
@@ -337,6 +363,7 @@ async fn run_standard_smoke(
     {
         bail!("federation smoke restore recovered no proofs");
     }
+    print_smoke_stage("standard.restore.done", smoke_started_at);
 
     println!(
         "federation operation smoke passed: minted={} swapped={} melted={} fee={} restored_unspent={} restored_spent={} restored_pending={}",
