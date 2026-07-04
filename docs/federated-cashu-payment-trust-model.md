@@ -126,15 +126,16 @@ The policy includes operator-facing limits:
 
 These limits are validated as non-zero config values. The current status
 surface exposes unresolved and conflicting observations by quote ID, member ID,
-state, and report status. The next admin work should add age and staleness
-classification without logging secrets, invoices, local paths, private keys, or
-proof secrets.
+state, report status, quote age, stale classification, and a redacted operator
+action recommendation. `local-status` and `cdk-mintd federation status` mark old
+unresolved evidence as `stale=true` with `action=inspect`, and conflicting
+evidence as `action=quarantine`, without logging secrets, invoices, local paths,
+private keys, or proof secrets.
 
 ## Required Follow-Up
 
-- Add stale-age classification to payment observation reports and status output.
-- Add explicit state-machine quarantine actions for mismatched amounts, payment
-  proofs, states, or backend-specific settlement references where policy should
-  halt instead of only reporting the conflict.
+- Add explicit consensus/state-machine quarantine operations for mismatched
+  amounts, payment proofs, states, or backend-specific settlement references
+  where policy should halt instead of only recommending quarantine.
 - Add tests proving stale pending quotes remain visible without blocking
-  consensus.
+  consensus across live process restart and catch-up scenarios.

@@ -539,6 +539,29 @@ impl fmt::Display for FederationPaymentObservationReportStatus {
     }
 }
 
+/// Operator action suggested by a payment observation report.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationPaymentObservationReportAction {
+    /// No action is currently suggested.
+    #[default]
+    None,
+    /// The quote should be inspected by an operator or follow-up task.
+    Inspect,
+    /// Conflicting evidence should be quarantined before trusting the quote.
+    Quarantine,
+}
+
+impl fmt::Display for FederationPaymentObservationReportAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => f.write_str("none"),
+            Self::Inspect => f.write_str("inspect"),
+            Self::Quarantine => f.write_str("quarantine"),
+        }
+    }
+}
+
 /// One group of payment observations that all describe the same evidence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationPaymentObservationEvidenceGroup {
@@ -596,6 +619,15 @@ pub struct FederationPaymentObservationReportSummary {
     pub competing_terminal_state_observers: Vec<MemberId>,
     /// High-level report status for operator and admin surfaces.
     pub status: FederationPaymentObservationReportStatus,
+    /// Age of the quote in seconds when it can be resolved from local quote storage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote_age_secs: Option<u64>,
+    /// Whether this unresolved report has exceeded the stale observation threshold.
+    #[serde(default)]
+    pub stale: bool,
+    /// Suggested operator action for this report.
+    #[serde(default)]
+    pub recommended_action: FederationPaymentObservationReportAction,
 }
 
 /// Summary of stored payment observations for one quote and context.
@@ -718,6 +750,27 @@ impl FederationPaymentObservationReport {
     /// Return a redacted summary that does not expose backend proof material.
     #[must_use]
     pub fn summary(&self) -> FederationPaymentObservationReportSummary {
+        self.summary_with_quote_age(None, 0)
+    }
+
+    /// Return a redacted summary with quote-age based staleness classification.
+    #[must_use]
+    pub fn summary_with_quote_age(
+        &self,
+        quote_age_secs: Option<u64>,
+        stale_observation_secs: u64,
+    ) -> FederationPaymentObservationReportSummary {
+        let stale = quote_age_secs.is_some_and(|age| {
+            stale_observation_secs > 0 && self.is_unresolved() && age >= stale_observation_secs
+        });
+        let recommended_action = if self.has_conflicts() {
+            FederationPaymentObservationReportAction::Quarantine
+        } else if stale {
+            FederationPaymentObservationReportAction::Inspect
+        } else {
+            FederationPaymentObservationReportAction::None
+        };
+
         FederationPaymentObservationReportSummary {
             context: self.context,
             quote: self.quote.clone(),
@@ -743,6 +796,9 @@ impl FederationPaymentObservationReport {
             conflicting_observers: self.conflicting_observers.clone(),
             competing_terminal_state_observers: self.competing_terminal_state_observers.clone(),
             status: self.status,
+            quote_age_secs,
+            stale,
+            recommended_action,
         }
     }
 }
@@ -1524,9 +1580,29 @@ mod tests {
         assert_eq!(summary.groups[0].observer_count, 2);
         assert_eq!(summary.groups[0].state, "PAID");
         assert_eq!(summary.groups[0].operation_indices, vec![0, 1]);
+        assert!(!summary.stale);
+        assert_eq!(
+            summary.recommended_action,
+            FederationPaymentObservationReportAction::Quarantine
+        );
         let summary_json = serde_json::to_string(&summary).expect("summary json");
         assert!(!summary_json.contains("settled"));
         assert!(!summary_json.contains("different-settlement"));
+
+        let stale_unresolved = unresolved.summary_with_quote_age(Some(3_601), 3_600);
+        assert!(stale_unresolved.stale);
+        assert_eq!(stale_unresolved.quote_age_secs, Some(3_601));
+        assert_eq!(
+            stale_unresolved.recommended_action,
+            FederationPaymentObservationReportAction::Inspect
+        );
+
+        let fresh_unresolved = unresolved.summary_with_quote_age(Some(30), 3_600);
+        assert!(!fresh_unresolved.stale);
+        assert_eq!(
+            fresh_unresolved.recommended_action,
+            FederationPaymentObservationReportAction::None
+        );
     }
 
     #[test]

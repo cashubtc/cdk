@@ -41,9 +41,9 @@ pub use self::operation::{
     FederationPaymentObservation, FederationPaymentObservationEvidenceGroup,
     FederationPaymentObservationEvidenceGroupSummary, FederationPaymentObservationQuorum,
     FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationPaymentObservationReportStatus, FederationPaymentObservationReportSummary,
-    FederationRestoreOperation, FederationSwapOperation, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
-    FEDERATION_OPERATION_VERSION,
+    FederationPaymentObservationReportAction, FederationPaymentObservationReportStatus,
+    FederationPaymentObservationReportSummary, FederationRestoreOperation, FederationSwapOperation,
+    FEDERATION_MAX_OPERATION_ENVELOPE_BYTES, FEDERATION_OPERATION_VERSION,
 };
 pub use self::signing::{FederationBlindSignatureShare, FederationBlindSignatureShareSet};
 pub use self::transport::{

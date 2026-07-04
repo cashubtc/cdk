@@ -619,6 +619,11 @@ async fn payment_observation_report_summaries(
     }
 
     let mut reports = Vec::with_capacity(report_keys.len());
+    let stale_observation_secs = runtime_config
+        .public_config()
+        .payment_observation_policy
+        .stale_observation_secs;
+    let now = current_unix_time();
     for (context, quote) in report_keys {
         let required = runtime_config
             .public_config()
@@ -633,10 +638,41 @@ async fn payment_observation_report_summaries(
             required,
             &observations,
         );
-        reports.push(report.summary());
+        let quote_age_secs =
+            payment_observation_quote_age_secs(state, context, &quote, now).await?;
+        reports.push(report.summary_with_quote_age(quote_age_secs, stale_observation_secs));
     }
 
     Ok(reports)
+}
+
+async fn payment_observation_quote_age_secs(
+    state: &MintState,
+    context: cdk::federation::FederationPaymentObservationContext,
+    quote: &str,
+    now: u64,
+) -> Result<Option<u64>, cdk::Error> {
+    let Ok(quote_id) = cdk::mint::QuoteId::from_str(quote) else {
+        return Ok(None);
+    };
+    let db = state.mint.localstore();
+    match context {
+        cdk::federation::FederationPaymentObservationContext::MintQuote => Ok(db
+            .get_mint_quote(&quote_id)
+            .await?
+            .map(|quote| now.saturating_sub(quote.created_time))),
+        cdk::federation::FederationPaymentObservationContext::MeltQuote => Ok(db
+            .get_melt_quote(&quote_id)
+            .await?
+            .map(|quote| now.saturating_sub(quote.created_time))),
+    }
+}
+
+fn current_unix_time() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
 }
 
 fn contiguous_session_outcome_quorum_prefix(
@@ -1249,13 +1285,16 @@ mod tests {
 
     use async_trait::async_trait;
     use bip39::Mnemonic;
+    use cdk::cdk_payment::PaymentIdentifier;
     use cdk::federation::{
         generate_trusted_dealer_configs, FederationMintQuotePaymentObservation,
         FederationOperation, FederationOperationEnvelope, FederationOperationKind,
-        FederationOperationStatus, FederationRestoreOperation, InMemoryFederationConsensus,
-        MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+        FederationOperationStatus, FederationPaymentObservationPolicy,
+        FederationPaymentObservationReportAction, FederationPaymentTrustModel,
+        FederationRestoreOperation, InMemoryFederationConsensus, MemberId, ThresholdParams,
+        TrustedDealerKeysetSpec, TrustedDealerMember,
     };
-    use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, QuoteId};
+    use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
     use cdk::mint_url::MintUrl;
     use cdk::nuts::nut00::KnownMethod;
     use cdk::nuts::nut01::{BlsG1PublicKey, BlsSecretKey};
@@ -4982,6 +5021,79 @@ mod tests {
         let status_json = serde_json::to_string(&response).expect("status json");
         assert!(!status_json.contains("settled"));
         assert!(!status_json.contains("different-settlement"));
+    }
+
+    #[tokio::test]
+    async fn private_local_status_route_reports_stale_payment_observations() {
+        let (mut public_config, local_private, peer_private) = transport_config();
+        public_config.payment_observation_policy =
+            FederationPaymentObservationPolicy::member_quorum(
+                2,
+                FederationPaymentTrustModel::SharedBackendReadOnly,
+            );
+        public_config
+            .payment_observation_policy
+            .stale_observation_secs = 1;
+        let state =
+            federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
+        let local_member = local_private.member_id;
+        let quote_id = QuoteId::new();
+        let old_quote = MintQuote::new(
+            Some(quote_id.clone()),
+            format!("invoice-{quote_id}"),
+            CurrencyUnit::Sat,
+            Some(Amount::from(1).with_unit(CurrencyUnit::Sat)),
+            10_000,
+            PaymentIdentifier::QuoteId(quote_id.clone()),
+            None,
+            Amount::ZERO.with_unit(CurrencyUnit::Sat),
+            Amount::ZERO.with_unit(CurrencyUnit::Sat),
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            1,
+            Vec::new(),
+            Vec::new(),
+            None,
+        );
+        let mut tx = state
+            .mint
+            .localstore()
+            .begin_transaction()
+            .await
+            .expect("begin transaction");
+        tx.add_mint_quote(old_quote).await.expect("add old quote");
+        tx.commit().await.expect("commit old quote");
+
+        state
+            .submit_federation_envelope(mint_payment_observation_envelope_for_member(
+                &state, &quote_id, 1, 1, "settled",
+            ))
+            .await
+            .expect("submit first payment observation");
+
+        let request = signed_status_request(&public_config, &peer_private, local_member, 1);
+        let response = post_local_status(State(state), Json(request))
+            .await
+            .expect("local status response")
+            .0;
+
+        assert_eq!(response.payment_observation_reports.len(), 1);
+        let report = &response.payment_observation_reports[0];
+        assert_eq!(
+            report.status,
+            cdk::federation::FederationPaymentObservationReportStatus::AwaitingQuorum
+        );
+        assert_eq!(report.required, 2);
+        assert_eq!(report.total_observations, 1);
+        assert!(report.stale);
+        assert!(report.quote_age_secs.expect("quote age") >= 1);
+        assert_eq!(
+            report.recommended_action,
+            FederationPaymentObservationReportAction::Inspect
+        );
+        assert!(!report.groups[0].quorum_reached);
+
+        let status_json = serde_json::to_string(&response).expect("status json");
+        assert!(!status_json.contains("settled"));
     }
 
     #[tokio::test]

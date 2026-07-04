@@ -362,15 +362,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: expose federation payment reports</span>
+          <span class="value">feat: classify stale federation payment reports</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Private REST and mintd payment-observation report views</span>
+          <span class="value">Stale payment-observation inspection and quarantine recommendations</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Stale quote inspection and explicit conflict quarantine</span>
+          <span class="value">Consensus quarantine operation for conflicting payment evidence</span>
         </div>
       </aside>
     </header>
@@ -1166,6 +1166,10 @@
             <h3>Payment reports exposed to operators</h3>
             <p>Signed private REST local-status responses and `cdk-mintd federation status` now surface redacted payment-observation report summaries with per-quote status, quorum counts, conflicting members, and group details without exposing backend proof material.</p>
           </article>
+          <article class="item">
+            <h3>Stale payment inspection surfaced</h3>
+            <p>Payment observation reports now include quote age, stale classification, and an operator action recommendation, so unresolved old evidence shows `action=inspect` and conflicting evidence shows `action=quarantine` in signed local status and mintd status output.</p>
+          </article>
         </div>
       </section>
 
@@ -1182,7 +1186,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations, and a fresh SQLite-backed mint state can restart through a pending melt reserve before catching up the paid observation. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, local sync plus materialized state-digest health is queryable from mintd over signed private REST, and the generated process smoke now drives live wallet mint, swap, proof-state check, melt, restore, convergence, restart, and catch-up. Payment observations are now durable SQL rows, mint quote payments can finalize from stored real-policy quorum evidence, melt paid/failed observations have focused stored-quorum saga coverage, stored observations can be summarized into conflict/unresolved reports, and those reports are visible through redacted signed local status plus mintd status output; remaining work is stale-age inspection, explicit conflict quarantine, stronger BFT ordering, and broader storage-backed process coverage.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations, and a fresh SQLite-backed mint state can restart through a pending melt reserve before catching up the paid observation. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, local sync plus materialized state-digest health is queryable from mintd over signed private REST, and the generated process smoke now drives live wallet mint, swap, proof-state check, melt, restore, convergence, restart, and catch-up. Payment observations are now durable SQL rows, mint quote payments can finalize from stored real-policy quorum evidence, melt paid/failed observations have focused stored-quorum saga coverage, stored observations can be summarized into conflict/unresolved reports, and those reports are visible through redacted signed local status plus mintd status output with stale-age and quarantine recommendations; remaining work is a consensus quarantine operation, stronger BFT ordering, and broader storage-backed process coverage.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -1710,8 +1714,8 @@
             <tr>
               <td>Payment observation policy</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk --lib --features federation real_policy -- --test-threads 1` passed the mint, paid-melt, and failed-melt stored-quorum regressions. `cargo test -p cdk-common --features federation federation -- --test-threads 1` passed 83 shared federation tests, including redacted report summaries. `cargo test -p cdk-axum --features federation private_local_status_route -- --test-threads 1` passed 5 signed local-status regressions, including payment-observation conflict reports without backend proof strings. `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" federation_status -- --test-threads 1` passed 9 status CLI regressions, including payment report counters and detail formatting.</td>
-              <td>Add stale quote inspection, age classification, and explicit conflict quarantine actions.</td>
+              <td>`cargo test -p cdk-common --features federation payment_observation_report -- --test-threads 1` passed 3 shared report tests, including stale inspect and conflict quarantine recommendations. `cargo test -p cdk-axum --features federation private_local_status_route_reports_stale_payment_observations -- --test-threads 1` passed the signed local-status stale report regression without leaking backend proof strings. `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" status_lines_include_payment_observation_report_counts -- --test-threads 1` passed the CLI stale/quarantine counter and detail formatting regression.</td>
+              <td>Add a consensus/state-machine quarantine operation for conflicting payment evidence, then cover live process restart and catch-up stale-report visibility.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>

@@ -3,10 +3,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use cdk_common::federation::{
-    FederationConfig, FederationId, FederationPaymentObservationReportStatus,
-    FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
-    FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic,
-    MemberId, FEDERATION_REST_API_VERSION,
+    FederationConfig, FederationId, FederationPaymentObservationReportAction,
+    FederationPaymentObservationReportStatus, FederationPaymentObservationReportSummary,
+    FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
+    FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic, MemberId,
+    FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
 use serde::{Deserialize, Serialize};
@@ -220,9 +221,10 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         .latest_index
         .map(|index| index.to_string())
         .unwrap_or_else(|| "none".to_string());
-    let (payment_reports, payment_conflicts, payment_unresolved) = payment_report_counts(status);
+    let (payment_reports, payment_conflicts, payment_unresolved, payment_stale, payment_quarantine) =
+        payment_report_counts(status);
     format!(
-        "member {}: sync={} ready={} operations={} latest_index={} order_digest={} state_digest={} payment_reports={} payment_conflicts={} payment_unresolved={} message={}",
+        "member {}: sync={} ready={} operations={} latest_index={} order_digest={} state_digest={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} message={}",
         peer.member_id,
         status.sync_state,
         status.sync_ready,
@@ -233,11 +235,15 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         payment_reports,
         payment_conflicts,
         payment_unresolved,
+        payment_stale,
+        payment_quarantine,
         status.sync_message
     )
 }
 
-fn payment_report_counts(status: &FederationLocalStatusResponse) -> (usize, usize, usize) {
+fn payment_report_counts(
+    status: &FederationLocalStatusResponse,
+) -> (usize, usize, usize, usize, usize) {
     let payment_reports = status.payment_observation_reports.len();
     let payment_conflicts = status
         .payment_observation_reports
@@ -255,8 +261,26 @@ fn payment_report_counts(status: &FederationLocalStatusResponse) -> (usize, usiz
             )
         })
         .count();
+    let payment_stale = status
+        .payment_observation_reports
+        .iter()
+        .filter(|report| report.stale)
+        .count();
+    let payment_quarantine = status
+        .payment_observation_reports
+        .iter()
+        .filter(|report| {
+            report.recommended_action == FederationPaymentObservationReportAction::Quarantine
+        })
+        .count();
 
-    (payment_reports, payment_conflicts, payment_unresolved)
+    (
+        payment_reports,
+        payment_conflicts,
+        payment_unresolved,
+        payment_stale,
+        payment_quarantine,
+    )
 }
 
 fn print_payment_observation_report(report: &FederationPaymentObservationReportSummary) {
@@ -267,8 +291,12 @@ fn print_payment_observation_report(report: &FederationPaymentObservationReportS
 }
 
 fn payment_observation_report_line(report: &FederationPaymentObservationReportSummary) -> String {
+    let quote_age_secs = report
+        .quote_age_secs
+        .map(|age| age.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
     format!(
-        "  payment_report context={} quote={} status={} observations={} required={} groups={} conflicts={} terminal_conflicts={}",
+        "  payment_report context={} quote={} status={} observations={} required={} groups={} conflicts={} terminal_conflicts={} quote_age_secs={} stale={} action={}",
         report.context,
         report.quote,
         report.status,
@@ -276,7 +304,10 @@ fn payment_observation_report_line(report: &FederationPaymentObservationReportSu
         report.required,
         report.groups.len(),
         report.conflicting_observers.len(),
-        report.competing_terminal_state_observers.len()
+        report.competing_terminal_state_observers.len(),
+        quote_age_secs,
+        report.stale,
+        report.recommended_action
     )
 }
 
@@ -655,18 +686,26 @@ mod tests {
             ],
             competing_terminal_state_observers: Vec::new(),
             status: FederationPaymentObservationReportStatus::Conflicting,
+            quote_age_secs: Some(7_200),
+            stale: true,
+            recommended_action: FederationPaymentObservationReportAction::Quarantine,
         }];
 
         let member_line = member_status_line(&status);
         assert!(member_line.contains("payment_reports=1"));
         assert!(member_line.contains("payment_conflicts=1"));
         assert!(member_line.contains("payment_unresolved=1"));
+        assert!(member_line.contains("payment_stale=1"));
+        assert!(member_line.contains("payment_quarantine=1"));
 
         let report_line = payment_observation_report_line(&status.payment_observation_reports[0]);
         assert!(report_line.contains("context=mint_quote"));
         assert!(report_line.contains("quote=quote-1"));
         assert!(report_line.contains("status=conflicting"));
         assert!(report_line.contains("observations=3"));
+        assert!(report_line.contains("quote_age_secs=7200"));
+        assert!(report_line.contains("stale=true"));
+        assert!(report_line.contains("action=quarantine"));
 
         let group_line =
             payment_observation_group_line(&status.payment_observation_reports[0].groups[0]);
