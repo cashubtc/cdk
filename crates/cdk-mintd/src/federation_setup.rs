@@ -541,6 +541,7 @@ STATUS_RETRIES="${{STATUS_RETRIES:-60}}"
 STATUS_SLEEP_SECONDS="${{STATUS_SLEEP_SECONDS:-1}}"
 SMOKE_QUOTE_RETRIES="${{SMOKE_QUOTE_RETRIES:-300}}"
 SMOKE_QUOTE_SLEEP_MS="${{SMOKE_QUOTE_SLEEP_MS:-100}}"
+OFFLINE_OPERATION_BATCHES="${{OFFLINE_OPERATION_BATCHES:-3}}"
 PENDING_WALLET_DB="${{PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/pending-melt-wallet.sqlite}}"
 FAILED_PENDING_WALLET_DB="${{FAILED_PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/failed-pending-melt-wallet.sqlite}}"
 PIDS=()
@@ -746,9 +747,21 @@ validate_quarantine_members() {{
   fi
 }}
 
+validate_smoke_settings() {{
+  if ! [[ "$OFFLINE_OPERATION_BATCHES" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'OFFLINE_OPERATION_BATCHES must be a positive integer\n' >&2
+    return 1
+  fi
+  if (( OFFLINE_OPERATION_BATCHES > 255 )); then
+    printf 'OFFLINE_OPERATION_BATCHES must be 255 or lower\n' >&2
+    return 1
+  fi
+}}
+
 trap cleanup EXIT INT TERM
 
 validate_quarantine_members
+validate_smoke_settings
 reset_member_work_dirs
 
 for member in "${{MEMBERS[@]}}"; do
@@ -764,7 +777,9 @@ run_smoke_operations
 wait_for_converged
 
 stop_member "$RESTART_MEMBER"
-run_smoke_operations --scenario offline-member-operations
+for batch in $(seq 1 "$OFFLINE_OPERATION_BATCHES"); do
+  run_smoke_operations --scenario offline-member-operations --seed-offset "$batch"
+done
 start_member "$RESTART_MEMBER"
 wait_for_status "$RESTART_MEMBER"
 wait_for_converged
@@ -903,6 +918,10 @@ mod tests {
         assert!(smoke_script.contains("FAILED_PENDING_WALLET_DB"));
         assert!(smoke_script.contains("SMOKE_QUOTE_RETRIES"));
         assert!(smoke_script.contains("SMOKE_QUOTE_SLEEP_MS"));
+        assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES"));
+        assert!(smoke_script.contains("validate_smoke_settings()"));
+        assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES must be a positive integer"));
+        assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES must be 255 or lower"));
         assert!(smoke_script.contains("member_payment_report_lines()"));
         assert!(smoke_script.contains("run_smoke_operations()"));
         assert!(smoke_script.contains("--quote-retries \"$SMOKE_QUOTE_RETRIES\""));
@@ -910,6 +929,9 @@ mod tests {
         assert!(smoke_script.contains("wait_for_quarantine_report()"));
         assert!(smoke_script.contains("validate_quarantine_members()"));
         assert!(smoke_script.contains("--scenario offline-member-operations"));
+        assert!(smoke_script.contains(
+            "run_smoke_operations --scenario offline-member-operations --seed-offset \"$batch\""
+        ));
         assert!(smoke_script.contains("--scenario pending-melt-start"));
         assert!(smoke_script.contains("--scenario pending-melt-finish"));
         assert!(smoke_script.contains("--scenario pending-melt-fail-start"));
@@ -1115,7 +1137,11 @@ mod tests {
         assert!(smoke_script.contains(
             "QUARANTINE_OFFLINE_MEMBER=\"${QUARANTINE_OFFLINE_MEMBER:-$RESTART_MEMBER}\""
         ));
+        assert!(
+            smoke_script.contains("OFFLINE_OPERATION_BATCHES=\"${OFFLINE_OPERATION_BATCHES:-3}\"")
+        );
         assert!(smoke_script.contains("for member in \"${MEMBERS[@]}\"; do"));
+        assert!(smoke_script.contains("for batch in $(seq 1 \"$OFFLINE_OPERATION_BATCHES\"); do"));
         assert!(smoke_script.contains("wait_for_converged"));
         assert!(smoke_script.contains("--scenario offline-member-operations"));
         assert!(smoke_script.contains("--scenario pending-melt-fail-finish"));

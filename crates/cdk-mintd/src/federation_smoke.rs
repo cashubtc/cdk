@@ -35,6 +35,12 @@ const PENDING_PAID_SMOKE_SEED: [u8; 64] = [8u8; 64];
 const PENDING_FAILED_SMOKE_SEED: [u8; 64] = [9u8; 64];
 const OFFLINE_MEMBER_SMOKE_SEED: [u8; 64] = [10u8; 64];
 
+fn smoke_seed(base: [u8; 64], offset: u8) -> [u8; 64] {
+    let mut seed = base;
+    seed[63] = seed[63].wrapping_add(offset);
+    seed
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SmokeMemberExpectation {
     AllMembers,
@@ -66,7 +72,7 @@ pub(crate) async fn run_smoke_operations_command(
                 unit,
                 &member_connectors,
                 connector,
-                STANDARD_SMOKE_SEED,
+                smoke_seed(STANDARD_SMOKE_SEED, args.seed_offset),
                 SmokeMemberExpectation::AllMembers,
             )
             .await
@@ -78,7 +84,7 @@ pub(crate) async fn run_smoke_operations_command(
                 unit,
                 &member_connectors,
                 connector,
-                OFFLINE_MEMBER_SMOKE_SEED,
+                smoke_seed(OFFLINE_MEMBER_SMOKE_SEED, args.seed_offset),
                 SmokeMemberExpectation::ThresholdMembers,
             )
             .await

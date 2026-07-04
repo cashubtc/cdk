@@ -204,6 +204,9 @@ pub struct FederationSmokeOperationsArgs {
     /// Wallet SQLite database path for resumable smoke scenarios.
     #[arg(long)]
     pub wallet_db: Option<PathBuf>,
+    /// Deterministic wallet seed offset for repeatable operation smoke batches.
+    #[arg(long, default_value_t = 0)]
+    pub seed_offset: u8,
     /// Number of mint quote status attempts before failing.
     #[arg(long, default_value_t = 100)]
     pub quote_retries: u16,
@@ -513,6 +516,8 @@ mod tests {
             "federation-public.json",
             "--scenario",
             "offline-member-operations",
+            "--seed-offset",
+            "3",
         ])
         .expect("offline smoke operations command parses");
 
@@ -526,6 +531,7 @@ mod tests {
             smoke.scenario,
             FederationSmokeScenario::OfflineMemberOperations
         );
+        assert_eq!(smoke.seed_offset, 3);
     }
 
     #[test]
