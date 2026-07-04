@@ -15,10 +15,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
     FederationConfig, FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationError, FederationId, FederationJournalAppendOutcome, FederationJournalDigest,
-    FederationJournalEntry, FederationOperationEnvelope, FederationOperationId,
-    FederationStateDigest, InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic,
-    MemberId, Result,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError, FederationId,
+    FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
+    FederationOperationEnvelope, FederationOperationId, FederationStateDigest,
+    InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, Result,
 };
 
 /// Version of the private federation REST payload format.
@@ -41,6 +41,8 @@ pub enum FederationRestMessageKind {
     DkgCommitment,
     /// Reveal DKG public polynomial commitments to a peer.
     DkgReveal,
+    /// Share a member signature over a DKG/setup transcript hash.
+    DkgTranscriptSignature,
     /// Submit one operation envelope to a peer.
     SubmitOperation,
     /// Request missing journal entries from a peer.
@@ -53,6 +55,7 @@ impl FederationRestMessageKind {
             Self::Status => b"status",
             Self::DkgCommitment => b"dkg_commitment",
             Self::DkgReveal => b"dkg_reveal",
+            Self::DkgTranscriptSignature => b"dkg_transcript_signature",
             Self::SubmitOperation => b"submit_operation",
             Self::CatchUp => b"catch_up",
         }
@@ -478,6 +481,58 @@ impl FederationDkgRevealRequest {
     ) -> Result<()> {
         self.reveal.validate_against_config(public_config)?;
         ensure_dkg_payload_sender(self.reveal.member_id, sender)
+    }
+}
+
+/// Signed request payload carrying one member's DKG/setup transcript signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationDkgTranscriptSignatureRequest {
+    /// Federation whose transcript is being signed.
+    pub federation_id: FederationId,
+    /// Member that produced the transcript signature.
+    pub signer: MemberId,
+    /// Public setup transcript hash being signed.
+    pub transcript_hash: FederationDkgTranscriptHash,
+    /// Member identity signature over the transcript hash.
+    pub signature: FederationDkgTranscriptSignature,
+}
+
+impl FederationDkgTranscriptSignatureRequest {
+    /// Create a DKG transcript signature transport request.
+    #[must_use]
+    pub fn new(
+        federation_id: FederationId,
+        signer: MemberId,
+        transcript_hash: FederationDkgTranscriptHash,
+        signature: FederationDkgTranscriptSignature,
+    ) -> Self {
+        Self {
+            federation_id,
+            signer,
+            transcript_hash,
+            signature,
+        }
+    }
+
+    /// Validate the transcript signature and ensure the signed sender owns it.
+    pub fn validate_sender(
+        &self,
+        public_config: &FederationConfig,
+        sender: MemberId,
+    ) -> Result<()> {
+        if self.federation_id != public_config.federation_id {
+            return Err(FederationError::FederationIdMismatch {
+                expected: public_config.federation_id,
+                found: self.federation_id,
+            });
+        }
+        ensure_dkg_payload_sender(self.signer, sender)?;
+        let member = public_config
+            .member(self.signer)
+            .ok_or(FederationError::MissingMember {
+                member_id: self.signer,
+            })?;
+        self.signature.verify(self.transcript_hash, member)
     }
 }
 
@@ -1754,6 +1809,63 @@ mod tests {
             .payload
             .validate_sender(&config, decoded.sender)
             .expect("decoded payload owner");
+    }
+
+    #[test]
+    fn signed_dkg_transcript_signature_request_verifies_sender_and_signature() {
+        let (config, first_private, second_private) = transport_config();
+        let receiver = roster_member_id(2);
+        let transcript_hash = FederationDkgTranscriptHash::from_bytes([42; 32]);
+        let signature = FederationDkgTranscriptSignature::sign(transcript_hash, &first_private)
+            .expect("transcript signature");
+        let payload = FederationDkgTranscriptSignatureRequest::new(
+            config.federation_id,
+            first_private.member_id,
+            transcript_hash,
+            signature,
+        );
+        let request = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            9,
+            FederationRestMessageKind::DkgTranscriptSignature,
+            payload,
+            &first_private,
+        )
+        .expect("signed dkg transcript signature");
+
+        request.verify(&config, receiver).expect("verified request");
+        request
+            .payload
+            .validate_sender(&config, request.sender)
+            .expect("payload owner");
+        let json = serde_json::to_string(&request).expect("dkg transcript signature json");
+        let decoded: FederationSignedRequest<FederationDkgTranscriptSignatureRequest> =
+            serde_json::from_str(&json).expect("decoded request");
+        assert_eq!(
+            decoded.kind,
+            FederationRestMessageKind::DkgTranscriptSignature
+        );
+        decoded.verify(&config, receiver).expect("decoded verifies");
+        decoded
+            .payload
+            .validate_sender(&config, decoded.sender)
+            .expect("decoded payload owner");
+
+        let bad_signature =
+            FederationDkgTranscriptSignature::sign(transcript_hash, &second_private)
+                .expect("bad transcript signature");
+        let bad_payload = FederationDkgTranscriptSignatureRequest::new(
+            config.federation_id,
+            first_private.member_id,
+            transcript_hash,
+            bad_signature,
+        );
+        assert!(matches!(
+            bad_payload.validate_sender(&config, first_private.member_id),
+            Err(FederationError::DkgTranscriptSignatureVerificationFailed { member_id })
+                if member_id == first_private.member_id
+        ));
     }
 
     #[test]

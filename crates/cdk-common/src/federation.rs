@@ -51,12 +51,12 @@ pub use self::operation::{
 pub use self::signing::{FederationBlindSignatureShare, FederationBlindSignatureShareSet};
 pub use self::transport::{
     FederationDkgCommitmentRequest, FederationDkgRevealRequest, FederationDkgSetupResponse,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
-    FederationPeerStatusRequest, FederationRestBodyHash, FederationRestMessageKind,
-    FederationRestSequenceTracker, FederationRestSignature, FederationSessionOutcome,
-    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, FEDERATION_REST_API_VERSION,
-    FEDERATION_SESSION_OUTCOME_VERSION,
+    FederationDkgTranscriptSignatureRequest, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationPeerStatus, FederationPeerStatusRequest,
+    FederationRestBodyHash, FederationRestMessageKind, FederationRestSequenceTracker,
+    FederationRestSignature, FederationSessionOutcome, FederationSessionOutcomeQuorum,
+    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    FEDERATION_REST_API_VERSION, FEDERATION_SESSION_OUTCOME_VERSION,
 };
 pub use self::trusted_dealer::{
     generate_trusted_dealer_configs, TrustedDealerConfigBundle, TrustedDealerKeysetSpec,
@@ -2182,7 +2182,8 @@ impl FederationDkgTranscriptSignature {
         crate::util::hex::encode(self.0)
     }
 
-    fn sign(
+    /// Sign a DKG/setup transcript hash with one member identity key.
+    pub fn sign(
         transcript_hash: FederationDkgTranscriptHash,
         private_config: &MemberConfigPrivate,
     ) -> Result<Self> {
@@ -2192,7 +2193,8 @@ impl FederationDkgTranscriptSignature {
         Ok(Self(signature.serialize()))
     }
 
-    fn verify(
+    /// Verify this signature against one member identity public key.
+    pub fn verify(
         self,
         transcript_hash: FederationDkgTranscriptHash,
         member: &MemberConfigPublic,

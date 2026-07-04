@@ -14,10 +14,10 @@ use axum::Router;
 use cdk::federation::{
     FederationConfig, FederationConsensusEngine, FederationConsensusRuntime,
     FederationDkgCommitmentRequest, FederationDkgRevealRequest, FederationDkgSetupResponse,
-    FederationError, FederationId, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationJournalDigest, FederationJournalEntry,
-    FederationMaterializedStateRow, FederationMaterializedStateSnapshot, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId,
+    FederationDkgTranscriptSignatureRequest, FederationError, FederationId,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalDigest,
+    FederationJournalEntry, FederationMaterializedStateRow, FederationMaterializedStateSnapshot,
+    FederationOperation, FederationOperationEnvelope, FederationOperationId,
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
     FederationPaymentObservationReport, FederationPaymentObservationReportSummary,
     FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
@@ -47,6 +47,10 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         .route("/local-status", post(post_local_status))
         .route("/dkg/commitments", post(post_dkg_commitment))
         .route("/dkg/reveals", post(post_dkg_reveal))
+        .route(
+            "/dkg/transcript-signatures",
+            post(post_dkg_transcript_signature),
+        )
         .route("/operations", post(post_operation))
         .route("/journal", post(post_journal))
 }
@@ -487,6 +491,37 @@ async fn post_dkg_reveal(
         local_member,
         FederationRestMessageKind::DkgReveal,
         payload.payload.reveal.member_id,
+    )))
+}
+
+#[instrument(skip_all)]
+async fn post_dkg_transcript_signature(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationDkgTranscriptSignatureRequest>>,
+) -> Result<Json<FederationDkgSetupResponse>, Response> {
+    let verified = verify_federation_request(
+        &state,
+        &payload,
+        FederationRestMessageKind::DkgTranscriptSignature,
+    )
+    .await?;
+    let runtime_config = federation_runtime_config(&state)?;
+    payload
+        .payload
+        .validate_sender(runtime_config.public_config(), verified.sender)
+        .map_err(federation_error_response)?;
+    let federation_id = runtime_config.federation_id();
+    let local_member = runtime_config.member_id();
+    state
+        .persist_federation_sequence(verified.sender, verified.sequence)
+        .await
+        .map_err(cdk_error_response)?;
+
+    Ok(Json(FederationDkgSetupResponse::new(
+        federation_id,
+        local_member,
+        FederationRestMessageKind::DkgTranscriptSignature,
+        payload.payload.signer,
     )))
 }
 
@@ -1130,6 +1165,34 @@ where
         Ok(response)
     }
 
+    pub(crate) async fn submit_dkg_transcript_signature(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationDkgTranscriptSignatureRequest,
+    ) -> anyhow::Result<FederationDkgSetupResponse> {
+        request.validate_sender(&self.public_config, self.private_config.member_id)?;
+        let request = self.signed_request(
+            member,
+            FederationRestMessageKind::DkgTranscriptSignature,
+            *request,
+        )?;
+        let response: FederationDkgSetupResponse = self
+            .transport
+            .http_post(
+                federation_endpoint(member, "dkg/transcript-signatures")?,
+                None,
+                &request,
+            )
+            .await?;
+        response.validate(
+            self.federation_id,
+            member.member_id,
+            FederationRestMessageKind::DkgTranscriptSignature,
+            self.private_config.member_id,
+        )?;
+        Ok(response)
+    }
+
     pub(crate) async fn catch_up(
         &self,
         member: &MemberConfigPublic,
@@ -1732,6 +1795,8 @@ mod tests {
         status_requests: Vec<FederationSignedRequest<FederationPeerStatusRequest>>,
         dkg_commitment_requests: Vec<FederationSignedRequest<FederationDkgCommitmentRequest>>,
         dkg_reveal_requests: Vec<FederationSignedRequest<FederationDkgRevealRequest>>,
+        dkg_transcript_signature_requests:
+            Vec<FederationSignedRequest<FederationDkgTranscriptSignatureRequest>>,
         submitted_operations: Vec<FederationSignedRequest<FederationSubmitOperationRequest>>,
         catch_up_requests: Vec<FederationSignedRequest<FederationJournalCatchUpRequest>>,
     }
@@ -1829,6 +1894,16 @@ mod tests {
                 .clone()
         }
 
+        fn dkg_transcript_signature_requests(
+            &self,
+        ) -> Vec<FederationSignedRequest<FederationDkgTranscriptSignatureRequest>> {
+            self.state
+                .lock()
+                .expect("mock transport lock")
+                .dkg_transcript_signature_requests
+                .clone()
+        }
+
         fn submitted_operations(
             &self,
         ) -> Vec<FederationSignedRequest<FederationSubmitOperationRequest>> {
@@ -1909,6 +1984,16 @@ mod tests {
                         FederationSignedRequest<FederationDkgRevealRequest>,
                     >(serde_json::to_value(payload)?)?;
                     state.dkg_reveal_requests.push(request);
+                    let response = state.dkg_setup_responses.pop_front().ok_or_else(|| {
+                        HttpError::Other("missing DKG setup response".to_string())
+                    })?;
+                    json_response(response)
+                }
+                path if path.ends_with("/federation/v1/dkg/transcript-signatures") => {
+                    let request = serde_json::from_value::<
+                        FederationSignedRequest<FederationDkgTranscriptSignatureRequest>,
+                    >(serde_json::to_value(payload)?)?;
+                    state.dkg_transcript_signature_requests.push(request);
                     let response = state.dkg_setup_responses.pop_front().ok_or_else(|| {
                         HttpError::Other("missing DKG setup response".to_string())
                     })?;
@@ -2232,6 +2317,45 @@ mod tests {
             private_config,
         )
         .expect("signed DKG reveal request")
+    }
+
+    fn dkg_transcript_signature_request(
+        public_config: &FederationConfig,
+        private_config: &MemberConfigPrivate,
+    ) -> FederationDkgTranscriptSignatureRequest {
+        let transcript = public_config
+            .setup_transcript
+            .as_ref()
+            .expect("setup transcript");
+        let signature = cdk::federation::FederationDkgTranscriptSignature::sign(
+            transcript.transcript_hash,
+            private_config,
+        )
+        .expect("transcript signature");
+        FederationDkgTranscriptSignatureRequest::new(
+            public_config.federation_id,
+            private_config.member_id,
+            transcript.transcript_hash,
+            signature,
+        )
+    }
+
+    fn signed_dkg_transcript_signature_request(
+        public_config: &FederationConfig,
+        private_config: &MemberConfigPrivate,
+        receiver: MemberId,
+        sequence: u64,
+        request: FederationDkgTranscriptSignatureRequest,
+    ) -> FederationSignedRequest<FederationDkgTranscriptSignatureRequest> {
+        FederationSignedRequest::new_signed(
+            public_config.federation_id,
+            receiver,
+            sequence,
+            FederationRestMessageKind::DkgTranscriptSignature,
+            request,
+            private_config,
+        )
+        .expect("signed DKG transcript signature request")
     }
 
     async fn consensus_operation_count(state: &MintState) -> u64 {
@@ -2602,6 +2726,8 @@ mod tests {
         let commitment_request =
             dkg_commitment_request(&public_config, local_private.member_id, 11);
         let reveal_request = dkg_reveal_request(&public_config, local_private.member_id, 11);
+        let transcript_signature_request =
+            dkg_transcript_signature_request(&public_config, &local_private);
         let transport = MockFederationTransport::default()
             .with_dkg_setup_response(FederationDkgSetupResponse::new(
                 public_config.federation_id,
@@ -2613,6 +2739,12 @@ mod tests {
                 public_config.federation_id,
                 member.member_id,
                 FederationRestMessageKind::DkgReveal,
+                local_private.member_id,
+            ))
+            .with_dkg_setup_response(FederationDkgSetupResponse::new(
+                public_config.federation_id,
+                member.member_id,
+                FederationRestMessageKind::DkgTranscriptSignature,
                 local_private.member_id,
             ));
         let client =
@@ -2627,11 +2759,17 @@ mod tests {
             .submit_dkg_reveal(member, &reveal_request)
             .await
             .expect("submit DKG reveal");
+        client
+            .submit_dkg_transcript_signature(member, &transcript_signature_request)
+            .await
+            .expect("submit DKG transcript signature");
 
         let commitments = transport.dkg_commitment_requests();
         let reveals = transport.dkg_reveal_requests();
+        let transcript_signatures = transport.dkg_transcript_signature_requests();
         assert_eq!(commitments.len(), 1);
         assert_eq!(reveals.len(), 1);
+        assert_eq!(transcript_signatures.len(), 1);
         commitments[0]
             .verify(&public_config, member.member_id)
             .expect("commitment signature");
@@ -2646,9 +2784,18 @@ mod tests {
             .payload
             .validate_sender(&public_config, reveals[0].sender)
             .expect("reveal payload owner");
+        transcript_signatures[0]
+            .verify(&public_config, member.member_id)
+            .expect("transcript signature request");
+        transcript_signatures[0]
+            .payload
+            .validate_sender(&public_config, transcript_signatures[0].sender)
+            .expect("transcript signature payload owner");
         assert_eq!(commitments[0].sender, local_private.member_id);
         assert_eq!(reveals[0].sender, local_private.member_id);
+        assert_eq!(transcript_signatures[0].sender, local_private.member_id);
         assert!(reveals[0].sequence > commitments[0].sequence);
+        assert!(transcript_signatures[0].sequence > reveals[0].sequence);
     }
 
     #[tokio::test]
@@ -6289,6 +6436,88 @@ mod tests {
             .expect("persisted reveals");
         assert_eq!(commitments, vec![expected_commitment]);
         assert_eq!(reveals, vec![expected_reveal]);
+    }
+
+    #[tokio::test]
+    async fn private_dkg_transcript_signature_route_accepts_signed_peer_request() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let local_member = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .member_id();
+        let payload = dkg_transcript_signature_request(&public_config, &peer_private);
+        let request = signed_dkg_transcript_signature_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            1,
+            payload,
+        );
+
+        let response = post_dkg_transcript_signature(State(state.clone()), Json(request))
+            .await
+            .expect("transcript signature accepted")
+            .0;
+
+        response
+            .validate(
+                public_config.federation_id,
+                local_member,
+                FederationRestMessageKind::DkgTranscriptSignature,
+                peer_private.member_id,
+            )
+            .expect("transcript signature ack");
+        let sequences = state
+            .mint
+            .localstore()
+            .get_federation_member_sequences()
+            .await
+            .expect("persisted sequences");
+        assert_eq!(sequences.get(&peer_private.member_id), Some(&1));
+    }
+
+    #[tokio::test]
+    async fn private_dkg_transcript_signature_route_rejects_bad_signature_before_sequence() {
+        let (state, public_config, local_private, peer_private) =
+            federation_route_state_with_local_private().await;
+        let local_member = local_private.member_id;
+        let transcript_hash = public_config
+            .setup_transcript
+            .as_ref()
+            .expect("setup transcript")
+            .transcript_hash;
+        let bad_signature = cdk::federation::FederationDkgTranscriptSignature::sign(
+            transcript_hash,
+            &local_private,
+        )
+        .expect("bad transcript signature");
+        let payload = FederationDkgTranscriptSignatureRequest::new(
+            public_config.federation_id,
+            peer_private.member_id,
+            transcript_hash,
+            bad_signature,
+        );
+        let request = signed_dkg_transcript_signature_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            1,
+            payload,
+        );
+
+        let response = post_dkg_transcript_signature(State(state.clone()), Json(request))
+            .await
+            .expect_err("bad transcript signature must fail");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let sequences = state
+            .mint
+            .localstore()
+            .get_federation_member_sequences()
+            .await
+            .expect("persisted sequences");
+        assert!(sequences.is_empty());
     }
 
     #[tokio::test]
