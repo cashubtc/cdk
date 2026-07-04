@@ -13,18 +13,18 @@ use axum::routing::post;
 use axum::Router;
 use cdk::federation::{
     FederatedKeyset, FederationConfig, FederationConsensusEngine, FederationConsensusRuntime,
-    FederationDkgCommitmentRequest, FederationDkgRevealRequest, FederationDkgSetupResponse,
-    FederationDkgTranscriptSignatureRequest, FederationError, FederationId,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalDigest,
-    FederationJournalEntry, FederationMaterializedStateRow, FederationMaterializedStateSnapshot,
-    FederationOperation, FederationOperationEnvelope, FederationOperationId,
-    FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationPaymentObservationReportSummary,
-    FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
-    FederationRestSequenceTracker, FederationSessionOutcome, FederationSessionOutcomeQuorum,
-    FederationSignedRequest, FederationStateDigest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, MemberConfigPrivate, MemberConfigPublic, MemberId,
-    FEDERATION_REST_API_VERSION,
+    FederationDkgCommitmentRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
+    FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest, FederationError,
+    FederationId, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationJournalDigest, FederationJournalEntry, FederationMaterializedStateRow,
+    FederationMaterializedStateSnapshot, FederationOperation, FederationOperationEnvelope,
+    FederationOperationId, FederationPaymentObservationQuarantineRecord,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
+    FederationRestMessageKind, FederationRestSequenceTracker, FederationSessionOutcome,
+    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationStateDigest,
+    FederationSubmitOperationRequest, FederationSubmitOperationResponse, MemberConfigPrivate,
+    MemberConfigPublic, MemberId, FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
 use serde::{Deserialize, Serialize};
@@ -47,6 +47,7 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         .route("/local-status", post(post_local_status))
         .route("/dkg/commitments", post(post_dkg_commitment))
         .route("/dkg/reveals", post(post_dkg_reveal))
+        .route("/dkg/secret-shares", post(post_dkg_secret_share))
         .route(
             "/dkg/transcript-signatures",
             post(post_dkg_transcript_signature),
@@ -491,6 +492,42 @@ async fn post_dkg_reveal(
         local_member,
         FederationRestMessageKind::DkgReveal,
         payload.payload.reveal.member_id,
+    )))
+}
+
+#[instrument(skip_all)]
+async fn post_dkg_secret_share(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationDkgSecretShareRequest>>,
+) -> Result<Json<FederationDkgSetupResponse>, Response> {
+    let verified =
+        verify_federation_request(&state, &payload, FederationRestMessageKind::DkgSecretShare)
+            .await?;
+    let runtime_config = federation_runtime_config(&state)?;
+    payload
+        .payload
+        .validate_sender_receiver(
+            runtime_config.public_config(),
+            verified.sender,
+            runtime_config.member_id(),
+        )
+        .map_err(federation_error_response)?;
+    let federation_id = runtime_config.federation_id();
+    let local_member = runtime_config.member_id();
+    state
+        .persist_federation_dkg_secret_share_contribution(
+            &payload.payload,
+            verified.sender,
+            verified.sequence,
+        )
+        .await
+        .map_err(cdk_error_response)?;
+
+    Ok(Json(FederationDkgSetupResponse::new(
+        federation_id,
+        local_member,
+        FederationRestMessageKind::DkgSecretShare,
+        payload.payload.sender,
     )))
 }
 
@@ -1169,6 +1206,38 @@ where
         Ok(response)
     }
 
+    pub(crate) async fn submit_dkg_secret_share(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationDkgSecretShareRequest,
+    ) -> anyhow::Result<FederationDkgSetupResponse> {
+        request.validate_sender_receiver(
+            &self.public_config,
+            self.private_config.member_id,
+            member.member_id,
+        )?;
+        let request = self.signed_request(
+            member,
+            FederationRestMessageKind::DkgSecretShare,
+            request.clone(),
+        )?;
+        let response: FederationDkgSetupResponse = self
+            .transport
+            .http_post(
+                federation_endpoint(member, "dkg/secret-shares")?,
+                None,
+                &request,
+            )
+            .await?;
+        response.validate(
+            self.federation_id,
+            member.member_id,
+            FederationRestMessageKind::DkgSecretShare,
+            self.private_config.member_id,
+        )?;
+        Ok(response)
+    }
+
     pub(crate) async fn submit_dkg_transcript_signature(
         &self,
         member: &MemberConfigPublic,
@@ -1816,7 +1885,7 @@ mod tests {
     use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
     use cdk::mint_url::MintUrl;
     use cdk::nuts::nut00::KnownMethod;
-    use cdk::nuts::nut01::{BlsG1PublicKey, BlsSecretKey};
+    use cdk::nuts::nut01::{evaluate_secret_key_coefficients, BlsG1PublicKey, BlsSecretKey};
     use cdk::nuts::nut22::AuthToken;
     use cdk::nuts::{
         BlindedMessage, CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState,
@@ -1841,6 +1910,7 @@ mod tests {
         status_requests: Vec<FederationSignedRequest<FederationPeerStatusRequest>>,
         dkg_commitment_requests: Vec<FederationSignedRequest<FederationDkgCommitmentRequest>>,
         dkg_reveal_requests: Vec<FederationSignedRequest<FederationDkgRevealRequest>>,
+        dkg_secret_share_requests: Vec<FederationSignedRequest<FederationDkgSecretShareRequest>>,
         dkg_transcript_signature_requests:
             Vec<FederationSignedRequest<FederationDkgTranscriptSignatureRequest>>,
         submitted_operations: Vec<FederationSignedRequest<FederationSubmitOperationRequest>>,
@@ -1940,6 +2010,16 @@ mod tests {
                 .clone()
         }
 
+        fn dkg_secret_share_requests(
+            &self,
+        ) -> Vec<FederationSignedRequest<FederationDkgSecretShareRequest>> {
+            self.state
+                .lock()
+                .expect("mock transport lock")
+                .dkg_secret_share_requests
+                .clone()
+        }
+
         fn dkg_transcript_signature_requests(
             &self,
         ) -> Vec<FederationSignedRequest<FederationDkgTranscriptSignatureRequest>> {
@@ -2030,6 +2110,16 @@ mod tests {
                         FederationSignedRequest<FederationDkgRevealRequest>,
                     >(serde_json::to_value(payload)?)?;
                     state.dkg_reveal_requests.push(request);
+                    let response = state.dkg_setup_responses.pop_front().ok_or_else(|| {
+                        HttpError::Other("missing DKG setup response".to_string())
+                    })?;
+                    json_response(response)
+                }
+                path if path.ends_with("/federation/v1/dkg/secret-shares") => {
+                    let request = serde_json::from_value::<
+                        FederationSignedRequest<FederationDkgSecretShareRequest>,
+                    >(serde_json::to_value(payload)?)?;
+                    state.dkg_secret_share_requests.push(request);
                     let response = state.dkg_setup_responses.pop_front().ok_or_else(|| {
                         HttpError::Other("missing DKG setup response".to_string())
                     })?;
@@ -2329,6 +2419,30 @@ mod tests {
         FederationDkgRevealRequest::new(dkg_reveal(public_config, member_id, seed))
     }
 
+    fn dkg_secret_share_request(
+        public_config: &FederationConfig,
+        sender: MemberId,
+        receiver: MemberId,
+        seed: u8,
+    ) -> FederationDkgSecretShareRequest {
+        FederationDkgSecretShareRequest::new(
+            public_config.federation_id,
+            sender,
+            receiver,
+            BTreeMap::from([(
+                Amount::from(1),
+                evaluate_secret_key_coefficients(
+                    receiver.to_bls_signer_id(),
+                    &[
+                        BlsSecretKey::from_reduced_bytes(&[seed; 32]),
+                        BlsSecretKey::from_reduced_bytes(&[seed + 10; 32]),
+                    ],
+                )
+                .expect("dkg secret share"),
+            )]),
+        )
+    }
+
     fn signed_dkg_commitment_request(
         public_config: &FederationConfig,
         private_config: &MemberConfigPrivate,
@@ -2363,6 +2477,24 @@ mod tests {
             private_config,
         )
         .expect("signed DKG reveal request")
+    }
+
+    fn signed_dkg_secret_share_request(
+        public_config: &FederationConfig,
+        private_config: &MemberConfigPrivate,
+        receiver: MemberId,
+        sequence: u64,
+        request: FederationDkgSecretShareRequest,
+    ) -> FederationSignedRequest<FederationDkgSecretShareRequest> {
+        FederationSignedRequest::new_signed(
+            public_config.federation_id,
+            receiver,
+            sequence,
+            FederationRestMessageKind::DkgSecretShare,
+            request,
+            private_config,
+        )
+        .expect("signed DKG secret-share request")
     }
 
     fn dkg_transcript_signature_request(
@@ -2772,6 +2904,12 @@ mod tests {
         let commitment_request =
             dkg_commitment_request(&public_config, local_private.member_id, 11);
         let reveal_request = dkg_reveal_request(&public_config, local_private.member_id, 11);
+        let secret_share_request = dkg_secret_share_request(
+            &public_config,
+            local_private.member_id,
+            member.member_id,
+            11,
+        );
         let transcript_signature_request =
             dkg_transcript_signature_request(&public_config, &local_private);
         let transport = MockFederationTransport::default()
@@ -2785,6 +2923,12 @@ mod tests {
                 public_config.federation_id,
                 member.member_id,
                 FederationRestMessageKind::DkgReveal,
+                local_private.member_id,
+            ))
+            .with_dkg_setup_response(FederationDkgSetupResponse::new(
+                public_config.federation_id,
+                member.member_id,
+                FederationRestMessageKind::DkgSecretShare,
                 local_private.member_id,
             ))
             .with_dkg_setup_response(FederationDkgSetupResponse::new(
@@ -2806,15 +2950,21 @@ mod tests {
             .await
             .expect("submit DKG reveal");
         client
+            .submit_dkg_secret_share(member, &secret_share_request)
+            .await
+            .expect("submit DKG secret share");
+        client
             .submit_dkg_transcript_signature(member, &transcript_signature_request)
             .await
             .expect("submit DKG transcript signature");
 
         let commitments = transport.dkg_commitment_requests();
         let reveals = transport.dkg_reveal_requests();
+        let secret_shares = transport.dkg_secret_share_requests();
         let transcript_signatures = transport.dkg_transcript_signature_requests();
         assert_eq!(commitments.len(), 1);
         assert_eq!(reveals.len(), 1);
+        assert_eq!(secret_shares.len(), 1);
         assert_eq!(transcript_signatures.len(), 1);
         commitments[0]
             .verify(&public_config, member.member_id)
@@ -2830,6 +2980,13 @@ mod tests {
             .payload
             .validate_sender(&public_config, reveals[0].sender)
             .expect("reveal payload owner");
+        secret_shares[0]
+            .verify(&public_config, member.member_id)
+            .expect("secret-share request");
+        secret_shares[0]
+            .payload
+            .validate_sender_receiver(&public_config, secret_shares[0].sender, member.member_id)
+            .expect("secret-share payload owner");
         transcript_signatures[0]
             .verify(&public_config, member.member_id)
             .expect("transcript signature request");
@@ -2839,9 +2996,11 @@ mod tests {
             .expect("transcript signature payload owner");
         assert_eq!(commitments[0].sender, local_private.member_id);
         assert_eq!(reveals[0].sender, local_private.member_id);
+        assert_eq!(secret_shares[0].sender, local_private.member_id);
         assert_eq!(transcript_signatures[0].sender, local_private.member_id);
         assert!(reveals[0].sequence > commitments[0].sequence);
-        assert!(transcript_signatures[0].sequence > reveals[0].sequence);
+        assert!(secret_shares[0].sequence > reveals[0].sequence);
+        assert!(transcript_signatures[0].sequence > secret_shares[0].sequence);
     }
 
     #[tokio::test]
@@ -6526,6 +6685,9 @@ mod tests {
         let expected_commitment = commitment_payload.commitment;
         let reveal_payload = dkg_reveal_request(&public_config, peer_private.member_id, 21);
         let expected_reveal = reveal_payload.reveal.clone();
+        let secret_share_payload =
+            dkg_secret_share_request(&public_config, peer_private.member_id, local_member, 21);
+        let expected_secret_share = secret_share_payload.clone();
         let commitment_request = signed_dkg_commitment_request(
             &public_config,
             &peer_private,
@@ -6540,6 +6702,13 @@ mod tests {
             2,
             reveal_payload,
         );
+        let secret_share_request = signed_dkg_secret_share_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            3,
+            secret_share_payload,
+        );
 
         let commitment_response =
             post_dkg_commitment(State(state.clone()), Json(commitment_request))
@@ -6550,6 +6719,11 @@ mod tests {
             .await
             .expect("reveal accepted")
             .0;
+        let secret_share_response =
+            post_dkg_secret_share(State(state.clone()), Json(secret_share_request))
+                .await
+                .expect("secret share accepted")
+                .0;
 
         commitment_response
             .validate(
@@ -6567,13 +6741,21 @@ mod tests {
                 peer_private.member_id,
             )
             .expect("reveal ack");
+        secret_share_response
+            .validate(
+                public_config.federation_id,
+                local_member,
+                FederationRestMessageKind::DkgSecretShare,
+                peer_private.member_id,
+            )
+            .expect("secret-share ack");
         let sequences = state
             .mint
             .localstore()
             .get_federation_member_sequences()
             .await
             .expect("persisted sequences");
-        assert_eq!(sequences.get(&peer_private.member_id), Some(&2));
+        assert_eq!(sequences.get(&peer_private.member_id), Some(&3));
         let commitments = state
             .mint
             .localstore()
@@ -6586,8 +6768,109 @@ mod tests {
             .get_federation_dkg_reveals()
             .await
             .expect("persisted reveals");
+        let secret_shares = state
+            .mint
+            .localstore()
+            .get_federation_dkg_secret_share_contributions()
+            .await
+            .expect("persisted secret-share contributions");
         assert_eq!(commitments, vec![expected_commitment]);
         assert_eq!(reveals, vec![expected_reveal]);
+        assert_eq!(secret_shares, vec![expected_secret_share]);
+    }
+
+    #[tokio::test]
+    async fn private_dkg_secret_share_route_rejects_wrong_receiver_before_sequence() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let local_member = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .member_id();
+        let payload = dkg_secret_share_request(
+            &public_config,
+            peer_private.member_id,
+            peer_private.member_id,
+            21,
+        );
+        let request = signed_dkg_secret_share_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            1,
+            payload,
+        );
+
+        let response = post_dkg_secret_share(State(state.clone()), Json(request))
+            .await
+            .expect_err("wrong receiver must fail");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let sequences = state
+            .mint
+            .localstore()
+            .get_federation_member_sequences()
+            .await
+            .expect("persisted sequences");
+        assert!(sequences.is_empty());
+        let secret_shares = state
+            .mint
+            .localstore()
+            .get_federation_dkg_secret_share_contributions()
+            .await
+            .expect("persisted secret-share contributions");
+        assert!(secret_shares.is_empty());
+    }
+
+    #[tokio::test]
+    async fn private_dkg_secret_share_route_rejects_conflict_before_sequence_persistence() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let local_member = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .member_id();
+        let first_payload =
+            dkg_secret_share_request(&public_config, peer_private.member_id, local_member, 21);
+        let conflicting_payload =
+            dkg_secret_share_request(&public_config, peer_private.member_id, local_member, 31);
+        let first_request = signed_dkg_secret_share_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            1,
+            first_payload.clone(),
+        );
+        let conflicting_request = signed_dkg_secret_share_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            2,
+            conflicting_payload,
+        );
+
+        let _ = post_dkg_secret_share(State(state.clone()), Json(first_request))
+            .await
+            .expect("first secret share accepted");
+        let response = post_dkg_secret_share(State(state.clone()), Json(conflicting_request))
+            .await
+            .expect_err("conflicting secret share must fail");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let sequences = state
+            .mint
+            .localstore()
+            .get_federation_member_sequences()
+            .await
+            .expect("persisted sequences");
+        assert_eq!(sequences.get(&peer_private.member_id), Some(&1));
+        let secret_shares = state
+            .mint
+            .localstore()
+            .get_federation_dkg_secret_share_contributions()
+            .await
+            .expect("persisted secret-share contributions");
+        assert_eq!(secret_shares, vec![first_payload]);
     }
 
     #[tokio::test]

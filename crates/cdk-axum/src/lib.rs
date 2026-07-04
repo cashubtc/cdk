@@ -17,11 +17,12 @@ use cache::HttpCache;
 use cdk::federation::{
     redact_federation_operator_message, FederationConfig, FederationConsensusEngine,
     FederationConsensusRuntime, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgSetupState,
-    FederationDkgTranscriptSignatureRequest, FederationError, FederationJournalAppendOutcome,
-    FederationJournalCatchUpResponse, FederationJournalEntry, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationRestSequenceTracker,
-    FederationSessionOutcome, FederationSubmitOperationResponse, MemberId,
+    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
+    FederationDkgSetupState, FederationDkgTranscriptSignatureRequest, FederationError,
+    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationRestSequenceTracker, FederationSessionOutcome, FederationSubmitOperationResponse,
+    MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -628,6 +629,48 @@ impl MintState {
         let db = self.mint.localstore();
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_dkg_reveal(reveal).await?;
+        tx.set_federation_member_sequence(sender, sequence).await?;
+        tx.commit().await?;
+        self.record_federation_sequence(sender, sequence).await;
+        Ok(())
+    }
+
+    pub(crate) async fn persist_federation_dkg_secret_share_contribution(
+        &self,
+        contribution: &FederationDkgSecretShareRequest,
+        sender: MemberId,
+        sequence: u64,
+    ) -> Result<(), cdk::Error> {
+        let runtime_config = self.mint.federation_config().ok_or_else(|| {
+            cdk::Error::Custom("federation mint is missing its runtime config".to_string())
+        })?;
+        contribution.validate_sender_receiver(
+            runtime_config.public_config(),
+            sender,
+            runtime_config.member_id(),
+        )?;
+
+        let db = self.mint.localstore();
+        let existing_contributions = db.get_federation_dkg_secret_share_contributions().await?;
+        if existing_contributions.iter().any(|existing| {
+            existing.sender == contribution.sender
+                && existing.receiver == contribution.receiver
+                && existing != contribution
+        }) {
+            return Err(cdk::Error::Federation(
+                FederationError::DkgCommitmentMismatch {
+                    member_id: contribution.sender,
+                    reason: format!(
+                        "conflicting secret-share contribution for receiver {}",
+                        contribution.receiver
+                    ),
+                },
+            ));
+        }
+
+        let mut tx = db.begin_transaction().await?;
+        tx.add_federation_dkg_secret_share_contribution(contribution)
+            .await?;
         tx.set_federation_member_sequence(sender, sequence).await?;
         tx.commit().await?;
         self.record_federation_sequence(sender, sequence).await;

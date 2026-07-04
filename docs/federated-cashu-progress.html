@@ -522,15 +522,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: persist federation dkg secret shares</span>
+          <span class="value">feat: add dkg secret share routes</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Private DKG secret-share contributions now have durable SQLite/Postgres storage with idempotent replay, conflict rejection, deterministic readback, and migration coverage</span>
+          <span class="value">Federation members now accept, validate, persist, and peer-submit signed private DKG secret-share contributions without advancing sequence watermarks on rejected payloads</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Wire signed private REST routes and peer-client calls for DKG secret-share contribution exchange, then recover completed DKG shares from stored contributions</span>
+          <span class="value">Assemble completed local DKG keyset-share records from stored secret-share contributions plus public reveals, then recover that completion path after restart</span>
         </div>
       </aside>
     </header>
@@ -1531,6 +1531,10 @@
             <p>SQLite and Postgres storage now persist private DKG secret-share contributions per sender/receiver pair, allow exact replay, reject conflicting payload changes, and read records back in deterministic order for restart-safe setup continuation.</p>
           </article>
           <article class="item">
+            <h3>DKG secret-share private routes ready</h3>
+            <p>Federation members now expose signed private REST submission for DKG secret-share contributions, the peer client can send them, wrong receivers fail before sequence persistence, and conflicting sender/receiver payloads leave the previous accepted sequence intact.</p>
+          </article>
+          <article class="item">
             <h3>DKG setup private routes added</h3>
             <p>Federation members now expose signed private REST endpoints for DKG commitments and reveals, the peer client can submit both messages, and accepted setup payloads persist the sender sequence watermark.</p>
           </article>
@@ -1646,7 +1650,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, durable secret-share contribution storage, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed record reads, generated setup readiness gates, and the first canonical key-rotation operation. The remaining setup work is secret-share route wiring, route-driven completion recovery, record export/import runbook wiring, accepted-rotation persistence, and active-keyset switching.</p>
+            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, durable secret-share contribution storage, secret-share private REST exchange, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed record reads, generated setup readiness gates, and the first canonical key-rotation operation. The remaining setup work is route-driven completed-share recovery, record export/import runbook wiring, accepted-rotation persistence, and active-keyset switching.</p>
           </article>
         </div>
       </section>
@@ -1746,6 +1750,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-sqlite --features federation federation_dkg_secret_share_contribution_persistence -- --test-threads 1` passed durable replay, conflict rejection, and deterministic readback for private DKG secret-share contributions. `cargo test -p cdk-sql-common --features federation federation_mint_migrations_cover_sqlite_and_postgres -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_dkg -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_journal_hot_path_indexes_are_used -- --test-threads 1`, `cargo test -p cdk-common --features federation federation -- --test-threads 1`, `cargo test -p cdk-postgres --features federation federation_dkg_secret_share_contribution_persistence --no-run`, `cargo check -p cdk-postgres --features federation`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
               <td>Add signed private REST routes and peer-client helpers for secret-share exchange, then assemble completed local DKG keyset shares from stored contributions plus public reveals.</td>
+            </tr>
+            <tr>
+              <td>DKG secret-share private routes</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation dkg -- --test-threads 1` passed 9 DKG route/client tests covering commitment, reveal, transcript-signature, and secret-share submission, including wrong-receiver rejection and conflict rejection before sequence advancement. `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 79 federation route, catch-up, and peer-client tests. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Use stored secret-share contributions and public DKG reveals to derive completed local member keyset-share records through the route-driven setup flow.</td>
             </tr>
             <tr>
               <td>DKG setup private routes</td>
