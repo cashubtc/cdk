@@ -891,6 +891,8 @@ impl Wallet {
         tracing::info!("Found {} pending melt(s) to check", melt_sagas.len());
 
         let mut results = Vec::new();
+        let mut skipped = 0usize;
+        let mut failures = Vec::new();
 
         for saga in melt_sagas {
             match self.resume_melt_saga(&saga).await {
@@ -899,13 +901,21 @@ impl Wallet {
                     results.push(melted);
                 }
                 Ok(None) => {
+                    skipped = skipped.saturating_add(1);
                     tracing::debug!("Melt {} still pending or compensated early", saga.id);
                 }
                 Err(e) => {
                     tracing::error!("Failed to finalize melt {}: {}", saga.id, e);
-                    // Continue with other sagas instead of failing entirely
+                    failures.push(format!("{}: {}", saga.id, e));
                 }
             }
+        }
+
+        if results.is_empty() && skipped == 0 && !failures.is_empty() {
+            return Err(Error::Custom(format!(
+                "failed to finalize pending melts: {}",
+                failures.join("; ")
+            )));
         }
 
         Ok(results)
@@ -2247,6 +2257,73 @@ mod tests {
         assert_eq!(transactions.len(), 1);
         assert_eq!(transactions[0].ys, vec![proof_y]);
         assert!(db.get_saga(&operation_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_finalize_pending_melts_finalizes_melt_requested_paid_quote() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let operation_id = uuid::Uuid::new_v4();
+        let quote_id = format!("test_melt_quote_{}", uuid::Uuid::new_v4());
+
+        let mut proof_info = test_proof_info(keyset_id, 120, mint_url.clone(), State::Pending);
+        proof_info.used_by_operation = Some(operation_id);
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let mut quote = test_melt_quote();
+        quote.id = quote_id.clone();
+        quote.amount = Amount::from(100);
+        quote.fee_reserve = Amount::from(20);
+        quote.state = MeltQuoteState::Unpaid;
+        quote.used_by_operation = Some(operation_id.to_string());
+        db.add_melt_quote(quote.clone()).await.unwrap();
+
+        let saga = WalletSaga::new(
+            operation_id,
+            WalletSagaState::Melt(MeltSagaState::MeltRequested),
+            quote.amount,
+            mint_url,
+            CurrencyUnit::Sat,
+            OperationData::Melt(MeltOperationData {
+                quote_id: quote_id.clone(),
+                amount: quote.amount,
+                fee_reserve: quote.fee_reserve,
+                counter_start: None,
+                counter_end: None,
+                change_amount: None,
+                change_blinded_messages: None,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+            payment_preimage: Some("preimage123".to_string()),
+            ..bolt11_status(&quote_id, MeltQuoteState::Paid, None)
+        }));
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let finalized = wallet.finalize_pending_melts().await.unwrap();
+        assert_eq!(finalized.len(), 1);
+        assert_eq!(finalized[0].quote_id(), quote_id);
+        assert_eq!(finalized[0].state(), MeltQuoteState::Paid);
+        assert_eq!(finalized[0].payment_proof(), Some("preimage123"));
+
+        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].state, State::Spent);
+
+        let stored_quote = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
+        assert_eq!(stored_quote.state, MeltQuoteState::Paid);
+        assert_eq!(stored_quote.payment_proof.as_deref(), Some("preimage123"));
+        assert_eq!(stored_quote.used_by_operation, None);
+        assert!(db.get_saga(&operation_id).await.unwrap().is_none());
+
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].ys, vec![proof_y]);
     }
 
     #[tokio::test]

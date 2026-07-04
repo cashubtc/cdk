@@ -196,15 +196,39 @@ async fn submit_federation_mint_quote_payment_observation(
         return Ok(());
     };
     let (amount_paid, amount_issued) = mint_quote_response_amounts(response);
-    let envelope = config.mint_quote_payment_observation(
-        response.quote().clone(),
-        response.method(),
-        response
-            .state()
-            .unwrap_or(cdk::nuts::MintQuoteState::Unpaid),
+    if response.state() != Some(cdk::nuts::MintQuoteState::Paid) || amount_paid == cdk::Amount::ZERO
+    {
+        return Ok(());
+    }
+    let observation = cdk::federation::FederationMintQuotePaymentObservation {
+        quote: response.quote().to_string(),
+        observer: config.member_id(),
+        method: response.method(),
+        state: cdk::nuts::MintQuoteState::Paid,
         amount_paid,
         amount_issued,
-        None,
+        payment_proof: None,
+    };
+    let candidate = cdk::federation::FederationPaymentObservation::MintQuote(observation.clone());
+    let already_recorded = state
+        .mint
+        .localstore()
+        .get_federation_payment_observations(
+            cdk::federation::FederationPaymentObservationContext::MintQuote,
+            &observation.quote,
+        )
+        .await?
+        .iter()
+        .any(|record| {
+            record.observation.observer() == observation.observer
+                && record.observation.matches_payment_evidence(&candidate)
+        });
+    if already_recorded {
+        return Ok(());
+    }
+
+    let envelope = config.operation_envelope(
+        cdk::federation::FederationOperation::MintQuotePayment(observation),
     );
     state
         .submit_federation_payment_observation_envelope(envelope)
@@ -235,14 +259,42 @@ async fn submit_federation_melt_quote_payment_observation(
     let Some(config) = state.mint.federation_config() else {
         return Ok(());
     };
-    let envelope = config.melt_quote_payment_observation(
-        response.quote().clone(),
-        response.method(),
+    if !matches!(
         response.state(),
-        response.amount(),
-        response.fee_reserve(),
-        response.payment_proof().map(str::to_string),
-        None,
+        cdk::nuts::MeltQuoteState::Paid | cdk::nuts::MeltQuoteState::Failed
+    ) {
+        return Ok(());
+    }
+    let observation = cdk::federation::FederationMeltQuotePaymentObservation {
+        quote: response.quote().to_string(),
+        observer: config.member_id(),
+        method: response.method(),
+        state: response.state(),
+        amount: response.amount(),
+        fee_reserve: response.fee_reserve(),
+        payment_proof: response.payment_proof().map(str::to_string),
+        failure_reason: None,
+    };
+    let candidate = cdk::federation::FederationPaymentObservation::MeltQuote(observation.clone());
+    let already_recorded = state
+        .mint
+        .localstore()
+        .get_federation_payment_observations(
+            cdk::federation::FederationPaymentObservationContext::MeltQuote,
+            &observation.quote,
+        )
+        .await?
+        .iter()
+        .any(|record| {
+            record.observation.observer() == observation.observer
+                && record.observation.matches_payment_evidence(&candidate)
+        });
+    if already_recorded {
+        return Ok(());
+    }
+
+    let envelope = config.operation_envelope(
+        cdk::federation::FederationOperation::MeltQuotePayment(observation),
     );
     state
         .submit_federation_payment_observation_envelope(envelope)
@@ -2097,6 +2149,35 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "federation")]
+    async fn set_federated_melt_quote_state(
+        state: &MintState,
+        quote_id: &QuoteId,
+        target_state: MeltQuoteState,
+        payment_proof: Option<&str>,
+    ) {
+        let mut tx = state
+            .mint
+            .localstore()
+            .begin_transaction()
+            .await
+            .expect("begin tx");
+        let mut quote = tx
+            .get_melt_quote(quote_id)
+            .await
+            .expect("melt quote lookup")
+            .expect("melt quote");
+        if target_state == MeltQuoteState::Paid {
+            tx.update_melt_quote_state(&mut quote, MeltQuoteState::Pending, None)
+                .await
+                .expect("mark melt quote pending before paid");
+        }
+        tx.update_melt_quote_state(&mut quote, target_state, payment_proof.map(str::to_string))
+            .await
+            .expect("update melt quote state");
+        tx.commit().await.expect("commit melt quote state");
+    }
+
     async fn response_error_detail(response: Response) -> String {
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -2254,6 +2335,96 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn post_batch_check_mint_quote_skips_duplicate_federation_payment_observation() {
+        let state = create_federated_test_state().await;
+        let quote_id = create_paid_bolt11_quote(&state).await;
+
+        let result = post_batch_check_mint_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(BatchCheckMintQuoteRequest {
+                quotes: vec![quote_id.clone()],
+            }),
+        )
+        .await;
+
+        assert!(result.is_ok(), "initial mint quote check should succeed");
+
+        let (finalizer, receiver) = tokio::sync::mpsc::channel(1);
+        drop(receiver);
+        let mut duplicate_state = state.clone();
+        duplicate_state.federation_finalizer = Some(finalizer);
+
+        let duplicate = post_batch_check_mint_quote(
+            AuthHeader::None,
+            State(duplicate_state),
+            Path("bolt11".to_string()),
+            Json(BatchCheckMintQuoteRequest {
+                quotes: vec![quote_id],
+            }),
+        )
+        .await;
+
+        assert!(
+            duplicate.is_ok(),
+            "duplicate mint quote check should use the recorded observation"
+        );
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::MintQuotePayment]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn post_batch_check_mint_quote_skips_unpaid_federation_payment_observation() {
+        let fake = FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 0.0,
+            },
+            HashMap::default(),
+            HashSet::default(),
+            60,
+            CurrencyUnit::Sat,
+        );
+        let state = create_federated_test_state_with_backend(Arc::new(fake)).await;
+        let quote: MintQuoteBolt11Response<QuoteId> = state
+            .mint
+            .get_mint_quote(
+                MintQuoteBolt11Request {
+                    amount: Amount::from(2u64),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                }
+                .into(),
+            )
+            .await
+            .expect("mint quote")
+            .try_into()
+            .expect("bolt11 quote");
+
+        let result = post_batch_check_mint_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(BatchCheckMintQuoteRequest {
+                quotes: vec![quote.quote],
+            }),
+        )
+        .await;
+
+        assert!(result.is_ok(), "unpaid mint quote check should succeed");
+        assert!(
+            federation_operation_kinds(&state).await.is_empty(),
+            "unpaid mint quote checks should not submit payment observations"
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn post_batch_check_mint_quote_records_observation_while_sync_not_ready() {
         let state = create_federated_test_state().await;
         let quote_id = create_paid_bolt11_quote(&state).await;
@@ -2286,6 +2457,13 @@ mod tests {
     async fn get_check_melt_custom_quote_records_federation_payment_observation() {
         let state = create_federated_test_state().await;
         let quote_id = create_federated_melt_quote(&state, 1000).await;
+        set_federated_melt_quote_state(
+            &state,
+            &quote_id,
+            MeltQuoteState::Paid,
+            Some("preimage-terminal"),
+        )
+        .await;
 
         let result = get_check_melt_custom_quote(
             AuthHeader::None,
@@ -2306,8 +2484,15 @@ mod tests {
     async fn get_check_melt_custom_quote_records_observation_while_sync_not_ready() {
         let state = create_federated_test_state().await;
         let quote_id = create_federated_melt_quote(&state, 1000).await;
+        set_federated_melt_quote_state(
+            &state,
+            &quote_id,
+            MeltQuoteState::Paid,
+            Some("preimage-sync-not-ready"),
+        )
+        .await;
         state
-            .mark_federation_verifying_session_outcome(MemberId::new(2).unwrap(), 1)
+            .mark_federation_verifying_session_outcome(MemberId::new(2).expect("member id"), 1)
             .await;
 
         let result = get_check_melt_custom_quote(
@@ -2331,6 +2516,71 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::MeltQuotePayment]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn get_check_melt_custom_quote_skips_duplicate_federation_payment_observation() {
+        let state = create_federated_test_state().await;
+        let quote_id = create_federated_melt_quote(&state, 1000).await;
+        set_federated_melt_quote_state(
+            &state,
+            &quote_id,
+            MeltQuoteState::Paid,
+            Some("preimage-duplicate"),
+        )
+        .await;
+
+        let result = get_check_melt_custom_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path(("bolt11".to_string(), quote_id.clone())),
+        )
+        .await;
+
+        assert!(result.is_ok(), "initial melt quote check should succeed");
+
+        let (finalizer, receiver) = tokio::sync::mpsc::channel(1);
+        drop(receiver);
+        let mut duplicate_state = state.clone();
+        duplicate_state.federation_finalizer = Some(finalizer);
+
+        let duplicate = get_check_melt_custom_quote(
+            AuthHeader::None,
+            State(duplicate_state),
+            Path(("bolt11".to_string(), quote_id)),
+        )
+        .await;
+
+        assert!(
+            duplicate.is_ok(),
+            "duplicate melt quote check should use the recorded observation"
+        );
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::MeltQuotePayment]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn get_check_melt_custom_quote_skips_non_terminal_federation_payment_observation() {
+        let state = create_federated_test_state().await;
+        let quote_id = create_federated_melt_quote(&state, 1000).await;
+        set_federated_melt_quote_state(&state, &quote_id, MeltQuoteState::Pending, None).await;
+
+        let result = get_check_melt_custom_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path(("bolt11".to_string(), quote_id)),
+        )
+        .await;
+
+        assert!(result.is_ok(), "pending melt quote check should succeed");
+        assert!(
+            federation_operation_kinds(&state).await.is_empty(),
+            "pending melt quote checks should not submit payment observations"
         );
     }
 

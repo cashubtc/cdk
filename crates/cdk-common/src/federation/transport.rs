@@ -355,10 +355,13 @@ where
     }
 }
 
-/// In-memory monotonic sequence tracker for authenticated federation REST requests.
+const FEDERATION_REST_SEQUENCE_REORDER_WINDOW_NANOS: u64 = 600_000_000_000;
+
+/// In-memory replay tracker for authenticated federation REST requests.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FederationRestSequenceTracker {
     highest_by_sender: BTreeMap<MemberId, u64>,
+    recent_by_sender: BTreeMap<MemberId, BTreeSet<u64>>,
 }
 
 impl FederationRestSequenceTracker {
@@ -371,7 +374,10 @@ impl FederationRestSequenceTracker {
     /// Rebuild a sequence tracker from persisted sender watermarks.
     #[must_use]
     pub fn from_sequences(highest_by_sender: BTreeMap<MemberId, u64>) -> Self {
-        Self { highest_by_sender }
+        Self {
+            highest_by_sender,
+            recent_by_sender: BTreeMap::new(),
+        }
     }
 
     /// Return persisted sender watermarks known to this tracker.
@@ -419,20 +425,60 @@ impl FederationRestSequenceTracker {
                 self.highest_by_sender.insert(sender, sequence);
             }
         }
+        self.recent_by_sender
+            .entry(sender)
+            .or_default()
+            .insert(sequence);
+        self.prune_recent_sequences(sender);
     }
 
     fn ensure_sequence_advances(&self, sender: MemberId, sequence: u64) -> Result<()> {
-        if let Some(last) = self.highest_by_sender.get(&sender) {
-            if sequence <= *last {
-                return Err(FederationError::RestStaleSequence {
-                    member_id: sender,
-                    last: *last,
-                    found: sequence,
-                });
-            }
+        let Some(last) = self.highest_by_sender.get(&sender).copied() else {
+            return Ok(());
+        };
+
+        if sequence > last {
+            return Ok(());
         }
 
-        Ok(())
+        let recent = self.recent_by_sender.get(&sender);
+        if recent.is_some_and(|sequences| sequences.contains(&sequence)) {
+            return Err(FederationError::RestStaleSequence {
+                member_id: sender,
+                last,
+                found: sequence,
+            });
+        }
+
+        if recent.is_some()
+            && sequence.saturating_add(FEDERATION_REST_SEQUENCE_REORDER_WINDOW_NANOS) >= last
+        {
+            return Ok(());
+        }
+
+        Err(FederationError::RestStaleSequence {
+            member_id: sender,
+            last,
+            found: sequence,
+        })
+    }
+
+    fn prune_recent_sequences(&mut self, sender: MemberId) {
+        let Some(highest) = self.highest_by_sender.get(&sender).copied() else {
+            return;
+        };
+        let Some(recent) = self.recent_by_sender.get_mut(&sender) else {
+            return;
+        };
+        let cutoff = highest.saturating_sub(FEDERATION_REST_SEQUENCE_REORDER_WINDOW_NANOS);
+        if let Some(first) = recent.first().copied() {
+            if first < cutoff {
+                *recent = recent.split_off(&cutoff);
+            }
+        }
+        if recent.is_empty() {
+            self.recent_by_sender.remove(&sender);
+        }
     }
 }
 
@@ -2243,5 +2289,80 @@ mod tests {
         tracker
             .verify_and_record(&second, &config, receiver)
             .expect("higher sequence accepted");
+    }
+
+    #[test]
+    fn sequence_tracker_accepts_out_of_order_request_once() {
+        let (config, first_private, _) = transport_config();
+        let receiver = roster_member_id(2);
+        let later_sequence = 1_000_000_000_100;
+        let earlier_sequence = later_sequence - 50;
+        let later = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            later_sequence,
+            FederationRestMessageKind::Status,
+            FederationPeerStatusRequest::default(),
+            &first_private,
+        )
+        .expect("later request");
+        let earlier = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            earlier_sequence,
+            FederationRestMessageKind::Status,
+            FederationPeerStatusRequest::default(),
+            &first_private,
+        )
+        .expect("earlier request");
+
+        let mut tracker = FederationRestSequenceTracker::new();
+        tracker
+            .verify_and_record(&later, &config, receiver)
+            .expect("later request arrived first");
+        tracker
+            .verify_and_record(&earlier, &config, receiver)
+            .expect("earlier in-flight request still accepted");
+        assert!(matches!(
+            tracker.verify_and_record(&earlier, &config, receiver),
+            Err(FederationError::RestStaleSequence {
+                member_id,
+                last,
+                found
+            }) if member_id == roster_member_id(1)
+                && last == later_sequence
+                && found == earlier_sequence
+        ));
+    }
+
+    #[test]
+    fn sequence_tracker_rejects_persisted_stale_request_without_recent_window() {
+        let (config, first_private, _) = transport_config();
+        let receiver = roster_member_id(2);
+        let last_sequence = 1_000_000_000_100;
+        let stale_sequence = last_sequence - 50;
+        let stale = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            stale_sequence,
+            FederationRestMessageKind::Status,
+            FederationPeerStatusRequest::default(),
+            &first_private,
+        )
+        .expect("stale request");
+        let mut persisted = BTreeMap::new();
+        persisted.insert(first_private.member_id, last_sequence);
+        let mut tracker = FederationRestSequenceTracker::from_sequences(persisted);
+
+        assert!(matches!(
+            tracker.verify_and_record(&stale, &config, receiver),
+            Err(FederationError::RestStaleSequence {
+                member_id,
+                last,
+                found
+            }) if member_id == roster_member_id(1)
+                && last == last_sequence
+                && found == stale_sequence
+        ));
     }
 }

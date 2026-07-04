@@ -15,7 +15,8 @@ use cdk::nuts::{
     MintQuoteState, PaymentMethod, State,
 };
 use cdk::wallet::{
-    FederatedMintConnector, HttpClient, MeltOutcome, MintConnector, Wallet, WalletBuilder,
+    FederatedMintConnector, HttpClient, MeltOutcome, MintConnector, NUT13Options, Wallet,
+    WalletBuilder,
 };
 use cdk::{Amount, Error};
 use cdk_common::federation::{
@@ -28,7 +29,6 @@ use cdk_common::federation::{
 use cdk_common::QuoteId;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_http_client::{Async, Transport};
-use futures::stream::{FuturesUnordered, StreamExt};
 
 use crate::cli::{FederationSmokeOperationsArgs, FederationSmokeScenario};
 use crate::federation_status::{query_local_statuses, FederationLocalStatusResponse};
@@ -39,6 +39,8 @@ const PENDING_FAILED_SMOKE_SEED: [u8; 64] = [9u8; 64];
 const OFFLINE_MEMBER_SMOKE_SEED: [u8; 64] = [10u8; 64];
 const KEYSET_ROTATION_SMOKE_SEED: [u8; 64] = [11u8; 64];
 const MEMBER_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
+const FEDERATION_SMOKE_RESTORE_BATCH_SIZE: u32 = 8;
+const FEDERATION_SMOKE_RESTORE_MAX_GAP: u32 = 2;
 
 fn smoke_seed(base: [u8; 64], offset: u8) -> [u8; 64] {
     let mut seed = base;
@@ -472,10 +474,12 @@ async fn run_keyset_rotation_smoke(
         None,
     )
     .await?;
+    print_smoke_stage("keyset-rotation.restore-old.start", smoke_started_at);
     let restored = restored_wallet
-        .restore()
+        .restore_with_opts(federation_smoke_restore_opts()?)
         .await
         .context("restore pre-rotation proofs after keyset rotation")?;
+    print_smoke_stage("keyset-rotation.restore-old.done", smoke_started_at);
     if restored.unspent < pre_rotation_amount {
         bail!(
             "keyset rotation smoke restored {} old-keyset unspent, expected at least {}",
@@ -528,11 +532,14 @@ async fn run_keyset_rotation_smoke(
         smoke_started_at,
     )
     .await?;
+    print_smoke_stage("keyset-rotation.melt-quote.start", smoke_started_at);
     let melt_invoice = create_fake_invoice(1000, "federation rotation smoke melt".to_string());
     let melt_quote = restored_wallet
         .melt_quote(PaymentMethod::BOLT11, melt_invoice, None, None)
         .await
         .context("create keyset rotation smoke melt quote")?;
+    print_smoke_stage("keyset-rotation.melt-quote.done", smoke_started_at);
+    print_smoke_stage("keyset-rotation.melt-visibility.start", smoke_started_at);
     wait_for_melt_quote_visible(
         member_connectors,
         &rotated_public_config,
@@ -542,6 +549,8 @@ async fn run_keyset_rotation_smoke(
         member_expectation,
     )
     .await?;
+    print_smoke_stage("keyset-rotation.melt-visibility.done", smoke_started_at);
+    print_smoke_stage("keyset-rotation.melt-confirm.start", smoke_started_at);
     let finalized = restored_wallet
         .prepare_melt(&melt_quote.id, HashMap::new())
         .await
@@ -549,6 +558,7 @@ async fn run_keyset_rotation_smoke(
         .confirm()
         .await
         .context("confirm keyset rotation smoke melt")?;
+    print_smoke_stage("keyset-rotation.melt-confirm.done", smoke_started_at);
     if finalized.state() != MeltQuoteState::Paid {
         bail!(
             "keyset rotation smoke melt ended in state {}, expected paid",
@@ -556,12 +566,14 @@ async fn run_keyset_rotation_smoke(
         );
     }
 
+    print_smoke_stage("keyset-rotation.final-restore.start", smoke_started_at);
     let final_wallet =
         smoke_wallet(&rotated_public_config, unit, seed, rotated_connector, None).await?;
     let final_restored = final_wallet
-        .restore()
+        .restore_with_opts(federation_smoke_restore_opts()?)
         .await
         .context("restore rotated wallet after post-rotation operations")?;
+    print_smoke_stage("keyset-rotation.final-restore.done", smoke_started_at);
     if final_restored.unspent == Amount::ZERO
         && final_restored.spent == Amount::ZERO
         && final_restored.pending == Amount::ZERO
@@ -583,6 +595,14 @@ async fn run_keyset_rotation_smoke(
     );
 
     Ok(())
+}
+
+fn federation_smoke_restore_opts() -> Result<NUT13Options> {
+    NUT13Options::new(
+        FEDERATION_SMOKE_RESTORE_BATCH_SIZE,
+        FEDERATION_SMOKE_RESTORE_MAX_GAP,
+    )
+    .context("build federation smoke restore options")
 }
 
 async fn run_pending_melt_start(
@@ -701,20 +721,21 @@ async fn run_pending_melt_finish(
     )
     .await?;
 
-    let finalized = wallet
-        .finalize_pending_melts()
-        .await
-        .context("finalize pending federation melt")?;
     let expected_wallet_state = wallet_melt_quote_state_for_terminal(terminal_state);
-    let terminal = finalized
-        .iter()
-        .find(|melt| melt.quote_id() == quote_id && melt.state() == expected_wallet_state)
-        .with_context(|| {
-            format!(
-                "pending federation melt did not finalize as {expected_wallet_state} \
-                 after terminal {terminal_state} observation"
-            )
-        })?;
+    let terminal = wait_for_pending_melt_finalization(
+        &wallet,
+        &quote_id,
+        expected_wallet_state,
+        args.quote_retries,
+        Duration::from_millis(args.quote_sleep_ms),
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "pending federation melt did not finalize as {expected_wallet_state} \
+             after terminal {terminal_state} observation"
+        )
+    })?;
 
     wait_for_melt_quote_state(
         member_connectors,
@@ -771,6 +792,38 @@ async fn run_pending_melt_finish(
     );
 
     Ok(())
+}
+
+async fn wait_for_pending_melt_finalization(
+    wallet: &Wallet,
+    quote_id: &str,
+    expected_state: MeltQuoteState,
+    retries: u16,
+    sleep: Duration,
+) -> Result<cdk_common::FinalizedMelt> {
+    for attempt in 0..retries {
+        let finalized = wallet
+            .finalize_pending_melts()
+            .await
+            .context("finalize pending federation melt")?;
+        if let Some(terminal) = finalized
+            .into_iter()
+            .find(|melt| melt.quote_id() == quote_id && melt.state() == expected_state)
+        {
+            return Ok(terminal);
+        }
+
+        if attempt.saturating_add(1) < retries {
+            tokio::time::sleep(sleep).await;
+        }
+    }
+
+    bail!(
+        "pending federation melt quote {} did not finalize as {} after {} attempts",
+        quote_id,
+        expected_state,
+        retries
+    )
 }
 
 async fn submit_terminal_melt_payment_observation(
@@ -1193,25 +1246,13 @@ async fn wait_for_mint_quote_paid(
     let quote_id = quote_id.to_string();
     for _ in 0..retries {
         let mut paid = 0usize;
-        let mut pending = FuturesUnordered::new();
         for (member_id, connector) in member_connectors {
-            let member_id = *member_id;
-            let connector = connector.clone();
-            let quote_id = quote_id.clone();
-            pending.push(async move {
-                (
-                    member_id,
-                    tokio::time::timeout(
-                        MEMBER_STATUS_TIMEOUT,
-                        connector.get_mint_quote_status(PaymentMethod::BOLT11, &quote_id),
-                    )
-                    .await,
-                )
-            });
-        }
-
-        while let Some((member_id, result)) = pending.next().await {
-            match result {
+            match tokio::time::timeout(
+                MEMBER_STATUS_TIMEOUT,
+                connector.get_mint_quote_status(PaymentMethod::BOLT11, &quote_id),
+            )
+            .await
+            {
                 Ok(Ok(status)) if status.state() == Some(MintQuoteState::Paid) => {
                     paid = paid.saturating_add(1);
                 }
@@ -1237,7 +1278,6 @@ async fn wait_for_mint_quote_paid(
                     );
                 }
             }
-
             if paid >= required {
                 return Ok(());
             }
@@ -1266,25 +1306,13 @@ async fn wait_for_melt_quote_visible(
     let quote_id = quote_id.to_string();
     for _ in 0..retries {
         let mut visible = 0usize;
-        let mut pending = FuturesUnordered::new();
         for (member_id, connector) in member_connectors {
-            let member_id = *member_id;
-            let connector = connector.clone();
-            let quote_id = quote_id.clone();
-            pending.push(async move {
-                (
-                    member_id,
-                    tokio::time::timeout(
-                        MEMBER_STATUS_TIMEOUT,
-                        connector.get_melt_quote_status(PaymentMethod::BOLT11, &quote_id),
-                    )
-                    .await,
-                )
-            });
-        }
-
-        while let Some((member_id, result)) = pending.next().await {
-            match result {
+            match tokio::time::timeout(
+                MEMBER_STATUS_TIMEOUT,
+                connector.get_melt_quote_status(PaymentMethod::BOLT11, &quote_id),
+            )
+            .await
+            {
                 Ok(Ok(_)) => {
                     visible = visible.saturating_add(1);
                 }
@@ -1303,7 +1331,6 @@ async fn wait_for_melt_quote_visible(
                     );
                 }
             }
-
             if visible >= required {
                 return Ok(());
             }
@@ -1419,25 +1446,13 @@ async fn wait_for_melt_quote_state(
     let quote_id = quote_id.to_string();
     for _ in 0..retries {
         let mut expected = 0usize;
-        let mut pending = FuturesUnordered::new();
         for (member_id, connector) in member_connectors {
-            let member_id = *member_id;
-            let connector = connector.clone();
-            let quote_id = quote_id.clone();
-            pending.push(async move {
-                (
-                    member_id,
-                    tokio::time::timeout(
-                        MEMBER_STATUS_TIMEOUT,
-                        connector.get_melt_quote_status(PaymentMethod::BOLT11, &quote_id),
-                    )
-                    .await,
-                )
-            });
-        }
-
-        while let Some((member_id, result)) = pending.next().await {
-            match result {
+            match tokio::time::timeout(
+                MEMBER_STATUS_TIMEOUT,
+                connector.get_melt_quote_status(PaymentMethod::BOLT11, &quote_id),
+            )
+            .await
+            {
                 Ok(Ok(status)) if status.state() == expected_state => {
                     expected = expected.saturating_add(1);
                 }
@@ -1464,7 +1479,6 @@ async fn wait_for_melt_quote_state(
                     );
                 }
             }
-
             if expected >= required {
                 return Ok(());
             }

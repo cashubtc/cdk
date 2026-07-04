@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 406 checked items and 107 remaining items. Wallet federation keyset discovery now returns after threshold-valid advertisements, first-healthy-member calls have bounded fallback, and generated smokes avoid optional Prometheus startup when metric checks are disabled.</span>
+          <span class="value">The implementation plan audit now tracks 406 checked items and 107 remaining items. The federation liveness bug behind the CPU-bound smoke loop has been traced through wallet retry, member fanout, restore quorum, melt-status quorum, private REST status, and blocking HTTP paths, with focused regressions and the local federation smoke passing.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: improve federation wallet liveness</span>
+          <span class="value">fix: resolve federation pending melt liveness</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Threshold-valid keyset reads no longer wait for every federation member, sequential quote-creating calls now fall back after a bounded member timeout, and smoke mint/melt quote-status waits poll members concurrently with per-member timeouts. The latest live five-member smoke reaches `standard.mint.quote-paid.start`, making fake-wallet payment observation finalization the current blocker.</span>
+          <span class="value">State-changing federation fanout now drains started member calls instead of cancelling post-threshold writes, restore and melt-status aggregation choose a matching threshold group, melt quote expiry skew is no longer treated as consensus-critical wallet status, and pending melt finalization surfaces unrecoverable recovery failures instead of silently retrying.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Make mint payment observation submission idempotent, bounded, and catch-up friendly so quote status checks can converge paid state across members, then rerun the five-member smoke into mint, swap, melt, restore, and restart stages.</span>
+          <span class="value">Repeat larger roster and Postgres-backed live smokes, then resume profiling seven-member mint request fanout now that paid and failed pending-melt recovery converge instead of spinning.</span>
         </div>
       </aside>
     </header>
@@ -1341,6 +1341,34 @@
           <article class="item">
             <h3>Milestone map expanded</h3>
             <p>The dashboard now renders all 24 implementation-plan milestones as individual index points plus matching objective and test-gate cards, so milestone coverage is visible without shorthand ranges.</p>
+          </article>
+          <article class="item">
+            <h3>Pending melt liveness fixed</h3>
+            <p>The wallet no longer loops silently when a durable pending melt cannot recover: finalization now either completes the paid or unpaid transition or returns the recovery error to the caller.</p>
+          </article>
+          <article class="item">
+            <h3>Federation write fanout made durable</h3>
+            <p>Mint and melt signing fanout now waits for all started member calls to finish, then uses a threshold subset for aggregation, preventing late but important member writes from being cancelled after the wallet already has enough shares.</p>
+          </article>
+          <article class="item">
+            <h3>Status quorum made consensus-aware</h3>
+            <p>Melt quote status aggregation now waits for a matching threshold group, ignores member-local expiry skew, and preserves the primary-member fallback only when a single response is all the caller has.</p>
+          </article>
+          <article class="item">
+            <h3>Restore quorum made catch-up tolerant</h3>
+            <p>Restore aggregation now selects a matching threshold restore view and tolerates stale or missing responses outside that threshold, which keeps wallet recovery from failing because one member is briefly behind.</p>
+          </article>
+          <article class="item">
+            <h3>Blocking REST calls isolated</h3>
+            <p>The bitreq HTTP backend now sends requests from a blocking worker with a bounded timeout, so a slow HTTP request no longer parks an async runtime worker during federation polling.</p>
+          </article>
+          <article class="item">
+            <h3>Cheap status and catch-up checks split</h3>
+            <p>Private peer status is now an order-status read on the hot path, while materialized-state digest comparison is kept for signed catch-up evidence after replay reaches the peer height.</p>
+          </article>
+          <article class="item">
+            <h3>Payment observations deduplicated</h3>
+            <p>Mint and melt quote status handlers now submit federation payment observations only for terminal or paid states that have not already been recorded, avoiding repeated consensus submissions during polling.</p>
           </article>
           <article class="item">
             <h3>Federation status metrics emitted</h3>
@@ -2778,10 +2806,10 @@
               <td>Keep DKG setup route probes in the dedicated DKG smoke path, and keep default process smokes focused on mint, swap, melt, restore, catch-up, and convergence.</td>
             </tr>
             <tr>
-              <td>Seven-member mint request profiling</td>
-              <td><span class="status progress">In progress</span></td>
-              <td>Earlier seven-member profiling reached mint request fanout, but the latest liveness work moved the immediate live-smoke blocker earlier in the flow. A five-member process smoke now completes wallet setup and mint quote creation, then times out at `standard.mint.quote-paid.start`; member logs show consensus catch-up progress, so the next suspected path is status-triggered mint payment observation submission and duplicate/catch-up handling.</td>
-              <td>Stabilize mint payment observation finalization first, then return to seven-member mint request fanout and share aggregation once paid quote convergence is no longer the limiting stage.</td>
+              <td>Federation pending-melt liveness</td>
+              <td><span class="status done">Passed</span></td>
+              <td>The live five-member federation smoke passed through wallet setup, mint, swap, check-state, melt, restore, member restart/catch-up, keyset rotation, paid pending-melt recovery, and failed pending-melt compensation. Focused regressions passed for matching melt-status quorum, member-local expiry skew, threshold restore views, pending paid melt finalization, pending melt waiter finalization, sequence tracking, terminal payment-observation dedupe, and private REST status/catch-up.</td>
+              <td>Repeat larger roster and Postgres-backed live smokes, then return to seven-member mint request fanout profiling with the liveness bug removed.</td>
             </tr>
             <tr>
               <td>Wallet federation probe concurrency</td>
@@ -2925,16 +2953,16 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Payment observation liveness</h3>
-            <p>Make mint quote status checks submit fake-wallet payment observations in an idempotent and bounded way, including duplicate observations and members that are still catching up.</p>
+            <h3>Larger live-smoke repetition</h3>
+            <p>Repeat the now-passing federation smoke against larger rosters and Postgres-backed members to catch any storage contention or slow catch-up path that the focused tests cannot show.</p>
           </article>
           <article class="item">
-            <h3>Five-member smoke recovery</h3>
-            <p>Rerun the bounded five-member smoke past `standard.mint.quote-paid.start`, then confirm it reaches mint request, swap, melt, restore, restart, and convergence gates.</p>
+            <h3>Seven-member fanout profiling</h3>
+            <p>Return to seven-member mint request and share aggregation profiling now that quote visibility, pending paid melt recovery, and failed pending melt compensation no longer mask the real runtime cost.</p>
           </article>
           <article class="item">
-            <h3>Seven-member fanout</h3>
-            <p>After paid quote convergence is stable, return to seven-member mint request fanout and share aggregation profiling before promoting the larger matrix into regular smoke coverage.</p>
+            <h3>Production ordering backend</h3>
+            <p>Compare AlephBFT integration against a simpler CDK-native ordering path, using Fedimint as the reference while preserving CDK's smaller federation surfaces.</p>
           </article>
           <article class="item">
             <h3>Extended Postgres partitions</h3>
@@ -2951,10 +2979,6 @@
           <article class="item">
             <h3>Rotation state transition</h3>
             <p>Repeat offline keyset rotation with larger federation sizes and longer offline windows after the three-member SQLite and Postgres variants are now passing.</p>
-          </article>
-          <article class="item">
-            <h3>BFT backend selection</h3>
-            <p>Compare AlephBFT integration against a simpler CDK-native ordering path, using Fedimint as the reference while preserving CDK's smaller federation surfaces.</p>
           </article>
           <article class="item">
             <h3>Commit discipline</h3>
