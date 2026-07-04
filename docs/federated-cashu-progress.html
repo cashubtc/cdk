@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">DKG setup messages now ride the signed private REST envelope</span>
+          <span class="value">DKG setup messages now have authenticated private REST endpoints</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add federation DKG setup transport messages</span>
+          <span class="value">feat: add federation DKG setup private routes</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Signed DKG commitment and reveal requests now verify member identity, payload ownership, federation roster membership, and threshold-shaped reveal commitments before any future DKG engine consumes them</span>
+          <span class="value">Private member routes and the peer client now exchange signed DKG commitment/reveal setup messages, validate sender ownership, acknowledge accepted setup payloads, and persist accepted peer sequences</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Wire DKG setup routes and persisted setup-round state, then connect validated reveals to share verification</span>
+          <span class="value">Persist DKG setup-round state so accepted commitments and reveals survive restart and can be replayed before share verification</span>
         </div>
       </aside>
     </header>
@@ -1479,6 +1479,10 @@
             <p>Signed private REST request types now carry DKG commitments and reveals, bind them to the sending member identity, round-trip through JSON, and reject valid signatures over another member's setup payload.</p>
           </article>
           <article class="item">
+            <h3>DKG setup private routes added</h3>
+            <p>Federation members now expose signed private REST endpoints for DKG commitments and reveals, the peer client can submit both messages, and accepted setup payloads persist the sender sequence watermark.</p>
+          </article>
+          <article class="item">
             <h3>State convergence certification planned</h3>
             <p>The implementation plan now has Milestone 16A, an explicit gate for consensus-visible database equality, canonical snapshots, quorum-backed catch-up evidence, safe catch-up mode, digest comparison, and row-level mismatch diagnostics.</p>
           </article>
@@ -1590,6 +1594,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation dkg -- --test-threads 1` passed 8 DKG tests, including signed commitment/reveal request validation, JSON round-trips, sender/body mismatch rejection, and invalid reveal threshold-shape rejection. `cargo test -p cdk-common --features federation signed_request -- --test-threads 1`, `cargo test -p cdk-common --features federation federation -- --test-threads 1`, `cargo check -p cdk-common --features federation --lib`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, and `cargo fmt --all` passed.</td>
               <td>Add private REST setup routes and persisted DKG setup-round state so online members can exchange and replay these messages safely.</td>
+            </tr>
+            <tr>
+              <td>DKG setup private routes</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation dkg -- --test-threads 1` passed 3 route/client tests covering signed DKG commitment and reveal submission, accepted-route acknowledgement, sender/body mismatch rejection, and no sequence persistence on invalid setup payloads. `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 69 tests, `cargo test -p cdk-common --features federation federation -- --test-threads 1` passed 98 tests, `cargo check -p cdk-common --features federation --lib`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, and `cargo fmt --all` passed.</td>
+              <td>Persist DKG setup-round commitments and reveals, then expose restart/catch-up tests for setup-state replay.</td>
             </tr>
             <tr>
               <td>State convergence certification plan</td>

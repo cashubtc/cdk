@@ -12,17 +12,19 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 use cdk::federation::{
-    FederationConfig, FederationConsensusEngine, FederationConsensusRuntime, FederationError,
-    FederationId, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationJournalDigest, FederationJournalEntry, FederationMaterializedStateRow,
-    FederationMaterializedStateSnapshot, FederationOperation, FederationOperationEnvelope,
-    FederationOperationId, FederationPaymentObservationQuarantineRecord,
-    FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
-    FederationRestMessageKind, FederationRestSequenceTracker, FederationSessionOutcome,
-    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationStateDigest,
-    FederationSubmitOperationRequest, FederationSubmitOperationResponse, MemberConfigPrivate,
-    MemberConfigPublic, MemberId, FEDERATION_REST_API_VERSION,
+    FederationConfig, FederationConsensusEngine, FederationConsensusRuntime,
+    FederationDkgCommitmentRequest, FederationDkgRevealRequest, FederationDkgSetupResponse,
+    FederationError, FederationId, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationJournalDigest, FederationJournalEntry,
+    FederationMaterializedStateRow, FederationMaterializedStateSnapshot, FederationOperation,
+    FederationOperationEnvelope, FederationOperationId,
+    FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
+    FederationPaymentObservationReport, FederationPaymentObservationReportSummary,
+    FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
+    FederationRestSequenceTracker, FederationSessionOutcome, FederationSessionOutcomeQuorum,
+    FederationSignedRequest, FederationStateDigest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, MemberConfigPrivate, MemberConfigPublic, MemberId,
+    FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
 use serde::{Deserialize, Serialize};
@@ -43,6 +45,8 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
     Router::new()
         .route("/status", post(post_status))
         .route("/local-status", post(post_local_status))
+        .route("/dkg/commitments", post(post_dkg_commitment))
+        .route("/dkg/reveals", post(post_dkg_reveal))
         .route("/operations", post(post_operation))
         .route("/journal", post(post_journal))
 }
@@ -425,6 +429,61 @@ async fn post_local_status(
     #[cfg(feature = "prometheus")]
     record_federation_local_status_metrics(&response);
     Ok(Json(response))
+}
+
+#[instrument(skip_all)]
+async fn post_dkg_commitment(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationDkgCommitmentRequest>>,
+) -> Result<Json<FederationDkgSetupResponse>, Response> {
+    let verified =
+        verify_federation_request(&state, &payload, FederationRestMessageKind::DkgCommitment)
+            .await?;
+    let runtime_config = federation_runtime_config(&state)?;
+    payload
+        .payload
+        .validate_sender(runtime_config.public_config(), verified.sender)
+        .map_err(federation_error_response)?;
+    let federation_id = runtime_config.federation_id();
+    let local_member = runtime_config.member_id();
+    state
+        .persist_federation_sequence(verified.sender, verified.sequence)
+        .await
+        .map_err(cdk_error_response)?;
+
+    Ok(Json(FederationDkgSetupResponse::new(
+        federation_id,
+        local_member,
+        FederationRestMessageKind::DkgCommitment,
+        payload.payload.commitment.member_id,
+    )))
+}
+
+#[instrument(skip_all)]
+async fn post_dkg_reveal(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationDkgRevealRequest>>,
+) -> Result<Json<FederationDkgSetupResponse>, Response> {
+    let verified =
+        verify_federation_request(&state, &payload, FederationRestMessageKind::DkgReveal).await?;
+    let runtime_config = federation_runtime_config(&state)?;
+    payload
+        .payload
+        .validate_sender(runtime_config.public_config(), verified.sender)
+        .map_err(federation_error_response)?;
+    let federation_id = runtime_config.federation_id();
+    let local_member = runtime_config.member_id();
+    state
+        .persist_federation_sequence(verified.sender, verified.sequence)
+        .await
+        .map_err(cdk_error_response)?;
+
+    Ok(Json(FederationDkgSetupResponse::new(
+        federation_id,
+        local_member,
+        FederationRestMessageKind::DkgReveal,
+        payload.payload.reveal.member_id,
+    )))
 }
 
 #[instrument(skip_all)]
@@ -946,6 +1005,7 @@ fn anyhow_response(err: anyhow::Error) -> Response {
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct FederationRestPeerClient<T = Async> {
     transport: T,
+    public_config: FederationConfig,
     federation_id: FederationId,
     private_config: MemberConfigPrivate,
     next_sequence: Arc<AtomicU64>,
@@ -964,6 +1024,7 @@ where
         private_config.validate_against_public(public_config)?;
         Ok(Self {
             transport,
+            public_config: public_config.clone(),
             federation_id: public_config.federation_id,
             private_config,
             next_sequence: Arc::new(AtomicU64::new(initial_federation_rest_sequence())),
@@ -1013,6 +1074,55 @@ where
             );
         }
 
+        Ok(response)
+    }
+
+    pub(crate) async fn submit_dkg_commitment(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationDkgCommitmentRequest,
+    ) -> anyhow::Result<FederationDkgSetupResponse> {
+        request.validate_sender(&self.public_config, self.private_config.member_id)?;
+        let request =
+            self.signed_request(member, FederationRestMessageKind::DkgCommitment, *request)?;
+        let response: FederationDkgSetupResponse = self
+            .transport
+            .http_post(
+                federation_endpoint(member, "dkg/commitments")?,
+                None,
+                &request,
+            )
+            .await?;
+        response.validate(
+            self.federation_id,
+            member.member_id,
+            FederationRestMessageKind::DkgCommitment,
+            self.private_config.member_id,
+        )?;
+        Ok(response)
+    }
+
+    pub(crate) async fn submit_dkg_reveal(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationDkgRevealRequest,
+    ) -> anyhow::Result<FederationDkgSetupResponse> {
+        request.validate_sender(&self.public_config, self.private_config.member_id)?;
+        let request = self.signed_request(
+            member,
+            FederationRestMessageKind::DkgReveal,
+            request.clone(),
+        )?;
+        let response: FederationDkgSetupResponse = self
+            .transport
+            .http_post(federation_endpoint(member, "dkg/reveals")?, None, &request)
+            .await?;
+        response.validate(
+            self.federation_id,
+            member.member_id,
+            FederationRestMessageKind::DkgReveal,
+            self.private_config.member_id,
+        )?;
         Ok(response)
     }
 
@@ -1613,8 +1723,11 @@ mod tests {
     struct MockFederationTransportState {
         status_response: Option<FederationPeerStatus>,
         submit_response: Option<FederationSubmitOperationResponse>,
+        dkg_setup_responses: VecDeque<FederationDkgSetupResponse>,
         catch_up_responses: VecDeque<FederationJournalCatchUpResponse>,
         status_requests: Vec<FederationSignedRequest<FederationPeerStatusRequest>>,
+        dkg_commitment_requests: Vec<FederationSignedRequest<FederationDkgCommitmentRequest>>,
+        dkg_reveal_requests: Vec<FederationSignedRequest<FederationDkgRevealRequest>>,
         submitted_operations: Vec<FederationSignedRequest<FederationSubmitOperationRequest>>,
         catch_up_requests: Vec<FederationSignedRequest<FederationJournalCatchUpRequest>>,
     }
@@ -1668,6 +1781,15 @@ mod tests {
             self
         }
 
+        fn with_dkg_setup_response(self, response: FederationDkgSetupResponse) -> Self {
+            self.state
+                .lock()
+                .expect("mock transport lock")
+                .dkg_setup_responses
+                .push_back(response);
+            self
+        }
+
         fn with_catch_up_response(self, response: FederationJournalCatchUpResponse) -> Self {
             self.state
                 .lock()
@@ -1682,6 +1804,24 @@ mod tests {
                 .lock()
                 .expect("mock transport lock")
                 .status_requests
+                .clone()
+        }
+
+        fn dkg_commitment_requests(
+            &self,
+        ) -> Vec<FederationSignedRequest<FederationDkgCommitmentRequest>> {
+            self.state
+                .lock()
+                .expect("mock transport lock")
+                .dkg_commitment_requests
+                .clone()
+        }
+
+        fn dkg_reveal_requests(&self) -> Vec<FederationSignedRequest<FederationDkgRevealRequest>> {
+            self.state
+                .lock()
+                .expect("mock transport lock")
+                .dkg_reveal_requests
                 .clone()
         }
 
@@ -1748,6 +1888,26 @@ mod tests {
                         .status_response
                         .clone()
                         .ok_or_else(|| HttpError::Other("missing status response".to_string()))?;
+                    json_response(response)
+                }
+                path if path.ends_with("/federation/v1/dkg/commitments") => {
+                    let request = serde_json::from_value::<
+                        FederationSignedRequest<FederationDkgCommitmentRequest>,
+                    >(serde_json::to_value(payload)?)?;
+                    state.dkg_commitment_requests.push(request);
+                    let response = state.dkg_setup_responses.pop_front().ok_or_else(|| {
+                        HttpError::Other("missing DKG setup response".to_string())
+                    })?;
+                    json_response(response)
+                }
+                path if path.ends_with("/federation/v1/dkg/reveals") => {
+                    let request = serde_json::from_value::<
+                        FederationSignedRequest<FederationDkgRevealRequest>,
+                    >(serde_json::to_value(payload)?)?;
+                    state.dkg_reveal_requests.push(request);
+                    let response = state.dkg_setup_responses.pop_front().ok_or_else(|| {
+                        HttpError::Other("missing DKG setup response".to_string())
+                    })?;
                     json_response(response)
                 }
                 path if path.ends_with("/federation/v1/operations") => {
@@ -1995,6 +2155,79 @@ mod tests {
         response
             .with_signed_session_outcome(private_config)
             .expect("signed catch-up response")
+    }
+
+    fn dkg_reveal(
+        public_config: &FederationConfig,
+        member_id: MemberId,
+        seed: u8,
+    ) -> cdk::federation::FederationDkgParticipantCommitmentReveal {
+        cdk::federation::FederationDkgParticipantCommitmentReveal {
+            federation_id: public_config.federation_id,
+            member_id,
+            coefficient_commitments: BTreeMap::from([(
+                Amount::from(1),
+                vec![
+                    BlsSecretKey::from_reduced_bytes(&[seed; 32]).public_key_g2(),
+                    BlsSecretKey::from_reduced_bytes(&[seed + 10; 32]).public_key_g2(),
+                ],
+            )]),
+        }
+    }
+
+    fn dkg_commitment_request(
+        public_config: &FederationConfig,
+        member_id: MemberId,
+        seed: u8,
+    ) -> FederationDkgCommitmentRequest {
+        let reveal = dkg_reveal(public_config, member_id, seed);
+        let commitment = cdk::federation::FederationDkgParticipantCommitment::from_reveal(&reveal)
+            .expect("dkg commitment");
+        FederationDkgCommitmentRequest::new(commitment)
+    }
+
+    fn dkg_reveal_request(
+        public_config: &FederationConfig,
+        member_id: MemberId,
+        seed: u8,
+    ) -> FederationDkgRevealRequest {
+        FederationDkgRevealRequest::new(dkg_reveal(public_config, member_id, seed))
+    }
+
+    fn signed_dkg_commitment_request(
+        public_config: &FederationConfig,
+        private_config: &MemberConfigPrivate,
+        receiver: MemberId,
+        sequence: u64,
+        request: FederationDkgCommitmentRequest,
+    ) -> FederationSignedRequest<FederationDkgCommitmentRequest> {
+        FederationSignedRequest::new_signed(
+            public_config.federation_id,
+            receiver,
+            sequence,
+            FederationRestMessageKind::DkgCommitment,
+            request,
+            private_config,
+        )
+        .expect("signed DKG commitment request")
+    }
+
+    fn signed_dkg_reveal_request(
+        public_config: &FederationConfig,
+        private_config: &MemberConfigPrivate,
+        receiver: MemberId,
+        sequence: u64,
+        request: FederationDkgRevealRequest,
+    ) -> FederationSignedRequest<FederationDkgRevealRequest> {
+        FederationSignedRequest::new_signed(
+            public_config.federation_id,
+            receiver,
+            sequence,
+            FederationRestMessageKind::DkgReveal,
+            request,
+            private_config,
+        )
+        .expect("signed DKG reveal request")
     }
 
     async fn consensus_operation_count(state: &MintState) -> u64 {
@@ -2356,6 +2589,62 @@ mod tests {
             requests[2].sequence > requests[1].sequence,
             "older client must reserve a sequence above newer client traffic"
         );
+    }
+
+    #[tokio::test]
+    async fn rest_peer_client_submits_dkg_setup_messages() {
+        let (public_config, local_private, _) = transport_config();
+        let member = public_config.member(member_id(2)).expect("peer member");
+        let commitment_request =
+            dkg_commitment_request(&public_config, local_private.member_id, 11);
+        let reveal_request = dkg_reveal_request(&public_config, local_private.member_id, 11);
+        let transport = MockFederationTransport::default()
+            .with_dkg_setup_response(FederationDkgSetupResponse::new(
+                public_config.federation_id,
+                member.member_id,
+                FederationRestMessageKind::DkgCommitment,
+                local_private.member_id,
+            ))
+            .with_dkg_setup_response(FederationDkgSetupResponse::new(
+                public_config.federation_id,
+                member.member_id,
+                FederationRestMessageKind::DkgReveal,
+                local_private.member_id,
+            ));
+        let client =
+            FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+                .expect("client");
+
+        client
+            .submit_dkg_commitment(member, &commitment_request)
+            .await
+            .expect("submit DKG commitment");
+        client
+            .submit_dkg_reveal(member, &reveal_request)
+            .await
+            .expect("submit DKG reveal");
+
+        let commitments = transport.dkg_commitment_requests();
+        let reveals = transport.dkg_reveal_requests();
+        assert_eq!(commitments.len(), 1);
+        assert_eq!(reveals.len(), 1);
+        commitments[0]
+            .verify(&public_config, member.member_id)
+            .expect("commitment signature");
+        commitments[0]
+            .payload
+            .validate_sender(&public_config, commitments[0].sender)
+            .expect("commitment payload owner");
+        reveals[0]
+            .verify(&public_config, member.member_id)
+            .expect("reveal signature");
+        reveals[0]
+            .payload
+            .validate_sender(&public_config, reveals[0].sender)
+            .expect("reveal payload owner");
+        assert_eq!(commitments[0].sender, local_private.member_id);
+        assert_eq!(reveals[0].sender, local_private.member_id);
+        assert!(reveals[0].sequence > commitments[0].sequence);
     }
 
     #[tokio::test]
@@ -5920,6 +6209,94 @@ mod tests {
         response
             .verify_session_outcome(public_config.member(local_member).expect("local member"))
             .expect("session outcome verifies");
+    }
+
+    #[tokio::test]
+    async fn private_dkg_setup_routes_accept_signed_peer_requests() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let local_member = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .member_id();
+        let commitment_request = signed_dkg_commitment_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            1,
+            dkg_commitment_request(&public_config, peer_private.member_id, 21),
+        );
+        let reveal_request = signed_dkg_reveal_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            2,
+            dkg_reveal_request(&public_config, peer_private.member_id, 21),
+        );
+
+        let commitment_response =
+            post_dkg_commitment(State(state.clone()), Json(commitment_request))
+                .await
+                .expect("commitment accepted")
+                .0;
+        let reveal_response = post_dkg_reveal(State(state.clone()), Json(reveal_request))
+            .await
+            .expect("reveal accepted")
+            .0;
+
+        commitment_response
+            .validate(
+                public_config.federation_id,
+                local_member,
+                FederationRestMessageKind::DkgCommitment,
+                peer_private.member_id,
+            )
+            .expect("commitment ack");
+        reveal_response
+            .validate(
+                public_config.federation_id,
+                local_member,
+                FederationRestMessageKind::DkgReveal,
+                peer_private.member_id,
+            )
+            .expect("reveal ack");
+        let sequences = state
+            .mint
+            .localstore()
+            .get_federation_member_sequences()
+            .await
+            .expect("persisted sequences");
+        assert_eq!(sequences.get(&peer_private.member_id), Some(&2));
+    }
+
+    #[tokio::test]
+    async fn private_dkg_setup_route_rejects_sender_body_mismatch_before_sequence_persistence() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let local_member = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .member_id();
+        let mismatched_request = signed_dkg_reveal_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            1,
+            dkg_reveal_request(&public_config, local_member, 11),
+        );
+
+        let response = post_dkg_reveal(State(state.clone()), Json(mismatched_request))
+            .await
+            .expect_err("mismatched setup request must fail");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let sequences = state
+            .mint
+            .localstore()
+            .get_federation_member_sequences()
+            .await
+            .expect("persisted sequences");
+        assert!(sequences.is_empty());
     }
 
     #[tokio::test]

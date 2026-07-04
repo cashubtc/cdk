@@ -481,6 +481,82 @@ impl FederationDkgRevealRequest {
     }
 }
 
+/// Response acknowledging a validated DKG setup payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationDkgSetupResponse {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Federation that accepted the setup payload.
+    pub federation_id: FederationId,
+    /// Member that accepted the setup payload.
+    pub receiver: MemberId,
+    /// Request kind that was accepted.
+    pub kind: FederationRestMessageKind,
+    /// Member whose setup payload was accepted.
+    pub accepted_member: MemberId,
+}
+
+impl FederationDkgSetupResponse {
+    /// Create a DKG setup acknowledgement.
+    #[must_use]
+    pub fn new(
+        federation_id: FederationId,
+        receiver: MemberId,
+        kind: FederationRestMessageKind,
+        accepted_member: MemberId,
+    ) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            federation_id,
+            receiver,
+            kind,
+            accepted_member,
+        }
+    }
+
+    /// Validate this acknowledgement against the request that produced it.
+    pub fn validate(
+        &self,
+        federation_id: FederationId,
+        receiver: MemberId,
+        kind: FederationRestMessageKind,
+        accepted_member: MemberId,
+    ) -> Result<()> {
+        if self.version != FEDERATION_REST_API_VERSION {
+            return Err(FederationError::RestVersionMismatch {
+                expected: FEDERATION_REST_API_VERSION,
+                found: self.version,
+            });
+        }
+        if self.federation_id != federation_id {
+            return Err(FederationError::RestFederationMismatch {
+                expected: federation_id,
+                found: self.federation_id,
+            });
+        }
+        if self.receiver != receiver {
+            return Err(FederationError::RestReceiverMismatch {
+                expected: receiver,
+                found: self.receiver,
+            });
+        }
+        if self.kind != kind {
+            return Err(FederationError::RestMessageKindMismatch {
+                expected: kind,
+                found: self.kind,
+            });
+        }
+        if self.accepted_member != accepted_member {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: accepted_member,
+                reason: "acknowledged member mismatch".to_string(),
+            });
+        }
+
+        Ok(())
+    }
+}
+
 /// Peer status response for federation health and catch-up checks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationPeerStatus {
