@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated local federation smoke passed end to end, long-partition catch-up smoke passed with five offline batches, and lagging members now fail closed before primary forwarding</span>
+          <span class="value">Generated local federation smoke passed end to end, long-partition catch-up smoke passed with five offline batches, lagging members fail closed before primary forwarding, and digest comparison now classifies convergence failures</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: block lagging public forwarding</span>
+          <span class="value">feat: classify digest divergence</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Public federation submits now check local sync readiness before non-primary forwarding, with a regression for lagging members</span>
+          <span class="value">`compare-digests` emits `digest_diagnostic` lines for height, order, materialized-state, and reported digest-alert divergence</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Run setup-only DKG, long-partition, and full process smoke against a real Postgres-backed local process environment when Postgres is available</span>
+          <span class="value">Add row-level consensus-visible mismatch export and diffing, then run setup-only DKG, long-partition, and full process smoke against a real Postgres-backed local process environment when Postgres is available</span>
         </div>
       </aside>
     </header>
@@ -1517,6 +1517,10 @@
           <article class="item">
             <h3>Digest comparison admin command added</h3>
             <p>`cdk-mintd federation compare-digests` signs local-status probes, groups members by operation count plus order and state digest, and exits non-zero on divergence unless an operator explicitly asks to inspect divergent groups.</p>
+          </article>
+          <article class="item">
+            <h3>Digest divergence diagnostics classified</h3>
+            <p>`compare-digests` now emits `digest_diagnostic` lines that distinguish member height lag, accepted-order digest mismatch, materialized-state mismatch, and reported digest alerts.</p>
           </article>
           <article class="item">
             <h3>Setup transcript scaffold added</h3>
@@ -2540,6 +2544,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite compare_digests -- --test-threads 1` passed parser coverage, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite digest_comparison -- --test-threads 1` passed matching, divergent, and reported-alert grouping tests, and the same two focused tests passed with `--no-default-features --features "federation fakewallet sqlite"`. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed, and `cargo fmt --all` completed with the known stable-rustfmt warnings.</td>
               <td>Use the dedicated digest command in operator runbooks and future Postgres-backed smoke comparisons.</td>
+            </tr>
+            <tr>
+              <td>Digest comparison diagnostics</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_digest_compare -- --test-threads 1` passed 5 tests covering matching groups, digest-alert rejection, height mismatch, order-digest mismatch, and materialized-state mismatch. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Add row-level consensus-visible mismatch export and diffing once the materialized snapshot API is exposed.</td>
             </tr>
             <tr>
               <td>Payment observation admin CLI</td>

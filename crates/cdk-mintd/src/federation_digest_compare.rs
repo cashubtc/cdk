@@ -57,6 +57,9 @@ fn print_digest_comparison(
     for group in &report.groups {
         println!("{}", digest_group_line(group));
     }
+    for diagnostic in &report.diagnostics {
+        println!("{}", digest_diagnostic_line(diagnostic));
+    }
 }
 
 fn digest_group_line(group: &DigestComparisonGroup) -> String {
@@ -77,6 +80,7 @@ struct DigestComparisonReport {
     queried_members: usize,
     groups: Vec<DigestComparisonGroup>,
     digest_alert_members: Vec<MemberId>,
+    diagnostics: Vec<DigestComparisonDiagnostic>,
 }
 
 impl DigestComparisonReport {
@@ -108,10 +112,14 @@ impl DigestComparisonReport {
             group.sync_states.insert(status.sync_state.clone());
         }
 
+        let groups = groups.into_values().collect::<Vec<_>>();
+        let diagnostics = digest_comparison_diagnostics(&groups, &digest_alert_members);
+
         Self {
             queried_members: statuses.len(),
-            groups: groups.into_values().collect(),
+            groups,
             digest_alert_members,
+            diagnostics,
         }
     }
 
@@ -127,10 +135,19 @@ impl DigestComparisonReport {
             );
         }
         if self.groups.len() > 1 {
+            let diagnostics = self
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.kind.as_str())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(",");
             bail!(
-                "federation digest comparison is not converged: {} digest groups across {} queried members",
+                "federation digest comparison is not converged: {} digest groups across {} queried members ({})",
                 self.groups.len(),
-                self.queried_members
+                self.queried_members,
+                diagnostics
             );
         }
 
@@ -146,11 +163,145 @@ struct DigestComparisonGroup {
     sync_states: BTreeSet<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DigestComparisonDiagnostic {
+    kind: DigestComparisonDiagnosticKind,
+    members: Vec<MemberId>,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum DigestComparisonDiagnosticKind {
+    DigestAlert,
+    HeightMismatch,
+    OrderDigestMismatch,
+    MaterializedStateMismatch,
+}
+
+impl DigestComparisonDiagnosticKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::DigestAlert => "digest_alert",
+            Self::HeightMismatch => "height_mismatch",
+            Self::OrderDigestMismatch => "order_digest_mismatch",
+            Self::MaterializedStateMismatch => "materialized_state_mismatch",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct DigestComparisonKey {
     operation_count: u64,
     order_digest: String,
     state_digest: String,
+}
+
+fn digest_comparison_diagnostics(
+    groups: &[DigestComparisonGroup],
+    digest_alert_members: &[MemberId],
+) -> Vec<DigestComparisonDiagnostic> {
+    let mut diagnostics = Vec::new();
+    if !digest_alert_members.is_empty() {
+        diagnostics.push(DigestComparisonDiagnostic {
+            kind: DigestComparisonDiagnosticKind::DigestAlert,
+            members: sorted_member_list(digest_alert_members.iter().copied()),
+            detail: "one or more members reported a local digest alert".to_string(),
+        });
+    }
+
+    if groups.len() <= 1 {
+        return diagnostics;
+    }
+
+    let members = grouped_members(groups);
+    let operation_counts = groups
+        .iter()
+        .map(|group| group.key.operation_count)
+        .collect::<BTreeSet<_>>();
+    if operation_counts.len() > 1 {
+        diagnostics.push(DigestComparisonDiagnostic {
+            kind: DigestComparisonDiagnosticKind::HeightMismatch,
+            members,
+            detail: format!(
+                "operation_counts={}",
+                operation_counts
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        });
+        return diagnostics;
+    }
+
+    let operation_count = operation_counts.iter().next().copied().unwrap_or_default();
+    let order_digests = groups
+        .iter()
+        .map(|group| group.key.order_digest.clone())
+        .collect::<BTreeSet<_>>();
+    if order_digests.len() > 1 {
+        diagnostics.push(DigestComparisonDiagnostic {
+            kind: DigestComparisonDiagnosticKind::OrderDigestMismatch,
+            members,
+            detail: format!(
+                "operation_count={} order_digests={}",
+                operation_count,
+                display_set(&order_digests)
+            ),
+        });
+        return diagnostics;
+    }
+
+    let state_digests = groups
+        .iter()
+        .map(|group| group.key.state_digest.clone())
+        .collect::<BTreeSet<_>>();
+    if state_digests.len() > 1 {
+        diagnostics.push(DigestComparisonDiagnostic {
+            kind: DigestComparisonDiagnosticKind::MaterializedStateMismatch,
+            members,
+            detail: format!(
+                "operation_count={} order_digest={} state_digests={}",
+                operation_count,
+                order_digests
+                    .iter()
+                    .next()
+                    .cloned()
+                    .unwrap_or_else(|| "none".to_string()),
+                display_set(&state_digests)
+            ),
+        });
+    }
+
+    diagnostics
+}
+
+fn digest_diagnostic_line(diagnostic: &DigestComparisonDiagnostic) -> String {
+    format!(
+        "digest_diagnostic kind={} members={} detail={}",
+        diagnostic.kind.as_str(),
+        display_list(&diagnostic.members),
+        diagnostic.detail
+    )
+}
+
+fn grouped_members(groups: &[DigestComparisonGroup]) -> Vec<MemberId> {
+    sorted_member_list(
+        groups
+            .iter()
+            .flat_map(|group| group.members.iter().copied()),
+    )
+}
+
+fn sorted_member_list<I>(members: I) -> Vec<MemberId>
+where
+    I: IntoIterator<Item = MemberId>,
+{
+    members
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn status_reports_digest_alert(status: &FederationLocalStatusResponse) -> bool {
@@ -281,6 +432,15 @@ mod tests {
         assert!(!report.is_converged());
         assert_eq!(report.groups.len(), 2);
         assert!(err.to_string().contains("not converged"));
+        assert!(err.to_string().contains("order_digest_mismatch"));
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(
+            report.diagnostics[0].kind,
+            DigestComparisonDiagnosticKind::OrderDigestMismatch
+        );
+        assert!(
+            digest_diagnostic_line(&report.diagnostics[0]).contains("kind=order_digest_mismatch")
+        );
     }
 
     #[test]
@@ -299,5 +459,60 @@ mod tests {
         assert!(!report.is_converged());
         assert!(err.to_string().contains("digest alerts"));
         assert!(err.to_string().contains("members 1"));
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(
+            report.diagnostics[0].kind,
+            DigestComparisonDiagnosticKind::DigestAlert
+        );
+    }
+
+    #[test]
+    fn digest_comparison_diagnoses_height_mismatch() {
+        let order_digest = FederationJournalDigest::from_bytes([1; 32]);
+        let state_digest = FederationStateDigest::from_order_digest(order_digest);
+        let statuses = vec![
+            local_status(1, 4, order_digest, state_digest),
+            local_status(2, 6, order_digest, state_digest),
+        ];
+
+        let report = DigestComparisonReport::from_statuses(&statuses);
+        let err = report
+            .ensure_converged()
+            .expect_err("height mismatch fails");
+
+        assert!(err.to_string().contains("height_mismatch"));
+        assert_eq!(
+            report.diagnostics[0].kind,
+            DigestComparisonDiagnosticKind::HeightMismatch
+        );
+        assert!(report.diagnostics[0]
+            .detail
+            .contains("operation_counts=4,6"));
+        assert!(digest_diagnostic_line(&report.diagnostics[0]).contains("members=1,2"));
+    }
+
+    #[test]
+    fn digest_comparison_diagnoses_materialized_state_mismatch() {
+        let order_digest = FederationJournalDigest::from_bytes([1; 32]);
+        let first_state_digest = FederationStateDigest::from_bytes([2; 32]);
+        let second_state_digest = FederationStateDigest::from_bytes([3; 32]);
+        let statuses = vec![
+            local_status(1, 4, order_digest, first_state_digest),
+            local_status(2, 4, order_digest, second_state_digest),
+        ];
+
+        let report = DigestComparisonReport::from_statuses(&statuses);
+        let err = report
+            .ensure_converged()
+            .expect_err("materialized state mismatch fails");
+
+        assert!(err.to_string().contains("materialized_state_mismatch"));
+        assert_eq!(
+            report.diagnostics[0].kind,
+            DigestComparisonDiagnosticKind::MaterializedStateMismatch
+        );
+        assert!(report.diagnostics[0].detail.contains("operation_count=4"));
+        assert!(digest_diagnostic_line(&report.diagnostics[0])
+            .contains("kind=materialized_state_mismatch"));
     }
 }
