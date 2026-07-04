@@ -1265,7 +1265,7 @@ impl TryFrom<MintQuote> for MintQuoteBolt12Response<QuoteId> {
         Ok(MintQuoteBolt12Response {
             quote: mint_quote.id.clone(),
             request: mint_quote.request,
-            expiry: Some(mint_quote.expiry),
+            expiry: (mint_quote.expiry != 0).then_some(mint_quote.expiry),
             amount_paid: mint_quote.amount_paid.into(),
             amount_issued: mint_quote.amount_issued.into(),
             pubkey: mint_quote.pubkey.ok_or(Error::PubkeyRequired)?,
@@ -1355,7 +1355,7 @@ impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
                 request: quote.request.clone(),
                 amount: quote.amount.as_ref().map(|a| a.clone().into()),
                 unit: quote.unit.clone(),
-                expiry: Some(quote.expiry),
+                expiry: (quote.expiry != 0).then_some(quote.expiry),
                 pubkey: quote.pubkey.ok_or(Error::PubkeyRequired)?,
                 amount_paid: quote.amount_paid().into(),
                 amount_issued: quote.amount_issued().into(),
@@ -1775,6 +1775,74 @@ mod tests {
         assert_eq!(response.pubkey, pubkey);
         assert_eq!(response.amount_paid, Amount::from(10_000));
         assert_eq!(response.amount_issued, Amount::from(1_000));
+    }
+
+    fn dummy_bolt12_mint_quote(expiry: u64) -> (MintQuote, QuoteId, PublicKey) {
+        let pubkey = PublicKey::from_hex(
+            "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+        )
+        .expect("test pubkey must parse");
+        let quote_id = QuoteId::new();
+        let mint_quote = MintQuote::new(
+            Some(quote_id.clone()),
+            "lno1testoffer".to_string(),
+            CurrencyUnit::Sat,
+            Some(Amount::new(10_000, CurrencyUnit::Sat)),
+            expiry,
+            PaymentIdentifier::QuoteId(quote_id.clone()),
+            Some(pubkey),
+            Amount::new(10_000, CurrencyUnit::Sat),
+            Amount::new(1_000, CurrencyUnit::Sat),
+            PaymentMethod::BOLT12,
+            unix_time(),
+            vec![],
+            vec![],
+            None,
+        );
+
+        (mint_quote, quote_id, pubkey)
+    }
+
+    #[test]
+    fn test_mint_quote_bolt12_response_converts_zero_expiry_to_none() {
+        let (mint_quote, quote_id, pubkey) = dummy_bolt12_mint_quote(0);
+
+        let response: MintQuoteBolt12Response<QuoteId> =
+            MintQuoteBolt12Response::try_from(mint_quote).unwrap();
+
+        assert_eq!(response.quote, quote_id);
+        assert_eq!(response.expiry, None);
+        assert_eq!(response.pubkey, pubkey);
+        assert_eq!(response.amount_paid, Amount::from(10_000));
+        assert_eq!(response.amount_issued, Amount::from(1_000));
+    }
+
+    #[test]
+    fn test_mint_quote_bolt12_response_preserves_nonzero_expiry() {
+        let expiry = unix_time() + 3600;
+        let (mint_quote, quote_id, _) = dummy_bolt12_mint_quote(expiry);
+
+        let response: MintQuoteBolt12Response<QuoteId> =
+            MintQuoteBolt12Response::try_from(mint_quote).unwrap();
+
+        assert_eq!(response.quote, quote_id);
+        assert_eq!(response.expiry, Some(expiry));
+    }
+
+    #[test]
+    fn test_mint_quote_response_bolt12_converts_zero_expiry_to_none() {
+        let (mint_quote, quote_id, pubkey) = dummy_bolt12_mint_quote(0);
+
+        let response = MintQuoteResponse::try_from(mint_quote).unwrap();
+
+        match response {
+            MintQuoteResponse::Bolt12(response) => {
+                assert_eq!(response.quote, quote_id);
+                assert_eq!(response.expiry, None);
+                assert_eq!(response.pubkey, pubkey);
+            }
+            _ => panic!("expected MintQuoteResponse::Bolt12 variant"),
+        }
     }
 
     #[test]
