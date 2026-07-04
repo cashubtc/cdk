@@ -249,7 +249,7 @@ pub struct FederationStatusArgs {
     /// Fail if any queried member reports a non-ready sync state.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub require_ready: bool,
-    /// Fail if queried members disagree on consensus height or latest order digest.
+    /// Fail if queried members disagree on consensus height, latest order digest, or state digest.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub require_converged: bool,
     /// Fail if any queried member is more than this many accepted operations behind the highest queried member.
@@ -258,6 +258,9 @@ pub struct FederationStatusArgs {
     /// Fail if queried members with accepted operations lack quorum-backed session outcome evidence.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub require_session_outcome_quorum: bool,
+    /// Fail if queried members report or reveal equal-height digest mismatches.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub require_no_digest_alerts: bool,
     /// Fail if queried members report stale, conflicting, or quarantined payment observations.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub require_no_payment_observation_alerts: bool,
@@ -562,6 +565,7 @@ mod tests {
             "--max-operation-lag",
             "2",
             "--require-session-outcome-quorum",
+            "--require-no-digest-alerts",
             "--require-no-payment-observation-alerts",
         ])
         .expect("status command parses");
@@ -585,6 +589,7 @@ mod tests {
         assert!(status.require_converged);
         assert_eq!(status.max_operation_lag, Some(2));
         assert!(status.require_session_outcome_quorum);
+        assert!(status.require_no_digest_alerts);
         assert!(status.require_no_payment_observation_alerts);
     }
 }

@@ -55,6 +55,9 @@ pub(crate) async fn run_status_command(
     if args.require_ready {
         ensure_statuses_ready(&statuses)?;
     }
+    if args.require_no_digest_alerts {
+        ensure_statuses_no_digest_alerts(&statuses)?;
+    }
     if args.require_converged {
         ensure_statuses_converged(&statuses)?;
     }
@@ -401,6 +404,47 @@ fn ensure_statuses_operation_lag(
                 max_operation_count,
                 max_operation_lag
             );
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_statuses_no_digest_alerts(statuses: &[FederationLocalStatusResponse]) -> Result<()> {
+    for status in statuses {
+        if status.sync_state == "materialized_state_mismatch"
+            || (status.sync_state == "halted" && status.sync_message.contains("digest mismatch"))
+        {
+            bail!(
+                "federation member {} reports digest alert: sync={} message={}",
+                status.peer_status.member_id,
+                status.sync_state,
+                status.sync_message
+            );
+        }
+    }
+
+    for (index, status) in statuses.iter().enumerate() {
+        for other in statuses.iter().skip(index + 1) {
+            if status.peer_status.operation_count != other.peer_status.operation_count {
+                continue;
+            }
+            if status.peer_status.latest_order_digest != other.peer_status.latest_order_digest {
+                bail!(
+                    "federation digest alert: members {} and {} disagree on order digest at operation count {}",
+                    status.peer_status.member_id,
+                    other.peer_status.member_id,
+                    status.peer_status.operation_count
+                );
+            }
+            if status.peer_status.state_digest != other.peer_status.state_digest {
+                bail!(
+                    "federation digest alert: members {} and {} disagree on state digest at operation count {}",
+                    status.peer_status.member_id,
+                    other.peer_status.member_id,
+                    status.peer_status.operation_count
+                );
+            }
         }
     }
 
@@ -998,6 +1042,80 @@ mod tests {
             ensure_statuses_converged(&statuses).expect_err("state digest mismatch should fail");
 
         assert!(err.to_string().contains("state digest"));
+    }
+
+    #[test]
+    fn status_digest_alert_guard_accepts_height_mismatch() {
+        let (public_config, _) = status_fixture();
+        let statuses = vec![
+            local_status(&public_config, 1, 0),
+            local_status(&public_config, 2, 1),
+        ];
+
+        ensure_statuses_no_digest_alerts(&statuses)
+            .expect("ordinary lag is handled by lag and convergence guards");
+    }
+
+    #[test]
+    fn status_digest_alert_guard_rejects_state_digest_mismatch() {
+        let (public_config, _) = status_fixture();
+        let first = local_status(&public_config, 1, 2);
+        let mut second = local_status(&public_config, 2, 2);
+        second.peer_status.state_digest = FederationStateDigest::genesis();
+        let statuses = vec![first, second];
+
+        let err =
+            ensure_statuses_no_digest_alerts(&statuses).expect_err("state digest mismatch fails");
+
+        assert!(err.to_string().contains("digest alert"));
+        assert!(err.to_string().contains("state digest"));
+    }
+
+    #[test]
+    fn status_digest_alert_guard_rejects_order_digest_mismatch() {
+        let (public_config, _) = status_fixture();
+        let first = local_status(&public_config, 1, 2);
+        let mut second = local_status(&public_config, 2, 2);
+        second.peer_status.latest_order_digest = FederationJournalDigest::from_bytes([42; 32]);
+        second.peer_status.state_digest =
+            FederationStateDigest::from_order_digest(second.peer_status.latest_order_digest);
+        let statuses = vec![first, second];
+
+        let err =
+            ensure_statuses_no_digest_alerts(&statuses).expect_err("order digest mismatch fails");
+
+        assert!(err.to_string().contains("digest alert"));
+        assert!(err.to_string().contains("order digest"));
+    }
+
+    #[test]
+    fn status_digest_alert_guard_rejects_reported_materialized_state_mismatch() {
+        let (public_config, _) = status_fixture();
+        let mut status = local_status(&public_config, 1, 2);
+        status.sync_state = "materialized_state_mismatch".to_string();
+        status.sync_ready = false;
+        status.sync_message =
+            "waiting for materialized state digest convergence with peer 2".to_string();
+
+        let err = ensure_statuses_no_digest_alerts(&[status]).expect_err("reported mismatch fails");
+
+        assert!(err.to_string().contains("reports digest alert"));
+        assert!(err.to_string().contains("materialized_state_mismatch"));
+    }
+
+    #[test]
+    fn status_digest_alert_guard_rejects_halted_digest_mismatch() {
+        let (public_config, _) = status_fixture();
+        let mut status = local_status(&public_config, 1, 2);
+        status.sync_state = "halted".to_string();
+        status.sync_ready = false;
+        status.sync_message = "peer 2 digest mismatch at operation count 2".to_string();
+
+        let err =
+            ensure_statuses_no_digest_alerts(&[status]).expect_err("halted digest mismatch fails");
+
+        assert!(err.to_string().contains("reports digest alert"));
+        assert!(err.to_string().contains("halted"));
     }
 
     #[test]

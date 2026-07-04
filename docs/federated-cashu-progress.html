@@ -358,19 +358,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated fake-regtest now scrapes federation Prometheus metrics during the live smoke</span>
+          <span class="value">Federation status now has an operator-visible digest-alert guard</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: verify federation metrics in smoke</span>
+          <span class="value">feat: add federation digest alert guard</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Generated member configs enable Prometheus and the smoke script requires redacted federation gauges from every member</span>
+          <span class="value">`cdk-mintd federation status --require-no-digest-alerts` catches reported mismatch states and equal-height digest divergence</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Add injected digest-mismatch alert coverage and broaden storage-backed smoke comparisons</span>
+          <span class="value">Broaden storage-backed smoke comparisons and keep tightening materialized digest coverage</span>
         </div>
       </aside>
     </header>
@@ -1132,6 +1132,10 @@
             <p>Trusted-dealer local member configs now enable per-member Prometheus endpoints, and the generated fake-wallet smoke script scrapes every member for federation gauges while rejecting sensitive metric labels.</p>
           </article>
           <article class="item">
+            <h3>Digest alert status guard exposed</h3>
+            <p>`cdk-mintd federation status --require-no-digest-alerts` now fails on reported materialized-state mismatch, halted digest mismatch, or equal-height order/state digest divergence while leaving ordinary member lag to the lag and convergence guards.</p>
+          </article>
+          <article class="item">
             <h3>Storage backend parity tightened</h3>
             <p>Postgres now wires the same federation journal persistence test as SQLite, and SQL common has a DB-free migration parity check for saga federation IDs, journal entries, member sequences, and signed session outcomes.</p>
           </article>
@@ -1826,18 +1830,24 @@
               <td>Federation status metrics</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-prometheus` passed 7 unit tests plus 1 doc test, including federation member-status and payment-report gauge coverage. `cargo check -p cdk-axum --features federation,prometheus` passed, and `cargo test -p cdk-axum --features federation,prometheus private_local_status_route -- --test-threads 1` passed 6 signed local-status route regressions with the metrics hook enabled.</td>
-              <td>Scrape the Prometheus endpoint during generated fake-wallet regtest and add injected digest-mismatch alert coverage.</td>
+              <td>Repeat metrics-enabled smoke against Postgres-backed member storage when a service is available.</td>
             </tr>
             <tr>
               <td>Fake-regtest metrics scrape</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1` and `cargo test -p cdk-mintd --features federation,fakewallet,sqlite,prometheus federation_setup -- --test-threads 1` passed generated-config and smoke-script coverage. `cargo build -p cdk-mintd --features federation,fakewallet,sqlite,prometheus`, `just --show fed-regtest`, `just --show fed-regtest-generate`, `just --show fed-regtest-status`, and a live three-member `just fed-regtest` run passed with Prometheus metric scraping enabled.</td>
-              <td>Add injected digest-mismatch alert coverage and, when available, repeat the metrics-enabled smoke against Postgres-backed member storage.</td>
+              <td>When available, repeat the metrics-enabled smoke against Postgres-backed member storage.</td>
+            </tr>
+            <tr>
+              <td>Digest alert status guard</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_status -- --test-threads 1` passed 28 status tests, including guard coverage for reported materialized-state mismatch, halted digest mismatch, equal-height order digest mismatch, equal-height state digest mismatch, and harmless height lag. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite parses_federation_status_subcommand -- --test-threads 1` passed CLI parsing for `--require-no-digest-alerts`, and `cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts -- --test-threads 1` passed generated smoke-script coverage for the new quorum-status guard.</td>
+              <td>Use the guard in live process drills and add storage-backed mismatch injection once Postgres smoke is available.</td>
             </tr>
             <tr>
               <td>Local federation helper recipes</td>
               <td><span class="status done">Passed</span></td>
-              <td>`just --summary` lists `fed-regtest`, `fed-regtest-generate`, `fed-regtest-start`, `fed-regtest-start-member`, `fed-regtest-stop-member`, `fed-regtest-stop`, `fed-regtest-status`, and `fed-regtest-clean`. `fed-regtest-status` now requires readiness, convergence, and session-outcome quorum evidence. `just --show` passed for the smoke, start, status, stop, and clean recipes. `just fed-regtest-generate` produced a three-member, two-threshold fake-wallet federation bundle, and the generated smoke script passed `bash -n`.</td>
+              <td>`just --summary` lists `fed-regtest`, `fed-regtest-generate`, `fed-regtest-start`, `fed-regtest-start-member`, `fed-regtest-stop-member`, `fed-regtest-stop`, `fed-regtest-status`, and `fed-regtest-clean`. `fed-regtest-status` now requires readiness, convergence, session-outcome quorum evidence, and no digest alerts. `just --show` passed for the smoke, start, status, stop, and clean recipes. `just fed-regtest-generate` produced a three-member, two-threshold fake-wallet federation bundle, and the generated smoke script passed `bash -n`.</td>
               <td>Use these helpers for repeatable live smoke drills and add storage-backed variants once Postgres is available.</td>
             </tr>
             <tr>
@@ -1927,10 +1937,6 @@
       <section class="panel span-6">
         <h2>Next Work</h2>
         <div class="stack">
-          <article class="item">
-            <h3>Digest mismatch alert coverage</h3>
-            <p>Inject materialized-state or order-digest divergence in a focused test and prove the operator-visible alert path fires without leaking private request material.</p>
-          </article>
           <article class="item">
             <h3>Live Postgres smoke</h3>
             <p>Run the generated process smoke against a Postgres-backed federation using member schemas, then compare convergence, restart, and catch-up evidence with the SQLite-backed smoke.</p>
