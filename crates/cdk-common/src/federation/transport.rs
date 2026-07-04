@@ -14,10 +14,11 @@ use bitcoin::secp256k1::schnorr::Signature;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
-    FederationConfig, FederationError, FederationId, FederationJournalAppendOutcome,
-    FederationJournalDigest, FederationJournalEntry, FederationOperationEnvelope,
-    FederationOperationId, FederationStateDigest, InMemoryFederationJournal, MemberConfigPrivate,
-    MemberConfigPublic, MemberId, Result,
+    FederationConfig, FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationError, FederationId, FederationJournalAppendOutcome, FederationJournalDigest,
+    FederationJournalEntry, FederationOperationEnvelope, FederationOperationId,
+    FederationStateDigest, InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic,
+    MemberId, Result,
 };
 
 /// Version of the private federation REST payload format.
@@ -36,6 +37,10 @@ const FEDERATION_SESSION_OUTCOME_SIGNATURE_VERSION: &[u8] =
 pub enum FederationRestMessageKind {
     /// Peer status request.
     Status,
+    /// Publish a pre-reveal DKG commitment hash to a peer.
+    DkgCommitment,
+    /// Reveal DKG public polynomial commitments to a peer.
+    DkgReveal,
     /// Submit one operation envelope to a peer.
     SubmitOperation,
     /// Request missing journal entries from a peer.
@@ -46,6 +51,8 @@ impl FederationRestMessageKind {
     fn as_bytes(self) -> &'static [u8] {
         match self {
             Self::Status => b"status",
+            Self::DkgCommitment => b"dkg_commitment",
+            Self::DkgReveal => b"dkg_reveal",
             Self::SubmitOperation => b"submit_operation",
             Self::CatchUp => b"catch_up",
         }
@@ -424,6 +431,56 @@ impl FederationRestSequenceTracker {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationPeerStatusRequest {}
 
+/// Signed request payload carrying one member's pre-reveal DKG commitment hash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationDkgCommitmentRequest {
+    /// DKG commitment being shared by the signed sender.
+    pub commitment: FederationDkgParticipantCommitment,
+}
+
+impl FederationDkgCommitmentRequest {
+    /// Create a DKG commitment transport request.
+    #[must_use]
+    pub fn new(commitment: FederationDkgParticipantCommitment) -> Self {
+        Self { commitment }
+    }
+
+    /// Validate the commitment and ensure the signed sender owns the payload.
+    pub fn validate_sender(
+        &self,
+        public_config: &FederationConfig,
+        sender: MemberId,
+    ) -> Result<()> {
+        self.commitment.validate_against_config(public_config)?;
+        ensure_dkg_payload_sender(self.commitment.member_id, sender)
+    }
+}
+
+/// Signed request payload revealing one member's DKG public commitments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationDkgRevealRequest {
+    /// DKG reveal being shared by the signed sender.
+    pub reveal: FederationDkgParticipantCommitmentReveal,
+}
+
+impl FederationDkgRevealRequest {
+    /// Create a DKG reveal transport request.
+    #[must_use]
+    pub fn new(reveal: FederationDkgParticipantCommitmentReveal) -> Self {
+        Self { reveal }
+    }
+
+    /// Validate the reveal and ensure the signed sender owns the payload.
+    pub fn validate_sender(
+        &self,
+        public_config: &FederationConfig,
+        sender: MemberId,
+    ) -> Result<()> {
+        self.reveal.validate_against_config(public_config)?;
+        ensure_dkg_payload_sender(self.reveal.member_id, sender)
+    }
+}
+
 /// Peer status response for federation health and catch-up checks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationPeerStatus {
@@ -504,6 +561,17 @@ impl FederationPeerStatus {
             journal.state_digest(),
         )
     }
+}
+
+fn ensure_dkg_payload_sender(payload_member: MemberId, sender: MemberId) -> Result<()> {
+    if payload_member != sender {
+        return Err(FederationError::DkgCommitmentMismatch {
+            member_id: payload_member,
+            reason: "request sender mismatch".to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 /// Request to submit an operation envelope to a federation peer.
@@ -1011,6 +1079,7 @@ mod tests {
         MintQuoteBolt11Response, MintQuoteRequest, MintQuoteResponse, MintRequest, PublicKey,
         SecretKey,
     };
+    use cashu::nuts::nut01::BlsSecretKey;
 
     fn federation_id() -> FederationId {
         FederationId::from_bytes([11; 32])
@@ -1094,6 +1163,28 @@ mod tests {
             keyset_id(),
             PublicKey::from_hex(hex).expect("public key"),
         )
+    }
+
+    fn bls_key(byte: u8) -> BlsSecretKey {
+        BlsSecretKey::from_reduced_bytes(&[byte; 32])
+    }
+
+    fn dkg_reveal(
+        public_config: &FederationConfig,
+        member_id: MemberId,
+        seed: u8,
+    ) -> FederationDkgParticipantCommitmentReveal {
+        FederationDkgParticipantCommitmentReveal {
+            federation_id: public_config.federation_id,
+            member_id,
+            coefficient_commitments: BTreeMap::from([(
+                Amount::from(1),
+                vec![
+                    bls_key(seed).public_key_g2(),
+                    bls_key(seed + 10).public_key_g2(),
+                ],
+            )]),
+        }
     }
 
     fn mint_envelope(quote: &str, hex: &str) -> FederationOperationEnvelope {
@@ -1520,6 +1611,151 @@ mod tests {
             request.verify(&config, roster_member_id(1)),
             Err(FederationError::RestSignatureVerificationFailed { member_id })
                 if member_id == roster_member_id(1)
+        ));
+    }
+
+    #[test]
+    fn signed_dkg_commitment_request_verifies_sender_and_payload_owner() {
+        let (config, first_private, _) = transport_config();
+        let receiver = roster_member_id(2);
+        let reveal = dkg_reveal(&config, first_private.member_id, 11);
+        let commitment =
+            FederationDkgParticipantCommitment::from_reveal(&reveal).expect("commitment");
+        let payload = FederationDkgCommitmentRequest::new(commitment);
+        let request = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            7,
+            FederationRestMessageKind::DkgCommitment,
+            payload,
+            &first_private,
+        )
+        .expect("signed dkg commitment");
+
+        request.verify(&config, receiver).expect("verified request");
+        request
+            .payload
+            .validate_sender(&config, request.sender)
+            .expect("payload owner");
+        let json = serde_json::to_string(&request).expect("dkg commitment json");
+        let decoded: FederationSignedRequest<FederationDkgCommitmentRequest> =
+            serde_json::from_str(&json).expect("decoded request");
+        assert_eq!(decoded.kind, FederationRestMessageKind::DkgCommitment);
+        decoded.verify(&config, receiver).expect("decoded verifies");
+        decoded
+            .payload
+            .validate_sender(&config, decoded.sender)
+            .expect("decoded payload owner");
+    }
+
+    #[test]
+    fn signed_dkg_reveal_request_verifies_sender_and_payload_owner() {
+        let (config, first_private, _) = transport_config();
+        let receiver = roster_member_id(2);
+        let payload =
+            FederationDkgRevealRequest::new(dkg_reveal(&config, first_private.member_id, 11));
+        let request = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            8,
+            FederationRestMessageKind::DkgReveal,
+            payload,
+            &first_private,
+        )
+        .expect("signed dkg reveal");
+
+        request.verify(&config, receiver).expect("verified request");
+        request
+            .payload
+            .validate_sender(&config, request.sender)
+            .expect("payload owner");
+        let json = serde_json::to_string(&request).expect("dkg reveal json");
+        let decoded: FederationSignedRequest<FederationDkgRevealRequest> =
+            serde_json::from_str(&json).expect("decoded request");
+        assert_eq!(decoded.kind, FederationRestMessageKind::DkgReveal);
+        decoded.verify(&config, receiver).expect("decoded verifies");
+        decoded
+            .payload
+            .validate_sender(&config, decoded.sender)
+            .expect("decoded payload owner");
+    }
+
+    #[test]
+    fn signed_dkg_setup_requests_reject_sender_body_mismatch() {
+        let (config, first_private, second_private) = transport_config();
+        let receiver = roster_member_id(2);
+        let reveal = dkg_reveal(&config, second_private.member_id, 21);
+        let commitment =
+            FederationDkgParticipantCommitment::from_reveal(&reveal).expect("commitment");
+        let commitment_request = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            9,
+            FederationRestMessageKind::DkgCommitment,
+            FederationDkgCommitmentRequest::new(commitment),
+            &first_private,
+        )
+        .expect("signed mismatched commitment");
+        let reveal_request = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            10,
+            FederationRestMessageKind::DkgReveal,
+            FederationDkgRevealRequest::new(reveal),
+            &first_private,
+        )
+        .expect("signed mismatched reveal");
+
+        commitment_request
+            .verify(&config, receiver)
+            .expect("signature verifies");
+        reveal_request
+            .verify(&config, receiver)
+            .expect("signature verifies");
+        assert!(matches!(
+            commitment_request
+                .payload
+                .validate_sender(&config, commitment_request.sender),
+            Err(FederationError::DkgCommitmentMismatch { member_id, reason })
+                if member_id == second_private.member_id && reason == "request sender mismatch"
+        ));
+        assert!(matches!(
+            reveal_request
+                .payload
+                .validate_sender(&config, reveal_request.sender),
+            Err(FederationError::DkgCommitmentMismatch { member_id, reason })
+                if member_id == second_private.member_id && reason == "request sender mismatch"
+        ));
+    }
+
+    #[test]
+    fn signed_dkg_reveal_request_rejects_invalid_threshold_shape() {
+        let (config, first_private, _) = transport_config();
+        let receiver = roster_member_id(2);
+        let mut reveal = dkg_reveal(&config, first_private.member_id, 11);
+        reveal
+            .coefficient_commitments
+            .get_mut(&Amount::from(1))
+            .expect("amount commitments")
+            .pop();
+        let request = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            11,
+            FederationRestMessageKind::DkgReveal,
+            FederationDkgRevealRequest::new(reveal),
+            &first_private,
+        )
+        .expect("signed invalid reveal");
+
+        request
+            .verify(&config, receiver)
+            .expect("signature verifies");
+        assert!(matches!(
+            request.payload.validate_sender(&config, request.sender),
+            Err(FederationError::DkgCommitmentMismatch { member_id, reason })
+                if member_id == first_private.member_id
+                    && reason.contains("coefficient commitment count mismatch")
         ));
     }
 
