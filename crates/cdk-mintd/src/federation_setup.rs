@@ -191,19 +191,38 @@ fn validate_trusted_dealer_args(args: &FederationTrustedDealerArgs) -> Result<()
     }
     match args.database_engine {
         FederationTrustedDealerDatabaseEngine::Sqlite => {
-            if args.postgres_url_template.is_some() {
-                bail!("--postgres-url-template requires --database-engine postgres");
+            if args.postgres_url_template.is_some() || args.postgres_base_url.is_some() {
+                bail!(
+                    "--postgres-url-template and --postgres-base-url require --database-engine postgres"
+                );
             }
         }
         FederationTrustedDealerDatabaseEngine::Postgres => {
-            let template = args.postgres_url_template.as_deref().ok_or_else(|| {
-                anyhow!("--postgres-url-template is required with --database-engine postgres")
-            })?;
-            if template.trim().is_empty() {
-                bail!("--postgres-url-template must not be empty");
-            }
-            if !template.contains("{member}") {
-                bail!("--postgres-url-template must contain {{member}} so each federation member has a distinct database");
+            match (
+                args.postgres_url_template.as_deref(),
+                args.postgres_base_url.as_deref(),
+            ) {
+                (Some(_), Some(_)) => {
+                    bail!("use either --postgres-url-template or --postgres-base-url, not both");
+                }
+                (None, None) => {
+                    bail!(
+                        "--postgres-url-template or --postgres-base-url is required with --database-engine postgres"
+                    );
+                }
+                (Some(template), None) => {
+                    if template.trim().is_empty() {
+                        bail!("--postgres-url-template must not be empty");
+                    }
+                    if !template.contains("{member}") {
+                        bail!("--postgres-url-template must contain {{member}} so each federation member has distinct Postgres storage");
+                    }
+                }
+                (None, Some(base_url)) => {
+                    if base_url.trim().is_empty() {
+                        bail!("--postgres-base-url must not be empty");
+                    }
+                }
             }
         }
     }
@@ -404,11 +423,23 @@ fn member_database_config(
             Ok("[database]\nengine = \"sqlite\"\n".to_string())
         }
         FederationTrustedDealerDatabaseEngine::Postgres => {
-            let template = args.postgres_url_template.as_deref().ok_or_else(|| {
-                anyhow!("--postgres-url-template is required with --database-engine postgres")
-            })?;
             let member_id = member_id.get().to_string();
-            let url = template.replace("{member}", &member_id);
+            let url = match (
+                args.postgres_url_template.as_deref(),
+                args.postgres_base_url.as_deref(),
+            ) {
+                (Some(template), None) => template.replace("{member}", &member_id),
+                (None, Some(base_url)) => format!(
+                    "{} schema=cdk_federation_member_{}",
+                    base_url.trim(),
+                    member_id
+                ),
+                _ => {
+                    bail!(
+                        "use exactly one of --postgres-url-template or --postgres-base-url with --database-engine postgres"
+                    );
+                }
+            };
             Ok(format!(
                 r#"[database]
 engine = "postgres"
@@ -828,6 +859,7 @@ mod tests {
             port_start: 8085,
             database_engine: FederationTrustedDealerDatabaseEngine::Sqlite,
             postgres_url_template: None,
+            postgres_base_url: None,
             force: false,
         }
     }
@@ -988,25 +1020,71 @@ mod tests {
     }
 
     #[test]
-    fn trusted_dealer_postgres_template_is_validated() {
+    fn trusted_dealer_artifacts_support_postgres_schema_base_url() {
+        let output_dir = temp_output_dir("postgres_schema_base_url");
+        let _ = std::fs::remove_dir_all(&output_dir);
+        let mut args = generator_args(output_dir.clone());
+        args.database_engine = FederationTrustedDealerDatabaseEngine::Postgres;
+        args.postgres_base_url = Some("postgresql://cdk:cdk@localhost:5432/cdk_mint".to_string());
+
+        let artifacts =
+            generate_trusted_dealer_artifacts(&args).expect("postgres trusted dealer artifacts");
+
+        for (member_id, member_artifacts) in &artifacts.member_artifacts {
+            let settings = config::Settings::try_new(Some(&member_artifacts.config_path))
+                .expect("member config toml");
+            assert_eq!(settings.database.engine, config::DatabaseEngine::Postgres);
+            let postgres = settings
+                .database
+                .postgres
+                .as_ref()
+                .expect("postgres config");
+            assert_eq!(
+                postgres.url,
+                format!(
+                    "postgresql://cdk:cdk@localhost:5432/cdk_mint schema=cdk_federation_member_{}",
+                    member_id.get()
+                )
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&output_dir);
+    }
+
+    #[test]
+    fn trusted_dealer_postgres_storage_options_are_validated() {
         let output_dir = temp_output_dir("postgres_validation");
         let mut args = generator_args(output_dir);
         args.database_engine = FederationTrustedDealerDatabaseEngine::Postgres;
 
-        let err = validate_trusted_dealer_args(&args).expect_err("postgres template is required");
+        let err = validate_trusted_dealer_args(&args).expect_err("postgres storage is required");
         assert!(err
             .to_string()
-            .contains("--postgres-url-template is required"));
+            .contains("--postgres-url-template or --postgres-base-url is required"));
 
         args.postgres_url_template = Some("postgresql://cdk:cdk@localhost:5432/shared".to_string());
         let err = validate_trusted_dealer_args(&args).expect_err("member placeholder is required");
         assert!(err.to_string().contains("must contain {member}"));
 
-        args.database_engine = FederationTrustedDealerDatabaseEngine::Sqlite;
-        let err = validate_trusted_dealer_args(&args).expect_err("sqlite rejects postgres url");
+        args.postgres_url_template =
+            Some("postgresql://cdk:cdk@localhost:5432/cdk_member_{member}".to_string());
+        args.postgres_base_url = Some("postgresql://cdk:cdk@localhost:5432/cdk_mint".to_string());
+        let err = validate_trusted_dealer_args(&args).expect_err("only one postgres option");
+        assert!(err.to_string().contains("not both"));
+
+        args.postgres_url_template = None;
+        args.postgres_base_url = Some("   ".to_string());
+        let err = validate_trusted_dealer_args(&args).expect_err("base url cannot be empty");
         assert!(err
             .to_string()
-            .contains("--postgres-url-template requires --database-engine postgres"));
+            .contains("--postgres-base-url must not be empty"));
+
+        args.database_engine = FederationTrustedDealerDatabaseEngine::Sqlite;
+        args.postgres_base_url = Some("postgresql://cdk:cdk@localhost:5432/cdk_mint".to_string());
+        let err = validate_trusted_dealer_args(&args).expect_err("sqlite rejects postgres options");
+        assert!(err
+            .to_string()
+            .contains("require --database-engine postgres"));
     }
 
     #[test]
