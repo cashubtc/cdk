@@ -5,8 +5,8 @@ use cdk_common::database::mint::{FederationJournalDatabase, FederationJournalTra
 use cdk_common::database::Error;
 use cdk_common::federation::{
     FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignatureRequest, FederationJournalEntry,
+    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest, FederationJournalEntry,
     FederationOperationConflictKey, FederationOperationId, FederationOperationStatus,
     FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationSessionOutcome, MemberId,
@@ -176,6 +176,33 @@ fn sql_row_to_federation_dkg_reveal(
     Ok(reveal)
 }
 
+fn sql_row_to_federation_dkg_secret_share(
+    row: Vec<Column>,
+) -> Result<FederationDkgSecretShareRequest, Error> {
+    unpack_into!(let (sender_id, receiver_id, payload_json) = row);
+    let sender_id = sql_member_id(sender_id)?;
+    let receiver_id = sql_member_id(receiver_id)?;
+    let secret_share =
+        serde_json::from_str::<FederationDkgSecretShareRequest>(&column_as_string!(&payload_json))
+            .map_err(|e| {
+                Error::Internal(format!("Invalid federation DKG secret share JSON: {e}"))
+            })?;
+    if secret_share.sender != sender_id {
+        return Err(Error::Internal(format!(
+            "Federation DKG secret share sender mismatch: expected={sender_id}, found={}",
+            secret_share.sender
+        )));
+    }
+    if secret_share.receiver != receiver_id {
+        return Err(Error::Internal(format!(
+            "Federation DKG secret share receiver mismatch: expected={receiver_id}, found={}",
+            secret_share.receiver
+        )));
+    }
+
+    Ok(secret_share)
+}
+
 fn sql_row_to_federation_dkg_member_keyset_share(
     row: Vec<Column>,
 ) -> Result<FederationDkgMemberKeysetShare, Error> {
@@ -246,6 +273,15 @@ fn federation_dkg_member_keyset_share_conflict_error(
     Error::Internal(format!(
         "Conflicting federation DKG keyset share for member {} keyset {}",
         share.member_id, share.keyset.id
+    ))
+}
+
+fn federation_dkg_secret_share_conflict_error(
+    contribution: &FederationDkgSecretShareRequest,
+) -> Error {
+    Error::Internal(format!(
+        "Conflicting federation DKG secret share from member {} to member {}",
+        contribution.sender, contribution.receiver
     ))
 }
 
@@ -470,6 +506,33 @@ where
                 FEDERATION_DKG_REVEAL_PHASE,
                 reveal.member_id,
             ));
+        }
+
+        Ok(())
+    }
+
+    async fn add_federation_dkg_secret_share_contribution(
+        &mut self,
+        contribution: &FederationDkgSecretShareRequest,
+    ) -> Result<(), Self::Err> {
+        let rows_affected = query(
+            r#"
+            INSERT INTO federation_dkg_secret_share_contributions
+            (sender_id, receiver_id, payload_json)
+            VALUES
+            (:sender_id, :receiver_id, :payload_json)
+            ON CONFLICT (sender_id, receiver_id)
+            DO UPDATE SET payload_json = EXCLUDED.payload_json
+            WHERE federation_dkg_secret_share_contributions.payload_json = EXCLUDED.payload_json
+            "#,
+        )?
+        .bind("sender_id", i64::from(contribution.sender.get()))
+        .bind("receiver_id", i64::from(contribution.receiver.get()))
+        .bind("payload_json", serde_json::to_string(contribution)?)
+        .execute(&self.inner)
+        .await?;
+        if rows_affected == 0 {
+            return Err(federation_dkg_secret_share_conflict_error(contribution));
         }
 
         Ok(())
@@ -779,6 +842,28 @@ where
         .await?
         .into_iter()
         .map(sql_row_to_federation_dkg_reveal)
+        .collect()
+    }
+
+    async fn get_federation_dkg_secret_share_contributions(
+        &self,
+    ) -> Result<Vec<FederationDkgSecretShareRequest>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT sender_id, receiver_id, payload_json
+            FROM federation_dkg_secret_share_contributions
+            ORDER BY sender_id ASC, receiver_id ASC
+            "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_dkg_secret_share)
         .collect()
     }
 

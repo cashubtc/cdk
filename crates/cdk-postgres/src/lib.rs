@@ -482,6 +482,16 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_dkg_secret_share_contribution_persistence() {
+        cdk_common::database::mint::test::federation_dkg_secret_share_contribution_persistence(
+            provide_mint_db("federation_dkg_secret_share_contribution_persistence".to_string())
+                .await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_dkg_transcript_signature_persistence() {
         cdk_common::database::mint::test::federation_dkg_transcript_signature_persistence(
             provide_mint_db("federation_dkg_transcript_signature_persistence".to_string()).await,

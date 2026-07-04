@@ -486,6 +486,12 @@ mod federation_migration_tests {
         let postgres_dkg_member_keyset_shares = include_str!(
             "migrations/postgres/20260703150000_add_federation_dkg_member_keyset_shares.sql"
         );
+        let sqlite_dkg_secret_share_contributions = include_str!(
+            "migrations/sqlite/20260703154500_add_federation_dkg_secret_share_contributions.sql"
+        );
+        let postgres_dkg_secret_share_contributions = include_str!(
+            "migrations/postgres/20260703154500_add_federation_dkg_secret_share_contributions.sql"
+        );
         let sqlite_dkg_transcript_signatures = include_str!(
             "migrations/sqlite/20260703153000_add_federation_dkg_transcript_signatures.sql"
         );
@@ -579,6 +585,22 @@ mod federation_migration_tests {
                     "member_id",
                     "payload_json",
                     "idx_federation_dkg_member_keyset_shares_member",
+                ],
+            );
+        }
+
+        for migration in [
+            sqlite_dkg_secret_share_contributions,
+            postgres_dkg_secret_share_contributions,
+        ] {
+            assert_contains_all(
+                migration,
+                &[
+                    "federation_dkg_secret_share_contributions",
+                    "sender_id",
+                    "receiver_id",
+                    "payload_json",
+                    "idx_federation_dkg_secret_share_contributions_receiver",
                 ],
             );
         }

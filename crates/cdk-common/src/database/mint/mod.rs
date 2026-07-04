@@ -13,10 +13,10 @@ use super::{DbTransactionFinalizer, Error};
 #[cfg(feature = "federation")]
 use crate::federation::{
     FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptSignatureRequest,
-    FederationJournalEntry, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationSessionOutcome, MemberId,
+    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
+    FederationDkgTranscriptSignatureRequest, FederationJournalEntry, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationSessionOutcome, MemberId,
 };
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
@@ -659,6 +659,12 @@ pub trait FederationJournalTransaction {
         reveal: &FederationDkgParticipantCommitmentReveal,
     ) -> Result<(), Self::Err>;
 
+    /// Persist one private DKG secret-share contribution.
+    async fn add_federation_dkg_secret_share_contribution(
+        &mut self,
+        contribution: &FederationDkgSecretShareRequest,
+    ) -> Result<(), Self::Err>;
+
     /// Persist one completed local member DKG keyset share.
     async fn add_federation_dkg_member_keyset_share(
         &mut self,
@@ -727,6 +733,11 @@ pub trait FederationJournalDatabase {
     async fn get_federation_dkg_reveals(
         &self,
     ) -> Result<Vec<FederationDkgParticipantCommitmentReveal>, Self::Err>;
+
+    /// Get all persisted private DKG secret-share contributions.
+    async fn get_federation_dkg_secret_share_contributions(
+        &self,
+    ) -> Result<Vec<FederationDkgSecretShareRequest>, Self::Err>;
 
     /// Get all persisted completed local member DKG keyset shares.
     async fn get_federation_dkg_member_keyset_shares(

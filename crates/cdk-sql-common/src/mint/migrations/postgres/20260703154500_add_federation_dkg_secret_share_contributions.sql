@@ -1,0 +1,9 @@
+CREATE TABLE IF NOT EXISTS federation_dkg_secret_share_contributions (
+    sender_id INTEGER NOT NULL,
+    receiver_id INTEGER NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (sender_id, receiver_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_federation_dkg_secret_share_contributions_receiver
+ON federation_dkg_secret_share_contributions (receiver_id);

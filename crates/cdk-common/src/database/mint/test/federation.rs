@@ -8,19 +8,19 @@ use crate::database::mint::{Database, FederationJournalDatabase};
 use crate::federation::{
     FederatedKeyset, FederationConfig, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
-    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, FederationId,
-    FederationJournalAppendOutcome, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationJournalEntry, FederationMintQuoteOperation,
-    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationPaymentObservationReportStatus, InMemoryFederationJournal, MemberConfigPrivate,
-    MemberConfigPublic, MemberId, ThresholdParams,
+    FederationDkgSecretShareRequest, FederationDkgSetupMethod, FederationDkgSetupState,
+    FederationDkgTranscript, FederationDkgTranscriptSignature,
+    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalAppendOutcome,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalEntry,
+    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationOperation,
+    FederationOperationEnvelope, FederationOperationStatus, FederationPaymentObservation,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationPaymentObservationReport, FederationPaymentObservationReportStatus,
+    InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
 };
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::KnownMethod;
-use crate::nuts::nut01::{trusted_dealer_keygen, BlsSecretKey};
+use crate::nuts::nut01::{evaluate_secret_key_coefficients, trusted_dealer_keygen, BlsSecretKey};
 use crate::{
     Amount, CurrencyUnit, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteRequest,
     MintQuoteResponse, MintQuoteState, PaymentMethod, SecretKey,
@@ -201,6 +201,27 @@ fn dkg_member_keyset_share(local_member_id: MemberId) -> FederationDkgMemberKeys
         keyset,
         secret_shares,
     }
+}
+
+fn dkg_secret_share_request(
+    public_config: &FederationConfig,
+    sender: MemberId,
+    receiver: MemberId,
+    seed: u8,
+) -> FederationDkgSecretShareRequest {
+    FederationDkgSecretShareRequest::new(
+        public_config.federation_id,
+        sender,
+        receiver,
+        BTreeMap::from([(
+            Amount::from(1),
+            evaluate_secret_key_coefficients(
+                receiver.to_bls_signer_id(),
+                &[bls_key(seed), bls_key(seed + 10)],
+            )
+            .expect("secret share"),
+        )]),
+    )
 }
 
 fn dkg_transcript_signature_request(
@@ -590,6 +611,58 @@ where
         .complete_round(&public_config)
         .expect("complete setup state")
         .is_some());
+}
+
+/// Assert private DKG secret-share contributions persist idempotently.
+pub async fn federation_dkg_secret_share_contribution_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let public_config = dkg_public_config();
+    let first_contribution =
+        dkg_secret_share_request(&public_config, member_id(1), member_id(2), 7);
+    let second_contribution =
+        dkg_secret_share_request(&public_config, member_id(2), member_id(1), 17);
+    let conflicting_contribution =
+        dkg_secret_share_request(&public_config, member_id(1), member_id(2), 27);
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin");
+    tx.add_federation_dkg_secret_share_contribution(&first_contribution)
+        .await
+        .expect("persist first secret-share contribution");
+    tx.add_federation_dkg_secret_share_contribution(&first_contribution)
+        .await
+        .expect("idempotent duplicate secret-share contribution replay");
+    tx.add_federation_dkg_secret_share_contribution(&second_contribution)
+        .await
+        .expect("persist second secret-share contribution");
+    tx.commit().await.expect("commit");
+
+    let contributions = db
+        .get_federation_dkg_secret_share_contributions()
+        .await
+        .expect("secret-share contributions");
+    assert_eq!(
+        contributions,
+        vec![first_contribution.clone(), second_contribution.clone()]
+    );
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin conflicting secret-share contribution");
+    assert!(tx
+        .add_federation_dkg_secret_share_contribution(&conflicting_contribution)
+        .await
+        .is_err());
+    tx.rollback()
+        .await
+        .expect("rollback conflicting secret-share contribution");
+
+    let contributions = db
+        .get_federation_dkg_secret_share_contributions()
+        .await
+        .expect("secret-share contributions after conflict");
+    assert_eq!(contributions, vec![first_contribution, second_contribution]);
 }
 
 /// Assert completed local DKG keyset shares persist idempotently.
