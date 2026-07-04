@@ -1523,6 +1523,10 @@
             <p>Signed private REST request types now carry DKG commitments and reveals, bind them to the sending member identity, round-trip through JSON, and reject valid signatures over another member's setup payload.</p>
           </article>
           <article class="item">
+            <h3>DKG secret-share transport added</h3>
+            <p>Signed private REST payloads can now carry per-amount DKG secret-share contributions from a participant to the intended receiver, binding federation ID, sender, receiver, and receiver signer ID before any setup material is persisted.</p>
+          </article>
+          <article class="item">
             <h3>DKG setup private routes added</h3>
             <p>Federation members now expose signed private REST endpoints for DKG commitments and reveals, the peer client can submit both messages, and accepted setup payloads persist the sender sequence watermark.</p>
           </article>
@@ -1638,7 +1642,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG scaffolding now covers commitments, reveals, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed record reads, generated setup readiness gates, and the first canonical key-rotation operation. The remaining setup work is route-driven completion recovery, record export/import runbook wiring, accepted-rotation persistence, and active-keyset switching.</p>
+            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed record reads, generated setup readiness gates, and the first canonical key-rotation operation. The remaining setup work is secret-share route/storage wiring, route-driven completion recovery, record export/import runbook wiring, accepted-rotation persistence, and active-keyset switching.</p>
           </article>
         </div>
       </section>
@@ -1726,6 +1730,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation dkg -- --test-threads 1` passed 8 DKG tests, including signed commitment/reveal request validation, JSON round-trips, sender/body mismatch rejection, and invalid reveal threshold-shape rejection. `cargo test -p cdk-common --features federation signed_request -- --test-threads 1`, `cargo test -p cdk-common --features federation federation -- --test-threads 1`, `cargo check -p cdk-common --features federation --lib`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, and `cargo fmt --all` passed.</td>
               <td>Add private REST setup routes and persisted DKG setup-round state so online members can exchange and replay these messages safely.</td>
+            </tr>
+            <tr>
+              <td>DKG secret-share transport messages</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation signed_dkg -- --test-threads 1` passed 7 signed DKG transport tests, including sender, receiver, signer-ID, JSON round-trip, and body-hash coverage for private secret-share contribution payloads. `cargo test -p cdk-common --features federation federation -- --test-threads 1` passed 118 federation tests, `cargo check -p cdk-common --features federation --lib` passed, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed.</td>
+              <td>Persist and route the secret-share contribution payloads, then derive completed local DKG keyset-share records from collected contributions and reveals.</td>
             </tr>
             <tr>
               <td>DKG setup private routes</td>

@@ -50,13 +50,14 @@ pub use self::operation::{
 };
 pub use self::signing::{FederationBlindSignatureShare, FederationBlindSignatureShareSet};
 pub use self::transport::{
-    FederationDkgCommitmentRequest, FederationDkgRevealRequest, FederationDkgSetupResponse,
-    FederationDkgTranscriptSignatureRequest, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationPeerStatus, FederationPeerStatusRequest,
-    FederationRestBodyHash, FederationRestMessageKind, FederationRestSequenceTracker,
-    FederationRestSignature, FederationSessionOutcome, FederationSessionOutcomeQuorum,
-    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    FEDERATION_REST_API_VERSION, FEDERATION_SESSION_OUTCOME_VERSION,
+    FederationDkgCommitmentRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
+    FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
+    FederationPeerStatusRequest, FederationRestBodyHash, FederationRestMessageKind,
+    FederationRestSequenceTracker, FederationRestSignature, FederationSessionOutcome,
+    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, FEDERATION_REST_API_VERSION,
+    FEDERATION_SESSION_OUTCOME_VERSION,
 };
 pub use self::trusted_dealer::{
     generate_trusted_dealer_configs, TrustedDealerConfigBundle, TrustedDealerKeysetSpec,

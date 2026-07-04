@@ -20,6 +20,8 @@ use super::{
     FederationOperationEnvelope, FederationOperationId, FederationStateDigest,
     InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, Result,
 };
+use crate::nuts::nut01::BlsSecretKeyShare;
+use crate::Amount;
 
 /// Version of the private federation REST payload format.
 pub const FEDERATION_REST_API_VERSION: u16 = 1;
@@ -41,6 +43,8 @@ pub enum FederationRestMessageKind {
     DkgCommitment,
     /// Reveal DKG public polynomial commitments to a peer.
     DkgReveal,
+    /// Send private DKG secret-share contributions to the intended receiver.
+    DkgSecretShare,
     /// Share a member signature over a DKG/setup transcript hash.
     DkgTranscriptSignature,
     /// Submit one operation envelope to a peer.
@@ -55,6 +59,7 @@ impl FederationRestMessageKind {
             Self::Status => b"status",
             Self::DkgCommitment => b"dkg_commitment",
             Self::DkgReveal => b"dkg_reveal",
+            Self::DkgSecretShare => b"dkg_secret_share",
             Self::DkgTranscriptSignature => b"dkg_transcript_signature",
             Self::SubmitOperation => b"submit_operation",
             Self::CatchUp => b"catch_up",
@@ -481,6 +486,87 @@ impl FederationDkgRevealRequest {
     ) -> Result<()> {
         self.reveal.validate_against_config(public_config)?;
         ensure_dkg_payload_sender(self.reveal.member_id, sender)
+    }
+}
+
+/// Signed request payload carrying one participant's private DKG contributions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationDkgSecretShareRequest {
+    /// Federation whose DKG round this contribution belongs to.
+    pub federation_id: FederationId,
+    /// Participant that generated the secret-share contributions.
+    pub sender: MemberId,
+    /// Member that must receive and store these local secret contributions.
+    pub receiver: MemberId,
+    /// Secret contribution per amount, evaluated for `receiver`.
+    pub secret_shares: BTreeMap<Amount, BlsSecretKeyShare>,
+}
+
+impl FederationDkgSecretShareRequest {
+    /// Create a DKG secret-share contribution transport request.
+    #[must_use]
+    pub fn new(
+        federation_id: FederationId,
+        sender: MemberId,
+        receiver: MemberId,
+        secret_shares: BTreeMap<Amount, BlsSecretKeyShare>,
+    ) -> Self {
+        Self {
+            federation_id,
+            sender,
+            receiver,
+            secret_shares,
+        }
+    }
+
+    /// Validate the contribution and bind it to the signed sender and receiver.
+    pub fn validate_sender_receiver(
+        &self,
+        public_config: &FederationConfig,
+        sender: MemberId,
+        receiver: MemberId,
+    ) -> Result<()> {
+        if self.federation_id != public_config.federation_id {
+            return Err(FederationError::FederationIdMismatch {
+                expected: public_config.federation_id,
+                found: self.federation_id,
+            });
+        }
+        public_config
+            .member(self.sender)
+            .ok_or(FederationError::MissingMember {
+                member_id: self.sender,
+            })?;
+        public_config
+            .member(self.receiver)
+            .ok_or(FederationError::MissingMember {
+                member_id: self.receiver,
+            })?;
+        ensure_dkg_payload_sender(self.sender, sender)?;
+        if self.receiver != receiver {
+            return Err(FederationError::RestReceiverMismatch {
+                expected: receiver,
+                found: self.receiver,
+            });
+        }
+        if self.secret_shares.is_empty() {
+            return Err(FederationError::DkgCommitmentMismatch {
+                member_id: self.sender,
+                reason: "empty local secret contributions".to_string(),
+            });
+        }
+
+        let signer_id = self.receiver.to_bls_signer_id();
+        for (amount, secret_share) in &self.secret_shares {
+            if secret_share.signer_id() != signer_id {
+                return Err(FederationError::DkgCommitmentMismatch {
+                    member_id: self.sender,
+                    reason: format!("secret contribution signer mismatch for amount {amount}"),
+                });
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -1210,7 +1296,7 @@ mod tests {
         MintQuoteBolt11Response, MintQuoteRequest, MintQuoteResponse, MintRequest, PublicKey,
         SecretKey,
     };
-    use cashu::nuts::nut01::BlsSecretKey;
+    use cashu::nuts::nut01::{evaluate_secret_key_coefficients, BlsSecretKey, BlsSecretKeyShare};
 
     fn federation_id() -> FederationId {
         FederationId::from_bytes([11; 32])
@@ -1316,6 +1402,14 @@ mod tests {
                 ],
             )]),
         }
+    }
+
+    fn dkg_secret_share(receiver: MemberId, seed: u8) -> BlsSecretKeyShare {
+        evaluate_secret_key_coefficients(
+            receiver.to_bls_signer_id(),
+            &[bls_key(seed), bls_key(seed + 10)],
+        )
+        .expect("dkg secret share")
     }
 
     fn mint_envelope(quote: &str, hex: &str) -> FederationOperationEnvelope {
@@ -1865,6 +1959,89 @@ mod tests {
             bad_payload.validate_sender(&config, first_private.member_id),
             Err(FederationError::DkgTranscriptSignatureVerificationFailed { member_id })
                 if member_id == first_private.member_id
+        ));
+    }
+
+    #[test]
+    fn signed_dkg_secret_share_request_verifies_sender_receiver_and_payload() {
+        let (config, first_private, _) = transport_config();
+        let receiver = roster_member_id(2);
+        let payload = FederationDkgSecretShareRequest::new(
+            config.federation_id,
+            first_private.member_id,
+            receiver,
+            BTreeMap::from([(Amount::from(1), dkg_secret_share(receiver, 11))]),
+        );
+        let request = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            10,
+            FederationRestMessageKind::DkgSecretShare,
+            payload,
+            &first_private,
+        )
+        .expect("signed dkg secret share");
+
+        request.verify(&config, receiver).expect("verified request");
+        request
+            .payload
+            .validate_sender_receiver(&config, request.sender, receiver)
+            .expect("payload owner and receiver");
+        let json = serde_json::to_string(&request).expect("dkg secret share json");
+        let decoded: FederationSignedRequest<FederationDkgSecretShareRequest> =
+            serde_json::from_str(&json).expect("decoded request");
+        assert_eq!(decoded.kind, FederationRestMessageKind::DkgSecretShare);
+        decoded.verify(&config, receiver).expect("decoded verifies");
+        decoded
+            .payload
+            .validate_sender_receiver(&config, decoded.sender, receiver)
+            .expect("decoded payload owner and receiver");
+    }
+
+    #[test]
+    fn signed_dkg_secret_share_request_rejects_sender_receiver_or_signer_mismatch() {
+        let (config, first_private, second_private) = transport_config();
+        let receiver = roster_member_id(2);
+        let sender_mismatch = FederationDkgSecretShareRequest::new(
+            config.federation_id,
+            second_private.member_id,
+            receiver,
+            BTreeMap::from([(Amount::from(1), dkg_secret_share(receiver, 11))]),
+        );
+        let receiver_mismatch = FederationDkgSecretShareRequest::new(
+            config.federation_id,
+            first_private.member_id,
+            first_private.member_id,
+            BTreeMap::from([(
+                Amount::from(1),
+                dkg_secret_share(first_private.member_id, 11),
+            )]),
+        );
+        let signer_mismatch = FederationDkgSecretShareRequest::new(
+            config.federation_id,
+            first_private.member_id,
+            receiver,
+            BTreeMap::from([(
+                Amount::from(1),
+                dkg_secret_share(first_private.member_id, 11),
+            )]),
+        );
+
+        assert!(matches!(
+            sender_mismatch.validate_sender_receiver(&config, first_private.member_id, receiver),
+            Err(FederationError::DkgCommitmentMismatch { member_id, reason })
+                if member_id == second_private.member_id && reason == "request sender mismatch"
+        ));
+        assert!(matches!(
+            receiver_mismatch.validate_sender_receiver(&config, first_private.member_id, receiver),
+            Err(FederationError::RestReceiverMismatch { expected, found })
+                if expected == receiver && found == first_private.member_id
+        ));
+        assert!(matches!(
+            signer_mismatch.validate_sender_receiver(&config, first_private.member_id, receiver),
+            Err(FederationError::DkgCommitmentMismatch { member_id, reason })
+                if member_id == first_private.member_id
+                    && reason.contains("secret contribution signer mismatch")
         ));
     }
 
