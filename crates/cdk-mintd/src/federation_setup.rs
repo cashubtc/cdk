@@ -13,10 +13,12 @@ use anyhow::{bail, Result};
 use bip39::Mnemonic;
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 use cdk_common::federation::{
-    generate_trusted_dealer_configs, FederationConfig, FederationDkgCommitmentRequest,
-    FederationDkgCommitmentRound, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgRevealRequest,
-    FederationDkgSecretShareRequest, FederationRestMessageKind, FederationSignedRequest,
+    generate_trusted_dealer_configs, FederatedKeyset, FederationConfig,
+    FederationDkgCommitmentRequest, FederationDkgCommitmentRound,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
+    FederationDkgTranscript, FederationDkgTranscriptSignature,
+    FederationDkgTranscriptSignatureRequest, FederationRestMessageKind, FederationSignedRequest,
     MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerConfigBundle,
     TrustedDealerKeysetSpec, TrustedDealerMember,
 };
@@ -405,6 +407,74 @@ fn write_dkg_setup_route_probe_requests(
         .validate_reveals(public_config, &reveals)
         .context("generated DKG route-probe reveals are invalid")?;
 
+    let mut derived_keysets = BTreeMap::new();
+    for receiver_id in public_config.members.keys().copied() {
+        let mut participant_secret_shares = BTreeMap::new();
+        for sender_id in public_config.members.keys().copied() {
+            let secret_share_payload = dkg_probe_secret_share_request(
+                public_config,
+                &coefficients,
+                sender_id,
+                receiver_id,
+            )?;
+            participant_secret_shares.insert(sender_id, secret_share_payload.secret_shares);
+        }
+
+        let keyset_share = round
+            .derive_member_keyset_share(
+                public_config,
+                &reveals,
+                receiver_id,
+                &participant_secret_shares,
+                unit.clone(),
+                true,
+                input_fee_ppk,
+                final_expiry,
+            )
+            .with_context(|| {
+                format!("generated DKG route-probe shares for member {receiver_id} are invalid")
+            })?;
+        derived_keysets.insert(receiver_id, keyset_share.keyset);
+    }
+    let route_probe_keyset = shared_dkg_probe_keyset(&derived_keysets)?;
+    let final_public_config = FederationConfig::new(
+        public_config.threshold_params,
+        public_config.members.clone(),
+        vec![route_probe_keyset],
+    )
+    .context("generated DKG route-probe final public config is invalid")?;
+    let transcript_hash = FederationDkgTranscript::hash_for_config(
+        FederationDkgSetupMethod::PedersenDkg,
+        &final_public_config,
+    )
+    .context("generated DKG route-probe transcript hash is invalid")?;
+    let transcript_signature_payloads = private_configs
+        .iter()
+        .map(|(sender_id, private_config)| {
+            Ok((
+                *sender_id,
+                FederationDkgTranscriptSignatureRequest::new(
+                    final_public_config.federation_id,
+                    *sender_id,
+                    transcript_hash,
+                    FederationDkgTranscriptSignature::sign(transcript_hash, private_config)?,
+                ),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let transcript = FederationDkgTranscript::from_signatures(
+        FederationDkgSetupMethod::PedersenDkg,
+        &final_public_config,
+        transcript_signature_payloads
+            .iter()
+            .map(|(member_id, payload)| (*member_id, payload.signature))
+            .collect(),
+    )
+    .context("generated DKG route-probe transcript signatures are invalid")?;
+    if transcript.transcript_hash != transcript_hash {
+        bail!("generated DKG route-probe transcript hash mismatch");
+    }
+
     let mut request_dirs = BTreeMap::new();
     for receiver_id in public_config.members.keys().copied() {
         let receiver_dir = output_dir
@@ -412,7 +482,6 @@ fn write_dkg_setup_route_probe_requests(
             .join(format!("receiver-{}", receiver_id.get()));
         request_dirs.insert(receiver_id, receiver_dir.clone());
 
-        let mut participant_secret_shares = BTreeMap::new();
         for sender_id in public_config.members.keys().copied() {
             let private_config = private_configs
                 .get(&sender_id)
@@ -457,7 +526,6 @@ fn write_dkg_setup_route_probe_requests(
                 sender_id,
                 receiver_id,
             )?;
-            participant_secret_shares.insert(sender_id, secret_share_payload.secret_shares.clone());
             write_signed_dkg_probe_request(
                 public_config,
                 private_config,
@@ -468,25 +536,42 @@ fn write_dkg_setup_route_probe_requests(
                 &dkg_probe_request_path(&receiver_dir, sender_id, "secret-share"),
                 force,
             )?;
-        }
 
-        round
-            .derive_member_keyset_share(
+            let transcript_signature_payload = *transcript_signature_payloads
+                .get(&sender_id)
+                .ok_or_else(|| {
+                    anyhow!("missing DKG route-probe transcript signature for member {sender_id}")
+                })?;
+            write_signed_dkg_probe_request(
                 public_config,
-                &reveals,
+                private_config,
                 receiver_id,
-                &participant_secret_shares,
-                unit.clone(),
-                true,
-                input_fee_ppk,
-                final_expiry,
-            )
-            .with_context(|| {
-                format!("generated DKG route-probe shares for member {receiver_id} are invalid")
-            })?;
+                4,
+                FederationRestMessageKind::DkgTranscriptSignature,
+                transcript_signature_payload,
+                &dkg_probe_request_path(&receiver_dir, sender_id, "transcript-signature"),
+                force,
+            )?;
+        }
     }
 
     Ok(request_dirs)
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn shared_dkg_probe_keyset(
+    derived_keysets: &BTreeMap<MemberId, FederatedKeyset>,
+) -> Result<FederatedKeyset> {
+    let first = derived_keysets
+        .values()
+        .next()
+        .ok_or_else(|| anyhow!("generated DKG route-probe has no derived keysets"))?;
+    for (member_id, keyset) in derived_keysets {
+        if keyset != first {
+            bail!("generated DKG route-probe keyset for member {member_id} differs");
+        }
+    }
+    Ok(first.clone())
 }
 
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
@@ -1009,6 +1094,17 @@ member_dkg_setup_records_line() {{
   "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --from-database | awk '/^setup_records / {{ print; exit }}'
 }}
 
+member_dkg_completion_records_line() {{
+  local member="$1"
+  local private_config
+  local config
+  local work_dir
+  private_config="$(member_private_config "$member")"
+  config="$(member_config "$member")"
+  work_dir="$(member_work_dir "$member")"
+  "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --from-database | awk '/^setup_transcript=/ {{ print; exit }}'
+}}
+
 print_dkg_record_runbook() {{
   local member="$1"
   local private_config
@@ -1168,6 +1264,9 @@ probe_dkg_setup_routes() {{
     for sender in "${{MEMBERS[@]}}"; do
       post_dkg_setup_request "$receiver_url/federation/v1/dkg/secret-shares" "$request_dir/from-$sender-secret-share.json"
     done
+    for sender in "${{MEMBERS[@]}}"; do
+      post_dkg_setup_request "$receiver_url/federation/v1/dkg/transcript-signatures" "$request_dir/from-$sender-transcript-signature.json"
+    done
   done
 }}
 
@@ -1227,19 +1326,25 @@ wait_for_dkg_setup_records() {{
     return 0
   fi
   local expected="${{#MEMBERS[@]}}"
+  local expected_keyset_shares="1"
   local member
   for member in "${{MEMBERS[@]}}"; do
     local ready=0
     for _ in $(seq 1 "$STATUS_RETRIES"); do
       local line
-      if line="$(member_dkg_setup_records_line "$member" 2>/dev/null)"; then
+      local completion_line
+      if line="$(member_dkg_setup_records_line "$member" 2>/dev/null)" && completion_line="$(member_dkg_completion_records_line "$member" 2>/dev/null)"; then
         local commitments
         local reveals
         local secret_shares
+        local keyset_shares
+        local transcript_signatures
         commitments="$(status_field "$line" commitments || true)"
         reveals="$(status_field "$line" reveals || true)"
         secret_shares="$(status_field "$line" secret_share_contributions || true)"
-        if [[ "$commitments" == "$expected" && "$reveals" == "$expected" && "$secret_shares" == "$expected" ]]; then
+        keyset_shares="$(status_field "$completion_line" keyset_share_records || true)"
+        transcript_signatures="$(status_field "$completion_line" transcript_signature_records || true)"
+        if [[ "$commitments" == "$expected" && "$reveals" == "$expected" && "$secret_shares" == "$expected" && "$keyset_shares" == "$expected_keyset_shares" && "$transcript_signatures" == "$expected" ]]; then
           ready=1
           break
         fi
@@ -1251,6 +1356,7 @@ wait_for_dkg_setup_records() {{
     fi
     printf 'member %s did not persist DKG setup route-probe records\n' "$member" >&2
     member_dkg_setup_records_line "$member" >&2 || true
+    member_dkg_completion_records_line "$member" >&2 || true
     return 1
   done
   return 0
@@ -1603,6 +1709,26 @@ mod tests {
             secret_share_request.kind,
             FederationRestMessageKind::DkgSecretShare
         );
+        let transcript_signature_json = std::fs::read_to_string(
+            first_receiver_probe_dir.join("from-2-transcript-signature.json"),
+        )
+        .expect("DKG transcript-signature route-probe request");
+        let transcript_signature_request: FederationSignedRequest<
+            FederationDkgTranscriptSignatureRequest,
+        > = serde_json::from_str(&transcript_signature_json)
+            .expect("signed DKG transcript-signature request");
+        transcript_signature_request
+            .verify(&public_config, first_member)
+            .expect("transcript-signature request verifies");
+        transcript_signature_request
+            .payload
+            .validate_sender(&public_config, second_member)
+            .expect("transcript-signature sender validates");
+        assert_eq!(transcript_signature_request.sequence, 4);
+        assert_eq!(
+            transcript_signature_request.kind,
+            FederationRestMessageKind::DkgTranscriptSignature
+        );
 
         let smoke_script =
             std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
@@ -1627,10 +1753,14 @@ mod tests {
         assert!(smoke_script.contains("probe_dkg_setup_routes()"));
         assert!(smoke_script.contains("post_dkg_setup_request()"));
         assert!(smoke_script.contains("wait_for_dkg_setup_records()"));
+        assert!(smoke_script.contains("member_dkg_completion_records_line()"));
         assert!(smoke_script.contains("could not post DKG setup route-probe request"));
         assert!(smoke_script.contains("/federation/v1/dkg/commitments"));
         assert!(smoke_script.contains("/federation/v1/dkg/reveals"));
         assert!(smoke_script.contains("/federation/v1/dkg/secret-shares"));
+        assert!(smoke_script.contains("/federation/v1/dkg/transcript-signatures"));
+        assert!(smoke_script.contains("keyset_share_records"));
+        assert!(smoke_script.contains("transcript_signature_records"));
         assert!(smoke_script.contains(
             "probe_dkg_setup_routes\nwait_for_dkg_setup_records\nif [[ \"$DKG_ROUTE_PROBE_ONLY\" == \"1\" ]]; then"
         ));

@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated local federation smoke passed end to end, Postgres smoke cleanup resets generated member schemas, and live DKG route-probe-only smoke passes against local members</span>
+          <span class="value">Generated local federation smoke passed end to end, Postgres smoke cleanup resets generated member schemas, and live DKG route-probe-only smoke now verifies completion records</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: stabilize dkg route probe smoke</span>
+          <span class="value">feat: probe dkg transcript signatures</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`DKG_ROUTE_PROBE_ONLY=1` generated smoke disables background peer sync for the probe run, posts signed DKG setup requests, reads member-specific databases, and passes a live 3-member local run</span>
+          <span class="value">`DKG_ROUTE_PROBE_ONLY=1` generated smoke posts commitment, reveal, secret-share, and transcript-signature requests, then requires keyset-share and transcript-signature records in member databases</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Promote the route-probe path into setup-only DKG activation coverage and keep the live process smoke as a fast regression gate</span>
+          <span class="value">Generate setup-only federation configs for the DKG smoke path and prove restart activation from route-derived records</span>
         </div>
       </aside>
     </header>
@@ -1627,6 +1627,10 @@
             <p>The fast route-probe mode now disables background peer sync only for the probe run, reads DKG setup records from each generated member database, and has passed against a fresh 3-member local process federation.</p>
           </article>
           <article class="item">
+            <h3>DKG completion-record route probe passed</h3>
+            <p>The generated route-probe artifacts now include transcript-signature requests, and the fast live smoke requires each member database to contain the route-derived keyset-share record plus transcript signatures from every member.</p>
+          </article>
+          <article class="item">
             <h3>Key rotation operation scaffold ready</h3>
             <p>Federation consensus can now encode proposed aggregate keysets, hash them canonically, dedupe conflicting payloads by keyset ID, and validate that rotation targets are v3/BLS keysets for the current roster.</p>
           </article>
@@ -1694,7 +1698,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, durable secret-share contribution storage, secret-share private REST exchange, a real HTTP setup-message bridge, generated route-probe request artifacts, route-probe-only smoke mode, live route-probe-only process smoke, route-driven local member keyset-share derivation, route-derived restart activation, generated record-recovery runbook guidance, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed setup-progress reads, generated setup readiness gates, and the key-rotation runtime path. The remaining setup work is setup-only DKG activation and live storage-backed setup coverage.</p>
+            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, durable secret-share contribution storage, secret-share private REST exchange, a real HTTP setup-message bridge, generated route-probe request artifacts, route-probe-only smoke mode, live route-probe-only process smoke, route-driven local member keyset-share derivation, route-derived transcript-signature route probes, route-derived restart activation, generated record-recovery runbook guidance, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed setup-progress reads, generated setup readiness gates, and the key-rotation runtime path. The remaining setup work is setup-only DKG activation and live storage-backed setup coverage.</p>
           </article>
         </div>
       </section>
@@ -1914,6 +1918,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`DKG_ROUTE_PROBE_ONLY=1 STATUS_RETRIES=45 STATUS_SLEEP_SECONDS=1 CDK_MINTD_BIN=target/debug/cdk-mintd bash <generated-smoke-script>` passed against a fresh 3-member local federation, including startup retries, private DKG REST posts, database-backed setup-record checks, and clean member shutdown. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation_peer_sync_disable_value_accepts_truthy_values -- --test-threads 1`, `cargo build -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo check -p cdk-axum --features federation`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
               <td>Promote setup-route traffic into setup-only DKG activation, then keep route-probe-only smoke as the fast live regression gate.</td>
+            </tr>
+            <tr>
+              <td>Generated DKG completion-record route probe</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`DKG_ROUTE_PROBE_ONLY=1 STATUS_RETRIES=45 STATUS_SLEEP_SECONDS=1 CDK_MINTD_BIN=target/debug/cdk-mintd bash <generated-smoke-script>` passed after posting transcript signatures and requiring `keyset_share_records=1` plus `transcript_signature_records=3` in each member database. A sample `federation dkg-status --from-database` showed commitments=3, reveals=3, secret_share_contributions=3, keyset_share_records=1, transcript_signature_records=3, and transcript_signers=1,2,3. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1`, `cargo build -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Generate setup-only configs for this same smoke path, then restart members and prove runtime activation from route-derived DKG records.</td>
             </tr>
             <tr>
               <td>Key rotation operation scaffold</td>
