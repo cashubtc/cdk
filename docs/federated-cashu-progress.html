@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 406 checked items and 107 remaining items. Default local smoke setup now skips heavyweight DKG route-probe fixtures, DKG setup smokes keep them opt-in, and seven-member profiling reaches the mint request fanout stage.</span>
+          <span class="value">The implementation plan audit now tracks 406 checked items and 107 remaining items. Wallet federation keyset discovery now returns after threshold-valid advertisements, first-healthy-member calls have bounded fallback, and generated smokes avoid optional Prometheus startup when metric checks are disabled.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: streamline federation smoke setup</span>
+          <span class="value">feat: improve federation wallet liveness</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The implementation plan now splits code-confirmed partial work into explicit done and remaining checklist items. The generator adds `--dkg-setup-route-probes`, skips heavy DKG probe fixture generation by default, keeps DKG setup smokes opt-in, validates generated probe shares against public commitments, and prints timing markers for trusted-dealer setup plus mint quote, paid, ready-member, and request substages.</span>
+          <span class="value">Threshold-valid keyset reads no longer wait for every federation member, sequential quote-creating calls now fall back after a bounded member timeout, and smoke mint/melt quote-status waits poll members concurrently with per-member timeouts. The latest live five-member smoke reaches `standard.mint.quote-paid.start`, making fake-wallet payment observation finalization the current blocker.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Profile and optimize seven-member mint request fanout/share aggregation, then rerun the bounded process smoke past mint into swap, melt, restore, and catch-up stages.</span>
+          <span class="value">Make mint payment observation submission idempotent, bounded, and catch-up friendly so quote status checks can converge paid state across members, then rerun the five-member smoke into mint, swap, melt, restore, and restart stages.</span>
         </div>
       </aside>
     </header>
@@ -2780,8 +2780,8 @@
             <tr>
               <td>Seven-member mint request profiling</td>
               <td><span class="status progress">In progress</span></td>
-              <td>A bounded seven-member/five-threshold process smoke now reaches standard wallet setup and mint quote processing. The latest run completed wallet setup, mint quote creation, paid visibility, and ready-member convergence, then timed out during `standard.mint.request`, identifying mint request fanout/share aggregation as the next runtime target.</td>
-              <td>Profile the federated wallet `post_mint` fanout and mint-side share generation path, then rerun the same bounded smoke until it reaches swap and melt stages.</td>
+              <td>Earlier seven-member profiling reached mint request fanout, but the latest liveness work moved the immediate live-smoke blocker earlier in the flow. A five-member process smoke now completes wallet setup and mint quote creation, then times out at `standard.mint.quote-paid.start`; member logs show consensus catch-up progress, so the next suspected path is status-triggered mint payment observation submission and duplicate/catch-up handling.</td>
+              <td>Stabilize mint payment observation finalization first, then return to seven-member mint request fanout and share aggregation once paid quote convergence is no longer the limiting stage.</td>
             </tr>
             <tr>
               <td>Wallet federation probe concurrency</td>
@@ -2794,6 +2794,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --features wallet,mint,federation federated_mint_connector_fetches_lnurl -- --test-threads 1` passed the LNURL pay-request and invoice first-healthy-member fallback regressions. `cargo test -p cdk --features wallet,mint,federation federated_mint_connector_fans_out_mint_members_concurrently -- --test-threads 1` passed the barrier-backed signing fanout regression. Focused mint, batch mint, and melt quote-status tests passed threshold-view and primary-fallback coverage, mint and melt quote creation, mint-info reads, and LNURL pay/invoice helpers now have first-healthy-member fallback coverage, definitive quote errors stop retry, and melt-status recovery aggregates persisted change shares. `cargo test -p cdk --features wallet,mint,federation federated_mint_connector -- --test-threads 1` passed all 35 wallet federation connector tests, covering mint-info fallback, LNURL fallback, quote creation fallback, definitive quote-error handling, mint, batch mint, swap, melt, restore, keyset validation, check-state quorum views, HTTP wrapper rotation, threshold quote-status reads, primary fallback, auth wallet propagation, and status change aggregation.</td>
               <td>Move remaining quote visibility checks from best-effort status reads into explicit consensus-backed readiness once the production ordering backend is chosen.</td>
+            </tr>
+            <tr>
+              <td>Wallet keyset liveness and smoke status polling</td>
+              <td><span class="status done">Passed</span></td>
+              <td>Wallet active-keyset validation and single-keyset reads now short-circuit once threshold members advertise matching v3/BLS aggregate keysets. Quote-creating first-healthy-member calls retain sequential semantics but fall back after a bounded member timeout. Generated smoke scripts disable Prometheus startup when metrics checks are off, and mint/melt quote-status waits poll members concurrently with per-member status timeouts. Focused connector tests passed threshold keyset advertisement, stalled primary quote fallback, and the full wallet federation connector suite; mintd trusted-dealer smoke-script tests passed the generated environment wiring.</td>
+              <td>Use the new bounded waits to isolate the remaining fake-wallet mint payment observation convergence issue rather than letting one slow status endpoint hide the real blocker.</td>
             </tr>
             <tr>
               <td>Wallet federation auth state</td>
@@ -2919,12 +2925,16 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Probe opt-in regression</h3>
-            <p>Run the mintd federation setup tests proving default generated bundles skip DKG route probe fixtures, opt-in bundles still write them, and the generated DKG setup smoke passes.</p>
+            <h3>Payment observation liveness</h3>
+            <p>Make mint quote status checks submit fake-wallet payment observations in an idempotent and bounded way, including duplicate observations and members that are still catching up.</p>
           </article>
           <article class="item">
-            <h3>Smoke timing validation</h3>
-            <p>Run the generated SQLite and Postgres smoke paths far enough to confirm trusted-dealer and mint substage timing markers appear around the slow paths without changing wallet behavior.</p>
+            <h3>Five-member smoke recovery</h3>
+            <p>Rerun the bounded five-member smoke past `standard.mint.quote-paid.start`, then confirm it reaches mint request, swap, melt, restore, restart, and convergence gates.</p>
+          </article>
+          <article class="item">
+            <h3>Seven-member fanout</h3>
+            <p>After paid quote convergence is stable, return to seven-member mint request fanout and share aggregation profiling before promoting the larger matrix into regular smoke coverage.</p>
           </article>
           <article class="item">
             <h3>Extended Postgres partitions</h3>

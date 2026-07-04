@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use bip39::Mnemonic;
 use cdk_common::database::WalletDatabase;
@@ -462,6 +463,8 @@ pub struct MockMintConnector {
     pub restore_response: Mutex<Option<Result<RestoreResponse, Error>>>,
     /// Response for post_mint_quote calls
     pub post_mint_quote_response: Mutex<Option<Result<MintQuoteResponse<String>, Error>>>,
+    /// Optional delay used by tests to simulate a slow mint quote member.
+    pub post_mint_quote_delay: Mutex<Option<Duration>>,
     /// Response for get_mint_quote_status calls
     pub mint_quote_status_response: Mutex<Option<Result<MintQuoteBolt11Response<String>, Error>>>,
     /// Response for post_batch_check_mint_quote_status calls
@@ -534,6 +537,7 @@ impl MockMintConnector {
             check_state_barrier: Mutex::new(None),
             restore_response: Mutex::new(None),
             post_mint_quote_response: Mutex::new(None),
+            post_mint_quote_delay: Mutex::new(None),
             mint_quote_status_response: Mutex::new(None),
             batch_mint_quote_status_response: Mutex::new(None),
             post_melt_quote_response: Mutex::new(None),
@@ -651,6 +655,10 @@ impl MockMintConnector {
 
     pub fn set_post_mint_quote_response(&self, response: Result<MintQuoteResponse<String>, Error>) {
         *self.post_mint_quote_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn set_post_mint_quote_delay(&self, delay: Duration) {
+        *self.post_mint_quote_delay.lock().unwrap() = Some(delay);
     }
 
     pub fn set_batch_mint_quote_status_response(
@@ -798,6 +806,11 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn get_mint_keyset(&self, keyset_id: Id) -> Result<crate::nuts::KeySet, Error> {
+        let barrier = self.mint_keys_barrier.lock().unwrap().clone();
+        if let Some(barrier) = barrier {
+            barrier.wait().await;
+        }
+
         if let Some(message) = self.mint_keys_error.lock().unwrap().clone() {
             return Err(Error::Custom(message));
         }
@@ -832,6 +845,11 @@ impl MintConnector for MockMintConnector {
         &self,
         _request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<String>, Error> {
+        let delay = *self.post_mint_quote_delay.lock().unwrap();
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
+
         self.post_mint_quote_response
             .lock()
             .unwrap()

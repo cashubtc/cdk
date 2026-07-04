@@ -28,6 +28,7 @@ use cdk_common::federation::{
 use cdk_common::QuoteId;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 use cdk_http_client::{Async, Transport};
+use futures::stream::{FuturesUnordered, StreamExt};
 
 use crate::cli::{FederationSmokeOperationsArgs, FederationSmokeScenario};
 use crate::federation_status::{query_local_statuses, FederationLocalStatusResponse};
@@ -37,6 +38,7 @@ const PENDING_PAID_SMOKE_SEED: [u8; 64] = [8u8; 64];
 const PENDING_FAILED_SMOKE_SEED: [u8; 64] = [9u8; 64];
 const OFFLINE_MEMBER_SMOKE_SEED: [u8; 64] = [10u8; 64];
 const KEYSET_ROTATION_SMOKE_SEED: [u8; 64] = [11u8; 64];
+const MEMBER_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn smoke_seed(base: [u8; 64], offset: u8) -> [u8; 64] {
     let mut seed = base;
@@ -1188,35 +1190,59 @@ async fn wait_for_mint_quote_paid(
     member_expectation: SmokeMemberExpectation,
 ) -> Result<()> {
     let required = required_member_observations(public_config, member_expectation);
+    let quote_id = quote_id.to_string();
     for _ in 0..retries {
         let mut paid = 0usize;
+        let mut pending = FuturesUnordered::new();
         for (member_id, connector) in member_connectors {
-            match connector
-                .get_mint_quote_status(PaymentMethod::BOLT11, quote_id)
-                .await
-            {
-                Ok(status) if status.state() == Some(MintQuoteState::Paid) => {
+            let member_id = *member_id;
+            let connector = connector.clone();
+            let quote_id = quote_id.clone();
+            pending.push(async move {
+                (
+                    member_id,
+                    tokio::time::timeout(
+                        MEMBER_STATUS_TIMEOUT,
+                        connector.get_mint_quote_status(PaymentMethod::BOLT11, &quote_id),
+                    )
+                    .await,
+                )
+            });
+        }
+
+        while let Some((member_id, result)) = pending.next().await {
+            match result {
+                Ok(Ok(status)) if status.state() == Some(MintQuoteState::Paid) => {
                     paid = paid.saturating_add(1);
                 }
-                Ok(status) => {
+                Ok(Ok(status)) => {
                     tracing::debug!(
                         member_id = %member_id,
                         state = ?status.state(),
                         "federation smoke mint quote is not paid yet"
                     );
                 }
-                Err(err) => {
+                Ok(Err(err)) => {
                     tracing::debug!(
                         member_id = %member_id,
                         "federation smoke mint quote status unavailable: {}",
                         err
                     );
                 }
+                Err(_) => {
+                    tracing::debug!(
+                        member_id = %member_id,
+                        timeout_seconds = MEMBER_STATUS_TIMEOUT.as_secs(),
+                        "federation smoke mint quote status timed out"
+                    );
+                }
+            }
+
+            if paid >= required {
+                return Ok(());
             }
         }
-        if paid >= required {
-            return Ok(());
-        }
+
         tokio::time::sleep(sleep).await;
     }
 
@@ -1237,28 +1263,52 @@ async fn wait_for_melt_quote_visible(
     member_expectation: SmokeMemberExpectation,
 ) -> Result<()> {
     let required = required_member_observations(public_config, member_expectation);
+    let quote_id = quote_id.to_string();
     for _ in 0..retries {
         let mut visible = 0usize;
+        let mut pending = FuturesUnordered::new();
         for (member_id, connector) in member_connectors {
-            match connector
-                .get_melt_quote_status(PaymentMethod::BOLT11, quote_id)
-                .await
-            {
-                Ok(_) => {
+            let member_id = *member_id;
+            let connector = connector.clone();
+            let quote_id = quote_id.clone();
+            pending.push(async move {
+                (
+                    member_id,
+                    tokio::time::timeout(
+                        MEMBER_STATUS_TIMEOUT,
+                        connector.get_melt_quote_status(PaymentMethod::BOLT11, &quote_id),
+                    )
+                    .await,
+                )
+            });
+        }
+
+        while let Some((member_id, result)) = pending.next().await {
+            match result {
+                Ok(Ok(_)) => {
                     visible = visible.saturating_add(1);
                 }
-                Err(err) => {
+                Ok(Err(err)) => {
                     tracing::debug!(
                         member_id = %member_id,
                         "federation smoke melt quote status unavailable: {}",
                         err
                     );
                 }
+                Err(_) => {
+                    tracing::debug!(
+                        member_id = %member_id,
+                        timeout_seconds = MEMBER_STATUS_TIMEOUT.as_secs(),
+                        "federation smoke melt quote status timed out"
+                    );
+                }
+            }
+
+            if visible >= required {
+                return Ok(());
             }
         }
-        if visible >= required {
-            return Ok(());
-        }
+
         tokio::time::sleep(sleep).await;
     }
 
@@ -1366,17 +1416,32 @@ async fn wait_for_melt_quote_state(
     member_expectation: SmokeMemberExpectation,
 ) -> Result<()> {
     let required = required_member_observations(public_config, member_expectation);
+    let quote_id = quote_id.to_string();
     for _ in 0..retries {
         let mut expected = 0usize;
+        let mut pending = FuturesUnordered::new();
         for (member_id, connector) in member_connectors {
-            match connector
-                .get_melt_quote_status(PaymentMethod::BOLT11, quote_id)
-                .await
-            {
-                Ok(status) if status.state() == expected_state => {
+            let member_id = *member_id;
+            let connector = connector.clone();
+            let quote_id = quote_id.clone();
+            pending.push(async move {
+                (
+                    member_id,
+                    tokio::time::timeout(
+                        MEMBER_STATUS_TIMEOUT,
+                        connector.get_melt_quote_status(PaymentMethod::BOLT11, &quote_id),
+                    )
+                    .await,
+                )
+            });
+        }
+
+        while let Some((member_id, result)) = pending.next().await {
+            match result {
+                Ok(Ok(status)) if status.state() == expected_state => {
                     expected = expected.saturating_add(1);
                 }
-                Ok(status) => {
+                Ok(Ok(status)) => {
                     tracing::debug!(
                         member_id = %member_id,
                         state = ?status.state(),
@@ -1384,18 +1449,27 @@ async fn wait_for_melt_quote_state(
                         "federation smoke melt quote is not in expected state"
                     );
                 }
-                Err(err) => {
+                Ok(Err(err)) => {
                     tracing::debug!(
                         member_id = %member_id,
                         "federation smoke melt quote status unavailable: {}",
                         err
                     );
                 }
+                Err(_) => {
+                    tracing::debug!(
+                        member_id = %member_id,
+                        timeout_seconds = MEMBER_STATUS_TIMEOUT.as_secs(),
+                        "federation smoke melt quote status timed out"
+                    );
+                }
+            }
+
+            if expected >= required {
+                return Ok(());
             }
         }
-        if expected >= required {
-            return Ok(());
-        }
+
         tokio::time::sleep(sleep).await;
     }
 
