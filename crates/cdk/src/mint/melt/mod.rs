@@ -1199,7 +1199,8 @@ impl Mint {
         melt_request: &MeltRequest<QuoteId>,
         federation_operation_id: FederationOperationId,
     ) -> Result<MeltQuoteResponse<QuoteId>, Error> {
-        self.federation_config()
+        self.effective_federation_config()
+            .await?
             .ok_or(Error::Internal)?
             .validate_melt_change_outputs(melt_request)?;
 

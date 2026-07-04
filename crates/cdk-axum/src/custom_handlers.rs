@@ -160,10 +160,9 @@ async fn process_federation_mint_input(
     state: &MintState,
     input: &cdk::mint::MintInput,
 ) -> Result<Option<MintResponse>, cdk::Error> {
-    let Some(operation_id) = submit_federation_mint_operation(state, input.clone()).await? else {
-        return Ok(None);
-    };
-    let Some(config) = state.mint.federation_config() else {
+    let Some((operation_id, config)) =
+        submit_federation_mint_operation(state, input.clone()).await?
+    else {
         return Ok(None);
     };
 
@@ -251,13 +250,19 @@ async fn submit_federation_melt_quote_payment_observation(
 async fn submit_federation_mint_operation(
     state: &MintState,
     input: cdk::mint::MintInput,
-) -> Result<Option<cdk::federation::FederationOperationId>, cdk::Error> {
-    let Some(config) = state.mint.federation_config() else {
+) -> Result<
+    Option<(
+        cdk::federation::FederationOperationId,
+        cdk::mint::FederationRuntimeConfig,
+    )>,
+    cdk::Error,
+> {
+    let Some(config) = state.mint.effective_federation_config().await? else {
         return Ok(None);
     };
     let envelope = config.mint_operation(input)?;
     let response = state.submit_federation_envelope(envelope).await?;
-    Ok(Some(response.operation_id))
+    Ok(Some((response.operation_id, config)))
 }
 
 #[cfg(feature = "federation")]
@@ -765,7 +770,7 @@ async fn process_federation_melt_request(
     state: &MintState,
     payload: &cdk::nuts::MeltRequest<QuoteId>,
 ) -> Result<Option<MeltQuoteResponse<QuoteId>>, cdk::Error> {
-    let Some(config) = state.mint.federation_config() else {
+    let Some(config) = state.mint.effective_federation_config().await? else {
         return Ok(None);
     };
     let envelope = config.melt_operation(payload.clone())?;

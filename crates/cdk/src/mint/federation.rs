@@ -5,7 +5,7 @@
 //! mode. Until then, the default standalone mode preserves current mint
 //! behavior.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use cdk_common::database;
@@ -34,6 +34,7 @@ use uuid::Uuid;
 use super::verification::{Verification, MAX_PROOF_CONTENT_LEN};
 use super::Mint;
 use super::MintInput;
+use crate::fees::calculate_fee;
 
 /// Defines whether a mint runs as a standalone Cashu mint or as a federation member.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -79,6 +80,19 @@ impl FederationRuntimeConfig {
     #[must_use]
     pub fn public_config(&self) -> &FederationConfig {
         &self.public_config
+    }
+
+    /// Return a new runtime config with a replaced public config.
+    pub fn with_public_config(&self, public_config: FederationConfig) -> Result<Self, Error> {
+        Self::new(public_config, self.private_config.clone())
+    }
+
+    /// Return a validated runtime config view after applying one keyset rotation.
+    pub fn apply_keyset_rotation(
+        &self,
+        operation: &FederationKeysetRotationOperation,
+    ) -> Result<Self, Error> {
+        self.with_public_config(self.public_config.apply_keyset_rotation(operation)?)
     }
 
     /// Local member private federation config.
@@ -408,6 +422,110 @@ impl FederationRuntimeConfig {
 }
 
 impl Mint {
+    /// Return the federation runtime config after replaying applied config transitions.
+    pub async fn effective_federation_config(
+        &self,
+    ) -> Result<Option<FederationRuntimeConfig>, Error> {
+        let Some(config) = self.federation_config() else {
+            return Ok(None);
+        };
+        let mut effective = config.clone();
+
+        for entry in self.localstore.get_federation_journal_entries().await? {
+            if entry.status != FederationOperationStatus::Applied {
+                continue;
+            }
+
+            if let FederationOperation::KeysetRotation(operation) = &entry.envelope.operation {
+                effective = effective.apply_keyset_rotation(operation)?;
+            }
+        }
+
+        Ok(Some(effective))
+    }
+
+    fn verify_federation_outputs_with_config(
+        &self,
+        config: &FederationRuntimeConfig,
+        outputs: &[BlindedMessage],
+    ) -> Result<Verification, Error> {
+        if outputs.is_empty() {
+            tracing::debug!("verify_federation_outputs called with empty outputs");
+            return Err(Error::TransactionUnbalanced(0, 0, 0));
+        }
+
+        let outputs_count = outputs.len();
+        if outputs_count > self.max_outputs {
+            tracing::warn!(
+                "Federation request exceeds max outputs limit: {} > {}",
+                outputs_count,
+                self.max_outputs
+            );
+            return Err(Error::MaxOutputsExceeded {
+                actual: outputs_count,
+                max: self.max_outputs,
+            });
+        }
+
+        Self::check_outputs_unique(outputs)?;
+        let mut keyset_units = HashSet::new();
+        for output in outputs {
+            let keyset = config.public_config().validate_blinded_output(output)?;
+            let keyset_info = super::keysets::federated_keyset_to_mint_keyset_info(keyset);
+            if keyset_info.is_expired() {
+                tracing::debug!(
+                    "Transaction attempted with expired federated keyset in outputs: {}.",
+                    keyset.id
+                );
+                return Err(Error::ExpiredKeyset);
+            }
+            keyset_units.insert(keyset.unit.clone());
+        }
+
+        if keyset_units.len() != 1 {
+            tracing::debug!(
+                "Federation transaction attempted with multiple units in outputs: {:?}.",
+                keyset_units
+            );
+            return Err(Error::MultipleUnits);
+        }
+
+        let unit = keyset_units.into_iter().next().ok_or(Error::Internal)?;
+        let amount = Amount::try_sum(outputs.iter().map(|output| output.amount))?.with_unit(unit);
+
+        Ok(Verification { amount })
+    }
+
+    fn get_federation_proofs_fee_with_config(
+        &self,
+        config: &FederationRuntimeConfig,
+        proofs: &Proofs,
+    ) -> Result<crate::fees::ProofsFeeBreakdown, Error> {
+        let mut proofs_per_keyset = HashMap::new();
+        let mut fee_per_keyset = HashMap::new();
+
+        for proof in proofs {
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                fee_per_keyset.entry(proof.keyset_id)
+            {
+                let keyset = config
+                    .public_config()
+                    .keysets
+                    .iter()
+                    .find(|keyset| keyset.id == proof.keyset_id)
+                    .ok_or(Error::UnknownKeySet)?;
+                entry.insert(keyset.input_fee_ppk);
+            }
+
+            proofs_per_keyset
+                .entry(proof.keyset_id)
+                .and_modify(|count| *count += 1)
+                .or_insert(1);
+        }
+
+        Ok(calculate_fee(&proofs_per_keyset, &fee_per_keyset)?)
+    }
+
     /// Apply accepted federation journal entries to this member's local mint database.
     ///
     /// This is intentionally idempotent so startup replay, duplicate operation
@@ -564,8 +682,10 @@ impl Mint {
         operation_id: FederationOperationId,
         operation: &FederationKeysetRotationOperation,
     ) -> Result<(), Error> {
-        let config = self.federation_config().ok_or(Error::Internal)?;
-        operation.validate_against_config(config.public_config())?;
+        self.effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?
+            .apply_keyset_rotation(operation)?;
 
         let mut tx = self.localstore.begin_transaction().await?;
         tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
@@ -637,10 +757,12 @@ impl Mint {
         operation: &FederationMintOperation,
     ) -> Result<(), Error> {
         let operation_id = entry.operation_id;
-        let config = self.federation_config().ok_or(Error::Internal)?;
+        let config = self
+            .effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?;
         let input = mint_input_from_federation_request(&operation.request)?;
         input.validate()?;
-        config.validate_output_keysets(input.outputs())?;
         for quote_id in input.quote_ids() {
             if self
                 .federation_payment_observation_is_quarantined_at_or_before(
@@ -656,7 +778,8 @@ impl Mint {
             }
         }
 
-        let output_verification = self.verify_outputs(input.outputs())?;
+        let output_verification =
+            self.verify_federation_outputs_with_config(&config, input.outputs())?;
         let outputs_amount = output_verification.amount;
         let blinded_secrets = input
             .outputs()
@@ -773,8 +896,10 @@ impl Mint {
         operation_id: FederationOperationId,
         operation: &FederationSwapOperation,
     ) -> Result<(), Error> {
-        let config = self.federation_config().ok_or(Error::Internal)?;
-        config.validate_swap_outputs(&operation.request)?;
+        let config = self
+            .effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?;
         let input_proofs = operation.request.inputs();
         if input_proofs.is_empty() {
             return Err(Error::TransactionUnbalanced(
@@ -784,17 +909,19 @@ impl Mint {
             ));
         }
 
-        let input_verification = self.verify_federation_inputs(input_proofs).await?;
+        let input_verification =
+            self.verify_federation_inputs_with_config(&config, input_proofs)?;
         operation.request.verify_spending_conditions()?;
-        let output_verification = self.verify_outputs(operation.request.outputs())?;
-        self.verify_transaction_balanced(
+        let output_verification =
+            self.verify_federation_outputs_with_config(&config, operation.request.outputs())?;
+        self.verify_federation_transaction_balanced_with_config(
+            &config,
             input_verification.clone(),
             output_verification.clone(),
             input_proofs,
-        )
-        .await?;
+        )?;
 
-        let fee_breakdown = self.get_proofs_fee(input_proofs).await?;
+        let fee_breakdown = self.get_federation_proofs_fee_with_config(&config, input_proofs)?;
         let signatures = federation_share_signatures(
             config.swap_signature_shares(operation_id, &operation.request)?,
         );
@@ -1079,6 +1206,18 @@ impl Mint {
         &self,
         inputs: &Proofs,
     ) -> Result<Verification, Error> {
+        let config = self
+            .effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?;
+        self.verify_federation_inputs_with_config(&config, inputs)
+    }
+
+    pub(crate) fn verify_federation_inputs_with_config(
+        &self,
+        config: &FederationRuntimeConfig,
+        inputs: &Proofs,
+    ) -> Result<Verification, Error> {
         let inputs_count = inputs.len();
         if inputs_count > self.max_inputs {
             tracing::warn!(
@@ -1124,17 +1263,76 @@ impl Mint {
         }
 
         Self::check_inputs_unique(inputs)?;
-        let unit = self.verify_inputs_keyset(inputs).await?;
+        config.verify_proofs(inputs)?;
+        let mut keyset_units = HashSet::new();
+        for proof in inputs {
+            let keyset = config
+                .public_config()
+                .keysets
+                .iter()
+                .find(|keyset| keyset.id == proof.keyset_id)
+                .ok_or(Error::UnknownKeySet)?;
+            let keyset_info = super::keysets::federated_keyset_to_mint_keyset_info(keyset);
+            if keyset_info.is_expired() {
+                tracing::debug!(
+                    "Transaction attempted with expired federated keyset in inputs: {}.",
+                    proof.keyset_id
+                );
+                return Err(Error::ExpiredKeyset);
+            }
+            keyset_units.insert(keyset.unit.clone());
+        }
+
+        if keyset_units.len() != 1 {
+            tracing::debug!(
+                "Federation transaction attempted with multiple units in inputs: {:?}.",
+                keyset_units
+            );
+            return Err(Error::MultipleUnits);
+        }
+
+        let unit = keyset_units.into_iter().next().ok_or(Error::Internal)?;
         if unit == CurrencyUnit::Auth {
             return Err(Error::UnsupportedUnit);
         }
 
         let amount = inputs.total_amount()?.with_unit(unit);
-        self.federation_config()
-            .ok_or(Error::Internal)?
-            .verify_proofs(inputs)?;
 
         Ok(Verification { amount })
+    }
+
+    fn verify_federation_transaction_balanced_with_config(
+        &self,
+        config: &FederationRuntimeConfig,
+        input_verification: Verification,
+        output_verification: Verification,
+        inputs: &Proofs,
+    ) -> Result<(), Error> {
+        let fee_breakdown = self.get_federation_proofs_fee_with_config(config, inputs)?;
+
+        if output_verification.amount.unit() != input_verification.amount.unit() {
+            tracing::debug!(
+                "Federation output unit {:?} does not match input unit {:?}",
+                output_verification.amount.unit(),
+                input_verification.amount.unit()
+            );
+            return Err(Error::UnitMismatch);
+        }
+
+        let fee_typed = fee_breakdown
+            .total
+            .with_unit(input_verification.amount.unit().clone());
+        let expected_output = input_verification.amount.checked_sub(&fee_typed)?;
+
+        if output_verification.amount != expected_output {
+            return Err(Error::TransactionUnbalanced(
+                input_verification.amount.value(),
+                output_verification.amount.value(),
+                fee_breakdown.total.to_u64(),
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -1456,7 +1654,7 @@ mod tests {
         MintSignaturesDatabase,
     };
     use cdk_common::federation::{
-        generate_trusted_dealer_configs, FederationError, FederationJournalEntry,
+        generate_trusted_dealer_configs, FederatedKeyset, FederationError, FederationJournalEntry,
         FederationKeysetRotationOperation, FederationMeltQuotePaymentObservation,
         FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
         FederationOperationEnvelope, FederationOperationStatus,
@@ -1504,6 +1702,49 @@ mod tests {
             ThresholdParams::with_bft_consensus(1, 1).expect("params"),
             vec![member],
             vec![keyset],
+        )
+        .expect("trusted dealer bundle");
+        let private_config = bundle
+            .private_configs
+            .get(&cdk_common::federation::MemberId::new(1).expect("member id"))
+            .expect("private config")
+            .clone();
+
+        FederationRuntimeConfig::new(bundle.public_config.clone(), private_config)
+            .expect("runtime config")
+    }
+
+    fn runtime_config_with_inactive_rotation_keyset() -> FederationRuntimeConfig {
+        let member = TrustedDealerMember::new(
+            cdk_common::federation::MemberId::new(1).expect("member id"),
+            MintUrl::from_str("https://mint1.example.com").expect("public mint url"),
+            MintUrl::from_str("https://fed1.example.com").expect("federation api url"),
+            SecretKey::from_slice(&[1; 32]).expect("identity secret"),
+        );
+        let old_keyset = TrustedDealerKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            BTreeMap::from([(
+                Amount::from(1),
+                vec![BlsSecretKey::from_reduced_bytes(&[2; 32])],
+            )]),
+        );
+        let next_keyset = TrustedDealerKeysetSpec::new(
+            CurrencyUnit::Sat,
+            false,
+            0,
+            None,
+            BTreeMap::from([(
+                Amount::from(1),
+                vec![BlsSecretKey::from_reduced_bytes(&[7; 32])],
+            )]),
+        );
+        let bundle = generate_trusted_dealer_configs(
+            ThresholdParams::with_bft_consensus(1, 1).expect("params"),
+            vec![member],
+            vec![old_keyset, next_keyset],
         )
         .expect("trusted dealer bundle");
         let private_config = bundle
@@ -1745,6 +1986,10 @@ mod tests {
         label: &[u8],
     ) -> BlindedMessage {
         let keyset = &runtime_config.public_config().keysets[0];
+        output_for_keyset(keyset, label)
+    }
+
+    fn output_for_keyset(keyset: &FederatedKeyset, label: &[u8]) -> BlindedMessage {
         BlindedMessage::new(
             Amount::from(1),
             keyset.id,
@@ -1754,8 +1999,12 @@ mod tests {
 
     fn proof_for_runtime(runtime_config: &FederationRuntimeConfig, label: &str) -> Proof {
         let keyset = &runtime_config.public_config().keysets[0];
+        proof_for_keyset(keyset, 2, label)
+    }
+
+    fn proof_for_keyset(keyset: &FederatedKeyset, aggregate_secret_seed: u8, label: &str) -> Proof {
         let secret = Secret::new(format!("federated-proof-{label}"));
-        let aggregate_secret = BlsSecretKey::from_reduced_bytes(&[2; 32]);
+        let aggregate_secret = BlsSecretKey::from_reduced_bytes(&[aggregate_secret_seed; 32]);
         let signature = BlsG1PublicKey::hash_to_curve(secret.as_bytes()).mul(&aggregate_secret);
 
         Proof::new(
@@ -1928,6 +2177,295 @@ mod tests {
                 .status,
             FederationOperationStatus::Applied
         );
+    }
+
+    #[tokio::test]
+    async fn effective_federation_config_replays_keyset_rotations() {
+        let runtime_config = runtime_config_with_inactive_rotation_keyset();
+        let (mint, _) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let old_keyset = runtime_config
+            .public_config()
+            .keysets
+            .iter()
+            .find(|keyset| keyset.active)
+            .expect("old active keyset")
+            .clone();
+        let mut next_keyset = runtime_config
+            .public_config()
+            .keysets
+            .iter()
+            .find(|keyset| !keyset.active)
+            .expect("inactive rotation keyset")
+            .clone();
+        next_keyset.active = true;
+        let entry = appended_entry(
+            &mut journal,
+            runtime_config.operation_envelope(FederationOperation::KeysetRotation(
+                FederationKeysetRotationOperation {
+                    keyset: next_keyset.clone(),
+                },
+            )),
+        );
+
+        persist_and_apply_entry(&mint, &entry).await;
+
+        let effective = mint
+            .effective_federation_config()
+            .await
+            .expect("effective config")
+            .expect("federation config");
+        assert!(
+            !effective
+                .public_config()
+                .keysets
+                .iter()
+                .find(|keyset| keyset.id == old_keyset.id)
+                .expect("old keyset")
+                .active
+        );
+        assert!(
+            effective
+                .public_config()
+                .keysets
+                .iter()
+                .find(|keyset| keyset.id == next_keyset.id)
+                .expect("next keyset")
+                .active
+        );
+        assert!(matches!(
+            effective.validate_output_keysets(&[output_for_keyset(
+                &old_keyset,
+                b"old output after rotation"
+            )]),
+            Err(cdk_common::Error::Federation(
+                FederationError::InactiveFederatedKeyset { .. }
+            ))
+        ));
+        effective
+            .validate_output_keysets(&[output_for_keyset(
+                &next_keyset,
+                b"next output after rotation",
+            )])
+            .expect("next keyset signs after rotation");
+        effective
+            .verify_proofs(&vec![proof_for_keyset(&old_keyset, 2, "old proof")])
+            .expect("old proofs remain verifiable after rotation");
+    }
+
+    #[tokio::test]
+    async fn apply_federation_mint_uses_rotated_keyset_for_signing() {
+        let runtime_config = runtime_config_with_inactive_rotation_keyset();
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let mut next_keyset = runtime_config
+            .public_config()
+            .keysets
+            .iter()
+            .find(|keyset| !keyset.active)
+            .expect("inactive rotation keyset")
+            .clone();
+        next_keyset.active = true;
+        let rotation_entry = appended_entry(
+            &mut journal,
+            runtime_config.operation_envelope(FederationOperation::KeysetRotation(
+                FederationKeysetRotationOperation {
+                    keyset: next_keyset.clone(),
+                },
+            )),
+        );
+        persist_and_apply_entry(&mint, &rotation_entry).await;
+
+        let quote = QuoteId::new();
+        let quote_entry = appended_entry(
+            &mut journal,
+            runtime_config.mint_quote_operation(
+                quote.clone(),
+                bolt11_quote_request(1),
+                bolt11_quote_response(&quote, 1),
+            ),
+        );
+        persist_and_apply_entry(&mint, &quote_entry).await;
+        let paid_entry = appended_entry(
+            &mut journal,
+            runtime_config.mint_quote_payment_observation(
+                quote.clone(),
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintQuoteState::Paid,
+                Amount::from(1),
+                Amount::ZERO,
+                Some("rotated-mint-payment".to_string()),
+            ),
+        );
+        persist_and_apply_entry(&mint, &paid_entry).await;
+
+        let effective = mint
+            .effective_federation_config()
+            .await
+            .expect("effective config")
+            .expect("federation config");
+        let output = output_for_keyset(&next_keyset, b"rotated mint output");
+        let input = MintInput::Single(MintRequest {
+            quote: quote.clone(),
+            outputs: vec![output.clone()],
+            signature: None,
+        });
+        let mint_entry = appended_entry(
+            &mut journal,
+            effective.mint_operation(input).expect("mint operation"),
+        );
+        persist_and_apply_entry(&mint, &mint_entry).await;
+
+        let signatures = localstore
+            .get_blind_signatures(&[output.blinded_secret])
+            .await
+            .expect("stored signatures");
+        let signature = signatures
+            .first()
+            .and_then(Option::as_ref)
+            .expect("rotated blind signature");
+        assert_eq!(signature.keyset_id, next_keyset.id);
+        assert_eq!(signature.amount, Amount::from(1));
+    }
+
+    #[tokio::test]
+    async fn effective_federation_keyset_responses_use_rotated_config() {
+        let runtime_config = runtime_config_with_inactive_rotation_keyset();
+        let (mint, _) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let old_keyset = runtime_config
+            .public_config()
+            .keysets
+            .iter()
+            .find(|keyset| keyset.active)
+            .expect("old active keyset")
+            .clone();
+        let mut next_keyset = runtime_config
+            .public_config()
+            .keysets
+            .iter()
+            .find(|keyset| !keyset.active)
+            .expect("inactive rotation keyset")
+            .clone();
+        next_keyset.active = true;
+        let rotation_entry = appended_entry(
+            &mut journal,
+            runtime_config.operation_envelope(FederationOperation::KeysetRotation(
+                FederationKeysetRotationOperation {
+                    keyset: next_keyset.clone(),
+                },
+            )),
+        );
+        persist_and_apply_entry(&mint, &rotation_entry).await;
+
+        let pubkeys = mint
+            .effective_federation_pubkeys()
+            .await
+            .expect("effective pubkeys")
+            .expect("federation pubkeys");
+        let keysets = mint
+            .effective_federation_keysets()
+            .await
+            .expect("effective keysets")
+            .expect("federation keysets");
+        let old_specific = mint
+            .effective_federation_keyset_pubkeys(&old_keyset.id)
+            .await
+            .expect("old specific keyset")
+            .expect("federation specific keyset");
+        let next_specific = mint
+            .effective_federation_keyset_pubkeys(&next_keyset.id)
+            .await
+            .expect("next specific keyset")
+            .expect("federation specific keyset");
+
+        assert_eq!(pubkeys.keysets.len(), 1);
+        assert_eq!(pubkeys.keysets[0].id, next_keyset.id);
+        assert_eq!(pubkeys.keysets[0].keys, next_keyset.keys());
+        assert_eq!(keysets.keysets.len(), 2);
+        assert!(
+            !keysets
+                .keysets
+                .iter()
+                .find(|keyset| keyset.id == old_keyset.id)
+                .expect("old keyset response")
+                .active
+        );
+        assert!(
+            keysets
+                .keysets
+                .iter()
+                .find(|keyset| keyset.id == next_keyset.id)
+                .expect("next keyset response")
+                .active
+        );
+        assert_eq!(old_specific.keysets[0].id, old_keyset.id);
+        assert_eq!(old_specific.keysets[0].active, Some(false));
+        assert_eq!(next_specific.keysets[0].id, next_keyset.id);
+        assert_eq!(next_specific.keysets[0].active, Some(true));
+    }
+
+    #[tokio::test]
+    async fn apply_federation_swap_spends_old_proofs_and_signs_rotated_outputs() {
+        let runtime_config = runtime_config_with_inactive_rotation_keyset();
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let old_keyset = runtime_config
+            .public_config()
+            .keysets
+            .iter()
+            .find(|keyset| keyset.active)
+            .expect("old active keyset")
+            .clone();
+        let mut next_keyset = runtime_config
+            .public_config()
+            .keysets
+            .iter()
+            .find(|keyset| !keyset.active)
+            .expect("inactive rotation keyset")
+            .clone();
+        next_keyset.active = true;
+        let rotation_entry = appended_entry(
+            &mut journal,
+            runtime_config.operation_envelope(FederationOperation::KeysetRotation(
+                FederationKeysetRotationOperation {
+                    keyset: next_keyset.clone(),
+                },
+            )),
+        );
+        persist_and_apply_entry(&mint, &rotation_entry).await;
+
+        let input = proof_for_keyset(&old_keyset, 2, "rotated swap input");
+        let output = output_for_keyset(&next_keyset, b"rotated swap output");
+        let swap = SwapRequest::new(vec![input.clone()], vec![output.clone()]);
+        let effective = mint
+            .effective_federation_config()
+            .await
+            .expect("effective config")
+            .expect("federation config");
+        let swap_entry = appended_entry(
+            &mut journal,
+            effective.swap_operation(swap).expect("swap operation"),
+        );
+        persist_and_apply_entry(&mint, &swap_entry).await;
+
+        let signatures = localstore
+            .get_blind_signatures(&[output.blinded_secret])
+            .await
+            .expect("stored signatures");
+        let signature = signatures
+            .first()
+            .and_then(Option::as_ref)
+            .expect("rotated swap blind signature");
+        assert_eq!(signature.keyset_id, next_keyset.id);
+
+        let input_states = mint
+            .check_state(&cdk_common::CheckStateRequest {
+                ys: vec![input.y().expect("input y")],
+            })
+            .await
+            .expect("input states");
+        assert_eq!(input_states.states[0].state, State::Spent);
     }
 
     #[tokio::test]

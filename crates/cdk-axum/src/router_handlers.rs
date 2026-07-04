@@ -94,6 +94,16 @@ post_cache_wrapper!(post_swap, SwapRequest, SwapResponse);
 pub(crate) async fn get_keys(
     State(state): State<MintState>,
 ) -> Result<Json<KeysResponse>, Response> {
+    #[cfg(feature = "federation")]
+    if let Some(pubkeys) = state
+        .mint
+        .effective_federation_pubkeys()
+        .await
+        .map_err(into_response)?
+    {
+        return Ok(Json(pubkeys));
+    }
+
     Ok(Json(state.mint.pubkeys()))
 }
 
@@ -105,6 +115,16 @@ pub(crate) async fn get_keyset_pubkeys(
     State(state): State<MintState>,
     Path(keyset_id): Path<Id>,
 ) -> Result<Json<KeysResponse>, Response> {
+    #[cfg(feature = "federation")]
+    if let Some(pubkeys) = state
+        .mint
+        .effective_federation_keyset_pubkeys(&keyset_id)
+        .await
+        .map_err(into_response)?
+    {
+        return Ok(Json(pubkeys));
+    }
+
     let pubkeys = state.mint.keyset_pubkeys(&keyset_id).map_err(|err| {
         tracing::error!("Could not get keyset pubkeys: {}", err);
         into_response(err)
@@ -120,6 +140,16 @@ pub(crate) async fn get_keyset_pubkeys(
 pub(crate) async fn get_keysets(
     State(state): State<MintState>,
 ) -> Result<Json<KeysetResponse>, Response> {
+    #[cfg(feature = "federation")]
+    if let Some(keysets) = state
+        .mint
+        .effective_federation_keysets()
+        .await
+        .map_err(into_response)?
+    {
+        return Ok(Json(keysets));
+    }
+
     Ok(Json(state.mint.keysets()))
 }
 
@@ -231,7 +261,7 @@ async fn process_federation_swap(
     state: &MintState,
     payload: &SwapRequest,
 ) -> Result<Option<SwapResponse>, cdk::Error> {
-    let Some(config) = state.mint.federation_config() else {
+    let Some(config) = state.mint.effective_federation_config().await? else {
         return Ok(None);
     };
     let envelope = config.swap_operation(payload.clone())?;
