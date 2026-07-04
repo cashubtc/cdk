@@ -114,6 +114,7 @@ pub(crate) async fn run_smoke_operations_command(
                 PENDING_PAID_SMOKE_SEED,
                 wallet_db,
                 MeltQuoteState::Paid,
+                SmokeMemberExpectation::ThresholdMembers,
             )
             .await
         }
@@ -148,6 +149,7 @@ pub(crate) async fn run_smoke_operations_command(
                 PENDING_FAILED_SMOKE_SEED,
                 wallet_db,
                 MeltQuoteState::Failed,
+                SmokeMemberExpectation::ThresholdMembers,
             )
             .await
         }
@@ -365,6 +367,7 @@ async fn run_pending_melt_finish(
     seed: [u8; 64],
     wallet_db: &Path,
     terminal_state: MeltQuoteState,
+    member_expectation: SmokeMemberExpectation,
 ) -> Result<()> {
     let wallet = smoke_wallet(public_config, unit, seed, connector, Some(wallet_db)).await?;
     let active_quotes = wallet
@@ -382,6 +385,7 @@ async fn run_pending_melt_finish(
         member_connectors,
         &quote_id,
         terminal_state,
+        member_expectation,
     )
     .await?;
 
@@ -402,10 +406,12 @@ async fn run_pending_melt_finish(
 
     wait_for_melt_quote_state(
         member_connectors,
+        public_config,
         &quote_id,
         member_melt_quote_state_for_terminal(terminal_state),
         args.quote_retries,
         Duration::from_millis(args.quote_sleep_ms),
+        member_expectation,
     )
     .await?;
 
@@ -461,6 +467,7 @@ async fn submit_terminal_melt_payment_observation(
     member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
     quote_id: &str,
     terminal_state: MeltQuoteState,
+    member_expectation: SmokeMemberExpectation,
 ) -> Result<()> {
     let private_config_path = args.private_config.as_deref().with_context(|| {
         format!("--private-config is required to finalize pending melt as {terminal_state}")
@@ -507,10 +514,12 @@ async fn submit_terminal_melt_payment_observation(
     .await?;
     wait_for_melt_quote_state(
         member_connectors,
+        public_config,
         quote_id,
         member_melt_quote_state_for_terminal(terminal_state),
         args.quote_retries,
         Duration::from_millis(args.quote_sleep_ms),
+        member_expectation,
     )
     .await?;
 
@@ -895,21 +904,25 @@ fn required_member_observations(
 
 async fn wait_for_melt_quote_state(
     member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+    public_config: &FederationConfig,
     quote_id: &str,
     expected_state: MeltQuoteState,
     retries: u16,
     sleep: Duration,
+    member_expectation: SmokeMemberExpectation,
 ) -> Result<()> {
+    let required = required_member_observations(public_config, member_expectation);
     for _ in 0..retries {
-        let mut all_expected = true;
+        let mut expected = 0usize;
         for (member_id, connector) in member_connectors {
             match connector
                 .get_melt_quote_status(PaymentMethod::BOLT11, quote_id)
                 .await
             {
-                Ok(status) if status.state() == expected_state => {}
+                Ok(status) if status.state() == expected_state => {
+                    expected = expected.saturating_add(1);
+                }
                 Ok(status) => {
-                    all_expected = false;
                     tracing::debug!(
                         member_id = %member_id,
                         state = ?status.state(),
@@ -918,7 +931,6 @@ async fn wait_for_melt_quote_state(
                     );
                 }
                 Err(err) => {
-                    all_expected = false;
                     tracing::debug!(
                         member_id = %member_id,
                         "federation smoke melt quote status unavailable: {}",
@@ -927,15 +939,16 @@ async fn wait_for_melt_quote_state(
                 }
             }
         }
-        if all_expected {
+        if expected >= required {
             return Ok(());
         }
         tokio::time::sleep(sleep).await;
     }
 
     bail!(
-        "federation smoke melt quote {} was not {} on every member after {} attempts",
+        "federation smoke melt quote {} did not reach {} member observations in state {} after {} attempts",
         quote_id,
+        required,
         expected_state,
         retries
     )

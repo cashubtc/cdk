@@ -691,22 +691,18 @@ run_smoke_operations --scenario pending-melt-start --wallet-db "$PENDING_WALLET_
 wait_for_converged
 
 stop_member "$RESTART_MEMBER"
+run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario pending-melt-finish --wallet-db "$PENDING_WALLET_DB"
 start_member "$RESTART_MEMBER"
 wait_for_status "$RESTART_MEMBER"
-
-wait_for_converged
-run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario pending-melt-finish --wallet-db "$PENDING_WALLET_DB"
 wait_for_converged
 
 run_smoke_operations --scenario pending-melt-fail-start --wallet-db "$FAILED_PENDING_WALLET_DB"
 wait_for_converged
 
 stop_member "$RESTART_MEMBER"
+run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario pending-melt-fail-finish --wallet-db "$FAILED_PENDING_WALLET_DB"
 start_member "$RESTART_MEMBER"
 wait_for_status "$RESTART_MEMBER"
-
-wait_for_converged
-run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario pending-melt-fail-finish --wallet-db "$FAILED_PENDING_WALLET_DB"
 wait_for_converged
 
 stop_member "$QUARANTINE_OFFLINE_MEMBER"
@@ -841,6 +837,12 @@ mod tests {
         ));
         assert!(smoke_script.contains(
             "--private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\" --scenario pending-melt-fail-finish"
+        ));
+        assert!(smoke_script.contains(
+            "stop_member \"$RESTART_MEMBER\"\nrun_smoke_operations --private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\" --scenario pending-melt-finish"
+        ));
+        assert!(smoke_script.contains(
+            "stop_member \"$RESTART_MEMBER\"\nrun_smoke_operations --private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\" --scenario pending-melt-fail-finish"
         ));
         assert!(smoke_script
             .contains("--private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\""));

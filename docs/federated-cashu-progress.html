@@ -358,19 +358,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Generated smokes now pass threshold wallet operations while a non-primary member is offline, then catch up after restart</span>
+          <span class="value">Generated smokes now finalize paid and failed pending melts while a non-primary member is offline, then catch up after restart</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: tolerate offline federation members in wallet key discovery</span>
+          <span class="value">test: deepen federation pending melt smoke</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Offline member operation batch converges after restart catch-up</span>
+          <span class="value">Offline pending-melt payment-observation windows converge after restart catch-up</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Add storage-backend process variants and deeper fault-injection windows</span>
+          <span class="value">Add storage-backend process variants and longer multi-batch partition windows</span>
         </div>
       </aside>
     </header>
@@ -1214,6 +1214,10 @@
             <h3>Wallet key discovery tolerates outages</h3>
             <p>The federated wallet connector now rejects any responding member that advertises mismatched keysets, while allowing operations to continue when unreachable members are below the configured signing threshold.</p>
           </article>
+          <article class="item">
+            <h3>Offline pending-melt finalization verified</h3>
+            <p>The generated smoke now keeps a non-primary member offline while paid and failed pending-melt terminal observations are submitted and finalized through the remaining threshold, then restarts the member and requires signed status plus digest convergence.</p>
+          </article>
         </div>
       </section>
 
@@ -1764,13 +1768,13 @@
             <tr>
               <td>Live quarantine process smoke drill</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk --features wallet,federation federated_mint_connector_tolerates_offline_member_key_discovery -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation -- --test-threads 1`, `cargo build -p cdk-mintd --features federation,fakewallet,sqlite`, and the generated three-member local smoke passed with the new offline operation batch. The live run covered standard wallet mint, swap, check-state, melt, restore, stopping a non-primary member, repeating the operation batch through the remaining threshold, restarting and catching up the offline member, paid pending-melt restart recovery, failed pending-melt compensation, offline quarantine injection, signed status, and final convergence. Earlier generated five-member smoke still covers 3-of-5 aggregate signing and catch-up.</td>
-              <td>Repeat the process smoke with storage-backend variants and deeper fault-injection windows.</td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation -- --test-threads 1`, `cargo build -p cdk-mintd --features federation,fakewallet,sqlite`, and the generated three-member local smoke passed with paid and failed pending-melt finalization while one non-primary member was offline. The live run covered standard wallet mint, swap, check-state, melt, restore, an offline wallet-operation batch, paid terminal melt observation through the remaining threshold, failed terminal melt observation through the remaining threshold, member restart catch-up, offline quarantine injection, signed status, and final convergence. Earlier generated five-member smoke still covers 3-of-5 aggregate signing and catch-up.</td>
+              <td>Repeat the process smoke with storage-backend variants and longer multi-batch partition windows.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, signed catch-up session outcomes, and durable per-member payment observation evidence; SQLite and Postgres migrations now have parity coverage, with Postgres compiling shared journal and payment-observation regressions and SQLite proving indexed plans plus concurrent writer progress for federation journal entries, sequence watermarks, session outcomes, and payment-observation lookups. Runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Mint quote payment observations now persist before mutation and real-backend policies mutate `amount_paid` only after stored matching quorum evidence; melt payment observations now have focused stored-quorum tests for paid finalization and failed rollback. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, a replaceable consensus runtime boundary, a multi-node simulator for delayed, duplicated, reordered, and quorum-limited proposal delivery, explicit consensus item admission with bounded pending batches, operation acceptance notifications back to public handlers, a finalization loop for accepted-entry apply/notify delivery, an exported backend adapter for queued operation dispatch plus finalized responses, a live generated 5-member process smoke that verifies signed status, readiness, convergence, restart, and cleanup, a materialized-state digest scaffold for consensus-visible mint rows, database-backed private status plus catch-up evidence digests derived from applied mint rows, a live operation-bearing process smoke that drives wallet mint, swap, check-state, melt, restore, convergence, restart, and catch-up, focused fake-wallet melt tests for failed payments, pending-to-paid verification, unresolved pending status-check errors, delayed quote-check finalization, staged offline catch-up from pending melt reserve to paid melt observation, staged offline catch-up from pending melt reserve to failed-observation rollback, restart replay of pending melts before later paid-observation catch-up, restart replay of pending melts before later failed-observation rollback, fresh SQLite-backed mint restart replay across the same pending-to-paid and pending-to-failed melt paths, generated process smoke scenarios that restart a member between pending melt start and paid or failed pending melt finalization, and a scripted quarantine smoke path that injects conflicting mint payment observations over signed private REST while one member is offline and checks post-restart quarantine catch-up visibility.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, signed catch-up session outcomes, and durable per-member payment observation evidence; SQLite and Postgres migrations now have parity coverage, with Postgres compiling shared journal and payment-observation regressions and SQLite proving indexed plans plus concurrent writer progress for federation journal entries, sequence watermarks, session outcomes, and payment-observation lookups. Runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Mint quote payment observations now persist before mutation and real-backend policies mutate `amount_paid` only after stored matching quorum evidence; melt payment observations now have focused stored-quorum tests for paid finalization and failed rollback. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, a replaceable consensus runtime boundary, a multi-node simulator for delayed, duplicated, reordered, and quorum-limited proposal delivery, explicit consensus item admission with bounded pending batches, operation acceptance notifications back to public handlers, a finalization loop for accepted-entry apply/notify delivery, an exported backend adapter for queued operation dispatch plus finalized responses, a live generated 5-member process smoke that verifies signed status, readiness, convergence, restart, and cleanup, a materialized-state digest scaffold for consensus-visible mint rows, database-backed private status plus catch-up evidence digests derived from applied mint rows, a live operation-bearing process smoke that drives wallet mint, swap, check-state, melt, restore, convergence, restart, and catch-up, focused fake-wallet melt tests for failed payments, pending-to-paid verification, unresolved pending status-check errors, delayed quote-check finalization, staged offline catch-up from pending melt reserve to paid melt observation, staged offline catch-up from pending melt reserve to failed-observation rollback, restart replay of pending melts before later paid-observation catch-up, restart replay of pending melts before later failed-observation rollback, fresh SQLite-backed mint restart replay across the same pending-to-paid and pending-to-failed melt paths, generated process smoke scenarios that finalize paid and failed pending melts while a non-primary member is offline, and a scripted quarantine smoke path that injects conflicting mint payment observations over signed private REST while one member is offline and checks post-restart quarantine catch-up visibility.</td>
               <td>Broaden operation smoke to more federation sizes and storage backends, run live Postgres persistence/index/concurrency coverage, then replace the simulator ordering source with a real BFT backend.</td>
             </tr>
           </tbody>
@@ -1843,12 +1847,12 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Deeper fault windows</h3>
-            <p>Extend process smoke to keep restarted members offline across multiple operation batches and payment-observation phases before catch-up, then compare digest convergence and signed status evidence.</p>
-          </article>
-          <article class="item">
             <h3>Backend-backed smoke matrix</h3>
             <p>Add process smoke variants that keep the same operation script but exercise more storage backends and longer restart/catch-up windows.</p>
+          </article>
+          <article class="item">
+            <h3>Longer partition windows</h3>
+            <p>Keep a member offline across several operation batches and payment-observation phases before catch-up, then compare digest convergence and signed status evidence.</p>
           </article>
           <article class="item">
             <h3>Broader materialized digest coverage</h3>
