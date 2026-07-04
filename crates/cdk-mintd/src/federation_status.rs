@@ -265,7 +265,7 @@ fn payment_observation_report_line(report: &FederationPaymentObservationReportSu
         .map(|age| age.to_string())
         .unwrap_or_else(|| "unknown".to_string());
     format!(
-        "  payment_report context={} quote={} status={} observations={} required={} groups={} conflicts={} terminal_conflicts={} quote_age_secs={} stale={} action={} quarantined={} quarantine_ops={}",
+        "  payment_report context={} quote={} status={} observations={} required={} groups={} conflicts={} terminal_conflicts={} quote_age_secs={} stale={} action={} quarantined={} quarantine_ops={} quarantine_ids={} quarantine_indices={}",
         report.context,
         report.quote,
         report.status,
@@ -278,7 +278,9 @@ fn payment_observation_report_line(report: &FederationPaymentObservationReportSu
         report.stale,
         report.recommended_action,
         report.quarantined,
-        report.quarantine_operation_ids.len()
+        report.quarantine_operation_ids.len(),
+        display_list(&report.quarantine_operation_ids),
+        display_list(&report.quarantine_operation_indices)
     )
 }
 
@@ -286,9 +288,11 @@ fn payment_observation_group_line(
     group: &cdk_common::federation::FederationPaymentObservationEvidenceGroupSummary,
 ) -> String {
     format!(
-        "    payment_group state={} observers={} quorum={} conflicts={} terminal={}",
+        "    payment_group state={} observers={} operation_ids={} operation_indices={} quorum={} conflicts={} terminal={}",
         group.state,
         member_list(&group.observers),
+        display_list(&group.operation_ids),
+        display_list(&group.operation_indices),
         group.quorum_reached,
         member_list(&group.conflicting_observers),
         group.terminal_state
@@ -296,13 +300,20 @@ fn payment_observation_group_line(
 }
 
 fn member_list(members: &[MemberId]) -> String {
-    if members.is_empty() {
+    display_list(members)
+}
+
+fn display_list<T>(values: &[T]) -> String
+where
+    T: ToString,
+{
+    if values.is_empty() {
         return "none".to_string();
     }
 
-    members
+    values
         .iter()
-        .map(ToString::to_string)
+        .map(|value| value.to_string())
         .collect::<Vec<_>>()
         .join(",")
 }
@@ -617,6 +628,13 @@ mod tests {
     fn status_lines_include_payment_observation_report_counts() {
         let (public_config, _) = status_fixture();
         let mut status = local_status(&public_config, 1, 2);
+        let first_observation_id =
+            cdk_common::federation::FederationOperationId::from_bytes([1; 32]);
+        let second_observation_id =
+            cdk_common::federation::FederationOperationId::from_bytes([2; 32]);
+        let third_observation_id =
+            cdk_common::federation::FederationOperationId::from_bytes([3; 32]);
+        let quarantine_id = cdk_common::federation::FederationOperationId::from_bytes([4; 32]);
         status.payment_observation_reports = vec![FederationPaymentObservationReportSummary {
             context: FederationPaymentObservationContext::MintQuote,
             quote: "quote-1".to_string(),
@@ -630,7 +648,7 @@ mod tests {
                         MemberId::new(2).expect("member two"),
                     ],
                     observer_count: 2,
-                    operation_ids: Vec::new(),
+                    operation_ids: vec![first_observation_id, second_observation_id],
                     operation_indices: vec![1, 2],
                     conflicting_observers: vec![MemberId::new(3).expect("member three")],
                     quorum_reached: true,
@@ -640,7 +658,7 @@ mod tests {
                     state: "PAID".to_string(),
                     observers: vec![MemberId::new(3).expect("member three")],
                     observer_count: 1,
-                    operation_ids: Vec::new(),
+                    operation_ids: vec![third_observation_id],
                     operation_indices: vec![3],
                     conflicting_observers: vec![
                         MemberId::new(1).expect("member one"),
@@ -661,8 +679,8 @@ mod tests {
             stale: true,
             recommended_action: FederationPaymentObservationReportAction::Quarantine,
             quarantined: true,
-            quarantine_operation_ids: Vec::new(),
-            quarantine_operation_indices: Vec::new(),
+            quarantine_operation_ids: vec![quarantine_id],
+            quarantine_operation_indices: vec![4],
             quarantine_reasons: Vec::new(),
         }];
 
@@ -682,12 +700,18 @@ mod tests {
         assert!(report_line.contains("stale=true"));
         assert!(report_line.contains("action=quarantine"));
         assert!(report_line.contains("quarantined=true"));
-        assert!(report_line.contains("quarantine_ops=0"));
+        assert!(report_line.contains("quarantine_ops=1"));
+        assert!(report_line.contains(
+            "quarantine_ids=0404040404040404040404040404040404040404040404040404040404040404"
+        ));
+        assert!(report_line.contains("quarantine_indices=4"));
 
         let group_line =
             payment_observation_group_line(&status.payment_observation_reports[0].groups[0]);
         assert!(group_line.contains("state=PAID"));
         assert!(group_line.contains("observers=1,2"));
+        assert!(group_line.contains("operation_ids=0101010101010101010101010101010101010101010101010101010101010101,0202020202020202020202020202020202020202020202020202020202020202"));
+        assert!(group_line.contains("operation_indices=1,2"));
         assert!(group_line.contains("conflicts=3"));
         assert!(group_line.contains("terminal=true"));
     }

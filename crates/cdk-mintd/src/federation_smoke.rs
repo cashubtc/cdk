@@ -2,19 +2,31 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{Error as DatabaseError, WalletDatabase};
-use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{CurrencyUnit, MeltQuoteState, MintQuoteState, PaymentMethod, State};
+use cdk::mint::{FederationRuntimeConfig, MintQuoteRequest, MintQuoteResponse};
+use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
+use cdk::nuts::{
+    CurrencyUnit, MeltQuoteState, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteState,
+    PaymentMethod, State,
+};
 use cdk::wallet::{
     FederatedMintConnector, HttpClient, MeltOutcome, MintConnector, Wallet, WalletBuilder,
 };
 use cdk::{Amount, Error};
-use cdk_common::federation::{FederationConfig, MemberId};
+use cdk_common::federation::{
+    FederationConfig, FederationJournalAppendOutcome, FederationMintQuotePaymentObservation,
+    FederationOperation, FederationOperationEnvelope, FederationPaymentObservationContext,
+    FederationPaymentObservationQuarantineReason, FederationRestMessageKind,
+    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    MemberConfigPrivate, MemberConfigPublic, MemberId,
+};
+use cdk_common::QuoteId;
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
+use cdk_http_client::{Async, Transport};
 
 use crate::cli::{FederationSmokeOperationsArgs, FederationSmokeScenario};
 
@@ -115,6 +127,15 @@ pub(crate) async fn run_smoke_operations_command(
                 MeltQuoteState::Failed,
             )
             .await
+        }
+        FederationSmokeScenario::QuarantineMintConflict => {
+            let private_config_path = args
+                .private_config
+                .as_deref()
+                .context("--private-config is required for quarantine-mint-conflict")?;
+            let private_config: MemberConfigPrivate =
+                crate::read_federation_json(private_config_path, "private federation config")?;
+            run_quarantine_mint_conflict(args, &public_config, unit, &private_config).await
         }
     }
 }
@@ -413,6 +434,177 @@ async fn mint_smoke_funds(
     }
 
     Ok(minted_amount)
+}
+
+async fn run_quarantine_mint_conflict(
+    args: &FederationSmokeOperationsArgs,
+    public_config: &FederationConfig,
+    unit: CurrencyUnit,
+    private_config: &MemberConfigPrivate,
+) -> Result<()> {
+    let runtime_config =
+        FederationRuntimeConfig::new(public_config.clone(), private_config.clone())
+            .context("private federation config does not match public federation config")?;
+    let target_member = public_config
+        .member(private_config.member_id)
+        .context("private federation member is missing from the public federation config")?;
+    let conflicting_observer = public_config
+        .members
+        .keys()
+        .copied()
+        .find(|member_id| *member_id != private_config.member_id)
+        .context("quarantine mint conflict smoke needs at least two federation members")?;
+    let quote = QuoteId::new();
+    let amount = Amount::from(args.mint_amount);
+    let conflicting_amount = Amount::from(args.mint_amount.saturating_add(1));
+    let quote_envelope = runtime_config.mint_quote_operation(
+        quote.clone(),
+        MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
+            amount,
+            unit: unit.clone(),
+            description: Some("federation quarantine smoke".to_string()),
+            pubkey: None,
+        }),
+        MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
+            quote: quote.to_string(),
+            request: format!("federation-smoke-quarantine-{quote}"),
+            amount: Some(amount),
+            unit: Some(unit),
+            state: MintQuoteState::Unpaid,
+            expiry: Some(10_000),
+            pubkey: None,
+        }),
+    );
+    let first_observation = runtime_config.mint_quote_payment_observation(
+        quote.clone(),
+        PaymentMethod::Known(KnownMethod::Bolt11),
+        MintQuoteState::Paid,
+        amount,
+        Amount::ZERO,
+        Some(format!("settled-{quote}")),
+    );
+    let conflicting_observation = FederationOperationEnvelope::new(
+        public_config.federation_id,
+        FederationOperation::MintQuotePayment(FederationMintQuotePaymentObservation {
+            quote: quote.to_string(),
+            observer: conflicting_observer,
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            state: MintQuoteState::Paid,
+            amount_paid: conflicting_amount,
+            amount_issued: Amount::ZERO,
+            payment_proof: Some(format!("conflicting-{quote}")),
+        }),
+    );
+    let first_observation_id = first_observation
+        .operation_id()
+        .context("compute first payment observation operation id")?;
+    let conflicting_observation_id = conflicting_observation
+        .operation_id()
+        .context("compute conflicting payment observation operation id")?;
+    let quarantine = runtime_config.payment_observation_quarantine(
+        FederationPaymentObservationContext::MintQuote,
+        quote.clone(),
+        FederationPaymentObservationQuarantineReason::ConflictingEvidence,
+        vec![first_observation_id, conflicting_observation_id],
+    );
+    let quarantine_id = quarantine
+        .operation_id()
+        .context("compute quarantine operation id")?;
+    let transport = Async::default();
+    let mut sequence = initial_smoke_sequence();
+
+    for envelope in [
+        quote_envelope,
+        first_observation,
+        conflicting_observation,
+        quarantine,
+    ] {
+        sequence = sequence.saturating_add(1);
+        submit_smoke_operation(
+            &transport,
+            public_config,
+            private_config,
+            target_member,
+            sequence,
+            envelope,
+        )
+        .await?;
+    }
+
+    println!(
+        "federation quarantine smoke submitted: quote={} observer={} conflicting_observer={} first_observation={} conflicting_observation={} quarantine={} target_member={}",
+        quote,
+        private_config.member_id,
+        conflicting_observer,
+        first_observation_id,
+        conflicting_observation_id,
+        quarantine_id,
+        target_member.member_id
+    );
+
+    Ok(())
+}
+
+async fn submit_smoke_operation<T>(
+    transport: &T,
+    public_config: &FederationConfig,
+    private_config: &MemberConfigPrivate,
+    target_member: &MemberConfigPublic,
+    sequence: u64,
+    envelope: FederationOperationEnvelope,
+) -> Result<FederationSubmitOperationResponse>
+where
+    T: Transport,
+{
+    let request = FederationSubmitOperationRequest::new(envelope);
+    request.ensure_admissible_size()?;
+    let operation_id = request.operation_id()?;
+    let signed_request = FederationSignedRequest::new_signed(
+        public_config.federation_id,
+        target_member.member_id,
+        sequence,
+        FederationRestMessageKind::SubmitOperation,
+        request,
+        private_config,
+    )?;
+    let url = target_member
+        .federation_api_url
+        .join_paths(&["federation", "v1", "operations"])?;
+    let response: FederationSubmitOperationResponse =
+        transport.http_post(url, None, &signed_request).await?;
+    if response.operation_id != operation_id {
+        bail!(
+            "federation member {} returned operation id {} for submitted operation {}",
+            target_member.member_id,
+            response.operation_id,
+            operation_id
+        );
+    }
+    let (outcome, index) = match &response.outcome {
+        FederationJournalAppendOutcome::Appended(entry) => ("appended", entry.index),
+        FederationJournalAppendOutcome::Duplicate(entry) => ("duplicate", entry.index),
+    };
+    tracing::debug!(
+        member_id = %target_member.member_id,
+        %operation_id,
+        outcome,
+        index,
+        "federation quarantine smoke operation submitted"
+    );
+
+    Ok(response)
+}
+
+fn initial_smoke_sequence() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| {
+            duration
+                .as_secs()
+                .saturating_mul(1_000_000)
+                .saturating_add(u64::from(duration.subsec_micros()))
+        })
+        .unwrap_or_default()
 }
 
 fn member_connectors(

@@ -452,6 +452,7 @@ set -euo pipefail
 CDK_MINTD_BIN="${{CDK_MINTD_BIN:-cdk-mintd}}"
 PUBLIC_CONFIG={public_config_path}
 MEMBERS=({members})
+PRIMARY_MEMBER="${{PRIMARY_MEMBER:-{primary_member}}}"
 RESTART_MEMBER="${{RESTART_MEMBER:-{restart_member}}}"
 STATUS_RETRIES="${{STATUS_RETRIES:-60}}"
 STATUS_SLEEP_SECONDS="${{STATUS_SLEEP_SECONDS:-1}}"
@@ -541,6 +542,13 @@ member_status_line() {{
   "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready | awk '/^member / {{ print; exit }}'
 }}
 
+member_payment_report_lines() {{
+  local member="$1"
+  local private_config
+  private_config="$(member_private_config "$member")"
+  "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready | awk '/^  payment_report / {{ print }}'
+}}
+
 status_field() {{
   local line="$1"
   local key="$2"
@@ -607,6 +615,21 @@ wait_for_converged() {{
   return 1
 }}
 
+wait_for_quarantine_report() {{
+  local member="$1"
+  for _ in $(seq 1 "$STATUS_RETRIES"); do
+    if member_payment_report_lines "$member" | grep -q 'quarantined=true'; then
+      return 0
+    fi
+    sleep "$STATUS_SLEEP_SECONDS"
+  done
+  printf 'member %s did not report an accepted payment observation quarantine\n' "$member" >&2
+  local private_config
+  private_config="$(member_private_config "$member")"
+  "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready >&2 || true
+  return 1
+}}
+
 trap cleanup EXIT INT TERM
 
 reset_member_work_dirs
@@ -645,10 +668,22 @@ wait_for_converged
 "$CDK_MINTD_BIN" federation smoke-operations --public-config "$PUBLIC_CONFIG" --scenario pending-melt-fail-finish --wallet-db "$FAILED_PENDING_WALLET_DB"
 wait_for_converged
 
+"$CDK_MINTD_BIN" federation smoke-operations --public-config "$PUBLIC_CONFIG" --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario quarantine-mint-conflict
+wait_for_converged
+wait_for_quarantine_report "$PRIMARY_MEMBER"
+
+stop_member "$RESTART_MEMBER"
+start_member "$RESTART_MEMBER"
+wait_for_status "$RESTART_MEMBER"
+
+wait_for_converged
+wait_for_quarantine_report "$RESTART_MEMBER"
+
 printf 'local federation smoke test passed\n'
 "#,
         public_config_path = public_config_path,
         members = members,
+        primary_member = primary_member.get(),
         restart_member = restart_member.get(),
         config_cases = config_cases,
         work_dir_cases = work_dir_cases,
@@ -736,15 +771,23 @@ mod tests {
             .contains("private_config=\"$(member_private_config \"$PRIMARY_MEMBER\")\""));
         assert!(smoke_script.contains("reset_member_work_dirs"));
         assert!(smoke_script.contains("rm -rf \"$work_dir\""));
+        assert!(smoke_script.contains("PRIMARY_MEMBER"));
         assert!(smoke_script.contains("RESTART_MEMBER"));
         assert!(smoke_script.contains("PENDING_WALLET_DB"));
         assert!(smoke_script.contains("FAILED_PENDING_WALLET_DB"));
+        assert!(smoke_script.contains("member_payment_report_lines()"));
+        assert!(smoke_script.contains("wait_for_quarantine_report()"));
         assert!(smoke_script.contains("--scenario pending-melt-start"));
         assert!(smoke_script.contains("--scenario pending-melt-finish"));
         assert!(smoke_script.contains("--scenario pending-melt-fail-start"));
         assert!(smoke_script.contains("--scenario pending-melt-fail-finish"));
+        assert!(smoke_script.contains("--scenario quarantine-mint-conflict"));
         assert!(smoke_script.contains("--wallet-db \"$PENDING_WALLET_DB\""));
         assert!(smoke_script.contains("--wallet-db \"$FAILED_PENDING_WALLET_DB\""));
+        assert!(smoke_script
+            .contains("--private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\""));
+        assert!(smoke_script.contains("wait_for_quarantine_report \"$PRIMARY_MEMBER\""));
+        assert!(smoke_script.contains("wait_for_quarantine_report \"$RESTART_MEMBER\""));
         assert!(smoke_script.contains("local federation smoke test passed"));
         assert!(smoke_script.contains(&artifacts.public_config_path.to_string_lossy().to_string()));
         #[cfg(unix)]

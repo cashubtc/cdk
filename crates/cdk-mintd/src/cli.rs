@@ -171,6 +171,9 @@ pub struct FederationSmokeOperationsArgs {
     /// Shared public federation config JSON path.
     #[arg(long)]
     pub public_config: PathBuf,
+    /// Private member config JSON path for scenarios that submit private federation operations.
+    #[arg(long)]
+    pub private_config: Option<PathBuf>,
     /// Currency unit to use for the operation smoke.
     #[arg(long, default_value = "sat")]
     pub unit: String,
@@ -204,6 +207,8 @@ pub enum FederationSmokeScenario {
     PendingMeltFailStart,
     /// Resume and compensate the failed pending melt stored in the wallet database.
     PendingMeltFailFinish,
+    /// Submit a conflicting mint payment observation and quarantine it through private REST.
+    QuarantineMintConflict,
 }
 
 #[cfg(feature = "federation")]
@@ -371,6 +376,40 @@ mod tests {
             FederationSmokeScenario::PendingMeltFailStart
         );
         assert_eq!(smoke.wallet_db, Some(PathBuf::from("wallet.sqlite")));
+        assert_eq!(smoke.private_config, None);
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[test]
+    fn parses_federation_quarantine_smoke_operations_subcommand() {
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "smoke-operations",
+            "--public-config",
+            "federation-public.json",
+            "--private-config",
+            "member-1/federation-private.json",
+            "--scenario",
+            "quarantine-mint-conflict",
+        ])
+        .expect("quarantine smoke operations command parses");
+
+        let Some(CliCommand::Federation(federation)) = args.command else {
+            panic!("expected federation command");
+        };
+        let FederationCommand::SmokeOperations(smoke) = federation.command else {
+            panic!("expected federation smoke-operations command");
+        };
+        assert_eq!(smoke.public_config, PathBuf::from("federation-public.json"));
+        assert_eq!(
+            smoke.private_config,
+            Some(PathBuf::from("member-1/federation-private.json"))
+        );
+        assert_eq!(
+            smoke.scenario,
+            FederationSmokeScenario::QuarantineMintConflict
+        );
     }
 
     #[test]
