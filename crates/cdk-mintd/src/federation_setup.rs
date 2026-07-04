@@ -680,6 +680,20 @@ member_dkg_status() {{
   "$CDK_MINTD_BIN" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --from-database --require-ready | awk '/^finalized_ready=true/ {{ print; exit }}'
 }}
 
+print_dkg_record_runbook() {{
+  local member="$1"
+  local private_config
+  private_config="$(member_private_config "$member")"
+  cat >&2 <<RUNBOOK
+DKG record recovery for member $member:
+  Database-backed readiness:
+    "$CDK_MINTD_BIN" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --from-database --require-ready
+  File-based readiness after exchanging completion records:
+    "$CDK_MINTD_BIN" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --keyset-share <keyset-share.json> --transcript-signature <transcript-signature.json> --require-ready
+  Combine --from-database with repeated --keyset-share and --transcript-signature flags while migrating records between members.
+RUNBOOK
+}}
+
 wait_for_dkg_status() {{
   local member="$1"
   local work_dir
@@ -692,6 +706,7 @@ wait_for_dkg_status() {{
   done
   printf 'member %s did not report usable federation DKG/config material\n' "$member" >&2
   member_dkg_status "$member" >&2 || true
+  print_dkg_record_runbook "$member"
   tail -n 80 "$work_dir/mintd.log" >&2 || true
   return 1
 }}
@@ -1101,6 +1116,11 @@ mod tests {
         assert!(smoke_script.contains("member_status_line()"));
         assert!(smoke_script.contains("member_dkg_status()"));
         assert!(smoke_script.contains("wait_for_dkg_status()"));
+        assert!(smoke_script.contains("print_dkg_record_runbook()"));
+        assert!(smoke_script.contains("DKG record recovery for member"));
+        assert!(smoke_script.contains("--keyset-share <keyset-share.json>"));
+        assert!(smoke_script.contains("--transcript-signature <transcript-signature.json>"));
+        assert!(smoke_script.contains("Combine --from-database"));
         assert!(smoke_script.contains("member_quorum_status_line()"));
         assert!(smoke_script.contains("--require-session-outcome-quorum"));
         assert!(smoke_script.contains("--require-no-digest-alerts"));

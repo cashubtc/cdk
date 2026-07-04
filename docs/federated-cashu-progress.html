@@ -522,15 +522,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover route-derived dkg restart activation</span>
+          <span class="value">docs: add dkg record recovery runbook</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">A setup-only mint restart now proves it can activate finalized DKG runtime config from keyset-share records produced by the private route flow plus persisted transcript signatures</span>
+          <span class="value">Generated local federation smoke scripts now print DKG record recovery commands for database-backed checks and file-based keyset-share/transcript-signature handoff when readiness fails</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Wire record export/import guidance into generated operator runbooks and then exercise a local DKG setup script path end to end</span>
+          <span class="value">Exercise a generated local DKG setup path end to end, then continue into accepted-rotation persistence and active-keyset switching</span>
         </div>
       </aside>
     </header>
@@ -1543,6 +1543,10 @@
             <p>A restart test now strips a member to setup-only config, derives its DKG keyset-share through private route persistence, adds transcript signatures for the derived aggregate keyset, and verifies mint startup activates the finalized runtime config from the database.</p>
           </article>
           <article class="item">
+            <h3>DKG record recovery runbook added</h3>
+            <p>The generated local smoke script now includes failure-time guidance for `federation dkg-status --from-database` plus file-based `--keyset-share` and `--transcript-signature` recovery checks, so operators have reconstructable DKG completion commands in the generated artifacts.</p>
+          </article>
+          <article class="item">
             <h3>DKG setup private routes added</h3>
             <p>Federation members now expose signed private REST endpoints for DKG commitments and reveals, the peer client can submit both messages, and accepted setup payloads persist the sender sequence watermark.</p>
           </article>
@@ -1658,7 +1662,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, durable secret-share contribution storage, secret-share private REST exchange, route-driven local member keyset-share derivation, route-derived restart activation, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed record reads, generated setup readiness gates, and the first canonical key-rotation operation. The remaining setup work is record export/import runbook wiring, accepted-rotation persistence, and active-keyset switching.</p>
+            <p>The DKG scaffolding now covers commitments, reveals, private secret-share transport payloads, durable secret-share contribution storage, secret-share private REST exchange, route-driven local member keyset-share derivation, route-derived restart activation, generated record-recovery runbook guidance, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command with database-backed record reads, generated setup readiness gates, and the first canonical key-rotation operation. The remaining setup work is generated local DKG setup exercise, accepted-rotation persistence, and active-keyset switching.</p>
           </article>
         </div>
       </section>
@@ -1776,6 +1780,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation federation_restart_activates_route_derived_dkg_records -- --test-threads 1` proved startup activates finalized federation runtime config from route-derived keyset-share records and persisted transcript signatures in the same database. `cargo test -p cdk-axum --features federation dkg -- --test-threads 1` passed 12 DKG tests, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
               <td>Add operator runbook/script support for exporting, importing, and checking DKG completion records during generated federation setup.</td>
+            </tr>
+            <tr>
+              <td>Generated DKG record recovery runbook</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1` and `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1` passed with assertions for `print_dkg_record_runbook()`, database-backed readiness, `--keyset-share`, `--transcript-signature`, and combined `--from-database` recovery guidance. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Exercise generated local DKG setup behavior end to end, then move from setup completion into rotation persistence and active keyset switching.</td>
             </tr>
             <tr>
               <td>DKG setup private routes</td>
