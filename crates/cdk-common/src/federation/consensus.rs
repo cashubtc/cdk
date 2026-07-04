@@ -6,6 +6,7 @@
 //! networking can replace the decision source while keeping this API shape.
 
 use core::fmt;
+use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use super::{
@@ -303,11 +304,59 @@ pub trait FederationConsensusEngine: fmt::Debug + Send {
 /// contract while future engines can be added behind this wrapper.
 #[derive(Debug, Clone)]
 pub struct FederationConsensusRuntime {
-    backend: FederationConsensusBackend,
+    backend: FederationConsensusRuntimeBackend,
+}
+
+/// Consensus backend selected for ordering federation operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationConsensusBackendKind {
+    /// Deterministic local append-log backend for tests, local smoke, and MVP wiring.
+    #[default]
+    InMemory,
+    /// Future AlephBFT-backed production ordering backend.
+    AlephBft,
+}
+
+impl FederationConsensusBackendKind {
+    /// Return the canonical config string for this backend.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InMemory => "in_memory",
+            Self::AlephBft => "aleph_bft",
+        }
+    }
+
+    /// Return true when this build can instantiate the backend.
+    #[must_use]
+    pub fn is_available(self) -> bool {
+        matches!(self, Self::InMemory)
+    }
+}
+
+impl fmt::Display for FederationConsensusBackendKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for FederationConsensusBackendKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().replace('-', "_").as_str() {
+            "in_memory" | "inmemory" | "memory" => Ok(Self::InMemory),
+            "aleph_bft" | "alephbft" => Ok(Self::AlephBft),
+            _ => Err(format!(
+                "Unknown federation consensus backend: {s}. Valid options: in_memory, aleph_bft"
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
-enum FederationConsensusBackend {
+enum FederationConsensusRuntimeBackend {
     InMemory(InMemoryFederationConsensus),
 }
 
@@ -316,10 +365,28 @@ impl FederationConsensusRuntime {
     #[must_use]
     pub fn in_memory(federation_id: FederationId, member_id: MemberId) -> Self {
         Self {
-            backend: FederationConsensusBackend::InMemory(InMemoryFederationConsensus::new(
+            backend: FederationConsensusRuntimeBackend::InMemory(InMemoryFederationConsensus::new(
                 federation_id,
                 member_id,
             )),
+        }
+    }
+
+    /// Create a runtime for the requested backend.
+    pub fn with_backend(
+        backend: FederationConsensusBackendKind,
+        federation_id: FederationId,
+        member_id: MemberId,
+    ) -> Result<Self> {
+        match backend {
+            FederationConsensusBackendKind::InMemory => {
+                Ok(Self::in_memory(federation_id, member_id))
+            }
+            FederationConsensusBackendKind::AlephBft => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: backend.as_str().to_string(),
+                })
+            }
         }
     }
 
@@ -330,21 +397,40 @@ impl FederationConsensusRuntime {
         entries: Vec<FederationJournalEntry>,
     ) -> Result<Self> {
         Ok(Self {
-            backend: FederationConsensusBackend::InMemory(
+            backend: FederationConsensusRuntimeBackend::InMemory(
                 InMemoryFederationConsensus::from_entries(federation_id, member_id, entries)?,
             ),
         })
     }
 
+    /// Rebuild a runtime for the requested backend from persisted journal entries.
+    pub fn from_entries_with_backend(
+        backend: FederationConsensusBackendKind,
+        federation_id: FederationId,
+        member_id: MemberId,
+        entries: Vec<FederationJournalEntry>,
+    ) -> Result<Self> {
+        match backend {
+            FederationConsensusBackendKind::InMemory => {
+                Self::in_memory_from_entries(federation_id, member_id, entries)
+            }
+            FederationConsensusBackendKind::AlephBft => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: backend.as_str().to_string(),
+                })
+            }
+        }
+    }
+
     fn engine(&self) -> &dyn FederationConsensusEngine {
         match &self.backend {
-            FederationConsensusBackend::InMemory(engine) => engine,
+            FederationConsensusRuntimeBackend::InMemory(engine) => engine,
         }
     }
 
     fn engine_mut(&mut self) -> &mut dyn FederationConsensusEngine {
         match &mut self.backend {
-            FederationConsensusBackend::InMemory(engine) => engine,
+            FederationConsensusRuntimeBackend::InMemory(engine) => engine,
         }
     }
 }
@@ -1295,6 +1381,76 @@ mod tests {
                 .expect("second entry")
                 .status,
             FederationOperationStatus::Applied
+        );
+    }
+
+    #[test]
+    fn consensus_backend_kind_parses_known_values_and_rejects_unknown() {
+        assert_eq!(
+            "in_memory"
+                .parse::<FederationConsensusBackendKind>()
+                .expect("in-memory backend"),
+            FederationConsensusBackendKind::InMemory
+        );
+        assert_eq!(
+            "memory"
+                .parse::<FederationConsensusBackendKind>()
+                .expect("memory alias"),
+            FederationConsensusBackendKind::InMemory
+        );
+        assert_eq!(
+            "aleph-bft"
+                .parse::<FederationConsensusBackendKind>()
+                .expect("aleph alias"),
+            FederationConsensusBackendKind::AlephBft
+        );
+        assert!("raft"
+            .parse::<FederationConsensusBackendKind>()
+            .expect_err("unknown backend should fail")
+            .contains("Unknown federation consensus backend"));
+    }
+
+    #[test]
+    fn consensus_runtime_rejects_unavailable_backend_kind() {
+        let err = FederationConsensusRuntime::with_backend(
+            FederationConsensusBackendKind::AlephBft,
+            federation_id(13),
+            member_id(),
+        )
+        .expect_err("aleph-bft backend is not implemented yet");
+
+        assert!(matches!(
+            err,
+            FederationError::UnsupportedConsensusBackend { ref backend }
+                if backend == "aleph_bft"
+        ));
+    }
+
+    #[test]
+    fn consensus_runtime_replays_entries_with_selected_backend() {
+        let federation_id = federation_id(13);
+        let mut runtime = FederationConsensusRuntime::with_backend(
+            FederationConsensusBackendKind::InMemory,
+            federation_id,
+            member_id(),
+        )
+        .expect("in-memory runtime");
+        runtime
+            .submit_envelope(mint_quote_envelope(federation_id))
+            .expect("submit first");
+
+        let replayed = FederationConsensusRuntime::from_entries_with_backend(
+            FederationConsensusBackendKind::InMemory,
+            federation_id,
+            member_id(),
+            runtime.journal().entries().to_vec(),
+        )
+        .expect("replay runtime");
+
+        assert_eq!(replayed.peer_status().operation_count, 1);
+        assert_eq!(
+            replayed.peer_status().latest_order_digest,
+            runtime.peer_status().latest_order_digest
         );
     }
 

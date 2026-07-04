@@ -23,11 +23,11 @@ mod transport;
 mod trusted_dealer;
 
 pub use self::consensus::{
-    FederationConsensusDefaultItem, FederationConsensusEngine, FederationConsensusItem,
-    FederationConsensusItemAdmission, FederationConsensusItemQueue, FederationConsensusModuleFact,
-    FederationConsensusRuntime, InMemoryFederationConsensus, InMemoryFederationConsensusAdapter,
-    InMemoryFederationConsensusNetwork, FEDERATION_CONSENSUS_ITEM_VERSION,
-    FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
+    FederationConsensusBackendKind, FederationConsensusDefaultItem, FederationConsensusEngine,
+    FederationConsensusItem, FederationConsensusItemAdmission, FederationConsensusItemQueue,
+    FederationConsensusModuleFact, FederationConsensusRuntime, InMemoryFederationConsensus,
+    InMemoryFederationConsensusAdapter, InMemoryFederationConsensusNetwork,
+    FEDERATION_CONSENSUS_ITEM_VERSION, FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
 };
 pub use self::journal::{
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
@@ -363,6 +363,12 @@ pub enum FederationError {
         reachable: u16,
         /// Required quorum threshold.
         required: u16,
+    },
+    /// The selected consensus backend is known but unavailable in this build.
+    #[error("Federation consensus backend {backend} is not available in this build")]
+    UnsupportedConsensusBackend {
+        /// Requested backend name.
+        backend: String,
     },
     /// A consensus item exceeded the configured canonical size limit.
     #[error("Federation consensus item too large: actual={actual}, max={max}")]

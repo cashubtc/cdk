@@ -1215,7 +1215,8 @@ async fn create_federation_runtime_state(
     let db = mint.localstore();
     let entries = db.get_federation_journal_entries().await?;
     let sequences = db.get_federation_member_sequences().await?;
-    let mut consensus = FederationConsensusRuntime::in_memory_from_entries(
+    let mut consensus = FederationConsensusRuntime::from_entries_with_backend(
+        config.consensus_backend(),
         config.federation_id(),
         config.member_id(),
         entries.clone(),

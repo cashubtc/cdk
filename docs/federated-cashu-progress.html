@@ -522,11 +522,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: select federation consensus backend explicitly</span>
+          <span class="value">feat: carry federation consensus backend into runtime</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Wallet federation signing paths now fan out concurrently, mint and melt quote creation, mint-info reads, and LNURL pay/invoice helpers fall through to the first healthy member; mintd now has an explicit federation consensus backend selector that defaults to in-memory MVP wiring and fails closed for future BFT backends until implemented</span>
+          <span class="value">Wallet federation signing paths now fan out concurrently, mint and melt quote creation, mint-info reads, and LNURL pay/invoice helpers fall through to the first healthy member; the explicit consensus backend selector now lives in shared federation runtime config, reaches Axum runtime construction, defaults to in-memory MVP wiring, and fails closed for future BFT backends until implemented</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -1488,7 +1488,7 @@
           </article>
           <article class="item">
             <h3>Consensus backend selection is explicit</h3>
-            <p>Mintd federation config now names the consensus backend. The only available runtime backend is `in_memory` for MVP and regtest wiring; future selections such as `aleph_bft` are parsed but rejected at startup until a real backend is implemented.</p>
+            <p>Mintd federation config now names the consensus backend and carries that choice into `FederationRuntimeConfig` and Axum runtime construction. The only available runtime backend is `in_memory` for MVP and regtest wiring; future selections such as `aleph_bft` are parsed but rejected through the shared runtime factory until a real backend is implemented.</p>
           </article>
           <article class="item">
             <h3>Offline pending-melt finalization verified</h3>
@@ -2724,7 +2724,7 @@
             <tr>
               <td>Consensus backend selection</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_env -- --test-threads 1` passed env parsing coverage for the backend selector, including rejection of unknown backend names. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite configure_federation -- --test-threads 1` passed startup coverage showing existing in-memory federation config still loads, non-v3 aggregate keysets still fail, missing paths still fail, and `aleph_bft` fails closed before path loading because it is not available in this build. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed.</td>
+              <td>`cargo test -p cdk-common --features federation consensus_backend -- --test-threads 1` and `cargo test -p cdk-common --features federation consensus_runtime -- --test-threads 1` passed shared backend-kind parsing, in-memory replay, and unavailable-backend rejection. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_env -- --test-threads 1` passed env parsing coverage, including rejection of unknown backend names. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite configure_federation -- --test-threads 1` passed startup coverage showing selected backend storage on the mint runtime config, existing in-memory federation config still loads, non-v3 aggregate keysets still fail, missing paths still fail, and `aleph_bft` fails closed before path loading because it is not available in this build. `cargo check -p cdk-axum --features federation` and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed.</td>
               <td>Implement the first real BFT ordering backend behind this selector, keeping `in_memory` as the local smoke and deterministic test backend.</td>
             </tr>
             <tr>

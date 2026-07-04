@@ -182,6 +182,7 @@ impl MintBuilder {
 
         let setup_public_config = runtime_config.public_config().clone();
         let local_private_config = runtime_config.private_config().clone();
+        let consensus_backend = runtime_config.consensus_backend();
         let keyset_shares = self
             .localstore
             .get_federation_dkg_member_keyset_shares()
@@ -212,9 +213,10 @@ impl MintBuilder {
             Ok(finalized) => {
                 let member_id = finalized.private_config.member_id;
                 let keyset_count = finalized.public_config.keysets.len();
-                self.federation_config = Some(FederationRuntimeConfig::new(
+                self.federation_config = Some(FederationRuntimeConfig::new_with_consensus_backend(
                     finalized.public_config,
                     finalized.private_config,
+                    consensus_backend,
                 )?);
                 self.federation_mode = FederationMode::Member;
                 tracing::info!(

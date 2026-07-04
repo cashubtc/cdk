@@ -11,11 +11,11 @@ use std::str::FromStr;
 use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederationBlindSignatureShareSet, FederationConfig, FederationError, FederationId,
-    FederationJournalEntry, FederationKeysetRotationOperation, FederationMeltOperation,
-    FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
-    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
-    FederationOperation, FederationOperationEnvelope, FederationOperationId,
+    FederationBlindSignatureShareSet, FederationConfig, FederationConsensusBackendKind,
+    FederationError, FederationId, FederationJournalEntry, FederationKeysetRotationOperation,
+    FederationMeltOperation, FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation,
+    FederationMintOperation, FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
+    FederationMintRequest, FederationOperation, FederationOperationEnvelope, FederationOperationId,
     FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
@@ -59,6 +59,7 @@ impl FederationMode {
 pub struct FederationRuntimeConfig {
     public_config: FederationConfig,
     private_config: MemberConfigPrivate,
+    consensus_backend: FederationConsensusBackendKind,
 }
 
 impl FederationRuntimeConfig {
@@ -67,12 +68,26 @@ impl FederationRuntimeConfig {
         public_config: FederationConfig,
         private_config: MemberConfigPrivate,
     ) -> Result<Self, Error> {
+        Self::new_with_consensus_backend(
+            public_config,
+            private_config,
+            FederationConsensusBackendKind::InMemory,
+        )
+    }
+
+    /// Create a runtime federation config with an explicit consensus backend.
+    pub fn new_with_consensus_backend(
+        public_config: FederationConfig,
+        private_config: MemberConfigPrivate,
+        consensus_backend: FederationConsensusBackendKind,
+    ) -> Result<Self, Error> {
         public_config.validate()?;
         private_config.validate_against_public(&public_config)?;
 
         Ok(Self {
             public_config,
             private_config,
+            consensus_backend,
         })
     }
 
@@ -84,7 +99,11 @@ impl FederationRuntimeConfig {
 
     /// Return a new runtime config with a replaced public config.
     pub fn with_public_config(&self, public_config: FederationConfig) -> Result<Self, Error> {
-        Self::new(public_config, self.private_config.clone())
+        Self::new_with_consensus_backend(
+            public_config,
+            self.private_config.clone(),
+            self.consensus_backend,
+        )
     }
 
     /// Return a validated runtime config view after applying one keyset rotation.
@@ -99,6 +118,12 @@ impl FederationRuntimeConfig {
     #[must_use]
     pub fn private_config(&self) -> &MemberConfigPrivate {
         &self.private_config
+    }
+
+    /// Selected consensus backend for this mint member.
+    #[must_use]
+    pub fn consensus_backend(&self) -> FederationConsensusBackendKind {
+        self.consensus_backend
     }
 
     /// Local member ID.

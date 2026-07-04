@@ -588,8 +588,12 @@ fn configure_federation(
         read_federation_json(public_config_path, "public federation config")?;
     let private_config: MemberConfigPrivate =
         read_federation_json(private_config_path, "private federation config")?;
-    let runtime_config = FederationRuntimeConfig::new(public_config, private_config)
-        .context("invalid federation runtime config")?;
+    let runtime_config = FederationRuntimeConfig::new_with_consensus_backend(
+        public_config,
+        private_config,
+        federation.consensus_backend,
+    )
+    .context("invalid federation runtime config")?;
 
     tracing::info!(
         "Loaded federation {} as member {} using {} consensus backend",
@@ -2157,6 +2161,13 @@ mod tests {
                 .expect("runtime config")
                 .member_id(),
             member_id
+        );
+        assert_eq!(
+            builder
+                .federation_config()
+                .expect("runtime config")
+                .consensus_backend(),
+            config::FederationConsensusBackend::InMemory
         );
 
         let _ = fs::remove_file(public_config_path);
