@@ -414,43 +414,48 @@ impl Wallet {
 
         // Create or update auth wallet
         {
+            let protected_endpoints = mint_info.protected_endpoints();
+            let oidc_client = mint_info
+                .openid_discovery()
+                .map(|url| crate::OidcClient::new(url, None));
+            let auth_enabled = !protected_endpoints.is_empty()
+                || oidc_client.is_some()
+                || mint_info.bat_max_mint().is_some();
+
             let mut auth_wallet = self.auth_wallet.write().await;
-            match &*auth_wallet {
-                Some(auth_wallet) => {
-                    let mut protected_endpoints = auth_wallet.protected_endpoints.write().await;
-                    *protected_endpoints = mint_info.protected_endpoints();
+            if auth_enabled {
+                match &*auth_wallet {
+                    Some(auth_wallet) => {
+                        let mut current_protected_endpoints =
+                            auth_wallet.protected_endpoints.write().await;
+                        *current_protected_endpoints = protected_endpoints;
+                        auth_wallet.set_oidc_client(oidc_client).await;
+                    }
+                    None => {
+                        tracing::info!("Mint has auth enabled; creating auth wallet");
 
-                    if let Some(oidc_client) = mint_info
-                        .openid_discovery()
-                        .map(|url| crate::OidcClient::new(url, None))
-                    {
-                        auth_wallet.set_oidc_client(Some(oidc_client)).await;
+                        let new_auth_wallet = AuthWallet::new(
+                            self.mint_url.clone(),
+                            None,
+                            self.localstore.clone(),
+                            self.metadata_cache.clone(),
+                            protected_endpoints,
+                            oidc_client,
+                        );
+                        *auth_wallet = Some(new_auth_wallet.clone());
+
+                        self.client
+                            .set_auth_wallet(Some(new_auth_wallet.clone()))
+                            .await;
+
+                        if let Err(e) = new_auth_wallet.refresh_keysets().await {
+                            tracing::error!("Could not fetch auth keysets: {}", e);
+                        }
                     }
                 }
-                None => {
-                    tracing::info!("Mint has auth enabled creating auth wallet");
-
-                    let oidc_client = mint_info
-                        .openid_discovery()
-                        .map(|url| crate::OidcClient::new(url, None));
-                    let new_auth_wallet = AuthWallet::new(
-                        self.mint_url.clone(),
-                        None,
-                        self.localstore.clone(),
-                        self.metadata_cache.clone(),
-                        mint_info.protected_endpoints(),
-                        oidc_client,
-                    );
-                    *auth_wallet = Some(new_auth_wallet.clone());
-
-                    self.client
-                        .set_auth_wallet(Some(new_auth_wallet.clone()))
-                        .await;
-
-                    if let Err(e) = new_auth_wallet.refresh_keysets().await {
-                        tracing::error!("Could not fetch auth keysets: {}", e);
-                    }
-                }
+            } else if auth_wallet.take().is_some() {
+                tracing::info!("Mint does not advertise auth; removing auth wallet");
+                self.client.set_auth_wallet(None).await;
             }
         }
 
@@ -1296,6 +1301,34 @@ mod tests {
         assert!(
             matches!(result, Err(Error::IncorrectWallet(_))),
             "expected Error::IncorrectWallet for token with a different mint URL; got: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_mint_info_does_not_create_auth_wallet_without_auth_settings() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_mint_info, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let mut mint_info = test_mint_info();
+        mint_info.time = None;
+        mock_client.set_mint_info_response(Ok(mint_info));
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        wallet
+            .fetch_mint_info()
+            .await
+            .expect("mint info should load from mock connector");
+
+        assert!(wallet.auth_wallet.read().await.is_none());
+
+        let result = wallet.get_unspent_auth_proofs().await;
+        assert!(
+            matches!(result, Err(Error::AuthSettingsUndefined)),
+            "expected auth settings to remain undefined; got: {:?}",
             result
         );
     }
