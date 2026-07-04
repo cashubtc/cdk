@@ -69,8 +69,9 @@ fn print_digest_comparison(
 
 fn digest_group_line(group: &DigestComparisonGroup) -> String {
     format!(
-        "digest_group operations={} order_digest={} state_digest={} members={} ready={}/{} sync_states={}",
+        "digest_group operations={} consensus_backend={} order_digest={} state_digest={} members={} ready={}/{} sync_states={}",
         group.key.operation_count,
+        group.key.consensus_backend,
         group.key.order_digest,
         group.key.state_digest,
         display_list(&group.members),
@@ -100,6 +101,7 @@ impl DigestComparisonReport {
             }
             let key = DigestComparisonKey {
                 operation_count: status.peer_status.operation_count,
+                consensus_backend: status.peer_status.consensus_backend.to_string(),
                 order_digest: status.peer_status.latest_order_digest.to_string(),
                 state_digest: status.peer_status.state_digest.to_string(),
             };
@@ -195,6 +197,7 @@ struct DigestComparisonRowVariant {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum DigestComparisonDiagnosticKind {
     DigestAlert,
+    ConsensusBackendMismatch,
     HeightMismatch,
     OrderDigestMismatch,
     MaterializedStateMismatch,
@@ -204,6 +207,7 @@ impl DigestComparisonDiagnosticKind {
     fn as_str(self) -> &'static str {
         match self {
             Self::DigestAlert => "digest_alert",
+            Self::ConsensusBackendMismatch => "consensus_backend_mismatch",
             Self::HeightMismatch => "height_mismatch",
             Self::OrderDigestMismatch => "order_digest_mismatch",
             Self::MaterializedStateMismatch => "materialized_state_mismatch",
@@ -214,6 +218,7 @@ impl DigestComparisonDiagnosticKind {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct DigestComparisonKey {
     operation_count: u64,
+    consensus_backend: String,
     order_digest: String,
     state_digest: String,
 }
@@ -257,6 +262,23 @@ fn digest_comparison_diagnostics(
     }
 
     let operation_count = operation_counts.iter().next().copied().unwrap_or_default();
+    let consensus_backends = groups
+        .iter()
+        .map(|group| group.key.consensus_backend.clone())
+        .collect::<BTreeSet<_>>();
+    if consensus_backends.len() > 1 {
+        diagnostics.push(DigestComparisonDiagnostic {
+            kind: DigestComparisonDiagnosticKind::ConsensusBackendMismatch,
+            members,
+            detail: format!(
+                "operation_count={} consensus_backends={}",
+                operation_count,
+                display_set(&consensus_backends)
+            ),
+        });
+        return diagnostics;
+    }
+
     let order_digests = groups
         .iter()
         .map(|group| group.key.order_digest.clone())
@@ -476,8 +498,9 @@ fn display_set(values: &BTreeSet<String>) -> String {
 #[cfg(test)]
 mod tests {
     use cdk_common::federation::{
-        FederationId, FederationJournalDigest, FederationMaterializedStateRow,
-        FederationPeerStatus, FederationStateDigest, FEDERATION_REST_API_VERSION,
+        FederationConsensusBackendKind, FederationId, FederationJournalDigest,
+        FederationMaterializedStateRow, FederationPeerStatus, FederationStateDigest,
+        FEDERATION_REST_API_VERSION,
     };
 
     use super::*;
@@ -617,6 +640,33 @@ mod tests {
             report.diagnostics[0].kind,
             DigestComparisonDiagnosticKind::DigestAlert
         );
+    }
+
+    #[test]
+    fn digest_comparison_rejects_consensus_backend_mismatch() {
+        let order_digest = FederationJournalDigest::from_bytes([1; 32]);
+        let state_digest = FederationStateDigest::from_order_digest(order_digest);
+        let first = local_status(1, 4, order_digest, state_digest);
+        let mut second = local_status(2, 4, order_digest, state_digest);
+        second.peer_status.consensus_backend = FederationConsensusBackendKind::AlephBft;
+        let statuses = vec![first, second];
+
+        let report = DigestComparisonReport::from_statuses(&statuses);
+        let err = report
+            .ensure_converged()
+            .expect_err("backend mismatch fails");
+
+        assert!(!report.is_converged());
+        assert_eq!(report.groups.len(), 2);
+        assert!(err.to_string().contains("consensus_backend_mismatch"));
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(
+            report.diagnostics[0].kind,
+            DigestComparisonDiagnosticKind::ConsensusBackendMismatch
+        );
+        assert!(digest_group_line(&report.groups[0]).contains("consensus_backend="));
+        assert!(digest_diagnostic_line(&report.diagnostics[0])
+            .contains("kind=consensus_backend_mismatch"));
     }
 
     #[test]
