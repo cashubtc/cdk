@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::env;
+use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
     redact_federation_operator_message, FederationConfig, FederationDkgFinalizedMemberConfig,
     FederationDkgMemberKeysetShare, FederationDkgSetupMethod,
@@ -10,7 +11,7 @@ use cdk_common::federation::{
 
 use crate::cli::{CLIArgs, FederationDkgStatusArgs};
 
-pub(crate) fn run_dkg_status_command(
+pub(crate) async fn run_dkg_status_command(
     cli_args: &CLIArgs,
     args: &FederationDkgStatusArgs,
 ) -> Result<()> {
@@ -27,11 +28,19 @@ pub(crate) fn run_dkg_status_command(
     public_config.validate()?;
     private_config.validate_against_public(&public_config)?;
 
-    let keyset_shares = read_record_files(&args.keyset_shares, "DKG keyset-share record")?;
-    let transcript_signatures = read_record_files(
+    let mut keyset_shares = read_record_files(&args.keyset_shares, "DKG keyset-share record")?;
+    let mut transcript_signatures = read_record_files(
         &args.transcript_signatures,
         "DKG transcript-signature record",
     )?;
+    if args.from_database {
+        let database_records = read_database_records(cli_args).await?;
+        merge_dkg_records(
+            &mut keyset_shares,
+            &mut transcript_signatures,
+            database_records,
+        );
+    }
     let report = dkg_status_report(
         &public_config,
         &private_config,
@@ -45,6 +54,79 @@ pub(crate) fn run_dkg_status_command(
     }
 
     Ok(())
+}
+
+async fn read_database_records(cli_args: &CLIArgs) -> Result<DkgCompletionRecords> {
+    let work_dir = crate::get_work_directory(cli_args).await?;
+    let settings = load_database_settings(&work_dir, cli_args)?;
+    #[cfg(feature = "sqlcipher")]
+    let password = Some(cli_args.password.clone());
+    #[cfg(not(feature = "sqlcipher"))]
+    let password = None;
+    let (db, _, _) = crate::setup_database(&settings, &work_dir, password)
+        .await
+        .context("failed to open mint database for federation DKG status")?;
+
+    Ok(DkgCompletionRecords {
+        keyset_shares: db
+            .get_federation_dkg_member_keyset_shares()
+            .await
+            .context("failed to read persisted DKG keyset-share records")?,
+        transcript_signatures: db
+            .get_federation_dkg_transcript_signatures()
+            .await
+            .context("failed to read persisted DKG transcript-signature records")?,
+    })
+}
+
+fn load_database_settings(work_dir: &Path, cli_args: &CLIArgs) -> Result<crate::config::Settings> {
+    let config_path = cli_args
+        .config
+        .clone()
+        .unwrap_or_else(|| work_dir.join("config.toml"));
+    let mut settings = if config_path.exists() {
+        crate::config::Settings::try_new(Some(config_path.clone()))
+            .with_context(|| format!("failed to load mint config {}", config_path.display()))?
+    } else {
+        crate::config::Settings::default()
+    };
+
+    apply_database_env_overrides(&mut settings)?;
+    Ok(settings)
+}
+
+fn apply_database_env_overrides(settings: &mut crate::config::Settings) -> Result<()> {
+    if let Ok(database) = env::var(crate::env_vars::DATABASE_ENV_VAR) {
+        settings.database.engine = database.parse().map_err(anyhow::Error::msg)?;
+    }
+
+    if settings.database.engine == crate::config::DatabaseEngine::Postgres {
+        settings.database.postgres = Some(
+            settings
+                .database
+                .postgres
+                .clone()
+                .unwrap_or_default()
+                .from_env(),
+        );
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct DkgCompletionRecords {
+    keyset_shares: Vec<FederationDkgMemberKeysetShare>,
+    transcript_signatures: Vec<FederationDkgTranscriptSignatureRequest>,
+}
+
+fn merge_dkg_records(
+    keyset_shares: &mut Vec<FederationDkgMemberKeysetShare>,
+    transcript_signatures: &mut Vec<FederationDkgTranscriptSignatureRequest>,
+    records: DkgCompletionRecords,
+) {
+    keyset_shares.extend(records.keyset_shares);
+    transcript_signatures.extend(records.transcript_signatures);
 }
 
 fn read_record_files<T>(paths: &[PathBuf], label: &str) -> Result<Vec<T>>
@@ -298,6 +380,28 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "sqlcipher")]
+    fn test_db_password() -> Option<String> {
+        Some("federation-dkg-status-test-password".to_string())
+    }
+
+    #[cfg(not(feature = "sqlcipher"))]
+    fn test_db_password() -> Option<String> {
+        None
+    }
+
+    fn test_cli_args(work_dir: PathBuf) -> CLIArgs {
+        CLIArgs {
+            command: None,
+            work_dir: Some(work_dir),
+            #[cfg(feature = "sqlcipher")]
+            password: test_db_password().expect("sqlcipher test password"),
+            config: None,
+            seed_file: None,
+            enable_logging: false,
+        }
+    }
+
     fn keyset_share_from_private(
         federation_id: cdk_common::federation::FederationId,
         local_member: MemberId,
@@ -366,5 +470,66 @@ mod tests {
             .text
             .contains("missing transcript signature for member 3"));
         assert!(!report.text.contains("keyset_secret_shares"));
+    }
+
+    #[test]
+    fn merge_dkg_records_appends_database_records_to_file_records() {
+        let fixture = dkg_completion_fixture(member_id(2));
+        let mut keyset_shares = Vec::new();
+        let mut transcript_signatures = fixture.transcript_signatures[..1].to_vec();
+
+        merge_dkg_records(
+            &mut keyset_shares,
+            &mut transcript_signatures,
+            DkgCompletionRecords {
+                keyset_shares: vec![fixture.keyset_share.clone()],
+                transcript_signatures: fixture.transcript_signatures[1..].to_vec(),
+            },
+        );
+
+        assert_eq!(keyset_shares, vec![fixture.keyset_share.clone()]);
+        assert_eq!(transcript_signatures, fixture.transcript_signatures);
+        let report = dkg_status_report(
+            &fixture.setup_public_config,
+            &fixture.setup_private_config,
+            &keyset_shares,
+            &transcript_signatures,
+        );
+        assert!(report.ready);
+        assert!(report.text.contains("finalized_ready=true"));
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn read_database_records_loads_persisted_dkg_completion_records() {
+        let fixture = dkg_completion_fixture(member_id(2));
+        let work_dir =
+            std::env::temp_dir().join(format!("cdk_mintd_dkg_status_db_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work_dir);
+        std::fs::create_dir_all(&work_dir).expect("create work dir");
+
+        let settings = crate::config::Settings::default();
+        let (db, _, _) = crate::setup_database(&settings, &work_dir, test_db_password())
+            .await
+            .expect("open test database");
+        let mut tx = db.begin_transaction().await.expect("begin transaction");
+        tx.add_federation_dkg_member_keyset_share(&fixture.keyset_share)
+            .await
+            .expect("persist keyset share");
+        for signature in &fixture.transcript_signatures {
+            tx.add_federation_dkg_transcript_signature(signature)
+                .await
+                .expect("persist transcript signature");
+        }
+        tx.commit().await.expect("commit DKG records");
+        drop(db);
+
+        let records = read_database_records(&test_cli_args(work_dir.clone()))
+            .await
+            .expect("read DKG records from database");
+
+        assert_eq!(records.keyset_shares, vec![fixture.keyset_share]);
+        assert_eq!(records.transcript_signatures, fixture.transcript_signatures);
+        let _ = std::fs::remove_dir_all(&work_dir);
     }
 }

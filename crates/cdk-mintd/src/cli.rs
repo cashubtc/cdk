@@ -88,6 +88,9 @@ pub struct FederationDkgStatusArgs {
     /// Private member config JSON path used to identify the local member.
     #[arg(long)]
     pub private_config: Option<PathBuf>,
+    /// Read persisted DKG completion records from the configured mint database.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub from_database: bool,
     /// Completed local DKG keyset-share JSON record. Repeat for multiple keysets.
     #[arg(long = "keyset-share")]
     pub keyset_shares: Vec<PathBuf>,
@@ -350,6 +353,7 @@ mod tests {
             "federation-public.json",
             "--private-config",
             "member-1/federation-private.json",
+            "--from-database",
             "--keyset-share",
             "member-1/dkg-keyset-share.json",
             "--transcript-signature",
@@ -372,6 +376,7 @@ mod tests {
             status.private_config,
             Some(PathBuf::from("member-1/federation-private.json"))
         );
+        assert!(status.from_database);
         assert_eq!(
             status.keyset_shares,
             vec![PathBuf::from("member-1/dkg-keyset-share.json")]

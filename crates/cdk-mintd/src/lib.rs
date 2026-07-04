@@ -97,7 +97,7 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                     federation_digest_compare::run_compare_digests_command(args, compare).await?;
                 }
                 cli::FederationCommand::DkgStatus(status) => {
-                    federation_dkg_status::run_dkg_status_command(args, status)?;
+                    federation_dkg_status::run_dkg_status_command(args, status).await?;
                 }
                 cli::FederationCommand::Inspect(inspect) => {
                     federation_inspect::run_inspect_command(args, inspect)?;
