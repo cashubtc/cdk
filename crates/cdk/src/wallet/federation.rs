@@ -1277,7 +1277,11 @@ impl MintConnector for FederatedMintConnector {
     }
 
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
-        self.primary_connector()?.get_mint_info().await
+        self.validate_member_active_keysets().await?;
+        self.call_first_healthy_member("mint info", |connector| async move {
+            connector.get_mint_info().await
+        })
+        .await
     }
 
     async fn post_check_state(
@@ -3005,6 +3009,43 @@ mod tests {
             .expect("mint response");
 
         assert_aggregate_response_valid(&bundle, &outputs, &response);
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_gets_mint_info_from_first_healthy_member() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let expected = MintInfo::new().name("healthy federation member");
+        let mut connectors = BTreeMap::new();
+
+        let unavailable_member = MockMintConnector::new();
+        unavailable_member.set_active_keyset(advertised.clone());
+        unavailable_member.set_mint_info_error("primary unavailable");
+        connectors.insert(
+            member_id(1),
+            Arc::new(unavailable_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let healthy_member = MockMintConnector::new();
+        healthy_member.set_active_keyset(advertised.clone());
+        healthy_member.set_mint_info_response(Ok(expected.clone()));
+        connectors.insert(
+            member_id(2),
+            Arc::new(healthy_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let unused_member = MockMintConnector::new();
+        unused_member.set_active_keyset(advertised);
+        connectors.insert(
+            member_id(3),
+            Arc::new(unused_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let response = connector.get_mint_info().await.expect("mint info");
+
+        assert_eq!(response, expected);
     }
 
     #[tokio::test]

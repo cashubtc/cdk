@@ -452,6 +452,8 @@ pub struct MockMintConnector {
     pub mint_keys_barrier: Mutex<Option<Arc<Barrier>>>,
     /// Mock mint info state
     pub mint_info: Mutex<MintInfo>,
+    /// Optional mock mint info error.
+    pub mint_info_error: Mutex<Option<String>>,
     /// Response for post_check_state calls
     pub check_state_response: Mutex<Option<Result<CheckStateResponse, Error>>>,
     /// Optional barrier used by tests to assert concurrent check-state calls.
@@ -523,6 +525,7 @@ impl MockMintConnector {
             mint_keys_error: Mutex::new(None),
             mint_keys_barrier: Mutex::new(None),
             mint_info: Mutex::new(mint_info),
+            mint_info_error: Mutex::new(None),
             check_state_response: Mutex::new(None),
             check_state_barrier: Mutex::new(None),
             restore_response: Mutex::new(None),
@@ -607,9 +610,16 @@ impl MockMintConnector {
 
     pub fn set_mint_info_response(&self, response: Result<MintInfo, Error>) {
         match response {
-            Ok(mint_info) => *self.mint_info.lock().unwrap() = mint_info,
+            Ok(mint_info) => {
+                *self.mint_info_error.lock().unwrap() = None;
+                *self.mint_info.lock().unwrap() = mint_info;
+            }
             Err(_) => unimplemented!("error responses for mint info state are not supported"),
         }
+    }
+
+    pub fn set_mint_info_error(&self, message: &str) {
+        *self.mint_info_error.lock().unwrap() = Some(message.to_string());
     }
 
     pub fn set_active_keyset(&self, keyset: KeySet) {
@@ -894,6 +904,10 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn get_mint_info(&self) -> Result<crate::nuts::MintInfo, Error> {
+        if let Some(message) = self.mint_info_error.lock().unwrap().clone() {
+            return Err(Error::Custom(message));
+        }
+
         Ok(self.mint_info.lock().unwrap().clone())
     }
 
