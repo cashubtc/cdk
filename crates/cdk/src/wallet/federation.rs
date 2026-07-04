@@ -1043,21 +1043,36 @@ impl FederatedMintConnector {
 impl MintConnector for FederatedMintConnector {
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, Error> {
-        self.primary_connector()?.resolve_dns_txt(domain).await
+        let domain = domain.to_string();
+        self.call_first_healthy_member("DNS TXT resolution", |connector| {
+            let domain = domain.clone();
+            async move { connector.resolve_dns_txt(&domain).await }
+        })
+        .await
     }
 
     async fn fetch_lnurl_pay_request(
         &self,
         url: &str,
     ) -> Result<crate::lightning_address::LnurlPayResponse, Error> {
-        self.primary_connector()?.fetch_lnurl_pay_request(url).await
+        let url = url.to_string();
+        self.call_first_healthy_member("LNURL pay request", |connector| {
+            let url = url.clone();
+            async move { connector.fetch_lnurl_pay_request(&url).await }
+        })
+        .await
     }
 
     async fn fetch_lnurl_invoice(
         &self,
         url: &str,
     ) -> Result<crate::lightning_address::LnurlPayInvoiceResponse, Error> {
-        self.primary_connector()?.fetch_lnurl_invoice(url).await
+        let url = url.to_string();
+        self.call_first_healthy_member("LNURL invoice request", |connector| {
+            let url = url.clone();
+            async move { connector.fetch_lnurl_invoice(&url).await }
+        })
+        .await
     }
 
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
@@ -3046,6 +3061,110 @@ mod tests {
         let response = connector.get_mint_info().await.expect("mint info");
 
         assert_eq!(response, expected);
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_fetches_lnurl_pay_request_from_first_healthy_member() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let mut connectors = BTreeMap::new();
+
+        let unavailable_member = MockMintConnector::new();
+        unavailable_member.set_active_keyset(advertised.clone());
+        unavailable_member.set_lnurl_pay_request_response(Err(crate::Error::Custom(
+            "primary unavailable".to_string(),
+        )));
+        connectors.insert(
+            member_id(1),
+            Arc::new(unavailable_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let healthy_member = MockMintConnector::new();
+        healthy_member.set_active_keyset(advertised.clone());
+        healthy_member.set_lnurl_pay_request_response(Ok(
+            crate::lightning_address::LnurlPayResponse {
+                callback: "https://example.com/callback".to_string(),
+                min_sendable: 1,
+                max_sendable: 1_000,
+                metadata: "[]".to_string(),
+                tag: Some("payRequest".to_string()),
+                reason: None,
+            },
+        ));
+        connectors.insert(
+            member_id(2),
+            Arc::new(healthy_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let unused_member = MockMintConnector::new();
+        unused_member.set_active_keyset(advertised);
+        connectors.insert(
+            member_id(3),
+            Arc::new(unused_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let response = connector
+            .fetch_lnurl_pay_request("https://example.com/.well-known/lnurlp/alice")
+            .await
+            .expect("lnurl pay request");
+
+        assert_eq!(response.callback, "https://example.com/callback");
+        assert_eq!(response.min_sendable, 1);
+        assert_eq!(response.max_sendable, 1_000);
+        assert_eq!(response.metadata, "[]");
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_fetches_lnurl_invoice_from_first_healthy_member() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let mut connectors = BTreeMap::new();
+
+        let unavailable_member = MockMintConnector::new();
+        unavailable_member.set_active_keyset(advertised.clone());
+        unavailable_member.set_lnurl_invoice_response(Err(crate::Error::Custom(
+            "primary unavailable".to_string(),
+        )));
+        connectors.insert(
+            member_id(1),
+            Arc::new(unavailable_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let healthy_member = MockMintConnector::new();
+        healthy_member.set_active_keyset(advertised.clone());
+        healthy_member.set_lnurl_invoice_response(Ok(
+            crate::lightning_address::LnurlPayInvoiceResponse {
+                pr: Some("bolt11-invoice".to_string()),
+                success_action: None,
+                routes: None,
+                reason: None,
+            },
+        ));
+        connectors.insert(
+            member_id(2),
+            Arc::new(healthy_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let unused_member = MockMintConnector::new();
+        unused_member.set_active_keyset(advertised);
+        connectors.insert(
+            member_id(3),
+            Arc::new(unused_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let response = connector
+            .fetch_lnurl_invoice("https://example.com/callback?amount=1000")
+            .await
+            .expect("lnurl invoice");
+
+        assert_eq!(response.pr.as_deref(), Some("bolt11-invoice"));
+        assert!(response.success_action.is_none());
+        assert!(response.routes.is_none());
+        assert!(response.reason.is_none());
     }
 
     #[tokio::test]

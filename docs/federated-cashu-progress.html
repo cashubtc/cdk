@@ -522,15 +522,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: read federated mint info from healthy members</span>
+          <span class="value">fix: resolve federated lnurl through healthy members</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Wallet federation signing paths now fan out concurrently, mint and melt quote creation plus mint-info reads fall through to the first healthy member, single and batch mint quote status can use threshold member views, melt status aggregates persisted change shares for recovery, and fresh primary-created quotes still have primary fallback until quote propagation is fully consensus-backed</span>
+          <span class="value">Wallet federation signing paths now fan out concurrently, mint and melt quote creation, mint-info reads, and LNURL pay/invoice helpers fall through to the first healthy member, single and batch mint quote status can use threshold member views, melt status aggregates persisted change shares for recovery, and fresh primary-created quotes still have primary fallback until quote propagation is fully consensus-backed</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Broaden long-partition runs to larger rosters, decide the remaining primary convenience routes for LNURL/auth handling, and choose the first production BFT ordering backend path</span>
+          <span class="value">Broaden long-partition runs to larger rosters, decide the remaining primary-scoped auth helper behavior, and choose the first production BFT ordering backend path</span>
         </div>
       </aside>
     </header>
@@ -1484,7 +1484,7 @@
           </article>
           <article class="item">
             <h3>Wallet signing fanout is threshold-first</h3>
-            <p>Federated wallet mint, batch mint, swap, melt, and restore calls now launch against members concurrently and return once a signing threshold replies. Mint and melt quote creation plus mint-info reads now use the first healthy member instead of requiring the primary to be wallet-reachable, single and NUT-29 batch mint quote status plus melt quote status accept threshold views after propagation, melt status aggregates persisted change shares for recovery, and status paths still fall back to the primary for freshly created quotes that have not reached a quorum yet.</p>
+            <p>Federated wallet mint, batch mint, swap, melt, and restore calls now launch against members concurrently and return once a signing threshold replies. Mint and melt quote creation, mint-info reads, and LNURL pay/invoice helpers now use the first healthy member instead of requiring the primary to be wallet-reachable, single and NUT-29 batch mint quote status plus melt quote status accept threshold views after propagation, melt status aggregates persisted change shares for recovery, and status paths still fall back to the primary for freshly created quotes that have not reached a quorum yet.</p>
           </article>
           <article class="item">
             <h3>Offline pending-melt finalization verified</h3>
@@ -2714,7 +2714,7 @@
             <tr>
               <td>Wallet federation signing fanout</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk --features wallet,mint,federation federated_mint_connector_fans_out_mint_members_concurrently -- --test-threads 1` passed the barrier-backed signing fanout regression. Focused mint, batch mint, and melt quote-status tests passed threshold-view and primary-fallback coverage, mint and melt quote creation plus mint-info reads now have first-healthy-member fallback coverage, definitive quote errors stop retry, and melt-status recovery aggregates persisted change shares. `cargo test -p cdk --features wallet,mint,federation federated_mint_connector -- --test-threads 1` passed all 31 wallet federation connector tests, covering mint-info fallback, quote creation fallback, definitive quote-error handling, mint, batch mint, swap, melt, restore, keyset validation, check-state quorum views, HTTP wrapper rotation, threshold quote-status reads, primary fallback, and status change aggregation.</td>
+              <td>`cargo test -p cdk --features wallet,mint,federation federated_mint_connector_fetches_lnurl -- --test-threads 1` passed the LNURL pay-request and invoice first-healthy-member fallback regressions. `cargo test -p cdk --features wallet,mint,federation federated_mint_connector_fans_out_mint_members_concurrently -- --test-threads 1` passed the barrier-backed signing fanout regression. Focused mint, batch mint, and melt quote-status tests passed threshold-view and primary-fallback coverage, mint and melt quote creation, mint-info reads, and LNURL pay/invoice helpers now have first-healthy-member fallback coverage, definitive quote errors stop retry, and melt-status recovery aggregates persisted change shares. `cargo test -p cdk --features wallet,mint,federation federated_mint_connector -- --test-threads 1` passed all 33 wallet federation connector tests, covering mint-info fallback, LNURL fallback, quote creation fallback, definitive quote-error handling, mint, batch mint, swap, melt, restore, keyset validation, check-state quorum views, HTTP wrapper rotation, threshold quote-status reads, primary fallback, and status change aggregation.</td>
               <td>Move remaining quote visibility checks from best-effort status reads into explicit consensus-backed readiness once the production ordering backend is chosen.</td>
             </tr>
             <tr>
