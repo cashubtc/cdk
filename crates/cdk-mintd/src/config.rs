@@ -1,4 +1,8 @@
+#[cfg(feature = "federation")]
+use std::fmt;
 use std::path::PathBuf;
+#[cfg(feature = "federation")]
+use std::str::FromStr;
 
 use bitcoin::hashes::{sha256, Hash};
 use cdk::nuts::{CurrencyUnit, PublicKey};
@@ -1052,10 +1056,65 @@ pub struct Federation {
     /// Enable federation member mode for this mint.
     #[serde(default)]
     pub enabled: bool,
+    /// Consensus backend selected for ordering federation operations.
+    #[serde(default)]
+    pub consensus_backend: FederationConsensusBackend,
     /// Path to the shared public federation config JSON file.
     pub public_config_path: Option<PathBuf>,
     /// Path to this member's private federation config JSON file.
     pub private_config_path: Option<PathBuf>,
+}
+
+/// Federation consensus backend selected by mintd runtime configuration.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+#[cfg(feature = "federation")]
+pub enum FederationConsensusBackend {
+    /// Deterministic local append-log backend for tests, local smoke, and MVP wiring.
+    #[default]
+    InMemory,
+    /// Future AlephBFT-backed production ordering backend.
+    AlephBft,
+}
+
+#[cfg(feature = "federation")]
+impl FederationConsensusBackend {
+    /// Return the canonical config string for this backend.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InMemory => "in_memory",
+            Self::AlephBft => "aleph_bft",
+        }
+    }
+
+    /// Return true when this build can instantiate the backend.
+    #[must_use]
+    pub fn is_available(self) -> bool {
+        matches!(self, Self::InMemory)
+    }
+}
+
+#[cfg(feature = "federation")]
+impl fmt::Display for FederationConsensusBackend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[cfg(feature = "federation")]
+impl FromStr for FederationConsensusBackend {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().replace('-', "_").as_str() {
+            "in_memory" | "inmemory" | "memory" => Ok(Self::InMemory),
+            "aleph_bft" | "alephbft" => Ok(Self::AlephBft),
+            _ => Err(format!(
+                "Unknown federation consensus backend: {s}. Valid options: in_memory, aleph_bft"
+            )),
+        }
+    }
 }
 
 /// Transaction limits configuration

@@ -570,6 +570,13 @@ fn configure_federation(
         return Ok(mint_builder);
     }
 
+    if !federation.consensus_backend.is_available() {
+        bail!(
+            "federation consensus backend `{}` is not available in this build; supported backend: in_memory",
+            federation.consensus_backend
+        );
+    }
+
     let public_config_path = federation.public_config_path.as_deref().ok_or_else(|| {
         anyhow!("federation.public_config_path must be set when federation is enabled")
     })?;
@@ -585,9 +592,10 @@ fn configure_federation(
         .context("invalid federation runtime config")?;
 
     tracing::info!(
-        "Loaded federation {} as member {}",
+        "Loaded federation {} as member {} using {} consensus backend",
         runtime_config.federation_id(),
-        runtime_config.member_id()
+        runtime_config.member_id(),
+        federation.consensus_backend
     );
 
     Ok(mint_builder.with_federation_config(runtime_config))
@@ -2132,6 +2140,7 @@ mod tests {
         let settings = config::Settings {
             federation: Some(config::Federation {
                 enabled: true,
+                consensus_backend: config::FederationConsensusBackend::InMemory,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
             }),
@@ -2163,6 +2172,7 @@ mod tests {
         let settings = config::Settings {
             federation: Some(config::Federation {
                 enabled: true,
+                consensus_backend: config::FederationConsensusBackend::InMemory,
                 public_config_path: None,
                 private_config_path: None,
             }),
@@ -2176,6 +2186,36 @@ mod tests {
         assert!(
             err.to_string().contains("public_config_path"),
             "error should mention missing public path: {err}"
+        );
+    }
+
+    #[cfg(all(feature = "federation", feature = "sqlite"))]
+    #[tokio::test]
+    async fn configure_federation_rejects_unavailable_consensus_backend() {
+        use cdk::mint::MintBuilder;
+        use cdk_sqlite::mint::memory;
+
+        let settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                consensus_backend: config::FederationConsensusBackend::AlephBft,
+                public_config_path: None,
+                private_config_path: None,
+            }),
+            ..Default::default()
+        };
+        let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
+        let builder = MintBuilder::new(localstore);
+        let err = configure_federation(&settings, builder)
+            .expect_err("unavailable consensus backend should fail startup");
+
+        assert!(
+            err.to_string().contains("aleph_bft"),
+            "error should name unavailable backend: {err}"
+        );
+        assert!(
+            err.to_string().contains("not available"),
+            "error should explain backend availability: {err}"
         );
     }
 
@@ -2285,6 +2325,7 @@ mod tests {
             let settings = config::Settings {
                 federation: Some(config::Federation {
                     enabled: true,
+                    consensus_backend: config::FederationConsensusBackend::InMemory,
                     public_config_path: Some(public_config_path.clone()),
                     private_config_path: Some(private_config_path.clone()),
                 }),

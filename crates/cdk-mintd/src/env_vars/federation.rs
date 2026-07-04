@@ -1,16 +1,25 @@
 use std::env;
 use std::path::PathBuf;
 
-use crate::config::Federation;
+use anyhow::{anyhow, Result};
+
+use crate::config::{Federation, FederationConsensusBackend};
 
 pub const ENV_FEDERATION_ENABLED: &str = "CDK_MINTD_FEDERATION_ENABLED";
 pub const ENV_FEDERATION_PUBLIC_CONFIG_PATH: &str = "CDK_MINTD_FEDERATION_PUBLIC_CONFIG_PATH";
 pub const ENV_FEDERATION_PRIVATE_CONFIG_PATH: &str = "CDK_MINTD_FEDERATION_PRIVATE_CONFIG_PATH";
+pub const ENV_FEDERATION_CONSENSUS_BACKEND: &str = "CDK_MINTD_FEDERATION_CONSENSUS_BACKEND";
 
 impl Federation {
-    pub fn from_env(mut self) -> Self {
+    pub fn from_env(mut self) -> Result<Self> {
         if let Ok(enabled_str) = env::var(ENV_FEDERATION_ENABLED) {
             self.enabled = enabled_str.parse::<bool>().unwrap_or(false);
+        }
+
+        if let Ok(backend) = env::var(ENV_FEDERATION_CONSENSUS_BACKEND) {
+            self.consensus_backend = backend
+                .parse::<FederationConsensusBackend>()
+                .map_err(|err| anyhow!(err))?;
         }
 
         if let Ok(path) = env::var(ENV_FEDERATION_PUBLIC_CONFIG_PATH) {
@@ -21,7 +30,7 @@ impl Federation {
             self.private_config_path = Some(PathBuf::from(path));
         }
 
-        self
+        Ok(self)
     }
 }
 
@@ -37,14 +46,24 @@ mod tests {
             .expect("federation env test lock should not be poisoned")
     }
 
+    fn clear_federation_env() {
+        env::remove_var(ENV_FEDERATION_ENABLED);
+        env::remove_var(ENV_FEDERATION_PUBLIC_CONFIG_PATH);
+        env::remove_var(ENV_FEDERATION_PRIVATE_CONFIG_PATH);
+        env::remove_var(ENV_FEDERATION_CONSENSUS_BACKEND);
+    }
+
     #[test]
     fn federation_env_overrides_paths_and_enabled() {
         let _guard = env_lock();
+        clear_federation_env();
         env::set_var(ENV_FEDERATION_ENABLED, "true");
         env::set_var(ENV_FEDERATION_PUBLIC_CONFIG_PATH, "/tmp/public-fed.json");
         env::set_var(ENV_FEDERATION_PRIVATE_CONFIG_PATH, "/tmp/private-fed.json");
 
-        let config = Federation::default().from_env();
+        let config = Federation::default()
+            .from_env()
+            .expect("federation env config");
 
         assert!(config.enabled);
         assert_eq!(
@@ -55,9 +74,48 @@ mod tests {
             config.private_config_path,
             Some(PathBuf::from("/tmp/private-fed.json"))
         );
+        assert_eq!(
+            config.consensus_backend,
+            FederationConsensusBackend::InMemory
+        );
 
-        env::remove_var(ENV_FEDERATION_ENABLED);
-        env::remove_var(ENV_FEDERATION_PUBLIC_CONFIG_PATH);
-        env::remove_var(ENV_FEDERATION_PRIVATE_CONFIG_PATH);
+        clear_federation_env();
+    }
+
+    #[test]
+    fn federation_env_overrides_consensus_backend() {
+        let _guard = env_lock();
+        clear_federation_env();
+        env::set_var(ENV_FEDERATION_CONSENSUS_BACKEND, "aleph_bft");
+
+        let config = Federation::default()
+            .from_env()
+            .expect("federation env config");
+
+        assert_eq!(
+            config.consensus_backend,
+            FederationConsensusBackend::AlephBft
+        );
+
+        clear_federation_env();
+    }
+
+    #[test]
+    fn federation_env_rejects_unknown_consensus_backend() {
+        let _guard = env_lock();
+        clear_federation_env();
+        env::set_var(ENV_FEDERATION_CONSENSUS_BACKEND, "raft");
+
+        let err = Federation::default()
+            .from_env()
+            .expect_err("unknown consensus backend should fail");
+
+        assert!(
+            err.to_string()
+                .contains("Unknown federation consensus backend"),
+            "error should mention unknown backend: {err}"
+        );
+
+        clear_federation_env();
     }
 }

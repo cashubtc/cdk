@@ -356,6 +356,9 @@ max_delay_time = 3
 # Set to true to run this mint as a federation member.
 # The public/private JSON files are produced by the trusted-dealer setup path.
 # enabled = false
+# Current supported value is "in_memory" for local MVP/regtest wiring.
+# Future production BFT backends such as "aleph_bft" must fail closed until implemented.
+# consensus_backend = "in_memory"
 # public_config_path = "/path/to/federation-public.json"
 # private_config_path = "/path/to/member-private.json"
 
