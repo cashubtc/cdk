@@ -125,6 +125,32 @@ impl FederatedMintConnector {
             })
     }
 
+    async fn call_first_healthy_member<R, F, Fut>(
+        &self,
+        operation: &str,
+        mut call_member: F,
+    ) -> Result<R, Error>
+    where
+        F: FnMut(Arc<dyn MintConnector + Send + Sync>) -> Fut,
+        Fut: std::future::Future<Output = Result<R, Error>>,
+    {
+        let mut failures = Vec::new();
+
+        for (member_id, connector) in &self.member_connectors {
+            match call_member(connector.clone()).await {
+                Ok(response) => return Ok(response),
+                Err(err) if err.is_definitive_failure() => return Err(err),
+                Err(err) => failures.push(format!("member {}: {}", member_id, err)),
+            }
+        }
+
+        Err(Error::InvalidMintResponse(format!(
+            "no healthy federation member accepted {}: {}",
+            operation,
+            failures.join("; ")
+        )))
+    }
+
     fn active_aggregate_keysets(&self) -> Vec<KeySet> {
         self.public_config
             .keysets
@@ -1082,7 +1108,11 @@ impl MintConnector for FederatedMintConnector {
         &self,
         request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<String>, Error> {
-        self.primary_connector()?.post_mint_quote(request).await
+        self.call_first_healthy_member("mint quote creation", |connector| {
+            let request = request.clone();
+            async move { connector.post_mint_quote(request).await }
+        })
+        .await
     }
 
     async fn post_mint(
@@ -1156,7 +1186,11 @@ impl MintConnector for FederatedMintConnector {
         &self,
         request: MeltQuoteRequest,
     ) -> Result<MeltQuoteCreateResponse<String>, Error> {
-        self.primary_connector()?.post_melt_quote(request).await
+        self.call_first_healthy_member("melt quote creation", |connector| {
+            let request = request.clone();
+            async move { connector.post_melt_quote(request).await }
+        })
+        .await
     }
 
     async fn get_mint_quote_status(
@@ -1559,8 +1593,8 @@ mod tests {
     use cdk_common::util::unix_time;
     use cdk_common::{
         Amount, BlindSignature, BlindedMessage, Bolt11Invoice, CurrencyUnit, Id,
-        MeltQuoteBolt11Response, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse,
-        MintQuoteBolt11Response, PublicKey, QuoteId,
+        MeltQuoteBolt11Request, MeltQuoteBolt11Response, MeltQuoteCreateResponse, MeltQuoteRequest,
+        MeltQuoteResponse, MintQuoteBolt11Response, PublicKey, QuoteId,
     };
     use cdk_common::{MintQuoteRequest, MintQuoteResponse, MintResponse, SecretKey};
     use cdk_fake_wallet::{create_fake_invoice, FakeWallet};
@@ -1943,6 +1977,20 @@ mod tests {
             state: MeltQuoteState::Paid,
             expiry: 42,
             payment_preimage: Some("payment-preimage".to_string()),
+            change: None,
+            request: Some("bolt11-invoice".to_string()),
+            unit: Some(CurrencyUnit::Sat),
+        })
+    }
+
+    fn melt_quote_create_response() -> MeltQuoteCreateResponse<String> {
+        MeltQuoteCreateResponse::Bolt11(MeltQuoteBolt11Response {
+            quote: "melt-quote".to_string(),
+            amount: Amount::from(1),
+            fee_reserve: Amount::ZERO,
+            state: MeltQuoteState::Unpaid,
+            expiry: 42,
+            payment_preimage: None,
             change: None,
             request: Some("bolt11-invoice".to_string()),
             unit: Some(CurrencyUnit::Sat),
@@ -2635,6 +2683,14 @@ mod tests {
             unit: CurrencyUnit::Sat,
             description: None,
             pubkey: None,
+        })
+    }
+
+    fn bolt11_melt_quote_request() -> MeltQuoteRequest {
+        MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+            request: create_fake_invoice(1000, "".to_string()),
+            unit: CurrencyUnit::Sat,
+            options: None,
         })
     }
 
@@ -3555,6 +3611,133 @@ mod tests {
             .expect("mint quote status");
 
         assert_eq!(response.state(), Some(MintQuoteState::Paid));
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_creates_mint_quote_with_first_healthy_member() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let quote_id = QuoteId::new();
+        let expected = bolt11_quote_response(&quote_id, 3);
+        let mut connectors = BTreeMap::new();
+
+        let unavailable_member = MockMintConnector::new();
+        unavailable_member.set_active_keyset(advertised.clone());
+        unavailable_member.set_post_mint_quote_response(Err(crate::Error::Custom(
+            "primary unavailable".to_string(),
+        )));
+        connectors.insert(
+            member_id(1),
+            Arc::new(unavailable_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let healthy_member = MockMintConnector::new();
+        healthy_member.set_active_keyset(advertised.clone());
+        healthy_member.set_post_mint_quote_response(Ok(expected.clone()));
+        connectors.insert(
+            member_id(2),
+            Arc::new(healthy_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let unused_member = MockMintConnector::new();
+        unused_member.set_active_keyset(advertised);
+        connectors.insert(
+            member_id(3),
+            Arc::new(unused_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let response = connector
+            .post_mint_quote(bolt11_quote_request(3))
+            .await
+            .expect("mint quote");
+
+        assert_eq!(response.quote(), expected.quote());
+        assert_eq!(response.request(), expected.request());
+        assert_eq!(response.method(), expected.method());
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_creates_melt_quote_with_first_healthy_member() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let expected = melt_quote_create_response();
+        let mut connectors = BTreeMap::new();
+
+        let unavailable_member = MockMintConnector::new();
+        unavailable_member.set_active_keyset(advertised.clone());
+        unavailable_member.set_post_melt_quote_response(Err(crate::Error::Custom(
+            "primary unavailable".to_string(),
+        )));
+        connectors.insert(
+            member_id(1),
+            Arc::new(unavailable_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let healthy_member = MockMintConnector::new();
+        healthy_member.set_active_keyset(advertised.clone());
+        healthy_member.set_post_melt_quote_response(Ok(expected.clone()));
+        connectors.insert(
+            member_id(2),
+            Arc::new(healthy_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let unused_member = MockMintConnector::new();
+        unused_member.set_active_keyset(advertised);
+        connectors.insert(
+            member_id(3),
+            Arc::new(unused_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let response = connector
+            .post_melt_quote(bolt11_melt_quote_request())
+            .await
+            .expect("melt quote");
+
+        assert_eq!(response, expected);
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_does_not_retry_definitive_quote_errors() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let expected = bolt11_quote_response(&QuoteId::new(), 3);
+        let mut connectors = BTreeMap::new();
+
+        let rejecting_member = MockMintConnector::new();
+        rejecting_member.set_active_keyset(advertised.clone());
+        rejecting_member.set_post_mint_quote_response(Err(crate::Error::InvalidPaymentMethod));
+        connectors.insert(
+            member_id(1),
+            Arc::new(rejecting_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let unused_member = MockMintConnector::new();
+        unused_member.set_active_keyset(advertised.clone());
+        unused_member.set_post_mint_quote_response(Ok(expected));
+        connectors.insert(
+            member_id(2),
+            Arc::new(unused_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let final_member = MockMintConnector::new();
+        final_member.set_active_keyset(advertised);
+        connectors.insert(
+            member_id(3),
+            Arc::new(final_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let err = connector
+            .post_mint_quote(bolt11_quote_request(3))
+            .await
+            .expect_err("definitive error");
+
+        assert!(matches!(err, crate::Error::InvalidPaymentMethod));
     }
 
     #[tokio::test]

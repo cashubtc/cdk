@@ -458,11 +458,15 @@ pub struct MockMintConnector {
     pub check_state_barrier: Mutex<Option<Arc<Barrier>>>,
     /// Response for post_restore calls
     pub restore_response: Mutex<Option<Result<RestoreResponse, Error>>>,
+    /// Response for post_mint_quote calls
+    pub post_mint_quote_response: Mutex<Option<Result<MintQuoteResponse<String>, Error>>>,
     /// Response for get_mint_quote_status calls
     pub mint_quote_status_response: Mutex<Option<Result<MintQuoteBolt11Response<String>, Error>>>,
     /// Response for post_batch_check_mint_quote_status calls
     pub batch_mint_quote_status_response:
         Mutex<Option<Result<Vec<MintQuoteResponse<String>>, Error>>>,
+    /// Response for post_melt_quote calls
+    pub post_melt_quote_response: Mutex<Option<Result<MeltQuoteCreateResponse<String>, Error>>>,
     /// Response for get_melt_quote_status calls
     pub melt_quote_status_response: Mutex<Option<Result<MeltQuoteBolt11Response<String>, Error>>>,
     /// Queue of responses for successive get_melt_quote_status calls.
@@ -522,8 +526,10 @@ impl MockMintConnector {
             check_state_response: Mutex::new(None),
             check_state_barrier: Mutex::new(None),
             restore_response: Mutex::new(None),
+            post_mint_quote_response: Mutex::new(None),
             mint_quote_status_response: Mutex::new(None),
             batch_mint_quote_status_response: Mutex::new(None),
+            post_melt_quote_response: Mutex::new(None),
             melt_quote_status_response: Mutex::new(None),
             melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
             post_mint_response: Mutex::new(None),
@@ -627,11 +633,22 @@ impl MockMintConnector {
         *self.mint_quote_status_response.lock().unwrap() = Some(response);
     }
 
+    pub fn set_post_mint_quote_response(&self, response: Result<MintQuoteResponse<String>, Error>) {
+        *self.post_mint_quote_response.lock().unwrap() = Some(response);
+    }
+
     pub fn set_batch_mint_quote_status_response(
         &self,
         response: Result<Vec<MintQuoteResponse<String>>, Error>,
     ) {
         *self.batch_mint_quote_status_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn set_post_melt_quote_response(
+        &self,
+        response: Result<MeltQuoteCreateResponse<String>, Error>,
+    ) {
+        *self.post_melt_quote_response.lock().unwrap() = Some(response);
     }
 
     pub fn set_melt_quote_status_response(
@@ -791,7 +808,11 @@ impl MintConnector for MockMintConnector {
         &self,
         _request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<String>, Error> {
-        unimplemented!()
+        self.post_mint_quote_response
+            .lock()
+            .unwrap()
+            .take()
+            .expect("MockMintConnector: post_mint_quote called without configured response")
     }
 
     async fn get_mint_quote_status(
@@ -831,7 +852,11 @@ impl MintConnector for MockMintConnector {
         &self,
         _request: MeltQuoteRequest,
     ) -> Result<MeltQuoteCreateResponse<String>, Error> {
-        unimplemented!()
+        self.post_melt_quote_response
+            .lock()
+            .unwrap()
+            .take()
+            .expect("MockMintConnector: post_melt_quote called without configured response")
     }
 
     async fn get_melt_quote_status(
