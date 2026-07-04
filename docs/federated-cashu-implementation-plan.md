@@ -38,6 +38,16 @@ Commit changes to Git regularly after each coherent section, milestone, or indep
 
 Never commit secrets, generated private member configs, private key shares, machine-specific paths, or personally identifiable local environment details. Test fixtures may include deterministic fake keys only when they are clearly marked as non-production material.
 
+## Blocking bugs
+
+If a bug or design issue blocks safe progress, record it here before continuing milestone work. Blocking bugs must be fixed before dependent milestones continue.
+
+A blocker is only resolved when the fix is tested and the code is clean: no debug scaffolding, temporary naming, fake shortcuts, relaxed validation, one-off tools, extra logs, generated artifacts, or other traces of the workaround remain in production paths.
+
+Current blocking bugs:
+
+- None recorded.
+
 ## Sources reviewed
 
 CDK source areas:
