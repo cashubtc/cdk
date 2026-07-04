@@ -358,19 +358,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Materialized state digests now cover unresolved payment-observation evidence</span>
+          <span class="value">Postgres-backed federation regtest helpers are now available</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: digest payment observation evidence</span>
+          <span class="value">feat: add postgres federation regtest helpers</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Accepted payment observations affect the materialized digest even before real-backend quorum finalizes a quote</span>
+          <span class="value">`just fed-regtest-postgres*` can generate schema-backed member configs, run smoke, start members, check signed status, stop, and clean</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Run or further script storage-backed process smoke, especially Postgres-backed federation drills</span>
+          <span class="value">Run the generated Postgres-backed process smoke against a live database service</span>
         </div>
       </aside>
     </header>
@@ -1271,6 +1271,10 @@
             <h3>Postgres smoke configs generated</h3>
             <p>The trusted-dealer generator now accepts a database engine, a member-varying Postgres URL template, or a shared Postgres base URL that expands into per-member schemas before writing local federation material.</p>
           </article>
+          <article class="item">
+            <h3>Postgres regtest helpers added</h3>
+            <p>The repo-level helper set now has `fed-regtest-postgres` recipes for generation, smoke execution, start, signed status, stop, and cleanup using the Postgres-enabled mintd feature set.</p>
+          </article>
         </div>
       </section>
 
@@ -1871,6 +1875,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation -- --test-threads 1` passed 33 mintd federation tests, including Postgres trusted-dealer CLI parsing, distinct per-member Postgres URL generation, shared-base URL schema generation, and invalid option rejection. `cargo build -p cdk-mintd --features federation,fakewallet,sqlite,postgres` passed, and a generated Postgres-backed federation config bundle produced one shared database URL with distinct member schemas. A local Postgres probe found no listening service, so the live process smoke remains pending.</td>
               <td>Start a live Postgres-backed local federation smoke once a Postgres service is available, then compare the same signed status and state digest gates against the SQLite smoke.</td>
+            </tr>
+            <tr>
+              <td>Postgres federation helper recipes</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`just --show fed-regtest-postgres-generate`, `just --show fed-regtest-postgres`, `just --show fed-regtest-postgres-start`, `just --show fed-regtest-postgres-status`, `just --show fed-regtest-postgres-stop`, `just --show fed-regtest-postgres-clean`, and `just --summary` passed. `cargo build -p cdk-mintd --features federation,fakewallet,sqlite,postgres,prometheus` passed. `just fed-regtest-postgres-generate` produced a three-member config bundle with Postgres engines, distinct member schemas, Prometheus-enabled member configs, and a smoke script that passes `bash -n`; focused mintd tests for Postgres base-url parsing and artifact generation passed.</td>
+              <td>Run `just fed-regtest-postgres` against a live Postgres service and compare convergence, restart, catch-up, metrics, and digest evidence with the SQLite helper smoke.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>

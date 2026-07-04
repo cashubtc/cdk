@@ -501,6 +501,92 @@ fed-regtest dir="target/cdk-fed-regtest" members="5" threshold="3" port_start="2
   just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
   CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
 
+# Generate local fake-wallet federation configs backed by PostgreSQL member schemas
+fed-regtest-postgres-generate dir="target/cdk-fed-regtest-postgres" members="5" threshold="3" port_start="22885" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  cargo build -p cdk-mintd --features federation,fakewallet,sqlite,postgres,prometheus
+  target/debug/cdk-mintd federation trusted-dealer \
+    --output-dir "{{dir}}" \
+    --force \
+    --members "{{members}}" \
+    --threshold "{{threshold}}" \
+    --port-start "{{port_start}}" \
+    --database-engine postgres \
+    --postgres-base-url "{{postgres_base_url}}"
+
+# Run the generated PostgreSQL-backed fake-wallet federation smoke
+fed-regtest-postgres dir="target/cdk-fed-regtest-postgres" members="5" threshold="3" port_start="22885" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  just fed-regtest-postgres-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{postgres_base_url}}"
+  CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
+
+# Start generated PostgreSQL-backed fake-wallet federation members and leave them running
+fed-regtest-postgres-start dir="target/cdk-fed-regtest-postgres" members="5" threshold="3" port_start="22885" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  if [ ! -f "{{dir}}/federation-public.json" ]; then
+    just fed-regtest-postgres-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{postgres_base_url}}"
+  else
+    cargo build -p cdk-mintd --features federation,fakewallet,sqlite,postgres,prometheus
+  fi
+  for member in $(seq 1 "{{members}}"); do
+    work_dir="{{dir}}/member-${member}/work"
+    config="{{dir}}/member-${member}/config.toml"
+    pid_file="${work_dir}/mintd.pid"
+    if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+      echo "member ${member} already running with pid $(cat "$pid_file")"
+      continue
+    fi
+    mkdir -p "$work_dir"
+    target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
+    echo "$!" > "$pid_file"
+    echo "started member ${member} with pid $(cat "$pid_file")"
+  done
+
+# Show signed status for generated PostgreSQL-backed fake-wallet federation members
+fed-regtest-postgres-status dir="target/cdk-fed-regtest-postgres" signer="1":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  cargo build -p cdk-mintd --features federation,fakewallet,sqlite,postgres,prometheus
+  if [ ! -f "{{dir}}/federation-public.json" ]; then
+    echo "missing federation public config: {{dir}}/federation-public.json" >&2
+    echo "run: just fed-regtest-postgres-generate" >&2
+    exit 1
+  fi
+  target/debug/cdk-mintd federation status \
+    --public-config "{{dir}}/federation-public.json" \
+    --private-config "{{dir}}/member-{{signer}}/federation-private.json" \
+    --require-ready \
+    --require-converged \
+    --require-session-outcome-quorum \
+    --require-no-digest-alerts
+
+# Stop generated PostgreSQL-backed fake-wallet federation members
+fed-regtest-postgres-stop dir="target/cdk-fed-regtest-postgres":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  just fed-regtest-stop "{{dir}}"
+
+# Remove generated PostgreSQL-backed fake-wallet federation state
+fed-regtest-postgres-clean dir="target/cdk-fed-regtest-postgres":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  just fed-regtest-clean "{{dir}}"
+
 # Start generated fake-wallet federation members and leave them running
 fed-regtest-start dir="target/cdk-fed-regtest" members="5" threshold="3" port_start="21885":
   #!/usr/bin/env bash
