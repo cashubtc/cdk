@@ -68,6 +68,8 @@ pub mod env_vars;
 #[cfg(feature = "federation")]
 mod federation_digest_compare;
 #[cfg(feature = "federation")]
+mod federation_dkg_status;
+#[cfg(feature = "federation")]
 mod federation_inspect;
 #[cfg(feature = "federation")]
 mod federation_payment_observations;
@@ -93,6 +95,9 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
             cli::CliCommand::Federation(federation) => match &federation.command {
                 cli::FederationCommand::CompareDigests(compare) => {
                     federation_digest_compare::run_compare_digests_command(args, compare).await?;
+                }
+                cli::FederationCommand::DkgStatus(status) => {
+                    federation_dkg_status::run_dkg_status_command(args, status)?;
                 }
                 cli::FederationCommand::Inspect(inspect) => {
                     federation_inspect::run_inspect_command(args, inspect)?;

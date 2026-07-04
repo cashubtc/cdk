@@ -1563,6 +1563,10 @@
             <p>Mint startup now promotes setup-only configs from stored DKG completion records, keeps partial transcript collection resumable, and rejects mismatched local member records before the mint starts signing.</p>
           </article>
           <article class="item">
+            <h3>DKG status command added</h3>
+            <p>`cdk-mintd federation dkg-status` now validates supplied DKG keyset-share and transcript-signature records against the setup config, reports whether final activation material can be assembled, and avoids printing local secret shares.</p>
+          </article>
+          <article class="item">
             <h3>Key rotation operation scaffold ready</h3>
             <p>Federation consensus can now encode proposed aggregate keysets, hash them canonically, dedupe conflicting payloads by keyset ID, and validate that rotation targets are v3/BLS keysets for the current roster.</p>
           </article>
@@ -1630,7 +1634,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG scaffolding now covers commitments, reveals, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, and the first canonical key-rotation operation. The remaining setup work is route-driven completion recovery, operator tooling, accepted-rotation persistence, and active-keyset switching.</p>
+            <p>The DKG scaffolding now covers commitments, reveals, public keyset derivation, private share derivation, durable local keyset-share storage, transcript-signature transport, durable transcript-signature approvals, final config assembly, startup activation, a read-only operator status command, and the first canonical key-rotation operation. The remaining setup work is route-driven completion recovery, record export/import wiring, accepted-rotation persistence, and active-keyset switching.</p>
           </article>
         </div>
       </section>
@@ -1778,6 +1782,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --lib --features federation mint::builder -- --test-threads 1` passed 19 builder tests, including finalized config activation from completed DKG records, resumable incomplete transcript signatures, and mismatched local-member record rejection. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo fmt --all`, and `git diff --check` passed.</td>
               <td>Drive completed DKG setup through private member route recovery and generated operator flows, then add key-rotation and federation-upgrade tests.</td>
+            </tr>
+            <tr>
+              <td>DKG status operator command</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite dkg_status -- --test-threads 1` passed CLI parsing plus ready and missing-signature report tests. `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" dkg_status -- --test-threads 1` passed the same focused slice without default features, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation -- --test-threads 1` passed 68 mintd federation tests, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed.</td>
+              <td>Wire DKG record export/import or database-backed reads into the command, then include it in generated setup runbooks.</td>
             </tr>
             <tr>
               <td>Key rotation operation scaffold</td>

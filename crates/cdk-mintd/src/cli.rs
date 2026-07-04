@@ -62,6 +62,8 @@ pub struct FederationArgs {
 pub enum FederationCommand {
     /// Compare signed consensus and state digests across federation members.
     CompareDigests(FederationCompareDigestsArgs),
+    /// Inspect collected DKG completion records without printing secret shares.
+    DkgStatus(FederationDkgStatusArgs),
     /// Inspect federation config material without printing member secrets.
     Inspect(FederationInspectArgs),
     /// List redacted payment-observation reports from signed member status.
@@ -75,6 +77,26 @@ pub enum FederationCommand {
     TrustedDealer(FederationTrustedDealerArgs),
     /// Query signed local status from federation members.
     Status(FederationStatusArgs),
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationDkgStatusArgs {
+    /// Shared setup public federation config JSON path.
+    #[arg(long)]
+    pub public_config: Option<PathBuf>,
+    /// Private member config JSON path used to identify the local member.
+    #[arg(long)]
+    pub private_config: Option<PathBuf>,
+    /// Completed local DKG keyset-share JSON record. Repeat for multiple keysets.
+    #[arg(long = "keyset-share")]
+    pub keyset_shares: Vec<PathBuf>,
+    /// DKG transcript-signature JSON record. Repeat for every collected member signature.
+    #[arg(long = "transcript-signature")]
+    pub transcript_signatures: Vec<PathBuf>,
+    /// Fail if final DKG config material cannot be assembled from the supplied records.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub require_ready: bool,
 }
 
 #[cfg(feature = "federation")]
@@ -317,6 +339,49 @@ pub struct FederationStatusArgs {
 #[cfg(all(test, feature = "federation"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_federation_dkg_status_subcommand() {
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "dkg-status",
+            "--public-config",
+            "federation-public.json",
+            "--private-config",
+            "member-1/federation-private.json",
+            "--keyset-share",
+            "member-1/dkg-keyset-share.json",
+            "--transcript-signature",
+            "member-1/dkg-transcript-signature.json",
+            "--require-ready",
+        ])
+        .expect("dkg status command parses");
+
+        let Some(CliCommand::Federation(federation)) = args.command else {
+            panic!("expected federation command");
+        };
+        let FederationCommand::DkgStatus(status) = federation.command else {
+            panic!("expected federation dkg-status command");
+        };
+        assert_eq!(
+            status.public_config,
+            Some(PathBuf::from("federation-public.json"))
+        );
+        assert_eq!(
+            status.private_config,
+            Some(PathBuf::from("member-1/federation-private.json"))
+        );
+        assert_eq!(
+            status.keyset_shares,
+            vec![PathBuf::from("member-1/dkg-keyset-share.json")]
+        );
+        assert_eq!(
+            status.transcript_signatures,
+            vec![PathBuf::from("member-1/dkg-transcript-signature.json")]
+        );
+        assert!(status.require_ready);
+    }
 
     #[test]
     fn parses_federation_trusted_dealer_subcommand() {
