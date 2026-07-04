@@ -518,6 +518,23 @@ fed-regtest-postgres-generate dir="target/cdk-fed-regtest-postgres" members="5" 
     --database-engine postgres \
     --postgres-base-url "{{postgres_base_url}}"
 
+# Check that the PostgreSQL service for Postgres-backed federation smoke is reachable
+fed-regtest-postgres-preflight postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  redacted_url="$(printf '%s' "{{postgres_base_url}}" | sed -E 's#(postgres(ql)?://[^:/@]+):[^@]*@#\1:***@#')"
+  if ! command -v pg_isready >/dev/null 2>&1; then
+    echo "pg_isready is required for PostgreSQL federation smoke preflight" >&2
+    echo "enter the regtest shell with: nix develop .#regtest" >&2
+    exit 1
+  fi
+  if ! pg_isready -d "{{postgres_base_url}}" -t 2 >/dev/null 2>&1; then
+    echo "PostgreSQL is not ready for federation smoke at ${redacted_url}" >&2
+    echo "inside the regtest shell, start it with: start-postgres" >&2
+    exit 1
+  fi
+  echo "PostgreSQL is ready for federation smoke at ${redacted_url}"
+
 # Run the generated PostgreSQL-backed fake-wallet federation smoke
 fed-regtest-postgres dir="target/cdk-fed-regtest-postgres" members="5" threshold="3" port_start="22885" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":
   #!/usr/bin/env bash
@@ -525,6 +542,7 @@ fed-regtest-postgres dir="target/cdk-fed-regtest-postgres" members="5" threshold
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
+  just fed-regtest-postgres-preflight "{{postgres_base_url}}"
   just fed-regtest-postgres-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{postgres_base_url}}"
   CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
 
@@ -535,6 +553,7 @@ fed-regtest-postgres-start dir="target/cdk-fed-regtest-postgres" members="5" thr
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
+  just fed-regtest-postgres-preflight "{{postgres_base_url}}"
   if [ ! -f "{{dir}}/federation-public.json" ]; then
     just fed-regtest-postgres-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{postgres_base_url}}"
   else
