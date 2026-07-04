@@ -608,6 +608,62 @@ pub fn trusted_dealer_keygen(
     })
 }
 
+/// Evaluate secret polynomial coefficients at one signer ID.
+///
+/// This helper is used by mocked DKG setup and by tests for future real DKG
+/// share-delivery code. The returned share is for one participant polynomial;
+/// final member shares are created by summing one valid contribution from each
+/// participant with [`aggregate_secret_key_shares`].
+#[cfg(feature = "federation")]
+pub fn evaluate_secret_key_coefficients(
+    signer_id: BlsSignerId,
+    coefficients: &[BlsSecretKey],
+) -> Result<BlsSecretKeyShare, Error> {
+    if coefficients.is_empty() {
+        return Err(Error::InsufficientThresholdShares {
+            threshold: 1,
+            found: 0,
+        });
+    }
+
+    let secret_key = evaluate_polynomial(coefficients, signer_id.scalar());
+    reject_zero_secret_key(&secret_key)?;
+    Ok(BlsSecretKeyShare::new(signer_id, secret_key))
+}
+
+/// Aggregate secret key shares for the same signer ID.
+///
+/// In dealer-free DKG, each participant contributes a private scalar share to a
+/// recipient. The recipient sums those same-signer contributions to obtain the
+/// final threshold secret share matching the aggregate public commitments.
+#[cfg(feature = "federation")]
+pub fn aggregate_secret_key_shares(
+    signer_id: BlsSignerId,
+    shares: &[BlsSecretKeyShare],
+) -> Result<BlsSecretKeyShare, Error> {
+    if shares.is_empty() {
+        return Err(Error::InsufficientThresholdShares {
+            threshold: 1,
+            found: 0,
+        });
+    }
+
+    let mut aggregate = Scalar::zero();
+    for share in shares {
+        if share.signer_id() != signer_id {
+            return Err(Error::ThresholdSignerMismatch {
+                expected: signer_id.get(),
+                found: share.signer_id().get(),
+            });
+        }
+        aggregate += share.secret_key.scalar();
+    }
+
+    let secret_key = BlsSecretKey { scalar: aggregate };
+    reject_zero_secret_key(&secret_key)?;
+    Ok(BlsSecretKeyShare::new(signer_id, secret_key))
+}
+
 /// Verify a blind signature share against the signer's public key share.
 #[cfg(feature = "federation")]
 pub fn verify_blind_signature_share(
@@ -788,6 +844,15 @@ fn evaluate_polynomial(coefficients: &[BlsSecretKey], x: Scalar) -> BlsSecretKey
     }
 
     BlsSecretKey { scalar: result }
+}
+
+#[cfg(feature = "federation")]
+fn reject_zero_secret_key(secret_key: &BlsSecretKey) -> Result<(), Error> {
+    if bool::from(secret_key.public_key_g2().point().is_identity()) {
+        return Err(Error::InvalidSecretKey);
+    }
+
+    Ok(())
 }
 
 #[cfg(feature = "federation")]
@@ -1063,6 +1128,79 @@ mod tests {
                 .expect("derived public share");
             assert_eq!(derived, *trusted_share);
         }
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn test_secret_polynomial_contributions_aggregate_to_public_commitments() {
+        let first_coefficients = vec![bls_key(3), bls_key(5)];
+        let second_coefficients = vec![bls_key(7), bls_key(11)];
+        let first_commitments = first_coefficients
+            .iter()
+            .map(BlsSecretKey::public_key_g2)
+            .collect::<Vec<_>>();
+        let second_commitments = second_coefficients
+            .iter()
+            .map(BlsSecretKey::public_key_g2)
+            .collect::<Vec<_>>();
+
+        for signer_id in signer_ids(&[1, 2, 3]) {
+            let first_share = evaluate_secret_key_coefficients(signer_id, &first_coefficients)
+                .expect("first secret contribution");
+            let second_share = evaluate_secret_key_coefficients(signer_id, &second_coefficients)
+                .expect("second secret contribution");
+            let aggregate_secret =
+                aggregate_secret_key_shares(signer_id, &[first_share, second_share])
+                    .expect("aggregate secret share");
+
+            let first_public = evaluate_public_key_commitments(signer_id, &first_commitments)
+                .expect("first public contribution");
+            let second_public = evaluate_public_key_commitments(signer_id, &second_commitments)
+                .expect("second public contribution");
+            let aggregate_public = aggregate_public_key_commitments(&[
+                first_public.public_key(),
+                second_public.public_key(),
+            ])
+            .expect("aggregate public share");
+
+            assert_eq!(
+                aggregate_secret.public_key_share(),
+                BlsPublicKeyShare::new(signer_id, aggregate_public)
+            );
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn test_secret_share_aggregation_rejects_missing_or_wrong_signer() {
+        let signer_one = BlsSignerId::new(1).expect("signer one");
+        let signer_two = BlsSignerId::new(2).expect("signer two");
+        let share_one =
+            evaluate_secret_key_coefficients(signer_one, &[bls_key(3)]).expect("share one");
+        let share_two =
+            evaluate_secret_key_coefficients(signer_two, &[bls_key(5)]).expect("share two");
+
+        assert!(matches!(
+            evaluate_secret_key_coefficients(signer_one, &[]),
+            Err(Error::InsufficientThresholdShares {
+                threshold: 1,
+                found: 0
+            })
+        ));
+        assert!(matches!(
+            aggregate_secret_key_shares(signer_one, &[]),
+            Err(Error::InsufficientThresholdShares {
+                threshold: 1,
+                found: 0
+            })
+        ));
+        assert!(matches!(
+            aggregate_secret_key_shares(signer_one, &[share_one, share_two]),
+            Err(Error::ThresholdSignerMismatch {
+                expected: 1,
+                found: 2
+            })
+        ));
     }
 
     #[cfg(feature = "federation")]

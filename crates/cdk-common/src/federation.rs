@@ -64,8 +64,9 @@ pub use self::trusted_dealer::{
 };
 
 use crate::nuts::nut01::{
-    aggregate_public_key_commitments, aggregate_public_key_shares, evaluate_public_key_commitments,
-    BlsAggregatePublicKey, BlsPublicKeyShare, BlsSecretKeyShare, BlsSignerId,
+    aggregate_public_key_commitments, aggregate_public_key_shares, aggregate_secret_key_shares,
+    evaluate_public_key_commitments, BlsAggregatePublicKey, BlsPublicKeyShare, BlsSecretKeyShare,
+    BlsSignerId,
 };
 use crate::nuts::nut02::{KeySet, KeySetVersion};
 use crate::{
@@ -1154,6 +1155,15 @@ pub struct FederatedKeyset {
     pub public_shares: BTreeMap<MemberId, BTreeMap<Amount, BlsPublicKeyShare>>,
 }
 
+/// Public DKG-derived keyset plus one member's local secret BLS shares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationDkgMemberKeysetShare {
+    /// Public aggregate keyset derived from all revealed DKG commitments.
+    pub keyset: FederatedKeyset,
+    /// Final local secret BLS share per amount for one federation member.
+    pub secret_shares: BTreeMap<Amount, BlsSecretKeyShare>,
+}
+
 impl FederatedKeyset {
     /// Create a federated keyset with a computed NUT-02 v3 keyset ID.
     pub fn new(
@@ -1761,6 +1771,97 @@ impl FederationDkgCommitmentRound {
         keyset.validate(public_config.threshold_params, &public_config.members)?;
         Ok(keyset)
     }
+
+    /// Derive one member's final local secret shares for a DKG keyset.
+    ///
+    /// `participant_secret_shares` contains the private same-signer scalar
+    /// contribution received from each DKG participant. Each contribution is
+    /// checked against that participant's revealed public polynomial
+    /// commitments before the final local share is aggregated.
+    pub fn derive_member_keyset_share(
+        &self,
+        public_config: &FederationConfig,
+        reveals: &BTreeMap<MemberId, FederationDkgParticipantCommitmentReveal>,
+        member_id: MemberId,
+        participant_secret_shares: &BTreeMap<MemberId, BTreeMap<Amount, BlsSecretKeyShare>>,
+        unit: CurrencyUnit,
+        active: bool,
+        input_fee_ppk: u64,
+        final_expiry: Option<u64>,
+    ) -> Result<FederationDkgMemberKeysetShare> {
+        if !public_config.members.contains_key(&member_id) {
+            return Err(FederationError::MissingMember { member_id });
+        }
+        let keyset = self.derive_federated_keyset(
+            public_config,
+            reveals,
+            unit,
+            active,
+            input_fee_ppk,
+            final_expiry,
+        )?;
+        let signer_id = member_id.to_bls_signer_id();
+        let public_member_shares =
+            keyset
+                .public_shares
+                .get(&member_id)
+                .ok_or(FederationError::MissingPublicShares {
+                    keyset_id: keyset.id,
+                    member_id,
+                })?;
+
+        let mut secret_shares = BTreeMap::new();
+        for amount in keyset.aggregate_keys.keys() {
+            let mut participant_shares = Vec::with_capacity(self.participant_order.len());
+            for participant_id in &self.participant_order {
+                let secret_share = dkg_participant_secret_share(
+                    participant_secret_shares,
+                    *participant_id,
+                    *amount,
+                )?;
+                if secret_share.signer_id() != signer_id {
+                    return Err(FederationError::SecretShareSignerMismatch {
+                        keyset_id: keyset.id,
+                        member_id,
+                        signer_id: secret_share.signer_id().get(),
+                    });
+                }
+
+                let commitments = dkg_reveal_amount_commitments(reveals, *participant_id, *amount)?;
+                let expected_public_share =
+                    evaluate_public_key_commitments(signer_id, commitments)?;
+                if secret_share.public_key_share() != expected_public_share {
+                    return Err(FederationError::DkgCommitmentMismatch {
+                        member_id: *participant_id,
+                        reason: format!("local secret contribution mismatch for amount {amount}"),
+                    });
+                }
+                participant_shares.push(secret_share.clone());
+            }
+
+            let secret_share = aggregate_secret_key_shares(signer_id, &participant_shares)?;
+            let public_share = public_member_shares.get(amount).ok_or(
+                FederationError::MissingPublicShareAmount {
+                    keyset_id: keyset.id,
+                    member_id,
+                    amount: *amount,
+                },
+            )?;
+            if secret_share.public_key_share() != *public_share {
+                return Err(FederationError::PrivateShareMismatch {
+                    keyset_id: keyset.id,
+                    member_id,
+                    amount: *amount,
+                });
+            }
+            secret_shares.insert(*amount, secret_share);
+        }
+
+        Ok(FederationDkgMemberKeysetShare {
+            keyset,
+            secret_shares,
+        })
+    }
 }
 
 fn dkg_reveal_amount_commitments(
@@ -1780,6 +1881,27 @@ fn dkg_reveal_amount_commitments(
         },
     )?;
     Ok(commitments)
+}
+
+fn dkg_participant_secret_share(
+    participant_secret_shares: &BTreeMap<MemberId, BTreeMap<Amount, BlsSecretKeyShare>>,
+    member_id: MemberId,
+    amount: Amount,
+) -> Result<&BlsSecretKeyShare> {
+    let secret_shares = participant_secret_shares.get(&member_id).ok_or(
+        FederationError::DkgCommitmentMismatch {
+            member_id,
+            reason: "missing local secret contributions".to_string(),
+        },
+    )?;
+    let secret_share =
+        secret_shares
+            .get(&amount)
+            .ok_or(FederationError::DkgCommitmentMismatch {
+                member_id,
+                reason: format!("missing local secret contribution for amount {amount}"),
+            })?;
+    Ok(secret_share)
 }
 
 /// In-memory DKG setup state collected from authenticated member setup messages.
@@ -2745,7 +2867,9 @@ mod tests {
     use std::str::FromStr;
 
     use crate::nuts::nut02::KeySetVersion;
-    use cashu::nuts::nut01::{trusted_dealer_keygen, BlsG1PublicKey, BlsSecretKey};
+    use cashu::nuts::nut01::{
+        evaluate_secret_key_coefficients, trusted_dealer_keygen, BlsG1PublicKey, BlsSecretKey,
+    };
 
     use super::*;
 
@@ -2776,6 +2900,10 @@ mod tests {
 
     fn bls_key(byte: u8) -> BlsSecretKey {
         BlsSecretKey::from_reduced_bytes(&[byte; 32])
+    }
+
+    fn dkg_amount_coefficients(seed: u8) -> BTreeMap<Amount, Vec<BlsSecretKey>> {
+        BTreeMap::from([(Amount::from(1), vec![bls_key(seed), bls_key(seed + 10)])])
     }
 
     fn test_roster() -> BTreeMap<MemberId, MemberConfigPublic> {
@@ -2838,13 +2966,18 @@ mod tests {
         FederationDkgParticipantCommitmentReveal {
             federation_id: public_config.federation_id,
             member_id,
-            coefficient_commitments: BTreeMap::from([(
-                Amount::from(1),
-                vec![
-                    bls_key(seed).public_key_g2(),
-                    bls_key(seed + 10).public_key_g2(),
-                ],
-            )]),
+            coefficient_commitments: dkg_amount_coefficients(seed)
+                .into_iter()
+                .map(|(amount, coefficients)| {
+                    (
+                        amount,
+                        coefficients
+                            .iter()
+                            .map(BlsSecretKey::public_key_g2)
+                            .collect(),
+                    )
+                })
+                .collect(),
         }
     }
 
@@ -2873,6 +3006,32 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    fn dkg_member_secret_contributions(
+        local_member_id: MemberId,
+    ) -> BTreeMap<MemberId, BTreeMap<Amount, BlsSecretKeyShare>> {
+        let signer_id = local_member_id.to_bls_signer_id();
+        [
+            (member_id(1), dkg_amount_coefficients(11)),
+            (member_id(2), dkg_amount_coefficients(21)),
+            (member_id(3), dkg_amount_coefficients(31)),
+        ]
+        .into_iter()
+        .map(|(participant_id, amount_coefficients)| {
+            let shares = amount_coefficients
+                .into_iter()
+                .map(|(amount, coefficients)| {
+                    (
+                        amount,
+                        evaluate_secret_key_coefficients(signer_id, &coefficients)
+                            .expect("secret contribution"),
+                    )
+                })
+                .collect();
+            (participant_id, shares)
+        })
+        .collect()
     }
 
     fn dkg_transcript_private_configs(
@@ -3256,6 +3415,120 @@ mod tests {
 
         public_config.setup_transcript = Some(transcript);
         public_config.validate().expect("config with transcript");
+    }
+
+    #[test]
+    fn dkg_commitment_round_derives_member_keyset_share() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let setup_config =
+            FederationConfig::new(params, members.clone(), Vec::new()).expect("setup config");
+        let reveals = dkg_reveals(&setup_config);
+        let commitments = dkg_commitments(&reveals);
+        let round = FederationDkgCommitmentRound::new(&setup_config, commitments).expect("round");
+        let local_member = member_id(2);
+        let material = round
+            .derive_member_keyset_share(
+                &setup_config,
+                &reveals,
+                local_member,
+                &dkg_member_secret_contributions(local_member),
+                CurrencyUnit::Sat,
+                true,
+                0,
+                None,
+            )
+            .expect("local member keyset share");
+
+        assert_eq!(material.keyset.id.get_version(), KeySetVersion::Version02);
+        assert_eq!(material.secret_shares.len(), 1);
+        let public_config = FederationConfig::new(params, members, vec![material.keyset.clone()])
+            .expect("public config");
+        let private_config = MemberConfigPrivate {
+            federation_id: None,
+            member_id: local_member,
+            identity_secret_key: identity_secret(local_member),
+            keyset_secret_shares: BTreeMap::from([(material.keyset.id, material.secret_shares)]),
+            setup_transcript_hash: None,
+        };
+        private_config
+            .validate_against_public(&public_config)
+            .expect("derived private config validates");
+    }
+
+    #[test]
+    fn dkg_member_keyset_share_rejects_bad_secret_contributions() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let config =
+            FederationConfig::new(params, test_roster(), Vec::new()).expect("public config");
+        let reveals = dkg_reveals(&config);
+        let commitments = dkg_commitments(&reveals);
+        let round =
+            FederationDkgCommitmentRound::new(&config, commitments).expect("commitment round");
+        let local_member = member_id(2);
+        let mut contributions = dkg_member_secret_contributions(local_member);
+        contributions
+            .get_mut(&member_id(1))
+            .expect("participant one")
+            .insert(
+                Amount::from(1),
+                evaluate_secret_key_coefficients(
+                    local_member.to_bls_signer_id(),
+                    &[bls_key(91), bls_key(92)],
+                )
+                .expect("bad secret contribution"),
+            );
+
+        assert!(matches!(
+            round.derive_member_keyset_share(
+                &config,
+                &reveals,
+                local_member,
+                &contributions,
+                CurrencyUnit::Sat,
+                true,
+                0,
+                None,
+            ),
+            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+                if id == member_id(1)
+                    && reason.contains("local secret contribution mismatch")
+        ));
+
+        let mut wrong_signer = dkg_member_secret_contributions(local_member);
+        let mut wrong_signer_coefficients = dkg_amount_coefficients(11);
+        let wrong_signer_amount_coefficients = wrong_signer_coefficients
+            .remove(&Amount::from(1))
+            .expect("amount coefficients");
+        wrong_signer
+            .get_mut(&member_id(1))
+            .expect("participant one")
+            .insert(
+                Amount::from(1),
+                evaluate_secret_key_coefficients(
+                    member_id(3).to_bls_signer_id(),
+                    &wrong_signer_amount_coefficients,
+                )
+                .expect("wrong-signer contribution"),
+            );
+
+        assert!(matches!(
+            round.derive_member_keyset_share(
+                &config,
+                &reveals,
+                local_member,
+                &wrong_signer,
+                CurrencyUnit::Sat,
+                true,
+                0,
+                None,
+            ),
+            Err(FederationError::SecretShareSignerMismatch {
+                member_id: id,
+                signer_id: 3,
+                ..
+            }) if id == local_member
+        ));
     }
 
     #[test]
