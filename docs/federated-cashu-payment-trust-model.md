@@ -92,7 +92,10 @@ melt operations that would spend a quarantined quote before writing signature
 shares or mutating proof state. Operators can now propose the same quarantine
 operation with `cdk-mintd federation quarantine-payment-observation`; the
 command signs a normal private REST operation submit request with the local
-member identity key and posts it to configured federation members.
+member identity key and posts it to configured federation members. Private REST
+catch-up replays accepted quarantine operations into the same report surface, so
+a lagging member that learns conflicting evidence plus quarantine from a peer
+still reports the quote as quarantined after catch-up.
 
 ## Melt Quote Observations
 
