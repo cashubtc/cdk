@@ -8,12 +8,13 @@
 
 use core::fmt;
 use core::str::FromStr;
+use std::collections::BTreeSet;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{FederationError, FederationId, Result};
+use super::{FederationError, FederationId, FederationPaymentObservationContext, MemberId, Result};
 use crate::{
     Amount, BatchMintRequest, MeltQuoteRequest, MeltQuoteState, MeltRequest, MintQuoteRequest,
     MintQuoteResponse, MintQuoteState, MintRequest, PaymentMethod, RestoreRequest, SwapRequest,
@@ -145,12 +146,14 @@ pub enum FederationOperationConflictKey {
         /// Quote ID being spent.
         quote: String,
     },
-    /// A mint quote may only have one observation for the same state.
+    /// A mint quote may only have one observation for the same state per observer.
     MintQuotePayment {
         /// Quote ID being observed.
         quote: String,
         /// Observed mint quote state.
         state: MintQuoteState,
+        /// Member that observed the payment state.
+        observer: MemberId,
     },
     /// One melt quote ID may only map to one quote request.
     MeltQuote {
@@ -162,12 +165,14 @@ pub enum FederationOperationConflictKey {
         /// Quote ID being spent.
         quote: String,
     },
-    /// A melt quote may only have one observation for the same state.
+    /// A melt quote may only have one observation for the same state per observer.
     MeltQuotePayment {
         /// Quote ID being observed.
         quote: String,
         /// Observed melt quote state.
         state: MeltQuoteState,
+        /// Member that observed the payment state.
+        observer: MemberId,
     },
 }
 
@@ -187,6 +192,8 @@ pub struct FederationMintQuoteOperation {
 pub struct FederationMintQuotePaymentObservation {
     /// Quote ID being observed.
     pub quote: String,
+    /// Federation member that observed this payment state.
+    pub observer: MemberId,
     /// Payment method for the quote.
     pub method: PaymentMethod,
     /// Observed quote state.
@@ -198,6 +205,52 @@ pub struct FederationMintQuotePaymentObservation {
     /// Optional method-specific proof or settlement reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payment_proof: Option<String>,
+}
+
+impl FederationMintQuotePaymentObservation {
+    /// Return true when two observations describe the same payment evidence.
+    #[must_use]
+    pub fn matches_payment_evidence(&self, other: &Self) -> bool {
+        self.quote == other.quote
+            && self.method == other.method
+            && self.state == other.state
+            && self.amount_paid == other.amount_paid
+            && self.amount_issued == other.amount_issued
+            && self.payment_proof == other.payment_proof
+    }
+
+    /// Count matching and conflicting observations from distinct members.
+    #[must_use]
+    pub fn quorum<'a, I>(
+        &self,
+        observations: I,
+        required: u16,
+    ) -> FederationPaymentObservationQuorum
+    where
+        I: IntoIterator<Item = &'a Self>,
+    {
+        let mut matching = BTreeSet::from([self.observer]);
+        let mut conflicting = BTreeSet::new();
+
+        for observation in observations {
+            if observation.quote != self.quote || observation.state != self.state {
+                continue;
+            }
+
+            if self.matches_payment_evidence(observation) {
+                matching.insert(observation.observer);
+            } else {
+                conflicting.insert(observation.observer);
+            }
+        }
+
+        FederationPaymentObservationQuorum::new(
+            FederationPaymentObservationContext::MintQuote,
+            required,
+            matching,
+            conflicting,
+        )
+    }
 }
 
 /// Request to sign blinded outputs for a paid mint quote.
@@ -242,6 +295,8 @@ pub struct FederationMeltQuoteOperation {
 pub struct FederationMeltQuotePaymentObservation {
     /// Quote ID being observed.
     pub quote: String,
+    /// Federation member that observed this payment state.
+    pub observer: MemberId,
     /// Payment method for the quote.
     pub method: PaymentMethod,
     /// Observed quote state.
@@ -256,6 +311,112 @@ pub struct FederationMeltQuotePaymentObservation {
     /// Optional failure reason when the observation records a failed payment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,
+}
+
+impl FederationMeltQuotePaymentObservation {
+    /// Return true when two observations describe the same payment evidence.
+    #[must_use]
+    pub fn matches_payment_evidence(&self, other: &Self) -> bool {
+        self.quote == other.quote
+            && self.method == other.method
+            && self.state == other.state
+            && self.amount == other.amount
+            && self.fee_reserve == other.fee_reserve
+            && self.payment_proof == other.payment_proof
+            && self.failure_reason == other.failure_reason
+    }
+
+    /// Count matching and conflicting observations from distinct members.
+    #[must_use]
+    pub fn quorum<'a, I>(
+        &self,
+        observations: I,
+        required: u16,
+    ) -> FederationPaymentObservationQuorum
+    where
+        I: IntoIterator<Item = &'a Self>,
+    {
+        let mut matching = BTreeSet::from([self.observer]);
+        let mut conflicting = BTreeSet::new();
+
+        for observation in observations {
+            if observation.quote != self.quote || observation.state != self.state {
+                continue;
+            }
+
+            if self.matches_payment_evidence(observation) {
+                matching.insert(observation.observer);
+            } else {
+                conflicting.insert(observation.observer);
+            }
+        }
+
+        FederationPaymentObservationQuorum::new(
+            FederationPaymentObservationContext::MeltQuote,
+            required,
+            matching,
+            conflicting,
+        )
+    }
+}
+
+/// Result of evaluating matching payment observations against a quorum policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationPaymentObservationQuorum {
+    /// Observation context being evaluated.
+    pub context: FederationPaymentObservationContext,
+    /// Number of matching observers required.
+    pub required: u16,
+    /// Members whose observations match the candidate evidence.
+    pub matching_observers: Vec<MemberId>,
+    /// Members whose observations conflict with the candidate evidence.
+    pub conflicting_observers: Vec<MemberId>,
+}
+
+impl FederationPaymentObservationQuorum {
+    fn new(
+        context: FederationPaymentObservationContext,
+        required: u16,
+        matching_observers: BTreeSet<MemberId>,
+        conflicting_observers: BTreeSet<MemberId>,
+    ) -> Self {
+        Self {
+            context,
+            required,
+            matching_observers: matching_observers.into_iter().collect(),
+            conflicting_observers: conflicting_observers.into_iter().collect(),
+        }
+    }
+
+    /// Number of distinct members with matching observations.
+    #[must_use]
+    pub fn matching_count(&self) -> u16 {
+        match self.matching_observers.len().try_into() {
+            Ok(count) => count,
+            Err(_) => u16::MAX,
+        }
+    }
+
+    /// Number of distinct members with conflicting observations.
+    #[must_use]
+    pub fn conflicting_count(&self) -> u16 {
+        match self.conflicting_observers.len().try_into() {
+            Ok(count) => count,
+            Err(_) => u16::MAX,
+        }
+    }
+
+    /// Return true once the matching observer set reaches the configured quorum.
+    #[must_use]
+    pub fn is_reached(&self) -> bool {
+        self.matching_count() >= self.required
+    }
+
+    /// Return true when at least one member submitted conflicting evidence.
+    #[must_use]
+    pub fn has_conflicts(&self) -> bool {
+        !self.conflicting_observers.is_empty()
+    }
 }
 
 /// Request to spend proofs against a melt quote.
@@ -334,6 +495,7 @@ impl FederationOperation {
                 vec![FederationOperationConflictKey::MintQuotePayment {
                     quote: observation.quote.clone(),
                     state: observation.state,
+                    observer: observation.observer,
                 }]
             }
             Self::Mint(operation) => operation
@@ -351,6 +513,7 @@ impl FederationOperation {
                 vec![FederationOperationConflictKey::MeltQuotePayment {
                     quote: observation.quote.clone(),
                     state: observation.state,
+                    observer: observation.observer,
                 }]
             }
             Self::Melt(operation) => vec![FederationOperationConflictKey::Melt {
@@ -480,6 +643,10 @@ mod tests {
 
     fn federation_id() -> FederationId {
         FederationId::from_bytes([7; 32])
+    }
+
+    fn member_id(id: u16) -> MemberId {
+        MemberId::new(id).expect("member id")
     }
 
     fn keyset_id() -> Id {
@@ -743,6 +910,7 @@ mod tests {
         let pending = envelope(FederationOperation::MeltQuotePayment(
             FederationMeltQuotePaymentObservation {
                 quote: "melt-quote".to_string(),
+                observer: member_id(1),
                 method: PaymentMethod::Custom("custom".to_string()),
                 state: MeltQuoteState::Pending,
                 amount: Amount::from(10),
@@ -754,6 +922,7 @@ mod tests {
         let paid = envelope(FederationOperation::MeltQuotePayment(
             FederationMeltQuotePaymentObservation {
                 quote: "melt-quote".to_string(),
+                observer: member_id(1),
                 method: PaymentMethod::Custom("custom".to_string()),
                 state: MeltQuoteState::Paid,
                 amount: Amount::from(10),
@@ -765,6 +934,7 @@ mod tests {
         let conflicting_paid = envelope(FederationOperation::MeltQuotePayment(
             FederationMeltQuotePaymentObservation {
                 quote: "melt-quote".to_string(),
+                observer: member_id(1),
                 method: PaymentMethod::Custom("custom".to_string()),
                 state: MeltQuoteState::Paid,
                 amount: Amount::from(10),
@@ -778,6 +948,66 @@ mod tests {
         assert!(paid
             .conflicts_with(&conflicting_paid)
             .expect("conflict check"));
+    }
+
+    #[test]
+    fn payment_observations_are_member_scoped_for_quorum() {
+        let first = FederationMintQuotePaymentObservation {
+            quote: "mint-quote".to_string(),
+            observer: member_id(1),
+            method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Bolt11),
+            state: MintQuoteState::Paid,
+            amount_paid: Amount::from(10),
+            amount_issued: Amount::ZERO,
+            payment_proof: Some("settled".to_string()),
+        };
+        let matching_second = FederationMintQuotePaymentObservation {
+            observer: member_id(2),
+            ..first.clone()
+        };
+        let conflicting_third = FederationMintQuotePaymentObservation {
+            observer: member_id(3),
+            amount_paid: Amount::from(11),
+            payment_proof: Some("different-settlement".to_string()),
+            ..first.clone()
+        };
+        let conflicting_first = FederationMintQuotePaymentObservation {
+            amount_paid: Amount::from(12),
+            payment_proof: Some("same-member-different-settlement".to_string()),
+            ..first.clone()
+        };
+
+        let first_envelope = envelope(FederationOperation::MintQuotePayment(first.clone()));
+        let matching_second_envelope = envelope(FederationOperation::MintQuotePayment(
+            matching_second.clone(),
+        ));
+        let conflicting_third_envelope = envelope(FederationOperation::MintQuotePayment(
+            conflicting_third.clone(),
+        ));
+        let conflicting_first_envelope = envelope(FederationOperation::MintQuotePayment(
+            conflicting_first.clone(),
+        ));
+
+        assert!(!first_envelope
+            .conflicts_with(&matching_second_envelope)
+            .expect("different observers can report matching evidence"));
+        assert!(!first_envelope
+            .conflicts_with(&conflicting_third_envelope)
+            .expect("different observers are accumulated, not journal-conflicted"));
+        assert!(first_envelope
+            .conflicts_with(&conflicting_first_envelope)
+            .expect("same observer conflicting evidence is rejected"));
+
+        let single = first.quorum(std::iter::empty(), 2);
+        assert!(!single.is_reached());
+        assert_eq!(single.matching_count(), 1);
+        assert!(!single.has_conflicts());
+
+        let quorum = first.quorum([&matching_second, &conflicting_third], 2);
+        assert!(quorum.is_reached());
+        assert!(quorum.has_conflicts());
+        assert_eq!(quorum.matching_observers, vec![member_id(1), member_id(2)]);
+        assert_eq!(quorum.conflicting_observers, vec![member_id(3)]);
     }
 
     #[test]
@@ -795,6 +1025,7 @@ mod tests {
         let mint_payment =
             FederationOperation::MintQuotePayment(FederationMintQuotePaymentObservation {
                 quote: "mint-quote".to_string(),
+                observer: member_id(1),
                 method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Bolt11),
                 state: MintQuoteState::Paid,
                 amount_paid: Amount::from(10),

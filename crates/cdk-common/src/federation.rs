@@ -38,8 +38,8 @@ pub use self::operation::{
     FederationMintOperation, FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
     FederationMintRequest, FederationOperation, FederationOperationConflictKey,
     FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationRestoreOperation, FederationSwapOperation, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
-    FEDERATION_OPERATION_VERSION,
+    FederationPaymentObservationQuorum, FederationRestoreOperation, FederationSwapOperation,
+    FEDERATION_MAX_OPERATION_ENVELOPE_BYTES, FEDERATION_OPERATION_VERSION,
 };
 pub use self::signing::{FederationBlindSignatureShare, FederationBlindSignatureShareSet};
 pub use self::transport::{
@@ -152,6 +152,18 @@ pub enum FederationError {
         required: u16,
         /// Matching observations currently available.
         found: u16,
+    },
+    /// Payment observations contain conflicting evidence that must be resolved first.
+    #[error(
+        "Federation payment observation conflict for {context}: matching={matching}, conflicting={conflicting}"
+    )]
+    PaymentObservationConflict {
+        /// Payment observation context being checked.
+        context: FederationPaymentObservationContext,
+        /// Matching observation count.
+        matching: u16,
+        /// Conflicting observation count.
+        conflicting: u16,
     },
     /// A consensus step requires more reachable members than are currently online.
     #[error("Federation consensus quorum unavailable: reachable={reachable}, required={required}")]
@@ -970,6 +982,28 @@ impl FederationPaymentVerificationPolicy {
             Self::FakeWallet => 1,
             Self::MemberQuorum { required, .. } => required,
         }
+    }
+
+    /// Validate an accumulated observation quorum against this policy.
+    pub fn evaluate_quorum(self, quorum: &FederationPaymentObservationQuorum) -> Result<()> {
+        if quorum.has_conflicts() {
+            return Err(FederationError::PaymentObservationConflict {
+                context: quorum.context,
+                matching: quorum.matching_count(),
+                conflicting: quorum.conflicting_count(),
+            });
+        }
+
+        let required = self.required_matching_observations();
+        if quorum.matching_count() < required {
+            return Err(FederationError::PaymentObservationQuorumNotSatisfied {
+                context: quorum.context,
+                required,
+                found: quorum.matching_count(),
+            });
+        }
+
+        Ok(())
     }
 
     fn validate(
@@ -1849,6 +1883,53 @@ mod tests {
                 members,
                 ..
             }) if required == params.member_count + 1 && members == params.member_count
+        ));
+    }
+
+    #[test]
+    fn federation_payment_policy_evaluates_observation_quorum() {
+        let fake = FederationPaymentVerificationPolicy::fake_wallet_for_testing();
+        let real = FederationPaymentVerificationPolicy::member_quorum(
+            2,
+            FederationPaymentTrustModel::SharedBackendReadOnly,
+        );
+        let single = FederationPaymentObservationQuorum {
+            context: FederationPaymentObservationContext::MintQuote,
+            required: 2,
+            matching_observers: vec![member_id(1)],
+            conflicting_observers: Vec::new(),
+        };
+        fake.evaluate_quorum(&single)
+            .expect("fake wallet accepts one matching observer");
+
+        assert!(matches!(
+            real.evaluate_quorum(&single),
+            Err(FederationError::PaymentObservationQuorumNotSatisfied {
+                context: FederationPaymentObservationContext::MintQuote,
+                required: 2,
+                found: 1,
+            })
+        ));
+
+        let matching = FederationPaymentObservationQuorum {
+            matching_observers: vec![member_id(1), member_id(2)],
+            ..single.clone()
+        };
+        real.evaluate_quorum(&matching)
+            .expect("real policy accepts matching quorum");
+
+        let conflicting = FederationPaymentObservationQuorum {
+            matching_observers: vec![member_id(1), member_id(2)],
+            conflicting_observers: vec![member_id(3)],
+            ..single
+        };
+        assert!(matches!(
+            real.evaluate_quorum(&conflicting),
+            Err(FederationError::PaymentObservationConflict {
+                context: FederationPaymentObservationContext::MintQuote,
+                matching: 2,
+                conflicting: 1,
+            })
         ));
     }
 

@@ -43,6 +43,13 @@ Real quorum policies must require at least the configured consensus threshold
 and no more than the member count. This prevents a single malicious member from
 marking a quote paid or settled in a real-backend configuration.
 
+Payment observation operations now include the observing federation member ID.
+The journal conflict key is scoped by quote, state, and observer, so one member
+cannot submit two different observations for the same quote state, while
+different members can submit matching evidence for quorum formation. A pure
+quorum helper separates matching observers from conflicting observers before the
+state machine is allowed to finalize a real-backend observation.
+
 ## Mint Quote Observations
 
 Mint quote creation remains a consensus operation. A wallet can ask one member
@@ -62,8 +69,9 @@ For real backends:
 - Conflicting amount or proof observations must be quarantined or rejected by
   the observation accumulator before any mint signatures are produced.
 
-The next implementation step is to persist per-member observations and finalize
-the quote only after the configured quorum is satisfied.
+The next implementation step is to persist the per-member observations and
+finalize the quote only after the configured quorum is satisfied by stored
+evidence.
 
 ## Melt Quote Observations
 
@@ -86,7 +94,8 @@ For real backends:
   trigger duplicate external payments.
 
 The current guard rejects single-observation state changes for real policies
-until the quorum accumulator and idempotent real payment executor exist.
+until the quorum accumulator is backed by storage and the idempotent real
+payment executor exists.
 
 ## Pending And Stale Quotes
 
@@ -104,9 +113,10 @@ secrets.
 
 ## Required Follow-Up
 
-- Persist one row per member payment observation instead of finalizing directly
-  from one ordered operation.
-- Add deterministic matching rules for mint and melt observations.
+- Persist one row per member payment observation and evaluate the stored rows
+  before finalizing quote state.
+- Use the deterministic matching rules from the pure helper inside the
+  DB-backed finalizer.
 - Add conflict quarantine for mismatched amounts, payment proofs, states, or
   backend-specific settlement references.
 - Add admin tooling to inspect unresolved, conflicting, and stale observations.

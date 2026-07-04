@@ -362,15 +362,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add federation payment policy</span>
+          <span class="value">feat: add observer payment quorum</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Payment observation policy scaffold</span>
+          <span class="value">Observer-scoped payment quorum helper</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Payment observation quorum accumulator</span>
+          <span class="value">DB-backed payment observation finalizer</span>
         </div>
       </aside>
     </header>
@@ -1143,6 +1143,10 @@
             <h3>Payment policy scaffolded</h3>
             <p>Federation public config now carries separate fake-wallet and real-backend payment observation policies, validates real quorum thresholds, and fails closed when a real policy would otherwise use the single-observation fake-wallet finality path.</p>
           </article>
+          <article class="item">
+            <h3>Observer payment quorum helper added</h3>
+            <p>Mint and melt payment observations now carry the observing member ID, journal conflicts are scoped per observer, and pure quorum helpers count matching and conflicting observers before a real policy can finalize.</p>
+          </article>
         </div>
       </section>
 
@@ -1687,8 +1691,8 @@
             <tr>
               <td>Payment observation policy</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-common --features federation federation_payment_policy -- --test-threads 1` passed fake-wallet default, legacy JSON defaulting, real quorum validation, single-observation rejection, and non-zero operator-limit checks. `cargo test -p cdk-common --features federation federation -- --test-threads 1` passed 77 tests. `cargo test -p cdk --lib --features federation mint::federation -- --test-threads 1`, `cargo check -p cdk --lib --features federation`, `cargo check -p cdk-axum --features federation`, and `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"` passed with the mint apply-path guard.</td>
-              <td>Add the per-member observation accumulator, conflict quarantine, stale quote inspection, and runtime tests proving real policies finalize only after quorum evidence.</td>
+              <td>`cargo test -p cdk-common --features federation federation_payment_policy -- --test-threads 1` now passes fake-wallet default, legacy JSON defaulting, real quorum validation, single-observation rejection, quorum evaluation, conflict reporting, and non-zero operator-limit checks. `cargo test -p cdk-common --features federation federation::operation -- --test-threads 1` passes observer-scoped conflict keys and matching/conflicting observer quorum counts. `cargo test -p cdk-common --features federation federation -- --test-threads 1` passed 80 tests, `cargo test -p cdk --lib --features federation mint::federation -- --test-threads 1` passed 16 tests, `cargo test -p cdk-sqlite --features "mint federation" federation_journal -- --test-threads 1` passed 4 storage tests, and cdk-axum plus mintd federation checks passed.</td>
+              <td>Add the DB-backed per-member observation table/finalizer, conflict quarantine, stale quote inspection, and runtime tests proving real policies finalize only after stored quorum evidence.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
@@ -1749,7 +1753,7 @@
           </article>
           <article class="item">
             <h3>Real payment observations fail closed</h3>
-            <p>Fake-wallet testing keeps one-observation finality, while real-backend policies require a configured quorum and currently reject single-observation finality until the observation accumulator is implemented.</p>
+            <p>Fake-wallet testing keeps one-observation finality, while real-backend policies require a configured quorum, reject single-observation finality, and now have pure matching/conflicting observer evaluation ready for DB-backed persistence.</p>
           </article>
           <article class="item">
             <h3>Feature-off compatibility</h3>
@@ -1766,8 +1770,8 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>Payment observation accumulator</h3>
-            <p>Persist one observation per member, match evidence deterministically, quarantine conflicts, and finalize mint or melt quotes only when the configured payment policy reaches quorum.</p>
+            <h3>DB-backed payment finalizer</h3>
+            <p>Persist one observation per member, evaluate the pure quorum helper over stored evidence, quarantine conflicts, and finalize mint or melt quotes only when the configured payment policy reaches quorum.</p>
           </article>
           <article class="item">
             <h3>Broader process smoke matrix</h3>

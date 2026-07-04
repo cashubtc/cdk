@@ -1020,6 +1020,7 @@ mod tests {
             super::super::FederationOperation::MeltQuotePayment(
                 super::super::FederationMeltQuotePaymentObservation {
                     quote: "melt-quote".to_string(),
+                    observer: super::super::MemberId::new(1).expect("member id"),
                     method: PaymentMethod::Custom("custom".to_string()),
                     state: crate::MeltQuoteState::Paid,
                     amount: Amount::from(10),
@@ -1043,5 +1044,40 @@ mod tests {
             journal.append(changed_observation),
             Err(FederationError::ConflictingOperation { .. })
         ));
+    }
+
+    #[test]
+    fn journal_allows_same_quote_payment_state_from_different_observers() {
+        let observation = FederationOperationEnvelope::new(
+            federation_id(),
+            super::super::FederationOperation::MeltQuotePayment(
+                super::super::FederationMeltQuotePaymentObservation {
+                    quote: "melt-quote".to_string(),
+                    observer: super::super::MemberId::new(1).expect("member id"),
+                    method: PaymentMethod::Custom("custom".to_string()),
+                    state: crate::MeltQuoteState::Paid,
+                    amount: Amount::from(10),
+                    fee_reserve: Amount::from(1),
+                    payment_proof: Some("preimage".to_string()),
+                    failure_reason: None,
+                },
+            ),
+        );
+        let mut second_observer = observation.clone();
+        if let super::super::FederationOperation::MeltQuotePayment(data) =
+            &mut second_observer.operation
+        {
+            data.observer = super::super::MemberId::new(2).expect("member id");
+        }
+
+        let mut journal = InMemoryFederationJournal::new();
+        journal
+            .append(observation)
+            .expect("append first observation");
+        journal
+            .append(second_observer)
+            .expect("append second observer");
+
+        assert_eq!(journal.entries().len(), 2);
     }
 }

@@ -142,6 +142,7 @@ impl FederationRuntimeConfig {
         self.operation_envelope(FederationOperation::MintQuotePayment(
             FederationMintQuotePaymentObservation {
                 quote: quote.to_string(),
+                observer: self.member_id(),
                 method,
                 state,
                 amount_paid,
@@ -186,6 +187,7 @@ impl FederationRuntimeConfig {
         self.operation_envelope(FederationOperation::MeltQuotePayment(
             FederationMeltQuotePaymentObservation {
                 quote: quote.to_string(),
+                observer: self.member_id(),
                 method,
                 state,
                 amount,

@@ -49,6 +49,7 @@ fn payment_observation_envelope(quote: &str) -> FederationOperationEnvelope {
         federation_id(),
         FederationOperation::MintQuotePayment(FederationMintQuotePaymentObservation {
             quote: quote.to_string(),
+            observer: MemberId::new(1).expect("member id"),
             method: PaymentMethod::Known(KnownMethod::Bolt11),
             state: MintQuoteState::Paid,
             amount_paid: Amount::from(21),
