@@ -358,19 +358,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Federation status can now alert on member lag, catch-up proof gaps, and payment-observation alerts</span>
+          <span class="value">The dashboard now lists every implementation-plan milestone as its own explicit point</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add federation status lag guard</span>
+          <span class="value">docs: expand milestone dashboard coverage</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk-mintd federation status --max-operation-lag` can fail if a queried member is too far behind</span>
+          <span class="value">All 24 implementation milestones have explicit line items and matching cards</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Use status guards for five-member drills, storage-backend smoke comparisons, and future operator monitors</span>
+          <span class="value">Resume federation status metrics, five-member drills, and storage-backend smoke comparisons</span>
         </div>
       </aside>
     </header>
@@ -381,7 +381,8 @@
         <p class="section-note">
           The implementation plan has 24 milestones. The ordered list below names
           them one by one, and each milestone has a matching objective and
-          test-gate card. No compressed milestone ranges remain on this dashboard.
+          test-gate card. Each implementation-plan milestone is represented as
+          its own point; compressed milestone ranges are deliberately avoided.
         </p>
         <ol class="milestone-index" aria-label="Expanded milestone index with one point per implementation-plan milestone">
           <li>Milestone 0: written RFC and feature gate.</li>
@@ -1120,7 +1121,7 @@
           </article>
           <article class="item">
             <h3>Milestone map expanded</h3>
-            <p>The dashboard now renders every implementation-plan milestone as an individual index point plus a matching objective and test-gate card.</p>
+            <p>The dashboard now renders every implementation-plan milestone as an individual index point plus a matching objective and test-gate card, so milestone coverage is visible without shorthand ranges.</p>
           </article>
           <article class="item">
             <h3>Storage backend parity tightened</h3>
