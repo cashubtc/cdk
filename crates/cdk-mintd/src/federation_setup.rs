@@ -670,7 +670,7 @@ member_payment_report_lines() {{
   local member="$1"
   local private_config
   private_config="$(member_private_config "$member")"
-  "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" | awk '/^  payment_report / {{ print }}'
+  "$CDK_MINTD_BIN" federation payment-observations --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --context mint-quote | awk '/^  payment_report / {{ print }}'
 }}
 
 wait_for_prometheus_metrics() {{
@@ -822,6 +822,7 @@ wait_for_quarantine_report() {{
   printf 'member %s did not report an accepted payment observation quarantine\n' "$member" >&2
   local private_config
   private_config="$(member_private_config "$member")"
+  "$CDK_MINTD_BIN" federation payment-observations --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --context mint-quote >&2 || true
   "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready >&2 || true
   return 1
 }}
@@ -1027,6 +1028,7 @@ mod tests {
             std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
         assert!(smoke_script.starts_with("#!/usr/bin/env bash"));
         assert!(smoke_script.contains("federation status"));
+        assert!(smoke_script.contains("federation payment-observations"));
         assert!(smoke_script.contains("federation smoke-operations"));
         assert!(smoke_script.contains("--require-ready"));
         assert!(smoke_script.contains("member_status_line()"));
@@ -1055,6 +1057,7 @@ mod tests {
         assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES must be a positive integer"));
         assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES must be 255 or lower"));
         assert!(smoke_script.contains("member_payment_report_lines()"));
+        assert!(smoke_script.contains("--context mint-quote"));
         assert!(smoke_script.contains("member_prometheus_url()"));
         assert!(smoke_script.contains("run_smoke_operations()"));
         assert!(smoke_script.contains("wait_for_prometheus_metrics()"));
@@ -1097,6 +1100,9 @@ mod tests {
         assert!(smoke_script
             .contains("--private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\""));
         assert!(smoke_script.contains("wait_for_quarantine_report \"$PRIMARY_MEMBER\""));
+        assert!(smoke_script.contains(
+            "federation payment-observations --public-config \"$PUBLIC_CONFIG\" --private-config \"$private_config\" --member \"$member\" --context mint-quote"
+        ));
         assert!(smoke_script.contains("stop_member \"$QUARANTINE_OFFLINE_MEMBER\""));
         assert!(smoke_script.contains("start_member \"$QUARANTINE_OFFLINE_MEMBER\""));
         assert!(smoke_script.contains("wait_for_status \"$QUARANTINE_OFFLINE_MEMBER\""));
@@ -1320,6 +1326,7 @@ mod tests {
         assert!(smoke_script.contains("--scenario offline-member-operations"));
         assert!(smoke_script.contains("--scenario pending-melt-fail-finish"));
         assert!(smoke_script.contains("--scenario quarantine-mint-conflict"));
+        assert!(smoke_script.contains("federation payment-observations"));
 
         for (member_id, member_artifacts) in &artifacts.member_artifacts {
             assert!(smoke_script.contains(&format!("    {}) printf", member_id.get())));

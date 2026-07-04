@@ -358,19 +358,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Payment-observation reports now have a focused signed admin view</span>
+          <span class="value">Generated local smoke now verifies payment-observation admin visibility</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add payment observation admin view</span>
+          <span class="value">test: exercise payment observation admin smoke</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk-mintd federation payment-observations` can query signed member status and list redacted unresolved, stale, conflicting, or quarantined payment reports with context and quote filters</span>
+          <span class="value">The generated local federation smoke uses `cdk-mintd federation payment-observations --context mint-quote` to wait for quarantined mint-payment evidence after an offline-member conflict</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Run the admin view against live smoke members, then continue Postgres-backed federation smoke once a database service is available</span>
+          <span class="value">Continue Postgres-backed federation smoke once a database service is available, then broaden storage-backed digest mismatch drills</span>
         </div>
       </aside>
     </header>
@@ -1284,6 +1284,10 @@
             <h3>Payment observation admin view added</h3>
             <p>`cdk-mintd federation payment-observations` signs local-status probes, targets selected members or the full roster, filters by mint or melt quote, and prints only redacted payment report and evidence-group summaries.</p>
           </article>
+          <article class="item">
+            <h3>Payment observation admin smoke verified</h3>
+            <p>The generated local smoke now waits for quarantined mint-payment reports through the dedicated admin command, and a shortened three-member live smoke passed through the conflict, restart, catch-up, and admin-visibility path.</p>
+          </article>
         </div>
       </section>
 
@@ -1847,7 +1851,13 @@
               <td>Payment observation admin CLI</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite payment_observations -- --test-threads 1` and `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" payment_observations -- --test-threads 1` each passed 4 focused tests for CLI parsing, actionable-report defaults, context and quote filters, and resolved-report inclusion. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed, and `cargo fmt --all` completed with the known stable-rustfmt warnings.</td>
-              <td>Run the command against live smoke members with conflicting and quarantined observations, then add script-level checks if the output becomes part of operator runbooks.</td>
+              <td>Keep the command wired into generated operator smoke and add script-level checks for additional report states as they become part of runbooks.</td>
+            </tr>
+            <tr>
+              <td>Payment observation admin smoke</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1` and `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" federation_setup -- --test-threads 1` each passed 6 generated-artifact tests, including script assertions for `federation payment-observations --context mint-quote`. `just fed-regtest-generate target/cdk-fed-regtest-admin-view 3 2 23885` generated a three-member bundle, `bash -n target/cdk-fed-regtest-admin-view/smoke-local-federation.sh` passed, and `CHECK_PROMETHEUS_METRICS=0 OFFLINE_OPERATION_BATCHES=1 CDK_MINTD_BIN=target/debug/cdk-mintd bash target/cdk-fed-regtest-admin-view/smoke-local-federation.sh` passed outside the sandbox after the sandbox blocked localhost binding.</td>
+              <td>Repeat the default five-member smoke periodically and carry the same admin visibility check into Postgres-backed smoke when a service is available.</td>
             </tr>
             <tr>
               <td>Federation status metrics</td>
