@@ -115,6 +115,10 @@ pub(crate) enum FederationSyncStatus {
         peer: MemberId,
         operation_count: u64,
     },
+    MaterializedStateMismatch {
+        peer: MemberId,
+        operation_count: u64,
+    },
     Halted {
         reason: String,
     },
@@ -139,6 +143,7 @@ impl FederationSyncStatus {
             Self::Lagging { .. } => "lagging",
             Self::CatchingUp { .. } => "catching_up",
             Self::VerifyingSessionOutcome { .. } => "verifying_session_outcome",
+            Self::MaterializedStateMismatch { .. } => "materialized_state_mismatch",
             Self::Halted { .. } => "halted",
         }
     }
@@ -161,6 +166,12 @@ impl FederationSyncStatus {
                 operation_count,
             } => format!(
                 "federation member is verifying quorum session outcome evidence after catch-up from peer {peer}: operation_count={operation_count}"
+            ),
+            Self::MaterializedStateMismatch {
+                peer,
+                operation_count,
+            } => format!(
+                "federation member is waiting for materialized state digest convergence with peer {peer}: operation_count={operation_count}"
             ),
             Self::Halted { reason } => format!("federation member is halted: {reason}"),
         }
@@ -205,6 +216,26 @@ impl FederationSyncState {
             } if peer_operation_count > operation_count => {}
             _ => {
                 self.status = FederationSyncStatus::VerifyingSessionOutcome {
+                    peer,
+                    operation_count,
+                };
+            }
+        }
+    }
+
+    fn mark_materialized_state_mismatch(&mut self, peer: MemberId, operation_count: u64) {
+        match self.status {
+            FederationSyncStatus::Halted { .. } => {}
+            FederationSyncStatus::Lagging {
+                peer_operation_count,
+                ..
+            } if peer_operation_count > operation_count => {}
+            FederationSyncStatus::VerifyingSessionOutcome {
+                operation_count: pending_operation_count,
+                ..
+            } if pending_operation_count > operation_count => {}
+            _ => {
+                self.status = FederationSyncStatus::MaterializedStateMismatch {
                     peer,
                     operation_count,
                 };
@@ -291,6 +322,13 @@ impl MintState {
         &self,
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
+        if let Some(response) =
+            crate::federation::submit_operation_to_primary_if_needed(self, envelope.clone(), None)
+                .await?
+        {
+            return Ok(response);
+        }
+
         self.ensure_federation_ready_for_public_submit().await?;
         self.submit_federation_envelope_with_sequence(envelope, None)
             .await
@@ -525,6 +563,18 @@ impl MintState {
             sync.lock()
                 .await
                 .mark_verifying_session_outcome(peer, operation_count);
+        }
+    }
+
+    pub(crate) async fn mark_federation_materialized_state_mismatch(
+        &self,
+        peer: MemberId,
+        operation_count: u64,
+    ) {
+        if let Some(sync) = &self.federation_sync {
+            sync.lock()
+                .await
+                .mark_materialized_state_mismatch(peer, operation_count);
         }
     }
 

@@ -30,6 +30,10 @@ use cdk_http_client::{Async, Transport};
 
 use crate::cli::{FederationSmokeOperationsArgs, FederationSmokeScenario};
 
+const STANDARD_SMOKE_SEED: [u8; 64] = [7u8; 64];
+const PENDING_PAID_SMOKE_SEED: [u8; 64] = [8u8; 64];
+const PENDING_FAILED_SMOKE_SEED: [u8; 64] = [9u8; 64];
+
 pub(crate) async fn run_smoke_operations_command(
     args: &FederationSmokeOperationsArgs,
 ) -> Result<()> {
@@ -46,7 +50,6 @@ pub(crate) async fn run_smoke_operations_command(
         FederatedMintConnector::new(public_config.clone(), member_connectors.clone())
             .context("federated wallet connector")?;
     let connector = Arc::new(federation_connector);
-    let seed = [7u8; 64];
 
     match args.scenario {
         FederationSmokeScenario::Standard => {
@@ -56,7 +59,7 @@ pub(crate) async fn run_smoke_operations_command(
                 unit,
                 &member_connectors,
                 connector,
-                seed,
+                STANDARD_SMOKE_SEED,
             )
             .await
         }
@@ -71,7 +74,7 @@ pub(crate) async fn run_smoke_operations_command(
                 unit,
                 &member_connectors,
                 connector,
-                seed,
+                PENDING_PAID_SMOKE_SEED,
                 wallet_db,
                 MeltQuoteState::Paid,
             )
@@ -88,7 +91,7 @@ pub(crate) async fn run_smoke_operations_command(
                 unit,
                 &member_connectors,
                 connector,
-                seed,
+                PENDING_PAID_SMOKE_SEED,
                 wallet_db,
                 MeltQuoteState::Paid,
             )
@@ -105,7 +108,7 @@ pub(crate) async fn run_smoke_operations_command(
                 unit,
                 &member_connectors,
                 connector,
-                seed,
+                PENDING_FAILED_SMOKE_SEED,
                 wallet_db,
                 MeltQuoteState::Failed,
             )
@@ -122,7 +125,7 @@ pub(crate) async fn run_smoke_operations_command(
                 unit,
                 &member_connectors,
                 connector,
-                seed,
+                PENDING_FAILED_SMOKE_SEED,
                 wallet_db,
                 MeltQuoteState::Failed,
             )
@@ -256,7 +259,7 @@ async fn run_pending_melt_start(
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Pending,
-        check_payment_state: terminal_state,
+        check_payment_state: MeltQuoteState::Pending,
         pay_err: false,
         check_err: false,
     };
@@ -295,13 +298,13 @@ async fn run_pending_melt_start(
         }
     }
 
-    let pending_quotes = wallet
-        .get_pending_melt_quotes()
+    let active_quotes = wallet
+        .get_active_melt_quotes()
         .await
-        .context("load pending melt quotes")?;
-    if !pending_quotes.iter().any(|quote| quote.id == melt_quote.id) {
+        .context("load active melt quotes")?;
+    if !active_quotes.iter().any(|quote| quote.id == melt_quote.id) {
         bail!(
-            "pending federation melt quote {} was not persisted in wallet db",
+            "pending federation melt quote {} was not active in wallet db",
             melt_quote.id
         );
     }
@@ -325,28 +328,43 @@ async fn run_pending_melt_finish(
     terminal_state: MeltQuoteState,
 ) -> Result<()> {
     let wallet = smoke_wallet(public_config, unit, seed, connector, Some(wallet_db)).await?;
-    let pending_quotes = wallet
-        .get_pending_melt_quotes()
+    let active_quotes = wallet
+        .get_active_melt_quotes()
         .await
-        .context("load pending melt quotes before recovery")?;
-    let quote_id = pending_quotes
+        .context("load active melt quotes before recovery")?;
+    let quote_id = active_quotes
         .first()
         .map(|quote| quote.id.clone())
-        .context("pending melt finish found no pending melt quotes in wallet db")?;
+        .context("pending melt finish found no active melt quotes in wallet db")?;
+
+    submit_terminal_melt_payment_observation(
+        args,
+        public_config,
+        member_connectors,
+        &quote_id,
+        terminal_state,
+    )
+    .await?;
 
     let finalized = wallet
         .finalize_pending_melts()
         .await
         .context("finalize pending federation melt")?;
+    let expected_wallet_state = wallet_melt_quote_state_for_terminal(terminal_state);
     let terminal = finalized
         .iter()
-        .find(|melt| melt.quote_id() == quote_id && melt.state() == terminal_state)
-        .with_context(|| format!("pending federation melt did not finalize as {terminal_state}"))?;
+        .find(|melt| melt.quote_id() == quote_id && melt.state() == expected_wallet_state)
+        .with_context(|| {
+            format!(
+                "pending federation melt did not finalize as {expected_wallet_state} \
+                 after terminal {terminal_state} observation"
+            )
+        })?;
 
     wait_for_melt_quote_state(
         member_connectors,
         &quote_id,
-        terminal_state,
+        member_melt_quote_state_for_terminal(terminal_state),
         args.quote_retries,
         Duration::from_millis(args.quote_sleep_ms),
     )
@@ -396,6 +414,82 @@ async fn run_pending_melt_finish(
     );
 
     Ok(())
+}
+
+async fn submit_terminal_melt_payment_observation(
+    args: &FederationSmokeOperationsArgs,
+    public_config: &FederationConfig,
+    member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+    quote_id: &str,
+    terminal_state: MeltQuoteState,
+) -> Result<()> {
+    let private_config_path = args.private_config.as_deref().with_context(|| {
+        format!("--private-config is required to finalize pending melt as {terminal_state}")
+    })?;
+    let private_config: MemberConfigPrivate =
+        crate::read_federation_json(private_config_path, "private federation config")?;
+    let runtime_config =
+        FederationRuntimeConfig::new(public_config.clone(), private_config.clone())
+            .context("private federation config does not match public federation config")?;
+    let target_member = public_config
+        .member(private_config.member_id)
+        .context("private federation member is missing from the public federation config")?;
+    let quote = member_connectors
+        .values()
+        .next()
+        .context("pending melt finish needs at least one federation member")?
+        .get_melt_quote_status(PaymentMethod::BOLT11, quote_id)
+        .await
+        .context("load pending melt quote status before terminal observation")?;
+    let envelope = runtime_config.melt_quote_payment_observation(
+        quote_id,
+        quote.method(),
+        terminal_state,
+        quote.amount(),
+        quote.fee_reserve(),
+        match terminal_state {
+            MeltQuoteState::Paid => Some(format!("federation-smoke-paid-{quote_id}")),
+            _ => None,
+        },
+        match terminal_state {
+            MeltQuoteState::Failed => Some("federation smoke terminal failure".to_string()),
+            _ => None,
+        },
+    );
+    let sequence = initial_smoke_sequence().saturating_add(1);
+    submit_smoke_operation(
+        &Async::default(),
+        public_config,
+        &private_config,
+        target_member,
+        sequence,
+        envelope,
+    )
+    .await?;
+    wait_for_melt_quote_state(
+        member_connectors,
+        quote_id,
+        member_melt_quote_state_for_terminal(terminal_state),
+        args.quote_retries,
+        Duration::from_millis(args.quote_sleep_ms),
+    )
+    .await?;
+
+    Ok(())
+}
+
+fn member_melt_quote_state_for_terminal(terminal_state: MeltQuoteState) -> MeltQuoteState {
+    match terminal_state {
+        MeltQuoteState::Failed => MeltQuoteState::Unpaid,
+        state => state,
+    }
+}
+
+fn wallet_melt_quote_state_for_terminal(terminal_state: MeltQuoteState) -> MeltQuoteState {
+    match terminal_state {
+        MeltQuoteState::Failed => MeltQuoteState::Unpaid,
+        state => state,
+    }
 }
 
 async fn mint_smoke_funds(
@@ -601,8 +695,8 @@ fn initial_smoke_sequence() -> u64 {
         .map(|duration| {
             duration
                 .as_secs()
-                .saturating_mul(1_000_000)
-                .saturating_add(u64::from(duration.subsec_micros()))
+                .saturating_mul(1_000_000_000)
+                .saturating_add(u64::from(duration.subsec_nanos()))
         })
         .unwrap_or_default()
 }

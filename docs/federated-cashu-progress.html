@@ -358,19 +358,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">Expanded milestone map: all 24 implementation-plan milestones are listed as individual points below</span>
+          <span class="value">Generated 3-member federation smoke now passes standard, pending-melt, failed-melt, and quarantine catch-up paths</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover offline quarantine smoke catch-up</span>
+          <span class="value">fix: stabilize federation process smoke</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Offline-member quarantine catch-up smoke scripted</span>
+          <span class="value">Primary REST admission, pending melt recovery, and quarantine replay converge in live smoke</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Run generated quarantine smoke end-to-end against local processes</span>
+          <span class="value">Broaden process smoke across federation sizes and storage backends</span>
         </div>
       </aside>
     </header>
@@ -379,9 +379,9 @@
       <section class="panel span-8">
         <h2>Implementation Plan Milestones</h2>
         <p class="section-note">
-          The implementation plan has 24 milestones. This dashboard renders each
-          milestone as its own ordered-list point and as a matching objective and
-          test-gate card, with no compressed milestone ranges.
+          The implementation plan has 24 milestones. The ordered list below names
+          them one by one, and each milestone has a matching objective and
+          test-gate card. No compressed milestone ranges remain on this dashboard.
         </p>
         <ol class="milestone-index" aria-label="Expanded milestone index with one point per implementation-plan milestone">
           <li>Milestone 0: written RFC and feature gate.</li>
@@ -1186,6 +1186,22 @@
             <h3>Live quarantine smoke drill scripted</h3>
             <p>`cdk-mintd federation smoke-operations --scenario quarantine-mint-conflict` now submits a mint quote, conflicting payment observations, and a quarantine through signed private REST, while the generated local smoke script keeps one member offline during injection and verifies that member reports the quarantine after restart catch-up.</p>
           </article>
+          <article class="item">
+            <h3>Primary REST admission stabilized</h3>
+            <p>Non-primary public and private federation submissions now forward operation envelopes to the deterministic primary before local catch-up, so generated member processes serialize client traffic through one admission point during the REST MVP.</p>
+          </article>
+          <article class="item">
+            <h3>Process smoke pending melts verified</h3>
+            <p>The live generated federation smoke now verifies both restart-delayed paid melts and failed pending melts; failed terminal observations compensate the wallet back to unpaid state and restore proofs without producing change.</p>
+          </article>
+          <article class="item">
+            <h3>Quarantine replay convergence fixed</h3>
+            <p>Payment-observation apply now checks quarantine records only up to the current operation index, preventing future catch-up entries from suppressing prior accepted observations and keeping materialized state digests aligned.</p>
+          </article>
+          <article class="item">
+            <h3>End-to-end quarantine smoke verified</h3>
+            <p>The generated three-member, two-threshold local smoke passed live member startup, standard wallet mint/swap/melt/restore, paid and failed pending-melt restart recovery, quarantine injection while one member was offline, restart catch-up, and final convergence.</p>
+          </article>
         </div>
       </section>
 
@@ -1202,7 +1218,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations, and a fresh SQLite-backed mint state can restart through a pending melt reserve before catching up the paid observation. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, local sync plus materialized state-digest health is queryable from mintd over signed private REST, and the generated process smoke now drives live wallet mint, swap, proof-state check, melt, restore, convergence, restart, and catch-up. Payment observations are now durable SQL rows, mint quote payments can finalize from stored real-policy quorum evidence, melt paid/failed observations have focused stored-quorum saga coverage, stored observations can be summarized into conflict/unresolved reports, those reports are visible through redacted signed local status plus mintd status output with stale-age, evidence operation IDs, and quarantine recommendations, accepted quarantine operations now halt quote spending/finalization while changing materialized state digests, mintd can propose those quarantines through signed private REST, catch-up now proves quarantined reports remain visible through signed local status, and the generated smoke script now injects conflicting mint evidence plus quarantine while one member is offline and verifies that member reports the quarantine after restart catch-up; remaining work is to run that generated quarantine smoke end-to-end against local processes, strengthen BFT ordering, and broaden storage-backed process coverage.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations, and a fresh SQLite-backed mint state can restart through a pending melt reserve before catching up the paid observation. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, local sync plus materialized state-digest health is queryable from mintd over signed private REST, and the generated process smoke now drives live wallet mint, swap, proof-state check, melt, restore, convergence, restart, and catch-up. Payment observations are now durable SQL rows, mint quote payments can finalize from stored real-policy quorum evidence, melt paid/failed observations have focused stored-quorum saga coverage, stored observations can be summarized into conflict/unresolved reports, those reports are visible through redacted signed local status plus mintd status output with stale-age, evidence operation IDs, and quarantine recommendations, accepted quarantine operations now halt quote spending/finalization while changing materialized state digests, mintd can propose those quarantines through signed private REST, catch-up now proves quarantined reports remain visible through signed local status, the generated smoke script injects conflicting mint evidence plus quarantine while one member is offline, and live smoke verifies that the restarted member catches up and all members converge; remaining work is to strengthen BFT ordering and broaden storage-backed process coverage.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -1735,9 +1751,9 @@
             </tr>
             <tr>
               <td>Live quarantine process smoke drill</td>
-              <td><span class="status progress">Scripted</span></td>
-              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite -- --test-threads 1` passed 80 tests, covering the new `quarantine-mint-conflict` smoke parser, signed-status operation ID formatting, and generated smoke-script assertions for private-config use, quarantine report checks, convergence, one member being offline during quarantine injection, and restart catch-up visibility.</td>
-              <td>Run the generated smoke script in an unsandboxed local environment and capture the local process evidence.</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite trusted_dealer_artifacts_are_written_and_validated -- --test-threads 1`, `cargo build -p cdk-mintd --features federation,fakewallet,sqlite`, and the generated three-member local smoke passed. The live run covered standard wallet mint, swap, check-state, melt, restore, paid pending-melt restart recovery, failed pending-melt compensation to unpaid with restored proofs, conflicting mint payment observations, quarantine submission while one member was offline, restart catch-up, signed status, and final convergence.</td>
+              <td>Repeat the live smoke for five-member and larger generated federations, then add storage-backend variants.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
@@ -1815,12 +1831,12 @@
         <h2>Next Work</h2>
         <div class="stack">
           <article class="item">
-            <h3>End-to-end quarantine smoke</h3>
-            <p>Run the generated quarantine smoke against local member processes and record the signed status, convergence, offline catch-up, and quarantine report evidence.</p>
+            <h3>Five-member smoke matrix</h3>
+            <p>Repeat the generated standard, pending-melt, failed-melt, and quarantine smoke against a five-member federation and compare convergence behavior with the three-member baseline.</p>
           </article>
           <article class="item">
-            <h3>Broader process smoke matrix</h3>
-            <p>Run the generated paid and failed pending-melt restart smoke in an environment with local listener permissions, then add delayed and offline fake-wallet observation variants across generated member processes.</p>
+            <h3>Backend-backed smoke matrix</h3>
+            <p>Add process smoke variants that keep the same operation script but exercise more storage backends and longer restart/catch-up windows.</p>
           </article>
           <article class="item">
             <h3>Broader materialized digest coverage</h3>

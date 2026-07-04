@@ -457,6 +457,8 @@ RESTART_MEMBER="${{RESTART_MEMBER:-{restart_member}}}"
 QUARANTINE_OFFLINE_MEMBER="${{QUARANTINE_OFFLINE_MEMBER:-$RESTART_MEMBER}}"
 STATUS_RETRIES="${{STATUS_RETRIES:-60}}"
 STATUS_SLEEP_SECONDS="${{STATUS_SLEEP_SECONDS:-1}}"
+SMOKE_QUOTE_RETRIES="${{SMOKE_QUOTE_RETRIES:-300}}"
+SMOKE_QUOTE_SLEEP_MS="${{SMOKE_QUOTE_SLEEP_MS:-100}}"
 PENDING_WALLET_DB="${{PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/pending-melt-wallet.sqlite}}"
 FAILED_PENDING_WALLET_DB="${{FAILED_PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/failed-pending-melt-wallet.sqlite}}"
 PIDS=()
@@ -565,6 +567,14 @@ status_field() {{
   return 1
 }}
 
+run_smoke_operations() {{
+  "$CDK_MINTD_BIN" federation smoke-operations \
+    --public-config "$PUBLIC_CONFIG" \
+    --quote-retries "$SMOKE_QUOTE_RETRIES" \
+    --quote-sleep-ms "$SMOKE_QUOTE_SLEEP_MS" \
+    "$@"
+}}
+
 wait_for_converged() {{
   for _ in $(seq 1 "$STATUS_RETRIES"); do
     local baseline_operations=""
@@ -660,21 +670,10 @@ for member in "${{MEMBERS[@]}}"; do
 done
 
 wait_for_converged
-"$CDK_MINTD_BIN" federation smoke-operations --public-config "$PUBLIC_CONFIG"
+run_smoke_operations
 wait_for_converged
 
-"$CDK_MINTD_BIN" federation smoke-operations --public-config "$PUBLIC_CONFIG" --scenario pending-melt-start --wallet-db "$PENDING_WALLET_DB"
-wait_for_converged
-
-stop_member "$RESTART_MEMBER"
-start_member "$RESTART_MEMBER"
-wait_for_status "$RESTART_MEMBER"
-
-wait_for_converged
-"$CDK_MINTD_BIN" federation smoke-operations --public-config "$PUBLIC_CONFIG" --scenario pending-melt-finish --wallet-db "$PENDING_WALLET_DB"
-wait_for_converged
-
-"$CDK_MINTD_BIN" federation smoke-operations --public-config "$PUBLIC_CONFIG" --scenario pending-melt-fail-start --wallet-db "$FAILED_PENDING_WALLET_DB"
+run_smoke_operations --scenario pending-melt-start --wallet-db "$PENDING_WALLET_DB"
 wait_for_converged
 
 stop_member "$RESTART_MEMBER"
@@ -682,11 +681,22 @@ start_member "$RESTART_MEMBER"
 wait_for_status "$RESTART_MEMBER"
 
 wait_for_converged
-"$CDK_MINTD_BIN" federation smoke-operations --public-config "$PUBLIC_CONFIG" --scenario pending-melt-fail-finish --wallet-db "$FAILED_PENDING_WALLET_DB"
+run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario pending-melt-finish --wallet-db "$PENDING_WALLET_DB"
+wait_for_converged
+
+run_smoke_operations --scenario pending-melt-fail-start --wallet-db "$FAILED_PENDING_WALLET_DB"
+wait_for_converged
+
+stop_member "$RESTART_MEMBER"
+start_member "$RESTART_MEMBER"
+wait_for_status "$RESTART_MEMBER"
+
+wait_for_converged
+run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario pending-melt-fail-finish --wallet-db "$FAILED_PENDING_WALLET_DB"
 wait_for_converged
 
 stop_member "$QUARANTINE_OFFLINE_MEMBER"
-"$CDK_MINTD_BIN" federation smoke-operations --public-config "$PUBLIC_CONFIG" --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario quarantine-mint-conflict
+run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario quarantine-mint-conflict
 wait_for_quarantine_report "$PRIMARY_MEMBER"
 
 start_member "$QUARANTINE_OFFLINE_MEMBER"
@@ -792,7 +802,12 @@ mod tests {
         assert!(smoke_script.contains("QUARANTINE_OFFLINE_MEMBER"));
         assert!(smoke_script.contains("PENDING_WALLET_DB"));
         assert!(smoke_script.contains("FAILED_PENDING_WALLET_DB"));
+        assert!(smoke_script.contains("SMOKE_QUOTE_RETRIES"));
+        assert!(smoke_script.contains("SMOKE_QUOTE_SLEEP_MS"));
         assert!(smoke_script.contains("member_payment_report_lines()"));
+        assert!(smoke_script.contains("run_smoke_operations()"));
+        assert!(smoke_script.contains("--quote-retries \"$SMOKE_QUOTE_RETRIES\""));
+        assert!(smoke_script.contains("--quote-sleep-ms \"$SMOKE_QUOTE_SLEEP_MS\""));
         assert!(smoke_script.contains("wait_for_quarantine_report()"));
         assert!(smoke_script.contains("validate_quarantine_members()"));
         assert!(smoke_script.contains("--scenario pending-melt-start"));
@@ -802,6 +817,12 @@ mod tests {
         assert!(smoke_script.contains("--scenario quarantine-mint-conflict"));
         assert!(smoke_script.contains("--wallet-db \"$PENDING_WALLET_DB\""));
         assert!(smoke_script.contains("--wallet-db \"$FAILED_PENDING_WALLET_DB\""));
+        assert!(smoke_script.contains(
+            "--private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\" --scenario pending-melt-finish"
+        ));
+        assert!(smoke_script.contains(
+            "--private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\" --scenario pending-melt-fail-finish"
+        ));
         assert!(smoke_script
             .contains("--private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\""));
         assert!(smoke_script.contains("wait_for_quarantine_report \"$PRIMARY_MEMBER\""));

@@ -15,14 +15,14 @@ use cdk::federation::{
     FederationConfig, FederationConsensusEngine, FederationConsensusRuntime, FederationError,
     FederationId, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
     FederationJournalDigest, FederationJournalEntry, FederationMaterializedStateRow,
-    FederationMaterializedStateSnapshot, FederationOperation, FederationOperationId,
-    FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationPaymentObservationReportSummary,
-    FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
-    FederationRestSequenceTracker, FederationSessionOutcome, FederationSessionOutcomeQuorum,
-    FederationSignedRequest, FederationStateDigest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, MemberConfigPrivate, MemberConfigPublic,
-    FEDERATION_REST_API_VERSION,
+    FederationMaterializedStateSnapshot, FederationOperation, FederationOperationEnvelope,
+    FederationOperationId, FederationPaymentObservationQuarantineRecord,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
+    FederationRestMessageKind, FederationRestSequenceTracker, FederationSessionOutcome,
+    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationStateDigest,
+    FederationSubmitOperationRequest, FederationSubmitOperationResponse, MemberConfigPrivate,
+    MemberConfigPublic, MemberId, FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
 use serde::{Deserialize, Serialize};
@@ -199,6 +199,78 @@ where
     collected
 }
 
+pub(crate) async fn submit_operation_to_primary_if_needed(
+    state: &MintState,
+    envelope: FederationOperationEnvelope,
+    sequence: Option<(MemberId, u64)>,
+) -> Result<Option<FederationSubmitOperationResponse>, cdk::Error> {
+    submit_operation_to_primary_if_needed_with_transport(
+        state,
+        envelope,
+        sequence,
+        Async::default(),
+    )
+    .await
+}
+
+async fn submit_operation_to_primary_if_needed_with_transport<T>(
+    state: &MintState,
+    envelope: FederationOperationEnvelope,
+    sequence: Option<(MemberId, u64)>,
+    transport: T,
+) -> Result<Option<FederationSubmitOperationResponse>, cdk::Error>
+where
+    T: Transport,
+{
+    let Some(runtime_config) = state.mint.federation_config() else {
+        return Ok(None);
+    };
+    let Some(primary_member) = runtime_config.public_config().members.values().next() else {
+        return Err(cdk::Error::Custom(
+            "federation config has an empty member roster".to_string(),
+        ));
+    };
+    if primary_member.member_id == runtime_config.member_id() {
+        return Ok(None);
+    }
+
+    let request = FederationSubmitOperationRequest::new(envelope);
+    request
+        .ensure_admissible_size()
+        .map_err(|err| cdk::Error::Custom(err.to_string()))?;
+    let operation_id = request
+        .operation_id()
+        .map_err(|err| cdk::Error::Custom(err.to_string()))?;
+    let client = FederationRestPeerClient::new(
+        transport,
+        runtime_config.public_config(),
+        runtime_config.private_config().clone(),
+    )
+    .map_err(|err| cdk::Error::Custom(err.to_string()))?;
+    let response = client
+        .submit_operation(primary_member, &request)
+        .await
+        .map_err(|err| cdk::Error::Custom(err.to_string()))?;
+
+    client
+        .sync_once_from_member(state, primary_member)
+        .await
+        .map_err(|err| cdk::Error::Custom(err.to_string()))?;
+
+    if let Some((sender, sequence)) = sequence {
+        state.persist_federation_sequence(sender, sequence).await?;
+    }
+
+    if response.operation_id != operation_id {
+        return Err(cdk::Error::Custom(format!(
+            "federation primary returned operation id {} for submitted operation {}",
+            response.operation_id, operation_id
+        )));
+    }
+
+    Ok(Some(response))
+}
+
 async fn persist_local_session_outcome_evidence_chunks(
     state: &MintState,
     runtime_config: &cdk::mint::FederationRuntimeConfig,
@@ -359,6 +431,21 @@ async fn post_operation(
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::SubmitOperation)
             .await?;
+    if let Some(response) = submit_operation_to_primary_if_needed(
+        &state,
+        payload.payload.envelope.clone(),
+        Some((verified.sender, verified.sequence)),
+    )
+    .await
+    .map_err(cdk_error_response)?
+    {
+        tracing::debug!(
+            "Forwarded federation operation {} to primary member",
+            response.operation_id
+        );
+        return Ok(Json(response));
+    }
+
     let response = state
         .submit_federation_envelope_with_sequence(
             payload.payload.envelope,
@@ -956,9 +1043,10 @@ where
         }
 
         local_status = local_peer_status(state).await?;
-        let digest_mismatch = local_status.latest_order_digest != peer_status.latest_order_digest
-            || local_status.state_digest != peer_status.state_digest;
-        if local_status.operation_count == peer_status.operation_count && digest_mismatch {
+        let order_digest_mismatch =
+            local_status.latest_order_digest != peer_status.latest_order_digest;
+        let state_digest_mismatch = local_status.state_digest != peer_status.state_digest;
+        if local_status.operation_count == peer_status.operation_count && order_digest_mismatch {
             state
                 .mark_federation_halted(format!(
                     "peer {} digest mismatch at operation count {}",
@@ -967,6 +1055,19 @@ where
                 .await;
             anyhow::bail!(
                 "federation peer {} digest mismatch at operation count {}",
+                member.member_id,
+                peer_status.operation_count
+            );
+        }
+        if local_status.operation_count == peer_status.operation_count && state_digest_mismatch {
+            state
+                .mark_federation_materialized_state_mismatch(
+                    member.member_id,
+                    peer_status.operation_count,
+                )
+                .await;
+            anyhow::bail!(
+                "federation peer {} materialized state digest mismatch at operation count {}",
                 member.member_id,
                 peer_status.operation_count
             );
@@ -1002,7 +1103,7 @@ where
         Ok(FederationSignedRequest::new_signed(
             self.federation_id,
             member.member_id,
-            self.next_sequence.fetch_add(1, Ordering::Relaxed) + 1,
+            next_federation_rest_sequence(&self.next_sequence),
             kind,
             payload,
             &self.private_config,
@@ -1010,8 +1111,8 @@ where
     }
 }
 
-fn initial_federation_rest_sequence() -> u64 {
-    let now = SystemTime::now()
+fn federation_rest_sequence_time_seed() -> u64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| {
             duration
@@ -1019,7 +1120,11 @@ fn initial_federation_rest_sequence() -> u64 {
                 .saturating_mul(1_000_000_000)
                 .saturating_add(u64::from(duration.subsec_nanos()))
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+fn initial_federation_rest_sequence() -> u64 {
+    let now = federation_rest_sequence_time_seed();
 
     loop {
         let last = FEDERATION_REST_SEQUENCE_SEED.load(Ordering::Relaxed);
@@ -1031,6 +1136,29 @@ fn initial_federation_rest_sequence() -> u64 {
             Ordering::Relaxed,
         ) {
             Ok(_) => return candidate,
+            Err(_) => continue,
+        }
+    }
+}
+
+fn next_federation_rest_sequence(local_sequence: &AtomicU64) -> u64 {
+    loop {
+        let now = federation_rest_sequence_time_seed();
+        let local_last = local_sequence.load(Ordering::Relaxed);
+        let global_last = FEDERATION_REST_SEQUENCE_SEED.load(Ordering::Relaxed);
+        let candidate = now
+            .max(local_last.saturating_add(1))
+            .max(global_last.saturating_add(1));
+        match FEDERATION_REST_SEQUENCE_SEED.compare_exchange(
+            global_last,
+            candidate,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => {
+                local_sequence.store(candidate, Ordering::Relaxed);
+                return candidate;
+            }
             Err(_) => continue,
         }
     }
@@ -2050,6 +2178,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rest_peer_client_older_client_sequence_catches_up_after_newer_client() {
+        let (public_config, local_private, _) = transport_config();
+        let federation_id = public_config.federation_id;
+        let member = public_config.member(member_id(2)).expect("peer member");
+        let status = FederationPeerStatus::new(
+            federation_id,
+            member.member_id,
+            0,
+            None,
+            cdk::federation::FederationJournalDigest::genesis(),
+        );
+        let transport = MockFederationTransport::default().with_status_response(status);
+        let older_client =
+            FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+                .expect("older client");
+        older_client
+            .peer_status(member)
+            .await
+            .expect("older first peer status");
+
+        let newer_client =
+            FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
+                .expect("newer client");
+        newer_client
+            .peer_status(member)
+            .await
+            .expect("newer peer status");
+        older_client
+            .peer_status(member)
+            .await
+            .expect("older second peer status");
+
+        let requests = transport.status_requests();
+        assert_eq!(requests.len(), 3);
+        assert!(
+            requests[1].sequence > requests[0].sequence,
+            "newer client should advance the process-wide REST sequence"
+        );
+        assert!(
+            requests[2].sequence > requests[1].sequence,
+            "older client must reserve a sequence above newer client traffic"
+        );
+    }
+
+    #[tokio::test]
     async fn rest_peer_client_rejects_status_wrong_federation() {
         let (public_config, local_private, _) = transport_config();
         let member = public_config.member(member_id(2)).expect("peer member");
@@ -2103,6 +2276,86 @@ mod tests {
             submitted[0].payload.envelope.operation.kind(),
             FederationOperationKind::MintQuotePayment
         );
+    }
+
+    #[tokio::test]
+    async fn non_primary_submit_forwards_to_primary_and_catches_up() {
+        let (public_config, primary_private, local_private) = transport_config();
+        let federation_id = public_config.federation_id;
+        let state =
+            federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
+        let primary_member = public_config.member(member_id(1)).expect("primary member");
+        let blinded_secret = PublicKey::from(BlsG1PublicKey::hash_to_curve(
+            b"non primary forwarded restore",
+        ));
+        let envelope = restore_envelope_with_output(federation_id, blinded_secret);
+        let operation_id = envelope.operation_id().expect("operation id");
+
+        let mut primary_consensus =
+            InMemoryFederationConsensus::new(federation_id, primary_member.member_id);
+        let submit_response = primary_consensus
+            .submit_operation(FederationSubmitOperationRequest::new(envelope.clone()))
+            .expect("primary submit response");
+        let local_catch_up_request = state
+            .federation_consensus
+            .as_ref()
+            .expect("local consensus")
+            .lock()
+            .await
+            .catch_up_request();
+        let mut catch_up_response = primary_consensus
+            .catch_up_checked(&local_catch_up_request)
+            .expect("primary catch-up response");
+        let state_digest =
+            FederationMaterializedStateSnapshot::from_rows([FederationMaterializedStateRow::new(
+                "blind_signatures",
+                blinded_secret.to_hex(),
+            )
+            .with_field("missing", "true")])
+            .digest()
+            .expect("state digest");
+        catch_up_response.state_digest = state_digest;
+        let catch_up_response = signed_catch_up_response(catch_up_response, &primary_private);
+        let primary_status = FederationPeerStatus::new_with_state_digest(
+            federation_id,
+            primary_member.member_id,
+            primary_consensus.peer_status().operation_count,
+            primary_consensus.peer_status().latest_index,
+            primary_consensus.peer_status().latest_order_digest,
+            state_digest,
+        );
+        let transport = MockFederationTransport::default()
+            .with_submit_response(submit_response.clone())
+            .with_status_response(primary_status)
+            .with_catch_up_response(catch_up_response);
+
+        let response = submit_operation_to_primary_if_needed_with_transport(
+            &state,
+            envelope,
+            None,
+            transport.clone(),
+        )
+        .await
+        .expect("forward to primary")
+        .expect("non-primary should forward");
+
+        assert_eq!(response.operation_id, operation_id);
+        assert_eq!(response.operation_id, submit_response.operation_id);
+        let submitted = transport.submitted_operations();
+        assert_eq!(submitted.len(), 1);
+        submitted[0]
+            .verify(&public_config, primary_member.member_id)
+            .expect("signed primary submit");
+        assert_eq!(submitted[0].sender, local_private.member_id);
+        assert_eq!(submitted[0].receiver, primary_member.member_id);
+        let persisted = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("persisted journal");
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].operation_id, operation_id);
     }
 
     #[tokio::test]
@@ -2611,7 +2864,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rest_peer_client_halts_on_equal_height_state_digest_mismatch() {
+    async fn rest_peer_client_marks_equal_height_state_digest_mismatch_not_ready() {
         let (state, public_config, local_private, _) =
             federation_route_state_with_local_private().await;
         let federation_id = public_config.federation_id;
@@ -2633,7 +2886,64 @@ mod tests {
         assert!(sync.is_err());
         assert!(matches!(
             state.federation_sync_status().await,
-            Some(crate::FederationSyncStatus::Halted { .. })
+            Some(crate::FederationSyncStatus::MaterializedStateMismatch { .. })
+        ));
+
+        let blocked = state
+            .submit_federation_envelope(restore_envelope(
+                federation_id,
+                "03b45d181a961a91a284e8c64eb72839d43300afaa4e6b3076f5183bb14f50c2cc",
+            ))
+            .await;
+        assert!(matches!(blocked, Err(cdk::Error::Custom(_))));
+    }
+
+    #[tokio::test]
+    async fn rest_peer_client_recovers_from_transient_equal_height_state_digest_mismatch() {
+        let (state, public_config, local_private, _) =
+            federation_route_state_with_local_private().await;
+        let federation_id = public_config.federation_id;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let mismatched_status = FederationPeerStatus::new_with_state_digest(
+            federation_id,
+            peer_member.member_id,
+            0,
+            None,
+            cdk::federation::FederationJournalDigest::genesis(),
+            cdk::federation::FederationStateDigest::from_bytes([9; 32]),
+        );
+        let transport = MockFederationTransport::default().with_status_response(mismatched_status);
+        let client =
+            FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
+                .expect("client");
+
+        let sync = client.sync_once_from_member(&state, peer_member).await;
+
+        assert!(sync.is_err());
+        assert!(matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::MaterializedStateMismatch { .. })
+        ));
+
+        let local_status = local_peer_status(&state).await.expect("local status");
+        let converged_status = FederationPeerStatus::new_with_state_digest(
+            federation_id,
+            peer_member.member_id,
+            local_status.operation_count,
+            local_status.latest_index,
+            local_status.latest_order_digest,
+            local_status.state_digest,
+        );
+        transport.with_status_response(converged_status);
+
+        client
+            .sync_once_from_member(&state, peer_member)
+            .await
+            .expect("second sync recovers");
+
+        assert!(matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Healthy)
         ));
     }
 
@@ -4853,15 +5163,15 @@ mod tests {
 
         for state in [&first_state, &second_state] {
             state
-                .submit_federation_envelope(quote_envelope.clone())
+                .submit_federation_envelope_with_sequence(quote_envelope.clone(), None)
                 .await
                 .expect("submit mint quote");
             state
-                .submit_federation_envelope(paid_envelope.clone())
+                .submit_federation_envelope_with_sequence(paid_envelope.clone(), None)
                 .await
                 .expect("submit paid observation");
             state
-                .submit_federation_envelope(mint_envelope.clone())
+                .submit_federation_envelope_with_sequence(mint_envelope.clone(), None)
                 .await
                 .expect("submit mint");
         }
