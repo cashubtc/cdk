@@ -1354,6 +1354,8 @@ where
         let mut local_status = local_peer_status(state).await?;
         let mut recovered_from_peer = false;
 
+        ensure_peer_consensus_backend_matches(state, member, &local_status, &peer_status).await?;
+
         if peer_status.operation_count > local_status.operation_count {
             state
                 .mark_federation_lagging(
@@ -1404,6 +1406,7 @@ where
             local_status,
         )
         .await?;
+        ensure_peer_consensus_backend_matches(state, member, &local_status, &peer_status).await?;
         let order_digest_mismatch =
             local_status.latest_order_digest != peer_status.latest_order_digest;
         let state_digest_mismatch = local_status.state_digest != peer_status.state_digest;
@@ -1610,6 +1613,30 @@ where
     }
 
     Ok((local_status, peer_status))
+}
+
+async fn ensure_peer_consensus_backend_matches(
+    state: &MintState,
+    member: &MemberConfigPublic,
+    local_status: &FederationPeerStatus,
+    peer_status: &FederationPeerStatus,
+) -> anyhow::Result<()> {
+    if local_status.consensus_backend == peer_status.consensus_backend {
+        return Ok(());
+    }
+
+    state
+        .mark_federation_halted(format!(
+            "peer {} consensus backend mismatch: local {} peer {}",
+            member.member_id, local_status.consensus_backend, peer_status.consensus_backend
+        ))
+        .await;
+    anyhow::bail!(
+        "federation peer {} consensus backend mismatch: local {} peer {}",
+        member.member_id,
+        local_status.consensus_backend,
+        peer_status.consensus_backend
+    );
 }
 
 async fn local_peer_status_with_materialized_rows(
@@ -3972,6 +3999,45 @@ mod tests {
         let sync = client.sync_once_from_member(&state, peer_member).await;
 
         assert!(sync.is_err());
+        assert!(matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Halted { .. })
+        ));
+
+        let blocked = state
+            .submit_federation_envelope(restore_envelope(
+                federation_id,
+                "03b45d181a961a91a284e8c64eb72839d43300afaa4e6b3076f5183bb14f50c2cc",
+            ))
+            .await;
+        assert!(matches!(blocked, Err(cdk::Error::Custom(_))));
+    }
+
+    #[tokio::test]
+    async fn rest_peer_client_halts_on_consensus_backend_mismatch() {
+        let (state, public_config, local_private, _) =
+            federation_route_state_with_local_private().await;
+        let federation_id = public_config.federation_id;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let mut status = FederationPeerStatus::new_with_state_digest(
+            federation_id,
+            peer_member.member_id,
+            0,
+            None,
+            cdk::federation::FederationJournalDigest::genesis(),
+            cdk::federation::FederationStateDigest::genesis(),
+        );
+        status.consensus_backend = cdk::federation::FederationConsensusBackendKind::AlephBft;
+        let transport = MockFederationTransport::default().with_status_response(status);
+        let client = FederationRestPeerClient::new(transport, &public_config, local_private)
+            .expect("client");
+
+        let sync = client.sync_once_from_member(&state, peer_member).await;
+
+        assert!(sync
+            .expect_err("backend mismatch should fail")
+            .to_string()
+            .contains("consensus backend mismatch"));
         assert!(matches!(
             state.federation_sync_status().await,
             Some(crate::FederationSyncStatus::Halted { .. })
