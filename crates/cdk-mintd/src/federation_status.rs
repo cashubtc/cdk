@@ -296,7 +296,7 @@ fn payment_observation_report_line(report: &FederationPaymentObservationReportSu
         .map(|age| age.to_string())
         .unwrap_or_else(|| "unknown".to_string());
     format!(
-        "  payment_report context={} quote={} status={} observations={} required={} groups={} conflicts={} terminal_conflicts={} quote_age_secs={} stale={} action={}",
+        "  payment_report context={} quote={} status={} observations={} required={} groups={} conflicts={} terminal_conflicts={} quote_age_secs={} stale={} action={} quarantined={} quarantine_ops={}",
         report.context,
         report.quote,
         report.status,
@@ -307,7 +307,9 @@ fn payment_observation_report_line(report: &FederationPaymentObservationReportSu
         report.competing_terminal_state_observers.len(),
         quote_age_secs,
         report.stale,
-        report.recommended_action
+        report.recommended_action,
+        report.quarantined,
+        report.quarantine_operation_ids.len()
     )
 }
 
@@ -689,6 +691,10 @@ mod tests {
             quote_age_secs: Some(7_200),
             stale: true,
             recommended_action: FederationPaymentObservationReportAction::Quarantine,
+            quarantined: true,
+            quarantine_operation_ids: Vec::new(),
+            quarantine_operation_indices: Vec::new(),
+            quarantine_reasons: Vec::new(),
         }];
 
         let member_line = member_status_line(&status);
@@ -706,6 +712,8 @@ mod tests {
         assert!(report_line.contains("quote_age_secs=7200"));
         assert!(report_line.contains("stale=true"));
         assert!(report_line.contains("action=quarantine"));
+        assert!(report_line.contains("quarantined=true"));
+        assert!(report_line.contains("quarantine_ops=0"));
 
         let group_line =
             payment_observation_group_line(&status.payment_observation_reports[0].groups[0]);

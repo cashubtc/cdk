@@ -39,11 +39,13 @@ pub use self::operation::{
     FederationMintRequest, FederationOperation, FederationOperationConflictKey,
     FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
     FederationPaymentObservation, FederationPaymentObservationEvidenceGroup,
-    FederationPaymentObservationEvidenceGroupSummary, FederationPaymentObservationQuorum,
-    FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationPaymentObservationReportAction, FederationPaymentObservationReportStatus,
-    FederationPaymentObservationReportSummary, FederationRestoreOperation, FederationSwapOperation,
-    FEDERATION_MAX_OPERATION_ENVELOPE_BYTES, FEDERATION_OPERATION_VERSION,
+    FederationPaymentObservationEvidenceGroupSummary, FederationPaymentObservationQuarantine,
+    FederationPaymentObservationQuarantineReason, FederationPaymentObservationQuarantineRecord,
+    FederationPaymentObservationQuorum, FederationPaymentObservationRecord,
+    FederationPaymentObservationReport, FederationPaymentObservationReportAction,
+    FederationPaymentObservationReportStatus, FederationPaymentObservationReportSummary,
+    FederationRestoreOperation, FederationSwapOperation, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
+    FEDERATION_OPERATION_VERSION,
 };
 pub use self::signing::{FederationBlindSignatureShare, FederationBlindSignatureShareSet};
 pub use self::transport::{

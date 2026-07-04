@@ -125,6 +125,8 @@ pub enum FederationOperationKind {
     MeltQuote,
     /// Observe an outgoing melt payment state.
     MeltQuotePayment,
+    /// Quarantine conflicting payment observations for a quote.
+    PaymentObservationQuarantine,
     /// Spend proofs against a melt quote and optionally sign change outputs.
     Melt,
     /// Spend proofs and sign replacement outputs.
@@ -174,6 +176,13 @@ pub enum FederationOperationConflictKey {
         state: MeltQuoteState,
         /// Member that observed the payment state.
         observer: MemberId,
+    },
+    /// One payment-observation context and quote may only be quarantined once.
+    PaymentObservationQuarantine {
+        /// Payment observation context being quarantined.
+        context: FederationPaymentObservationContext,
+        /// Quote ID being quarantined.
+        quote: String,
     },
 }
 
@@ -371,6 +380,41 @@ pub enum FederationPaymentObservation {
     MeltQuote(FederationMeltQuotePaymentObservation),
 }
 
+/// Reason an accepted consensus operation quarantined payment observations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationPaymentObservationQuarantineReason {
+    /// Matching observers submitted different amounts, proofs, or settlement references.
+    ConflictingEvidence,
+    /// Multiple terminal states were observed for the same quote.
+    CompetingTerminalStates,
+    /// Manual operator or policy halt while evidence is inspected.
+    OperatorHalt,
+}
+
+impl fmt::Display for FederationPaymentObservationQuarantineReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ConflictingEvidence => f.write_str("conflicting_evidence"),
+            Self::CompetingTerminalStates => f.write_str("competing_terminal_states"),
+            Self::OperatorHalt => f.write_str("operator_halt"),
+        }
+    }
+}
+
+/// Consensus operation that explicitly halts payment finalization for one quote.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationPaymentObservationQuarantine {
+    /// Observation context being quarantined.
+    pub context: FederationPaymentObservationContext,
+    /// Quote ID whose payment observations are quarantined.
+    pub quote: String,
+    /// Redacted machine-readable quarantine reason.
+    pub reason: FederationPaymentObservationQuarantineReason,
+    /// Accepted payment-observation operations that motivated the quarantine.
+    pub evidence_operation_ids: Vec<FederationOperationId>,
+}
+
 impl FederationPaymentObservation {
     /// Extract a durable payment observation from a consensus operation.
     #[must_use]
@@ -385,6 +429,7 @@ impl FederationPaymentObservation {
             FederationOperation::MintQuote(_)
             | FederationOperation::Mint(_)
             | FederationOperation::MeltQuote(_)
+            | FederationOperation::PaymentObservationQuarantine(_)
             | FederationOperation::Melt(_)
             | FederationOperation::Swap(_)
             | FederationOperation::Restore(_) => None,
@@ -514,6 +559,39 @@ impl FederationPaymentObservationRecord {
     }
 }
 
+/// Durable payment-observation quarantine plus the consensus entry that produced it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationPaymentObservationQuarantineRecord {
+    /// Stable operation ID for the consensus quarantine.
+    pub operation_id: FederationOperationId,
+    /// Consensus order index of the quarantine.
+    pub operation_index: u64,
+    /// Typed quarantine operation.
+    pub quarantine: FederationPaymentObservationQuarantine,
+}
+
+impl FederationPaymentObservationQuarantineRecord {
+    /// Extract a durable quarantine record from a federation journal entry.
+    #[must_use]
+    pub fn from_journal_entry(entry: &FederationJournalEntry) -> Option<Self> {
+        match &entry.envelope.operation {
+            FederationOperation::PaymentObservationQuarantine(quarantine) => Some(Self {
+                operation_id: entry.operation_id,
+                operation_index: entry.index,
+                quarantine: quarantine.clone(),
+            }),
+            FederationOperation::MintQuote(_)
+            | FederationOperation::MintQuotePayment(_)
+            | FederationOperation::Mint(_)
+            | FederationOperation::MeltQuote(_)
+            | FederationOperation::MeltQuotePayment(_)
+            | FederationOperation::Melt(_)
+            | FederationOperation::Swap(_)
+            | FederationOperation::Restore(_) => None,
+        }
+    }
+}
+
 /// Operator-facing status for stored payment observation evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -628,6 +706,18 @@ pub struct FederationPaymentObservationReportSummary {
     /// Suggested operator action for this report.
     #[serde(default)]
     pub recommended_action: FederationPaymentObservationReportAction,
+    /// Whether a consensus quarantine operation has been accepted for this quote.
+    #[serde(default)]
+    pub quarantined: bool,
+    /// Operation IDs of accepted quarantine operations for this quote.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quarantine_operation_ids: Vec<FederationOperationId>,
+    /// Consensus order indices of accepted quarantine operations for this quote.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quarantine_operation_indices: Vec<u64>,
+    /// Redacted machine-readable quarantine reasons.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quarantine_reasons: Vec<FederationPaymentObservationQuarantineReason>,
 }
 
 /// Summary of stored payment observations for one quote and context.
@@ -649,6 +739,8 @@ pub struct FederationPaymentObservationReport {
     pub competing_terminal_state_observers: Vec<MemberId>,
     /// High-level report status for operator and admin surfaces.
     pub status: FederationPaymentObservationReportStatus,
+    /// Accepted quarantine records for this quote and context.
+    pub quarantines: Vec<FederationPaymentObservationQuarantineRecord>,
 }
 
 impl FederationPaymentObservationReport {
@@ -659,6 +751,18 @@ impl FederationPaymentObservationReport {
         quote: &str,
         required: u16,
         records: &[FederationPaymentObservationRecord],
+    ) -> Self {
+        Self::from_records_with_quarantines(context, quote, required, records, &[])
+    }
+
+    /// Build a report from stored observations plus accepted quarantine operations.
+    #[must_use]
+    pub fn from_records_with_quarantines(
+        context: FederationPaymentObservationContext,
+        quote: &str,
+        required: u16,
+        records: &[FederationPaymentObservationRecord],
+        quarantines: &[FederationPaymentObservationQuarantineRecord],
     ) -> Self {
         let matching_records = records
             .iter()
@@ -722,6 +826,14 @@ impl FederationPaymentObservationReport {
             FederationPaymentObservationReportStatus::AwaitingQuorum
         };
 
+        let quarantines = quarantines
+            .iter()
+            .filter(|record| {
+                record.quarantine.context == context && record.quarantine.quote == quote
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
         Self {
             context,
             quote: quote.to_string(),
@@ -731,6 +843,7 @@ impl FederationPaymentObservationReport {
             conflicting_observers,
             competing_terminal_state_observers,
             status,
+            quarantines,
         }
     }
 
@@ -763,7 +876,7 @@ impl FederationPaymentObservationReport {
         let stale = quote_age_secs.is_some_and(|age| {
             stale_observation_secs > 0 && self.is_unresolved() && age >= stale_observation_secs
         });
-        let recommended_action = if self.has_conflicts() {
+        let recommended_action = if self.is_quarantined() || self.has_conflicts() {
             FederationPaymentObservationReportAction::Quarantine
         } else if stale {
             FederationPaymentObservationReportAction::Inspect
@@ -799,7 +912,31 @@ impl FederationPaymentObservationReport {
             quote_age_secs,
             stale,
             recommended_action,
+            quarantined: self.is_quarantined(),
+            quarantine_operation_ids: self
+                .quarantines
+                .iter()
+                .map(|record| record.operation_id)
+                .collect(),
+            quarantine_operation_indices: self
+                .quarantines
+                .iter()
+                .map(|record| record.operation_index)
+                .collect(),
+            quarantine_reasons: self
+                .quarantines
+                .iter()
+                .map(|record| record.quarantine.reason)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
         }
+    }
+
+    /// Return true when a consensus quarantine has been accepted for this report.
+    #[must_use]
+    pub fn is_quarantined(&self) -> bool {
+        !self.quarantines.is_empty()
     }
 }
 
@@ -917,6 +1054,8 @@ pub enum FederationOperation {
     MeltQuote(FederationMeltQuoteOperation),
     /// Observe an outgoing melt payment state.
     MeltQuotePayment(FederationMeltQuotePaymentObservation),
+    /// Quarantine payment observations for one quote and context.
+    PaymentObservationQuarantine(FederationPaymentObservationQuarantine),
     /// Spend proofs against a melt quote and optionally sign change outputs.
     Melt(FederationMeltOperation),
     /// Spend proofs and sign replacement outputs.
@@ -935,6 +1074,9 @@ impl FederationOperation {
             Self::Mint(_) => FederationOperationKind::Mint,
             Self::MeltQuote(_) => FederationOperationKind::MeltQuote,
             Self::MeltQuotePayment(_) => FederationOperationKind::MeltQuotePayment,
+            Self::PaymentObservationQuarantine(_) => {
+                FederationOperationKind::PaymentObservationQuarantine
+            }
             Self::Melt(_) => FederationOperationKind::Melt,
             Self::Swap(_) => FederationOperationKind::Swap,
             Self::Restore(_) => FederationOperationKind::Restore,
@@ -979,6 +1121,14 @@ impl FederationOperation {
                     observer: observation.observer,
                 }]
             }
+            Self::PaymentObservationQuarantine(operation) => {
+                vec![
+                    FederationOperationConflictKey::PaymentObservationQuarantine {
+                        context: operation.context,
+                        quote: operation.quote.clone(),
+                    },
+                ]
+            }
             Self::Melt(operation) => vec![FederationOperationConflictKey::Melt {
                 quote: operation.request.quote().clone(),
             }],
@@ -995,6 +1145,7 @@ impl FederationOperation {
             Self::Mint(operation) => operation.request.quote_ids().into_iter().next(),
             Self::MeltQuote(operation) => Some(operation.quote.as_str()),
             Self::MeltQuotePayment(observation) => Some(observation.quote.as_str()),
+            Self::PaymentObservationQuarantine(operation) => Some(operation.quote.as_str()),
             Self::Melt(operation) => Some(operation.request.quote().as_str()),
             Self::Swap(_) | Self::Restore(_) => None,
         }
@@ -1178,15 +1329,22 @@ mod tests {
         operation_index: u64,
         operation: FederationOperation,
     ) -> FederationPaymentObservationRecord {
+        let entry = journal_entry(operation_index, operation);
+        FederationPaymentObservationRecord::from_journal_entry(&entry)
+            .expect("payment observation record")
+    }
+
+    fn journal_entry(
+        operation_index: u64,
+        operation: FederationOperation,
+    ) -> FederationJournalEntry {
         let mut journal = InMemoryFederationJournal::new();
         let response = journal
             .append(envelope(operation))
             .expect("append operation");
-        let mut record = FederationPaymentObservationRecord::from_journal_entry(response.entry())
-            .expect("payment observation record");
-        record.operation_index = operation_index;
-
-        record
+        let mut entry = response.entry().clone();
+        entry.index = operation_index;
+        entry
     }
 
     fn oversized_mint_quote_envelope() -> FederationOperationEnvelope {
@@ -1565,7 +1723,7 @@ mod tests {
             FederationPaymentObservationContext::MintQuote,
             "mint-quote",
             2,
-            &[matching_second],
+            &[matching_second.clone()],
         );
         assert_eq!(
             quorum.status,
@@ -1602,6 +1760,40 @@ mod tests {
         assert_eq!(
             fresh_unresolved.recommended_action,
             FederationPaymentObservationReportAction::None
+        );
+
+        let quarantine = journal_entry(
+            3,
+            FederationOperation::PaymentObservationQuarantine(
+                FederationPaymentObservationQuarantine {
+                    context: FederationPaymentObservationContext::MintQuote,
+                    quote: "mint-quote".to_string(),
+                    reason: FederationPaymentObservationQuarantineReason::ConflictingEvidence,
+                    evidence_operation_ids: vec![report.groups[0].operation_ids[0]],
+                },
+            ),
+        );
+        let quarantine_record =
+            FederationPaymentObservationQuarantineRecord::from_journal_entry(&quarantine)
+                .expect("quarantine record");
+        let quarantined = FederationPaymentObservationReport::from_records_with_quarantines(
+            FederationPaymentObservationContext::MintQuote,
+            "mint-quote",
+            2,
+            &[matching_second],
+            &[quarantine_record],
+        );
+        let quarantined_summary = quarantined.summary();
+        assert!(quarantined.is_quarantined());
+        assert!(quarantined_summary.quarantined);
+        assert_eq!(quarantined_summary.quarantine_operation_indices, vec![3]);
+        assert_eq!(
+            quarantined_summary.quarantine_reasons,
+            vec![FederationPaymentObservationQuarantineReason::ConflictingEvidence]
+        );
+        assert_eq!(
+            quarantined_summary.recommended_action,
+            FederationPaymentObservationReportAction::Quarantine
         );
     }
 
@@ -1785,6 +1977,14 @@ mod tests {
                 )],
             },
         });
+        let quarantine = FederationOperation::PaymentObservationQuarantine(
+            FederationPaymentObservationQuarantine {
+                context: FederationPaymentObservationContext::MintQuote,
+                quote: "mint-quote".to_string(),
+                reason: FederationPaymentObservationQuarantineReason::ConflictingEvidence,
+                evidence_operation_ids: Vec::new(),
+            },
+        );
 
         let operations = [
             (
@@ -1802,6 +2002,11 @@ mod tests {
                 melt_quote,
                 FederationOperationKind::MeltQuote,
                 Some("melt-quote"),
+            ),
+            (
+                quarantine,
+                FederationOperationKind::PaymentObservationQuarantine,
+                Some("mint-quote"),
             ),
             (melt, FederationOperationKind::Melt, Some("melt-quote")),
             (swap, FederationOperationKind::Swap, None),

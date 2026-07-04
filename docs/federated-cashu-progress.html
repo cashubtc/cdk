@@ -362,15 +362,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: classify stale federation payment reports</span>
+          <span class="value">feat: add federation payment quarantine operations</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Stale payment-observation inspection and quarantine recommendations</span>
+          <span class="value">Consensus quarantine operation for conflicting payment evidence</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Consensus quarantine operation for conflicting payment evidence</span>
+          <span class="value">Admin quarantine proposal command and process catch-up coverage</span>
         </div>
       </aside>
     </header>
@@ -1170,6 +1170,10 @@
             <h3>Stale payment inspection surfaced</h3>
             <p>Payment observation reports now include quote age, stale classification, and an operator action recommendation, so unresolved old evidence shows `action=inspect` and conflicting evidence shows `action=quarantine` in signed local status and mintd status output.</p>
           </article>
+          <article class="item">
+            <h3>Payment quarantine consensus-ready</h3>
+            <p>A `PaymentObservationQuarantine` consensus operation now marks one quote/context as quarantined, appears in redacted status reports, contributes to materialized state digests, and makes mint/melt state-machine paths fail closed before signing or finalizing payments.</p>
+          </article>
         </div>
       </section>
 
@@ -1186,7 +1190,7 @@
           </article>
           <article class="item">
             <h3>Networked recovery semantics</h3>
-            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations, and a fresh SQLite-backed mint state can restart through a pending melt reserve before catching up the paid observation. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, local sync plus materialized state-digest health is queryable from mintd over signed private REST, and the generated process smoke now drives live wallet mint, swap, proof-state check, melt, restore, convergence, restart, and catch-up. Payment observations are now durable SQL rows, mint quote payments can finalize from stored real-policy quorum evidence, melt paid/failed observations have focused stored-quorum saga coverage, stored observations can be summarized into conflict/unresolved reports, and those reports are visible through redacted signed local status plus mintd status output with stale-age and quarantine recommendations; remaining work is a consensus quarantine operation, stronger BFT ordering, and broader storage-backed process coverage.</p>
+            <p>The private REST client can replay missed journal entries over signed routes, and SQL storage now restores accepted entries plus sequence watermarks at startup. Multi-operation offline catch-up covers mint, swap, melt, and payment observations, and a fresh SQLite-backed mint state can restart through a pending melt reserve before catching up the paid observation. Lagging members now fail closed before public signing, router startup launches a peer recovery loop, mintd can generate runnable local member configs plus a guarded local smoke script, restarted private REST clients no longer replay low sequence numbers, local sync plus materialized state-digest health is queryable from mintd over signed private REST, and the generated process smoke now drives live wallet mint, swap, proof-state check, melt, restore, convergence, restart, and catch-up. Payment observations are now durable SQL rows, mint quote payments can finalize from stored real-policy quorum evidence, melt paid/failed observations have focused stored-quorum saga coverage, stored observations can be summarized into conflict/unresolved reports, those reports are visible through redacted signed local status plus mintd status output with stale-age and quarantine recommendations, and accepted quarantine operations now halt quote spending/finalization while changing materialized state digests; remaining work is an admin quarantine proposal command, stronger BFT ordering, and broader storage-backed process coverage.</p>
           </article>
           <article class="item">
             <h3>DKG timing</h3>
@@ -1714,8 +1718,8 @@
             <tr>
               <td>Payment observation policy</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-common --features federation payment_observation_report -- --test-threads 1` passed 3 shared report tests, including stale inspect and conflict quarantine recommendations. `cargo test -p cdk-axum --features federation private_local_status_route_reports_stale_payment_observations -- --test-threads 1` passed the signed local-status stale report regression without leaking backend proof strings. `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" status_lines_include_payment_observation_report_counts -- --test-threads 1` passed the CLI stale/quarantine counter and detail formatting regression.</td>
-              <td>Add a consensus/state-machine quarantine operation for conflicting payment evidence, then cover live process restart and catch-up stale-report visibility.</td>
+              <td>`cargo test -p cdk-common --features federation federation -- --test-threads 1` passed 83 shared federation tests, including canonical quarantine operation coverage and report quarantine metadata. `cargo test -p cdk --lib --features federation mint::federation -- --test-threads 1` passed 20 mint-side federation tests, including fail-closed mint signing after quarantine. `cargo test -p cdk-axum --features federation private_local_status_route -- --test-threads 1` passed 6 signed local-status regressions, including accepted quarantine report metadata without backend proof strings. `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" federation_status -- --test-threads 1` passed 9 status CLI regressions with quarantine detail formatting.</td>
+              <td>Add an admin quarantine proposal command or signed route, then cover live process restart and catch-up quarantine visibility.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
@@ -1794,7 +1798,7 @@
         <div class="stack">
           <article class="item">
             <h3>Conflict quarantine</h3>
-            <p>Add explicit quarantine and operator visibility for mismatched payment amounts, states, payment proofs, and backend settlement references.</p>
+            <p>Add an operator command or signed admin route that proposes the new quarantine operation directly from redacted payment reports.</p>
           </article>
           <article class="item">
             <h3>Broader process smoke matrix</h3>

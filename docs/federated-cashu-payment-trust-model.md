@@ -68,8 +68,8 @@ For real backends:
 - A single paid observation is not enough to mutate `amount_paid`.
 - Matching observations must agree on quote ID, method, state, amount paid,
   issued amount, and backend proof material.
-- Conflicting amount or proof observations must be quarantined or rejected by
-  the observation accumulator before any mint signatures are produced.
+- Conflicting amount or proof observations can now be quarantined by consensus
+  before any later mint signatures are produced.
 
 The storage layer now persists per-member observations with quote, observer,
 state, context, and typed JSON evidence. The mint state machine evaluates those
@@ -84,7 +84,12 @@ reports treat unpaid observations as unresolved progress, while paid or issued
 evidence can conflict with other terminal evidence. Signed private REST
 `local-status` responses and `cdk-mintd federation status` now expose redacted
 report summaries with context, quote ID, status, observer counts, conflicting
-members, and quorum flags without returning backend proof material.
+members, quorum flags, accepted quarantine operation IDs, and redacted
+quarantine reasons without returning backend proof material. The mint state
+machine applies accepted `PaymentObservationQuarantine` operations idempotently,
+skips later payment finalization for quarantined quotes, and rejects mint or
+melt operations that would spend a quarantined quote before writing signature
+shares or mutating proof state.
 
 ## Melt Quote Observations
 
@@ -134,8 +139,9 @@ private keys, or proof secrets.
 
 ## Required Follow-Up
 
-- Add explicit consensus/state-machine quarantine operations for mismatched
-  amounts, payment proofs, states, or backend-specific settlement references
-  where policy should halt instead of only recommending quarantine.
+- Add an operator command or signed admin route that proposes quarantine
+  operations from the redacted report surface.
+- Add indexed storage for quarantine records if journal scans become expensive
+  in large federations.
 - Add tests proving stale pending quotes remain visible without blocking
   consensus across live process restart and catch-up scenarios.

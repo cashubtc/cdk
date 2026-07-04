@@ -17,7 +17,9 @@ use cdk_common::federation::{
     FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
     FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationSwapOperation, MemberConfigPrivate, MemberId,
+    FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
+    FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
+    FederationSwapOperation, MemberConfigPrivate, MemberId,
 };
 use cdk_common::mint::{MeltQuote, MintQuote, Operation, OperationKind};
 use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
@@ -195,6 +197,28 @@ impl FederationRuntimeConfig {
                 fee_reserve,
                 payment_proof,
                 failure_reason,
+            },
+        ))
+    }
+
+    /// Build the consensus operation for quarantining conflicting payment observations.
+    #[must_use]
+    pub fn payment_observation_quarantine<Q>(
+        &self,
+        context: FederationPaymentObservationContext,
+        quote: Q,
+        reason: FederationPaymentObservationQuarantineReason,
+        evidence_operation_ids: Vec<FederationOperationId>,
+    ) -> FederationOperationEnvelope
+    where
+        Q: ToString,
+    {
+        self.operation_envelope(FederationOperation::PaymentObservationQuarantine(
+            FederationPaymentObservationQuarantine {
+                context,
+                quote: quote.to_string(),
+                reason,
+                evidence_operation_ids,
             },
         ))
     }
@@ -437,6 +461,11 @@ impl Mint {
                     .await?;
                 Ok(true)
             }
+            FederationOperation::PaymentObservationQuarantine(operation) => {
+                self.apply_federation_payment_observation_quarantine(entry.operation_id, operation)
+                    .await?;
+                Ok(true)
+            }
             FederationOperation::Swap(operation) => {
                 self.apply_federation_swap(entry.operation_id, operation)
                     .await?;
@@ -449,6 +478,19 @@ impl Mint {
             }
             FederationOperation::Restore(_) => Ok(false),
         }
+    }
+
+    async fn federation_payment_observation_is_quarantined(
+        &self,
+        context: FederationPaymentObservationContext,
+        quote: &str,
+    ) -> Result<bool, Error> {
+        let entries = self.localstore.get_federation_journal_entries().await?;
+        Ok(entries.iter().any(|entry| {
+            FederationPaymentObservationQuarantineRecord::from_journal_entry(entry).is_some_and(
+                |record| record.quarantine.context == context && record.quarantine.quote == quote,
+            )
+        }))
     }
 
     fn federation_payment_observation_can_finalize(
@@ -498,6 +540,19 @@ impl Mint {
         Ok(())
     }
 
+    async fn apply_federation_payment_observation_quarantine(
+        &self,
+        operation_id: FederationOperationId,
+        operation: &FederationPaymentObservationQuarantine,
+    ) -> Result<(), Error> {
+        let _quote_id = quote_id_from_federation(&operation.quote)?;
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     async fn apply_federation_mint_quote_payment(
         &self,
         entry: &FederationJournalEntry,
@@ -506,6 +561,12 @@ impl Mint {
         let operation_id = entry.operation_id;
         let quote_id = quote_id_from_federation(&observation.quote)?;
         let record = payment_observation_record_from_entry(entry)?;
+        let is_quarantined = self
+            .federation_payment_observation_is_quarantined(
+                FederationPaymentObservationContext::MintQuote,
+                &observation.quote,
+            )
+            .await?;
         let mut tx = self.localstore.begin_transaction().await?;
         let mut quote = tx
             .get_mint_quote(&quote_id)
@@ -527,7 +588,7 @@ impl Mint {
             self.federation_payment_observation_can_finalize(&record.observation, &observations)?;
 
         let observed_paid = observation.amount_paid.with_unit(quote.unit.clone());
-        if can_finalize && observed_paid > quote.amount_paid() {
+        if can_finalize && !is_quarantined && observed_paid > quote.amount_paid() {
             let additional_amount = observed_paid
                 .checked_sub(&quote.amount_paid())
                 .map_err(|_| Error::AmountOverflow)?;
@@ -557,6 +618,19 @@ impl Mint {
         let input = mint_input_from_federation_request(&operation.request)?;
         input.validate()?;
         config.validate_output_keysets(input.outputs())?;
+        for quote_id in input.quote_ids() {
+            if self
+                .federation_payment_observation_is_quarantined(
+                    FederationPaymentObservationContext::MintQuote,
+                    &quote_id.to_string(),
+                )
+                .await?
+            {
+                return Err(Error::Custom(
+                    "federation mint quote payment observations are quarantined".to_string(),
+                ));
+            }
+        }
 
         let output_verification = self.verify_outputs(input.outputs())?;
         let outputs_amount = output_verification.amount;
@@ -818,9 +892,15 @@ impl Mint {
             tx.commit().await?;
             can_finalize
         };
+        let is_quarantined = self
+            .federation_payment_observation_is_quarantined(
+                FederationPaymentObservationContext::MeltQuote,
+                &observation.quote,
+            )
+            .await?;
 
         if quote.state != observation.state {
-            if can_finalize {
+            if can_finalize && !is_quarantined {
                 match observation.state {
                     cdk_common::MeltQuoteState::Paid => {
                         self.apply_paid_melt_quote_payment_observation(
@@ -929,6 +1009,17 @@ impl Mint {
     ) -> Result<(), Error> {
         let request = MeltRequest::<QuoteId>::try_from(operation.request.clone())
             .map_err(|_| Error::UnknownQuote)?;
+        if self
+            .federation_payment_observation_is_quarantined(
+                FederationPaymentObservationContext::MeltQuote,
+                &request.quote().to_string(),
+            )
+            .await?
+        {
+            return Err(Error::Custom(
+                "federation melt quote payment observations are quarantined".to_string(),
+            ));
+        }
 
         self.melt_federation(&request, operation_id).await?;
 
@@ -1317,15 +1408,17 @@ mod tests {
     use cdk_common::common::FeeReserve;
     use cdk_common::database::mint::SagaDatabase;
     use cdk_common::database::{
-        MintFederationJournalDatabase, MintProofsDatabase, MintQuotesDatabase,
+        MintDatabase, MintFederationJournalDatabase, MintProofsDatabase, MintQuotesDatabase,
+        MintSignaturesDatabase,
     };
     use cdk_common::federation::{
         generate_trusted_dealer_configs, FederationError, FederationJournalEntry,
         FederationMeltQuotePaymentObservation, FederationMintQuotePaymentObservation,
         FederationMintRequest, FederationOperation, FederationOperationEnvelope,
         FederationPaymentObservationContext, FederationPaymentObservationPolicy,
-        FederationPaymentTrustModel, InMemoryFederationConsensus, InMemoryFederationJournal,
-        MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+        FederationPaymentObservationQuarantineReason, FederationPaymentTrustModel,
+        InMemoryFederationConsensus, InMemoryFederationJournal, MemberId, ThresholdParams,
+        TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     use cdk_common::mint_url::MintUrl;
     use cdk_common::nuts::nut00::KnownMethod;
@@ -1341,7 +1434,7 @@ mod tests {
     };
     use cdk_sqlite::mint::{memory, MintSqliteDatabase};
 
-    use crate::mint::{Mint, MintBuilder, MintMeltLimits};
+    use crate::mint::{Mint, MintBuilder, MintInput, MintMeltLimits};
 
     use super::{FederationMode, FederationRuntimeConfig};
 
@@ -1857,6 +1950,87 @@ mod tests {
             observations_after_conflict[2].observation.observer(),
             MemberId::new(3).expect("member three")
         );
+    }
+
+    #[tokio::test]
+    async fn payment_quarantine_blocks_mint_signing() {
+        let policy = FederationPaymentObservationPolicy::member_quorum(
+            2,
+            FederationPaymentTrustModel::SharedBackendReadOnly,
+        );
+        let runtime_config = runtime_config_with_payment_policy(policy);
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let quote = QuoteId::new();
+
+        let quote_entry = appended_entry(
+            &mut journal,
+            runtime_config.mint_quote_operation(
+                quote.clone(),
+                bolt11_quote_request(1),
+                bolt11_quote_response(&quote, 1),
+            ),
+        );
+        persist_and_apply_entry(&mint, &quote_entry).await;
+        let first_observation = appended_entry(
+            &mut journal,
+            mint_payment_observation_envelope(&runtime_config, &quote, 1, 1, "settled"),
+        );
+        persist_and_apply_entry(&mint, &first_observation).await;
+        let matching_second = appended_entry(
+            &mut journal,
+            mint_payment_observation_envelope(&runtime_config, &quote, 2, 1, "settled"),
+        );
+        persist_and_apply_entry(&mint, &matching_second).await;
+        let quote_after_quorum = localstore
+            .get_mint_quote(&quote)
+            .await
+            .expect("quote lookup")
+            .expect("quote");
+        assert_eq!(quote_after_quorum.state(), MintQuoteState::Paid);
+
+        let quarantine_entry = appended_entry(
+            &mut journal,
+            runtime_config.payment_observation_quarantine(
+                FederationPaymentObservationContext::MintQuote,
+                quote.clone(),
+                FederationPaymentObservationQuarantineReason::ConflictingEvidence,
+                vec![first_observation.operation_id, matching_second.operation_id],
+            ),
+        );
+        persist_and_apply_entry(&mint, &quarantine_entry).await;
+
+        let output = output_for_runtime(&runtime_config, b"quarantined mint output");
+        let input = MintInput::Single(MintRequest {
+            quote: quote.clone(),
+            outputs: vec![output.clone()],
+            signature: None,
+        });
+        let mint_entry = appended_entry(
+            &mut journal,
+            runtime_config
+                .mint_operation(input)
+                .expect("mint operation"),
+        );
+        let mut tx = localstore.begin_transaction().await.expect("begin");
+        tx.add_federation_journal_entry(&mint_entry)
+            .await
+            .expect("persist mint entry");
+        tx.commit().await.expect("commit mint entry");
+        let err = mint
+            .apply_federation_journal_entries(std::slice::from_ref(&mint_entry))
+            .await
+            .expect_err("quarantined quote must not mint");
+        assert!(
+            err.to_string().contains("quarantined"),
+            "unexpected error: {err}"
+        );
+
+        let signatures = localstore
+            .get_blind_signatures(&[output.blinded_secret])
+            .await
+            .expect("signature lookup");
+        assert!(signatures[0].is_none());
     }
 
     #[tokio::test]

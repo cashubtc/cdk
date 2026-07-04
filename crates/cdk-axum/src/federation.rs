@@ -16,12 +16,13 @@ use cdk::federation::{
     FederationId, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
     FederationJournalDigest, FederationJournalEntry, FederationMaterializedStateRow,
     FederationMaterializedStateSnapshot, FederationOperation, FederationOperationId,
-    FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
-    FederationRestMessageKind, FederationRestSequenceTracker, FederationSessionOutcome,
-    FederationSessionOutcomeQuorum, FederationSignedRequest, FederationStateDigest,
-    FederationSubmitOperationRequest, FederationSubmitOperationResponse, MemberConfigPrivate,
-    MemberConfigPublic, FEDERATION_REST_API_VERSION,
+    FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
+    FederationPaymentObservationReport, FederationPaymentObservationReportSummary,
+    FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
+    FederationRestSequenceTracker, FederationSessionOutcome, FederationSessionOutcomeQuorum,
+    FederationSignedRequest, FederationStateDigest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, MemberConfigPrivate, MemberConfigPublic,
+    FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
 use serde::{Deserialize, Serialize};
@@ -616,7 +617,16 @@ async fn payment_observation_report_summaries(
                 record.observation.quote().to_string(),
             ));
         }
+        if let Some(record) =
+            FederationPaymentObservationQuarantineRecord::from_journal_entry(entry)
+        {
+            report_keys.insert((record.quarantine.context, record.quarantine.quote.clone()));
+        }
     }
+    let quarantines = entries
+        .iter()
+        .filter_map(FederationPaymentObservationQuarantineRecord::from_journal_entry)
+        .collect::<Vec<_>>();
 
     let mut reports = Vec::with_capacity(report_keys.len());
     let stale_observation_secs = runtime_config
@@ -632,11 +642,12 @@ async fn payment_observation_report_summaries(
         let observations = db
             .get_federation_payment_observations(context, &quote)
             .await?;
-        let report = FederationPaymentObservationReport::from_records(
+        let report = FederationPaymentObservationReport::from_records_with_quarantines(
             context,
             &quote,
             required,
             &observations,
+            &quarantines,
         );
         let quote_age_secs =
             payment_observation_quote_age_secs(state, context, &quote, now).await?;
@@ -1087,6 +1098,7 @@ async fn materialized_state_digest(
     let mut snapshot = FederationMaterializedStateSnapshot::new();
     let mut mint_quotes = BTreeSet::new();
     let mut melt_quotes = BTreeSet::new();
+    let mut payment_quarantines = BTreeSet::new();
     let mut proof_ys = BTreeSet::new();
     let mut blinded_messages = BTreeSet::new();
 
@@ -1122,6 +1134,17 @@ async fn materialized_state_digest(
             }
             FederationOperation::MeltQuotePayment(observation) => {
                 melt_quotes.insert(observation.quote.clone());
+            }
+            FederationOperation::PaymentObservationQuarantine(operation) => {
+                payment_quarantines.insert((operation.context, operation.quote.clone()));
+                match operation.context {
+                    cdk::federation::FederationPaymentObservationContext::MintQuote => {
+                        mint_quotes.insert(operation.quote.clone());
+                    }
+                    cdk::federation::FederationPaymentObservationContext::MeltQuote => {
+                        melt_quotes.insert(operation.quote.clone());
+                    }
+                }
             }
             FederationOperation::Melt(operation) => {
                 melt_quotes.insert(operation.request.quote().clone());
@@ -1195,6 +1218,17 @@ async fn materialized_state_digest(
                     .with_field("missing", "true"),
             ),
         }
+    }
+
+    for (context, quote) in payment_quarantines {
+        snapshot.push(
+            FederationMaterializedStateRow::new(
+                "payment_observation_quarantines",
+                format!("{context}:{quote}"),
+            )
+            .with_field("context", context.to_string())
+            .with_field("quote", quote),
+        );
     }
 
     if !proof_ys.is_empty() {
@@ -1290,9 +1324,9 @@ mod tests {
         generate_trusted_dealer_configs, FederationMintQuotePaymentObservation,
         FederationOperation, FederationOperationEnvelope, FederationOperationKind,
         FederationOperationStatus, FederationPaymentObservationPolicy,
-        FederationPaymentObservationReportAction, FederationPaymentTrustModel,
-        FederationRestoreOperation, InMemoryFederationConsensus, MemberId, ThresholdParams,
-        TrustedDealerKeysetSpec, TrustedDealerMember,
+        FederationPaymentObservationQuarantineReason, FederationPaymentObservationReportAction,
+        FederationPaymentTrustModel, FederationRestoreOperation, InMemoryFederationConsensus,
+        MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
     use cdk::mint_url::MintUrl;
@@ -4967,18 +5001,23 @@ mod tests {
             .federation_config()
             .expect("federation config")
             .member_id();
+        let config = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .clone();
         let quote_id = QuoteId::new();
         state
             .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
             .await
             .expect("submit mint quote");
-        state
+        let first_response = state
             .submit_federation_envelope(mint_payment_observation_envelope_for_member(
                 &state, &quote_id, 1, 1, "settled",
             ))
             .await
             .expect("submit first payment observation");
-        state
+        let conflicting_response = state
             .submit_federation_envelope(mint_payment_observation_envelope_for_member(
                 &state,
                 &quote_id,
@@ -4988,6 +5027,18 @@ mod tests {
             ))
             .await
             .expect("submit conflicting second payment observation");
+        let quarantine_response = state
+            .submit_federation_envelope(config.payment_observation_quarantine(
+                cdk::federation::FederationPaymentObservationContext::MintQuote,
+                quote_id.clone(),
+                FederationPaymentObservationQuarantineReason::ConflictingEvidence,
+                vec![
+                    first_response.operation_id,
+                    conflicting_response.operation_id,
+                ],
+            ))
+            .await
+            .expect("submit quarantine");
 
         let request = signed_status_request(&public_config, &peer_private, local_member, 1);
         let response = post_local_status(State(state), Json(request))
@@ -5016,6 +5067,20 @@ mod tests {
         assert_eq!(
             report.conflicting_observers,
             vec![member_id(1), member_id(2)]
+        );
+        assert!(report.quarantined);
+        assert_eq!(
+            report.recommended_action,
+            FederationPaymentObservationReportAction::Quarantine
+        );
+        assert_eq!(
+            report.quarantine_operation_ids,
+            vec![quarantine_response.operation_id]
+        );
+        assert_eq!(report.quarantine_operation_indices, vec![3]);
+        assert_eq!(
+            report.quarantine_reasons,
+            vec![FederationPaymentObservationQuarantineReason::ConflictingEvidence]
         );
 
         let status_json = serde_json::to_string(&response).expect("status json");
