@@ -504,6 +504,10 @@ pub struct MockMintConnector {
     /// Response for LNURL invoice calls
     pub lnurl_invoice_response:
         Mutex<Option<Result<crate::lightning_address::LnurlPayInvoiceResponse, Error>>>,
+    /// Auth wallet currently stored on this connector
+    pub auth_wallet: Mutex<Option<crate::wallet::AuthWallet>>,
+    /// Number of times auth wallet state was updated
+    pub set_auth_wallet_calls: Mutex<usize>,
     /// Response for DNS TXT resolution calls
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     pub dns_txt_response: Mutex<Option<Result<Vec<String>, Error>>>,
@@ -545,6 +549,8 @@ impl MockMintConnector {
             last_post_melt_request: Mutex::new(None),
             lnurl_pay_request_response: Mutex::new(None),
             lnurl_invoice_response: Mutex::new(None),
+            auth_wallet: Mutex::new(None),
+            set_auth_wallet_calls: Mutex::new(0),
             #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
             dns_txt_response: Mutex::new(None),
         }
@@ -733,6 +739,14 @@ impl MockMintConnector {
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     pub fn set_dns_txt_response(&self, response: Result<Vec<String>, Error>) {
         *self.dns_txt_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn set_stored_auth_wallet(&self, wallet: Option<crate::wallet::AuthWallet>) {
+        *self.auth_wallet.lock().unwrap() = wallet;
+    }
+
+    pub fn auth_wallet_set_count(&self) -> usize {
+        *self.set_auth_wallet_calls.lock().unwrap()
     }
 }
 
@@ -936,10 +950,13 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn get_auth_wallet(&self) -> Option<crate::wallet::AuthWallet> {
-        None
+        self.auth_wallet.lock().unwrap().clone()
     }
 
-    async fn set_auth_wallet(&self, _wallet: Option<crate::wallet::AuthWallet>) {}
+    async fn set_auth_wallet(&self, wallet: Option<crate::wallet::AuthWallet>) {
+        *self.auth_wallet.lock().unwrap() = wallet;
+        *self.set_auth_wallet_calls.lock().unwrap() += 1;
+    }
 
     async fn post_melt(
         &self,

@@ -1331,16 +1331,34 @@ impl MintConnector for FederatedMintConnector {
     }
 
     async fn get_auth_wallet(&self) -> Option<AuthWallet> {
-        match self.primary_connector() {
-            Ok(connector) => connector.get_auth_wallet().await,
-            Err(_) => None,
+        if let Ok(connector) = self.primary_connector() {
+            if let Some(wallet) = connector.get_auth_wallet().await {
+                return Some(wallet);
+            }
         }
+
+        for (member_id, connector) in &self.member_connectors {
+            if *member_id == self.primary_member_id {
+                continue;
+            }
+
+            if let Some(wallet) = connector.get_auth_wallet().await {
+                return Some(wallet);
+            }
+        }
+
+        None
     }
 
     async fn set_auth_wallet(&self, wallet: Option<AuthWallet>) {
-        if let Ok(connector) = self.primary_connector() {
-            connector.set_auth_wallet(wallet).await;
-        }
+        join_all(self.member_connectors.values().map(|connector| {
+            let connector = connector.clone();
+            let wallet = wallet.clone();
+            async move {
+                connector.set_auth_wallet(wallet).await;
+            }
+        }))
+        .await;
     }
 }
 
@@ -1631,8 +1649,9 @@ mod tests {
     };
     use crate::types::{FeeReserve, QuoteTTL};
     use crate::wallet::mint_connector::transport::Transport;
+    use crate::wallet::mint_metadata_cache::MintMetadataCache;
     use crate::wallet::test_utils::MockMintConnector;
-    use crate::wallet::MintConnector;
+    use crate::wallet::{AuthWallet, MintConnector};
 
     fn member_id(id: u16) -> MemberId {
         MemberId::new(id).expect("member id")
@@ -1652,6 +1671,25 @@ mod tests {
             MintUrl::from_str(&format!("https://fed{}.example.com", member_id.get()))
                 .expect("fed url"),
             identity_secret(member_id),
+        )
+    }
+
+    async fn test_auth_wallet() -> AuthWallet {
+        let mint_url = MintUrl::from_str("https://federation.example.com").expect("mint url");
+        let localstore = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("wallet db"),
+        );
+        let metadata_cache = Arc::new(MintMetadataCache::new(mint_url.clone()));
+
+        AuthWallet::new(
+            mint_url,
+            None,
+            localstore,
+            metadata_cache,
+            HashMap::new(),
+            None,
         )
     }
 
@@ -4359,6 +4397,70 @@ mod tests {
         let result = connector.post_check_state(CheckStateRequest { ys }).await;
 
         assert!(matches!(result, Err(crate::Error::InvalidMintResponse(_))));
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_sets_auth_wallet_on_all_members() {
+        let bundle = threshold_bundle();
+        let auth_wallet = test_auth_wallet().await;
+        let mut mocks = BTreeMap::new();
+        let mut connectors = BTreeMap::new();
+
+        for member_id in [member_id(1), member_id(2), member_id(3)] {
+            let connector = Arc::new(MockMintConnector::new());
+            mocks.insert(member_id, connector.clone());
+            connectors.insert(member_id, connector as Arc<dyn MintConnector + Send + Sync>);
+        }
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        connector.set_auth_wallet(Some(auth_wallet.clone())).await;
+
+        for member in mocks.values() {
+            let stored = member.get_auth_wallet().await.expect("auth wallet");
+            assert_eq!(stored.mint_url, auth_wallet.mint_url);
+            assert_eq!(member.auth_wallet_set_count(), 1);
+        }
+
+        connector.set_auth_wallet(None).await;
+
+        for member in mocks.values() {
+            assert!(member.get_auth_wallet().await.is_none());
+            assert_eq!(member.auth_wallet_set_count(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_reads_auth_wallet_from_first_available_member() {
+        let bundle = threshold_bundle();
+        let auth_wallet = test_auth_wallet().await;
+        let mut connectors = BTreeMap::new();
+
+        let primary = Arc::new(MockMintConnector::new());
+        connectors.insert(
+            member_id(1),
+            primary.clone() as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let fallback = Arc::new(MockMintConnector::new());
+        fallback.set_stored_auth_wallet(Some(auth_wallet.clone()));
+        connectors.insert(
+            member_id(2),
+            fallback as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let final_member = Arc::new(MockMintConnector::new());
+        connectors.insert(
+            member_id(3),
+            final_member as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let stored = connector.get_auth_wallet().await.expect("auth wallet");
+
+        assert_eq!(stored.mint_url, auth_wallet.mint_url);
+        assert!(primary.get_auth_wallet().await.is_none());
     }
 
     #[tokio::test]
