@@ -58,6 +58,9 @@ pub(crate) async fn run_status_command(
     if args.require_converged {
         ensure_statuses_converged(&statuses)?;
     }
+    if let Some(max_operation_lag) = args.max_operation_lag {
+        ensure_statuses_operation_lag(&statuses, max_operation_lag)?;
+    }
     if args.require_session_outcome_quorum {
         ensure_statuses_session_outcome_quorum(&public_config, &statuses)?;
     }
@@ -368,6 +371,35 @@ fn ensure_statuses_converged(statuses: &[FederationLocalStatusResponse]) -> Resu
                 first.peer_status.operation_count,
                 first.peer_status.latest_order_digest,
                 first.peer_status.state_digest
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_statuses_operation_lag(
+    statuses: &[FederationLocalStatusResponse],
+    max_operation_lag: u64,
+) -> Result<()> {
+    let Some(max_operation_count) = statuses
+        .iter()
+        .map(|status| status.peer_status.operation_count)
+        .max()
+    else {
+        return Ok(());
+    };
+
+    for status in statuses {
+        let operation_count = status.peer_status.operation_count;
+        let lag = max_operation_count.saturating_sub(operation_count);
+        if lag > max_operation_lag {
+            bail!(
+                "federation member {} is {} operations behind the highest queried member height {}, allowed lag {}",
+                status.peer_status.member_id,
+                lag,
+                max_operation_count,
+                max_operation_lag
             );
         }
     }
@@ -966,6 +998,40 @@ mod tests {
             ensure_statuses_converged(&statuses).expect_err("state digest mismatch should fail");
 
         assert!(err.to_string().contains("state digest"));
+    }
+
+    #[test]
+    fn status_operation_lag_guard_accepts_members_within_limit() {
+        let (public_config, _) = status_fixture();
+        let statuses = vec![
+            local_status(&public_config, 1, 7),
+            local_status(&public_config, 2, 5),
+            local_status(&public_config, 3, 6),
+        ];
+
+        ensure_statuses_operation_lag(&statuses, 2).expect("members are within lag limit");
+    }
+
+    #[test]
+    fn status_operation_lag_guard_accepts_empty_status_set() {
+        ensure_statuses_operation_lag(&[], 0).expect("empty status set has no lag");
+    }
+
+    #[test]
+    fn status_operation_lag_guard_rejects_member_beyond_limit() {
+        let (public_config, _) = status_fixture();
+        let statuses = vec![
+            local_status(&public_config, 1, 7),
+            local_status(&public_config, 2, 4),
+            local_status(&public_config, 3, 6),
+        ];
+
+        let err =
+            ensure_statuses_operation_lag(&statuses, 2).expect_err("member two is too far behind");
+
+        assert!(err.to_string().contains("member 2"));
+        assert!(err.to_string().contains("3 operations behind"));
+        assert!(err.to_string().contains("allowed lag 2"));
     }
 
     #[test]

@@ -252,6 +252,9 @@ pub struct FederationStatusArgs {
     /// Fail if queried members disagree on consensus height or latest order digest.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub require_converged: bool,
+    /// Fail if any queried member is more than this many accepted operations behind the highest queried member.
+    #[arg(long)]
+    pub max_operation_lag: Option<u64>,
     /// Fail if queried members with accepted operations lack quorum-backed session outcome evidence.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub require_session_outcome_quorum: bool,
@@ -556,6 +559,8 @@ mod tests {
             "3",
             "--require-ready",
             "--require-converged",
+            "--max-operation-lag",
+            "2",
             "--require-session-outcome-quorum",
             "--require-no-payment-observation-alerts",
         ])
@@ -578,6 +583,7 @@ mod tests {
         assert_eq!(status.members, vec![1, 3]);
         assert!(status.require_ready);
         assert!(status.require_converged);
+        assert_eq!(status.max_operation_lag, Some(2));
         assert!(status.require_session_outcome_quorum);
         assert!(status.require_no_payment_observation_alerts);
     }

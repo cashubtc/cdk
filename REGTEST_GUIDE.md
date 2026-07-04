@@ -106,6 +106,8 @@ just fed-regtest-clean             # Stop members and remove generated local sta
 
 `just fed-regtest-status` verifies readiness, convergence, and catch-up quorum
 evidence. For stricter monitoring, run `cdk-mintd federation status` with
+`--max-operation-lag <count>` to fail when a queried member falls too far
+behind the highest queried consensus height, or
 `--require-no-payment-observation-alerts` to fail when signed status includes
 stale, conflicting, or quarantined payment-observation reports.
 
