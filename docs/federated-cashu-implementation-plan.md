@@ -88,7 +88,7 @@ Current confirmed shape:
 - Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes, in-memory consensus scaffold, private REST peer envelopes, federation journal persistence, mint/swap/melt/restore/check-state apply paths, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
 - Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, exact deterministic binary operation encoding, a separate `federation_signature_share` table, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
 - Test-suite status: focused federation replay, peer-sync, session-outcome, trusted-dealer setup, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, and `cdk-axum` federation tests were run for the latest checkpoints; the full workspace test suite remains open.
-- Latest checkpoint: federated stored-quorum mint and melt payment-observation tests now run against a backend-agnostic mock payment backend that supports generic Bolt11 quote/pending-payment behavior without using `FakeWallet`; payment finality still comes only from accepted federation observation entries.
+- Latest checkpoint: the payment trust-model documentation and mintd federation config comments now describe `development_single_observation` as a backend-neutral local development policy, with fakewallet documented only as one local smoke/regtest backend that can use it.
 
 ## Key observations
 
@@ -1116,7 +1116,7 @@ Tests and success criteria:
 - [ ] Module split/refactor keeps focused federation tests passing without behavioral changes.
 - [ ] `rg "scaffold|placeholder|MVP"` in production federation modules only finds intentional dev/test documentation or open future-work comments.
 - [ ] Standalone fakewallet mint tests remain unchanged and prove fakewallet is still available as a non-federation development backend.
-- [ ] Documentation states that federation is payment-backend agnostic and fakewallet is only a development backend for mintd/regtest.
+- [x] Documentation states that federation is payment-backend agnostic and fakewallet is only a development backend for mintd/regtest.
 
 ## Milestone 24: security review checklist
 

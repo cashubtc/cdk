@@ -8,12 +8,14 @@ The central rule is:
 > Consensus may order payment observations, but real-backend quote state must
 > not finalize from one member's observation alone.
 
-The current implementation keeps fake-wallet testing on the existing
-single-observation path and makes real-backend policies explicit in the public
-federation config. Durable per-member observation rows now persist ordered
-evidence by quote and context. Mint quote payment observations now finalize
-only after stored evidence satisfies the configured policy; melt observations
-are also persisted and policy-gated before state transitions.
+The current implementation models local smoke/regtest single-observation
+behavior as an explicit `development_single_observation` policy and makes
+production payment policies explicit in the public federation config. Fakewallet
+is only one development backend that can be used with that policy. Durable
+per-member observation rows now persist ordered evidence by quote and context.
+Mint quote payment observations now finalize only after stored evidence
+satisfies the configured policy; melt observations are also persisted and
+policy-gated before state transitions.
 
 ## Policy Surface
 
@@ -25,10 +27,15 @@ for:
 
 Each side can currently use one of two policy families:
 
-- `fake_wallet`: test-only policy. One accepted observation can update quote
-  state. This is for the fake wallet backend and local smoke tests.
-- `member_quorum`: real-backend policy. A configured number of matching member
-  observations is required before quote state can finalize.
+- `development_single_observation`: local development/test policy. One accepted
+  observation can update quote state. This is for local smoke/regtest setups,
+  including fakewallet-backed tests.
+- `member_quorum`: production-oriented policy. A configured number of matching
+  member observations is required before quote state can finalize.
+
+Legacy JSON configs using the old `fake_wallet` policy type still deserialize
+as `development_single_observation` for compatibility, but newly generated
+configs must use the backend-neutral name.
 
 The real policy also records a trust model:
 
@@ -41,9 +48,9 @@ The real policy also records a trust model:
 - `onchain_proof`: members verify transaction proof observations against a
   consensus block-height view.
 
-Real quorum policies must require at least the configured consensus threshold
-and no more than the member count. This prevents a single malicious member from
-marking a quote paid or settled in a real-backend configuration.
+Quorum policies must require at least the configured consensus threshold and no
+more than the member count. This prevents a single malicious member from marking
+a quote paid or settled in a production configuration.
 
 Payment observation operations now include the observing federation member ID.
 The journal conflict key is scoped by quote, state, and observer, so one member
@@ -57,13 +64,14 @@ state machine is allowed to finalize a real-backend observation.
 Mint quote creation remains a consensus operation. A wallet can ask one member
 for a quote, and all members learn the quote through the accepted operation log.
 
-For fake-wallet tests:
+For development single-observation tests:
 
-- Members may submit a paid observation after the fake backend reports success.
+- Members may submit a paid observation after the configured local development
+  backend reports success.
 - One accepted observation can increment `amount_paid`.
 - Mint issuance is still consensus-gated and tied to the exact output set.
 
-For real backends:
+For quorum policies:
 
 - A single paid observation is not enough to mutate `amount_paid`.
 - Matching observations must agree on quote ID, method, state, amount paid,
@@ -73,7 +81,7 @@ For real backends:
 
 The storage layer now persists per-member observations with quote, observer,
 state, context, and typed JSON evidence. The mint state machine evaluates those
-stored rows before mutating `amount_paid`: a single real-backend observation is
+stored rows before mutating `amount_paid`: a single quorum-policy observation is
 stored and marked applied but does not mark the quote paid, matching quorum
 evidence finalizes the quote, and conflicting evidence remains stored without
 silently increasing the paid amount. A shared
@@ -102,13 +110,13 @@ still reports the quote as quarantined after catch-up.
 Melt quote creation and melt reserve are consensus operations. Inputs are
 reserved or spent only through the accepted melt flow.
 
-For fake-wallet tests:
+For development single-observation tests:
 
 - A paid observation finalizes the pending melt saga and signs change shares.
 - A failed or unpaid observation rolls back the pending saga and releases inputs.
 - Pending observations can survive restart and catch up through the journal.
 
-For real backends:
+For quorum policies:
 
 - A single state transition observation must not finalize payment success,
   rollback, or failure.
@@ -119,12 +127,13 @@ For real backends:
 
 Melt observations are persisted and evaluated against stored quorum evidence
 before quote state transitions. Focused mint-side regressions now prove that a
-single real-backend observation leaves a pending melt saga untouched, a matching
+single quorum-policy observation leaves a pending melt saga untouched, a matching
 paid quorum finalizes the saga and spends inputs, and a matching failed quorum
 rolls the quote back to unpaid and releases inputs. The observation report
 helper treats pending melt observations as non-terminal progress, while
 competing terminal paid, failed, or unpaid observations are marked as
-conflicting evidence. The idempotent real payment executor remains future work.
+conflicting evidence. The idempotent production payment executor remains future
+work.
 
 ## Pending And Stale Quotes
 

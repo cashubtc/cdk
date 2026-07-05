@@ -1057,8 +1057,8 @@ pub struct Federation {
     /// Consensus backend selected for ordering federation operations.
     #[serde(default)]
     pub consensus_backend: FederationConsensusBackend,
-    /// Permit development-only payment observation policies such as local
-    /// fake-wallet single-observation finality.
+    /// Permit development-only payment observation policies such as
+    /// `development_single_observation` for local smoke/regtest setups.
     #[serde(default)]
     pub allow_development_payment_observation_policy: bool,
     /// Path to the shared public federation config JSON file.
