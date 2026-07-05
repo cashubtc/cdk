@@ -1216,6 +1216,25 @@ impl FederationOperationEnvelope {
         }
     }
 
+    /// Decode a JSON operation envelope and reject unsupported versions.
+    pub fn from_json_slice(bytes: &[u8]) -> Result<Self> {
+        let envelope: Self = serde_json::from_slice(bytes)?;
+        envelope.ensure_supported_version()?;
+        Ok(envelope)
+    }
+
+    /// Reject this operation if its envelope version is unsupported.
+    pub fn ensure_supported_version(&self) -> Result<()> {
+        if self.version != FEDERATION_OPERATION_VERSION {
+            return Err(FederationError::OperationVersionMismatch {
+                expected: FEDERATION_OPERATION_VERSION,
+                found: self.version,
+            });
+        }
+
+        Ok(())
+    }
+
     /// Return canonical JSON bytes with all object keys sorted.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
         canonical_json_bytes(self)
@@ -1228,6 +1247,7 @@ impl FederationOperationEnvelope {
 
     /// Reject this operation if its canonical envelope exceeds `max_bytes`.
     pub fn ensure_within_size_limit(&self, max_bytes: usize) -> Result<usize> {
+        self.ensure_supported_version()?;
         let actual = self.canonical_size()?;
         if actual > max_bytes {
             return Err(FederationError::OperationEnvelopeTooLarge {
@@ -1246,6 +1266,7 @@ impl FederationOperationEnvelope {
 
     /// Compute the domain-separated operation ID.
     pub fn operation_id(&self) -> Result<FederationOperationId> {
+        self.ensure_supported_version()?;
         let canonical = self.canonical_bytes()?;
         let mut transcript = Vec::new();
         append_hash_bytes(&mut transcript, FEDERATION_OPERATION_HASH_VERSION);
@@ -1526,6 +1547,77 @@ mod tests {
             envelope.operation_id().expect("operation id").to_hex(),
             "f3c0714fa42d9af1c4ac53555c9d854ee66fc4bc2d28710bbdb26acde2278bcd"
         );
+    }
+
+    #[test]
+    fn operation_envelope_rejects_unsupported_version_before_admission() {
+        let mut envelope = envelope(mint_operation(
+            "quote-version",
+            vec![output(
+                1,
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            )],
+        ));
+        envelope.version = FEDERATION_OPERATION_VERSION + 1;
+
+        let err = envelope
+            .ensure_admissible_size()
+            .expect_err("unsupported version should fail admission");
+        assert!(matches!(
+            err,
+            FederationError::OperationVersionMismatch {
+                expected: FEDERATION_OPERATION_VERSION,
+                found
+            } if found == FEDERATION_OPERATION_VERSION + 1
+        ));
+
+        let err = envelope
+            .operation_id()
+            .expect_err("unsupported version should not hash");
+        assert!(matches!(
+            err,
+            FederationError::OperationVersionMismatch {
+                expected: FEDERATION_OPERATION_VERSION,
+                found
+            } if found == FEDERATION_OPERATION_VERSION + 1
+        ));
+    }
+
+    #[test]
+    fn operation_envelope_decode_rejects_unknown_versions_and_malformed_payloads() {
+        let envelope = envelope(mint_operation(
+            "quote-decode",
+            vec![output(
+                1,
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            )],
+        ));
+        let encoded = serde_json::to_vec(&envelope).expect("operation json");
+        FederationOperationEnvelope::from_json_slice(&encoded).expect("valid operation envelope");
+
+        let mut unsupported = envelope;
+        unsupported.version = FEDERATION_OPERATION_VERSION + 1;
+        let unsupported = serde_json::to_vec(&unsupported).expect("unsupported operation json");
+        let err = FederationOperationEnvelope::from_json_slice(&unsupported)
+            .expect_err("unsupported version should fail decode");
+        assert!(matches!(
+            err,
+            FederationError::OperationVersionMismatch {
+                expected: FEDERATION_OPERATION_VERSION,
+                found
+            } if found == FEDERATION_OPERATION_VERSION + 1
+        ));
+
+        for malformed in [
+            br#"{"#.as_slice(),
+            br#"{"federation_id":"0707070707070707070707070707070707070707070707070707070707070707","version":1}"#.as_slice(),
+            br#"{"federation_id":"0707070707070707070707070707070707070707070707070707070707070707","operation":{"type":"unknown","data":{}},"version":1}"#.as_slice(),
+        ] {
+            assert!(
+                FederationOperationEnvelope::from_json_slice(malformed).is_err(),
+                "malformed payload should fail decode"
+            );
+        }
     }
 
     #[test]

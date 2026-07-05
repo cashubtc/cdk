@@ -631,6 +631,14 @@ pub enum FederationError {
         /// Maximum admitted canonical envelope bytes.
         max: usize,
     },
+    /// Operation envelope used an unsupported payload version.
+    #[error("Federation operation version mismatch: expected={expected}, found={found}")]
+    OperationVersionMismatch {
+        /// Expected operation envelope version.
+        expected: u16,
+        /// Found operation envelope version.
+        found: u16,
+    },
     /// A requested operation ID was not found in the journal.
     #[error("Unknown federation operation {operation_id}")]
     UnknownOperation {

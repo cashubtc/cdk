@@ -17,6 +17,11 @@ bitcoin = { version = "0.32.2", default-features = false }
 [dependencies.cashu]
 path = "../crates/cashu"
 
+[dependencies.cdk-common]
+path = "../crates/cdk-common"
+default-features = false
+features = ["federation"]
+
 [lib]
 name = "cdk_fuzz"
 path = "src/lib.rs"
@@ -248,6 +253,13 @@ bench = false
 [[bin]]
 name = "fuzz_payment_request_structured"
 path = "fuzz_targets/fuzz_payment_request_structured.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_federation_operation"
+path = "fuzz_targets/fuzz_federation_operation.rs"
 test = false
 doc = false
 bench = false
