@@ -669,6 +669,14 @@ pub enum FederationError {
         /// Found operation envelope version.
         found: u16,
     },
+    /// Consensus item used an unsupported payload version.
+    #[error("Federation consensus item version mismatch: expected={expected}, found={found}")]
+    ConsensusItemVersionMismatch {
+        /// Expected consensus item version.
+        expected: u16,
+        /// Found consensus item version.
+        found: u16,
+    },
     /// Federation metadata advertised an unsupported protocol component version.
     #[error(
         "Federation protocol version mismatch for {component}: expected={expected}, found={found}"

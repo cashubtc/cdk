@@ -522,19 +522,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 516 checked items and 72 remaining items. Public federation configs now advertise protocol component versions and real mint/wallet entry points reject stale or unsupported versions.</span>
+          <span class="value">The implementation plan audit tracks 518 checked items and 70 remaining items. Consensus item admission, runtime replay, and catch-up now reject stale or future federation encoding versions before local state advances.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: reject stale federation protocol versions</span>
+          <span class="value">test: reject stale consensus item versions</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Mint runtime configuration and the federation-aware wallet connector now fail closed on unsupported advertised protocol components before serving member startup, fanout, or signature aggregation.</span>
+          <span class="value">The consensus boundary now validates module/default item versions, persisted replay refuses future operation envelopes, and catch-up refuses future-version accepted entries before advancing the local journal.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with operation-encoding migration planning, stale-upgrade rejection tests, live Postgres migration/application coverage, and the remaining real-backend/BFT follow-ups.</span>
+          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, proof-of-possession gating for rotations, and the remaining real-backend/BFT follow-ups.</span>
         </div>
       </aside>
     </header>
@@ -545,7 +545,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 516 checked entries and 72 remaining entries. The
+          checklist has 518 checked entries and 70 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -784,6 +784,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Consensus stale-upgrade guard</h3>
+            <p>Consensus item admission now rejects unsupported module/default item versions, and future-version operation entries are refused during persisted replay and catch-up before local consensus state can advance.</p>
+          </article>
           <article class="item">
             <h3>Stale protocol configs rejected</h3>
             <p>Mixed-version regressions now prove unsupported advertised protocol components are rejected at mint runtime config construction and at the federation wallet connector before any member fanout or threshold aggregation begins.</p>
@@ -3213,13 +3217,19 @@
               <td>Federation protocol metadata</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation protocol_versions -- --test-threads 1` passed four protocol metadata tests covering current-version advertisement, legacy missing-field defaults, partial component defaults, and unsupported version rejection. `cargo test -p cdk-common --features federation federation::tests -- --test-threads 1`, `cargo check -p cdk --features federation`, and `git diff --check` passed.</td>
-              <td>Add operation-encoding migration planning and stale-upgrade consensus tests for future incompatible operation encodings.</td>
+              <td>Carry the same version-gating discipline into any future production BFT consensus item formats.</td>
             </tr>
             <tr>
               <td>Mixed-version config rejection</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --features mint,federation runtime_config_rejects_unsupported_protocol_versions -- --test-threads 1` and `cargo test -p cdk --features wallet,mint,federation federated_mint_connector_rejects_unsupported_protocol_versions -- --test-threads 1` passed focused entry-point regressions. `cargo test -p cdk-common --features federation federation::tests -- --test-threads 1`, `cargo test -p cdk --features mint,federation mint::federation::tests -- --test-threads 1`, and `cargo test -p cdk --features wallet,mint,federation federated_mint_connector -- --test-threads 1` passed the broader suites.</td>
-              <td>Add the operation-encoding migration plan and stale-upgrade consensus tests for future incompatible operation encodings.</td>
+              <td>Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, and the remaining real-backend/BFT follow-ups.</td>
+            </tr>
+            <tr>
+              <td>Stale consensus item rejection</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1` passed 33 consensus tests, including future-version module/default consensus item rejection, persisted replay rejection for future operation envelopes, and catch-up rejection before the local operation count advances. `cargo test -p cdk-common --features federation federation::tests -- --test-threads 1` also passed the root federation suite.</td>
+              <td>Extend the same stale-upgrade coverage to the production BFT backend once it replaces the in-memory consensus simulator.</td>
             </tr>
             <tr>
               <td>Federation peer sync policy</td>

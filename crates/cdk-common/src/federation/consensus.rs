@@ -52,6 +52,7 @@ impl FederationConsensusItem {
 
     /// Return canonical JSON bytes with all object keys sorted.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
+        self.ensure_supported_version()?;
         canonical_json_bytes(self)
     }
 
@@ -62,6 +63,7 @@ impl FederationConsensusItem {
 
     /// Reject this item if its canonical encoding exceeds `max_bytes`.
     pub fn ensure_within_size_limit(&self, max_bytes: usize) -> Result<usize> {
+        self.ensure_supported_version()?;
         if let Self::Operation(envelope) = self {
             envelope.ensure_admissible_size()?;
         }
@@ -87,6 +89,25 @@ impl FederationConsensusItem {
         match self {
             Self::Operation(envelope) => Ok(Some(envelope.operation_id()?)),
             Self::ModuleFact(_) | Self::SessionSignature(_) | Self::Default(_) => Ok(None),
+        }
+    }
+
+    /// Reject consensus items from unsupported item encodings.
+    pub fn ensure_supported_version(&self) -> Result<()> {
+        match self {
+            Self::Operation(envelope) => envelope.ensure_supported_version(),
+            Self::ModuleFact(item) => item.ensure_supported_version(),
+            Self::SessionSignature(outcome) => {
+                if outcome.version != super::FEDERATION_SESSION_OUTCOME_VERSION {
+                    return Err(FederationError::SessionOutcomeVersionMismatch {
+                        expected: super::FEDERATION_SESSION_OUTCOME_VERSION,
+                        found: outcome.version,
+                    });
+                }
+
+                Ok(())
+            }
+            Self::Default(item) => item.ensure_supported_version(),
         }
     }
 }
@@ -119,6 +140,11 @@ impl FederationConsensusModuleFact {
             payload,
         }
     }
+
+    /// Reject module facts from unsupported consensus-item encodings.
+    pub fn ensure_supported_version(&self) -> Result<()> {
+        ensure_consensus_item_version(self.version)
+    }
 }
 
 /// Generic consensus item for forward-compatible item classes.
@@ -145,6 +171,22 @@ impl FederationConsensusDefaultItem {
             payload,
         }
     }
+
+    /// Reject default items from unsupported consensus-item encodings.
+    pub fn ensure_supported_version(&self) -> Result<()> {
+        ensure_consensus_item_version(self.version)
+    }
+}
+
+fn ensure_consensus_item_version(version: u16) -> Result<()> {
+    if version != FEDERATION_CONSENSUS_ITEM_VERSION {
+        return Err(FederationError::ConsensusItemVersionMismatch {
+            expected: FEDERATION_CONSENSUS_ITEM_VERSION,
+            found: version,
+        });
+    }
+
+    Ok(())
 }
 
 /// Admission result for the pending consensus item queue.
@@ -1589,6 +1631,25 @@ mod tests {
     }
 
     #[test]
+    fn consensus_runtime_replay_rejects_future_operation_versions() {
+        let federation_id = federation_id(13);
+        let mut runtime = FederationConsensusRuntime::in_memory(federation_id, member_id());
+        runtime
+            .submit_envelope(mint_quote_envelope(federation_id))
+            .expect("submit first");
+        let mut entries = runtime.journal().entries().to_vec();
+        entries[0].envelope.version = super::super::FEDERATION_OPERATION_VERSION + 1;
+
+        assert!(matches!(
+            FederationConsensusRuntime::in_memory_from_entries(federation_id, member_id(), entries),
+            Err(FederationError::OperationVersionMismatch {
+                expected: super::super::FEDERATION_OPERATION_VERSION,
+                found,
+            }) if found == super::super::FEDERATION_OPERATION_VERSION + 1
+        ));
+    }
+
+    #[test]
     fn consensus_backend_kind_parses_known_values_and_rejects_unknown() {
         assert_eq!(
             "in_memory"
@@ -1723,6 +1784,46 @@ mod tests {
         assert!(matches!(
             queue.submit(item),
             Err(FederationError::ConsensusItemTooLarge { .. })
+        ));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn consensus_item_queue_rejects_future_module_fact_versions() {
+        let mut queue = FederationConsensusItemQueue::new();
+        let mut fact = FederationConsensusModuleFact::new("mint", "fact", json!({"ok": true}));
+        fact.version = FEDERATION_CONSENSUS_ITEM_VERSION + 1;
+        let item = FederationConsensusItem::ModuleFact(fact);
+
+        assert!(matches!(
+            item.canonical_bytes(),
+            Err(FederationError::ConsensusItemVersionMismatch {
+                expected: FEDERATION_CONSENSUS_ITEM_VERSION,
+                found,
+            }) if found == FEDERATION_CONSENSUS_ITEM_VERSION + 1
+        ));
+        assert!(matches!(
+            queue.submit(item),
+            Err(FederationError::ConsensusItemVersionMismatch {
+                expected: FEDERATION_CONSENSUS_ITEM_VERSION,
+                found,
+            }) if found == FEDERATION_CONSENSUS_ITEM_VERSION + 1
+        ));
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn consensus_item_queue_rejects_future_default_item_versions() {
+        let mut queue = FederationConsensusItemQueue::new();
+        let mut item = FederationConsensusDefaultItem::new("future", json!({"ok": true}));
+        item.version = FEDERATION_CONSENSUS_ITEM_VERSION + 1;
+
+        assert!(matches!(
+            queue.submit(FederationConsensusItem::Default(item)),
+            Err(FederationError::ConsensusItemVersionMismatch {
+                expected: FEDERATION_CONSENSUS_ITEM_VERSION,
+                found,
+            }) if found == FEDERATION_CONSENSUS_ITEM_VERSION + 1
         ));
         assert!(queue.is_empty());
     }
@@ -2427,6 +2528,28 @@ mod tests {
             local.apply_catch_up_response(&response),
             Err(FederationError::CatchUpOperationIdMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn dummy_consensus_rejects_future_operation_version_catch_up_response() {
+        let federation_id = federation_id(13);
+        let mut local = InMemoryFederationConsensus::new(federation_id, member_id());
+        let mut peer = InMemoryFederationConsensus::new(federation_id, member_id());
+        peer.submit_envelope(mint_quote_envelope(federation_id))
+            .expect("peer quote submit");
+        let mut response = peer
+            .catch_up_checked(&local.catch_up_request())
+            .expect("catch up");
+        response.entries[0].envelope.version = super::super::FEDERATION_OPERATION_VERSION + 1;
+
+        assert!(matches!(
+            local.apply_catch_up_response(&response),
+            Err(FederationError::OperationVersionMismatch {
+                expected: super::super::FEDERATION_OPERATION_VERSION,
+                found,
+            }) if found == super::super::FEDERATION_OPERATION_VERSION + 1
+        ));
+        assert_eq!(local.peer_status().operation_count, 0);
     }
 
     #[test]
