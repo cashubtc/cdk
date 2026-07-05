@@ -523,15 +523,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 524 checked items and 64 remaining items. Mint, wallet, and public-route federation regressions still pass after removing fakewallet-specific semantics from production-facing wording.</span>
+          <span class="value">The implementation plan audit tracks 525 checked items and 63 remaining items. Fakewallet setup is now directly asserted to satisfy the normal CDK `MintPayment` backend boundary used by mintd registration.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: record mint swap melt federation regressions</span>
+          <span class="value">test: assert fakewallet backend interface</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The mint runtime federation suite, wallet federation suite, and focused Axum mint/swap/melt route regressions pass with backend-neutral fakewallet wording in place.</span>
+          <span class="value">Focused mintd tests prove fakewallet setup, dispatcher unit selection, and generic backend method registration still use the normal payment backend interface.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -546,7 +546,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 524 checked entries and 64 remaining entries. The
+          checklist has 525 checked entries and 63 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -3435,6 +3435,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --lib --features federation mint::federation -- --test-threads 1` passed 44 tests. `cargo test -p cdk --lib --features federation wallet::federation -- --test-threads 1` passed 50 tests. Focused Axum route regressions for batch mint, swap, and melt-change share responses passed individually. The broader Axum custom-handler slice had 38 passing tests and only the two listener-bound real-router connector tests failed in this sandbox with `Operation not permitted` while binding local listeners.</td>
               <td>Move more fakewallet-specific test names toward configured-backend wording, then run listener-bound real-router tests where local binding is permitted.</td>
+            </tr>
+            <tr>
+              <td>Fakewallet backend interface</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features fakewallet,sqlite fake_wallet_setup_filters_custom_methods_by_unit -- --test-threads 1`, `fakewallet_dispatcher_uses_ln_entry_unit`, and `configure_backend_for_methods_registers_websockets_and_fee` passed. The setup test now includes a direct `MintPayment` trait-bound assertion for the returned fakewallet backend.</td>
+              <td>Run the full generated regtest smoke where local process ports are available.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>

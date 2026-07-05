@@ -250,6 +250,13 @@ mod tests {
 
     use super::*;
 
+    fn assert_mint_payment_backend<T>(backend: &T)
+    where
+        T: MintPayment<Err = cdk_common::payment::Error>,
+    {
+        let _ = backend;
+    }
+
     #[tokio::test]
     async fn fake_wallet_setup_filters_custom_methods_by_unit() {
         let fake_wallet = config::FakeWallet {
@@ -280,6 +287,7 @@ mod tests {
             )
             .await
             .expect("sat fake wallet should set up");
+        assert_mint_payment_backend(&sat_wallet);
         let sat_settings = sat_wallet
             .get_settings()
             .await
@@ -299,6 +307,7 @@ mod tests {
             )
             .await
             .expect("usd fake wallet should set up");
+        assert_mint_payment_backend(&usd_wallet);
         let usd_settings = usd_wallet
             .get_settings()
             .await
