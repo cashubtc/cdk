@@ -1318,10 +1318,10 @@ mod tests {
     };
     use crate::nuts::nut01::BlsSecretKey;
     use crate::{
-        mint_url::MintUrl, BatchMintRequest, BlindedMessage, CurrencyUnit, Id,
-        MeltQuoteCustomRequest, MintQuoteBolt11Request, MintQuoteBolt11Response,
+        mint_url::MintUrl, BatchMintRequest, BlindedMessage, Conditions, CurrencyUnit, HTLCWitness,
+        Id, MeltQuoteCustomRequest, MintQuoteBolt11Request, MintQuoteBolt11Response,
         MintQuoteCustomResponse, MintQuoteResponse, P2PKWitness, Proof, PublicKey, SecretKey,
-        Witness,
+        SigFlag, SpendingConditions, Witness,
     };
 
     fn federation_id() -> FederationId {
@@ -1415,6 +1415,57 @@ mod tests {
         Witness::P2PKWitness(P2PKWitness {
             signatures: vec![marker.repeat(64)],
         })
+    }
+
+    fn htlc_witness(preimage_byte: u8, marker: &str) -> Witness {
+        Witness::HTLCWitness(HTLCWitness {
+            preimage: crate::util::hex::encode([preimage_byte; 32]),
+            signatures: Some(vec![marker.repeat(64)]),
+        })
+    }
+
+    fn p2pk_locked_proof(amount: u64, sig_flag: SigFlag) -> (Proof, SecretKey) {
+        let secret_key = SecretKey::generate();
+        let secret: crate::secret::Secret = SpendingConditions::new_p2pk(
+            secret_key.public_key(),
+            Some(Conditions {
+                sig_flag,
+                ..Default::default()
+            }),
+        )
+        .try_into()
+        .expect("p2pk locked secret");
+
+        (
+            Proof::new(
+                Amount::from(amount),
+                keyset_id(),
+                secret,
+                public_key("02c97ee3d1db41cf0a3ddb601724be8711a032950811bf326f8219c50c4808d3cd"),
+            ),
+            secret_key,
+        )
+    }
+
+    fn htlc_locked_proof(amount: u64, preimage_byte: u8, sig_flag: SigFlag) -> Proof {
+        let preimage = crate::util::hex::encode([preimage_byte; 32]);
+        let secret: crate::secret::Secret = SpendingConditions::new_htlc(
+            preimage,
+            Some(Conditions {
+                sig_flag,
+                ..Default::default()
+            }),
+        )
+        .expect("htlc locked condition")
+        .try_into()
+        .expect("htlc locked secret");
+
+        Proof::new(
+            Amount::from(amount),
+            keyset_id(),
+            secret,
+            public_key("02c97ee3d1db41cf0a3ddb601724be8711a032950811bf326f8219c50c4808d3cd"),
+        )
     }
 
     fn mint_operation(quote: &str, outputs: Vec<BlindedMessage>) -> FederationOperation {
@@ -1861,6 +1912,113 @@ mod tests {
         }));
         let second = envelope(FederationOperation::Swap(FederationSwapOperation {
             request: SwapRequest::new(vec![second_proof], outputs),
+        }));
+
+        assert_ne!(
+            first.canonical_bytes().expect("canonical bytes"),
+            second.canonical_bytes().expect("canonical bytes")
+        );
+        assert_ne!(
+            first.operation_id().expect("operation id"),
+            second.operation_id().expect("operation id")
+        );
+    }
+
+    #[test]
+    fn operation_id_tracks_p2pk_locked_witness_mutation() {
+        let (mut first_proof, _) = p2pk_locked_proof(10, SigFlag::SigInputs);
+        first_proof.witness = Some(p2pk_witness("33"));
+        let mut second_proof = first_proof.clone();
+        second_proof.witness = Some(p2pk_witness("44"));
+
+        let outputs = vec![output(
+            10,
+            "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39",
+        )];
+        let first = envelope(FederationOperation::Swap(FederationSwapOperation {
+            request: SwapRequest::new(vec![first_proof], outputs.clone()),
+        }));
+        let second = envelope(FederationOperation::Swap(FederationSwapOperation {
+            request: SwapRequest::new(vec![second_proof], outputs),
+        }));
+
+        assert_ne!(
+            first.canonical_bytes().expect("canonical bytes"),
+            second.canonical_bytes().expect("canonical bytes")
+        );
+        assert_ne!(
+            first.operation_id().expect("operation id"),
+            second.operation_id().expect("operation id")
+        );
+    }
+
+    #[test]
+    fn operation_id_tracks_htlc_locked_witness_mutation() {
+        let mut first_proof = htlc_locked_proof(10, 0x42, SigFlag::SigInputs);
+        first_proof.witness = Some(htlc_witness(0x42, "55"));
+        let mut second_proof = first_proof.clone();
+        second_proof.witness = Some(htlc_witness(0x43, "66"));
+
+        let outputs = vec![output(
+            10,
+            "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39",
+        )];
+        let first = envelope(FederationOperation::Swap(FederationSwapOperation {
+            request: SwapRequest::new(vec![first_proof], outputs.clone()),
+        }));
+        let second = envelope(FederationOperation::Swap(FederationSwapOperation {
+            request: SwapRequest::new(vec![second_proof], outputs),
+        }));
+
+        assert_ne!(
+            first.canonical_bytes().expect("canonical bytes"),
+            second.canonical_bytes().expect("canonical bytes")
+        );
+        assert_ne!(
+            first.operation_id().expect("operation id"),
+            second.operation_id().expect("operation id")
+        );
+    }
+
+    #[test]
+    fn sig_all_signature_and_operation_id_track_exact_swap_outputs() {
+        let (proof, signing_key) = p2pk_locked_proof(10, SigFlag::SigAll);
+        let first_outputs = vec![output(
+            10,
+            "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39",
+        )];
+        let second_outputs = vec![output(
+            10,
+            "022d000b4bab1f64ba07c940fdc43ecfe45a94cc574023c3578f17ea635addb437",
+        )];
+        let mut first_request = SwapRequest::new(vec![proof.clone()], first_outputs);
+        let mut second_request = SwapRequest::new(vec![proof], second_outputs);
+
+        first_request
+            .sign_sig_all(signing_key.clone())
+            .expect("first sig_all signature");
+        second_request
+            .sign_sig_all(signing_key)
+            .expect("second sig_all signature");
+
+        assert_ne!(
+            first_request.inputs()[0]
+                .witness
+                .as_ref()
+                .and_then(Witness::signatures)
+                .expect("first sig_all witness"),
+            second_request.inputs()[0]
+                .witness
+                .as_ref()
+                .and_then(Witness::signatures)
+                .expect("second sig_all witness")
+        );
+
+        let first = envelope(FederationOperation::Swap(FederationSwapOperation {
+            request: first_request,
+        }));
+        let second = envelope(FederationOperation::Swap(FederationSwapOperation {
+            request: second_request,
         }));
 
         assert_ne!(

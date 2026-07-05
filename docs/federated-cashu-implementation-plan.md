@@ -87,8 +87,8 @@ Current confirmed shape:
 
 - Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes, in-memory consensus boundary, private REST peer envelopes, federation journal persistence, mint/swap/melt/restore/check-state apply paths, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
 - Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, exact deterministic binary operation encoding, a separate `federation_signature_share` table, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
-- Test-suite status: focused federation replay, peer-sync, session-outcome, trusted-dealer setup, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, fakewallet coupling audit, wallet member request timeout/retry policy tests, NUT-19 retry backoff, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, federated swap input-reuse attack regression, and `cdk-axum` federation tests were run for the latest checkpoints; the full workspace test suite remains open.
-- Latest checkpoint: wallet federation fanout now applies a validated per-member request timeout to mint, batch mint, swap, melt, restore, and check-state member calls, and can retry retryable member failures when explicitly configured.
+- Test-suite status: focused federation replay, peer-sync, session-outcome, trusted-dealer setup, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, fakewallet coupling audit, wallet member request timeout/retry policy tests, P2PK/HTLC/SIG_ALL canonical swap transcript tests, NUT-19 retry backoff, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, federated swap input-reuse attack regression, and `cdk-axum` federation tests were run for the latest checkpoints; the full workspace test suite remains open.
+- Latest checkpoint: canonical federation swap operation tests now prove P2PK witnesses, HTLC witnesses, and SIG_ALL exact-output transaction signatures change the serialized consensus envelope and operation ID.
 
 ## Key observations
 
@@ -653,14 +653,14 @@ Implementation checklist:
 
 - [x] In federation mode, public `/swap` submits a canonical `Swap` operation to consensus.
 - [x] `Swap` commits to all input proofs, all witnesses, all output blinded messages, and request version.
-- [ ] Consensus apply verifies:
+- [x] Consensus apply verifies:
   - [x] inputs are unique.
   - [x] outputs are unique.
   - [x] input keysets are known and not expired.
   - [x] output keysets are active and not expired.
   - [x] proofs verify under aggregate public keys.
   - [x] Existing spending-condition verification is called inside federated swap apply.
-  - [ ] Add dedicated federated canonical-transcript tests for P2PK, HTLC, and SIG_ALL.
+  - [x] Add dedicated federated canonical-transcript tests for P2PK, HTLC, and SIG_ALL.
   - [x] input value equals output value plus fees.
   - [x] no input proof Y is already spent or pending in consensus state.
 - [x] Consensus apply marks inputs spent and records output signature shares in one DB transaction.

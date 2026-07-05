@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 464 checked items and 123 remaining items. Wallet federation member fanout now has an explicit timeout and retry policy.</span>
+          <span class="value">The implementation plan audit now tracks 466 checked items and 121 remaining items. Canonical swap transcript coverage now includes P2PK, HTLC, and SIG_ALL cases.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: bound wallet federation member requests</span>
+          <span class="value">test: cover locked swap transcripts</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Mint, batch mint, swap, melt, restore, and check-state wallet fanout now apply a validated per-member request timeout, with opt-in retries for retryable member failures.</span>
+          <span class="value">Federation swap operation IDs now have dedicated coverage for P2PK witness mutations, HTLC witness mutations, and SIG_ALL signatures over exact output sets.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue production-cleanup work by auditing remaining fakewallet references, member backpressure paths, and storage-backed process coverage.</span>
+          <span class="value">Continue with runtime federated P2PK/HTLC swap coverage and the remaining NUT-20 locked quote regressions.</span>
         </div>
       </aside>
     </header>
@@ -541,7 +541,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 464 checked entries and 123 remaining entries. The
+          checklist has 466 checked entries and 121 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -803,6 +803,10 @@
           <article class="item">
             <h3>Witness-bound hashes</h3>
             <p>Canonical swap operation tests now prove that mutating an input proof witness changes both the serialized consensus envelope and the operation ID used before signing.</p>
+          </article>
+          <article class="item">
+            <h3>Locked swap transcripts covered</h3>
+            <p>Canonical federation swap tests now use real P2PK and HTLC locked secrets and prove witness mutations change the operation ID; SIG_ALL signatures also change when the exact blinded output set changes.</p>
           </article>
           <article class="item">
             <h3>4-of-7 BLS proven</h3>
@@ -2002,6 +2006,12 @@
               <td>Extend the same proof-state guard coverage to P2PK, HTLC, and SIG_ALL federated swap fixtures.</td>
             </tr>
             <tr>
+              <td>Locked swap canonical transcripts</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation operation_id_tracks -- --test-threads 1`, `cargo test -p cdk-common --features federation sig_all_signature_and_operation_id_track_exact_swap_outputs -- --test-threads 1`, and `cargo test -p cdk-common --features federation federation::operation -- --test-threads 1` passed. The operation suite now covers P2PK witness mutations, HTLC witness mutations, and SIG_ALL signatures changing when the exact blinded output set changes.</td>
+              <td>Add runtime federated P2PK and HTLC swap tests that execute apply/signing against a federated mint.</td>
+            </tr>
+            <tr>
               <td>NUT-19 retry backoff</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --features wallet wallet::mint_connector::http_client::tests -- --test-threads 1` passed, including regressions that retryable HTTP requests do not spin without NUT-19 support and wait before retrying when replay support exists.</td>
@@ -3001,7 +3011,7 @@
               <td>Witness-bound operation hashes</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation operation_id_tracks_input_witness_mutation -- --test-threads 1` passed, proving a mutated input proof witness changes the canonical federation operation bytes and operation ID.</td>
-              <td>Carry the same transcript-binding discipline into the remaining NUT-20, P2PK, HTLC, and SIG_ALL canonical-transcript tests.</td>
+              <td>Carry the same transcript-binding discipline into runtime federated P2PK, HTLC, and NUT-20 locked-quote regressions.</td>
             </tr>
             <tr>
               <td>4-of-7 threshold BLS aggregation</td>
