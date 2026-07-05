@@ -2490,6 +2490,38 @@ mod tests {
     }
 
     #[test]
+    fn fakewallet_is_documented_as_development_backend() {
+        let docs = [
+            include_str!("../../../docs/federated-cashu-consensus-current.md"),
+            include_str!("../../../docs/federated-cashu-consensus-current.html"),
+            include_str!("../../../docs/federated-cashu-progress.html"),
+        ];
+        let forbidden_phrases = [
+            "core fake-wallet eCash flows",
+            "Core fake-wallet flows",
+            "fake-wallet phase",
+            "fake-wallet federation path",
+            "current fake-wallet path",
+            "fake wallet semantics",
+            "fake-wallet member",
+            "federated fake-wallet",
+            "fake-wallet melt",
+            "fake-wallet payment",
+            "fake-wallet flows",
+            "fake-wallet path",
+        ];
+
+        for doc in docs {
+            for phrase in forbidden_phrases {
+                assert!(
+                    !doc.contains(phrase),
+                    "federation docs must not describe fakewallet as federation semantics: {phrase}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn trusted_dealer_artifacts_are_written_and_validated() {
         let output_dir = temp_output_dir("artifacts");
         let _ = std::fs::remove_dir_all(&output_dir);

@@ -506,7 +506,8 @@
           Living status for the CDK work to federate Cashu mints with threshold
           BLS blind signatures, private member networking, consensus-backed
           mint state transitions, wallet aggregation, catch-up, and
-          development fake-wallet-backed mint/swap/melt tests.
+          backend-neutral mint/swap/melt tests that use fakewallet only as a
+          configured local development payment backend.
         </p>
         <div class="links" aria-label="Project documents">
           <a class="link-pill" href="./federated-cashu-implementation-plan.md">Implementation plan</a>
@@ -522,15 +523,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 522 checked items and 66 remaining items. Federation members now raise privacy-preserving invalid-operation alerts by auth-token, client-IP, or anonymous bucket without exposing raw identifiers.</span>
+          <span class="value">The implementation plan audit tracks 523 checked items and 65 remaining items. Federation docs now describe fakewallet only as a configured local development payment backend, not as part of federation semantics.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add invalid operation alerts</span>
+          <span class="value">docs: clarify fakewallet backend wording</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Signed local status and `cdk-mintd federation status` now surface invalid-operation alert buckets for repeated bad operation submissions while keeping tokens and IP addresses out of status output.</span>
+          <span class="value">The consensus snapshot, implementation plan, progress dashboard, and regression test now guard backend-neutral federation wording around fakewallet usage.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -545,7 +546,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 522 checked entries and 66 remaining entries. The
+          checklist has 523 checked entries and 65 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -646,7 +647,7 @@
             <div>
               <h3>Milestone 8: federated mint quote creation and payment observations</h3>
               <p>Objective: make all members agree on mint quotes and paid status.</p>
-              <p class="test-gate"><strong>Test gate:</strong> quotes created on one member appear on all members, fake-wallet payment observations mark them paid everywhere, duplicate observations do not double-count, conflicts are rejected, and digests match.</p>
+              <p class="test-gate"><strong>Test gate:</strong> quotes created on one member appear on all members, development-backend payment observations mark them paid everywhere, duplicate observations do not double-count, conflicts are rejected, and digests match.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -694,7 +695,7 @@
             <div>
               <h3>Milestone 14: melt reserve and payment finalization</h3>
               <p>Objective: federate melts without losing funds or allowing proof reuse.</p>
-              <p class="test-gate"><strong>Test gate:</strong> fake-wallet melts finalize with aggregate change, failures release inputs, pending melts later resolve, crash recovery is safe, duplicate melts cannot both pay, and internal melt-to-mint is atomic.</p>
+              <p class="test-gate"><strong>Test gate:</strong> development-backend melts finalize with aggregate change, failures release inputs, pending melts later resolve, crash recovery is safe, duplicate melts cannot both pay, and internal melt-to-mint is atomic.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -726,7 +727,7 @@
             <div>
               <h3>Milestone 17: `cdk-mintd` integration and regtest tooling</h3>
               <p>Objective: make the federation easy to run locally.</p>
-              <p class="test-gate"><strong>Test gate:</strong> local fake-wallet federations start and cleanly stop, wallets mint, swap, restore, check state, and melt through them, stopped members catch up, digests match, and local auth rejects bad peers.</p>
+              <p class="test-gate"><strong>Test gate:</strong> local development-backend federations start and cleanly stop, wallets mint, swap, restore, check state, and melt through them, stopped members catch up, digests match, and local auth rejects bad peers.</p>
             </div>
             <span class="status progress">In progress</span>
           </li>
@@ -741,8 +742,8 @@
           <li class="milestone">
             <div>
               <h3>Milestone 19: real payment backend policy</h3>
-              <p>Objective: move beyond fake wallet without centralizing payment trust accidentally.</p>
-              <p class="test-gate"><strong>Test gate:</strong> fake-wallet and real-backend policies are separate, a single malicious observation cannot mark a quote paid, conflicting amounts are not silently accepted, and stale pending payments are operator-visible.</p>
+              <p>Objective: move beyond development payment backends without centralizing payment trust accidentally.</p>
+              <p class="test-gate"><strong>Test gate:</strong> development-backend and real-backend policies are separate, a single malicious observation cannot mark a quote paid, conflicting amounts are not silently accepted, and stale pending payments are operator-visible.</p>
             </div>
             <span class="status done">Done</span>
           </li>
@@ -842,7 +843,7 @@
           </article>
           <article class="item">
             <h3>Deterministic setup seed</h3>
-            <p>The trusted-dealer generator now has an explicit deterministic test seed that reproduces member identity keys, BLS coefficients, fake-wallet mnemonics, setup transcript signatures, and generated DKG route-probe request signatures byte-for-byte. The previous noisy failing path came from seeded data being signed with randomized Schnorr signatures.</p>
+            <p>The trusted-dealer generator now has an explicit deterministic test seed that reproduces member identity keys, BLS coefficients, fakewallet backend mnemonics, setup transcript signatures, and generated DKG route-probe request signatures byte-for-byte. The previous noisy failing path came from seeded data being signed with randomized Schnorr signatures.</p>
           </article>
           <article class="item">
             <h3>Workspace gates closed</h3>
@@ -966,7 +967,7 @@
           </article>
           <article class="item">
             <h3>Implementation plan committed</h3>
-            <p>The federation architecture, invariants, test ladder, fake-wallet matrix, and network strategy are available as a step-by-step checklist.</p>
+            <p>The federation architecture, invariants, test ladder, development-backend matrix, and network strategy are available as a step-by-step checklist.</p>
           </article>
           <article class="item">
             <h3>Goal prompt committed</h3>
@@ -1061,8 +1062,8 @@
             <p>Federation change validation now accepts NUT-08 amount-zero placeholders only for active v3/BLS keysets, and the wallet connector can aggregate returned melt change signature shares while preserving the method-specific melt response metadata.</p>
           </article>
           <article class="item">
-            <h3>Fake-wallet member bridge ready</h3>
-            <p>The mint runtime now serializes melt operations and produces swap share responses from accepted operation IDs. Wallet tests wrap real fake-wallet-backed federated member mints, verify fake-wallet mint quotes settle, and aggregate real member-produced mint, batch mint, and swap BLS shares.</p>
+            <h3>Development backend member bridge ready</h3>
+            <p>The mint runtime now serializes melt operations and produces swap share responses from accepted operation IDs. Wallet tests wrap federated member mints using fakewallet as the configured backend, verify mint quotes settle through the normal backend path, and aggregate real member-produced mint, batch mint, and swap BLS shares.</p>
           </article>
           <article class="item">
             <h3>Public swap share route ready</h3>
@@ -1073,12 +1074,12 @@
             <p>The public melt request path now detects federation member mode before entering the standalone saga, submits canonical melt operations to consensus, rejects non-v3 change outputs before journaling, and refuses to emit standalone change signatures while federation-aware finalization is still pending.</p>
           </article>
           <article class="item">
-            <h3>Federated fake-wallet melt executor ready</h3>
-            <p>The public melt route now executes accepted federated fake-wallet melts, verifies aggregate BLS input proofs, finalizes paid quotes through the saga, and returns member BLS change shares from the accepted operation ID.</p>
+            <h3>Federated melt executor ready</h3>
+            <p>The public melt route now executes accepted federated melts using the configured backend, verifies aggregate BLS input proofs, finalizes paid quotes through the saga, and returns member BLS change shares from the accepted operation ID.</p>
           </article>
           <article class="item">
             <h3>Federated melt wallet bridge ready</h3>
-            <p>The wallet federation connector now fans out melts even without change outputs, aggregates real fake-wallet member melt change shares, and member melt sagas persist the federation operation ID for pending recovery.</p>
+            <p>The wallet federation connector now fans out melts even without change outputs, aggregates real member melt change shares from tests using fakewallet as the configured backend, and member melt sagas persist the federation operation ID for pending recovery.</p>
           </article>
           <article class="item">
             <h3>Restore and check-state routing ready</h3>
@@ -1122,11 +1123,11 @@
           </article>
           <article class="item">
             <h3>Melt journal application ready</h3>
-            <p>Accepted melt operations now replay through the federation fake-wallet executor, spend aggregate BLS proofs, finalize paid quotes, persist member change shares, preserve pending saga metadata, and mark journal entries Applied.</p>
+            <p>Accepted melt operations now replay through the federation melt executor, spend aggregate BLS proofs, finalize paid quotes through the configured backend path, persist member change shares, preserve pending saga metadata, and mark journal entries Applied.</p>
           </article>
           <article class="item">
             <h3>Melt quote propagation ready</h3>
-            <p>Public melt quote creation now submits canonical melt quote operations to consensus, and catch-up replay can recreate consensus-assigned fake-wallet melt quotes before any melt spend is signed.</p>
+            <p>Public melt quote creation now submits canonical melt quote operations to consensus, and catch-up replay can recreate consensus-assigned melt quotes before any melt spend is signed.</p>
           </article>
           <article class="item">
             <h3>Melt payment observation replay ready</h3>
@@ -1196,7 +1197,7 @@
           </article>
           <article class="item">
             <h3>Scope clarified</h3>
-            <p>Minting, swapping, and melting are all explicit implementation requirements, including fake-wallet happy and unhappy paths.</p>
+            <p>Minting, swapping, and melting are all explicit implementation requirements, including development-backend happy and unhappy paths.</p>
           </article>
           <article class="item">
             <h3>Transport strategy clarified</h3>
@@ -1264,11 +1265,11 @@
           </article>
           <article class="item">
             <h3>Aggregate melt proofs verified</h3>
-            <p>Federated melt inputs now verify against the aggregate v3/BLS federation keyset instead of local standalone keysets before the fake-wallet payment saga is allowed to finalize.</p>
+            <p>Federated melt inputs now verify against the aggregate v3/BLS federation keyset instead of local standalone keysets before the configured payment saga is allowed to finalize.</p>
           </article>
           <article class="item">
             <h3>Federated melt change signs as shares</h3>
-            <p>Paid fake-wallet melts with overpaid inputs now derive change amounts, persist member-local blind signature shares, and expose those shares through the normal melt response shape for wallet aggregation.</p>
+            <p>Paid melts with overpaid inputs now derive change amounts, persist member-local blind signature shares, and expose those shares through the normal melt response shape for wallet aggregation.</p>
           </article>
           <article class="item">
             <h3>Restore placeholders stay federation-safe</h3>
@@ -1351,7 +1352,7 @@
             <p>A member that learns a swap through catch-up now verifies the aggregate input proof, marks it spent, stores the authorized output share, and marks the journal entry Applied without needing the original public REST request.</p>
           </article>
           <article class="item">
-            <h3>Catch-up can finalize fake-wallet melts</h3>
+            <h3>Catch-up can finalize melts</h3>
             <p>A member that learns an accepted melt through catch-up now executes the same federation melt state machine as the public route, ending with a paid quote, spent proofs, stored change shares, and Applied journal status.</p>
           </article>
           <article class="item">
@@ -1380,7 +1381,7 @@
           </article>
           <article class="item">
             <h3>Local federation setup is reproducible</h3>
-            <p>Operators and tests no longer need to handcraft federation JSON: the mint daemon can generate a complete fake-wallet local roster, validate every private member config, and protect generated secret material with a local ignore file.</p>
+            <p>Operators and tests no longer need to handcraft federation JSON: the mint daemon can generate a complete local roster using fakewallet as the configured backend, validate every private member config, and protect generated secret material with a local ignore file.</p>
           </article>
           <article class="item">
             <h3>Restarted members stop replaying sequence one</h3>
@@ -1480,7 +1481,7 @@
           </article>
           <article class="item">
             <h3>Five-member process smoke verified</h3>
-            <p>The generated fake-wallet harness started five independent mintd members, queried signed private REST status, verified readiness and digest convergence, restarted one member, and verified convergence again.</p>
+            <p>The generated development-backend harness started five independent mintd members, queried signed private REST status, verified readiness and digest convergence, restarted one member, and verified convergence again.</p>
           </article>
           <article class="item">
             <h3>Materialized digest scaffold ready</h3>
@@ -1492,27 +1493,27 @@
           </article>
           <article class="item">
             <h3>Operation process smoke verified</h3>
-            <p>The generated fake-wallet harness now runs wallet mint, swap, proof-state check, melt, restore, signed private REST convergence, and member restart/catch-up across both 3-member/2-threshold and 5-member/3-threshold local federations.</p>
+            <p>The generated development-backend harness now runs wallet mint, swap, proof-state check, melt, restore, signed private REST convergence, and member restart/catch-up across both 3-member/2-threshold and 5-member/3-threshold local federations.</p>
           </article>
           <article class="item">
             <h3>Swap, melt, and restore digest rows covered</h3>
             <p>Focused Axum federation tests now prove the materialized state digest changes when catch-up replays swap proof-state/output-share rows, melt quote/proof-state/change-share rows, and restore output-share rows.</p>
           </article>
           <article class="item">
-            <h3>Failed fake-wallet melt rollback covered</h3>
-            <p>The federated public melt route now has focused failure coverage proving a failed fake-wallet payment records the accepted melt operation, resets the quote to unpaid, releases the reserved input proof, clears saga state, and returns no change shares.</p>
+            <h3>Failed development-backend melt rollback covered</h3>
+            <p>The federated public melt route now has focused failure coverage proving a failed payment observation from the configured development backend records the accepted melt operation, resets the quote to unpaid, releases the reserved input proof, clears saga state, and returns no change shares.</p>
           </article>
           <article class="item">
-            <h3>Pending fake-wallet melt verification covered</h3>
-            <p>The federated public melt route now covers the race where a fake-wallet payment initially reports pending but verifies as paid before the response returns, finalizing the melt with spent inputs and persisted change shares.</p>
+            <h3>Pending development-backend melt verification covered</h3>
+            <p>The federated public melt route now covers the race where the configured development backend initially reports pending but verifies as paid before the response returns, finalizing the melt with spent inputs and persisted change shares.</p>
           </article>
           <article class="item">
-            <h3>Pending fake-wallet melt check failure covered</h3>
-            <p>The federated public melt route now covers the ambiguous case where an outgoing fake-wallet payment reports pending but follow-up status checking fails, keeping the quote, input proof, and saga in recovery-safe pending state without producing change shares.</p>
+            <h3>Pending development-backend melt check failure covered</h3>
+            <p>The federated public melt route now covers the ambiguous case where an outgoing payment reports pending but follow-up status checking fails, keeping the quote, input proof, and saga in recovery-safe pending state without producing change shares.</p>
           </article>
           <article class="item">
             <h3>Delayed pending melt reconciliation covered</h3>
-            <p>A federated fake-wallet melt that initially parks as pending can now finalize on a later quote check once the backend reports paid, and the same quote-check response returns the refreshed paid quote with change shares.</p>
+            <p>A federated melt that initially parks as pending can now finalize on a later quote check once the configured backend reports paid, and the same quote-check response returns the refreshed paid quote with change shares.</p>
           </article>
           <article class="item">
             <h3>Staged pending melt catch-up covered</h3>
@@ -1536,11 +1537,11 @@
           </article>
           <article class="item">
             <h3>Pending melt process smoke scripted</h3>
-            <p>The generated local federation smoke script now runs a resumable pending-melt scenario: it starts a pending fake-wallet melt into a file-backed wallet DB, restarts a federation member while the melt is pending, then resumes the wallet and finalizes the paid observation.</p>
+            <p>The generated local federation smoke script now runs a resumable pending-melt scenario with fakewallet as the configured backend: it starts a pending melt into a file-backed wallet DB, restarts a federation member while the melt is pending, then resumes the wallet and finalizes the paid observation.</p>
           </article>
           <article class="item">
             <h3>Failed pending melt process smoke scripted</h3>
-            <p>The generated local federation smoke script now also runs the unhappy path: it starts a pending fake-wallet melt that later resolves as failed, restarts a federation member while the wallet saga is durable, then resumes the wallet and verifies compensation released the proofs.</p>
+            <p>The generated local federation smoke script now also runs the unhappy path with fakewallet as the configured backend: it starts a pending melt that later resolves as failed, restarts a federation member while the wallet saga is durable, then resumes the wallet and verifies compensation released the proofs.</p>
           </article>
           <article class="item">
             <h3>Milestone map expanded</h3>
@@ -1596,7 +1597,7 @@
           </article>
           <article class="item">
             <h3>Metrics smoke gate added</h3>
-            <p>Trusted-dealer local member configs now enable per-member Prometheus endpoints, and the generated fake-wallet smoke script scrapes every member for federation gauges while rejecting sensitive metric labels.</p>
+            <p>Trusted-dealer local member configs now enable per-member Prometheus endpoints, and the generated development-backend smoke script scrapes every member for federation gauges while rejecting sensitive metric labels.</p>
           </article>
           <article class="item">
             <h3>Digest alert status guard exposed</h3>
@@ -1632,7 +1633,7 @@
           </article>
           <article class="item">
             <h3>Payment policy scaffolded</h3>
-            <p>Federation public config now carries separate fake-wallet and real-backend payment observation policies, validates real quorum thresholds, and fails closed when a real policy would otherwise use the single-observation fake-wallet finality path.</p>
+            <p>Federation public config now carries separate development-backend and real-backend payment observation policies, validates real quorum thresholds, and fails closed when a real policy would otherwise use the single-observation development finality path.</p>
           </article>
           <article class="item">
             <h3>Observer payment quorum helper added</h3>
@@ -1728,7 +1729,7 @@
           </article>
           <article class="item">
             <h3>Federation regtest helpers added</h3>
-            <p>The repo now has `just fed-regtest` recipes to generate trusted-dealer fake-wallet federations, run the generated smoke, start and stop members, query signed status, and clean generated local state.</p>
+            <p>The repo now has `just fed-regtest` recipes to generate trusted-dealer federations with fakewallet configured as the backend, run the generated smoke, start and stop members, query signed status, and clean generated local state.</p>
           </article>
           <article class="item">
             <h3>Federation regtest helper smoke verified</h3>
@@ -1872,7 +1873,7 @@
           </article>
           <article class="item">
             <h3>Full offline smoke passes again</h3>
-            <p>A regenerated three-member, two-threshold fake-wallet smoke passed standard wallet operations, one offline operation batch, paid and failed pending melts, quarantine replay, offline keyset rotation, old-keyset spend, post-rotation mint and melt, restarted-member catch-up, and final convergence.</p>
+            <p>A regenerated three-member, two-threshold development-backend smoke passed standard wallet operations, one offline operation batch, paid and failed pending melts, quarantine replay, offline keyset rotation, old-keyset spend, post-rotation mint and melt, restarted-member catch-up, and final convergence.</p>
           </article>
           <article class="item">
             <h3>Setup transcript scaffold added</h3>
@@ -2036,7 +2037,7 @@
           </article>
           <article class="item">
             <h3>Wallet rotation aggregation ready</h3>
-            <p>Wallet-side federation aggregation now accepts inactive old-keyset restore outputs, local member connector tests use replay-derived configs, and a rotated fake-wallet federation aggregates mint, swap, melt-change, and restore shares.</p>
+            <p>Wallet-side federation aggregation now accepts inactive old-keyset restore outputs, local member connector tests use replay-derived configs, and a rotated federation using fakewallet as the configured backend aggregates mint, swap, melt-change, and restore shares.</p>
           </article>
           <article class="item">
             <h3>Wallet HTTP-client rotation smoke ready</h3>
@@ -2484,7 +2485,7 @@
             <tr>
               <td>Wallet rotation aggregation</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk --lib --features federation wallet::federation -- --test-threads 1` passed 18 tests, including rotated fake-wallet mint, swap, melt-change, and restore aggregation. `cargo test -p cdk --lib --features federation mint::federation -- --test-threads 1` passed 30 tests, `cargo check -p cdk-axum --features federation`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>`cargo test -p cdk --lib --features federation wallet::federation -- --test-threads 1` passed 18 tests, including rotated development-backend mint, swap, melt-change, and restore aggregation. `cargo test -p cdk --lib --features federation mint::federation -- --test-threads 1` passed 30 tests, `cargo check -p cdk-axum --features federation`, `cargo fmt --all`, and `git diff --check` passed.</td>
               <td>Promote the rotated aggregation proof to real Axum/HTTP member connectors, then add rotated status and check-state coverage.</td>
             </tr>
             <tr>
@@ -2605,42 +2606,42 @@
               <td>Wallet threshold aggregation</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --lib --features federation wallet::federation` passed 7 tests covering mint, batch mint, swap aggregation, aggregate signature verification, and non-v3 member advertisement rejection. `cargo check -p cdk --lib`, `cargo check -p cdk --lib --features federation`, `cargo test -p cdk-axum --features federation custom_handlers`, `cargo check -p cdk-axum --features federation`, `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"`, and `cargo fmt --all -- --check` passed.</td>
-              <td>Extend federation handling through melt change outputs and fake-wallet end-to-end operation tests.</td>
+              <td>Extend federation handling through melt change outputs and development-backend end-to-end operation tests.</td>
             </tr>
             <tr>
               <td>Federated melt change</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation federation` passed 38 tests, including zero-amount change placeholder validation and non-v3 change rejection. `cargo test -p cdk --lib --features federation federation` passed 18 tests, including mint runtime change-placeholder acceptance and wallet melt-change aggregation. `cargo test -p cdk-axum --features federation custom_handlers`, cdk/cdk-axum/mintd feature checks, and `cargo fmt --all -- --check` passed.</td>
-              <td>Exercise mint, swap, and melt across multiple fake-wallet federation members end to end.</td>
+              <td>Exercise mint, swap, and melt across multiple federation members using the configured development backend end to end.</td>
             </tr>
             <tr>
-              <td>Fake-wallet member bridge</td>
+              <td>Development backend member bridge</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk --lib --features federation mint::federation` passed 12 tests covering mint, swap, and melt consensus operation builders plus BLS share verification. `cargo test -p cdk --lib --features federation wallet::federation` passed 10 tests, including a real fake-wallet member connector bridge for mint, batch mint, and swap aggregation. `cargo test -p cdk-axum --features federation custom_handlers` passed 17 tests. `cargo check -p cdk --lib`, `cargo check -p cdk --lib --features federation`, `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"`, and `cargo fmt --all -- --check` passed.</td>
-              <td>Wire public swap and melt handlers into federation consensus, including fake-wallet outgoing payment finalization and member catch-up behavior.</td>
+              <td>`cargo test -p cdk --lib --features federation mint::federation` passed 12 tests covering mint, swap, and melt consensus operation builders plus BLS share verification. `cargo test -p cdk --lib --features federation wallet::federation` passed 10 tests, including a real member connector bridge with fakewallet configured as the backend for mint, batch mint, and swap aggregation. `cargo test -p cdk-axum --features federation custom_handlers` passed 17 tests. `cargo check -p cdk --lib`, `cargo check -p cdk --lib --features federation`, `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"`, and `cargo fmt --all -- --check` passed.</td>
+              <td>Wire public swap and melt handlers into federation consensus, including configured-backend outgoing payment finalization and member catch-up behavior.</td>
             </tr>
             <tr>
               <td>Public swap federation route</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation custom_handlers` passed 18 tests, including public swap route share verification and local consensus journal assertion. `cargo check -p cdk-axum --features federation`, `cargo check -p cdk --lib --features federation`, `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"`, and `cargo fmt --all -- --check` passed.</td>
-              <td>Route public melt requests through federation consensus and model fake-wallet outgoing payment finalization.</td>
+              <td>Route public melt requests through federation consensus and model outgoing payment finalization through the configured backend.</td>
             </tr>
             <tr>
               <td>Federated melt public gate</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation custom_handlers` passed 21 tests, including melt consensus journaling, non-v3 change rejection before consensus, and a guard preventing federated change outputs from falling through to standalone signing. `cargo test -p cdk-axum custom_handlers`, cdk/cdk-axum/mintd feature checks, and `cargo fmt --all -- --check` passed.</td>
-              <td>Refactor melt proof verification, spend-table apply, fake-wallet settlement, pending retry, and change-share generation into a consensus-backed federated executor.</td>
+              <td>Refactor melt proof verification, spend-table apply, configured-backend settlement, pending retry, and change-share generation into a consensus-backed federated executor.</td>
             </tr>
             <tr>
-              <td>Federated fake-wallet melt executor</td>
+              <td>Federated development-backend melt executor</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk --lib --features federation mint::federation` passed 15 tests, including aggregate BLS proof verification and non-v3 proof rejection. `cargo test -p cdk-axum --features federation custom_handlers` passed 21 tests, including paid fake-wallet melt finalization, no-change responses, change share generation, and non-v3 change rejection before consensus. `cargo test -p cdk --lib --features federation wallet::federation` passed 10 tests. cdk, cdk-axum, and cdk-mintd feature checks passed.</td>
-              <td>Add federation-aware pending recovery and wire the wallet member connector through real fake-wallet melt responses.</td>
+              <td>`cargo test -p cdk --lib --features federation mint::federation` passed 15 tests, including aggregate BLS proof verification and non-v3 proof rejection. `cargo test -p cdk-axum --features federation custom_handlers` passed 21 tests, including paid melt finalization with fakewallet configured as the backend, no-change responses, change share generation, and non-v3 change rejection before consensus. `cargo test -p cdk --lib --features federation wallet::federation` passed 10 tests. cdk, cdk-axum, and cdk-mintd feature checks passed.</td>
+              <td>Add federation-aware pending recovery and wire the wallet member connector through real melt responses produced by configured-backend members.</td>
             </tr>
             <tr>
               <td>Federated melt wallet bridge</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk --lib --features federation wallet::federation` passed 11 tests, including no-change melt fan-out past a failing primary and real fake-wallet member melt change aggregation. `cargo test -p cdk-axum --features federation custom_handlers` passed 24 tests, including pending melt saga federation operation ID persistence and non-v3 mint/swap/change rejection before consensus. `cargo test -p cdk-sqlite --features mint saga` passed 20 saga storage tests with the new nullable federation operation ID column.</td>
+              <td>`cargo test -p cdk --lib --features federation wallet::federation` passed 11 tests, including no-change melt fan-out past a failing primary and real member melt change aggregation with fakewallet configured as the backend. `cargo test -p cdk-axum --features federation custom_handlers` passed 24 tests, including pending melt saga federation operation ID persistence and non-v3 mint/swap/change rejection before consensus. `cargo test -p cdk-sqlite --features mint saga` passed 20 saga storage tests with the new nullable federation operation ID column.</td>
               <td>Route restore and check-state through federation members, then connect catch-up/payment observation over the private member network.</td>
             </tr>
             <tr>
@@ -2689,25 +2690,25 @@
               <td>Swap state-machine replay</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation federation` passed 21 tests, including private REST catch-up applying swap proof state and persisted member shares. `cargo test -p cdk-axum --features federation custom_handlers` passed 26 tests, including public swap consensus submission with a valid aggregate BLS input and stored output share. `cargo test -p cdk --features federation federation`, `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"`, `cargo fmt --all -- --check`, and `git diff --check` passed.</td>
-              <td>Apply accepted melt operations to proof states, fake-wallet settlement state, change shares, and pending saga recovery state.</td>
+              <td>Apply accepted melt operations to proof states, configured-backend settlement state, change shares, and pending saga recovery state.</td>
             </tr>
             <tr>
               <td>Melt state-machine replay</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-axum --features federation federation` passed 22 tests, including private REST catch-up applying a fake-wallet melt into paid quote state, spent proofs, stored change shares, and Applied journal status. `cargo test -p cdk-axum --features federation custom_handlers` passed 26 tests, including paid, change, pending, and non-v3 federated melt routes. `cargo test -p cdk --features federation federation`, `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"`, `cargo fmt --all -- --check`, and `git diff --check` passed.</td>
-              <td>Propagate melt quote/payment observations and run multi-member restart/catch-up scenarios around fake-wallet mint, swap, and melt flows.</td>
+              <td>`cargo test -p cdk-axum --features federation federation` passed 22 tests, including private REST catch-up applying a configured-backend melt into paid quote state, spent proofs, stored change shares, and Applied journal status. `cargo test -p cdk-axum --features federation custom_handlers` passed 26 tests, including paid, change, pending, and non-v3 federated melt routes. `cargo test -p cdk --features federation federation`, `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"`, `cargo fmt --all -- --check`, and `git diff --check` passed.</td>
+              <td>Propagate melt quote/payment observations and run multi-member restart/catch-up scenarios around mint, swap, and melt flows using the configured development backend.</td>
             </tr>
             <tr>
               <td>Melt quote propagation</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation post_melt_custom_quote_records_federation_quote_operation` and `cargo test -p cdk-axum --features federation catch_up_applies_melt_quote_operation_to_local_store` passed. `cargo test -p cdk-axum --features federation federation` passed 24 tests, `cargo test -p cdk-axum --features federation custom_handlers` passed 27 tests, and `cargo test -p cdk --features federation federation` passed 31 tests.</td>
-              <td>Propagate melt payment observations and add restart/catch-up scenarios across multiple fake-wallet members.</td>
+              <td>Propagate melt payment observations and add restart/catch-up scenarios across multiple members using the configured development backend.</td>
             </tr>
             <tr>
               <td>Melt payment observations</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation get_check_melt_custom_quote_records_federation_payment_observation`, `catch_up_applies_paid_melt_payment_observation_to_pending_melt`, and `catch_up_applies_unpaid_melt_payment_observation_to_pending_melt` passed. `cargo test -p cdk-axum --features federation federation` passed 27 tests, `cargo test -p cdk-axum --features federation custom_handlers` passed 28 tests, and `cargo test -p cdk --features federation federation` passed 31 tests.</td>
-              <td>Run restart and catch-up scenarios across multiple fake-wallet federation members for mint, swap, and melt flows.</td>
+              <td>Run restart and catch-up scenarios across multiple federation members using the configured development backend for mint, swap, and melt flows.</td>
             </tr>
             <tr>
               <td>Multi-member recovery scenarios</td>
@@ -2725,12 +2726,12 @@
               <td>Automatic peer recovery loop</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation peer_sync_round_catches_up_from_configured_peer` and `peer_sync_round_does_not_clear_higher_known_lag_with_lower_peer` passed. `cargo test -p cdk-axum --features federation federation` passed 34 tests, and `cargo check -p cdk-axum --features federation` plus the mintd federation/fakewallet/sqlite check passed after the router startup hook.</td>
-              <td>Run the peer loop against separate fake-wallet member processes and add operator-visible sync status.</td>
+              <td>Run the peer loop against separate member processes using the configured development backend and add operator-visible sync status.</td>
             </tr>
             <tr>
               <td>Local trusted-dealer generator</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" trusted_dealer -- --test-threads 1` passed, covering CLI parsing, artifact generation, private/public config validation, TOML parsing, and overwrite refusal. A real `cargo run -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" -- federation trusted-dealer ...` smoke command generated a three-member local fake-wallet federation config set.</td>
+              <td>`cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" trusted_dealer -- --test-threads 1` passed, covering CLI parsing, artifact generation, private/public config validation, TOML parsing, and overwrite refusal. A real `cargo run -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" -- federation trusted-dealer ...` smoke command generated a three-member local federation config set using fakewallet as the backend.</td>
               <td>Start the generated members as separate local processes and verify private REST status/catch-up between them.</td>
             </tr>
             <tr>
@@ -2827,13 +2828,13 @@
               <td>Quorum-gated recovery policy</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation rest_peer_client_sync_requires_quorum_evidence_before_public_submit -- --test-threads 1`, `peer_sync_round_catches_up_from_configured_peer`, and `private_local_status_route_reports_verifying_session_outcome_state` passed, proving direct catch-up blocks public submits until the full sync round verifies quorum session evidence and exposes the verifying state.</td>
-              <td>Run live multi-process fake-wallet member scenarios from generated configs where loopback listeners are permitted.</td>
+              <td>Run live multi-process member scenarios with the configured development backend where loopback listeners are permitted.</td>
             </tr>
             <tr>
               <td>Long-range evidence collection</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation peer_sync_round_collects_chunked_session_outcome_evidence -- --test-threads 1` passed with 1001 accepted restore entries, proving two bounded evidence chunks compose into a quorum-verified prefix and clear the verifying recovery state.</td>
-              <td>Run live multi-process fake-wallet member scenarios from generated configs where loopback listeners are permitted.</td>
+              <td>Run live multi-process member scenarios with the configured development backend where loopback listeners are permitted.</td>
             </tr>
             <tr>
               <td>Consensus runtime abstraction</td>
@@ -2869,10 +2870,10 @@
               <td>Consensus backend adapter</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation backend_adapter -- --test-threads 1` passed queue dispatch, duplicate admission, quorum finalization, quorum-unavailable retention, and offline-proposer queue retention. `cargo test -p cdk-common --features federation federation -- --test-threads 1` passed 71 tests, and Axum plus mintd federation checks passed without adapter dead-code warnings.</td>
-              <td>Use the adapter in a live multi-process fake-wallet smoke or replace its simulator source with the first real BFT ordering backend.</td>
+              <td>Use the adapter in a live multi-process development-backend smoke or replace its simulator source with the first real BFT ordering backend.</td>
             </tr>
             <tr>
-              <td>Live fake-wallet process smoke</td>
+              <td>Live development-backend process smoke</td>
               <td><span class="status done">Passed</span></td>
               <td>Generated trusted-dealer configs with `cargo run -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" -- federation trusted-dealer` for both 3-member/2-threshold and 5-member/3-threshold local federations. The generated smoke script passed with loopback networking enabled: members answered signed private REST local-status requests, reported ready sync state, agreed on operation height plus order and state digests, restarted one member, and converged again.</td>
               <td>Add operation-bearing process smoke traffic for mint, swap, melt, restore, and check-state once the live harness can drive a federation-aware wallet end to end.</td>
@@ -2892,35 +2893,35 @@
             <tr>
               <td>Operation-bearing process smoke</td>
               <td><span class="status done">Passed</span></td>
-              <td>The generated fake-wallet federation smoke ran against live local mintd processes with the checked-in mintd binary selected through `CDK_MINTD_BIN`. The 3-member/2-threshold and 5-member/3-threshold runs each minted 4 sats, refreshed 4 sats through swap, marked the pre-swap proofs spent, melted 1 sat with 1 sat fee, restored wallet state with 2 unspent proofs, 6 spent proofs, and 0 pending proofs, then restarted member 2 and reported `local federation smoke test passed` after convergence.</td>
-              <td>Add storage-backed process coverage and failure-injection variants around delayed or failed fake-wallet payment observations.</td>
+              <td>The generated development-backend federation smoke ran against live local mintd processes with the checked-in mintd binary selected through `CDK_MINTD_BIN`. The 3-member/2-threshold and 5-member/3-threshold runs each minted 4 sats, refreshed 4 sats through swap, marked the pre-swap proofs spent, melted 1 sat with 1 sat fee, restored wallet state with 2 unspent proofs, 6 spent proofs, and 0 pending proofs, then restarted member 2 and reported `local federation smoke test passed` after convergence.</td>
+              <td>Add storage-backed process coverage and failure-injection variants around delayed or failed development-backend payment observations.</td>
             </tr>
             <tr>
               <td>Swap, melt, and restore materialized digests</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation materialized_state_digest -- --test-threads 1` passed five digest tests covering mint metadata normalization, member-local signature normalization, swap rows, melt rows, and restore rows. `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 53 tests, and `cargo check -p cdk-axum --features federation`, `cargo fmt --all -- --check`, and `git diff --check` passed.</td>
-              <td>Add storage-backend process variants and failure-injection coverage for delayed or failed fake-wallet payment observations.</td>
+              <td>Add storage-backend process variants and failure-injection coverage for delayed or failed development-backend payment observations.</td>
             </tr>
             <tr>
-              <td>Failed federated fake-wallet melt</td>
+              <td>Failed development-backend federated melt</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation process_failed_melt_request_releases_inputs_without_change_shares -- --test-threads 1` passed the focused failure path. `cargo test -p cdk-axum --features federation custom_handlers -- --test-threads 1` passed 29 tests, `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 53 tests, and formatting plus diff checks passed.</td>
-              <td>Add delayed and offline fake-wallet observation variants, including member catch-up after a pending melt resolves.</td>
+              <td>Add delayed and offline development-backend observation variants, including member catch-up after a pending melt resolves.</td>
             </tr>
             <tr>
-              <td>Pending federated fake-wallet melt verified paid</td>
+              <td>Pending development-backend federated melt verified paid</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation pending_federated_melt_verified_paid_finalizes_with_change -- --test-threads 1` passed the focused pending-to-paid verification path. `cargo test -p cdk-axum --features federation custom_handlers -- --test-threads 1` passed 30 tests, and formatting plus diff checks passed.</td>
               <td>Add delayed quote-check and offline member catch-up variants for long-running pending melts.</td>
             </tr>
             <tr>
-              <td>Pending federated fake-wallet melt check failure</td>
+              <td>Pending development-backend federated melt check failure</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation pending_federated_melt_check_error_keeps_recovery_state -- --test-threads 1` passed the focused ambiguous-payment regression. `cargo test -p cdk-axum --features federation custom_handlers -- --test-threads 1` passed 31 tests, `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 53 tests, `cargo check -p cdk-axum --features federation` passed, and `cargo fmt --all` completed successfully.</td>
               <td>Add delayed quote-check, recovery polling, and offline member catch-up variants for unresolved pending melts.</td>
             </tr>
             <tr>
-              <td>Delayed pending federated fake-wallet melt reconciliation</td>
+              <td>Delayed pending development-backend federated melt reconciliation</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation pending_federated_melt_quote_check_later_finalizes_with_change -- --test-threads 1` passed the focused delayed quote-check regression. Adjacent pending paid and pending check-error regressions passed, `cargo test -p cdk-axum --features federation custom_handlers -- --test-threads 1` passed 32 tests, `cargo test -p cdk-axum --features federation federation -- --test-threads 1` passed 53 tests, `cargo test -p cdk pending_melt -- --test-threads 1` passed 9 tests, `cargo check -p cdk`, `cargo check -p cdk-axum --features federation`, and `cargo fmt --all` completed successfully.</td>
               <td>Add member-offline and restart catch-up variants around pending melts that resolve after the original response.</td>
@@ -2959,7 +2960,7 @@
               <td>Generated pending melt process smoke</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" -- --test-threads 1` passed 50 tests, including CLI parsing and trusted-dealer smoke script validation for `pending-melt-start`, `pending-melt-finish`, `pending-melt-fail-start`, and `pending-melt-fail-finish`. `cargo check -p cdk-mintd --no-default-features --features "federation fakewallet sqlite"` passed, `cargo run ... federation smoke-operations --help` showed all paid and failed pending-melt scenarios, and `cargo fmt --all` completed successfully. A live generated process run was not repeated here because local listener startup is blocked in this sandbox by `Operation not permitted`.</td>
-              <td>Run the generated paid and failed pending-melt script paths in an unsandboxed local environment, then broaden process smoke fault injection around delayed and offline fake-wallet observations.</td>
+              <td>Run the generated paid and failed pending-melt script paths in an unsandboxed local environment, then broaden process smoke fault injection around delayed and offline development-backend observations.</td>
             </tr>
             <tr>
               <td>SQLite/Postgres federation storage parity</td>
@@ -3132,13 +3133,13 @@
             <tr>
               <td>Local federation helper recipes</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1` passed all 10 generator tests, including the startup branch that avoids empty Bash array expansion under `set -u`. `just fed-regtest` generated and ran the default five-member, three-threshold fake-wallet federation; `just fed-regtest-clean` then removed the generated local state.</td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1` passed all 10 generator tests, including the startup branch that avoids empty Bash array expansion under `set -u`. `just fed-regtest` generated and ran the default five-member, three-threshold development-backend federation; `just fed-regtest-clean` then removed the generated local state.</td>
               <td>Use these helpers for repeatable live smoke drills and add storage-backed variants once Postgres is available.</td>
             </tr>
             <tr>
               <td>Repo-level federation helper smoke</td>
               <td><span class="status done">Passed</span></td>
-              <td>`just fed-regtest` passed with the default five-member, three-threshold fake-wallet federation after the generated startup fix. The helper built `cdk-mintd`, generated member configs, ran wallet mint/swap/check-state/melt/restore, kept member 2 offline across three complete wallet-operation batches, restarted it, verified convergence/session-outcome evidence, finalized paid and failed pending melts through the remaining threshold, injected and replayed quarantine evidence, rotated keysets while a member was offline, restored and spent old-keyset proofs, ran post-rotation mint/melt/restore, restarted the offline member, reached final signed convergence, and stopped all members.</td>
+              <td>`just fed-regtest` passed with the default five-member, three-threshold development-backend federation after the generated startup fix. The helper built `cdk-mintd`, generated member configs, ran wallet mint/swap/check-state/melt/restore, kept member 2 offline across three complete wallet-operation batches, restarted it, verified convergence/session-outcome evidence, finalized paid and failed pending melts through the remaining threshold, injected and replayed quarantine evidence, rotated keysets while a member was offline, restored and spent old-keyset proofs, ran post-rotation mint/melt/restore, restarted the offline member, reached final signed convergence, and stopped all members.</td>
               <td>Reuse the default five-member helper smoke after consensus/storage changes and repeat the same quorum-gated recipe for Postgres-backed process smoke once a service is available.</td>
             </tr>
             <tr>
@@ -3223,7 +3224,7 @@
               <td>Wallet keyset liveness and smoke status polling</td>
               <td><span class="status done">Passed</span></td>
               <td>Wallet active-keyset validation and single-keyset reads now short-circuit once threshold members advertise matching v3/BLS aggregate keysets. Quote-creating first-healthy-member calls retain sequential semantics but fall back after a bounded member timeout. Generated smoke scripts disable Prometheus startup when metrics checks are off, and mint/melt quote-status waits poll members concurrently with per-member status timeouts. Focused connector tests passed threshold keyset advertisement, stalled primary quote fallback, and the full wallet federation connector suite; mintd trusted-dealer smoke-script tests passed the generated environment wiring.</td>
-              <td>Use the new bounded waits to isolate the remaining fake-wallet mint payment observation convergence issue rather than letting one slow status endpoint hide the real blocker.</td>
+              <td>Use the new bounded waits to isolate the remaining development-backend mint payment observation convergence issue rather than letting one slow status endpoint hide the real blocker.</td>
             </tr>
             <tr>
               <td>Payment event stream backoff</td>
@@ -3414,7 +3415,7 @@
             <tr>
               <td>Offline keyset rotation process smoke</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-axum --features federation federation::tests -- --test-threads 1` passed 66 Axum federation tests, including the new already-applied catch-up overlap regression. `cargo check -p cdk-axum --features federation`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation -- --test-threads 1`, and `cargo build -p cdk-mintd --features federation,fakewallet,sqlite` passed. A generated three-member SQLite/fake-wallet smoke then passed baseline wallet operations, offline wallet operations, paid and failed pending-melt recovery, quarantine catch-up, keyset rotation while one member was offline, old-keyset restore and spend, post-rotation mint and melt, restarted-member catch-up, signed quorum evidence, and final convergence.</td>
+              <td>`cargo test -p cdk-axum --features federation federation::tests -- --test-threads 1` passed 66 Axum federation tests, including the new already-applied catch-up overlap regression. `cargo check -p cdk-axum --features federation`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation -- --test-threads 1`, and `cargo build -p cdk-mintd --features federation,fakewallet,sqlite` passed. A generated three-member SQLite development-backend smoke then passed baseline wallet operations, offline wallet operations, paid and failed pending-melt recovery, quarantine catch-up, keyset rotation while one member was offline, old-keyset restore and spend, post-rotation mint and melt, restarted-member catch-up, signed quorum evidence, and final convergence.</td>
               <td>Repeat the same smoke with Postgres-backed member storage, then carry the catch-up overlap regression into any future real consensus backend adapter.</td>
             </tr>
             <tr>
@@ -3424,9 +3425,15 @@
               <td>Run the same readiness-hardening smoke against Postgres-backed members and add a real BFT backend variant once the ordering adapter is selected.</td>
             </tr>
             <tr>
+              <td>Fakewallet wording audit</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite fakewallet_is_documented_as_development_backend -- --test-threads 1` passed, proving the consensus snapshot and progress dashboard reject stale wording that would describe fakewallet as federation semantics.</td>
+              <td>Continue removing deeper fakewallet-specific naming from federation implementation tests as payment-backend isolation work proceeds.</td>
+            </tr>
+            <tr>
               <td>Core federation flows</td>
               <td><span class="status progress">In progress</span></td>
-              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, signed catch-up session outcomes, and durable per-member payment observation evidence; SQLite and Postgres migrations now have parity coverage, with Postgres compiling shared journal and payment-observation regressions and SQLite proving empty-database migration application, standalone table preservation, indexed plans, plus concurrent writer progress for federation journal entries, sequence watermarks, session outcomes, and payment-observation lookups. Runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Mint quote payment observations now persist before mutation and real-backend policies mutate `amount_paid` only after stored matching quorum evidence; melt payment observations now have focused stored-quorum tests for paid finalization and failed rollback. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, bounded private REST inbound/outbound admission with fail-fast overflow handling, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, mintd status printing for session-outcome quorum operation counts and signers, a status-level lag guard, a status-level quorum evidence guard, a status-level payment-observation alert guard, consensus-backend status reporting with status, peer-sync, and digest-compare mixed-backend rejection, operator sync-message redaction for likely secrets, URL credentials, and local paths, a filterable payment-observation admin view, a dedicated digest comparison admin command, repo-level `just fed-regtest` helpers for local generation, smoke, process control, signed status, and cleanup, a replaceable consensus runtime boundary, a multi-node simulator for delayed, duplicated, reordered, and quorum-limited proposal delivery, explicit consensus item admission with bounded pending batches, operation acceptance notifications back to public handlers, a finalization loop for accepted-entry apply/notify delivery, an exported backend adapter trait and selector runtime for queued operation dispatch plus finalized responses, a live generated 5-member process smoke that verifies signed status, readiness, convergence, restart, and cleanup, a materialized-state digest scaffold for consensus-visible mint rows, database-backed private status plus catch-up evidence digests derived from applied mint rows, a live operation-bearing process smoke that drives wallet mint, swap, check-state, melt, restore, convergence, restart, and catch-up, focused fake-wallet melt tests for failed payments, pending-to-paid verification, unresolved pending status-check errors, delayed quote-check finalization, staged offline catch-up from pending melt reserve to paid melt observation, staged offline catch-up from pending melt reserve to failed-observation rollback, restart replay of pending melts before later paid-observation catch-up, restart replay of pending melts before later failed-observation rollback, fresh SQLite-backed mint restart replay across the same pending-to-paid and pending-to-failed melt paths, generated process smoke scenarios that finalize paid and failed pending melts while a non-primary member is offline, a scripted quarantine smoke path that injects conflicting mint payment observations over signed private REST while one member is offline and checks post-restart quarantine catch-up visibility, trusted-dealer config generation for Postgres process smoke runs using either custom per-member URLs or one shared database with member schemas, a multi-batch offline partition smoke that runs several distinct wallet operation histories before restart catch-up, foreground/background catch-up overlap handling for already-applied journal ranges, generated keyset-rotation smoke that spends old-keyset proofs after rotating to a new aggregate v3/BLS keyset, offline keyset-rotation process smoke with restarted-member catch-up, payment-observation forwarding while a member is still catching up, threshold-matching wallet check-state aggregation, bounded materialized-digest rechecks for journal-first/materialization-second races, and generated smoke gates that require restarted members to report session-outcome quorum evidence after convergence.</td>
+              <td>Mint quote, melt quote, quote-check, mint-submit, swap, melt, restore, and check-state flows now have local federation routes or wallet fan-out; mint members advertise aggregate v3/BLS keysets and return verified local share responses for mint/swap/melt change/restore. Private REST can submit payment observations and replay missed consensus entries over signed member-authenticated routes. SQL storage can persist accepted journal entries, sequence watermarks, signed catch-up session outcomes, and durable per-member payment observation evidence; SQLite and Postgres migrations now have parity coverage, with Postgres compiling shared journal and payment-observation regressions and SQLite proving empty-database migration application, standalone table preservation, indexed plans, plus concurrent writer progress for federation journal entries, sequence watermarks, session outcomes, and payment-observation lookups. Runtime boot replay restores the consensus layer through the consensus runtime wrapper, and mint quote/payment/mint/swap/melt/melt-payment entries now apply into local storage. Mint quote payment observations now persist before mutation and real-backend policies mutate `amount_paid` only after stored matching quorum evidence; melt payment observations now have focused stored-quorum tests for paid finalization and failed rollback. Offline catch-up scenarios now verify convergence, divergent-history rejection, lagging-member fail-closed behavior, automatic peer sync rounds, generated local member configs, restart-safe outbound REST sequences, signed local status responses, mintd status probes, generated smoke-script wiring, status convergence guards, state-digest mismatch halting, v3/BLS-only aggregate keyset enforcement, non-secret config inspection, the mint-side sliding-window quorum-cover regression, the paired naive-signing attack demonstration, bounded operation admission before consensus append or peer REST broadcast, bounded private REST inbound/outbound admission with fail-fast overflow handling, signed catch-up session outcomes for non-empty private REST journal ranges, durable session-outcome storage, operator-visible quorum outcome evidence, equal-height peer evidence collection, quorum-gated recovery readiness, chunked long-range session evidence, mintd status printing for session-outcome quorum operation counts and signers, a status-level lag guard, a status-level quorum evidence guard, a status-level payment-observation alert guard, consensus-backend status reporting with status, peer-sync, and digest-compare mixed-backend rejection, operator sync-message redaction for likely secrets, URL credentials, and local paths, a filterable payment-observation admin view, a dedicated digest comparison admin command, repo-level `just fed-regtest` helpers for local generation, smoke, process control, signed status, and cleanup, a replaceable consensus runtime boundary, a multi-node simulator for delayed, duplicated, reordered, and quorum-limited proposal delivery, explicit consensus item admission with bounded pending batches, operation acceptance notifications back to public handlers, a finalization loop for accepted-entry apply/notify delivery, an exported backend adapter trait and selector runtime for queued operation dispatch plus finalized responses, a live generated 5-member process smoke that verifies signed status, readiness, convergence, restart, and cleanup, a materialized-state digest scaffold for consensus-visible mint rows, database-backed private status plus catch-up evidence digests derived from applied mint rows, a live operation-bearing process smoke that drives wallet mint, swap, check-state, melt, restore, convergence, restart, and catch-up, focused development-backend melt tests for failed payments, pending-to-paid verification, unresolved pending status-check errors, delayed quote-check finalization, staged offline catch-up from pending melt reserve to paid melt observation, staged offline catch-up from pending melt reserve to failed-observation rollback, restart replay of pending melts before later paid-observation catch-up, restart replay of pending melts before later failed-observation rollback, fresh SQLite-backed mint restart replay across the same pending-to-paid and pending-to-failed melt paths, generated process smoke scenarios that finalize paid and failed pending melts while a non-primary member is offline, a scripted quarantine smoke path that injects conflicting mint payment observations over signed private REST while one member is offline and checks post-restart quarantine catch-up visibility, trusted-dealer config generation for Postgres process smoke runs using either custom per-member URLs or one shared database with member schemas, a multi-batch offline partition smoke that runs several distinct wallet operation histories before restart catch-up, foreground/background catch-up overlap handling for already-applied journal ranges, generated keyset-rotation smoke that spends old-keyset proofs after rotating to a new aggregate v3/BLS keyset, offline keyset-rotation process smoke with restarted-member catch-up, payment-observation forwarding while a member is still catching up, threshold-matching wallet check-state aggregation, bounded materialized-digest rechecks for journal-first/materialization-second races, and generated smoke gates that require restarted members to report session-outcome quorum evidence after convergence.</td>
               <td>Broaden operation smoke to more federation sizes and storage backends, run live Postgres persistence/index/concurrency coverage, then replace the simulator ordering source with a real BFT backend.</td>
             </tr>
           </tbody>

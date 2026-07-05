@@ -4,7 +4,7 @@ This is a working checklist for adding federated Cashu mint support to CDK while
 
 ## Grand vision
 
-The grand vision of this project is to evolve Cashu from a single-operator Chaumian eCash mint into a federated, threshold-secured eCash system where multiple mint members can run on independent servers, coordinate all state transitions through consensus, and jointly issue, swap, and melt Cashu tokens using BLS threshold blind signatures. Federation mode should preserve the existing Cashu wallet-to-mint protocol as much as possible while giving users stronger security and fault tolerance: no single operator should be able to inflate, censor, or unilaterally corrupt mint state, and the federation should continue operating when some members are offline as long as the signing and consensus thresholds are met. Every safety-critical mint operation must be serialized by the federation, stored in a shared consensus journal, replayable after outages, and applied deterministically so all honest members converge on the same database state. Wallets must be able to talk to multiple members, verify and aggregate threshold signature shares into ordinary Cashu proofs, and reject inconsistent federation metadata or bad shares. The system should start with static trusted-dealer key generation, fake-wallet payment backends, private REST networking, and locally testable consensus scaffolding, then grow toward durable storage, catch-up, member authentication, DKG, key rotation, and full mint/swap/melt integration. Federation is explicitly v3/BLS-only, standalone CDK behavior must remain unchanged, and the implementation should favor simple CDK-native designs while borrowing Fedimint's core safety lessons around consensus-before-signing, authenticated peers, deterministic state machines, and robust recovery.
+The grand vision of this project is to evolve Cashu from a single-operator Chaumian eCash mint into a federated, threshold-secured eCash system where multiple mint members can run on independent servers, coordinate all state transitions through consensus, and jointly issue, swap, and melt Cashu tokens using BLS threshold blind signatures. Federation mode should preserve the existing Cashu wallet-to-mint protocol as much as possible while giving users stronger security and fault tolerance: no single operator should be able to inflate, censor, or unilaterally corrupt mint state, and the federation should continue operating when some members are offline as long as the signing and consensus thresholds are met. Every safety-critical mint operation must be serialized by the federation, stored in a shared consensus journal, replayable after outages, and applied deterministically so all honest members converge on the same database state. Wallets must be able to talk to multiple members, verify and aggregate threshold signature shares into ordinary Cashu proofs, and reject inconsistent federation metadata or bad shares. The system should start with static trusted-dealer key generation, fakewallet as a configured development payment backend, private REST networking, and locally testable consensus scaffolding, then grow toward durable storage, catch-up, member authentication, DKG, key rotation, and full mint/swap/melt integration. Federation is explicitly v3/BLS-only, standalone CDK behavior must remain unchanged, and the implementation should favor simple CDK-native designs while borrowing Fedimint's core safety lessons around consensus-before-signing, authenticated peers, deterministic state machines, and robust recovery.
 
 ## Scope
 
@@ -12,7 +12,7 @@ The grand vision of this project is to evolve Cashu from a single-operator Chaum
 - Let a federation-aware CDK wallet talk to multiple mint members and aggregate BLS blind signature shares into normal Cashu proofs.
 - Serialize all safety-critical mint state transitions through consensus before any member returns a usable signature share.
 - Keep existing standalone mint and wallet behavior unchanged unless federation mode is explicitly enabled.
-- Start with fake wallet payment backends and trusted-dealer key shares, then add payment observation quorum and real DKG.
+- Start with fakewallet as a normal configured CDK payment backend for local development and trusted-dealer key shares, then add payment observation quorum and real DKG.
 
 ## Hard keyset constraint
 
@@ -146,7 +146,7 @@ Recommended new components:
 - `cdk-federation` crate: consensus engine, in-memory, private REST, and later NAT-traversing network transports, operation mempool, session outcomes, DB journal abstractions, and test harness.
 - `cdk` mint federation mode: wraps mint operations with consensus submit/apply/await and uses a key-share signatory.
 - `cdk` wallet federation connector: fans out requests, validates partial responses against public shares, aggregates threshold shares, and returns ordinary wallet responses.
-- `cdk-mintd` federation config and commands: create local trusted-dealer configs, run member nodes, expose status, and start fake-wallet federation tests.
+- `cdk-mintd` federation config and commands: create local trusted-dealer configs, run member nodes, expose status, and start fakewallet-backed development federation tests.
 
 ## Federation member identity model
 
@@ -200,7 +200,7 @@ Swapping coverage:
 Melting coverage:
 
 - Covered by Milestone 14, with earlier support from the deterministic state machine in Milestone 6 and the journal in Milestone 5.
-- The wallet submits proofs and a melt quote. The federation serializes reserve, fake-wallet payment observation, finalization, and optional change signing.
+- The wallet submits proofs and a melt quote. The federation serializes reserve, development-backend payment observation, finalization, and optional change signing.
 - Inputs are not considered finally spent until the accepted melt state says the outgoing payment is final, while pending states remain durable and recoverable.
 - With the fake wallet backend, all members can deterministically observe success for happy-path tests, and scripted failures or delays are used for unhappy-path tests.
 - Required happy-path tests: fake wallet outgoing payment succeeds, all members finalize the melt, inputs become spent, and change outputs aggregate when present.
@@ -251,7 +251,7 @@ Checkpoint 7: deterministic mint state-machine extraction.
 - Refactor existing mint business logic so validation and state transitions can be run as deterministic apply functions.
 - Success criteria: standalone mint behavior remains unchanged; federation mode can apply accepted operations without making HTTP responses or payment calls inside consensus apply.
 
-Checkpoint 8: fake-wallet payment observations.
+Checkpoint 8: development-backend payment observations.
 
 - Script fake incoming and outgoing payment outcomes as deterministic observations that can be proposed into consensus.
 - Success criteria: success, failure, pending, delayed, duplicate, and conflicting observations are all serialized and produce the expected quote state.
@@ -259,7 +259,7 @@ Checkpoint 8: fake-wallet payment observations.
 Checkpoint 9: federated mint issuance.
 
 - Enable mint quote creation, paid observation, accepted output set, share production, response caching, and wallet aggregation.
-- Success criteria: one end-to-end fake-wallet mint succeeds; conflicting mint requests for the same quote fail; one offline member catches up and later serves the cached or regenerated share.
+- Success criteria: one end-to-end fakewallet-backed development mint succeeds; conflicting mint requests for the same quote fail; one offline member catches up and later serves the cached or regenerated share.
 
 Checkpoint 10: federated swap.
 
@@ -771,7 +771,7 @@ Implementation checklist:
 - [x] Refuse private REST requests from member IDs that are not in the configured roster.
 - [x] Refuse private REST requests whose signing key does not match the configured public key for the claimed sender member ID.
 - [x] Do not support dynamic peer admission in MVP; member add/remove must be an explicit later governance operation.
-- [x] Make REST messages idempotent so retries after timeouts cannot duplicate consensus proposals, payment observations, or outgoing fake-wallet attempts.
+- [x] Make REST messages idempotent so retries after timeouts cannot duplicate consensus proposals, payment observations, or configured development-backend outgoing attempts.
 - [x] Add REST endpoints for peer status, proposal submission, consensus messages, signed session outcomes, catch-up ranges, and state-digest comparison.
 - [ ] Optionally implement TCP/TLS or Noise transport with static peer identities if the consensus engine benefits from a lower-level stream API.
 - [ ] Add an Iroh transport adapter for internet deployments where members cannot expose stable inbound P2P ports.
@@ -828,7 +828,7 @@ Implementation checklist:
 - [ ] Add DB checkpoint retention configuration.
 - [x] Add a safe read-only "catch-up" mode for lagging members.
 - [x] Prevent a lagging member from serving signing shares until it catches up to the operation's acceptance height.
-- [x] Prevent a lagging member from initiating fake-wallet outgoing payment attempts until it has replayed all accepted melt state.
+- [x] Prevent a lagging member from initiating configured development-backend outgoing payment attempts until it has replayed all accepted melt state.
 - [x] Add idempotency keys for fake wallet outgoing payments so recovery cannot pay twice.
 - [x] Add a manual halt and inspect mode for state digest mismatch.
 
@@ -841,7 +841,7 @@ Tests and success criteria:
 - [x] Member offline for 10 accepted sessions catches up and reaches the same state digest.
 - [x] Member offline during mint quote payment observation catches up and can later return the correct deterministic share.
 - [x] Member offline during swap cannot later accept a conflicting spend and catches up to spent state.
-- [x] Member offline during melt payment observation catches up without attempting a duplicate fake-wallet payment.
+- [x] Member offline during melt payment observation catches up without attempting a duplicate configured-backend payment.
 - [x] Network partition heals and all non-faulty members converge or halt on digest mismatch.
 - [x] State digest mismatch is detected and halts the member in tests.
 
@@ -869,7 +869,7 @@ Implementation checklist:
 - [x] Exit catch-up mode only after local height and state digest match quorum evidence.
 - [x] Halt or quarantine the member if local replay produces a digest mismatch.
 - [x] Regenerate deterministic signature shares from accepted operations if local share rows are missing.
-- [x] Ensure fake-wallet outgoing payment idempotency prevents duplicate payments after catch-up or restart.
+- [x] Ensure configured-backend outgoing payment idempotency prevents duplicate payments after catch-up or restart.
 
 Tests and success criteria:
 
@@ -905,7 +905,7 @@ Implementation checklist:
 
 - [x] Add `federation` section to mintd config.
 - [x] Add member-specific config file support.
-- [x] Add `just fed-regtest` or similar target that starts N fake-wallet mints and a test wallet.
+- [x] Add `just fed-regtest` or similar target that starts N local federation mints with fakewallet configured and a test wallet.
 - [x] Add health commands: member status, consensus height, quote status across members, state digest comparison.
 - [x] Add log labels for federation ID, member ID, operation hash, and session.
 - [x] Add a fixture generator for 4-member and 5-member federations.
@@ -913,10 +913,10 @@ Implementation checklist:
 
 Local multi-mint federation harness:
 
-- [x] Generate per-member local configs containing member ID, public wallet API URL, private federation REST URL, DB path, fake-wallet backend settings, federation public config path, and local private member config path.
+- [x] Generate per-member local configs containing member ID, public wallet API URL, private federation REST URL, DB path, configured backend settings, federation public config path, and local private member config path.
 - [x] Assign deterministic localhost ports for every member, with separate public wallet API ports and private federation REST ports.
 - [x] Create isolated per-member data directories so databases, logs, and configs cannot overlap.
-- [x] Add `just fed-regtest` to launch 4-member and 5-member fake-wallet federations as separate `cdk-mintd` processes.
+- [x] Add `just fed-regtest` to launch 4-member and 5-member federations with fakewallet configured as the backend as separate `cdk-mintd` processes.
 - [x] Add `just fed-regtest-status` to show public URL, private federation URL, process status, consensus height, last state digest, lag, and member health.
 - [x] Add `just fed-regtest-stop-member MEMBER_ID` and `just fed-regtest-start-member MEMBER_ID` to test threshold liveness, reconnect, and catch-up.
 - [x] Add `just fed-regtest-clean` to remove generated local configs, DBs, logs, and process state.
@@ -927,12 +927,12 @@ Local multi-mint federation harness:
 
 Tests and success criteria:
 
-- [x] `just fed-regtest` target and generated smoke scripts exist for fake-wallet federation runs.
-- [x] Re-run `just fed-regtest` and record that it starts a 5-member fake-wallet federation.
+- [x] `just fed-regtest` target and generated smoke scripts exist for development-backend federation runs.
+- [x] Re-run `just fed-regtest` and record that it starts a 5-member federation with fakewallet configured as the backend.
 - [x] Connector and local smoke coverage exist for mint, swap, restore, and check-state flows.
 - [x] Re-run full regtest proving a CDK wallet can mint, swap, restore, and check state against the federation.
-- [x] Code and tests exist for fake-wallet federated melt and aggregated change signatures.
-- [x] Re-run full regtest proving a CDK wallet can melt through the fake-wallet federation and receive aggregated change signatures when change is expected.
+- [x] Code and tests exist for development-backend federated melt and aggregated change signatures.
+- [x] Re-run full regtest proving a CDK wallet can melt through the development-backend federation and receive aggregated change signatures when change is expected.
 - [x] Stop/start tooling and catch-up tests exist for threshold liveness and member recovery.
 - [x] Re-run regtest proving stopping one member still allows operations if threshold and consensus quorum allow.
 - [x] Re-run regtest proving restarting the stopped member reconnects, catches up from peers, and reaches the same state digest.
@@ -1082,8 +1082,8 @@ Implementation checklist:
 - [x] Ensure federation crates and production federation modules do not depend on, import, or semantically special-case `cdk-fake-wallet`.
 - [x] Keep `FakeWallet` only as a normal CDK mint payment backend used by `cdk-mintd` for local development, smoke tests, and regtest.
 - [x] Rename or replace any federation policy type, method, error, config field, or test helper whose production meaning is currently expressed as `FakeWallet`.
-- [x] Replace implicit fake-wallet payment policy defaults with explicit payment observation policy configuration at the mintd startup boundary.
-- [x] Reject production federation startup when a config relies on implicit fake-wallet defaults, single-observation dev policies, or test-only payment assumptions.
+- [x] Replace implicit fakewallet payment policy defaults with explicit payment observation policy configuration at the mintd startup boundary.
+- [x] Reject production federation startup when a config relies on implicit fakewallet defaults, single-observation dev policies, or test-only payment assumptions.
 - [x] Model deterministic single-observation behavior, if still needed for local tests, as an explicit dev/test payment observation policy rather than as fakewallet-specific federation logic.
 - [ ] Make federation minting and melting depend only on generic payment observations, quote state transitions, and existing CDK payment backend traits.
 - [ ] Make federated minting and melting use the mint's configured payment backend in the same way standalone mint mode does; the federation layer must not know whether the backend is CLN, LND, LNBits, LDK Node, fakewallet, or a future backend.
@@ -1100,14 +1100,14 @@ Implementation checklist:
 - [ ] Suggested mint split: config/runtime, apply, mint, swap, melt, restore/check-state, payment observations, keysets, and tests.
 - [ ] Suggested wallet split: connector, member fanout, share aggregation, keyset validation, quote/status aggregation, melt/change aggregation, and tests.
 - [ ] Suggested Axum split: routes, peer client, sync loop, status, catch-up, DKG/setup routes, payment-observation routes, and tests.
-- [ ] Move large inline federation test fixtures, local connectors, and fake-wallet helpers into dedicated test modules or integration-test helpers.
+- [ ] Move large inline federation test fixtures, local connectors, and fakewallet helpers into dedicated test modules or integration-test helpers.
 - [ ] Gate any remaining smoke/regtest-only federation helpers behind test-only code or explicit dev features.
 - [x] Audit `cdk`, `cdk-common`, `cdk-axum`, `cdk-mintd`, and storage crates for accidental fakewallet coupling in federation code.
-- [x] Audit generated example configs so fake-wallet federation examples are clearly marked development-only and cannot be mistaken for production templates.
+- [x] Audit generated example configs so fakewallet-backed development federation examples are clearly marked development-only and cannot be mistaken for production templates.
 - [x] Audit timeout constants, fallback behavior, and member retry policies introduced for smoke tests, and make production-relevant values configurable.
 - [x] Remove stale "scaffolding", "placeholder", and "MVP wiring" labels from production federation modules once the corresponding feature is implemented; keep such language only in explicit dev/test code.
 - [ ] Make fakewallet federation regtest and smoke tooling look and run more like existing CDK tests where practical, with `cargo test` coverage for core flows and `just` targets as convenience wrappers.
-- [ ] Remove or rewrite any comments, docs, metrics, or status labels that imply fakewallet is part of federation rather than a replaceable mint backend.
+- [x] Remove or rewrite any comments, docs, metrics, or status labels that imply fakewallet is part of federation rather than a replaceable mint backend.
 - [x] Confirm standalone fakewallet mint behavior remains unchanged outside federation mode.
 
 Tests and success criteria:
@@ -1172,7 +1172,7 @@ MVP 1: local deterministic federation
 - Federated wallet connector aggregation.
 - Sliding-window regression test.
 
-MVP 2: networked fake-wallet federation
+MVP 2: networked development-backend federation
 
 - Separate member processes.
 - AlephBFT consensus.
@@ -1205,7 +1205,7 @@ MVP 3: payments and production hardening
 10. Refactor and implement federated swap.
 11. Add sliding-window swap attack regression.
 12. Add networked consensus and cdk-mintd fake federation harness.
-13. Add fake-wallet melt reserve, pending, failure, finalize, and change signing.
+13. Add development-backend melt reserve, pending, failure, finalize, and change signing.
 14. Add restore/check-state.
 15. Add state convergence, catch-up certification, and database-equivalence gates.
 16. Add network chaos, catch-up, and payment-observation recovery tests.

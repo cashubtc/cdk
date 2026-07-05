@@ -1,6 +1,6 @@
 # Federated Cashu Consensus in CDK
 
-A technical paper on what has already been implemented in CDK's federated Cashu branch: federation configuration, threshold BLS share material, operation envelopes, signed private REST, the in-memory consensus journal, durable replay, core fake-wallet eCash flows, and wallet-side threshold aggregation. The final section separates that current state from the remaining production plan.
+A technical paper on what has already been implemented in CDK's federated Cashu branch: federation configuration, threshold BLS share material, operation envelopes, signed private REST, the in-memory consensus journal, durable replay, backend-neutral eCash flows exercised with local development payment backends, and wallet-side threshold aggregation. The final section separates that current state from the remaining production plan.
 
 - **Status:** Federation MVP in progress
 - **Current checkpoint:** Signed REST, replay, core flows
@@ -104,11 +104,11 @@ The object model is intentionally small, but each object has a narrow job. The i
 
 ### 4.2 Operation Objects
 
-The operation enum is the bridge from Cashu protocol requests to consensus. `FederationMintQuoteOperation` records a quote ID, the original `MintQuoteRequest`, and the string-ID `MintQuoteResponse`. This makes quote creation visible to the federation instead of leaving it as a private fact inside one mint's database. `FederationMintQuotePaymentObservation` records what the member believes about that quote's payment state: method, state, amount paid, amount issued, and an optional payment proof. In the fake-wallet phase, these observations are expected to be happy-path observations most of the time, but the object is already shaped so delayed or failed observations can be modeled.
+The operation enum is the bridge from Cashu protocol requests to consensus. `FederationMintQuoteOperation` records a quote ID, the original `MintQuoteRequest`, and the string-ID `MintQuoteResponse`. This makes quote creation visible to the federation instead of leaving it as a private fact inside one mint's database. `FederationMintQuotePaymentObservation` records what the member believes about that quote's payment state: method, state, amount paid, amount issued, and an optional payment proof. Local development runs often use the fakewallet backend as the configured CDK payment backend, but the observation object is backend-neutral and already shaped so delayed or failed observations can be modeled.
 
 `FederationMintOperation` wraps a `FederationMintRequest`, which can be either a single `MintRequest<String>` or a `BatchMintRequest<String>`. The request exposes the quote IDs it touches, and those quote IDs become conflict keys. This is exactly where the protocol-level inflation issue is addressed: the federation is not supposed to sign "some outputs for some quote"; it is supposed to agree on the one exact output transcript that consumes that quote.
 
-The melt, swap, and restore variants are now active protocol objects. `FederationMeltQuoteOperation`, `FederationMeltQuotePaymentObservation`, and `FederationMeltOperation` describe the outgoing-payment side. `FederationSwapOperation` wraps a `SwapRequest`, and `FederationRestoreOperation` wraps a `RestoreRequest`. Public routes and wallet connector paths now use these objects for fake-wallet federation flows, while production BFT ordering and real payment policy remain future work.
+The melt, swap, and restore variants are now active protocol objects. `FederationMeltQuoteOperation`, `FederationMeltQuotePaymentObservation`, and `FederationMeltOperation` describe the outgoing-payment side. `FederationSwapOperation` wraps a `SwapRequest`, and `FederationRestoreOperation` wraps a `RestoreRequest`. Public routes and wallet connector paths now use these backend-neutral objects for federation flows that can be exercised with fakewallet in local development, while production BFT ordering and real payment policy remain future work.
 
 ### 4.3 Journal, Transport, Signing, and Runtime Objects
 
@@ -203,7 +203,7 @@ The final architecture wants consensus to order operations and a deterministic m
 
 Today the public Cashu handler still receives a request in the ordinary way. In federation mode, the Axum handler asks the federation runtime to build an operation envelope from the Cashu request or response. That envelope is submitted to the local consensus driver, which appends it, deduplicates it, or rejects it as a conflict. The accepted entry is persisted and then applied through federation-aware mint functions that update local quote, proof, operation, and blind-signature state.
 
-Mint issuance validates paid quote state, output balance, active v3/BLS keysets, and idempotent persisted shares before recording blinded messages, member share signatures, completed operations, and quote issuance. Swap apply verifies aggregate BLS inputs, checks balance and spent state, marks inputs spent, stores output blinded messages, and persists member output shares. Melt apply verifies aggregate BLS inputs, records fake-wallet pending or paid state, spends proofs when appropriate, stores change shares, and lets later melt-payment observations finalize or roll back pending saga state.
+Mint issuance validates paid quote state, output balance, active v3/BLS keysets, and idempotent persisted shares before recording blinded messages, member share signatures, completed operations, and quote issuance. Swap apply verifies aggregate BLS inputs, checks balance and spent state, marks inputs spent, stores output blinded messages, and persists member output shares. Melt apply verifies aggregate BLS inputs, records configured-backend pending or paid state, spends proofs when appropriate, stores change shares, and lets later melt-payment observations finalize or roll back pending saga state.
 
 As this extraction matures, the local dummy consensus and the future distributed consensus can keep sharing the same application code. That is the point of the boundary: ordering can evolve from a single-process append log to a real BFT protocol without rewriting the Cashu state transition semantics each time.
 
@@ -220,7 +220,7 @@ Mint quote creation is the first public flow that has been made consensus-visibl
 
 ### 8.2 Mint Quote Payment Observation
 
-Payment observation is represented separately from quote creation because in a real mint federation the payment state is an external fact that can be learned later. In the fake-wallet phase, members will usually observe success, but the object already records enough information to model delay and failure: the method, state, amount paid, amount issued, and optional payment proof. The current handler turns the observed quote status into a `FederationMintQuotePaymentObservation` and records it under a quote-and-state conflict key. Later, when the payment backend is real, this same operation is where members will agree that a quote is paid before issuance can proceed. In the current fake-wallet path, paid observations replay into the quote state and make issuance possible.
+Payment observation is represented separately from quote creation because in a real mint federation the payment state is an external fact that can be learned later. Local development members commonly use fakewallet to observe success, delay, or failure through the same CDK payment-backend boundary, and the object records enough information to model those states: the method, state, amount paid, amount issued, and optional payment proof. The current handler turns the observed quote status into a `FederationMintQuotePaymentObservation` and records it under a quote-and-state conflict key. Later, when real payment backends are used, this same operation is where members will agree that a quote is paid before issuance can proceed. Paid observations replay into the quote state and make issuance possible without making fakewallet part of the federation semantics.
 
 ### 8.3 Mint Issuance
 
@@ -232,7 +232,7 @@ Accepted mint operations now produce local BLS member shares and store them as b
 
 Swap is now wired through the federation path. The public swap route converts the request into a `FederationSwapOperation`, submits it to the journal, applies the accepted operation by verifying aggregate BLS input proofs, checking balance and spent state, spending inputs, storing output blinded messages, and returning local BLS output shares. The wallet connector aggregates member swap shares and rejects mismatched member responses.
 
-Melt is implemented for the fake-wallet federation path. Melt quote operations can be recorded, melt requests are accepted through consensus, aggregate BLS inputs are verified, fake-wallet payment state is represented as pending, paid, or unpaid, and accepted payment observations can finalize paid pending melts or roll back unpaid pending melts. Change outputs are signed with member BLS shares only after accepted operation apply, and non-v3 change outputs are rejected before consensus signing.
+Melt is implemented through the backend-neutral federation payment-observation path. Melt quote operations can be recorded, melt requests are accepted through consensus, aggregate BLS inputs are verified, the configured CDK payment backend reports pending, paid, or unpaid state, and accepted payment observations can finalize paid pending melts or roll back unpaid pending melts. Local tests use fakewallet to exercise those states, but change outputs are signed with member BLS shares only after accepted operation apply, and non-v3 change outputs are rejected before consensus signing.
 
 Restore and check-state are also federation-aware. Restore returns shares for outputs that were already signed by accepted operations, and the wallet connector aggregates threshold restore shares. Check-state remains a read query over materialized state, but the connector requires threshold agreement and rejects divergent spent, pending, or unspent views.
 
@@ -250,7 +250,7 @@ Finally, status and catch-up expose the local journal height and order digest, d
 
 ## 10. Future Outlook: Precise Next Steps
 
-Everything above documents the implementation that exists today. This section is intentionally forward-looking. The major shape of the federation MVP is now present: signed private REST, durable journal replay, deterministic apply for core fake-wallet flows, wallet aggregation, lag guards, and operator status tooling. The remaining work is to replace the local decision source with real replicated consensus and harden the system around state digests, production networking, real payment backends, DKG, rotation, and review.
+Everything above documents the implementation that exists today. This section is intentionally forward-looking. The major shape of the federation MVP is now present: signed private REST, durable journal replay, deterministic apply for backend-neutral eCash flows, wallet aggregation, lag guards, and operator status tooling. The remaining work is to replace the local decision source with real replicated consensus and harden the system around state digests, production networking, real payment backends, DKG, rotation, and review.
 
 ### 10.1 Freeze or Replace Canonical Encoding
 
@@ -270,13 +270,13 @@ Catch-up currently verifies digest-chain continuity from a peer, but real produc
 
 ### 10.4 Run and Harden the Live Multi-Process Harness
 
-The trusted-dealer generator now emits backend-agnostic public/private federation config by default, with local fake-wallet member configs and the guarded smoke script available through the explicit development/regtest opt-in. `cdk-mintd federation status` can require members to be ready and converged. The remaining validation is to run that harness where loopback listeners are permitted: start multiple fake-wallet members, issue mint/swap/melt/restore/check-state traffic, stop and restart one member, observe catch-up, and verify the roster returns to the same height and digest.
+The trusted-dealer generator now emits backend-agnostic public/private federation config by default, with local member configs that use the fakewallet backend and the guarded smoke script available through the explicit development/regtest opt-in. `cdk-mintd federation status` can require members to be ready and converged. The remaining validation is to run that harness where loopback listeners are permitted: start multiple members using the local fakewallet backend, issue mint/swap/melt/restore/check-state traffic, stop and restart one member, observe catch-up, and verify the roster returns to the same height and digest.
 
 Private REST is the MVP transport because it is simple and fits existing CDK patterns, but it requires reachable private member endpoints. Later deployments may add TCP/TLS, Noise, Tor, VPN, reverse tunnels, or an Iroh adapter for members behind NATs and firewalls. Those transports should stay behind the same signed federation message and consensus interfaces.
 
 ### 10.5 Define Real Payment Backend Policy
 
-The current minting and melting path intentionally uses fake wallet semantics. Real Lightning or onchain backends need a written trust model before they handle funds. The federation must decide whether settlement is independently verifiable, shared backend based, origin-custodied with proof, or handled by a threshold payment processor. Payment observations must have clear quorum rules, conflict handling, retry behavior, timeout policy, and operator inspection.
+Current local smoke tests exercise minting and melting with the fakewallet backend as a normal CDK payment backend. Real Lightning or onchain backends need a written trust model before they handle funds. The federation must decide whether settlement is independently verifiable, shared backend based, origin-custodied with proof, or handled by a threshold payment processor. Payment observations must have clear quorum rules, conflict handling, retry behavior, timeout policy, and operator inspection.
 
 ### 10.6 Replace Trusted Dealer with DKG and Add Rotation
 
@@ -289,7 +289,7 @@ Observability should become part of the consensus product: consensus height, app
 > [!NOTE]
 > ### Near-term checkpoint
 >
-> The next practical consensus checkpoint is to run the generated multi-process fake-wallet federation smoke script in an environment where loopback listeners are permitted, then record signed status, restart, catch-up, and convergence evidence. The next purely offline checkpoint is materialized state digests and audit summaries over consensus-visible mint tables.
+> The next practical consensus checkpoint is to run the generated multi-process development-backend federation smoke script in an environment where loopback listeners are permitted, then record signed status, restart, catch-up, and convergence evidence. The next purely offline checkpoint is materialized state digests and audit summaries over consensus-visible mint tables.
 
 ## 11. Code Map
 
