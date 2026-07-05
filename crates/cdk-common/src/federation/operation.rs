@@ -1583,6 +1583,16 @@ mod tests {
         })
     }
 
+    fn request_transcript_hash(
+        envelope: &FederationOperationEnvelope,
+    ) -> FederationRequestTranscriptHash {
+        envelope
+            .request_transcript()
+            .expect("request transcript")
+            .expect("wallet request transcript")
+            .transcript_hash()
+    }
+
     fn p2pk_locked_proof(amount: u64, sig_flag: SigFlag) -> (Proof, SecretKey) {
         let secret_key = SecretKey::generate();
         let secret: crate::secret::Secret = SpendingConditions::new_p2pk(
@@ -2245,6 +2255,10 @@ mod tests {
             first.operation_id().expect("operation id"),
             second.operation_id().expect("operation id")
         );
+        assert_ne!(
+            request_transcript_hash(&first),
+            request_transcript_hash(&second)
+        );
     }
 
     #[test]
@@ -2272,6 +2286,10 @@ mod tests {
         assert_ne!(
             first.operation_id().expect("operation id"),
             second.operation_id().expect("operation id")
+        );
+        assert_ne!(
+            request_transcript_hash(&first),
+            request_transcript_hash(&second)
         );
     }
 
@@ -2323,6 +2341,10 @@ mod tests {
         assert_ne!(
             first.operation_id().expect("operation id"),
             second.operation_id().expect("operation id")
+        );
+        assert_ne!(
+            request_transcript_hash(&first),
+            request_transcript_hash(&second)
         );
     }
 

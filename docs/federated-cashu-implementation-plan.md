@@ -1132,7 +1132,7 @@ Implementation checklist:
 - [x] Public handlers are wired through federation paths in federation mode.
 - [ ] Complete final security review proving no public endpoint can bypass consensus in federation mode.
 - [x] Complete final review and/or tests for NUT-20 signature verification in federated batch issuance.
-- [ ] Complete final review and/or tests for P2PK, HTLC, and SIG_ALL transcript construction.
+- [x] Complete final review and/or tests for P2PK, HTLC, and SIG_ALL transcript construction.
 - [x] Review real payment observation policies.
 - [x] Implement DB conflict keys and initial federation indexes.
 - [ ] Complete final DB conflict-key and index review after the signature-share schema and query-plan checks are done.

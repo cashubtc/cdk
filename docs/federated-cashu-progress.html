@@ -519,15 +519,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 477 checked items and 110 remaining items. Federation operation fuzzing now covers both envelope decoding and request-conversion projections.</span>
+          <span class="value">The implementation plan audit now tracks 478 checked items and 109 remaining items. Locked P2PK, HTLC, and SIG_ALL swap transcript construction now has direct transcript-hash coverage.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: fuzz federation request conversion</span>
+          <span class="value">test: bind locked swap transcripts</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Added a structured federation request-conversion fuzz target that exercises canonical envelope round trips, request transcripts, conflict keys, payment-observation records, quarantine records, and redacted observation reports.</span>
+          <span class="value">Added exact common-layer assertions proving locked P2PK witnesses, locked HTLC witnesses, and SIG_ALL output sets change the federation request transcript hash before signing.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -542,7 +542,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 477 checked entries and 110 remaining entries. The
+          checklist has 478 checked entries and 109 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -827,7 +827,7 @@
           </article>
           <article class="item">
             <h3>Locked swap transcripts covered</h3>
-            <p>Canonical federation swap tests now use real P2PK and HTLC locked secrets and prove witness mutations change the operation ID; SIG_ALL signatures also change when the exact blinded output set changes.</p>
+            <p>Canonical federation swap tests now use real P2PK and HTLC locked secrets and prove witness mutations change the request transcript hash and operation ID; SIG_ALL signatures and transcript hashes also change when the exact blinded output set changes.</p>
           </article>
           <article class="item">
             <h3>Runtime locked swaps enforced</h3>
@@ -2077,7 +2077,7 @@
             <tr>
               <td>Locked swap canonical transcripts</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-common --features federation operation_id_tracks -- --test-threads 1`, `cargo test -p cdk-common --features federation sig_all_signature_and_operation_id_track_exact_swap_outputs -- --test-threads 1`, and `cargo test -p cdk-common --features federation federation::operation -- --test-threads 1` passed. The operation suite now covers P2PK witness mutations, HTLC witness mutations, and SIG_ALL signatures changing when the exact blinded output set changes.</td>
+              <td>`cargo test -p cdk-common --features federation operation_id_tracks -- --test-threads 1`, `cargo test -p cdk-common --features federation sig_all_signature_and_operation_id_track_exact_swap_outputs -- --test-threads 1`, and `cargo test -p cdk-common --features federation federation::operation -- --test-threads 1` passed. The operation suite now covers P2PK witness mutations, HTLC witness mutations, and SIG_ALL output changes altering the exact request transcript hash used before signing.</td>
               <td>Keep canonical transcript coverage in sync if federation operation encoding changes.</td>
             </tr>
             <tr>
