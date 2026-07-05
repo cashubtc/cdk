@@ -521,15 +521,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 500 checked items and 87 remaining items. Federation restore now reads durable signature-share rows by blinded message before falling back to compatibility rows.</span>
+          <span class="value">The implementation plan audit tracks 502 checked items and 85 remaining items. Standalone fakewallet regression checks confirm the development backend remains available outside federation semantics.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover signature share query plans</span>
+          <span class="value">test: record standalone fakewallet checks</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">SQLite storage tests now prove both `federation_signature_shares` hot lookups use indexed query plans.</span>
+          <span class="value">Reran `cdk-fake-wallet` tests and mintd fakewallet config/dispatcher tests, then recorded the standalone-development-backend evidence.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -544,7 +544,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 500 checked entries and 87 remaining entries. The
+          checklist has 502 checked entries and 85 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -2079,6 +2079,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --features federation restore_returns_old_keyset_signature_after_rotation -- --test-threads 1` and `cargo check -p cdk --lib` passed. Restore now prefers durable federation share rows while standalone cdk restore still compiles with federation disabled.</td>
               <td>Add operation-hash/output-index restore mapping only if future restore UX needs to expose consensus provenance directly.</td>
+            </tr>
+            <tr>
+              <td>Standalone fakewallet backend</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-fake-wallet -- --test-threads 1` passed 2 tests. `cargo test -p cdk-mintd --features fakewallet,sqlite fakewallet -- --test-threads 1` passed 13 tests covering fakewallet config parsing, backend combinations, dispatcher unit selection, onchain behavior, and missing-config errors.</td>
+              <td>Keep fakewallet scoped to development/regtest plumbing while federation minting and melting continue to use generic payment-observation paths.</td>
             </tr>
             <tr>
               <td>Federated batch NUT-20 issuance</td>

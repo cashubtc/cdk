@@ -88,7 +88,7 @@ Current confirmed shape:
 - Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes and request transcripts, in-memory consensus boundary, private REST peer envelopes, federation journal persistence, dedicated federation signature-share persistence, mint/swap/melt/restore/check-state apply paths, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
 - Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, exact deterministic binary operation encoding, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
 - Test-suite status: focused federation replay, peer-sync, peer reconnect backoff, peer evidence/backoff, mintd peer-sync config wiring, SQLite federation storage/query plans, session-outcome, trusted-dealer setup, deterministic trusted-dealer fixture generation, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, backend-agnostic signature-share persistence, fakewallet coupling audit, wallet member request timeout/retry policy tests, canonical request transcript tests for NUT-20 and SIG_ALL, federated NUT-20 single and batch issuance tests, P2PK/HTLC/SIG_ALL canonical swap transcript tests, NUT-19 retry backoff, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, federated swap input-reuse attack regression, and `cdk-axum` federation tests were run for recent checkpoints. The broad feature-disabled library gate `cargo test --lib --workspace --exclude cdk-postgres` passed on 2026-07-05, and the broad feature-enabled compile gate `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed on 2026-07-05.
-- Latest checkpoint: SQLite query-plan regression coverage now proves both dedicated federation signature-share lookup paths use indexed searches.
+- Latest checkpoint: standalone fakewallet crate tests and mintd fakewallet config/dispatcher tests were rerun to confirm the development backend remains available outside federation semantics.
 
 ## Key observations
 
@@ -1098,7 +1098,7 @@ Implementation checklist:
 - [x] Remove stale "scaffolding", "placeholder", and "MVP wiring" labels from production federation modules once the corresponding feature is implemented; keep such language only in explicit dev/test code.
 - [ ] Make fakewallet federation regtest and smoke tooling look and run more like existing CDK tests where practical, with `cargo test` coverage for core flows and `just` targets as convenience wrappers.
 - [ ] Remove or rewrite any comments, docs, metrics, or status labels that imply fakewallet is part of federation rather than a replaceable mint backend.
-- [ ] Confirm standalone fakewallet mint behavior remains unchanged outside federation mode.
+- [x] Confirm standalone fakewallet mint behavior remains unchanged outside federation mode.
 
 Tests and success criteria:
 
@@ -1115,7 +1115,7 @@ Tests and success criteria:
 - [ ] Mint, melt, and swap federation tests still pass after fakewallet-specific naming is removed from federation semantics.
 - [ ] Module split/refactor keeps focused federation tests passing without behavioral changes.
 - [x] `rg "scaffold|placeholder|MVP"` in production federation modules only finds intentional dev/test documentation or open future-work comments.
-- [ ] Standalone fakewallet mint tests remain unchanged and prove fakewallet is still available as a non-federation development backend.
+- [x] Standalone fakewallet mint tests remain unchanged and prove fakewallet is still available as a non-federation development backend.
 - [x] Documentation states that federation is payment-backend agnostic and fakewallet is only a development backend for mintd/regtest.
 
 ## Milestone 24: security review checklist
