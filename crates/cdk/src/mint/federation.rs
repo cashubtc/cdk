@@ -4094,8 +4094,8 @@ mod tests {
             &mut journal,
             runtime_config.mint_quote_operation(
                 quote.clone(),
-                bolt11_quote_request(1),
-                bolt11_quote_response(&quote, 1),
+                bolt11_quote_request(2),
+                bolt11_quote_response(&quote, 2),
             ),
         );
         persist_and_apply_entry(&mint, &quote_entry).await;
@@ -4105,17 +4105,20 @@ mod tests {
                 quote.clone(),
                 PaymentMethod::Known(KnownMethod::Bolt11),
                 MintQuoteState::Paid,
-                Amount::from(1),
+                Amount::from(2),
                 Amount::ZERO,
                 Some("old-restore-payment".to_string()),
             ),
         );
         persist_and_apply_entry(&mint, &paid_entry).await;
 
-        let old_output = output_for_keyset(&old_keyset, b"old restore output");
+        let old_outputs = vec![
+            output_for_keyset(&old_keyset, b"old restore output zero"),
+            output_for_keyset(&old_keyset, b"old restore output one"),
+        ];
         let input = MintInput::Single(MintRequest {
             quote: quote.clone(),
-            outputs: vec![old_output.clone()],
+            outputs: old_outputs.clone(),
             signature: None,
         });
         let mint_entry = appended_entry(
@@ -4141,7 +4144,7 @@ mod tests {
             .expect("effective config")
             .expect("federation config");
         assert!(matches!(
-            effective.validate_output_keysets(std::slice::from_ref(&old_output)),
+            effective.validate_output_keysets(&old_outputs),
             Err(cdk_common::Error::Federation(
                 FederationError::InactiveFederatedKeyset { .. }
             ))
@@ -4149,11 +4152,11 @@ mod tests {
 
         let restored = mint
             .restore(RestoreRequest {
-                outputs: vec![old_output.clone()],
+                outputs: vec![old_outputs[1].clone()],
             })
             .await
             .expect("restore old signature");
-        assert_eq!(restored.outputs, vec![old_output]);
+        assert_eq!(restored.outputs, vec![old_outputs[1].clone()]);
         assert_eq!(restored.signatures.len(), 1);
         assert_eq!(restored.signatures[0].keyset_id, old_keyset.id);
 
@@ -4163,12 +4166,18 @@ mod tests {
             .expect("stored federation restore signature share");
         assert_eq!(share_records.len(), 1);
         assert_eq!(share_records[0].operation_id, mint_entry.operation_id);
-        assert_eq!(share_records[0].output_index, 0);
+        assert_eq!(share_records[0].output_index, 1);
         assert_eq!(share_records[0].keyset_id, old_keyset.id);
         assert_eq!(
             restored.signatures[0].c,
             PublicKey::from(share_records[0].share.signature())
         );
+
+        let operation_output_records = localstore
+            .get_federation_signature_shares_for_output(mint_entry.operation_id, 1)
+            .await
+            .expect("stored federation restore signature share by operation output");
+        assert_eq!(operation_output_records, share_records);
     }
 
     #[tokio::test]

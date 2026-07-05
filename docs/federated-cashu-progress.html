@@ -523,15 +523,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 542 checked items and 47 remaining items. Federation storage now persists materialized state digest checkpoints in a dedicated table and prunes them with configurable runtime retention after successful Axum finalization.</span>
+          <span class="value">The implementation plan audit tracks 543 checked items and 46 remaining items. Federation restore recovery now proves durable signature-share rows retain accepted operation-hash and nonzero output-index provenance after key rotation.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: prune federation state digest checkpoints</span>
+          <span class="value">test: prove federation restore share provenance</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federation storage now has a dedicated `federation_state_digest` table, shared SQLite/Postgres persistence and pruning methods, a mintd retention setting, and runtime checkpoint recording plus pruning after successful materialized apply.</span>
+          <span class="value">Federation restore now has focused coverage proving a restored old-keyset share can be traced through the dedicated signature-share table by accepted operation hash and output index, including a nonzero output index.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -546,7 +546,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 542 checked entries and 47 remaining entries. The
+          checklist has 543 checked entries and 46 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -2159,8 +2159,8 @@
             <tr>
               <td>Federation restore share lookup</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk --features federation restore_returns_old_keyset_signature_after_rotation -- --test-threads 1` and `cargo check -p cdk --lib` passed. Restore now prefers durable federation share rows while standalone cdk restore still compiles with federation disabled.</td>
-              <td>Add operation-hash/output-index restore mapping only if future restore UX needs to expose consensus provenance directly.</td>
+              <td>`cargo test -p cdk --features federation restore_returns_old_keyset_signature_after_rotation -- --test-threads 1` passed after extending the regression to mint two old-keyset outputs, rotate the keyset inactive, restore the second output, and assert the recovered share matches the dedicated `(operation_id, output_index = 1)` signature-share row. `cargo fmt --all -- --check` passed with the known stable-rustfmt warnings.</td>
+              <td>Carry the same provenance proof into broader storage-backed restart/catch-up tests and live Postgres migration coverage.</td>
             </tr>
             <tr>
               <td>Deterministic mint quote replay time</td>
