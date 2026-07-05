@@ -51,44 +51,6 @@ impl WalletRepository {
         })
     }
 
-    /// Create a new WalletRepository that routes all mint connections over Tor
-    ///
-    /// Uses an embedded Tor client (arti). Any Tor bootstrap triggered during
-    /// construction runs on the process-wide shared runtime, so the client's
-    /// background tasks survive after the constructor returns. If the database
-    /// already contains mints, construction blocks until the initial Tor
-    /// bootstrap completes and may take tens of seconds.
-    #[cfg(feature = "tor")]
-    #[uniffi::constructor]
-    pub fn new_with_tor(
-        mnemonic: String,
-        store: crate::database::WalletStore,
-    ) -> Result<Self, FfiError> {
-        let db = crate::database::resolve_wallet_store(store)?;
-
-        // Parse mnemonic and generate seed without passphrase
-        let m = Mnemonic::parse(&mnemonic)
-            .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
-        let seed = m.to_seed_normalized("");
-
-        // Convert the FFI database trait to a CDK database implementation
-        let localstore = crate::database::create_cdk_database_from_ffi(db);
-
-        let rt = crate::runtime::RuntimeGuard::new().map_err(FfiError::internal)?;
-        let wallet = rt.block_on(async move {
-            WalletRepositoryBuilder::new()
-                .localstore(localstore)
-                .seed(seed)
-                .tor()
-                .build()
-                .await
-        })?;
-
-        Ok(Self {
-            inner: Arc::new(wallet),
-        })
-    }
-
     /// Create a new WalletRepository with proxy configuration
     #[uniffi::constructor]
     pub fn new_with_proxy(
@@ -208,11 +170,12 @@ impl WalletRepository {
         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
 
         let inner = Arc::clone(&self.inner);
-        let info = crate::runtime::run_on_shared(async move {
-            inner.fetch_mint_info(&cdk_mint_url).await
-        })
-        .await
-        .map_err(FfiError::internal)??;
+        let info =
+            crate::runtime::run_on_shared(
+                async move { inner.fetch_mint_info(&cdk_mint_url).await },
+            )
+            .await
+            .map_err(FfiError::internal)??;
 
         Ok(info.into())
     }
@@ -325,6 +288,47 @@ impl WalletRepository {
         token: Arc<crate::token::Token>,
     ) -> Result<TokenData, FfiError> {
         Ok(self.inner.get_token_data(&token.inner).await?.into())
+    }
+}
+
+#[cfg(feature = "tor")]
+#[uniffi::export]
+impl WalletRepository {
+    /// Create a new WalletRepository that routes all mint connections over Tor
+    ///
+    /// Uses an embedded Tor client (arti). Any Tor bootstrap triggered during
+    /// construction runs on the process-wide shared runtime, so the client's
+    /// background tasks survive after the constructor returns. If the database
+    /// already contains mints, construction blocks until the initial Tor
+    /// bootstrap completes and may take tens of seconds.
+    #[uniffi::constructor]
+    pub fn new_with_tor(
+        mnemonic: String,
+        store: crate::database::WalletStore,
+    ) -> Result<Self, FfiError> {
+        let db = crate::database::resolve_wallet_store(store)?;
+
+        // Parse mnemonic and generate seed without passphrase
+        let m = Mnemonic::parse(&mnemonic)
+            .map_err(|e| FfiError::internal(format!("Invalid mnemonic: {}", e)))?;
+        let seed = m.to_seed_normalized("");
+
+        // Convert the FFI database trait to a CDK database implementation
+        let localstore = crate::database::create_cdk_database_from_ffi(db);
+
+        let rt = crate::runtime::RuntimeGuard::new().map_err(FfiError::internal)?;
+        let wallet = rt.block_on(async move {
+            WalletRepositoryBuilder::new()
+                .localstore(localstore)
+                .seed(seed)
+                .tor()
+                .build()
+                .await
+        })?;
+
+        Ok(Self {
+            inner: Arc::new(wallet),
+        })
     }
 }
 
