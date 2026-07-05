@@ -1122,7 +1122,7 @@ Tests and success criteria:
 - [x] Restart tests prove accepted-but-unapplied federation operations are replayed from the database and converge to the same state digest.
 - [x] Private REST status, catch-up, digest, and session outcome tests read from durable database state rather than an in-memory journal scaffold.
 - [ ] Fake-wallet regtest still passes through the normal CDK payment backend interface.
-- [ ] Mint, melt, and swap federation tests still pass after fakewallet-specific naming is removed from federation semantics.
+- [x] Mint, melt, and swap federation tests still pass after fakewallet-specific naming is removed from federation semantics.
 - [ ] Module split/refactor keeps focused federation tests passing without behavioral changes.
 - [x] `rg "scaffold|placeholder|MVP"` in production federation modules only finds intentional dev/test documentation or open future-work comments.
 - [x] Standalone fakewallet mint tests remain unchanged and prove fakewallet is still available as a non-federation development backend.
