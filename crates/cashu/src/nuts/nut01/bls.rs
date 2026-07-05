@@ -1031,6 +1031,55 @@ mod tests {
         BlsSecretKey::from_reduced_bytes(&[seed; 32])
     }
 
+    #[cfg(feature = "federation")]
+    #[derive(Debug)]
+    struct DeterministicTestRng {
+        state: u64,
+    }
+
+    #[cfg(feature = "federation")]
+    impl DeterministicTestRng {
+        fn new(seed: u64) -> Self {
+            Self { state: seed }
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            let mut value = self.state;
+            value ^= value << 13;
+            value ^= value >> 7;
+            value ^= value << 17;
+            self.state = value;
+            value
+        }
+
+        fn next_usize(&mut self, upper_bound: usize) -> usize {
+            (self.next_u64() as usize) % upper_bound
+        }
+
+        fn fill_bytes(&mut self, bytes: &mut [u8]) {
+            for chunk in bytes.chunks_mut(8) {
+                let random = self.next_u64().to_be_bytes();
+                chunk.copy_from_slice(&random[..chunk.len()]);
+            }
+        }
+
+        fn bls_secret_key(&mut self) -> BlsSecretKey {
+            let mut bytes = [0u8; 32];
+            self.fill_bytes(&mut bytes);
+            bytes[31] |= 1;
+            BlsSecretKey::from_reduced_bytes(&bytes)
+        }
+
+        fn shuffled_indices(&mut self, len: usize) -> Vec<usize> {
+            let mut indices = (0..len).collect::<Vec<_>>();
+            for index in (1..indices.len()).rev() {
+                let swap_index = self.next_usize(index + 1);
+                indices.swap(index, swap_index);
+            }
+            indices
+        }
+    }
+
     /// NUT-00 batch verification test vector: two proofs under the same mint key
     /// `K = 2·G2`. Exercises both rejection-sampling code paths: `weight_1` is
     /// accepted at `ctr = 4` and `weight_2` at `ctr = 0`.
@@ -1363,6 +1412,75 @@ mod tests {
                     .expect("aggregate public key"),
                 keyset.aggregate_public_key()
             );
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn test_threshold_bls_seeded_random_messages_thresholds_and_subsets() {
+        let mut rng = DeterministicTestRng::new(0x0c_a5_1f_ed_b1_51_70_01);
+
+        for case_index in 0..16u8 {
+            let member_count = 2 + rng.next_usize(7);
+            let threshold = 1 + rng.next_usize(member_count);
+            let coefficients = (0..threshold)
+                .map(|_| rng.bls_secret_key())
+                .collect::<Vec<_>>();
+            let signer_id_values = (1..=member_count as u16).collect::<Vec<_>>();
+            let keyset = trusted_dealer_keygen(&coefficients, &signer_ids(&signer_id_values))
+                .expect("threshold keyset");
+
+            let mut message = [0u8; 40];
+            rng.fill_bytes(&mut message);
+            message[0] = case_index;
+            let blinded_message = BlsG1PublicKey::hash_to_curve(&message);
+            let direct_signature = blinded_message.mul(&coefficients[0]);
+            let shares = keyset
+                .secret_shares()
+                .iter()
+                .map(|share| share.blind_sign_share(&blinded_message))
+                .collect::<Vec<_>>();
+
+            for (share, public_share) in shares.iter().zip(keyset.public_shares()) {
+                assert!(
+                    verify_blind_signature_share(share, &blinded_message, public_share)
+                        .expect("share verification result")
+                );
+            }
+
+            for _ in 0..3 {
+                let subset_indices = rng.shuffled_indices(member_count);
+                let share_subset = subset_indices
+                    .iter()
+                    .take(threshold)
+                    .map(|index| shares[*index])
+                    .collect::<Vec<_>>();
+                let public_subset = subset_indices
+                    .iter()
+                    .take(threshold)
+                    .map(|index| keyset.public_shares()[*index])
+                    .collect::<Vec<_>>();
+
+                let aggregate = aggregate_blind_signature_shares(threshold, &share_subset)
+                    .expect("aggregate signature");
+                let aggregate_public_key = aggregate_public_key_shares(threshold, &public_subset)
+                    .expect("aggregate public key");
+
+                let mut reversed_share_subset = share_subset.clone();
+                reversed_share_subset.reverse();
+                let reversed_aggregate =
+                    aggregate_blind_signature_shares(threshold, &reversed_share_subset)
+                        .expect("reversed aggregate signature");
+
+                assert_eq!(aggregate, direct_signature);
+                assert_eq!(reversed_aggregate, direct_signature);
+                assert_eq!(aggregate_public_key, keyset.aggregate_public_key());
+                assert!(verify_blind_signature_pairing(
+                    &aggregate,
+                    &blinded_message,
+                    &keyset.aggregate_public_key()
+                ));
+            }
         }
     }
 

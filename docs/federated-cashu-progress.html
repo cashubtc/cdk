@@ -518,15 +518,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 461 checked items and 126 remaining items. Federation operation decoding now rejects unsupported envelope versions and has a seeded fuzz target.</span>
+          <span class="value">The implementation plan audit now tracks 462 checked items and 125 remaining items. Threshold BLS now has seeded randomized coverage for messages, thresholds, and quorum subsets.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: fuzz federation operation decoding</span>
+          <span class="value">test: add threshold bls property coverage</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Unsupported operation versions now fail before consensus admission or operation hashing, and malformed operation payloads have fuzz coverage.</span>
+          <span class="value">Randomized threshold BLS cases now prove arbitrary quorum subsets aggregate to the same signature and aggregate public key.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -541,7 +541,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 461 checked entries and 126 remaining entries. The
+          checklist has 462 checked entries and 125 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -781,6 +781,10 @@
         <h2>Unlocked</h2>
         <div class="stack">
           <article class="item">
+            <h3>BLS property coverage</h3>
+            <p>A seeded threshold BLS regression now varies messages, roster sizes, thresholds, and quorum subsets while checking share verification, aggregate signatures, aggregate public keys, and order independence.</p>
+          </article>
+          <article class="item">
             <h3>Operation decode fuzzed</h3>
             <p>Federation operation envelopes now reject unsupported versions before admission or hashing, with a seeded fuzz target covering valid v1, future-version, unknown-type, and truncated payloads.</p>
           </article>
@@ -830,7 +834,7 @@
           </article>
           <article class="item">
             <h3>Plan audit refreshed</h3>
-            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 461 checked items and 126 explicit next items.</p>
+            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 462 checked items and 125 explicit next items.</p>
           </article>
           <article class="item">
             <h3>Router startup replay proven</h3>
@@ -2952,6 +2956,12 @@
               <td>Use the startup replay proof as the recovery gate while cleaning fakewallet-specific federation semantics out of the production payment-observation path.</td>
             </tr>
             <tr>
+              <td>Seeded threshold BLS property coverage</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cashu --features federation test_threshold_bls_seeded_random_messages_thresholds_and_subsets -- --test-threads 1` passed a deterministic randomized regression over messages, thresholds, roster sizes, and quorum subsets. `cargo test -p cashu --features federation threshold_bls -- --test-threads 1` passed the broader threshold BLS suite with 8 tests.</td>
+              <td>Keep future cryptographic changes on this seeded path so threshold quorum aggregation stays reproducible in CI.</td>
+            </tr>
+            <tr>
               <td>Federation operation decode fuzzing</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation operation_envelope -- --test-threads 1` passed unsupported-version and malformed-payload decode regressions. `cargo check --manifest-path fuzz/Cargo.toml --bin fuzz_federation_operation` passed after allowing Cargo to fetch the fuzz dependencies needed for the new target.</td>
@@ -2973,7 +2983,7 @@
               <td>4-of-7 threshold BLS aggregation</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cashu --features federation test_threshold_bls_four_of_seven_aggregates_valid_quorums -- --test-threads 1` passed the explicit four-of-seven aggregation regression. `cargo test -p cashu --features federation threshold_bls -- --test-threads 1` passed the broader threshold BLS suite.</td>
-              <td>Add randomized/property coverage for threshold signer subsets when the broader cryptographic test expansion is scheduled.</td>
+              <td>Carry the same quorum-shape coverage into any future production DKG implementation.</td>
             </tr>
             <tr>
               <td>Large offline catch-up coverage</td>
