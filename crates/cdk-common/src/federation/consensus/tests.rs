@@ -1563,22 +1563,129 @@ fn backend_adapter_runtime_dispatches_selected_in_memory_backend() {
 }
 
 #[test]
-fn backend_adapter_runtime_rejects_unavailable_backend_kind() {
+fn backend_adapter_runtime_dispatches_selected_aleph_bft_backend() {
+    let federation_id = federation_id(13);
     let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
-
-    let err = FederationConsensusBackendAdapterRuntime::with_backend(
+    let mut adapter = FederationConsensusBackendAdapterRuntime::with_backend(
         FederationConsensusBackendKind::AlephBft,
-        federation_id(13),
+        federation_id,
         members,
         2,
         members[0],
     )
-    .expect_err("aleph-bft adapter is not implemented yet");
+    .expect("aleph-bft adapter runtime");
+    let first_envelope = mint_envelope(
+        federation_id,
+        "quote-1",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let first = first_envelope.operation_id().expect("first operation id");
+    let second_envelope = mint_envelope(
+        federation_id,
+        "quote-2",
+        "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+    );
+    let second = second_envelope.operation_id().expect("second operation id");
+
+    assert_eq!(
+        adapter.backend_kind(),
+        FederationConsensusBackendKind::AlephBft
+    );
+    assert_eq!(
+        adapter
+            .submit_operation(first_envelope)
+            .expect("submit first"),
+        FederationConsensusItemAdmission::Accepted
+    );
+    assert_eq!(
+        adapter
+            .submit_operation(second_envelope)
+            .expect("submit second"),
+        FederationConsensusItemAdmission::Accepted
+    );
+    assert_eq!(adapter.queued_len(), 2);
+    assert_eq!(adapter.pending_finalization_len(), 0);
+
+    let unit = adapter
+        .next_aleph_bft_unit_payload()
+        .expect("next unit")
+        .expect("unit");
+    assert_eq!(unit.operation_ids, vec![first, second]);
+    assert_eq!(adapter.queued_len(), 0);
+
+    let responses = adapter
+        .finalize_aleph_bft_unit(unit)
+        .expect("finalize unit");
+
+    assert_eq!(responses.len(), 2);
+    assert_eq!(responses[0].operation_id, first);
+    assert_eq!(responses[1].operation_id, second);
+    assert_eq!(
+        adapter
+            .aleph_bft_finalized_items()
+            .expect("finalized items")
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn backend_adapter_runtime_aleph_bft_generic_dispatch_fails_closed() {
+    let federation_id = federation_id(13);
+    let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+    let mut adapter = FederationConsensusBackendAdapterRuntime::with_backend(
+        FederationConsensusBackendKind::AlephBft,
+        federation_id,
+        members,
+        2,
+        members[0],
+    )
+    .expect("aleph-bft adapter runtime");
+    adapter
+        .submit_operation(mint_envelope(
+            federation_id,
+            "quote-1",
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        ))
+        .expect("submit");
+
+    assert!(matches!(
+        adapter.dispatch_and_finalize(10),
+        Err(FederationError::ConsensusBackendRequiresExternalFinalization { ref backend })
+            if backend == "aleph_bft"
+    ));
+    assert_eq!(adapter.queued_len(), 1);
+    assert_eq!(adapter.pending_finalization_len(), 0);
+}
+
+#[test]
+fn backend_adapter_runtime_aleph_bft_validates_roster_before_queueing() {
+    let members = [member_id_value(1), member_id_value(2), member_id_value(2)];
+
+    assert!(matches!(
+        FederationConsensusBackendAdapterRuntime::with_backend(
+            FederationConsensusBackendKind::AlephBft,
+            federation_id(13),
+            members,
+            2,
+            member_id_value(1),
+        ),
+        Err(FederationError::DuplicateMember { member_id }) if member_id == member_id_value(2)
+    ));
+
+    let err = FederationConsensusBackendAdapterRuntime::with_backend(
+        FederationConsensusBackendKind::AlephBft,
+        federation_id(13),
+        [member_id_value(1), member_id_value(2), member_id_value(3)],
+        2,
+        member_id_value(4),
+    )
+    .expect_err("local member must be in roster");
 
     assert!(matches!(
         err,
-        FederationError::UnsupportedConsensusBackend { ref backend }
-            if backend == "aleph_bft"
+        FederationError::UnknownMember { member_id }
+            if member_id == member_id_value(4)
     ));
 }
 

@@ -416,6 +416,14 @@ pub enum FederationError {
         /// Requested backend name.
         backend: String,
     },
+    /// The selected consensus backend cannot return responses until externally finalized.
+    #[error(
+        "Federation consensus backend {backend} requires external finalization before accepted responses are available"
+    )]
+    ConsensusBackendRequiresExternalFinalization {
+        /// Requested backend name.
+        backend: String,
+    },
     /// A consensus item exceeded the configured canonical size limit.
     #[error("Federation consensus item too large: actual={actual}, max={max}")]
     ConsensusItemTooLarge {
