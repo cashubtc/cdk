@@ -2419,12 +2419,33 @@ mod tests {
         pubkey: PublicKey,
         payment_proof: &str,
     ) {
+        persist_paid_locked_mint_quote_amount(
+            mint,
+            journal,
+            runtime_config,
+            quote,
+            1,
+            pubkey,
+            payment_proof,
+        )
+        .await;
+    }
+
+    async fn persist_paid_locked_mint_quote_amount(
+        mint: &Mint,
+        journal: &mut InMemoryFederationJournal,
+        runtime_config: &FederationRuntimeConfig,
+        quote: &QuoteId,
+        amount: u64,
+        pubkey: PublicKey,
+        payment_proof: &str,
+    ) {
         let quote_entry = appended_entry(
             journal,
             runtime_config.mint_quote_operation(
                 quote.clone(),
-                locked_bolt11_quote_request(1, pubkey),
-                locked_bolt11_quote_response(quote, 1, pubkey),
+                locked_bolt11_quote_request(amount, pubkey),
+                locked_bolt11_quote_response(quote, amount, pubkey),
             ),
         );
         persist_and_apply_entry(mint, &quote_entry).await;
@@ -2435,12 +2456,31 @@ mod tests {
                 quote.clone(),
                 PaymentMethod::Known(KnownMethod::Bolt11),
                 MintQuoteState::Paid,
-                Amount::from(1),
+                Amount::from(amount),
                 Amount::ZERO,
                 Some(payment_proof.to_string()),
             ),
         );
         persist_and_apply_entry(mint, &paid_entry).await;
+    }
+
+    fn sign_batch_mint_request_for_quotes(
+        request: &mut BatchMintRequest<QuoteId>,
+        signing_keys: &[SecretKey],
+    ) {
+        let signatures = request
+            .quotes
+            .iter()
+            .zip(signing_keys)
+            .map(|(quote, signing_key)| {
+                Some(
+                    request
+                        .sign_quote(quote, signing_key)
+                        .expect("batch NUT-20 quote signature"),
+                )
+            })
+            .collect();
+        request.signatures = Some(signatures);
     }
 
     #[test]
@@ -2868,6 +2908,229 @@ mod tests {
             signatures,
             vec![None, None],
             "mutated NUT-20 output set must fail before any member share is stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_federation_batch_mint_accepts_nut20_locked_quotes() {
+        let runtime_config = runtime_config();
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let first_key = SecretKey::generate();
+        let second_key = SecretKey::generate();
+        let first_quote = QuoteId::new();
+        let second_quote = QuoteId::new();
+        persist_paid_locked_mint_quote_amount(
+            &mint,
+            &mut journal,
+            &runtime_config,
+            &first_quote,
+            1,
+            first_key.public_key(),
+            "batch-nut20-first-payment",
+        )
+        .await;
+        persist_paid_locked_mint_quote_amount(
+            &mint,
+            &mut journal,
+            &runtime_config,
+            &second_quote,
+            1,
+            second_key.public_key(),
+            "batch-nut20-second-payment",
+        )
+        .await;
+
+        let outputs = vec![
+            output_for_runtime(&runtime_config, b"batch nut20 first output"),
+            output_for_runtime(&runtime_config, b"batch nut20 second output"),
+        ];
+        let mut request = BatchMintRequest {
+            quotes: vec![first_quote.clone(), second_quote.clone()],
+            quote_amounts: None,
+            outputs: outputs.clone(),
+            signatures: None,
+        };
+        sign_batch_mint_request_for_quotes(&mut request, &[first_key, second_key]);
+        let mint_entry = appended_entry(
+            &mut journal,
+            runtime_config
+                .mint_operation(MintInput::Batch(request))
+                .expect("batch locked mint operation"),
+        );
+        persist_and_apply_entry(&mint, &mint_entry).await;
+
+        let blinded_secrets = outputs
+            .iter()
+            .map(|output| output.blinded_secret)
+            .collect::<Vec<_>>();
+        let signatures = localstore
+            .get_blind_signatures(&blinded_secrets)
+            .await
+            .expect("stored batch locked mint signatures");
+        assert_eq!(signatures.len(), 2);
+        assert!(
+            signatures.iter().all(Option::is_some),
+            "valid batch NUT-20 locked quotes must receive member shares"
+        );
+        for quote in [&first_quote, &second_quote] {
+            let quote_state = localstore
+                .get_mint_quote(quote)
+                .await
+                .expect("quote lookup")
+                .expect("quote");
+            assert_eq!(quote_state.state(), MintQuoteState::Issued);
+            assert_eq!(
+                quote_state.amount_issued(),
+                Amount::new(1, CurrencyUnit::Sat)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_federation_batch_mint_rejects_missing_nut20_signature_before_signing() {
+        let runtime_config = runtime_config();
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let first_key = SecretKey::generate();
+        let second_key = SecretKey::generate();
+        let first_quote = QuoteId::new();
+        let second_quote = QuoteId::new();
+        persist_paid_locked_mint_quote_amount(
+            &mint,
+            &mut journal,
+            &runtime_config,
+            &first_quote,
+            1,
+            first_key.public_key(),
+            "batch-nut20-missing-first-payment",
+        )
+        .await;
+        persist_paid_locked_mint_quote_amount(
+            &mint,
+            &mut journal,
+            &runtime_config,
+            &second_quote,
+            1,
+            second_key.public_key(),
+            "batch-nut20-missing-second-payment",
+        )
+        .await;
+
+        let outputs = vec![
+            output_for_runtime(&runtime_config, b"batch nut20 missing first output"),
+            output_for_runtime(&runtime_config, b"batch nut20 missing second output"),
+        ];
+        let mut request = BatchMintRequest {
+            quotes: vec![first_quote.clone(), second_quote.clone()],
+            quote_amounts: None,
+            outputs: outputs.clone(),
+            signatures: None,
+        };
+        sign_batch_mint_request_for_quotes(&mut request, &[first_key, second_key]);
+        if let Some(signatures) = request.signatures.as_mut() {
+            signatures[1] = None;
+        }
+        let mint_entry = appended_entry(
+            &mut journal,
+            runtime_config
+                .mint_operation(MintInput::Batch(request))
+                .expect("batch missing signature mint operation"),
+        );
+        persist_journal_entry(&localstore, &mint_entry).await;
+
+        assert!(matches!(
+            mint.apply_federation_journal_entries(std::slice::from_ref(&mint_entry))
+                .await,
+            Err(cdk_common::Error::SignatureMissingOrInvalid)
+        ));
+        let blinded_secrets = outputs
+            .iter()
+            .map(|output| output.blinded_secret)
+            .collect::<Vec<_>>();
+        let signatures = localstore
+            .get_blind_signatures(&blinded_secrets)
+            .await
+            .expect("missing batch signature lookup");
+        assert_eq!(
+            signatures,
+            vec![None, None],
+            "batch missing NUT-20 signature must fail before any member share is stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_federation_batch_mint_rejects_nut20_output_mutation_before_signing() {
+        let runtime_config = runtime_config();
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let first_key = SecretKey::generate();
+        let second_key = SecretKey::generate();
+        let first_quote = QuoteId::new();
+        let second_quote = QuoteId::new();
+        persist_paid_locked_mint_quote_amount(
+            &mint,
+            &mut journal,
+            &runtime_config,
+            &first_quote,
+            1,
+            first_key.public_key(),
+            "batch-nut20-mutated-first-payment",
+        )
+        .await;
+        persist_paid_locked_mint_quote_amount(
+            &mint,
+            &mut journal,
+            &runtime_config,
+            &second_quote,
+            1,
+            second_key.public_key(),
+            "batch-nut20-mutated-second-payment",
+        )
+        .await;
+
+        let signed_outputs = vec![
+            output_for_runtime(&runtime_config, b"batch nut20 signed first output"),
+            output_for_runtime(&runtime_config, b"batch nut20 signed second output"),
+        ];
+        let mutated_outputs = vec![
+            output_for_runtime(&runtime_config, b"batch nut20 mutated first output"),
+            output_for_runtime(&runtime_config, b"batch nut20 mutated second output"),
+        ];
+        let mut request = BatchMintRequest {
+            quotes: vec![first_quote.clone(), second_quote.clone()],
+            quote_amounts: None,
+            outputs: signed_outputs.clone(),
+            signatures: None,
+        };
+        sign_batch_mint_request_for_quotes(&mut request, &[first_key, second_key]);
+        request.outputs = mutated_outputs.clone();
+        let mint_entry = appended_entry(
+            &mut journal,
+            runtime_config
+                .mint_operation(MintInput::Batch(request))
+                .expect("batch mutated signature mint operation"),
+        );
+        persist_journal_entry(&localstore, &mint_entry).await;
+
+        assert!(matches!(
+            mint.apply_federation_journal_entries(std::slice::from_ref(&mint_entry))
+                .await,
+            Err(cdk_common::Error::SignatureMissingOrInvalid)
+        ));
+        let blinded_secrets = signed_outputs
+            .iter()
+            .chain(mutated_outputs.iter())
+            .map(|output| output.blinded_secret)
+            .collect::<Vec<_>>();
+        let signatures = localstore
+            .get_blind_signatures(&blinded_secrets)
+            .await
+            .expect("mutated batch signature lookup");
+        assert_eq!(
+            signatures,
+            vec![None, None, None, None],
+            "batch mutated NUT-20 output set must fail before any member share is stored"
         );
     }
 

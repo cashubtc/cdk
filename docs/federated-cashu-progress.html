@@ -519,15 +519,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 475 checked items and 112 remaining items. Milestone 3 now includes canonical request transcripts for signing-sensitive wallet requests.</span>
+          <span class="value">The implementation plan audit now tracks 476 checked items and 111 remaining items. Federated NUT-20 issuance coverage now includes locked batch mint requests.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add federation request transcripts</span>
+          <span class="value">test: cover federated batch nut20 issuance</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Added `FederationRequestTranscript` and a domain-separated transcript hash for mint, melt, swap, and restore operations, with NUT-20 and SIG_ALL tests proving request mutations change the transcript before federation signing.</span>
+          <span class="value">Added runtime tests proving federated batch mint accepts valid per-quote NUT-20 signatures and rejects missing or output-mutated signatures before storing any member share.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -542,7 +542,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 475 checked entries and 112 remaining entries. The
+          checklist has 476 checked entries and 111 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -781,6 +781,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Batch NUT-20 covered</h3>
+            <p>Federated batch mint issuance now has runtime coverage for locked quotes: valid per-quote NUT-20 signatures issue member shares, while a missing quote signature or a post-signature output mutation fails before any share is persisted.</p>
+          </article>
           <article class="item">
             <h3>Request transcripts explicit</h3>
             <p>Mint, melt, swap, and restore operations now expose a canonical `FederationRequestTranscript` plus a domain-separated transcript hash. The operation tests prove NUT-20 mint output changes and SIG_ALL swap output changes alter the transcript that federation members can audit before signing shares.</p>
@@ -2021,6 +2025,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test --lib --workspace --exclude cdk-postgres` passed with federation disabled. `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed after the example key-type fix and stable transport DNS TXT method.</td>
               <td>Move back to the remaining consensus/storage follow-ups with the broad feature gates green.</td>
+            </tr>
+            <tr>
+              <td>Federated batch NUT-20 issuance</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --features mint,federation apply_federation_batch_mint -- --test-threads 1`, `cargo test -p cdk --features mint,federation nut20 -- --test-threads 1`, `cargo check -p cdk --features mint,federation`, `cargo fmt --all`, and `git diff --check` passed. The runtime tests cover valid locked batch issuance, a missing per-quote signature, and a post-signature output mutation.</td>
+              <td>Carry the same before-signing checks into any future dedicated signature-share table or batch request conversion layer.</td>
             </tr>
             <tr>
               <td>Canonical request transcripts</td>
