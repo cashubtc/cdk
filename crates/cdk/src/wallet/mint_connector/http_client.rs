@@ -30,6 +30,7 @@ use crate::nuts::{
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
 
 type Cache = (u64, HashSet<(nut19::Method, nut19::Path)>);
+const RETRIABLE_HTTP_REQUEST_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 fn payment_method_path_segment(method: &PaymentMethod) -> Result<&str, Error> {
     match method {
@@ -229,12 +230,23 @@ where
                         return result;
                     }
 
-                    // retry request, if possible
-                    tracing::error!("Failed http_request {:?}", result.as_ref().err());
-
-                    if retriable_window < started.elapsed() {
+                    let elapsed = started.elapsed();
+                    if retriable_window.is_zero() || retriable_window <= elapsed {
                         return result;
                     }
+                    let remaining = retriable_window.saturating_sub(elapsed);
+                    if remaining <= RETRIABLE_HTTP_REQUEST_RETRY_DELAY {
+                        return result;
+                    }
+
+                    if let Err(err) = result.as_ref() {
+                        tracing::warn!(
+                            retry_delay_ms = RETRIABLE_HTTP_REQUEST_RETRY_DELAY.as_millis(),
+                            "Failed retryable http request: {}",
+                            err
+                        );
+                    }
+                    tokio::time::sleep(RETRIABLE_HTTP_REQUEST_RETRY_DELAY).await;
                 }
                 Err(_) => return result,
                 _ => unreachable!(),
@@ -956,6 +968,8 @@ mod tests {
         captured_payload: Arc<Mutex<Option<serde_json::Value>>>,
         /// Canned JSON string returned by `http_post`.
         post_response: Arc<Mutex<Option<String>>>,
+        /// Optional status error returned by `http_post`.
+        post_error: Arc<Mutex<Option<(u16, String)>>>,
         /// Canned JSON string returned by `http_get`.
         get_response: Arc<Mutex<Option<String>>>,
         /// URLs passed to `http_get`.
@@ -1012,6 +1026,10 @@ mod tests {
             R: DeserializeOwned,
         {
             self.post_urls.lock().expect("lock").push(_url.to_string());
+            if let Some((status, message)) = self.post_error.lock().expect("lock").clone() {
+                return Err(HttpError::Status { status, message });
+            }
+
             // Capture the serialized payload for test assertions
             let value = serde_json::to_value(payload)
                 .map_err(|e| HttpError::Serialization(e.to_string()))?;
@@ -1051,6 +1069,7 @@ mod tests {
         let transport = MockTransport {
             captured_payload: Arc::new(Mutex::new(None)),
             post_response: Arc::new(Mutex::new(Some(canned_json))),
+            post_error: Arc::new(Mutex::new(None)),
             get_response: Arc::new(Mutex::new(None)),
             get_urls: Arc::new(Mutex::new(Vec::new())),
             post_urls: Arc::new(Mutex::new(Vec::new())),
@@ -1197,6 +1216,83 @@ mod tests {
             post_urls.lock().expect("lock").is_empty(),
             "invalid custom method must be rejected before POST transport"
         );
+    }
+
+    #[tokio::test]
+    async fn retriable_http_request_without_nut19_support_does_not_retry_server_error() {
+        let transport = MockTransport {
+            post_error: Arc::new(Mutex::new(Some((
+                500,
+                "transient server error".to_string(),
+            )))),
+            ..Default::default()
+        };
+        let post_urls = transport.post_urls.clone();
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+
+        let result = client
+            .retriable_http_request::<_, serde_json::Value>(
+                nut19::Method::Post,
+                nut19::Path::Swap,
+                None,
+                &serde_json::json!({}),
+            )
+            .await;
+
+        assert!(matches!(result, Err(Error::HttpError(Some(500), _))));
+        assert_eq!(
+            post_urls.lock().expect("lock").len(),
+            1,
+            "requests without NUT-19 replay support must not spin on retryable errors"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retriable_http_request_waits_between_nut19_retries() {
+        let transport = MockTransport {
+            post_error: Arc::new(Mutex::new(Some((
+                500,
+                "transient server error".to_string(),
+            )))),
+            ..Default::default()
+        };
+        let post_urls = transport.post_urls.clone();
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+        *client.cache_support.write().expect("lock") = (
+            300,
+            std::collections::HashSet::from([(nut19::Method::Post, nut19::Path::Swap)]),
+        );
+
+        let task = tokio::spawn(async move {
+            client
+                .retriable_http_request::<_, serde_json::Value>(
+                    nut19::Method::Post,
+                    nut19::Path::Swap,
+                    None,
+                    &serde_json::json!({}),
+                )
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        assert_eq!(post_urls.lock().expect("lock").len(), 1);
+
+        tokio::time::advance(RETRIABLE_HTTP_REQUEST_RETRY_DELAY - Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            post_urls.lock().expect("lock").len(),
+            1,
+            "retryable NUT-19 failures must back off instead of retrying immediately"
+        );
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(post_urls.lock().expect("lock").len(), 2);
+
+        task.abort();
+        let _ = task.await;
     }
 
     #[tokio::test]
