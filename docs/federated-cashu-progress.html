@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 462 checked items and 125 remaining items. Threshold BLS now has seeded randomized coverage for messages, thresholds, and quorum subsets.</span>
+          <span class="value">The implementation plan audit now tracks 463 checked items and 124 remaining items. Federated swap apply now rejects spent-input reuse before creating new member shares.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: add threshold bls property coverage</span>
+          <span class="value">fix: reject federated swap input reuse</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Randomized threshold BLS cases now prove arbitrary quorum subsets aggregate to the same signature and aggregate public key.</span>
+          <span class="value">The swap sliding-window regression now proves conflicting swaps cannot reuse spent inputs to obtain fresh output shares, while exact replay stays idempotent.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue production-cleanup work by auditing remaining fakewallet references and broadening storage-backed process coverage.</span>
+          <span class="value">Continue production-cleanup work by auditing remaining fakewallet references, per-member retry/backpressure paths, and storage-backed process coverage.</span>
         </div>
       </aside>
     </header>
@@ -541,7 +541,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 462 checked entries and 125 remaining entries. The
+          checklist has 463 checked entries and 124 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -781,6 +781,14 @@
         <h2>Unlocked</h2>
         <div class="stack">
           <article class="item">
+            <h3>Swap input reuse blocked</h3>
+            <p>Federated swap apply now rejects spent, pending, reserved, or pending-spent input proofs before generating fresh member shares, while exact accepted-operation replay remains idempotent.</p>
+          </article>
+          <article class="item">
+            <h3>Retriable HTTP backoff added</h3>
+            <p>NUT-19 retryable HTTP failures now wait before retrying and do not retry at all when the mint has not advertised replay support, preventing unreachable members from creating a tight retry loop.</p>
+          </article>
+          <article class="item">
             <h3>BLS property coverage</h3>
             <p>A seeded threshold BLS regression now varies messages, roster sizes, thresholds, and quorum subsets while checking share verification, aggregate signatures, aggregate public keys, and order independence.</p>
           </article>
@@ -834,7 +842,7 @@
           </article>
           <article class="item">
             <h3>Plan audit refreshed</h3>
-            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 462 checked items and 125 explicit next items.</p>
+            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 463 checked items and 124 explicit next items.</p>
           </article>
           <article class="item">
             <h3>Router startup replay proven</h3>
@@ -1982,6 +1990,18 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo check -p cdk --lib` passed with federation disabled.</td>
               <td>Run broader workspace tests before behavior-changing federation work.</td>
+            </tr>
+            <tr>
+              <td>Federated swap input-reuse attack</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --features mint,wallet,federation apply_federation_swap_rejects_sliding_window_input_reuse_attack -- --test-threads 1` passed, proving the exact accepted swap can replay idempotently while disjoint and ABC/BCD/CDA/DAB-style conflicting swaps with the same spent inputs fail before new shares are stored. `cargo test -p cdk --features mint,wallet,federation mint::federation::tests -- --test-threads 1` passed all 31 mint federation tests.</td>
+              <td>Extend the same proof-state guard coverage to P2PK, HTLC, and SIG_ALL federated swap fixtures.</td>
+            </tr>
+            <tr>
+              <td>NUT-19 retry backoff</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --features wallet wallet::mint_connector::http_client::tests -- --test-threads 1` passed, including regressions that retryable HTTP requests do not spin without NUT-19 support and wait before retrying when replay support exists.</td>
+              <td>Keep reviewing remaining member fanout, queueing, and reconnect paths for tight retry loops.</td>
             </tr>
             <tr>
               <td>Feature-enabled scaffold</td>

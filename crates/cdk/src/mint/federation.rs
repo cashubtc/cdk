@@ -1000,9 +1000,6 @@ impl Mint {
         )?;
 
         let fee_breakdown = self.get_federation_proofs_fee_with_config(&config, input_proofs)?;
-        let signatures = federation_share_signatures(
-            config.swap_signature_shares(operation_id, &operation.request)?,
-        );
         let input_ys = input_proofs.ys()?;
         let blinded_secrets = operation
             .request
@@ -1035,15 +1032,33 @@ impl Mint {
             }
         };
 
-        if proofs.state != State::Spent {
-            Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await?;
-        }
-
         let existing_signatures = tx.get_blind_signatures(&blinded_secrets).await?;
         let signatures_present = existing_signatures
             .iter()
             .filter(|sig| sig.is_some())
             .count();
+
+        match proofs.state {
+            State::Unspent => {}
+            State::Spent if signatures_present == existing_signatures.len() => {
+                tx.update_federation_operation_status(
+                    operation_id,
+                    FederationOperationStatus::Applied,
+                )
+                .await?;
+                tx.commit().await?;
+                return Ok(());
+            }
+            State::Spent => {
+                tx.rollback().await?;
+                return Err(Error::TokenAlreadySpent);
+            }
+            State::Pending | State::Reserved | State::PendingSpent => {
+                tx.rollback().await?;
+                return Err(Error::TokenPending);
+            }
+        }
+
         if signatures_present != 0 && signatures_present != existing_signatures.len() {
             tx.rollback().await?;
             return Err(Error::Custom(
@@ -1051,7 +1066,12 @@ impl Mint {
             ));
         }
 
+        Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await?;
+
         if signatures_present == 0 {
+            let signatures = federation_share_signatures(
+                config.swap_signature_shares(operation_id, &operation.request)?,
+            );
             tx.add_blinded_messages(None, operation.request.outputs(), &operation_record)
                 .await?;
             tx.add_blind_signatures(&blinded_secrets, &signatures, None)
@@ -2674,6 +2694,96 @@ mod tests {
             .await
             .expect("input states");
         assert_eq!(input_states.states[0].state, State::Spent);
+    }
+
+    #[tokio::test]
+    async fn apply_federation_swap_rejects_sliding_window_input_reuse_attack() {
+        let runtime_config = runtime_config();
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let inputs = vec![
+            proof_for_runtime(&runtime_config, "sliding-swap-input-a"),
+            proof_for_runtime(&runtime_config, "sliding-swap-input-b"),
+            proof_for_runtime(&runtime_config, "sliding-swap-input-c"),
+        ];
+        let input_ys = inputs.ys().expect("input ys");
+        let output_a = output_for_runtime(&runtime_config, b"sliding-swap-output-a");
+        let output_b = output_for_runtime(&runtime_config, b"sliding-swap-output-b");
+        let output_c = output_for_runtime(&runtime_config, b"sliding-swap-output-c");
+        let output_d = output_for_runtime(&runtime_config, b"sliding-swap-output-d");
+        let output_e = output_for_runtime(&runtime_config, b"sliding-swap-output-e");
+        let output_f = output_for_runtime(&runtime_config, b"sliding-swap-output-f");
+
+        let first_entry = appended_entry(
+            &mut journal,
+            runtime_config
+                .swap_operation(SwapRequest::new(
+                    inputs.clone(),
+                    vec![output_a.clone(), output_b.clone(), output_c.clone()],
+                ))
+                .expect("first swap operation"),
+        );
+        persist_and_apply_entry(&mint, &first_entry).await;
+
+        mint.apply_federation_journal_entries(std::slice::from_ref(&first_entry))
+            .await
+            .expect("same swap replay remains idempotent");
+
+        let signed_outputs = localstore
+            .get_blind_signatures(&[
+                output_a.blinded_secret,
+                output_b.blinded_secret,
+                output_c.blinded_secret,
+            ])
+            .await
+            .expect("accepted swap signatures");
+        assert_eq!(signed_outputs.iter().filter(|sig| sig.is_some()).count(), 3);
+
+        for outputs in [
+            vec![output_d.clone(), output_e.clone(), output_f.clone()],
+            vec![output_b.clone(), output_c.clone(), output_d.clone()],
+            vec![output_c.clone(), output_d.clone(), output_a.clone()],
+            vec![output_d.clone(), output_a.clone(), output_b.clone()],
+        ] {
+            let entry = appended_entry(
+                &mut journal,
+                runtime_config
+                    .swap_operation(SwapRequest::new(inputs.clone(), outputs))
+                    .expect("conflicting swap operation"),
+            );
+            let mut tx = localstore.begin_transaction().await.expect("begin");
+            tx.add_federation_journal_entry(&entry)
+                .await
+                .expect("persist conflicting swap");
+            tx.commit().await.expect("commit conflicting swap");
+
+            assert!(matches!(
+                mint.apply_federation_journal_entries(std::slice::from_ref(&entry))
+                    .await,
+                Err(cdk_common::Error::TokenAlreadySpent)
+            ));
+        }
+
+        let unsigned_outputs = localstore
+            .get_blind_signatures(&[
+                output_d.blinded_secret,
+                output_e.blinded_secret,
+                output_f.blinded_secret,
+            ])
+            .await
+            .expect("unsigned conflicting swap outputs");
+        assert_eq!(
+            unsigned_outputs,
+            vec![None, None, None],
+            "conflicting swap outputs must not receive member shares"
+        );
+        assert_eq!(
+            localstore
+                .get_proofs_states(&input_ys)
+                .await
+                .expect("input states"),
+            vec![Some(State::Spent), Some(State::Spent), Some(State::Spent)]
+        );
     }
 
     #[tokio::test]

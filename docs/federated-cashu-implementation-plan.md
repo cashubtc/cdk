@@ -87,8 +87,8 @@ Current confirmed shape:
 
 - Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes, in-memory consensus boundary, private REST peer envelopes, federation journal persistence, mint/swap/melt/restore/check-state apply paths, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
 - Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, exact deterministic binary operation encoding, a separate `federation_signature_share` table, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
-- Test-suite status: focused federation replay, peer-sync, session-outcome, trusted-dealer setup, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, fakewallet coupling audit, configurable timeout/retry policy tests, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, and `cdk-axum` federation tests were run for the latest checkpoints; the full workspace test suite remains open.
-- Latest checkpoint: threshold BLS now has a deterministic seeded property regression covering random messages, random thresholds, and random quorum subsets with share verification, signature aggregation, public-key aggregation, and order independence.
+- Test-suite status: focused federation replay, peer-sync, session-outcome, trusted-dealer setup, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, fakewallet coupling audit, configurable timeout/retry policy tests, NUT-19 retry backoff, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, federated swap input-reuse attack regression, and `cdk-axum` federation tests were run for the latest checkpoints; the full workspace test suite remains open.
+- Latest checkpoint: federated swap apply now rejects already-spent or pending input proofs before generating new signature shares, while preserving idempotent replay for the exact same accepted swap operation.
 
 ## Key observations
 
@@ -690,7 +690,7 @@ Implementation checklist:
 - [x] Ensure each member submits its request to consensus and signs only accepted operations.
 - [x] Record which operation hash won consensus.
 - [x] Attempt to aggregate shares per output across all responses.
-- [ ] Repeat the same sliding-window attack test for swap inputs instead of mint quote issuance.
+- [x] Repeat the same sliding-window attack test for swap inputs instead of mint quote issuance.
 - [x] Repeat with delayed members and duplicate submissions.
 
 Tests and success criteria:
