@@ -10,9 +10,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 use cdk::federation::{
-    FederatedKeyset, FederationConsensusEngine, FederationDkgCommitmentRequest,
-    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
-    FederationDkgTranscriptSignatureRequest, FederationError, FederationJournalCatchUpRequest,
+    FederatedKeyset, FederationConsensusEngine, FederationError, FederationJournalCatchUpRequest,
     FederationJournalCatchUpResponse, FederationJournalDigest, FederationJournalEntry,
     FederationMaterializedStateRow, FederationMaterializedStateRowFingerprint,
     FederationMaterializedStateSnapshot, FederationOperation, FederationOperationEnvelope,
@@ -32,9 +30,13 @@ use tracing::instrument;
 
 use crate::MintState;
 
+mod dkg_routes;
 mod peer_client;
 mod sync_config;
 
+use self::dkg_routes::{
+    post_dkg_commitment, post_dkg_reveal, post_dkg_secret_share, post_dkg_transcript_signature,
+};
 use self::peer_client::FederationRestPeerClient;
 pub use self::sync_config::FederationPeerSyncConfig;
 use self::sync_config::{
@@ -44,7 +46,11 @@ use self::sync_config::{
 #[cfg(test)]
 use self::sync_config::{federation_peer_sync_disabled_value, federation_reconnect_backoff_delay};
 #[cfg(test)]
-use cdk::federation::{FederationConfig, FederationId};
+use cdk::federation::{
+    FederationConfig, FederationDkgCommitmentRequest, FederationDkgRevealRequest,
+    FederationDkgSecretShareRequest, FederationDkgSetupResponse,
+    FederationDkgTranscriptSignatureRequest, FederationId,
+};
 #[cfg(test)]
 use tokio::time::Duration;
 
@@ -719,142 +725,6 @@ async fn post_local_status(
     #[cfg(feature = "prometheus")]
     record_federation_local_status_metrics(&response);
     Ok(Json(response))
-}
-
-#[instrument(skip_all)]
-async fn post_dkg_commitment(
-    State(state): State<MintState>,
-    Json(payload): Json<FederationSignedRequest<FederationDkgCommitmentRequest>>,
-) -> Result<Json<FederationDkgSetupResponse>, Response> {
-    let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::DkgCommitment)?;
-    let verified =
-        verify_federation_request(&state, &payload, FederationRestMessageKind::DkgCommitment)
-            .await?;
-    let runtime_config = federation_runtime_config(&state)?;
-    payload
-        .payload
-        .validate_sender(runtime_config.public_config(), verified.sender)
-        .map_err(federation_error_response)?;
-    let federation_id = runtime_config.federation_id();
-    let local_member = runtime_config.member_id();
-    state
-        .persist_federation_dkg_commitment(
-            &payload.payload.commitment,
-            verified.sender,
-            verified.sequence,
-        )
-        .await
-        .map_err(cdk_error_response)?;
-
-    Ok(Json(FederationDkgSetupResponse::new(
-        federation_id,
-        local_member,
-        FederationRestMessageKind::DkgCommitment,
-        payload.payload.commitment.member_id,
-    )))
-}
-
-#[instrument(skip_all)]
-async fn post_dkg_reveal(
-    State(state): State<MintState>,
-    Json(payload): Json<FederationSignedRequest<FederationDkgRevealRequest>>,
-) -> Result<Json<FederationDkgSetupResponse>, Response> {
-    let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::DkgReveal)?;
-    let verified =
-        verify_federation_request(&state, &payload, FederationRestMessageKind::DkgReveal).await?;
-    let runtime_config = federation_runtime_config(&state)?;
-    payload
-        .payload
-        .validate_sender(runtime_config.public_config(), verified.sender)
-        .map_err(federation_error_response)?;
-    let federation_id = runtime_config.federation_id();
-    let local_member = runtime_config.member_id();
-    state
-        .persist_federation_dkg_reveal(&payload.payload.reveal, verified.sender, verified.sequence)
-        .await
-        .map_err(cdk_error_response)?;
-
-    Ok(Json(FederationDkgSetupResponse::new(
-        federation_id,
-        local_member,
-        FederationRestMessageKind::DkgReveal,
-        payload.payload.reveal.member_id,
-    )))
-}
-
-#[instrument(skip_all)]
-async fn post_dkg_secret_share(
-    State(state): State<MintState>,
-    Json(payload): Json<FederationSignedRequest<FederationDkgSecretShareRequest>>,
-) -> Result<Json<FederationDkgSetupResponse>, Response> {
-    let _permit =
-        acquire_private_rest_admission(&state, FederationRestMessageKind::DkgSecretShare)?;
-    let verified =
-        verify_federation_request(&state, &payload, FederationRestMessageKind::DkgSecretShare)
-            .await?;
-    let runtime_config = federation_runtime_config(&state)?;
-    payload
-        .payload
-        .validate_sender_receiver(
-            runtime_config.public_config(),
-            verified.sender,
-            runtime_config.member_id(),
-        )
-        .map_err(federation_error_response)?;
-    let federation_id = runtime_config.federation_id();
-    let local_member = runtime_config.member_id();
-    state
-        .persist_federation_dkg_secret_share_contribution(
-            &payload.payload,
-            verified.sender,
-            verified.sequence,
-        )
-        .await
-        .map_err(cdk_error_response)?;
-
-    Ok(Json(FederationDkgSetupResponse::new(
-        federation_id,
-        local_member,
-        FederationRestMessageKind::DkgSecretShare,
-        payload.payload.sender,
-    )))
-}
-
-#[instrument(skip_all)]
-async fn post_dkg_transcript_signature(
-    State(state): State<MintState>,
-    Json(payload): Json<FederationSignedRequest<FederationDkgTranscriptSignatureRequest>>,
-) -> Result<Json<FederationDkgSetupResponse>, Response> {
-    let _permit =
-        acquire_private_rest_admission(&state, FederationRestMessageKind::DkgTranscriptSignature)?;
-    let verified = verify_federation_request(
-        &state,
-        &payload,
-        FederationRestMessageKind::DkgTranscriptSignature,
-    )
-    .await?;
-    let runtime_config = federation_runtime_config(&state)?;
-    payload
-        .payload
-        .validate_sender(runtime_config.public_config(), verified.sender)
-        .map_err(federation_error_response)?;
-    let federation_id = runtime_config.federation_id();
-    let local_member = runtime_config.member_id();
-    state
-        .persist_federation_dkg_transcript_signature(
-            &payload.payload,
-            verified.sender,
-            verified.sequence,
-        )
-        .await
-        .map_err(cdk_error_response)?;
-
-    Ok(Json(FederationDkgSetupResponse::new(
-        federation_id,
-        local_member,
-        FederationRestMessageKind::DkgTranscriptSignature,
-        payload.payload.signer,
-    )))
 }
 
 #[instrument(skip_all)]

@@ -525,19 +525,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The repo now has a fast `fed-regtest-check` helper for federation smoke/setup cargo-test coverage, and Axum peer-sync policy plus signed peer-client code now live in focused child modules.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The repo now has a fast `fed-regtest-check` helper for federation smoke/setup cargo-test coverage, and Axum peer-sync policy, signed peer-client code, and private DKG setup routes now live in focused child modules.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: split axum peer client</span>
+          <span class="value">refactor: split axum dkg routes</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`crates/cdk-axum/src/federation/peer_client.rs` now owns signed private REST peer calls, outbound admission, endpoint building, request timeouts, and sequence reservation while the parent module keeps local catch-up orchestration.</span>
+          <span class="value">`crates/cdk-axum/src/federation/dkg_routes.rs` now owns private DKG commitment, reveal, secret-share, and transcript-signature route handlers while the parent module keeps router assembly and shared signed-envelope verification helpers.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue the Axum split toward sync loop, status, catch-up, and route modules, then return to production DKG, broader storage-backed recovery checks, larger-roster partition drills, and the remaining BFT follow-ups.</span>
+          <span class="value">Continue the Axum split toward sync loop, status, catch-up, and payment-observation route modules, then return to production DKG, broader storage-backed recovery checks, larger-roster partition drills, and the remaining BFT follow-ups.</span>
         </div>
       </aside>
     </header>
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Axum DKG routes split out</h3>
+            <p>The private DKG setup route handlers now live in `federation/dkg_routes.rs`, covering commitment, reveal, secret-share, and transcript-signature request validation and persistence while shared envelope verification stays in the parent module.</p>
+          </article>
           <article class="item">
             <h3>Axum peer client split out</h3>
             <p>The signed private REST peer client now lives in `federation/peer_client.rs`, covering outbound admission, signed request construction, endpoint building, per-operation timeouts, DKG/status/submit/catch-up calls, and process-wide REST sequence reservation while local catch-up orchestration stays in the parent module.</p>
@@ -2313,6 +2317,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo check -p cdk-axum --features federation`, `cargo test -p cdk-axum --features federation peer_sync_round -- --test-threads 1`, and `cargo test -p cdk-axum --features federation rest_peer_client -- --test-threads 1` passed; the listener-bound loopback test passed after rerunning with localhost bind permission.</td>
               <td>Continue the Axum split toward sync loop, status, catch-up, and route modules while keeping signed peer calls isolated in `federation/peer_client.rs`.</td>
+            </tr>
+            <tr>
+              <td>Axum DKG route split</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo check -p cdk-axum --features federation` passed after moving private DKG setup handlers into `crates/cdk-axum/src/federation/dkg_routes.rs`. `cargo test -p cdk-axum --features federation dkg -- --test-threads 1` passed 15 DKG route/client tests after rerunning the listener-bound loopback test with localhost bind permission.</td>
+              <td>Continue the Axum split toward sync loop, status, catch-up, and payment-observation route modules while keeping router assembly and shared envelope helpers in the parent module.</td>
             </tr>
             <tr>
               <td>Federation smoke argument validation</td>
