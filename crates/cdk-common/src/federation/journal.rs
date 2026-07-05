@@ -14,7 +14,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
     FederationError, FederationOperationConflictKey, FederationOperationEnvelope,
-    FederationOperationId, Result,
+    FederationOperationId, MemberId, Result,
 };
 
 const FEDERATION_JOURNAL_GENESIS_VERSION: &[u8] = b"cdk-federation-journal-genesis-v1";
@@ -455,6 +455,88 @@ impl FederationStateDigestCheckpoint {
             state_digest,
         }
     }
+}
+
+/// Durable local sync status labels for one federation member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationMemberStatusKind {
+    /// The member is caught up and ready to process public federation requests.
+    Healthy,
+    /// The member has observed that a peer is ahead.
+    Lagging,
+    /// The member is actively applying journal entries from a peer.
+    CatchingUp,
+    /// The member is waiting for signed session-outcome evidence after catch-up.
+    VerifyingSessionOutcome,
+    /// The member is waiting for materialized state digests to converge.
+    MaterializedStateMismatch,
+    /// The member halted federation public request handling.
+    Halted,
+}
+
+impl FederationMemberStatusKind {
+    /// Return the stable database/API label for this status.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::Lagging => "lagging",
+            Self::CatchingUp => "catching_up",
+            Self::VerifyingSessionOutcome => "verifying_session_outcome",
+            Self::MaterializedStateMismatch => "materialized_state_mismatch",
+            Self::Halted => "halted",
+        }
+    }
+
+    /// Parse a status from its stable database/API label.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "healthy" => Some(Self::Healthy),
+            "lagging" => Some(Self::Lagging),
+            "catching_up" => Some(Self::CatchingUp),
+            "verifying_session_outcome" => Some(Self::VerifyingSessionOutcome),
+            "materialized_state_mismatch" => Some(Self::MaterializedStateMismatch),
+            "halted" => Some(Self::Halted),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for FederationMemberStatusKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Durable local sync status snapshot for one federation member.
+///
+/// This record is local operator/admin state. It is intentionally excluded from
+/// consensus materialized state digests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationMemberStatusSnapshot {
+    /// Local member whose status is being recorded.
+    pub member_id: MemberId,
+    /// Local sync status label.
+    pub status: FederationMemberStatusKind,
+    /// Peer associated with the status, when applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<MemberId>,
+    /// Local operation count recorded for lagging statuses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_operation_count: Option<u64>,
+    /// Peer operation count recorded for lagging statuses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_operation_count: Option<u64>,
+    /// Operation count associated with verification or digest convergence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_count: Option<u64>,
+    /// Redacted operator-facing status message, when useful for restart/status output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Unix time when the snapshot was recorded.
+    pub updated_time: u64,
 }
 
 /// Outcome of appending an operation envelope.

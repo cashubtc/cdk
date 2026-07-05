@@ -472,7 +472,7 @@ Implementation checklist:
   - [x] `federation_payment_observations`.
   - [x] Dedicated `federation_state_digest` digest-history table.
   - [x] `federation_member_sequences` for private REST sequence watermarks.
-  - [ ] Dedicated `federation_member_status` table if runtime/admin state should become persistent.
+  - [x] Dedicated `federation_member_status` table if runtime/admin state should become persistent.
 - [x] Keep existing mint tables as the materialized state used by existing APIs where possible.
 - [x] Add `signature_share` rows instead of overloading final `blind_signature` semantics for federated members.
 - [x] Add state digest calculation over consensus-visible tables only.

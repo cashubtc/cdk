@@ -7,17 +7,21 @@ use cdk_common::federation::{
     FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
     FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest, FederationJournalEntry,
-    FederationOperationConflictKey, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationSessionOutcome, FederationSignatureShareRecord,
-    FederationStateDigestCheckpoint, MemberId,
+    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationConflictKey,
+    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationSessionOutcome, FederationSignatureShareRecord, FederationStateDigestCheckpoint,
+    MemberId,
 };
 use cdk_common::PublicKey;
 
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
-use crate::{column_as_number, column_as_string, unpack_into};
+use crate::{
+    column_as_nullable_number, column_as_nullable_string, column_as_number, column_as_string,
+    unpack_into,
+};
 
 const FEDERATION_DKG_COMMITMENT_PHASE: &str = "commitment";
 const FEDERATION_DKG_REVEAL_PHASE: &str = "reveal";
@@ -176,6 +180,49 @@ fn sql_member_id(column: Column) -> Result<MemberId, Error> {
     let member_id_raw: u64 = column_as_number!(column);
     MemberId::new(member_id_raw as u16)
         .map_err(|e| Error::Internal(format!("Invalid federation member id: {e}")))
+}
+
+fn sql_optional_member_id(column: Column) -> Result<Option<MemberId>, Error> {
+    let member_id_raw: Option<u64> = column_as_nullable_number!(column);
+    let Some(member_id_raw) = member_id_raw else {
+        return Ok(None);
+    };
+    MemberId::new(member_id_raw as u16)
+        .map(Some)
+        .map_err(|e| Error::Internal(format!("Invalid federation member id: {e}")))
+}
+
+fn sql_row_to_federation_member_status(
+    row: Vec<Column>,
+) -> Result<FederationMemberStatusSnapshot, Error> {
+    unpack_into!(
+        let (
+            member_id,
+            status,
+            peer_member_id,
+            local_operation_count,
+            peer_operation_count,
+            operation_count,
+            message,
+            updated_time
+        ) = row
+    );
+
+    let status_label = column_as_string!(&status);
+    let status = FederationMemberStatusKind::from_label(&status_label).ok_or_else(|| {
+        Error::Internal(format!("Invalid federation member status: {status_label}"))
+    })?;
+
+    Ok(FederationMemberStatusSnapshot {
+        member_id: sql_member_id(member_id)?,
+        status,
+        peer: sql_optional_member_id(peer_member_id)?,
+        local_operation_count: column_as_nullable_number!(local_operation_count),
+        peer_operation_count: column_as_nullable_number!(peer_operation_count),
+        operation_count: column_as_nullable_number!(operation_count),
+        message: column_as_nullable_string!(message),
+        updated_time: column_as_number!(updated_time),
+    })
 }
 
 fn sql_row_to_federation_dkg_commitment(
@@ -432,6 +479,71 @@ where
         )?
         .bind("member_id", i64::from(member_id.get()))
         .bind("last_sequence", sequence as i64)
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn set_federation_member_status(
+        &mut self,
+        status: &FederationMemberStatusSnapshot,
+    ) -> Result<(), Self::Err> {
+        query(
+            r#"
+            INSERT INTO federation_member_status
+            (
+                member_id,
+                status,
+                peer_member_id,
+                local_operation_count,
+                peer_operation_count,
+                operation_count,
+                message,
+                updated_time
+            )
+            VALUES
+            (
+                :member_id,
+                :status,
+                :peer_member_id,
+                :local_operation_count,
+                :peer_operation_count,
+                :operation_count,
+                :message,
+                :updated_time
+            )
+            ON CONFLICT (member_id)
+            DO UPDATE SET
+                status = EXCLUDED.status,
+                peer_member_id = EXCLUDED.peer_member_id,
+                local_operation_count = EXCLUDED.local_operation_count,
+                peer_operation_count = EXCLUDED.peer_operation_count,
+                operation_count = EXCLUDED.operation_count,
+                message = EXCLUDED.message,
+                updated_time = EXCLUDED.updated_time
+            "#,
+        )?
+        .bind("member_id", i64::from(status.member_id.get()))
+        .bind("status", status.status.as_str())
+        .bind(
+            "peer_member_id",
+            status.peer.map(|peer| i64::from(peer.get())),
+        )
+        .bind(
+            "local_operation_count",
+            status.local_operation_count.map(|count| count as i64),
+        )
+        .bind(
+            "peer_operation_count",
+            status.peer_operation_count.map(|count| count as i64),
+        )
+        .bind(
+            "operation_count",
+            status.operation_count.map(|count| count as i64),
+        )
+        .bind("message", status.message.clone())
+        .bind("updated_time", status.updated_time as i64)
         .execute(&self.inner)
         .await?;
 
@@ -873,6 +985,40 @@ where
         }
 
         Ok(sequences)
+    }
+
+    async fn get_federation_member_status(
+        &self,
+        member_id: MemberId,
+    ) -> Result<Option<FederationMemberStatusSnapshot>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        let mut rows = query(
+            r#"
+            SELECT
+                member_id,
+                status,
+                peer_member_id,
+                local_operation_count,
+                peer_operation_count,
+                operation_count,
+                message,
+                updated_time
+            FROM federation_member_status
+            WHERE member_id = :member_id
+            "#,
+        )?
+        .bind("member_id", i64::from(member_id.get()))
+        .fetch_all(&*conn)
+        .await?
+        .into_iter();
+        match rows.next() {
+            Some(row) => sql_row_to_federation_member_status(row).map(Some),
+            None => Ok(None),
+        }
     }
 
     async fn get_federation_session_outcomes(

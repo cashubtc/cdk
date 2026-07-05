@@ -11,6 +11,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
+#[cfg(test)]
+use cdk::federation::FederationMemberStatusKind;
 use cdk::federation::{
     FederatedKeyset, FederationConfig, FederationConsensusEngine, FederationDkgCommitmentRequest,
     FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
@@ -8897,6 +8899,80 @@ mod tests {
         assert!(response
             .sync_message
             .contains("federation member is lagging behind peer"));
+    }
+
+    #[tokio::test]
+    async fn sync_status_transitions_persist_member_status_snapshot() {
+        let (state, _, peer_private) = federation_route_state().await;
+        let local_member = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .member_id();
+        let peer_member = peer_private.member_id;
+
+        state.mark_federation_lagging(peer_member, 1, 4).await;
+        let lagging = state
+            .mint
+            .localstore()
+            .get_federation_member_status(local_member)
+            .await
+            .expect("persisted lagging status")
+            .expect("lagging status");
+        assert_eq!(lagging.status, FederationMemberStatusKind::Lagging);
+        assert_eq!(lagging.peer, Some(peer_member));
+        assert_eq!(lagging.local_operation_count, Some(1));
+        assert_eq!(lagging.peer_operation_count, Some(4));
+        assert!(lagging
+            .message
+            .expect("lagging message")
+            .contains("lagging behind peer"));
+
+        state
+            .mark_federation_halted(
+                "halted while reading secret=sync-secret from /home/example/fed/private.json",
+            )
+            .await;
+        let halted = state
+            .mint
+            .localstore()
+            .get_federation_member_status(local_member)
+            .await
+            .expect("persisted halted status")
+            .expect("halted status");
+        let halted_message = halted.message.expect("halted message");
+        assert_eq!(halted.status, FederationMemberStatusKind::Halted);
+        assert!(halted_message.contains("secret=[REDACTED]"));
+        assert!(halted_message.contains("[REDACTED_PATH]"));
+        assert!(!halted_message.contains("sync-secret"));
+        assert!(!halted_message.contains("/home/example"));
+    }
+
+    #[tokio::test]
+    async fn startup_restores_persisted_federation_sync_status() {
+        let (state, _, peer_private) = federation_route_state().await;
+        let peer_member = peer_private.member_id;
+        state.mark_federation_lagging(peer_member, 2, 5).await;
+
+        let mut restarted = state.clone();
+        restarted.federation_sync = Some(Arc::new(tokio::sync::Mutex::new(
+            crate::FederationSyncState::default(),
+        )));
+        assert_eq!(
+            restarted.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Healthy)
+        );
+
+        restarted.restore_federation_sync_status().await;
+
+        assert_eq!(
+            restarted.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Lagging {
+                peer: peer_member,
+                local_operation_count: 2,
+                peer_operation_count: 5,
+            })
+        );
     }
 
     #[tokio::test]

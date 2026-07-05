@@ -464,6 +464,15 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_member_status_persistence() {
+        cdk_common::database::mint::test::federation_member_status_persistence(
+            provide_mint_db("federation_member_status_persistence".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_state_digest_checkpoint_persistence() {
         cdk_common::database::mint::test::federation_state_digest_checkpoint_persistence(
             provide_mint_db("federation_state_digest_checkpoint_persistence".to_string()).await,

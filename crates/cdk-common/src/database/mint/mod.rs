@@ -14,10 +14,11 @@ use super::{DbTransactionFinalizer, Error};
 use crate::federation::{
     FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgTranscriptSignatureRequest, FederationJournalEntry, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationSessionOutcome, FederationSignatureShareRecord,
-    FederationStateDigestCheckpoint, MemberId,
+    FederationDkgTranscriptSignatureRequest, FederationJournalEntry,
+    FederationMemberStatusSnapshot, FederationOperationId, FederationOperationStatus,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationSessionOutcome, FederationSignatureShareRecord, FederationStateDigestCheckpoint,
+    MemberId,
 };
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
@@ -636,6 +637,12 @@ pub trait FederationJournalTransaction {
         sequence: u64,
     ) -> Result<(), Self::Err>;
 
+    /// Persist the latest local sync status snapshot for one federation member.
+    async fn set_federation_member_status(
+        &mut self,
+        status: &FederationMemberStatusSnapshot,
+    ) -> Result<(), Self::Err>;
+
     /// Persist one signed federation session outcome.
     async fn add_federation_session_outcome(
         &mut self,
@@ -736,6 +743,12 @@ pub trait FederationJournalDatabase {
 
     /// Get persisted private REST sequence watermarks by member.
     async fn get_federation_member_sequences(&self) -> Result<BTreeMap<MemberId, u64>, Self::Err>;
+
+    /// Get the latest local sync status snapshot for one federation member.
+    async fn get_federation_member_status(
+        &self,
+        member_id: MemberId,
+    ) -> Result<Option<FederationMemberStatusSnapshot>, Self::Err>;
 
     /// Get all persisted signed federation session outcomes.
     async fn get_federation_session_outcomes(
