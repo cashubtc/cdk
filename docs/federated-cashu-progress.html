@@ -525,15 +525,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. DKG transcript-signature private REST acceptance now binds every accepted signature to the receiver's locally derived DKG keyset-share transcript hash before advancing sequence state, while full production DKG remains an open milestone.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The Axum DKG transcript-signature route regressions now live in a focused child test module while the parent federation route fixture stays shared for the broader private REST suite.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: bind DKG transcript signatures to local keysets</span>
+          <span class="value">refactor: split axum DKG transcript signature tests</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The DKG transcript-signature route now rejects premature signatures before local keyset-share derivation and rejects validly signed but wrong transcript hashes before sequence persistence.</span>
+          <span class="value">`crates/cdk-axum/src/federation/tests/dkg_transcript_signature.rs` now owns the accepted, bad-signature, premature-keyset-share, and wrong-hash private REST route tests.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Axum DKG route tests split out</h3>
+            <p>The DKG transcript-signature private REST route tests now live in a focused child module, keeping the large Axum federation route fixture available while making the newest DKG transcript-binding regressions easier to audit.</p>
+          </article>
           <article class="item">
             <h3>DKG transcript signatures bound to local shares</h3>
             <p>Private REST no longer stores a transcript-signature approval just because a roster member signed an arbitrary hash; the receiving member first derives the expected Pedersen-DKG transcript hash from its durable local keyset-share record and fails closed on premature or mismatched hashes.</p>
@@ -2255,6 +2259,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation federation::tests:: -- --test-threads 1` passed 100 tests after moving the large inline private REST route fixtures into `crates/cdk-axum/src/federation/tests.rs`. The loopback HTTP DKG route test required localhost bind permission outside the sandbox.</td>
               <td>Continue the same behavior-neutral split pattern for the remaining local connector and smoke-helper federation fixtures.</td>
+            </tr>
+            <tr>
+              <td>Axum DKG transcript-signature test split</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation dkg_transcript_signature -- --test-threads 1` passed 4 route tests after moving the accepted, bad-signature, premature-keyset-share, and wrong-hash transcript-signature regressions into `crates/cdk-axum/src/federation/tests/dkg_transcript_signature.rs`.</td>
+              <td>Keep future route-specific regressions in child modules when the split improves auditability without hiding shared fixtures.</td>
             </tr>
             <tr>
               <td>Mint federation test module split</td>
