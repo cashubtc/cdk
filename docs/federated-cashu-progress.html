@@ -525,15 +525,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The Axum DKG setup route regressions now live beside the transcript-signature tests in focused child modules while the parent federation route fixture stays shared for the broader private REST suite.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The Axum private operation route regressions now live beside the DKG route tests in focused child modules while the parent federation route fixture stays shared for the broader private REST suite.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: split axum DKG setup route tests</span>
+          <span class="value">refactor: split axum private operation route tests</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`crates/cdk-axum/src/federation/tests/dkg_setup_routes.rs` now owns the commitment, reveal, secret-share, route-derived keyset-share, and restart activation private REST route tests.</span>
+          <span class="value">`crates/cdk-axum/src/federation/tests/private_operation_route.rs` now owns the signed submit-operation acceptance, mutation rejection, sender validation, kind mismatch, and stale-sequence private REST route tests.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Axum private operation route tests split out</h3>
+            <p>The signed submit-operation acceptance, oversized payload, tampered payload, unknown sender, wrong-kind, and stale-sequence tests now live in a focused child module while shared federation route builders remain in the parent fixture.</p>
+          </article>
           <article class="item">
             <h3>Axum DKG setup tests split out</h3>
             <p>The DKG commitment, reveal, secret-share, route-derived keyset-share, and restart activation tests now live in a focused child module, making the setup-route regressions easier to audit while keeping shared request builders in the parent fixture.</p>
@@ -2275,6 +2279,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation dkg_setup_routes -- --test-threads 1` passed 9 route tests after moving commitment, reveal, secret-share, route-derived keyset-share, and restart activation regressions into `crates/cdk-axum/src/federation/tests/dkg_setup_routes.rs`.</td>
               <td>Keep the remaining Axum cleanup constrained to route groups where the split keeps the parent private REST fixture readable.</td>
+            </tr>
+            <tr>
+              <td>Axum private operation route test split</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation private_operation_route -- --test-threads 1` passed 6 route tests after moving signed submit-operation acceptance, mutation rejection, sender validation, kind mismatch, and stale-sequence regressions into `crates/cdk-axum/src/federation/tests/private_operation_route.rs`.</td>
+              <td>Keep future private REST route splits focused on cohesive route surfaces that can reuse the parent federation fixture without duplicating helpers.</td>
             </tr>
             <tr>
               <td>Mint federation test module split</td>
