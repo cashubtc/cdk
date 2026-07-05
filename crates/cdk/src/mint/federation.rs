@@ -453,9 +453,29 @@ impl Mint {
         let Some(config) = self.federation_config() else {
             return Ok(None);
         };
-        let mut effective = config.clone();
 
-        for entry in self.localstore.get_federation_journal_entries().await? {
+        let entries = self.localstore.get_federation_journal_entries().await?;
+        let applied_rotations = entries
+            .iter()
+            .filter(|entry| entry.status == FederationOperationStatus::Applied)
+            .filter(|entry| {
+                matches!(
+                    &entry.envelope.operation,
+                    FederationOperation::KeysetRotation(_)
+                )
+            })
+            .map(|entry| (entry.index, entry.operation_id))
+            .collect::<Vec<_>>();
+
+        let mut cache = self.federation_effective_config_cache.lock().await;
+        if let Some(cached) = cache.as_ref() {
+            if cached.applied_rotations == applied_rotations {
+                return Ok(Some(cached.config.clone()));
+            }
+        }
+
+        let mut effective = config.clone();
+        for entry in entries {
             if entry.status != FederationOperationStatus::Applied {
                 continue;
             }
@@ -464,6 +484,11 @@ impl Mint {
                 effective = effective.apply_keyset_rotation(operation)?;
             }
         }
+
+        *cache = Some(super::EffectiveFederationConfigCache {
+            applied_rotations,
+            config: effective.clone(),
+        });
 
         Ok(Some(effective))
     }
@@ -2683,6 +2708,40 @@ mod tests {
         effective
             .verify_proofs(&vec![proof_for_keyset(&old_keyset, 2, "old proof")])
             .expect("old proofs remain verifiable after rotation");
+
+        let second_entry = appended_entry(
+            &mut journal,
+            runtime_config.operation_envelope(FederationOperation::KeysetRotation(
+                FederationKeysetRotationOperation {
+                    keyset: old_keyset.clone(),
+                },
+            )),
+        );
+        persist_and_apply_entry(&mint, &second_entry).await;
+
+        let reverted = mint
+            .effective_federation_config()
+            .await
+            .expect("reverted effective config")
+            .expect("federation config");
+        assert!(
+            reverted
+                .public_config()
+                .keysets
+                .iter()
+                .find(|keyset| keyset.id == old_keyset.id)
+                .expect("old keyset")
+                .active
+        );
+        assert!(
+            !reverted
+                .public_config()
+                .keysets
+                .iter()
+                .find(|keyset| keyset.id == next_keyset.id)
+                .expect("next keyset")
+                .active
+        );
     }
 
     #[tokio::test]

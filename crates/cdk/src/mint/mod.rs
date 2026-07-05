@@ -88,6 +88,9 @@ pub struct Mint {
     /// Validated federation config for member mode.
     #[cfg(feature = "federation")]
     federation_config: Option<FederationRuntimeConfig>,
+    /// Cached federation config after applying accepted keyset rotations.
+    #[cfg(feature = "federation")]
+    federation_effective_config_cache: Arc<Mutex<Option<EffectiveFederationConfigCache>>>,
 }
 
 impl std::fmt::Debug for Mint {
@@ -103,6 +106,13 @@ struct TaskState {
     shutdown_notify: Option<Arc<Notify>>,
     /// Handle to the main supervisor task
     supervisor_handle: Option<JoinHandle<Result<(), Error>>>,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone)]
+struct EffectiveFederationConfigCache {
+    applied_rotations: Vec<(u64, cdk_common::federation::FederationOperationId)>,
+    config: FederationRuntimeConfig,
 }
 
 impl Mint {
@@ -273,6 +283,8 @@ impl Mint {
             federation_mode,
             #[cfg(feature = "federation")]
             federation_config,
+            #[cfg(feature = "federation")]
+            federation_effective_config_cache: Arc::new(Mutex::new(None)),
         })
     }
 
