@@ -525,19 +525,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 557 checked items and 32 remaining items. Federation-aware wallets can now bootstrap from a versioned invite code that carries the validated public federation config and member public mint URLs.</span>
+          <span class="value">The implementation plan audit tracks 558 checked items and 31 remaining items. Federation-aware wallets now verify threshold quote visibility after quote creation, and quote-status fanout waits for a matching quorum before aggregation.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add federation invite-code wallet discovery</span>
+          <span class="value">fix: wait for matching mint quote status quorum</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`FederationInvite` encodes the public config as `cashufedA...`, and `FederatedMintConnector::from_invite_code` builds validated HTTP member connectors from the roster.</span>
+          <span class="value">`post_mint_quote` now refuses federation quotes that are not visible to a threshold, and mint quote status collection no longer stops on a nonmatching paid/unpaid quorum race.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with quote-visibility readiness after quote creation, live Postgres migration/application coverage, production DKG, and the remaining BFT follow-ups.</span>
+          <span class="value">Continue with live Postgres migration/application coverage, production DKG, broader storage-backed recovery checks, and the remaining BFT follow-ups.</span>
         </div>
       </aside>
     </header>
@@ -548,7 +548,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 557 checked entries and 32 remaining entries. The
+          checklist has 558 checked entries and 31 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Quote visibility gate</h3>
+            <p>Federated mint quote creation now confirms the created quote is visible to a threshold before returning it, and mint quote status fanout waits for a matching threshold view instead of stopping on the first nonmatching pair of responses.</p>
+          </article>
           <article class="item">
             <h3>Wallet invite discovery</h3>
             <p>Federation invites now encode the validated public config in a `cashufedA` payload, and the wallet connector can construct member HTTP clients from the roster's public mint URLs before applying the existing aggregate-keyset checks.</p>
@@ -3276,7 +3280,13 @@
               <td>Wallet federation signing fanout</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --features wallet,federation federated_mint_connector_ -- --test-threads 1` passed all 46 wallet federation connector tests after the member request policy update, including invalid policy rejection, configured fallback timeout, configured member request timeout, retryable member request recovery, configured quote-status timeout, bounded state-changing fanout, bad advertisement rejection, slow extra keyset-member tolerance, mint, batch mint, swap, melt, restore, check-state, HTTP wrapper rotation, primary fallback, auth wallet propagation, and status change aggregation. `cargo check -p cdk --features wallet,mint,federation`, `cargo fmt --all -- --check`, and `git diff --check` passed.</td>
-              <td>Move remaining quote visibility checks from best-effort status reads into explicit consensus-backed readiness once the production ordering backend is chosen.</td>
+              <td>Continue with production ordering, storage-backed recovery, and larger-roster process coverage now that quote visibility has a focused wallet connector gate.</td>
+            </tr>
+            <tr>
+              <td>Wallet quote visibility and status quorum</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --features wallet,federation mint_quote -- --test-threads 1` passed 18 mint-quote tests, including threshold quote visibility and the matching mint-quote status quorum regression. `cargo test -p cdk --features wallet,mint,federation federated_mint_connector_aggregates_fake_wallet_member_shares -- --test-threads 1`, `cargo test -p cdk --features wallet,federation quote_visibility -- --test-threads 1`, `cargo test -p cdk --features wallet,federation quote_member_stalls -- --test-threads 1`, `cargo test -p cdk --features wallet,federation matching_melt_quote_status -- --test-threads 1`, `cargo check -p cdk --features wallet,mint,federation`, `cargo fmt --all -- --check`, and `git diff --check` passed.</td>
+              <td>Carry the matching-quorum status rule into any future quote-status batching or production peer transport implementation.</td>
             </tr>
             <tr>
               <td>Wallet keyset liveness and smoke status polling</td>

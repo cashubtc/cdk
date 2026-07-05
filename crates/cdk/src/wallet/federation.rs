@@ -636,6 +636,7 @@ impl FederatedMintConnector {
     async fn collect_mint_quote_status_responses<F, Fut>(
         &self,
         mut call_member: F,
+        allow_primary_fallback: bool,
     ) -> Result<Vec<(MemberId, MintQuoteResponse<String>)>, Error>
     where
         F: FnMut(Arc<dyn MintConnector + Send + Sync>) -> Fut,
@@ -648,7 +649,7 @@ impl FederatedMintConnector {
                 Some(self.config.quote_status_member_timeout),
                 self.config.member_request_max_retries,
                 "mint quote status",
-                |responses| responses.len() >= threshold,
+                |responses| has_threshold_matching_mint_quote_status(responses, threshold),
             )
             .await;
 
@@ -656,11 +657,13 @@ impl FederatedMintConnector {
             return Ok(responses);
         }
 
-        if let Some((_, response)) = responses
-            .iter()
-            .find(|(member_id, _)| *member_id == self.primary_member_id)
-        {
-            return Ok(vec![(self.primary_member_id, response.clone())]);
+        if allow_primary_fallback {
+            if let Some((_, response)) = responses
+                .iter()
+                .find(|(member_id, _)| *member_id == self.primary_member_id)
+            {
+                return Ok(vec![(self.primary_member_id, response.clone())]);
+            }
         }
 
         Err(Error::InvalidMintResponse(format!(
@@ -738,6 +741,34 @@ impl FederatedMintConnector {
             responses.len(),
             failures.join("; ")
         )))
+    }
+
+    async fn verify_mint_quote_visible_to_threshold(
+        &self,
+        response: &MintQuoteResponse<String>,
+    ) -> Result<(), Error> {
+        let method = response.method();
+        let quote_id = response.quote().to_string();
+        let member_responses = self
+            .collect_mint_quote_status_responses(
+                |connector| {
+                    let method = method.clone();
+                    let quote_id = quote_id.clone();
+                    async move { connector.get_mint_quote_status(method, &quote_id).await }
+                },
+                false,
+            )
+            .await?;
+        let visible_response = self.aggregate_mint_quote_status_response(&member_responses)?;
+        if visible_response.method() != response.method()
+            || visible_response.quote() != response.quote()
+        {
+            return Err(Error::InvalidMintResponse(
+                "federation mint quote visibility returned a different quote".to_string(),
+            ));
+        }
+
+        Ok(())
     }
 
     fn aggregate_member_responses(
@@ -1351,11 +1382,17 @@ impl MintConnector for FederatedMintConnector {
         &self,
         request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<String>, Error> {
-        self.call_first_healthy_member("mint quote creation", |connector| {
-            let request = request.clone();
-            async move { connector.post_mint_quote(request).await }
-        })
-        .await
+        let response = self
+            .call_first_healthy_member("mint quote creation", |connector| {
+                let request = request.clone();
+                async move { connector.post_mint_quote(request).await }
+            })
+            .await?;
+
+        self.verify_mint_quote_visible_to_threshold(&response)
+            .await?;
+
+        Ok(response)
     }
 
     async fn post_mint(
@@ -1452,11 +1489,14 @@ impl MintConnector for FederatedMintConnector {
         quote_id: &str,
     ) -> Result<MintQuoteResponse<String>, Error> {
         let member_responses = self
-            .collect_mint_quote_status_responses(|connector| {
-                let method = method.clone();
-                let quote_id = quote_id.to_string();
-                async move { connector.get_mint_quote_status(method, &quote_id).await }
-            })
+            .collect_mint_quote_status_responses(
+                |connector| {
+                    let method = method.clone();
+                    let quote_id = quote_id.to_string();
+                    async move { connector.get_mint_quote_status(method, &quote_id).await }
+                },
+                true,
+            )
             .await?;
 
         self.aggregate_mint_quote_status_response(&member_responses)
@@ -1723,6 +1763,34 @@ fn has_threshold_matching_melt_quote_status(
     threshold: usize,
 ) -> bool {
     matching_melt_quote_status_group(responses, threshold).is_some()
+}
+
+fn has_threshold_matching_mint_quote_status(
+    responses: &[(MemberId, MintQuoteResponse<String>)],
+    threshold: usize,
+) -> bool {
+    let mut matching_views = Vec::<(serde_json::Value, usize)>::new();
+
+    for (_, response) in responses {
+        let Ok(view) = serde_json::to_value(response) else {
+            return false;
+        };
+
+        match matching_views
+            .iter_mut()
+            .find(|(candidate, _)| *candidate == view)
+        {
+            Some((_, count)) => {
+                *count = count.saturating_add(1);
+                if *count >= threshold {
+                    return true;
+                }
+            }
+            None => matching_views.push((view, 1)),
+        }
+    }
+
+    false
 }
 
 fn matching_melt_quote_status_group(
@@ -2673,6 +2741,8 @@ mod tests {
     #[derive(Clone)]
     struct LocalFederatedMemberConnector {
         mint: Arc<Mint>,
+        federation_mints: Option<Arc<Vec<Arc<Mint>>>>,
+        federation_journal: Option<Arc<tokio::sync::Mutex<InMemoryFederationJournal>>>,
     }
 
     impl fmt::Debug for LocalFederatedMemberConnector {
@@ -2689,7 +2759,37 @@ mod tests {
 
     impl LocalFederatedMemberConnector {
         fn new(mint: Arc<Mint>) -> Self {
-            Self { mint }
+            Self {
+                mint,
+                federation_mints: None,
+                federation_journal: None,
+            }
+        }
+
+        fn new_with_federation_mints(
+            mint: Arc<Mint>,
+            federation_mints: Arc<Vec<Arc<Mint>>>,
+            federation_journal: Arc<tokio::sync::Mutex<InMemoryFederationJournal>>,
+        ) -> Self {
+            Self {
+                mint,
+                federation_mints: Some(federation_mints),
+                federation_journal: Some(federation_journal),
+            }
+        }
+
+        async fn append_and_apply_to_federation(&self, envelope: FederationOperationEnvelope) {
+            if let (Some(federation_mints), Some(federation_journal)) =
+                (&self.federation_mints, &self.federation_journal)
+            {
+                let entry = {
+                    let mut journal = federation_journal.lock().await;
+                    appended_entry(&mut journal, envelope)
+                };
+                for mint in federation_mints.iter() {
+                    persist_and_apply_entry(mint, &entry).await;
+                }
+            }
         }
 
         async fn effective_federation_config(
@@ -2707,6 +2807,76 @@ mod tests {
 
         fn quote_id(quote: &str) -> Result<QuoteId, crate::Error> {
             QuoteId::from_str(quote).map_err(crate::Error::from)
+        }
+
+        fn paid_amount(response: &MintQuoteResponse<QuoteId>) -> Option<Amount> {
+            match response {
+                MintQuoteResponse::Bolt11(response) => response.amount,
+                MintQuoteResponse::Bolt12(response) => Some(response.amount_paid),
+                MintQuoteResponse::Onchain(response) => Some(response.amount_paid),
+                MintQuoteResponse::Custom { response, .. } => Some(response.amount_paid),
+            }
+        }
+
+        async fn mint_quote_payment_proof(
+            &self,
+            quote_id: &QuoteId,
+        ) -> Result<Option<String>, crate::Error> {
+            Ok(self
+                .mint
+                .localstore()
+                .get_mint_quote(quote_id)
+                .await?
+                .map(|quote| quote.request_lookup_id.to_string()))
+        }
+
+        async fn append_paid_mint_quote_observation(
+            &self,
+            quote_id: &QuoteId,
+            method: PaymentMethod,
+            amount_paid: Amount,
+            payment_proof: Option<String>,
+        ) -> Result<(), crate::Error> {
+            let config = self.effective_federation_config().await?;
+            let envelope = config.mint_quote_payment_observation_with_metadata(
+                quote_id.clone(),
+                method,
+                MintQuoteState::Paid,
+                amount_paid,
+                Amount::ZERO,
+                payment_proof,
+                None,
+                Some(unix_time()),
+            );
+            self.append_and_apply_to_federation(envelope).await;
+
+            Ok(())
+        }
+
+        async fn sync_paid_mint_quote_observation(
+            &self,
+            quote_id: &QuoteId,
+            response: &MintQuoteResponse<QuoteId>,
+        ) -> Result<(), crate::Error> {
+            if response.state() != Some(MintQuoteState::Paid) {
+                return Ok(());
+            }
+
+            let amount_paid = Self::paid_amount(response).ok_or_else(|| {
+                crate::Error::InvalidMintResponse(
+                    "paid federation mint quote status did not include an amount".to_string(),
+                )
+            })?;
+            let payment_proof = self.mint_quote_payment_proof(quote_id).await?;
+            self.append_paid_mint_quote_observation(
+                quote_id,
+                response.method(),
+                amount_paid,
+                payment_proof,
+            )
+            .await?;
+
+            Ok(())
         }
 
         async fn validate_mint_quote_method(
@@ -2799,7 +2969,28 @@ mod tests {
             &self,
             request: MintQuoteRequest,
         ) -> Result<MintQuoteResponse<String>, crate::Error> {
-            Ok(self.mint.get_mint_quote(request).await?.into())
+            let response: MintQuoteResponse<String> =
+                self.mint.get_mint_quote(request.clone()).await?.into();
+            let method = request.method();
+            let amount = request.amount();
+            let config = self.effective_federation_config().await?;
+            let quote = Self::quote_id(response.quote())?;
+            let envelope = config.mint_quote_operation(quote.clone(), request, response.clone());
+            self.append_and_apply_to_federation(envelope).await;
+            if self.federation_mints.is_some() {
+                if let Some(amount_paid) = amount.filter(|amount| *amount > Amount::ZERO) {
+                    let payment_proof = self.mint_quote_payment_proof(&quote).await?;
+                    self.append_paid_mint_quote_observation(
+                        &quote,
+                        method,
+                        amount_paid,
+                        payment_proof,
+                    )
+                    .await?;
+                }
+            }
+
+            Ok(response)
         }
 
         async fn post_mint(
@@ -2880,6 +3071,12 @@ mod tests {
             quote_id: &str,
         ) -> Result<MintQuoteResponse<String>, crate::Error> {
             let quote_id = Self::quote_id(quote_id)?;
+            let was_paid = self
+                .mint
+                .localstore()
+                .get_mint_quote(&quote_id)
+                .await?
+                .is_some_and(|quote| quote.state() == MintQuoteState::Paid);
             let response = self
                 .mint
                 .check_mint_quotes(std::slice::from_ref(&quote_id))
@@ -2887,6 +3084,11 @@ mod tests {
                 .into_iter()
                 .next()
                 .ok_or(crate::Error::UnknownQuote)?;
+
+            if !was_paid {
+                self.sync_paid_mint_quote_observation(&quote_id, &response)
+                    .await?;
+            }
 
             Ok(response.into())
         }
@@ -3310,6 +3512,18 @@ mod tests {
         })
     }
 
+    fn set_mint_quote_status_from_response(
+        connector: &MockMintConnector,
+        response: &MintQuoteResponse<String>,
+    ) {
+        match response {
+            MintQuoteResponse::Bolt11(response) => {
+                connector.set_mint_quote_status_response(Ok(response.clone()));
+            }
+            _ => panic!("expected bolt11 mint quote response"),
+        }
+    }
+
     async fn persist_paid_mint_quote(
         mint: &Mint,
         config: &FederationRuntimeConfig,
@@ -3381,22 +3595,33 @@ mod tests {
         melt_amount: u64,
     ) -> BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>> {
         let mut connectors = BTreeMap::new();
+        let mut member_mints = BTreeMap::new();
         let melt_expiry = unix_time() + 10_000;
         for member_id in [member_id(1), member_id(2), member_id(3)] {
-            let mint = create_fake_wallet_member_mint(bundle, member_id).await;
-            add_paid_bolt11_quote(&mint, mint_quote_id, mint_quote_amount).await;
+            let mint = Arc::new(create_fake_wallet_member_mint(bundle, member_id).await);
+            add_paid_bolt11_quote(mint.as_ref(), mint_quote_id, mint_quote_amount).await;
             add_unpaid_bolt11_melt_quote(
-                &mint,
+                mint.as_ref(),
                 melt_quote_id,
                 melt_invoice,
                 melt_amount,
                 melt_expiry,
             )
             .await;
+            member_mints.insert(member_id, mint);
+        }
+
+        let federation_mints = Arc::new(member_mints.values().cloned().collect::<Vec<_>>());
+        let federation_journal =
+            Arc::new(tokio::sync::Mutex::new(InMemoryFederationJournal::new()));
+        for (member_id, mint) in member_mints {
             connectors.insert(
                 member_id,
-                Arc::new(LocalFederatedMemberConnector::new(Arc::new(mint)))
-                    as Arc<dyn MintConnector + Send + Sync>,
+                Arc::new(LocalFederatedMemberConnector::new_with_federation_mints(
+                    mint,
+                    federation_mints.clone(),
+                    federation_journal.clone(),
+                )) as Arc<dyn MintConnector + Send + Sync>,
             );
         }
 
@@ -4494,6 +4719,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn federated_mint_connector_waits_for_matching_mint_quote_status_quorum() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let mut connectors = BTreeMap::new();
+
+        let stale_member = MockMintConnector::new();
+        stale_member.set_active_keyset(advertised.clone());
+        stale_member
+            .set_mint_quote_status_response(Ok(mint_quote_status_response(MintQuoteState::Unpaid)));
+        connectors.insert(
+            member_id(1),
+            Arc::new(stale_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        for member_id in [member_id(2), member_id(3)] {
+            let connector = MockMintConnector::new();
+            connector.set_active_keyset(advertised.clone());
+            connector.set_mint_quote_status_response(Ok(mint_quote_status_response(
+                MintQuoteState::Paid,
+            )));
+            connectors.insert(
+                member_id,
+                Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+            );
+        }
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let response = connector
+            .get_mint_quote_status(PaymentMethod::Known(KnownMethod::Bolt11), "mint-quote")
+            .await
+            .expect("mint quote status");
+
+        assert_eq!(response.state(), Some(MintQuoteState::Paid));
+    }
+
+    #[tokio::test]
     async fn federated_mint_connector_falls_back_to_primary_mint_quote_status() {
         let bundle = threshold_bundle();
         let advertised = advertised_keyset(&bundle);
@@ -4541,6 +4803,7 @@ mod tests {
         unavailable_member.set_post_mint_quote_response(Err(crate::Error::Custom(
             "primary unavailable".to_string(),
         )));
+        set_mint_quote_status_from_response(&unavailable_member, &expected);
         connectors.insert(
             member_id(1),
             Arc::new(unavailable_member) as Arc<dyn MintConnector + Send + Sync>,
@@ -4549,6 +4812,7 @@ mod tests {
         let healthy_member = MockMintConnector::new();
         healthy_member.set_active_keyset(advertised.clone());
         healthy_member.set_post_mint_quote_response(Ok(expected.clone()));
+        set_mint_quote_status_from_response(&healthy_member, &expected);
         connectors.insert(
             member_id(2),
             Arc::new(healthy_member) as Arc<dyn MintConnector + Send + Sync>,
@@ -4556,6 +4820,7 @@ mod tests {
 
         let unused_member = MockMintConnector::new();
         unused_member.set_active_keyset(advertised);
+        set_mint_quote_status_from_response(&unused_member, &expected);
         connectors.insert(
             member_id(3),
             Arc::new(unused_member) as Arc<dyn MintConnector + Send + Sync>,
@@ -4571,6 +4836,47 @@ mod tests {
         assert_eq!(response.quote(), expected.quote());
         assert_eq!(response.request(), expected.request());
         assert_eq!(response.method(), expected.method());
+    }
+
+    #[tokio::test]
+    async fn federated_mint_connector_requires_threshold_quote_visibility_after_creation() {
+        let bundle = threshold_bundle();
+        let advertised = advertised_keyset(&bundle);
+        let quote_id = QuoteId::new();
+        let expected = bolt11_quote_response(&quote_id, 3);
+        let mut connectors = BTreeMap::new();
+
+        let primary_member = MockMintConnector::new();
+        primary_member.set_active_keyset(advertised.clone());
+        primary_member.set_post_mint_quote_response(Ok(expected.clone()));
+        set_mint_quote_status_from_response(&primary_member, &expected);
+        connectors.insert(
+            member_id(1),
+            Arc::new(primary_member) as Arc<dyn MintConnector + Send + Sync>,
+        );
+
+        for member_id in [member_id(2), member_id(3)] {
+            let connector = MockMintConnector::new();
+            connector.set_active_keyset(advertised.clone());
+            connector.set_mint_quote_status_response(Err(crate::Error::UnknownQuote));
+            connectors.insert(
+                member_id,
+                Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+            );
+        }
+
+        let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+            .expect("federated mint connector");
+        let err = connector
+            .post_mint_quote(bolt11_quote_request(3))
+            .await
+            .expect_err("quote should not be threshold visible");
+
+        assert!(
+            err.to_string()
+                .contains("insufficient federation mint quote status responses"),
+            "{err}"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -4699,6 +5005,7 @@ mod tests {
         stalled_member.set_active_keyset(advertised.clone());
         stalled_member.set_post_mint_quote_delay(fallback_timeout + Duration::from_secs(60));
         stalled_member.set_post_mint_quote_response(Ok(stalled_quote));
+        set_mint_quote_status_from_response(&stalled_member, &expected);
         connectors.insert(
             member_id(1),
             Arc::new(stalled_member) as Arc<dyn MintConnector + Send + Sync>,
@@ -4707,6 +5014,7 @@ mod tests {
         let healthy_member = MockMintConnector::new();
         healthy_member.set_active_keyset(advertised.clone());
         healthy_member.set_post_mint_quote_response(Ok(expected.clone()));
+        set_mint_quote_status_from_response(&healthy_member, &expected);
         connectors.insert(
             member_id(2),
             Arc::new(healthy_member) as Arc<dyn MintConnector + Send + Sync>,
@@ -4714,6 +5022,7 @@ mod tests {
 
         let unused_member = MockMintConnector::new();
         unused_member.set_active_keyset(advertised);
+        set_mint_quote_status_from_response(&unused_member, &expected);
         connectors.insert(
             member_id(3),
             Arc::new(unused_member) as Arc<dyn MintConnector + Send + Sync>,
