@@ -525,19 +525,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The repo now has a fast `fed-regtest-check` helper for federation smoke/setup cargo-test coverage, and Axum peer-sync policy/backoff code now lives in a focused child module.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The repo now has a fast `fed-regtest-check` helper for federation smoke/setup cargo-test coverage, and Axum peer-sync policy plus signed peer-client code now live in focused child modules.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: split axum peer sync config</span>
+          <span class="value">refactor: split axum peer client</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`crates/cdk-axum/src/federation/sync_config.rs` now owns peer-sync defaults, validation, env-disable parsing, interval setup, and reconnect backoff while keeping the public config re-export stable.</span>
+          <span class="value">`crates/cdk-axum/src/federation/peer_client.rs` now owns signed private REST peer calls, outbound admission, endpoint building, request timeouts, and sequence reservation while the parent module keeps local catch-up orchestration.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with production DKG, broader storage-backed recovery checks, larger-roster partition drills, and the remaining BFT follow-ups.</span>
+          <span class="value">Continue the Axum split toward sync loop, status, catch-up, and route modules, then return to production DKG, broader storage-backed recovery checks, larger-roster partition drills, and the remaining BFT follow-ups.</span>
         </div>
       </aside>
     </header>
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Axum peer client split out</h3>
+            <p>The signed private REST peer client now lives in `federation/peer_client.rs`, covering outbound admission, signed request construction, endpoint building, per-operation timeouts, DKG/status/submit/catch-up calls, and process-wide REST sequence reservation while local catch-up orchestration stays in the parent module.</p>
+          </article>
           <article class="item">
             <h3>Axum peer sync config split out</h3>
             <p>Peer-sync policy defaults, validation, env-disable parsing, interval setup, and per-peer reconnect backoff now live in `federation/sync_config.rs`; the parent private REST module keeps the same `FederationPeerSyncConfig` re-export for callers.</p>
@@ -2303,6 +2307,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation federation_peer_sync -- --test-threads 1` passed 3 policy tests, `cargo test -p cdk-axum --features federation federation_reconnect_backoff -- --test-threads 1` passed the backoff regression, and `cargo check -p cdk-axum --features federation` passed after moving peer-sync policy defaults, validation, env parsing, interval construction, and reconnect backoff into `crates/cdk-axum/src/federation/sync_config.rs`.</td>
               <td>Continue the Axum split toward peer client, sync loop, status, catch-up, and route modules while preserving the public re-export surface.</td>
+            </tr>
+            <tr>
+              <td>Axum peer client split</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo check -p cdk-axum --features federation`, `cargo test -p cdk-axum --features federation peer_sync_round -- --test-threads 1`, and `cargo test -p cdk-axum --features federation rest_peer_client -- --test-threads 1` passed; the listener-bound loopback test passed after rerunning with localhost bind permission.</td>
+              <td>Continue the Axum split toward sync loop, status, catch-up, and route modules while keeping signed peer calls isolated in `federation/peer_client.rs`.</td>
             </tr>
             <tr>
               <td>Federation smoke argument validation</td>
