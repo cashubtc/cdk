@@ -525,15 +525,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The mintd federation smoke command now rejects invalid operation prerequisites through fast cargo-test-covered validation before generated scripts reach networked member operations.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The repo now has a fast `fed-regtest-check` helper for federation smoke/setup cargo-test coverage that does not start local member processes.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: harden federation smoke argument validation</span>
+          <span class="value">test: add fast federation regtest check</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`crates/cdk-mintd/src/federation_smoke.rs` now fails early for zero mint amounts and missing scenario-specific wallet/private config paths, with coverage in `federation_smoke/tests.rs`.</span>
+          <span class="value">`just fed-regtest-check` now runs smoke-operation validation, CLI parser, and generated smoke/setup artifact tests without requiring loopback listeners.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Fast federation smoke check</h3>
+            <p>`just fed-regtest-check` now runs the mintd federation smoke validation, smoke CLI parser, and generated setup/smoke artifact tests without starting local member processes, giving the live smoke tooling a normal quick test entrypoint.</p>
+          </article>
           <article class="item">
             <h3>Smoke prerequisites fail fast</h3>
             <p>The `federation smoke-operations` driver now validates zero mint amounts plus resumable-wallet and signed-operation scenario prerequisites before reading configs or touching member endpoints, and the checks run as focused mintd unit tests.</p>
@@ -2295,6 +2299,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_smoke -- --test-threads 1` covers zero mint-amount rejection, polling guardrails, resumable scenario `--wallet-db` requirements, signed-operation scenario `--private-config` requirements, and ordinary standard/offline scenario acceptance without optional paths.</td>
               <td>Keep broad live smoke repetition for loopback-enabled environments while promoting more generated-script prerequisites into fast unit tests where possible.</td>
+            </tr>
+            <tr>
+              <td>Fast federation regtest check wrapper</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`just fed-regtest-check` runs `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_smoke`, `smoke_operations`, and `federation_setup` with single-threaded test execution, covering smoke argument validation, CLI parsing, generated setup artifacts, and generated local smoke-script structure without launching local member processes.</td>
+              <td>Keep `just fed-regtest` and the Postgres variants as live process smoke gates for loopback-enabled environments.</td>
             </tr>
             <tr>
               <td>Mint federation test module split</td>

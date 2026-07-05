@@ -598,6 +598,17 @@ fed-regtest-generate dir="target/cdk-fed-regtest" members="5" threshold="3" port
     --port-start "{{port_start}}" \
     ${dkg_probe_arg:+$dkg_probe_arg}
 
+# Run fast federation regtest and smoke unit checks without starting member processes
+fed-regtest-check:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+  cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_smoke -- --test-threads 1
+  cargo test -p cdk-mintd --features federation,fakewallet,sqlite smoke_operations -- --test-threads 1
+  cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1
+
 # Run the generated local fake-wallet federation smoke
 fed-regtest dir="target/cdk-fed-regtest" members="5" threshold="3" port_start="21885":
   #!/usr/bin/env bash
