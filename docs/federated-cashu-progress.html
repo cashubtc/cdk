@@ -519,15 +519,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 479 checked items and 108 remaining items. Private REST peer sync now emits per-peer connectivity and remote height metrics.</span>
+          <span class="value">The implementation plan audit now tracks 480 checked items and 107 remaining items. Failed private REST peer sync attempts now reconnect with per-peer exponential backoff.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add federation peer sync metrics</span>
+          <span class="value">feat: back off federation peer reconnects</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Added Prometheus gauges for peer sync reachability and last reported peer operation count, updated by the private REST sync loop.</span>
+          <span class="value">Added reconnect initial/max backoff policy, per-peer retry state, and paused-time tests proving failed peer sync attempts are skipped until their backoff expires and reset after success.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -542,7 +542,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 479 checked entries and 108 remaining entries. The
+          checklist has 480 checked entries and 107 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -1084,6 +1084,10 @@
           <article class="item">
             <h3>Automatic peer recovery loop ready</h3>
             <p>Federation routers now spawn a signed private-REST peer sync loop that polls configured partners, catches up missing journal entries, and preserves fail-closed lag state until the member has reached the known peer height.</p>
+          </article>
+          <article class="item">
+            <h3>Peer reconnect backoff ready</h3>
+            <p>Private REST peer sync now keeps independent retry state per federation peer, doubles reconnect delay after repeated failures up to a configured cap, and clears the delay after a successful sync.</p>
           </article>
           <article class="item">
             <h3>Local trusted-dealer CLI ready</h3>
@@ -3055,6 +3059,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`FederationPeerSyncConfig` now validates private REST peer request timeout, operation submission timeout, catch-up limit, digest recheck attempts and delay, session-outcome evidence chunk size, and peer sync interval. Focused tests passed invalid config rejection, configured peer request timeout, configured operation submission timeout, configured catch-up request limit, configured digest recheck delay, and configured session-outcome evidence chunking.</td>
               <td>Expose these policy values through mintd config once the production cleanup pass settles the final operator-facing names and defaults.</td>
+            </tr>
+            <tr>
+              <td>Federation peer reconnect backoff</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation federation_reconnect_backoff_doubles_until_max -- --test-threads 1`, `peer_sync_round_backs_off_failed_peer_until_retry_delay`, `federation_peer_sync_config_rejects_invalid_values`, and `cargo test -p cdk-axum --features federation peer_sync -- --test-threads 1` passed. `cargo check -p cdk-axum --features federation` and `cargo check -p cdk-axum --features federation,prometheus` passed without warnings.</td>
+              <td>Expose the reconnect backoff knobs in mintd config with the rest of the peer-sync policy values.</td>
             </tr>
             <tr>
               <td>Durable private REST peer reads</td>

@@ -31,7 +31,7 @@ use cdk_http_client::{Async, Transport};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::time::{self, Duration, MissedTickBehavior};
+use tokio::time::{self, Duration, Instant, MissedTickBehavior};
 use tracing::instrument;
 
 use crate::MintState;
@@ -47,6 +47,8 @@ const DEFAULT_FEDERATION_CATCH_UP_LIMIT: u16 = 100;
 const MAX_FEDERATION_CATCH_UP_LIMIT: u16 = 1000;
 const DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_ATTEMPTS: usize = 20;
 const DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_DELAY: Duration = Duration::from_millis(100);
+const DEFAULT_FEDERATION_RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const DEFAULT_FEDERATION_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(60);
 static FEDERATION_REST_SEQUENCE_SEED: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +60,8 @@ pub(crate) struct FederationPeerSyncConfig {
     digest_recheck_attempts: usize,
     digest_recheck_delay: Duration,
     session_outcome_evidence_chunk_size: usize,
+    reconnect_initial_backoff: Duration,
+    reconnect_max_backoff: Duration,
 }
 
 impl Default for FederationPeerSyncConfig {
@@ -71,6 +75,8 @@ impl Default for FederationPeerSyncConfig {
             digest_recheck_delay: DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_DELAY,
             session_outcome_evidence_chunk_size:
                 DEFAULT_FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_SIZE,
+            reconnect_initial_backoff: DEFAULT_FEDERATION_RECONNECT_INITIAL_BACKOFF,
+            reconnect_max_backoff: DEFAULT_FEDERATION_RECONNECT_MAX_BACKOFF,
         }
     }
 }
@@ -103,6 +109,17 @@ impl FederationPeerSyncConfig {
         if self.session_outcome_evidence_chunk_size > usize::from(u16::MAX) {
             anyhow::bail!(
                 "federation session outcome evidence chunk size must fit in a catch-up request limit"
+            );
+        }
+        if self.reconnect_initial_backoff.is_zero() {
+            anyhow::bail!("federation reconnect initial backoff must be greater than zero");
+        }
+        if self.reconnect_max_backoff.is_zero() {
+            anyhow::bail!("federation reconnect max backoff must be greater than zero");
+        }
+        if self.reconnect_max_backoff < self.reconnect_initial_backoff {
+            anyhow::bail!(
+                "federation reconnect max backoff must be greater than or equal to the initial backoff"
             );
         }
 
@@ -173,10 +190,17 @@ pub(crate) fn spawn_federation_peer_sync_loop_with_config(
             }
         };
         let mut interval = federation_peer_sync_interval(sync_config);
+        let mut reconnect_backoff = FederationPeerReconnectBackoff::default();
 
         loop {
             interval.tick().await;
-            run_federation_peer_sync_round(&state, &client, &peers).await;
+            run_federation_peer_sync_round_with_backoff(
+                &state,
+                &client,
+                &peers,
+                &mut reconnect_backoff,
+            )
+            .await;
         }
     });
 }
@@ -201,6 +225,66 @@ fn federation_peer_sync_disabled_value(value: &str) -> bool {
     )
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FederationPeerReconnectBackoffEntry {
+    failures: u32,
+    retry_after: Instant,
+}
+
+#[derive(Debug, Default)]
+struct FederationPeerReconnectBackoff {
+    entries: BTreeMap<MemberId, FederationPeerReconnectBackoffEntry>,
+}
+
+impl FederationPeerReconnectBackoff {
+    fn should_attempt(&self, peer: MemberId, now: Instant) -> bool {
+        self.entries
+            .get(&peer)
+            .map(|entry| now >= entry.retry_after)
+            .unwrap_or(true)
+    }
+
+    fn record_success(&mut self, peer: MemberId) {
+        self.entries.remove(&peer);
+    }
+
+    fn record_failure(
+        &mut self,
+        peer: MemberId,
+        sync_config: FederationPeerSyncConfig,
+        now: Instant,
+    ) -> Duration {
+        let entry =
+            self.entries
+                .entry(peer)
+                .or_insert_with(|| FederationPeerReconnectBackoffEntry {
+                    failures: 0,
+                    retry_after: now,
+                });
+        let delay = federation_reconnect_backoff_delay(sync_config, entry.failures);
+        entry.failures = entry.failures.saturating_add(1);
+        entry.retry_after = now + delay;
+        delay
+    }
+}
+
+fn federation_reconnect_backoff_delay(
+    sync_config: FederationPeerSyncConfig,
+    failure_count: u32,
+) -> Duration {
+    let mut delay = sync_config.reconnect_initial_backoff;
+    for _ in 0..failure_count {
+        match delay.checked_mul(2) {
+            Some(next) if next < sync_config.reconnect_max_backoff => {
+                delay = next;
+            }
+            _ => return sync_config.reconnect_max_backoff,
+        }
+    }
+    delay.min(sync_config.reconnect_max_backoff)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 async fn run_federation_peer_sync_round<T>(
     state: &MintState,
     client: &FederationRestPeerClient<T>,
@@ -209,11 +293,48 @@ async fn run_federation_peer_sync_round<T>(
 where
     T: Transport,
 {
+    run_federation_peer_sync_attempts(state, client, peers, None).await
+}
+
+async fn run_federation_peer_sync_round_with_backoff<T>(
+    state: &MintState,
+    client: &FederationRestPeerClient<T>,
+    peers: &[MemberConfigPublic],
+    backoff: &mut FederationPeerReconnectBackoff,
+) -> usize
+where
+    T: Transport,
+{
+    run_federation_peer_sync_attempts(state, client, peers, Some(backoff)).await
+}
+
+async fn run_federation_peer_sync_attempts<T>(
+    state: &MintState,
+    client: &FederationRestPeerClient<T>,
+    peers: &[MemberConfigPublic],
+    mut backoff: Option<&mut FederationPeerReconnectBackoff>,
+) -> usize
+where
+    T: Transport,
+{
     let mut synced = 0;
     for peer in peers {
+        let now = Instant::now();
+        if let Some(backoff) = backoff.as_ref() {
+            if !backoff.should_attempt(peer.member_id, now) {
+                tracing::debug!(
+                    member_id = %peer.member_id,
+                    "Federation peer sync skipped until reconnect backoff expires"
+                );
+                continue;
+            }
+        }
         match client.sync_once_from_member(state, peer).await {
             Ok(status) => {
                 synced += 1;
+                if let Some(backoff) = backoff.as_mut() {
+                    backoff.record_success(peer.member_id);
+                }
                 record_federation_peer_sync_metrics(
                     state,
                     peer.member_id,
@@ -228,12 +349,27 @@ where
                 );
             }
             Err(err) => {
+                let reconnect_after = backoff.as_mut().map(|backoff| {
+                    backoff.record_failure(peer.member_id, client.sync_config, Instant::now())
+                });
                 record_federation_peer_sync_metrics(state, peer.member_id, false, None);
-                tracing::warn!(
-                    member_id = %peer.member_id,
-                    "Federation peer sync failed: {}",
-                    err
-                );
+                match reconnect_after {
+                    Some(delay) => {
+                        tracing::warn!(
+                            member_id = %peer.member_id,
+                            reconnect_after_ms = delay.as_millis(),
+                            "Federation peer sync failed: {}",
+                            err
+                        );
+                    }
+                    None => {
+                        tracing::warn!(
+                            member_id = %peer.member_id,
+                            "Federation peer sync failed: {}",
+                            err
+                        );
+                    }
+                }
             }
         }
     }
@@ -2385,6 +2521,19 @@ mod tests {
                 session_outcome_evidence_chunk_size: usize::from(u16::MAX) + 1,
                 ..valid
             },
+            FederationPeerSyncConfig {
+                reconnect_initial_backoff: Duration::ZERO,
+                ..valid
+            },
+            FederationPeerSyncConfig {
+                reconnect_max_backoff: Duration::ZERO,
+                ..valid
+            },
+            FederationPeerSyncConfig {
+                reconnect_initial_backoff: Duration::from_secs(2),
+                reconnect_max_backoff: Duration::from_secs(1),
+                ..valid
+            },
         ];
 
         for config in cases {
@@ -2417,6 +2566,32 @@ mod tests {
 
         tokio::time::advance(Duration::from_millis(1)).await;
         second_tick.await.expect("second configured tick");
+    }
+
+    #[test]
+    fn federation_reconnect_backoff_doubles_until_max() {
+        let config = FederationPeerSyncConfig {
+            reconnect_initial_backoff: Duration::from_secs(2),
+            reconnect_max_backoff: Duration::from_secs(5),
+            ..FederationPeerSyncConfig::default()
+        };
+
+        assert_eq!(
+            federation_reconnect_backoff_delay(config, 0),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            federation_reconnect_backoff_delay(config, 1),
+            Duration::from_secs(4)
+        );
+        assert_eq!(
+            federation_reconnect_backoff_delay(config, 2),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            federation_reconnect_backoff_delay(config, u32::MAX),
+            Duration::from_secs(5)
+        );
     }
 
     #[derive(Debug, Default)]
@@ -4305,6 +4480,126 @@ mod tests {
             .submit_federation_envelope(next)
             .await
             .expect("quorum-verified member can submit");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn peer_sync_round_backs_off_failed_peer_until_retry_delay() {
+        let (state, public_config, local_private, _) =
+            federation_route_state_with_local_private().await;
+        let federation_id = public_config.federation_id;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let transport = MockFederationTransport::default();
+        let client = FederationRestPeerClient::new_with_config(
+            transport.clone(),
+            &public_config,
+            local_private,
+            FederationPeerSyncConfig {
+                reconnect_initial_backoff: Duration::from_secs(2),
+                reconnect_max_backoff: Duration::from_secs(8),
+                ..FederationPeerSyncConfig::default()
+            },
+        )
+        .expect("client");
+        let mut backoff = FederationPeerReconnectBackoff::default();
+
+        let synced = run_federation_peer_sync_round_with_backoff(
+            &state,
+            &client,
+            std::slice::from_ref(peer_member),
+            &mut backoff,
+        )
+        .await;
+        assert_eq!(synced, 0);
+        assert_eq!(transport.status_requests().len(), 1);
+
+        let synced = run_federation_peer_sync_round_with_backoff(
+            &state,
+            &client,
+            std::slice::from_ref(peer_member),
+            &mut backoff,
+        )
+        .await;
+        assert_eq!(synced, 0);
+        assert_eq!(
+            transport.status_requests().len(),
+            1,
+            "retry before reconnect backoff expires must be skipped"
+        );
+
+        tokio::time::advance(Duration::from_secs(2) - Duration::from_millis(1)).await;
+        let synced = run_federation_peer_sync_round_with_backoff(
+            &state,
+            &client,
+            std::slice::from_ref(peer_member),
+            &mut backoff,
+        )
+        .await;
+        assert_eq!(synced, 0);
+        assert_eq!(
+            transport.status_requests().len(),
+            1,
+            "retry just before reconnect backoff expiry must still be skipped"
+        );
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        let synced = run_federation_peer_sync_round_with_backoff(
+            &state,
+            &client,
+            std::slice::from_ref(peer_member),
+            &mut backoff,
+        )
+        .await;
+        assert_eq!(synced, 0);
+        assert_eq!(transport.status_requests().len(), 2);
+
+        let status = FederationPeerStatus::new_with_state_digest(
+            federation_id,
+            peer_member.member_id,
+            0,
+            None,
+            cdk::federation::FederationJournalDigest::genesis(),
+            cdk::federation::FederationStateDigest::genesis(),
+        );
+        let _transport = transport.clone().with_status_response(status);
+
+        let synced = run_federation_peer_sync_round_with_backoff(
+            &state,
+            &client,
+            std::slice::from_ref(peer_member),
+            &mut backoff,
+        )
+        .await;
+        assert_eq!(synced, 0);
+        assert_eq!(
+            transport.status_requests().len(),
+            2,
+            "second failed attempt should double the reconnect backoff"
+        );
+
+        tokio::time::advance(Duration::from_secs(4)).await;
+        let synced = run_federation_peer_sync_round_with_backoff(
+            &state,
+            &client,
+            std::slice::from_ref(peer_member),
+            &mut backoff,
+        )
+        .await;
+        assert_eq!(synced, 1);
+        assert_eq!(transport.status_requests().len(), 3);
+
+        let synced = run_federation_peer_sync_round_with_backoff(
+            &state,
+            &client,
+            std::slice::from_ref(peer_member),
+            &mut backoff,
+        )
+        .await;
+        assert_eq!(synced, 1);
+        assert_eq!(
+            transport.status_requests().len(),
+            4,
+            "successful peer sync must clear reconnect backoff"
+        );
     }
 
     #[tokio::test]
