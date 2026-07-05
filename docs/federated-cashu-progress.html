@@ -525,15 +525,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The consensus runtime test fixtures now live in a dedicated module, keeping the production consensus file focused while the focused consensus suite remains green.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The consensus runtime and wallet connector test fixtures now live in dedicated modules, keeping production federation files focused while the focused suites remain green.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: split consensus federation tests</span>
+          <span class="value">refactor: split wallet federation tests</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk-common::federation::consensus` now keeps runtime code in `consensus.rs` and moves its 33-test fixture suite into `federation/consensus/tests.rs`.</span>
+          <span class="value">`cdk::wallet::federation` now keeps connector code in `federation.rs` and moves its 54-test fixture suite into `wallet/federation/tests.rs`.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Wallet tests split out</h3>
+            <p>The wallet federation connector file is now focused on production code, while the large invite, fanout, keyset validation, quote-status, melt-change, restore, and share-aggregation fixture suite lives in a dedicated test module.</p>
+          </article>
           <article class="item">
             <h3>Consensus tests split out</h3>
             <p>The consensus runtime file is now focused on production code, while the large in-memory runtime, queue, catch-up, backend-adapter, and quorum test fixtures live in a dedicated test module.</p>
@@ -2202,7 +2206,13 @@
               <td>Consensus test module split</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1` passed 33 tests after moving the large inline consensus fixtures into `crates/cdk-common/src/federation/consensus/tests.rs`.</td>
-              <td>Continue the same behavior-neutral split pattern for the larger mint, wallet, Axum, local connector, and smoke-helper federation test fixtures.</td>
+              <td>Continue the same behavior-neutral split pattern for the larger mint, Axum, local connector, and smoke-helper federation test fixtures.</td>
+            </tr>
+            <tr>
+              <td>Wallet federation test module split</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --features wallet,mint,federation wallet::federation::tests -- --test-threads 1` passed 54 wallet federation connector tests after moving the large inline wallet fixtures into `crates/cdk/src/wallet/federation/tests.rs`.</td>
+              <td>Keep splitting the remaining large mint, Axum, local connector, and smoke-helper federation fixtures in small behavior-neutral checkpoints.</td>
             </tr>
             <tr>
               <td>Standalone mint and DbSignatory regressions</td>
