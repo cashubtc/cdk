@@ -513,6 +513,7 @@
           <a class="link-pill" href="./federated-cashu-codex-goal-prompt.md">Goal prompt</a>
           <a class="link-pill" href="./federated-cashu-rfc.md">Milestone 0 RFC</a>
           <a class="link-pill" href="./federated-cashu-review-checklist.md">Review checklist</a>
+          <a class="link-pill" href="./federated-cashu-signature-share-provenance.md">Share provenance</a>
           <a class="link-pill" href="./federated-cashu-payment-trust-model.md">Payment trust model</a>
           <a class="link-pill" href="./federated-cashu-sql-lock-ordering.md">SQL lock ordering</a>
           <a class="link-pill" href="./federated-cashu-storage-scope.md">Storage scope</a>
@@ -521,15 +522,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 502 checked items and 85 remaining items. Standalone fakewallet regression checks confirm the development backend remains available outside federation semantics.</span>
+          <span class="value">The implementation plan audit tracks 503 checked items and 84 remaining items. Signature-share provenance is now documented from returned shares back to accepted federation operations.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: record standalone fakewallet checks</span>
+          <span class="value">docs: document signature share provenance</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Reran `cdk-fake-wallet` tests and mintd fakewallet config/dispatcher tests, then recorded the standalone-development-backend evidence.</span>
+          <span class="value">Added a reviewer trace recipe for mapping every durable threshold BLS share to an accepted operation ID, output index, member, amount, keyset, and blinded message.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -544,7 +545,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 502 checked entries and 85 remaining entries. The
+          checklist has 503 checked entries and 84 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -1078,6 +1079,10 @@
           <article class="item">
             <h3>Signature shares stored separately</h3>
             <p>Federation members now persist local threshold BLS shares in `federation_signature_shares`, keyed by accepted operation, output index, member, blinded message, amount, and keyset. Replays are idempotent, conflicting share material is rejected, and mint, swap, and melt-change apply paths assert the stored rows.</p>
+          </article>
+          <article class="item">
+            <h3>Share provenance reviewable</h3>
+            <p>A dedicated provenance guide now lets reviewers trace returned member shares through `federation_signature_shares` to accepted operation IDs, output indexes, member IDs, keysets, amounts, blinded messages, and public-share verification.</p>
           </article>
           <article class="item">
             <h3>Mint journal application ready</h3>

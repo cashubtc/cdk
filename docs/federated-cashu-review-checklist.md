@@ -78,7 +78,8 @@ If any answer is yes, review the relevant sections below before approving.
   in `docs/federated-cashu-storage-scope.md`.
 - If signature shares move into a dedicated table, reviewers must be able to
   trace every stored share to operation hash, output index, member ID, amount,
-  keyset ID, and blinded message.
+  keyset ID, and blinded message. Use
+  `docs/federated-cashu-signature-share-provenance.md` for the trace recipe.
 - Storage code must not persist private BLS shares, identity secrets, payment
   secrets, or local paths in public status rows, fixtures, or logs.
 
@@ -171,7 +172,7 @@ and at least one broader gate appropriate to the blast radius:
 - Would a wallet obtain any usable extra eCash if one member signs this request
   and another member signs a slightly different request?
 - Can an independent reviewer trace every returned share to an accepted
-  operation hash?
+  operation hash using `docs/federated-cashu-signature-share-provenance.md`?
 - Can a restarted member reconstruct the same state from durable data?
 - Does a standalone non-federated mint still behave as before?
 - Are all new logs, docs, examples, fixtures, status outputs, and commits free

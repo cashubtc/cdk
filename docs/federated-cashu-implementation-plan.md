@@ -88,7 +88,7 @@ Current confirmed shape:
 - Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes and request transcripts, in-memory consensus boundary, private REST peer envelopes, federation journal persistence, dedicated federation signature-share persistence, mint/swap/melt/restore/check-state apply paths, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
 - Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, exact deterministic binary operation encoding, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
 - Test-suite status: focused federation replay, peer-sync, peer reconnect backoff, peer evidence/backoff, mintd peer-sync config wiring, SQLite federation storage/query plans, session-outcome, trusted-dealer setup, deterministic trusted-dealer fixture generation, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, backend-agnostic signature-share persistence, fakewallet coupling audit, wallet member request timeout/retry policy tests, canonical request transcript tests for NUT-20 and SIG_ALL, federated NUT-20 single and batch issuance tests, P2PK/HTLC/SIG_ALL canonical swap transcript tests, NUT-19 retry backoff, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, federated swap input-reuse attack regression, and `cdk-axum` federation tests were run for recent checkpoints. The broad feature-disabled library gate `cargo test --lib --workspace --exclude cdk-postgres` passed on 2026-07-05, and the broad feature-enabled compile gate `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed on 2026-07-05.
-- Latest checkpoint: standalone fakewallet crate tests and mintd fakewallet config/dispatcher tests were rerun to confirm the development backend remains available outside federation semantics.
+- Latest checkpoint: signature-share provenance now has a reviewer trace recipe from returned member shares to accepted operation IDs, output indexes, member IDs, keysets, amounts, blinded messages, and BLS share verification.
 
 ## Key observations
 
@@ -1143,7 +1143,7 @@ Implementation checklist:
 Tests and success criteria:
 
 - [x] Operation IDs are tied to share generation in federation apply paths.
-- [ ] Ensure an independent reviewer can trace every signature share to an accepted operation hash after the signature-share persistence decision is finalized.
+- [x] Ensure an independent reviewer can trace every signature share to an accepted operation hash after the signature-share persistence decision is finalized.
 - [x] Add federation operation fuzz targets for operation decoding and request conversion.
 - [x] Attack regression tests exist.
 - [ ] Re-run and record the full attack regression suite.
