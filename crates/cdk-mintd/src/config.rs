@@ -1065,11 +1065,112 @@ pub struct Federation {
     pub public_config_path: Option<PathBuf>,
     /// Path to this member's private federation config JSON file.
     pub private_config_path: Option<PathBuf>,
+    /// Private REST peer synchronization and retry policy.
+    #[serde(default)]
+    pub peer_sync: FederationPeerSync,
 }
 
 /// Federation consensus backend selected by mintd runtime configuration.
 #[cfg(feature = "federation")]
 pub type FederationConsensusBackend = FederationConsensusBackendKind;
+
+/// Private federation peer synchronization settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg(feature = "federation")]
+pub struct FederationPeerSync {
+    /// Interval between background private REST peer sync rounds.
+    #[serde(default = "default_federation_peer_sync_interval_secs")]
+    pub peer_sync_interval_secs: u64,
+    /// Timeout for private peer status, catch-up, DKG, and evidence requests.
+    #[serde(default = "default_federation_peer_request_timeout_secs")]
+    pub peer_request_timeout_secs: u64,
+    /// Timeout for forwarding a locally received operation to the primary member.
+    #[serde(default = "default_federation_operation_submission_timeout_secs")]
+    pub operation_submission_timeout_secs: u64,
+    /// Maximum number of accepted journal entries requested per catch-up page.
+    #[serde(default = "default_federation_catch_up_limit")]
+    pub catch_up_limit: u16,
+    /// Number of materialized-state digest rechecks after journal catch-up.
+    #[serde(default = "default_federation_digest_recheck_attempts")]
+    pub digest_recheck_attempts: usize,
+    /// Delay between materialized-state digest rechecks, in milliseconds.
+    #[serde(default = "default_federation_digest_recheck_delay_ms")]
+    pub digest_recheck_delay_ms: u64,
+    /// Number of journal entries covered by each session-outcome evidence chunk.
+    #[serde(default = "default_federation_session_outcome_evidence_chunk_size")]
+    pub session_outcome_evidence_chunk_size: usize,
+    /// Initial reconnect backoff after a peer sync failure.
+    #[serde(default = "default_federation_reconnect_initial_backoff_secs")]
+    pub reconnect_initial_backoff_secs: u64,
+    /// Maximum reconnect backoff after repeated peer sync failures.
+    #[serde(default = "default_federation_reconnect_max_backoff_secs")]
+    pub reconnect_max_backoff_secs: u64,
+}
+
+#[cfg(feature = "federation")]
+impl Default for FederationPeerSync {
+    fn default() -> Self {
+        let operation_submission_timeout_secs =
+            default_federation_operation_submission_timeout_secs();
+        Self {
+            peer_sync_interval_secs: default_federation_peer_sync_interval_secs(),
+            peer_request_timeout_secs: default_federation_peer_request_timeout_secs(),
+            operation_submission_timeout_secs,
+            catch_up_limit: default_federation_catch_up_limit(),
+            digest_recheck_attempts: default_federation_digest_recheck_attempts(),
+            digest_recheck_delay_ms: default_federation_digest_recheck_delay_ms(),
+            session_outcome_evidence_chunk_size:
+                default_federation_session_outcome_evidence_chunk_size(),
+            reconnect_initial_backoff_secs: default_federation_reconnect_initial_backoff_secs(),
+            reconnect_max_backoff_secs: default_federation_reconnect_max_backoff_secs(),
+        }
+    }
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_peer_sync_interval_secs() -> u64 {
+    5
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_peer_request_timeout_secs() -> u64 {
+    10
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_operation_submission_timeout_secs() -> u64 {
+    10
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_catch_up_limit() -> u16 {
+    100
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_digest_recheck_attempts() -> usize {
+    20
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_digest_recheck_delay_ms() -> u64 {
+    100
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_session_outcome_evidence_chunk_size() -> usize {
+    1000
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_reconnect_initial_backoff_secs() -> u64 {
+    1
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_reconnect_max_backoff_secs() -> u64 {
+    60
+}
 
 /// Transaction limits configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

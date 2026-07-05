@@ -521,19 +521,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 482 checked items and 105 remaining items. Redb is explicitly scoped as a wallet-only backend and is not a mint federation storage blocker.</span>
+          <span class="value">The implementation plan audit tracks 482 checked items and 105 remaining items. `cdk-mintd` now exposes the private REST peer-sync retry policy instead of relying only on Axum defaults.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: scope redb out of mint federation</span>
+          <span class="value">feat: expose federation peer sync policy</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Recorded that `cdk-redb` implements wallet storage only; federation mint storage remains scoped to mint database backends such as SQLite, Postgres, and in-memory test storage.</span>
+          <span class="value">Added `[federation.peer_sync]` mintd config for sync interval, peer request timeout, operation submission timeout, catch-up limit, digest recheck policy, evidence chunking, and reconnect backoff.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with the remaining storage follow-ups that apply to mint backends: exact hot-path indexes, dedicated signature-share persistence, SQLite/Postgres query-plan checks, and broader storage-backed recovery coverage.</span>
+          <span class="value">Continue with bounded REST queues/backpressure, exact storage hot-path index review, dedicated signature-share persistence, and broader storage-backed recovery coverage.</span>
         </div>
       </aside>
     </header>
@@ -783,6 +783,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Peer sync knobs exposed</h3>
+            <p>`cdk-mintd` can now configure private REST peer-sync interval, request timeouts, forwarded-operation timeout, catch-up page size, digest recheck timing, session-outcome evidence chunking, and reconnect backoff from `[federation.peer_sync]`.</p>
+          </article>
           <article class="item">
             <h3>Redb scoped to wallet</h3>
             <p>`cdk-redb` is documented as a wallet-only backend, so federation mint storage parity is tracked against mint database backends and Redb is not a blocker unless it later grows a mint database implementation.</p>
@@ -2881,6 +2885,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation peer_sync_round_skips_evidence_for_failed_or_backing_off_peer -- --test-threads 1`, `cargo test -p cdk-axum --features federation peer_sync -- --test-threads 1`, and `cargo check -p cdk-axum --features federation,prometheus` passed. The sync loop now avoids `/journal` evidence retries for failed or backing-off peers.</td>
               <td>Keep evidence collection tied to successful peer sync rounds when adding REST queues, alternative transports, or production consensus backends.</td>
+            </tr>
+            <tr>
+              <td>Mintd peer-sync policy wiring</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_peer_sync_config -- --test-threads 1`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo check -p cdk-axum --features federation`, `cargo check -p cdk-axum`, `cargo fmt --all`, and `git diff --check` passed. The Axum router now accepts a validated peer-sync policy and mintd maps `[federation.peer_sync]` settings into it.</td>
+              <td>Use these knobs in local process drills before adding bounded REST queues or non-REST transports.</td>
             </tr>
             <tr>
               <td>Concurrent federation metadata storage</td>

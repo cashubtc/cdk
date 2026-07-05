@@ -51,17 +51,27 @@ const DEFAULT_FEDERATION_RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_se
 const DEFAULT_FEDERATION_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(60);
 static FEDERATION_REST_SEQUENCE_SEED: AtomicU64 = AtomicU64::new(0);
 
+/// Private federation peer synchronization policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct FederationPeerSyncConfig {
-    peer_sync_interval: Duration,
-    peer_request_timeout: Duration,
-    operation_submission_timeout: Duration,
-    catch_up_limit: u16,
-    digest_recheck_attempts: usize,
-    digest_recheck_delay: Duration,
-    session_outcome_evidence_chunk_size: usize,
-    reconnect_initial_backoff: Duration,
-    reconnect_max_backoff: Duration,
+pub struct FederationPeerSyncConfig {
+    /// Interval between background private REST peer sync rounds.
+    pub peer_sync_interval: Duration,
+    /// Timeout for private peer status, catch-up, DKG, and evidence requests.
+    pub peer_request_timeout: Duration,
+    /// Timeout for forwarding a locally received operation to the primary member.
+    pub operation_submission_timeout: Duration,
+    /// Maximum number of accepted journal entries requested per catch-up page.
+    pub catch_up_limit: u16,
+    /// Number of materialized-state digest rechecks after journal catch-up.
+    pub digest_recheck_attempts: usize,
+    /// Delay between materialized-state digest rechecks.
+    pub digest_recheck_delay: Duration,
+    /// Number of journal entries covered by each session-outcome evidence chunk.
+    pub session_outcome_evidence_chunk_size: usize,
+    /// Initial reconnect backoff after a peer sync failure.
+    pub reconnect_initial_backoff: Duration,
+    /// Maximum reconnect backoff after repeated peer sync failures.
+    pub reconnect_max_backoff: Duration,
 }
 
 impl Default for FederationPeerSyncConfig {
@@ -82,7 +92,8 @@ impl Default for FederationPeerSyncConfig {
 }
 
 impl FederationPeerSyncConfig {
-    fn validate(&self) -> anyhow::Result<()> {
+    /// Validate the synchronization policy before starting private peer sync.
+    pub fn validate(&self) -> anyhow::Result<()> {
         if self.peer_sync_interval.is_zero() {
             anyhow::bail!("federation peer sync interval must be greater than zero");
         }
@@ -140,10 +151,6 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         )
         .route("/operations", post(post_operation))
         .route("/journal", post(post_journal))
-}
-
-pub(crate) fn spawn_federation_peer_sync_loop(state: MintState) {
-    spawn_federation_peer_sync_loop_with_config(state, FederationPeerSyncConfig::default());
 }
 
 pub(crate) fn spawn_federation_peer_sync_loop_with_config(

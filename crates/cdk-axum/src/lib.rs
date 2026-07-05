@@ -35,6 +35,8 @@ mod custom_handlers;
 mod custom_router;
 #[cfg(feature = "federation")]
 mod federation;
+#[cfg(feature = "federation")]
+pub use self::federation::FederationPeerSyncConfig;
 mod router_handlers;
 mod ws;
 
@@ -1119,6 +1121,53 @@ pub async fn create_mint_router_with_custom_cache(
     enable_info_page: bool,
 ) -> Result<Router> {
     #[cfg(feature = "federation")]
+    {
+        create_mint_router_with_custom_cache_and_federation_peer_sync_config(
+            mint,
+            cache,
+            custom_methods,
+            enable_info_page,
+            FederationPeerSyncConfig::default(),
+        )
+        .await
+    }
+    #[cfg(not(feature = "federation"))]
+    {
+        create_mint_router_with_custom_cache_inner(mint, cache, custom_methods, enable_info_page)
+            .await
+    }
+}
+
+/// Create mint [`Router`] with a custom cache and federation peer sync policy.
+#[cfg(feature = "federation")]
+#[allow(unused_mut, unused_variables)]
+pub async fn create_mint_router_with_custom_cache_and_federation_peer_sync_config(
+    mint: Arc<Mint>,
+    cache: HttpCache,
+    custom_methods: Vec<String>,
+    enable_info_page: bool,
+    federation_peer_sync_config: FederationPeerSyncConfig,
+) -> Result<Router> {
+    federation_peer_sync_config.validate()?;
+    create_mint_router_with_custom_cache_inner(
+        mint,
+        cache,
+        custom_methods,
+        enable_info_page,
+        federation_peer_sync_config,
+    )
+    .await
+}
+
+#[allow(unused_mut, unused_variables)]
+async fn create_mint_router_with_custom_cache_inner(
+    mint: Arc<Mint>,
+    cache: HttpCache,
+    custom_methods: Vec<String>,
+    enable_info_page: bool,
+    #[cfg(feature = "federation")] federation_peer_sync_config: FederationPeerSyncConfig,
+) -> Result<Router> {
+    #[cfg(feature = "federation")]
     let (federation_consensus, federation_sequences) =
         create_federation_runtime_state(&mint).await?;
     let mut state = MintState {
@@ -1156,7 +1205,10 @@ pub async fn create_mint_router_with_custom_cache(
 
     #[cfg(feature = "federation")]
     if state.federation_consensus.is_some() {
-        federation::spawn_federation_peer_sync_loop(state.clone());
+        federation::spawn_federation_peer_sync_loop_with_config(
+            state.clone(),
+            federation_peer_sync_config,
+        );
         mint_router = mint_router.nest("/federation/v1", federation::create_federation_router());
     }
 

@@ -681,6 +681,32 @@ fn validate_federation_payment_observation_startup_policy(
 }
 
 #[cfg(feature = "federation")]
+fn federation_peer_sync_config(settings: &config::Settings) -> cdk_axum::FederationPeerSyncConfig {
+    let peer_sync = settings
+        .federation
+        .as_ref()
+        .map(|federation| &federation.peer_sync)
+        .cloned()
+        .unwrap_or_default();
+
+    cdk_axum::FederationPeerSyncConfig {
+        peer_sync_interval: std::time::Duration::from_secs(peer_sync.peer_sync_interval_secs),
+        peer_request_timeout: std::time::Duration::from_secs(peer_sync.peer_request_timeout_secs),
+        operation_submission_timeout: std::time::Duration::from_secs(
+            peer_sync.operation_submission_timeout_secs,
+        ),
+        catch_up_limit: peer_sync.catch_up_limit,
+        digest_recheck_attempts: peer_sync.digest_recheck_attempts,
+        digest_recheck_delay: std::time::Duration::from_millis(peer_sync.digest_recheck_delay_ms),
+        session_outcome_evidence_chunk_size: peer_sync.session_outcome_evidence_chunk_size,
+        reconnect_initial_backoff: std::time::Duration::from_secs(
+            peer_sync.reconnect_initial_backoff_secs,
+        ),
+        reconnect_max_backoff: std::time::Duration::from_secs(peer_sync.reconnect_max_backoff_secs),
+    }
+}
+
+#[cfg(feature = "federation")]
 pub(crate) fn read_federation_json<T>(path: &Path, label: &str) -> Result<T>
 where
     T: DeserializeOwned,
@@ -1776,6 +1802,17 @@ async fn start_services_with_shutdown(
         }
     }
 
+    #[cfg(feature = "federation")]
+    let v1_service =
+        cdk_axum::create_mint_router_with_custom_cache_and_federation_peer_sync_config(
+            Arc::clone(&mint),
+            cache,
+            custom_methods,
+            settings.info.enable_info_page.unwrap_or(true),
+            federation_peer_sync_config(settings),
+        )
+        .await?;
+    #[cfg(not(feature = "federation"))]
     let v1_service = cdk_axum::create_mint_router_with_custom_cache(
         Arc::clone(&mint),
         cache,
@@ -2289,6 +2326,7 @@ mod tests {
                 allow_development_payment_observation_policy: false,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
+                peer_sync: config::FederationPeerSync::default(),
             }),
             ..Default::default()
         };
@@ -2314,6 +2352,93 @@ mod tests {
 
         let _ = fs::remove_file(public_config_path);
         let _ = fs::remove_file(private_config_path);
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn federation_peer_sync_config_maps_mintd_settings() {
+        let settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                consensus_backend: config::FederationConsensusBackend::InMemory,
+                allow_development_payment_observation_policy: false,
+                public_config_path: None,
+                private_config_path: None,
+                peer_sync: config::FederationPeerSync {
+                    peer_sync_interval_secs: 7,
+                    peer_request_timeout_secs: 11,
+                    operation_submission_timeout_secs: 13,
+                    catch_up_limit: 17,
+                    digest_recheck_attempts: 19,
+                    digest_recheck_delay_ms: 23,
+                    session_outcome_evidence_chunk_size: 29,
+                    reconnect_initial_backoff_secs: 31,
+                    reconnect_max_backoff_secs: 37,
+                },
+            }),
+            ..Default::default()
+        };
+
+        let sync_config = federation_peer_sync_config(&settings);
+
+        assert_eq!(
+            sync_config.peer_sync_interval,
+            std::time::Duration::from_secs(7)
+        );
+        assert_eq!(
+            sync_config.peer_request_timeout,
+            std::time::Duration::from_secs(11)
+        );
+        assert_eq!(
+            sync_config.operation_submission_timeout,
+            std::time::Duration::from_secs(13)
+        );
+        assert_eq!(sync_config.catch_up_limit, 17);
+        assert_eq!(sync_config.digest_recheck_attempts, 19);
+        assert_eq!(
+            sync_config.digest_recheck_delay,
+            std::time::Duration::from_millis(23)
+        );
+        assert_eq!(sync_config.session_outcome_evidence_chunk_size, 29);
+        assert_eq!(
+            sync_config.reconnect_initial_backoff,
+            std::time::Duration::from_secs(31)
+        );
+        assert_eq!(
+            sync_config.reconnect_max_backoff,
+            std::time::Duration::from_secs(37)
+        );
+        sync_config.validate().expect("valid sync config");
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn federation_peer_sync_config_rejects_invalid_mintd_settings() {
+        let settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                consensus_backend: config::FederationConsensusBackend::InMemory,
+                allow_development_payment_observation_policy: false,
+                public_config_path: None,
+                private_config_path: None,
+                peer_sync: config::FederationPeerSync {
+                    reconnect_initial_backoff_secs: 10,
+                    reconnect_max_backoff_secs: 5,
+                    ..config::FederationPeerSync::default()
+                },
+            }),
+            ..Default::default()
+        };
+
+        let err = federation_peer_sync_config(&settings)
+            .validate()
+            .expect_err("max backoff below initial backoff must fail");
+
+        assert!(
+            err.to_string()
+                .contains("max backoff must be greater than or equal"),
+            "error should explain invalid reconnect backoff: {err}"
+        );
     }
 
     #[cfg(all(feature = "federation", feature = "sqlite"))]
@@ -2349,6 +2474,7 @@ mod tests {
                 allow_development_payment_observation_policy: false,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
+                peer_sync: config::FederationPeerSync::default(),
             }),
             ..Default::default()
         };
@@ -2394,6 +2520,7 @@ mod tests {
                 allow_development_payment_observation_policy: false,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
+                peer_sync: config::FederationPeerSync::default(),
             }),
             ..Default::default()
         };
@@ -2415,6 +2542,7 @@ mod tests {
                 allow_development_payment_observation_policy: true,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
+                peer_sync: config::FederationPeerSync::default(),
             }),
             ..Default::default()
         };
@@ -2442,6 +2570,7 @@ mod tests {
                 allow_development_payment_observation_policy: false,
                 public_config_path: None,
                 private_config_path: None,
+                peer_sync: config::FederationPeerSync::default(),
             }),
             ..Default::default()
         };
@@ -2469,6 +2598,7 @@ mod tests {
                 allow_development_payment_observation_policy: false,
                 public_config_path: None,
                 private_config_path: None,
+                peer_sync: config::FederationPeerSync::default(),
             }),
             ..Default::default()
         };
@@ -2597,6 +2727,7 @@ mod tests {
                     allow_development_payment_observation_policy: true,
                     public_config_path: Some(public_config_path.clone()),
                     private_config_path: Some(private_config_path.clone()),
+                    peer_sync: config::FederationPeerSync::default(),
                 }),
                 ..Default::default()
             };

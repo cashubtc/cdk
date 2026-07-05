@@ -365,6 +365,17 @@ max_delay_time = 3
 # allow_development_payment_observation_policy = false
 # public_config_path = "/path/to/federation-public.json"
 # private_config_path = "/path/to/member-private.json"
+# Optional private REST peer synchronization policy. Defaults shown.
+# [federation.peer_sync]
+# peer_sync_interval_secs = 5
+# peer_request_timeout_secs = 10
+# operation_submission_timeout_secs = 10
+# catch_up_limit = 100
+# digest_recheck_attempts = 20
+# digest_recheck_delay_ms = 100
+# session_outcome_evidence_chunk_size = 1000
+# reconnect_initial_backoff_secs = 1
+# reconnect_max_backoff_secs = 60
 
 # Transaction limits for DoS protection (optional, defaults shown)
 [limits]
