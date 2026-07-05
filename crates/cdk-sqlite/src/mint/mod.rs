@@ -281,7 +281,8 @@ mod test {
                   'federation_dkg_setup_messages',
                   'federation_dkg_member_keyset_shares',
                   'federation_dkg_secret_share_contributions',
-                  'federation_dkg_transcript_signatures'
+                  'federation_dkg_transcript_signatures',
+                  'blind_signature'
               )
             "#,
         )
@@ -336,6 +337,10 @@ mod test {
         assert!(
             index_names.contains("idx_federation_dkg_transcript_signatures_member"),
             "missing federation DKG transcript-signature member index"
+        );
+        assert!(
+            index_names.contains("blind_signature_quote_id_index"),
+            "missing blind-signature quote-id index"
         );
 
         let journal_range_plan = explain_details(
@@ -448,6 +453,56 @@ mod test {
             &signature_share_blinded_message_plan,
             "federation_signature_shares",
         );
+
+        let proof_y_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT state
+                FROM proof
+                WHERE y = x'000102'
+                "#,
+            )
+            .expect("proof-y plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("proof-y query plan"),
+        );
+        assert_uses_indexed_search(&proof_y_plan, "proof");
+
+        let blind_signature_blinded_message_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT c
+                FROM blind_signature
+                WHERE blinded_message = x'000102'
+                "#,
+            )
+            .expect("blind-signature blinded-message plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("blind-signature blinded-message query plan"),
+        );
+        assert_uses_indexed_search(&blind_signature_blinded_message_plan, "blind_signature");
+
+        let blind_signature_quote_id_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT blinded_message
+                FROM blind_signature
+                WHERE quote_id = 'quote-1'
+                  AND c IS NOT NULL
+                ORDER BY order_index ASC
+                "#,
+            )
+            .expect("blind-signature quote-id plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("blind-signature quote-id query plan"),
+        );
+        assert_uses_indexed_search(&blind_signature_quote_id_plan, "blind_signature");
 
         drop(conn);
         drop(pool);
