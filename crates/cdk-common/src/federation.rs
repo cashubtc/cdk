@@ -25,12 +25,15 @@ mod transport;
 mod trusted_dealer;
 
 pub use self::consensus::{
-    FederationConsensusBackendAdapter, FederationConsensusBackendAdapterRuntime,
-    FederationConsensusBackendKind, FederationConsensusDefaultItem, FederationConsensusEngine,
-    FederationConsensusItem, FederationConsensusItemAdmission, FederationConsensusItemQueue,
-    FederationConsensusModuleFact, FederationConsensusRuntime, InMemoryFederationConsensus,
-    InMemoryFederationConsensusAdapter, InMemoryFederationConsensusNetwork,
-    FEDERATION_CONSENSUS_ITEM_VERSION, FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
+    FederationAlephBftUnitBodyHash, FederationAlephBftUnitDataProvider,
+    FederationAlephBftUnitPayload, FederationConsensusBackendAdapter,
+    FederationConsensusBackendAdapterRuntime, FederationConsensusBackendKind,
+    FederationConsensusDefaultItem, FederationConsensusEngine, FederationConsensusItem,
+    FederationConsensusItemAdmission, FederationConsensusItemQueue, FederationConsensusModuleFact,
+    FederationConsensusRuntime, InMemoryFederationConsensus, InMemoryFederationConsensusAdapter,
+    InMemoryFederationConsensusNetwork, FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION,
+    FEDERATION_CONSENSUS_ITEM_VERSION, FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES,
+    FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS, FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
 };
 pub use self::journal::{
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
@@ -408,6 +411,33 @@ pub enum FederationError {
         /// Maximum allowed canonical item size.
         max: usize,
     },
+    /// A consensus batching or payload limit must be non-zero.
+    #[error("Invalid federation consensus limit {field}: value={value}")]
+    InvalidConsensusLimit {
+        /// Configured limit field.
+        field: &'static str,
+        /// Invalid value.
+        value: u64,
+    },
+    /// An AlephBFT unit body hash must be exactly 32 bytes.
+    #[error("Invalid federation AlephBFT unit body hash size: expected={expected}, found={found}")]
+    InvalidAlephBftUnitBodyHashSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
+    /// An AlephBFT unit body hash does not match the canonical item body.
+    #[error("Federation AlephBFT unit body hash mismatch: expected={expected}, found={found}")]
+    AlephBftUnitBodyHashMismatch {
+        /// Expected body hash.
+        expected: String,
+        /// Found body hash.
+        found: String,
+    },
+    /// An AlephBFT unit operation ID list does not match the canonical item body.
+    #[error("Federation AlephBFT unit operation ids do not match item body")]
+    AlephBftUnitOperationIdsMismatch,
     /// The roster has a different member count than the threshold params.
     #[error("Federation member count mismatch: expected={expected}, found={found}")]
     MemberCountMismatch {

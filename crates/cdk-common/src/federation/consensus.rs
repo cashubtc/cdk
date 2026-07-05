@@ -13,11 +13,13 @@ use super::{
     FederationError, FederationId, FederationJournalCatchUpRequest,
     FederationJournalCatchUpResponse, FederationJournalEntry, FederationOperationEnvelope,
     FederationOperationId, FederationOperationStatus, FederationPeerStatus,
-    FederationSessionOutcome, FederationStateDigest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, InMemoryFederationJournal, MemberId, Result,
-    FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
+    FederationProtocolVersions, FederationSessionOutcome, FederationStateDigest,
+    FederationSubmitOperationRequest, FederationSubmitOperationResponse, InMemoryFederationJournal,
+    MemberId, Result, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
 };
-use serde::{Deserialize, Serialize};
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 const DEFAULT_CATCH_UP_LIMIT: u16 = 100;
 const MAX_CATCH_UP_LIMIT: u16 = 1000;
@@ -28,6 +30,207 @@ pub const FEDERATION_CONSENSUS_ITEM_VERSION: u16 = 1;
 /// Default maximum canonical size for one consensus item.
 pub const FEDERATION_MAX_CONSENSUS_ITEM_BYTES: usize =
     FEDERATION_MAX_OPERATION_ENVELOPE_BYTES + 4096;
+
+const FEDERATION_ALEPH_BFT_UNIT_BODY_HASH_VERSION: &[u8] = b"cdk-federation-aleph-bft-unit-body-v1";
+
+/// Version of AlephBFT unit payloads carrying CDK consensus items.
+pub const FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION: u16 = 1;
+
+/// Default maximum number of consensus items in one AlephBFT unit payload.
+pub const FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS: usize = 64;
+
+/// Default maximum canonical item-body bytes in one AlephBFT unit payload.
+pub const FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES: usize = FEDERATION_MAX_CONSENSUS_ITEM_BYTES * 4;
+
+/// Digest of the ordered consensus-item body in an AlephBFT unit payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FederationAlephBftUnitBodyHash([u8; 32]);
+
+impl FederationAlephBftUnitBodyHash {
+    /// Create a unit body hash from raw bytes.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Parse a unit body hash from a byte slice.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
+        let bytes: [u8; 32] =
+            bytes
+                .try_into()
+                .map_err(|_| FederationError::InvalidAlephBftUnitBodyHashSize {
+                    expected: 32,
+                    found: bytes.len(),
+                })?;
+        Ok(Self(bytes))
+    }
+
+    /// Parse a unit body hash from hex.
+    pub fn from_hex<S>(hex: S) -> Result<Self>
+    where
+        S: AsRef<str>,
+    {
+        let bytes = crate::util::hex::decode(hex.as_ref())?;
+        Self::from_slice(&bytes)
+    }
+
+    /// Return this unit body hash as bytes.
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    /// Return this unit body hash as hex.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        crate::util::hex::encode(self.0)
+    }
+}
+
+impl fmt::Display for FederationAlephBftUnitBodyHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
+
+impl FromStr for FederationAlephBftUnitBodyHash {
+    type Err = FederationError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Self::from_hex(value)
+    }
+}
+
+impl Serialize for FederationAlephBftUnitBodyHash {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for FederationAlephBftUnitBodyHash {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::from_hex(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Canonical payload carried by an AlephBFT unit.
+///
+/// The payload deliberately remains CDK-specific: AlephBFT orders units, while
+/// the unit body carries already-versioned CDK consensus items.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationAlephBftUnitPayload {
+    /// AlephBFT unit payload version.
+    pub version: u16,
+    /// Federation whose consensus instance produced the unit.
+    pub federation_id: FederationId,
+    /// Member that submitted this unit.
+    pub submitting_member: MemberId,
+    /// Consensus session containing this unit.
+    pub session: u64,
+    /// Submitting member's unit index within the session.
+    pub unit_index: u64,
+    /// Federation protocol versions required to interpret this unit.
+    pub protocol_versions: FederationProtocolVersions,
+    /// Consensus item version required for every item in the body.
+    pub consensus_item_version: u16,
+    /// Operation IDs derived from operation items, in body order.
+    pub operation_ids: Vec<FederationOperationId>,
+    /// Hash of the ordered canonical item body.
+    pub body_hash: FederationAlephBftUnitBodyHash,
+    /// Ordered CDK consensus items proposed by this unit.
+    pub items: Vec<FederationConsensusItem>,
+}
+
+impl FederationAlephBftUnitPayload {
+    /// Build a canonical AlephBFT unit payload from ordered consensus items.
+    pub fn new(
+        federation_id: FederationId,
+        submitting_member: MemberId,
+        session: u64,
+        unit_index: u64,
+        items: Vec<FederationConsensusItem>,
+    ) -> Result<Self> {
+        let operation_ids = collect_operation_ids(&items)?;
+        let body_hash = compute_aleph_bft_unit_body_hash(&items)?;
+        let payload = Self {
+            version: FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION,
+            federation_id,
+            submitting_member,
+            session,
+            unit_index,
+            protocol_versions: FederationProtocolVersions::current(),
+            consensus_item_version: FEDERATION_CONSENSUS_ITEM_VERSION,
+            operation_ids,
+            body_hash,
+            items,
+        };
+        payload.ensure_supported_version()?;
+        Ok(payload)
+    }
+
+    /// Return canonical JSON bytes with all object keys sorted.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
+        self.ensure_supported_version()?;
+        canonical_json_bytes(self)
+    }
+
+    /// Return this unit payload's canonical size.
+    pub fn canonical_size(&self) -> Result<usize> {
+        Ok(self.canonical_bytes()?.len())
+    }
+
+    /// Reject this payload if its canonical encoding exceeds `max_bytes`.
+    pub fn ensure_within_size_limit(&self, max_bytes: usize) -> Result<usize> {
+        let actual = self.canonical_size()?;
+        if actual > max_bytes {
+            return Err(FederationError::ConsensusItemTooLarge {
+                actual,
+                max: max_bytes,
+            });
+        }
+
+        Ok(actual)
+    }
+
+    /// Reject this payload if its metadata or body hash cannot be verified.
+    pub fn ensure_supported_version(&self) -> Result<()> {
+        if self.version != FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION {
+            return Err(FederationError::ProtocolVersionMismatch {
+                component: "aleph_bft_unit_payload",
+                expected: FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION,
+                found: self.version,
+            });
+        }
+        self.protocol_versions.validate()?;
+        ensure_consensus_item_version(self.consensus_item_version)?;
+
+        for item in &self.items {
+            item.ensure_supported_version()?;
+        }
+
+        let expected_operation_ids = collect_operation_ids(&self.items)?;
+        if self.operation_ids != expected_operation_ids {
+            return Err(FederationError::AlephBftUnitOperationIdsMismatch);
+        }
+
+        let expected_hash = compute_aleph_bft_unit_body_hash(&self.items)?;
+        if self.body_hash != expected_hash {
+            return Err(FederationError::AlephBftUnitBodyHashMismatch {
+                expected: expected_hash.to_hex(),
+                found: self.body_hash.to_hex(),
+            });
+        }
+
+        Ok(())
+    }
+}
 
 /// One item that can enter the federation consensus pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,6 +392,47 @@ fn ensure_consensus_item_version(version: u16) -> Result<()> {
     Ok(())
 }
 
+fn collect_operation_ids(items: &[FederationConsensusItem]) -> Result<Vec<FederationOperationId>> {
+    let mut operation_ids = Vec::new();
+    for item in items {
+        if let Some(operation_id) = item.operation_id()? {
+            operation_ids.push(operation_id);
+        }
+    }
+
+    Ok(operation_ids)
+}
+
+fn compute_aleph_bft_unit_body_hash(
+    items: &[FederationConsensusItem],
+) -> Result<FederationAlephBftUnitBodyHash> {
+    let mut transcript = Vec::new();
+    append_len_prefixed_bytes(&mut transcript, FEDERATION_ALEPH_BFT_UNIT_BODY_HASH_VERSION);
+    transcript.extend_from_slice(
+        &u64::try_from(items.len())
+            .expect("consensus item count fits in u64")
+            .to_be_bytes(),
+    );
+
+    for item in items {
+        let canonical = item.canonical_bytes()?;
+        append_len_prefixed_bytes(&mut transcript, &canonical);
+    }
+
+    Ok(FederationAlephBftUnitBodyHash::from_bytes(
+        Sha256Hash::hash(&transcript).to_byte_array(),
+    ))
+}
+
+fn append_len_prefixed_bytes(transcript: &mut Vec<u8>, bytes: &[u8]) {
+    transcript.extend_from_slice(
+        &u64::try_from(bytes.len())
+            .expect("byte slice length fits in u64")
+            .to_be_bytes(),
+    );
+    transcript.extend_from_slice(bytes);
+}
+
 /// Admission result for the pending consensus item queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FederationConsensusItemAdmission {
@@ -271,6 +515,175 @@ impl FederationConsensusItemQueue {
         }
         batch
     }
+
+    /// Drain up to `max_items` FIFO items without exceeding `max_bytes`.
+    ///
+    /// If the first queued item is larger than `max_bytes`, the queue is left
+    /// unchanged and an error is returned so the caller can apply backpressure
+    /// or surface the invalid batching limit.
+    pub fn drain_batch_until(
+        &mut self,
+        max_items: usize,
+        max_bytes: usize,
+    ) -> Result<Vec<FederationConsensusItem>> {
+        let mut batch = Vec::new();
+        let mut batch_bytes = 0usize;
+
+        for _ in 0..max_items {
+            let Some(item) = self.pending.front() else {
+                break;
+            };
+            let item_size = item.canonical_size()?;
+            if item_size > max_bytes {
+                if batch.is_empty() {
+                    return Err(FederationError::ConsensusItemTooLarge {
+                        actual: item_size,
+                        max: max_bytes,
+                    });
+                }
+                break;
+            }
+            if !batch.is_empty() && batch_bytes.saturating_add(item_size) > max_bytes {
+                break;
+            }
+
+            let Some(item) = self.pending.pop_front() else {
+                break;
+            };
+            if let Ok(Some(operation_id)) = item.operation_id() {
+                self.pending_operation_ids.remove(&operation_id);
+            }
+            batch_bytes = batch_bytes.saturating_add(item_size);
+            batch.push(item);
+        }
+
+        Ok(batch)
+    }
+}
+
+/// Bounded AlephBFT data provider for local pending CDK consensus items.
+#[derive(Debug, Clone)]
+pub struct FederationAlephBftUnitDataProvider {
+    federation_id: FederationId,
+    submitting_member: MemberId,
+    session: u64,
+    next_unit_index: u64,
+    max_items_per_unit: usize,
+    max_unit_body_bytes: usize,
+    queue: FederationConsensusItemQueue,
+}
+
+impl FederationAlephBftUnitDataProvider {
+    /// Create an empty data provider with default batching limits.
+    pub fn new(federation_id: FederationId, submitting_member: MemberId, session: u64) -> Self {
+        Self::with_limits(
+            federation_id,
+            submitting_member,
+            session,
+            FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
+            FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
+            FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES,
+        )
+        .expect("default AlephBFT data-provider limits are non-zero")
+    }
+
+    /// Create an empty data provider with explicit batching limits.
+    pub fn with_limits(
+        federation_id: FederationId,
+        submitting_member: MemberId,
+        session: u64,
+        max_item_bytes: usize,
+        max_items_per_unit: usize,
+        max_unit_body_bytes: usize,
+    ) -> Result<Self> {
+        ensure_non_zero_consensus_limit("max_item_bytes", max_item_bytes)?;
+        ensure_non_zero_consensus_limit("max_items_per_unit", max_items_per_unit)?;
+        ensure_non_zero_consensus_limit("max_unit_body_bytes", max_unit_body_bytes)?;
+
+        Ok(Self {
+            federation_id,
+            submitting_member,
+            session,
+            next_unit_index: 0,
+            max_items_per_unit,
+            max_unit_body_bytes,
+            queue: FederationConsensusItemQueue::with_max_item_bytes(max_item_bytes),
+        })
+    }
+
+    /// Return the session used for newly produced unit payloads.
+    #[must_use]
+    pub fn session(&self) -> u64 {
+        self.session
+    }
+
+    /// Return the index that will be used by the next non-empty unit.
+    #[must_use]
+    pub fn next_unit_index(&self) -> u64 {
+        self.next_unit_index
+    }
+
+    /// Return the number of queued consensus items.
+    #[must_use]
+    pub fn queued_len(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// Return true when the provider has no queued consensus items.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
+    /// Begin a new AlephBFT session and reset local unit indexing.
+    pub fn begin_session(&mut self, session: u64) {
+        self.session = session;
+        self.next_unit_index = 0;
+    }
+
+    /// Queue a consensus item for the next unit payload.
+    pub fn submit_item(
+        &mut self,
+        item: FederationConsensusItem,
+    ) -> Result<FederationConsensusItemAdmission> {
+        self.queue.submit(item)
+    }
+
+    /// Queue an operation envelope for the next unit payload.
+    pub fn submit_operation(
+        &mut self,
+        envelope: FederationOperationEnvelope,
+    ) -> Result<FederationConsensusItemAdmission> {
+        self.submit_item(FederationConsensusItem::operation(envelope))
+    }
+
+    /// Return the next non-empty unit payload, or `None` when no item is ready.
+    pub fn next_unit_payload(&mut self) -> Result<Option<FederationAlephBftUnitPayload>> {
+        let items = self
+            .queue
+            .drain_batch_until(self.max_items_per_unit, self.max_unit_body_bytes)?;
+        if items.is_empty() {
+            return Ok(None);
+        }
+
+        let payload = FederationAlephBftUnitPayload::new(
+            self.federation_id,
+            self.submitting_member,
+            self.session,
+            self.next_unit_index,
+            items,
+        )?;
+        self.next_unit_index = self.next_unit_index.saturating_add(1);
+        Ok(Some(payload))
+    }
+}
+
+fn ensure_non_zero_consensus_limit(field: &'static str, value: usize) -> Result<()> {
+    if value == 0 {
+        return Err(FederationError::InvalidConsensusLimit { field, value: 0 });
+    }
+
+    Ok(())
 }
 
 /// Minimal synchronous consensus engine surface used by federation runtimes.

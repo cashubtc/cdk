@@ -412,6 +412,273 @@ fn consensus_item_canonical_bytes_sort_json_payload_keys() {
 }
 
 #[test]
+fn aleph_bft_unit_payload_commits_to_ordered_items_and_operation_ids() {
+    let federation_id = federation_id(13);
+    let envelope = mint_envelope(
+        federation_id,
+        "quote-1",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let operation_id = envelope.operation_id().expect("operation id");
+    let operation_item = FederationConsensusItem::operation(envelope);
+    let fact_item = FederationConsensusItem::ModuleFact(FederationConsensusModuleFact::new(
+        "mint",
+        "fact",
+        json!({"paid": true}),
+    ));
+
+    let payload = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        7,
+        11,
+        vec![operation_item.clone(), fact_item.clone()],
+    )
+    .expect("payload");
+    let same_payload = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        7,
+        11,
+        vec![operation_item.clone(), fact_item.clone()],
+    )
+    .expect("same payload");
+    let reversed_payload = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        7,
+        11,
+        vec![fact_item, operation_item],
+    )
+    .expect("reversed payload");
+
+    assert_eq!(payload.version, FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION);
+    assert_eq!(payload.federation_id, federation_id);
+    assert_eq!(payload.submitting_member, member_id_value(2));
+    assert_eq!(payload.session, 7);
+    assert_eq!(payload.unit_index, 11);
+    assert_eq!(payload.operation_ids, vec![operation_id]);
+    assert_eq!(payload.body_hash, same_payload.body_hash);
+    assert_eq!(
+        payload.canonical_bytes().expect("payload canonical bytes"),
+        same_payload
+            .canonical_bytes()
+            .expect("same payload canonical bytes")
+    );
+    assert_ne!(payload.body_hash, reversed_payload.body_hash);
+    assert_eq!(reversed_payload.operation_ids, vec![operation_id]);
+}
+
+#[test]
+fn aleph_bft_unit_payload_rejects_tampered_body_hash_and_operation_ids() {
+    let federation_id = federation_id(13);
+    let envelope = mint_envelope(
+        federation_id,
+        "quote-1",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let item = FederationConsensusItem::operation(envelope);
+    let mut payload = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        7,
+        0,
+        vec![item.clone()],
+    )
+    .expect("payload");
+
+    payload.body_hash = FederationAlephBftUnitBodyHash::from_bytes([9; 32]);
+    assert!(matches!(
+        payload.ensure_supported_version(),
+        Err(FederationError::AlephBftUnitBodyHashMismatch { .. })
+    ));
+
+    let mut payload =
+        FederationAlephBftUnitPayload::new(federation_id, member_id_value(2), 7, 0, vec![item])
+            .expect("payload");
+    payload.operation_ids.clear();
+    assert!(matches!(
+        payload.ensure_supported_version(),
+        Err(FederationError::AlephBftUnitOperationIdsMismatch)
+    ));
+
+    let mut payload =
+        FederationAlephBftUnitPayload::new(federation_id, member_id_value(2), 7, 0, Vec::new())
+            .expect("empty payload");
+    payload.version = FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION + 1;
+    assert!(matches!(
+        payload.ensure_supported_version(),
+        Err(FederationError::ProtocolVersionMismatch {
+            component: "aleph_bft_unit_payload",
+            expected: FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION,
+            found,
+        }) if found == FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION + 1
+    ));
+}
+
+#[test]
+fn aleph_bft_data_provider_drains_bounded_batches_without_empty_units() {
+    let federation_id = federation_id(13);
+    let mut provider = FederationAlephBftUnitDataProvider::with_limits(
+        federation_id,
+        member_id_value(2),
+        3,
+        FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
+        2,
+        FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES,
+    )
+    .expect("provider");
+
+    for index in 0..3 {
+        provider
+            .submit_item(FederationConsensusItem::ModuleFact(
+                FederationConsensusModuleFact::new("mint", "fact", json!({"index": index})),
+            ))
+            .expect("submit fact");
+    }
+
+    let first = provider
+        .next_unit_payload()
+        .expect("first unit")
+        .expect("first unit present");
+    assert_eq!(first.session, 3);
+    assert_eq!(first.unit_index, 0);
+    assert_eq!(first.items.len(), 2);
+    assert_eq!(provider.queued_len(), 1);
+    assert_eq!(provider.next_unit_index(), 1);
+
+    let second = provider
+        .next_unit_payload()
+        .expect("second unit")
+        .expect("second unit present");
+    assert_eq!(second.unit_index, 1);
+    assert_eq!(second.items.len(), 1);
+    assert!(provider.is_empty());
+    assert_eq!(provider.next_unit_index(), 2);
+
+    assert!(provider
+        .next_unit_payload()
+        .expect("empty unit check")
+        .is_none());
+    assert_eq!(provider.next_unit_index(), 2);
+
+    provider.begin_session(4);
+    assert_eq!(provider.session(), 4);
+    assert_eq!(provider.next_unit_index(), 0);
+}
+
+#[test]
+fn aleph_bft_data_provider_deduplicates_pending_operations() {
+    let federation_id = federation_id(13);
+    let envelope = mint_envelope(
+        federation_id,
+        "quote-1",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let operation_id = envelope.operation_id().expect("operation id");
+    let mut provider = FederationAlephBftUnitDataProvider::new(federation_id, member_id(), 0);
+
+    assert_eq!(
+        provider
+            .submit_operation(envelope.clone())
+            .expect("submit operation"),
+        FederationConsensusItemAdmission::Accepted
+    );
+    assert_eq!(
+        provider
+            .submit_operation(envelope)
+            .expect("submit duplicate operation"),
+        FederationConsensusItemAdmission::DuplicateOperation
+    );
+
+    let payload = provider
+        .next_unit_payload()
+        .expect("unit")
+        .expect("unit present");
+    assert_eq!(payload.items.len(), 1);
+    assert_eq!(payload.operation_ids, vec![operation_id]);
+    assert!(provider.is_empty());
+}
+
+#[test]
+fn aleph_bft_data_provider_enforces_body_byte_limit_without_spinning_or_dropping() {
+    let federation_id = federation_id(13);
+    let first = FederationConsensusItem::Default(FederationConsensusDefaultItem::new(
+        "small",
+        json!({"body": "a"}),
+    ));
+    let second = FederationConsensusItem::Default(FederationConsensusDefaultItem::new(
+        "small",
+        json!({"body": "b"}),
+    ));
+    let first_size = first.canonical_size().expect("first size");
+    let mut provider = FederationAlephBftUnitDataProvider::with_limits(
+        federation_id,
+        member_id(),
+        0,
+        FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
+        10,
+        first_size,
+    )
+    .expect("provider");
+
+    provider.submit_item(first).expect("submit first");
+    provider.submit_item(second).expect("submit second");
+
+    let payload = provider
+        .next_unit_payload()
+        .expect("unit")
+        .expect("unit present");
+    assert_eq!(payload.items.len(), 1);
+    assert_eq!(provider.queued_len(), 1);
+
+    let oversized = FederationConsensusItem::Default(FederationConsensusDefaultItem::new(
+        "too-large-for-unit",
+        json!({"body": "x".repeat(64)}),
+    ));
+    let oversized_size = oversized.canonical_size().expect("oversized size");
+    let mut provider = FederationAlephBftUnitDataProvider::with_limits(
+        federation_id,
+        member_id(),
+        0,
+        oversized_size + 1,
+        10,
+        oversized_size - 1,
+    )
+    .expect("provider");
+    provider
+        .submit_item(oversized)
+        .expect("submit oversized-for-unit item");
+
+    assert!(matches!(
+        provider.next_unit_payload(),
+        Err(FederationError::ConsensusItemTooLarge { .. })
+    ));
+    assert_eq!(provider.queued_len(), 1);
+}
+
+#[test]
+fn aleph_bft_data_provider_rejects_zero_limits() {
+    let err = FederationAlephBftUnitDataProvider::with_limits(
+        federation_id(13),
+        member_id(),
+        0,
+        0,
+        FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
+        FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES,
+    )
+    .expect_err("zero item size limit");
+
+    assert!(matches!(
+        err,
+        FederationError::InvalidConsensusLimit {
+            field: "max_item_bytes",
+            value: 0,
+        }
+    ));
+}
+
+#[test]
 fn multi_node_engine_converges_with_reordered_duplicate_delayed_messages() {
     let federation_id = federation_id(13);
     let members = [member_id_value(1), member_id_value(2), member_id_value(3)];

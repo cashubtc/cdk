@@ -496,12 +496,15 @@ Architecture checklist:
 - [ ] Keep Cashu/CDK simpler than Fedimint where possible: CDK needs strict
   operation ordering and deterministic mint execution, not Fedimint's full module
   system or wallet state-machine stack.
-- [ ] Define the AlephBFT unit payload as canonical CDK consensus items:
+- [x] Define the AlephBFT unit payload as canonical CDK consensus items:
   `Operation(FederationOperation)`, payment observation facts, session
-  signatures, default/compatibility items, and future module facts.
-- [ ] Ensure every unit payload includes or commits to federation ID, consensus
+  signatures, default/compatibility items, and future module facts. This is now
+  represented by `FederationAlephBftUnitPayload`.
+- [x] Ensure every unit payload includes or commits to federation ID, consensus
   item version, operation hash, submitting member, accepted session/index, body
-  hash, and protocol-version metadata.
+  hash, and protocol-version metadata. The payload includes member/session/unit
+  metadata, current federation protocol versions, derived operation IDs, and a
+  length-prefixed hash over the ordered canonical item body.
 - [ ] Reuse the existing signed private REST envelope as the authenticated
   admission and transport envelope where practical, but make it explicitly
   mappable into AlephBFT proposals without changing the canonical operation
@@ -510,7 +513,10 @@ Architecture checklist:
   private REST submit, catch-up response, or signed session outcome is accepted.
 - [ ] Add a Fedimint-like data-provider loop that drains a bounded pending queue,
   deduplicates operation hashes locally per session, enforces max byte limits,
-  and batches items without busy loops.
+  and batches items without busy loops. The synchronous
+  `FederationAlephBftUnitDataProvider` primitive now performs bounded,
+  byte-limited, duplicate-aware unit construction; the production async
+  AlephBFT loop still needs to call it.
 - [ ] Add a Fedimint-like finalization handler that converts finalized AlephBFT
   units into an ordered stream consumed by exactly one deterministic CDK apply
   loop.
