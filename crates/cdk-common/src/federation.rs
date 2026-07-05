@@ -669,6 +669,18 @@ pub enum FederationError {
         /// Found operation envelope version.
         found: u16,
     },
+    /// Federation metadata advertised an unsupported protocol component version.
+    #[error(
+        "Federation protocol version mismatch for {component}: expected={expected}, found={found}"
+    )]
+    ProtocolVersionMismatch {
+        /// Protocol component being validated.
+        component: &'static str,
+        /// Expected component version.
+        expected: u16,
+        /// Found component version.
+        found: u16,
+    },
     /// A requested operation ID was not found in the journal.
     #[error("Unknown federation operation {operation_id}")]
     UnknownOperation {
@@ -1087,6 +1099,92 @@ impl ThresholdParams {
 
         Ok(())
     }
+}
+
+/// Federation protocol component versions advertised in public metadata.
+///
+/// These versions let members and federation-aware wallets fail closed when a
+/// config requires operation, consensus, private REST, or session-outcome
+/// semantics they do not understand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationProtocolVersions {
+    /// Canonical operation envelope version.
+    #[serde(default = "current_federation_operation_version")]
+    pub operation: u16,
+    /// Consensus item envelope version.
+    #[serde(default = "current_federation_consensus_item_version")]
+    pub consensus_item: u16,
+    /// Private federation REST API version.
+    #[serde(default = "current_federation_rest_api_version")]
+    pub rest_api: u16,
+    /// Signed session-outcome payload version.
+    #[serde(default = "current_federation_session_outcome_version")]
+    pub session_outcome: u16,
+}
+
+impl FederationProtocolVersions {
+    /// Return the protocol versions supported by this CDK build.
+    #[must_use]
+    pub const fn current() -> Self {
+        Self {
+            operation: FEDERATION_OPERATION_VERSION,
+            consensus_item: FEDERATION_CONSENSUS_ITEM_VERSION,
+            rest_api: FEDERATION_REST_API_VERSION,
+            session_outcome: FEDERATION_SESSION_OUTCOME_VERSION,
+        }
+    }
+
+    /// Validate that every advertised protocol component is supported.
+    pub fn validate(&self) -> Result<()> {
+        let current = Self::current();
+        validate_protocol_component("operation", current.operation, self.operation)?;
+        validate_protocol_component(
+            "consensus_item",
+            current.consensus_item,
+            self.consensus_item,
+        )?;
+        validate_protocol_component("rest_api", current.rest_api, self.rest_api)?;
+        validate_protocol_component(
+            "session_outcome",
+            current.session_outcome,
+            self.session_outcome,
+        )?;
+        Ok(())
+    }
+}
+
+impl Default for FederationProtocolVersions {
+    fn default() -> Self {
+        Self::current()
+    }
+}
+
+fn validate_protocol_component(component: &'static str, expected: u16, found: u16) -> Result<()> {
+    if expected == found {
+        return Ok(());
+    }
+
+    Err(FederationError::ProtocolVersionMismatch {
+        component,
+        expected,
+        found,
+    })
+}
+
+const fn current_federation_operation_version() -> u16 {
+    FEDERATION_OPERATION_VERSION
+}
+
+const fn current_federation_consensus_item_version() -> u16 {
+    FEDERATION_CONSENSUS_ITEM_VERSION
+}
+
+const fn current_federation_rest_api_version() -> u16 {
+    FEDERATION_REST_API_VERSION
+}
+
+const fn current_federation_session_outcome_version() -> u16 {
+    FEDERATION_SESSION_OUTCOME_VERSION
 }
 
 const DEFAULT_MAX_PENDING_PAYMENT_QUOTES: u32 = 10_000;
@@ -2897,6 +2995,9 @@ fn dkg_signature_transcript(transcript_hash: FederationDkgTranscriptHash) -> Vec
 pub struct FederationConfig {
     /// Stable federation roster ID.
     pub federation_id: FederationId,
+    /// Protocol component versions required by this public config.
+    #[serde(default)]
+    pub protocol_versions: FederationProtocolVersions,
     /// Federation threshold settings.
     pub threshold_params: ThresholdParams,
     /// Public member roster keyed by member ID.
@@ -2921,6 +3022,7 @@ impl FederationConfig {
         let federation_id = Self::derive_federation_id(threshold_params, &members)?;
         let config = Self {
             federation_id,
+            protocol_versions: FederationProtocolVersions::current(),
             threshold_params,
             members,
             keysets,
@@ -2965,6 +3067,8 @@ impl FederationConfig {
 
     /// Validate this config.
     pub fn validate(&self) -> Result<()> {
+        self.protocol_versions.validate()?;
+
         let expected_id = Self::derive_federation_id(self.threshold_params, &self.members)?;
         if expected_id != self.federation_id {
             return Err(FederationError::FederationIdMismatch {
@@ -3666,6 +3770,93 @@ mod tests {
                 .expect("id from json"),
             id
         );
+    }
+
+    #[test]
+    fn federation_config_advertises_current_protocol_versions() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let config = FederationConfig::new(params, test_roster(), Vec::new()).expect("config");
+
+        assert_eq!(
+            config.protocol_versions,
+            FederationProtocolVersions::current()
+        );
+
+        let json = serde_json::to_value(&config).expect("config json");
+        let versions = json
+            .get("protocol_versions")
+            .and_then(serde_json::Value::as_object)
+            .expect("protocol versions object");
+        assert_eq!(
+            versions
+                .get("operation")
+                .and_then(serde_json::Value::as_u64),
+            Some(u64::from(FEDERATION_OPERATION_VERSION))
+        );
+        assert_eq!(
+            versions
+                .get("consensus_item")
+                .and_then(serde_json::Value::as_u64),
+            Some(u64::from(FEDERATION_CONSENSUS_ITEM_VERSION))
+        );
+        assert_eq!(
+            versions.get("rest_api").and_then(serde_json::Value::as_u64),
+            Some(u64::from(FEDERATION_REST_API_VERSION))
+        );
+        assert_eq!(
+            versions
+                .get("session_outcome")
+                .and_then(serde_json::Value::as_u64),
+            Some(u64::from(FEDERATION_SESSION_OUTCOME_VERSION))
+        );
+    }
+
+    #[test]
+    fn federation_config_defaults_missing_protocol_versions_for_legacy_configs() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let config = FederationConfig::new(params, test_roster(), Vec::new()).expect("config");
+        let mut legacy_json = serde_json::to_value(&config).expect("config json");
+        legacy_json
+            .as_object_mut()
+            .expect("config object")
+            .remove("protocol_versions");
+
+        let decoded =
+            serde_json::from_value::<FederationConfig>(legacy_json).expect("legacy config");
+        assert_eq!(
+            decoded.protocol_versions,
+            FederationProtocolVersions::current()
+        );
+        decoded.validate().expect("legacy config validates");
+    }
+
+    #[test]
+    fn federation_protocol_versions_default_missing_components() {
+        let versions = serde_json::from_value::<FederationProtocolVersions>(serde_json::json!({
+            "operation": FEDERATION_OPERATION_VERSION
+        }))
+        .expect("partial protocol versions");
+
+        assert_eq!(versions, FederationProtocolVersions::current());
+        versions
+            .validate()
+            .expect("partial versions default current");
+    }
+
+    #[test]
+    fn federation_config_rejects_unsupported_protocol_versions() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let mut config = FederationConfig::new(params, test_roster(), Vec::new()).expect("config");
+        config.protocol_versions.rest_api = FEDERATION_REST_API_VERSION + 1;
+
+        assert!(matches!(
+            config.validate(),
+            Err(FederationError::ProtocolVersionMismatch {
+                component: "rest_api",
+                expected: FEDERATION_REST_API_VERSION,
+                found,
+            }) if found == FEDERATION_REST_API_VERSION + 1
+        ));
     }
 
     #[test]

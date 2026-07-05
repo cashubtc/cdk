@@ -522,19 +522,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 514 checked items and 74 remaining items. Production federation modules now have source- and manifest-level guards against direct fakewallet backend coupling outside tests and explicit backend setup.</span>
+          <span class="value">The implementation plan audit tracks 515 checked items and 73 remaining items. Public federation configs now advertise protocol component versions and fail closed when unsupported versions are required.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: enforce fakewallet dependency boundary</span>
+          <span class="value">feat: advertise federation protocol versions</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Shared federation regressions now scan source and Cargo manifests so fakewallet stays test-only in federation crates and optional behind `cdk-mintd`'s explicit backend feature.</span>
+          <span class="value">`FederationConfig` metadata now carries operation, consensus-item, private REST, and signed session-outcome versions with legacy defaults and explicit unsupported-version rejection.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, fakewallet isolation cleanup, and the remaining real-backend/BFT follow-ups.</span>
+          <span class="value">Continue with operation-encoding migration planning, stale-upgrade rejection tests, live Postgres migration/application coverage, and the remaining real-backend/BFT follow-ups.</span>
         </div>
       </aside>
     </header>
@@ -545,7 +545,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 514 checked entries and 74 remaining entries. The
+          checklist has 515 checked entries and 73 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -784,6 +784,14 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Protocol metadata advertised</h3>
+            <p>Public federation configs now advertise operation, consensus-item, private REST, and signed session-outcome component versions. Legacy configs without the field default to current versions, while unsupported explicit versions fail validation before startup or wallet/member use.</p>
+          </article>
+          <article class="item">
+            <h3>Remote pubsub spin fixed</h3>
+            <p>The shared remote pubsub consumer now backs off after a live long stream ends and sleeps while waiting for retry eligibility, so stream-only transports cannot reconnect in a tight loop when polling is unavailable.</p>
+          </article>
           <article class="item">
             <h3>Fakewallet coupling guard</h3>
             <p>Production federation modules now have executable source and manifest audits. Shared federation crates cannot depend on fakewallet, `cdk` and `cdk-axum` keep fakewallet under dev-dependencies, and mintd fakewallet support remains an optional backend feature for development/regtest setup.</p>
@@ -3190,6 +3198,18 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk ended_payment_event_stream_retries_with_backoff -- --test-threads 1` proved an empty backend payment event stream no longer reconnects in a tight loop. `cargo check -p cdk`, `cargo check -p cdk-payment-processor`, `cargo test -p cdk-payment-processor --lib`, `cargo fmt --all -- --check`, and `git diff --check` passed for the committed backoff fix.</td>
               <td>Keep reconnect backoff in mind when reviewing future payment backend bridges; ended streams should recover, but never by busy-looping.</td>
+            </tr>
+            <tr>
+              <td>Remote pubsub reconnect backoff</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common pub_sub::remote_consumer -- --test-threads 1` passed seven remote-consumer regressions, including an ended stream without polling support backing off before reconnecting and a preferred-polling client falling back to stream when polling is unsupported. `cargo test -p cdk-common` and `git diff --check` also passed for the spin fix.</td>
+              <td>Keep checking shared stream and polling transports for branches that can retry without awaiting after network or backend capability changes.</td>
+            </tr>
+            <tr>
+              <td>Federation protocol metadata</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation protocol_versions -- --test-threads 1` passed four protocol metadata tests covering current-version advertisement, legacy missing-field defaults, partial component defaults, and unsupported version rejection. `cargo test -p cdk-common --features federation federation::tests -- --test-threads 1`, `cargo check -p cdk --features federation`, and `git diff --check` passed.</td>
+              <td>Add operation-encoding migration planning and broader mixed-version federation tests that prove stale members refuse upgraded consensus cleanly.</td>
             </tr>
             <tr>
               <td>Federation peer sync policy</td>
