@@ -28,7 +28,6 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
         accept_invalid_certs: bool,
     ) -> Result<(), HttpError>;
 
-    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     /// DNS resolver to get TXT records from a domain name.
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, HttpError>;
 
@@ -120,27 +119,37 @@ impl Transport for Async {
         Ok(())
     }
 
-    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, HttpError> {
-        use std::str::FromStr;
+        #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+        {
+            use std::str::FromStr;
 
-        let name = hickory_resolver::Name::from_str(domain)
-            .map_err(|e| HttpError::Other(format!("Invalid domain name: {}", e)))?;
+            let name = hickory_resolver::Name::from_str(domain)
+                .map_err(|e| HttpError::Other(format!("Invalid domain name: {}", e)))?;
 
-        Ok(self
-            .resolver
-            .txt_lookup(name)
-            .await
-            .map_err(|e| HttpError::Other(e.to_string()))?
-            .into_iter()
-            .map(|txt| {
-                txt.txt_data()
-                    .iter()
-                    .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-                    .collect::<Vec<_>>()
-                    .join("")
-            })
-            .collect::<Vec<_>>())
+            Ok(self
+                .resolver
+                .txt_lookup(name)
+                .await
+                .map_err(|e| HttpError::Other(e.to_string()))?
+                .into_iter()
+                .map(|txt| {
+                    txt.txt_data()
+                        .iter()
+                        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                        .collect::<Vec<_>>()
+                        .join("")
+                })
+                .collect::<Vec<_>>())
+        }
+
+        #[cfg(any(not(feature = "bip353"), target_arch = "wasm32"))]
+        {
+            let _ = domain;
+            Err(HttpError::Other(
+                "DNS TXT resolution requires the bip353 feature".to_string(),
+            ))
+        }
     }
 
     async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, HttpError>

@@ -519,19 +519,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 471 checked items and 116 remaining items. Threshold BLS secret shares now support explicit zeroization and wipe temporary secret serialization buffers where practical.</span>
+          <span class="value">The implementation plan audit now tracks 473 checked items and 114 remaining items. Milestone 0 broad feature-disabled and feature-enabled workspace gates are now recorded as passing.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: zeroize threshold bls secret shares</span>
+          <span class="value">fix: close federation workspace gates</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Added explicit zeroization support for BLS secret keys and federation secret shares, plus cleanup of temporary secret-share serde buffers and a regression proving secret-share bytes clear to zero.</span>
+          <span class="value">Closed Milestone 0's broad gates after fixing the NUT-10 helper keyset-version mismatch, the melt-token example's invoice-signing key type, and the feature-unified transport DNS TXT trait shape.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with the broad feature-disabled and feature-enabled workspace gates, then the remaining consensus/storage follow-ups.</span>
+          <span class="value">Continue with the remaining consensus/storage follow-ups, especially production BFT ordering, dedicated signature-share persistence, and broader storage-backed recovery coverage.</span>
         </div>
       </aside>
     </header>
@@ -542,7 +542,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 471 checked entries and 116 remaining entries. The
+          checklist has 473 checked entries and 114 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -781,6 +781,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Workspace gates closed</h3>
+            <p>The broad feature-disabled library test gate and feature-enabled all-targets compile gate now pass and are recorded in the implementation plan. The checkpoint also fixed the NUT-10 keyset-version helper mismatch, the melt-token example's secp256k1 signing key import, and the transport DNS TXT trait shape across feature combinations.</p>
+          </article>
           <article class="item">
             <h3>BLS secret shares zeroize</h3>
             <p>Threshold BLS secret keys and federation secret shares now implement explicit zeroization, drop through the same clearing path, and wipe temporary secret-share serialization buffers where practical.</p>
@@ -2005,10 +2009,16 @@
           </thead>
           <tbody>
             <tr>
+              <td>Milestone 0 broad workspace gates</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test --lib --workspace --exclude cdk-postgres` passed with federation disabled. `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed after the example key-type fix and stable transport DNS TXT method.</td>
+              <td>Move back to the remaining consensus/storage follow-ups with the broad feature gates green.</td>
+            </tr>
+            <tr>
               <td>Docs/dashboard</td>
               <td><span class="status done">Passed</span></td>
               <td>`docs/federated-cashu-review-checklist.md` now gives reviewers concrete federation gates for consensus-before-signing, deterministic operation binding, state digests, storage, private REST authentication, v3/BLS keysets, payments, wallet aggregation, and attack regressions. The implementation plan marks the dedicated review-checklist item complete.</td>
-              <td>Record the next broad workspace test gate in both the implementation plan and dashboard.</td>
+              <td>Keep the dashboard updated after each coherent implementation checkpoint.</td>
             </tr>
             <tr>
               <td>Threshold BLS secret-share zeroization</td>

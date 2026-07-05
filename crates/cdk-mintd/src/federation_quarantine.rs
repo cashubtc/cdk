@@ -257,6 +257,10 @@ mod tests {
             Ok(())
         }
 
+        async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, HttpError> {
+            Ok(Vec::new())
+        }
+
         async fn http_get<R>(
             &self,
             _url: Url,

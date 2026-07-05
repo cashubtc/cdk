@@ -2555,6 +2555,10 @@ mod tests {
             Ok(())
         }
 
+        async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, HttpError> {
+            Ok(Vec::new())
+        }
+
         async fn http_get<R>(
             &self,
             _url: url::Url,
@@ -2591,6 +2595,10 @@ mod tests {
             _accept_invalid_certs: bool,
         ) -> Result<(), HttpError> {
             Ok(())
+        }
+
+        async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, HttpError> {
+            Ok(Vec::new())
         }
 
         async fn http_get<R>(&self, url: url::Url, _auth: Option<AuthToken>) -> Result<R, HttpError>

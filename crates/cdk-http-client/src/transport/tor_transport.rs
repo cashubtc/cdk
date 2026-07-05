@@ -225,7 +225,6 @@ impl Transport for TorAsync {
         ))
     }
 
-    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, HttpError> {
         #[derive(serde::Deserialize)]
         struct Answer {
