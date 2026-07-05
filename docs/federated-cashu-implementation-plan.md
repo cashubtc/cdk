@@ -318,7 +318,7 @@ Tests and success criteria:
 
 - [ ] Re-run `cargo test --lib --workspace --exclude cdk-postgres` with the feature disabled and record the result.
 - [ ] Re-run a feature-enabled workspace compile/check and confirm standalone behavior remains unchanged.
-- [ ] Add a dedicated review checklist document or PR template for future federation PRs: determinism, consensus-before-signing, operation hashing, state digest, attack tests.
+- [x] Add a dedicated review checklist document or PR template for future federation PRs: determinism, consensus-before-signing, operation hashing, state digest, attack tests.
 
 ## Milestone 1: threshold BLS blind signature primitives
 

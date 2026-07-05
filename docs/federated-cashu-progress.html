@@ -512,25 +512,26 @@
           <a class="link-pill" href="./federated-cashu-implementation-plan.md">Implementation plan</a>
           <a class="link-pill" href="./federated-cashu-codex-goal-prompt.md">Goal prompt</a>
           <a class="link-pill" href="./federated-cashu-rfc.md">Milestone 0 RFC</a>
+          <a class="link-pill" href="./federated-cashu-review-checklist.md">Review checklist</a>
           <a class="link-pill" href="./federated-cashu-payment-trust-model.md">Payment trust model</a>
         </div>
       </div>
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 469 checked items and 118 remaining items. Federated mint apply now enforces NUT-20 locked quote signatures before generating member shares.</span>
+          <span class="value">The implementation plan audit now tracks 470 checked items and 117 remaining items. Federation PRs now have a dedicated review checklist for consensus, signing, digests, attacks, and standalone safety.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover federated nut20 mint locks</span>
+          <span class="value">docs: add federation review checklist</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federated mint apply now accepts valid NUT-20 locked quote signatures, rejects missing signatures, and rejects output mutation before any share is stored.</span>
+          <span class="value">Added `docs/federated-cashu-review-checklist.md` so reviewers can trace federation changes through consensus-before-signing, operation binding, state replay, networking, storage, payments, and attack regressions.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with broader post-refactor standalone/federation test gates and the remaining consensus/storage follow-ups.</span>
+          <span class="value">Continue with the broad feature-disabled and feature-enabled workspace gates, then the remaining consensus/storage follow-ups.</span>
         </div>
       </aside>
     </header>
@@ -541,7 +542,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 469 checked entries and 118 remaining entries. The
+          checklist has 470 checked entries and 117 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -815,6 +816,10 @@
           <article class="item">
             <h3>NUT-20 mint locks enforced</h3>
             <p>Federated mint apply now validates locked quote signatures before generating member shares, accepts valid signed output sets, and rejects missing or mutated-output signatures without storing shares.</p>
+          </article>
+          <article class="item">
+            <h3>Federation review checklist added</h3>
+            <p>A dedicated reviewer checklist now covers consensus-before-signing, deterministic operation binding, state replay, private REST authentication, v3/BLS keysets, payment observations, wallet aggregation, and attack regressions.</p>
           </article>
           <article class="item">
             <h3>4-of-7 BLS proven</h3>
@@ -1998,8 +2003,8 @@
             <tr>
               <td>Docs/dashboard</td>
               <td><span class="status done">Passed</span></td>
-              <td>Dashboard baseline committed as 4d340ed0 and updated after e7494bea.</td>
-              <td>Update after each checkpoint.</td>
+              <td>`docs/federated-cashu-review-checklist.md` now gives reviewers concrete federation gates for consensus-before-signing, deterministic operation binding, state digests, storage, private REST authentication, v3/BLS keysets, payments, wallet aggregation, and attack regressions. The implementation plan marks the dedicated review-checklist item complete.</td>
+              <td>Record the next broad workspace test gate in both the implementation plan and dashboard.</td>
             </tr>
             <tr>
               <td>Feature-gated standalone behavior</td>
