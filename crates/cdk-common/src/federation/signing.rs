@@ -44,7 +44,7 @@ impl MemberConfigPrivate {
         operation_id: FederationOperationId,
         outputs: &[BlindedMessage],
     ) -> Result<FederationBlindSignatureShareSet> {
-        self.validate_against_public(public_config)?;
+        self.validate_metadata_against_public(public_config)?;
 
         let mut shares = Vec::with_capacity(outputs.len());
         for output in outputs {
@@ -66,6 +66,13 @@ impl MemberConfigPrivate {
                     keyset_id: keyset.id,
                     amount: output.amount,
                 })?;
+            if secret_share.signer_id().get() != self.member_id.get() {
+                return Err(FederationError::SecretShareSignerMismatch {
+                    keyset_id: keyset.id,
+                    member_id: self.member_id,
+                    signer_id: secret_share.signer_id().get(),
+                });
+            }
             let public_share = keyset
                 .public_shares
                 .get(&self.member_id)
@@ -431,6 +438,46 @@ mod tests {
         assert!(matches!(
             private.sign_blinded_messages(&bundle.public_config, operation_id, &[output]),
             Err(FederationError::UnknownFederatedKeysetAmount { .. })
+        ));
+    }
+
+    #[test]
+    fn signing_rejects_wrong_member_secret_share() {
+        let bundle = bundle();
+        let keyset = &bundle.public_config.keysets[0];
+        let operation_id = FederationOperationId::from_bytes([6; 32]);
+        let blinded_message = BlsG1PublicKey::hash_to_curve(b"wrong member secret share");
+        let output =
+            BlindedMessage::new(Amount::from(1), keyset.id, PublicKey::from(blinded_message));
+
+        let wrong_secret_share = bundle
+            .private_configs
+            .get(&member_id(2))
+            .expect("second private config")
+            .keyset_secret_shares
+            .get(&keyset.id)
+            .expect("second keyset shares")
+            .get(&Amount::from(1))
+            .expect("second amount share")
+            .clone();
+        let mut private = bundle
+            .private_configs
+            .get(&member_id(1))
+            .expect("first private config")
+            .clone();
+        private
+            .keyset_secret_shares
+            .get_mut(&keyset.id)
+            .expect("first keyset shares")
+            .insert(Amount::from(1), wrong_secret_share);
+
+        assert!(matches!(
+            private.sign_blinded_messages(&bundle.public_config, operation_id, &[output]),
+            Err(FederationError::SecretShareSignerMismatch {
+                member_id: local_member_id,
+                signer_id: 2,
+                ..
+            }) if local_member_id == member_id(1)
         ));
     }
 }

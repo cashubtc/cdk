@@ -1884,7 +1884,7 @@ mod tests {
     use std::fmt;
     use std::str::FromStr;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, OnceLock};
     use std::time::Duration;
 
     use async_trait::async_trait;
@@ -1967,134 +1967,126 @@ mod tests {
     }
 
     fn bundle() -> cdk_common::federation::TrustedDealerConfigBundle {
-        generate_trusted_dealer_configs(
-            ThresholdParams::with_bft_consensus(1, 1).expect("params"),
-            vec![member(member_id(1))],
-            vec![TrustedDealerKeysetSpec::new(
-                CurrencyUnit::Sat,
-                true,
-                0,
-                None,
-                BTreeMap::from([(
-                    Amount::from(1),
-                    vec![BlsSecretKey::from_reduced_bytes(&[2; 32])],
-                )]),
-            )],
-        )
-        .expect("trusted dealer bundle")
+        static BUNDLE: OnceLock<TrustedDealerConfigBundle> = OnceLock::new();
+        BUNDLE
+            .get_or_init(|| {
+                generate_trusted_dealer_configs(
+                    ThresholdParams::with_bft_consensus(1, 1).expect("params"),
+                    vec![member(member_id(1))],
+                    vec![TrustedDealerKeysetSpec::new(
+                        CurrencyUnit::Sat,
+                        true,
+                        0,
+                        None,
+                        BTreeMap::from([(
+                            Amount::from(1),
+                            vec![BlsSecretKey::from_reduced_bytes(&[2; 32])],
+                        )]),
+                    )],
+                )
+                .expect("trusted dealer bundle")
+            })
+            .clone()
     }
 
     fn threshold_bundle() -> TrustedDealerConfigBundle {
-        generate_trusted_dealer_configs(
-            ThresholdParams::with_bft_consensus(3, 2).expect("params"),
-            vec![
-                member(member_id(1)),
-                member(member_id(2)),
-                member(member_id(3)),
-            ],
-            vec![TrustedDealerKeysetSpec::new(
-                CurrencyUnit::Sat,
-                true,
-                0,
-                None,
-                BTreeMap::from([
-                    (
-                        Amount::from(1),
-                        vec![
-                            BlsSecretKey::from_reduced_bytes(&[2; 32]),
-                            BlsSecretKey::from_reduced_bytes(&[3; 32]),
-                        ],
-                    ),
-                    (
-                        Amount::from(2),
-                        vec![
-                            BlsSecretKey::from_reduced_bytes(&[4; 32]),
-                            BlsSecretKey::from_reduced_bytes(&[5; 32]),
-                        ],
-                    ),
-                    (
-                        Amount::from(4),
-                        vec![
-                            BlsSecretKey::from_reduced_bytes(&[6; 32]),
-                            BlsSecretKey::from_reduced_bytes(&[7; 32]),
-                        ],
-                    ),
-                ]),
-            )],
-        )
-        .expect("trusted dealer bundle")
+        static THRESHOLD_BUNDLE: OnceLock<TrustedDealerConfigBundle> = OnceLock::new();
+        THRESHOLD_BUNDLE
+            .get_or_init(|| {
+                generate_trusted_dealer_configs(
+                    ThresholdParams::with_bft_consensus(3, 2).expect("params"),
+                    vec![
+                        member(member_id(1)),
+                        member(member_id(2)),
+                        member(member_id(3)),
+                    ],
+                    vec![TrustedDealerKeysetSpec::new(
+                        CurrencyUnit::Sat,
+                        true,
+                        0,
+                        None,
+                        BTreeMap::from([
+                            (
+                                Amount::from(1),
+                                vec![
+                                    BlsSecretKey::from_reduced_bytes(&[2; 32]),
+                                    BlsSecretKey::from_reduced_bytes(&[3; 32]),
+                                ],
+                            ),
+                            (
+                                Amount::from(2),
+                                vec![
+                                    BlsSecretKey::from_reduced_bytes(&[4; 32]),
+                                    BlsSecretKey::from_reduced_bytes(&[5; 32]),
+                                ],
+                            ),
+                            (
+                                Amount::from(4),
+                                vec![
+                                    BlsSecretKey::from_reduced_bytes(&[6; 32]),
+                                    BlsSecretKey::from_reduced_bytes(&[7; 32]),
+                                ],
+                            ),
+                        ]),
+                    )],
+                )
+                .expect("trusted dealer bundle")
+            })
+            .clone()
     }
 
     fn threshold_rotation_bundle() -> TrustedDealerConfigBundle {
-        generate_trusted_dealer_configs(
-            ThresholdParams::with_bft_consensus(3, 2).expect("params"),
-            vec![
-                member(member_id(1)),
-                member(member_id(2)),
-                member(member_id(3)),
-            ],
-            vec![
-                TrustedDealerKeysetSpec::new(
-                    CurrencyUnit::Sat,
-                    true,
-                    0,
-                    None,
-                    BTreeMap::from([
-                        (
-                            Amount::from(1),
-                            vec![
-                                BlsSecretKey::from_reduced_bytes(&[2; 32]),
-                                BlsSecretKey::from_reduced_bytes(&[3; 32]),
-                            ],
+        static THRESHOLD_ROTATION_BUNDLE: OnceLock<TrustedDealerConfigBundle> = OnceLock::new();
+        THRESHOLD_ROTATION_BUNDLE
+            .get_or_init(|| {
+                generate_trusted_dealer_configs(
+                    ThresholdParams::with_bft_consensus(3, 2).expect("params"),
+                    vec![
+                        member(member_id(1)),
+                        member(member_id(2)),
+                        member(member_id(3)),
+                    ],
+                    vec![
+                        TrustedDealerKeysetSpec::new(
+                            CurrencyUnit::Sat,
+                            true,
+                            0,
+                            None,
+                            BTreeMap::from([(
+                                Amount::from(4),
+                                vec![
+                                    BlsSecretKey::from_reduced_bytes(&[6; 32]),
+                                    BlsSecretKey::from_reduced_bytes(&[7; 32]),
+                                ],
+                            )]),
                         ),
-                        (
-                            Amount::from(2),
-                            vec![
-                                BlsSecretKey::from_reduced_bytes(&[4; 32]),
-                                BlsSecretKey::from_reduced_bytes(&[5; 32]),
-                            ],
+                        TrustedDealerKeysetSpec::new(
+                            CurrencyUnit::Sat,
+                            false,
+                            0,
+                            None,
+                            BTreeMap::from([
+                                (
+                                    Amount::from(1),
+                                    vec![
+                                        BlsSecretKey::from_reduced_bytes(&[8; 32]),
+                                        BlsSecretKey::from_reduced_bytes(&[9; 32]),
+                                    ],
+                                ),
+                                (
+                                    Amount::from(2),
+                                    vec![
+                                        BlsSecretKey::from_reduced_bytes(&[10; 32]),
+                                        BlsSecretKey::from_reduced_bytes(&[11; 32]),
+                                    ],
+                                ),
+                            ]),
                         ),
-                        (
-                            Amount::from(4),
-                            vec![
-                                BlsSecretKey::from_reduced_bytes(&[6; 32]),
-                                BlsSecretKey::from_reduced_bytes(&[7; 32]),
-                            ],
-                        ),
-                    ]),
-                ),
-                TrustedDealerKeysetSpec::new(
-                    CurrencyUnit::Sat,
-                    false,
-                    0,
-                    None,
-                    BTreeMap::from([
-                        (
-                            Amount::from(1),
-                            vec![
-                                BlsSecretKey::from_reduced_bytes(&[8; 32]),
-                                BlsSecretKey::from_reduced_bytes(&[9; 32]),
-                            ],
-                        ),
-                        (
-                            Amount::from(2),
-                            vec![
-                                BlsSecretKey::from_reduced_bytes(&[10; 32]),
-                                BlsSecretKey::from_reduced_bytes(&[11; 32]),
-                            ],
-                        ),
-                        (
-                            Amount::from(4),
-                            vec![
-                                BlsSecretKey::from_reduced_bytes(&[12; 32]),
-                                BlsSecretKey::from_reduced_bytes(&[13; 32]),
-                            ],
-                        ),
-                    ]),
-                ),
-            ],
-        )
-        .expect("trusted dealer rotation bundle")
+                    ],
+                )
+                .expect("trusted dealer rotation bundle")
+            })
+            .clone()
     }
 
     fn active_keyset(bundle: &TrustedDealerConfigBundle) -> FederatedKeyset {
@@ -2150,21 +2142,23 @@ mod tests {
     }
 
     fn blinded_outputs_for_keyset(keyset: &FederatedKeyset, label: &[u8]) -> Vec<BlindedMessage> {
-        let first_label = [label, b" 1".as_slice()].concat();
-        let second_label = [label, b" 2".as_slice()].concat();
-
         vec![
-            BlindedMessage::new(
-                Amount::from(1),
-                keyset.id,
-                PublicKey::from(BlsG1PublicKey::hash_to_curve(&first_label)),
-            ),
-            BlindedMessage::new(
-                Amount::from(2),
-                keyset.id,
-                PublicKey::from(BlsG1PublicKey::hash_to_curve(&second_label)),
-            ),
+            blinded_output_for_keyset_amount(keyset, 1, label),
+            blinded_output_for_keyset_amount(keyset, 2, label),
         ]
+    }
+
+    fn blinded_output_for_keyset_amount(
+        keyset: &FederatedKeyset,
+        amount: u64,
+        label: &[u8],
+    ) -> BlindedMessage {
+        let amount_label = [label, b" ".as_slice(), amount.to_string().as_bytes()].concat();
+        BlindedMessage::new(
+            Amount::from(amount),
+            keyset.id,
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(&amount_label)),
+        )
     }
 
     fn blinded_change_outputs_for_keyset(
@@ -3348,7 +3342,14 @@ mod tests {
             let mint = create_fake_wallet_member_mint(bundle, member_id).await;
             let config = mint.federation_config().expect("federation config").clone();
             let mut journal = InMemoryFederationJournal::new();
-            persist_paid_mint_quote(&mint, &config, &mut journal, old_mint_quote_id, 1).await;
+            persist_paid_mint_quote(
+                &mint,
+                &config,
+                &mut journal,
+                old_mint_quote_id,
+                old_restore_output.amount.into(),
+            )
+            .await;
             persist_paid_mint_quote(&mint, &config, &mut journal, new_mint_quote_id, 3).await;
             add_unpaid_bolt11_melt_quote(
                 &mint,
@@ -4018,10 +4019,7 @@ mod tests {
         let melt_quote_id = QuoteId::new();
         let melt_invoice = create_fake_invoice(1000, "".to_string());
         let old_restore_output =
-            blinded_outputs_for_keyset(&old_keyset, b"rotated wallet old restore")
-                .into_iter()
-                .next()
-                .expect("old restore output");
+            blinded_output_for_keyset_amount(&old_keyset, 4, b"rotated wallet old restore");
         let next_outputs = blinded_outputs_for_keyset(&next_keyset, b"rotated wallet output");
         let next_change_outputs =
             vec![
@@ -4124,10 +4122,7 @@ mod tests {
         let melt_quote_id = QuoteId::new();
         let melt_invoice = create_fake_invoice(1000, "".to_string());
         let old_restore_output =
-            blinded_outputs_for_keyset(&old_keyset, b"rotated http old restore")
-                .into_iter()
-                .next()
-                .expect("old restore output");
+            blinded_output_for_keyset_amount(&old_keyset, 4, b"rotated http old restore");
         let next_outputs = blinded_outputs_for_keyset(&next_keyset, b"rotated http output");
         let next_change_outputs =
             vec![

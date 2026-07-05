@@ -3135,8 +3135,11 @@ impl fmt::Debug for MemberConfigPrivate {
 }
 
 impl MemberConfigPrivate {
-    /// Validate this private config against the public federation config.
-    pub fn validate_against_public(&self, public_config: &FederationConfig) -> Result<()> {
+    /// Validate identity and transcript metadata against the public federation config.
+    pub(crate) fn validate_metadata_against_public(
+        &self,
+        public_config: &FederationConfig,
+    ) -> Result<()> {
         let member =
             public_config
                 .member(self.member_id)
@@ -3190,6 +3193,13 @@ impl MemberConfigPrivate {
             }
             (Some(_), Some(_)) | (None, None) => {}
         }
+
+        Ok(())
+    }
+
+    /// Validate this private config against the public federation config.
+    pub fn validate_against_public(&self, public_config: &FederationConfig) -> Result<()> {
+        self.validate_metadata_against_public(public_config)?;
 
         for keyset_id in self.keyset_secret_shares.keys() {
             if public_config

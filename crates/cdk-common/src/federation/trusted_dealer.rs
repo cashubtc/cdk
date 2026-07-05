@@ -226,7 +226,6 @@ pub fn generate_trusted_dealer_configs(
     let federation_id = public_config.federation_id;
     for private_config in private_configs.values_mut() {
         private_config.federation_id = Some(federation_id);
-        private_config.validate_against_public(&public_config)?;
     }
     let setup_transcript =
         FederationDkgTranscript::trusted_dealer(&public_config, &private_configs)?;
