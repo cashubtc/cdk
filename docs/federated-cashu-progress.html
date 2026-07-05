@@ -523,19 +523,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 532 checked items and 57 remaining items. The DB conflict-key and index review is now recorded, backed by migration parity and SQLite query-plan gates.</span>
+          <span class="value">The implementation plan audit tracks 533 checked items and 56 remaining items. The full DoS review is now recorded, backed by restore-spam, oversized proof-content, consensus admission, REST admission, timeout, and invalid-operation alert gates.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: record DB index review</span>
+          <span class="value">test: cover federation DoS admission limits</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk-sql-common` and `cdk-sqlite` focused tests were rerun for federation migration parity and hot-path query plans covering journal, payment-observation, session-outcome, and signature-share rows.</span>
+          <span class="value">Mint and federation verifier tests now reject oversized proof secrets and witnesses before expensive validation, restore rejects requests above the output cap, and existing consensus/REST/timeout/invalid-operation gates were rerun.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, module splits, DoS review, and the remaining BFT follow-ups.</span>
+          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, module splits, production DKG, and the remaining BFT follow-ups.</span>
         </div>
       </aside>
     </header>
@@ -546,7 +546,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 532 checked entries and 57 remaining entries. The
+          checklist has 533 checked entries and 56 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -1450,6 +1450,10 @@
           <article class="item">
             <h3>Bounded operation admission ready</h3>
             <p>Federation operation envelopes now have a deterministic canonical-size limit. Oversized operations are rejected before consensus journal append, peer clients refuse to broadcast them, and signed private REST submissions leave sequence watermarks untouched when admission fails.</p>
+          </article>
+          <article class="item">
+            <h3>DoS review complete</h3>
+            <p>Mint and federation admission now have focused tests for oversized proof secrets, oversized witnesses, restore output spam, large batch mint requests, oversized consensus items, private REST overflow, slow peer/consensus timeouts, and repeated invalid-operation alerting.</p>
           </article>
           <article class="item">
             <h3>Signed catch-up outcomes ready</h3>
@@ -3484,19 +3488,25 @@
               <td>Direct signing allowlist</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --lib direct_signing_paths_are_reviewed_and_allowlisted -- --test-threads 1` and `cargo test -p cdk --lib --features federation direct_signing_paths_are_reviewed_and_allowlisted -- --test-threads 1` passed. The audit enumerates every reviewed `blind_sign`, `auth_blind_sign`, `sign_blinded_messages`, and `blind_sign_share` boundary.</td>
-              <td>Continue with DB conflict/index review, DoS review, and production BFT ordering work.</td>
+              <td>DB conflict/index and DoS reviews are complete; continue with production BFT ordering work and live Postgres reruns when available.</td>
             </tr>
             <tr>
               <td>Public endpoint consensus gates</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation public_endpoints_are_consensus_gated_in_federation_mode -- --test-threads 1`, `public_handlers_do_not_directly_sign_in_production`, `post_restore_accepts_v3_restore_placeholders`, and `post_restore_rejects_non_v3_outputs` passed. The audit covers federation key advertisement, quote operations, payment observations, mint/swap/melt share responses, and restore as a stored-share read path.</td>
-              <td>Continue with DoS review, production BFT ordering work, and live Postgres reruns when available.</td>
+              <td>DoS review is complete; continue with production BFT ordering work and live Postgres reruns when available.</td>
             </tr>
             <tr>
               <td>DB conflict/index review</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-sql-common --features federation federation_mint_migrations_cover_sqlite_and_postgres -- --test-threads 1` and `cargo test -p cdk-sqlite --features federation federation_journal_hot_path_indexes_are_used -- --test-threads 1` passed. These gates cover SQLite/Postgres migration parity plus indexed searches for journal catch-up, operation ID updates, session outcomes, payment observations, and signature shares.</td>
               <td>Keep live Postgres migration/application reruns open until a Postgres service is available.</td>
+            </tr>
+            <tr>
+              <td>Federation DoS review</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --lib --features federation oversized_secret_and_witness_content -- --test-threads 1`, `cargo test -p cdk --lib restore_rejects_requests_above_max_outputs -- --test-threads 1`, `cargo test -p cdk --lib test_process_batch_mint_enforces_max_batch_size -- --test-threads 1`, `cargo test -p cdk-common --features federation oversized -- --test-threads 1`, `cargo test -p cdk-axum --features federation oversized -- --test-threads 1`, `cargo test -p cdk-axum --features federation overflow -- --test-threads 1`, `cargo test -p cdk-axum --features federation operation_submission_timeout -- --test-threads 1`, `cargo test -p cdk-axum --features federation peer_request_timeout -- --test-threads 1`, `cargo test -p cdk-axum --features federation invalid_operation -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite invalid_operation_alert -- --test-threads 1`, `cargo test -p cdk --lib --features federation federated_mint_connector_applies_configured_member_request_timeout -- --test-threads 1`, `cargo test -p cdk --lib --features federation federated_mint_connector_applies_configured_quote_status_timeout -- --test-threads 1`, and `cargo test -p cdk --lib --features federation federated_mint_connector_falls_back_when_primary_quote_member_stalls -- --test-threads 1` passed. The review covers huge witnesses, huge batches, restore spam, oversized consensus items, REST admission overflow, slow consensus/peer paths, repeated invalid-operation alerts, and wallet fanout timeouts.</td>
+              <td>Keep any future transport or AlephBFT backend under the same bounded admission and timeout expectations.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>

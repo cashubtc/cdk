@@ -1148,7 +1148,7 @@ Implementation checklist:
 - [x] Complete final DB conflict-key and index review after the signature-share schema and query-plan checks are done.
 - [x] Review member identity authentication.
 - [x] Implement size/admission limits for oversized consensus items.
-- [ ] Complete full DoS review for huge witnesses, huge batches, repeated invalid ops, slow consensus, and restore spam.
+- [x] Complete full DoS review for huge witnesses, huge batches, repeated invalid ops, slow consensus, and restore spam.
 
 Tests and success criteria:
 

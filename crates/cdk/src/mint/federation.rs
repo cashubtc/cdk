@@ -2074,6 +2074,64 @@ mod tests {
         (mint, localstore)
     }
 
+    #[tokio::test]
+    async fn verify_federation_inputs_rejects_oversized_secret_and_witness_content() {
+        use cdk_common::nuts::{P2PKWitness, Witness};
+
+        let runtime_config = runtime_config();
+        let keyset_id = runtime_config.public_config().keysets[0].id;
+        let (mint, _) = federated_test_mint(runtime_config.clone()).await;
+
+        let oversized_secret = Proof::new(
+            Amount::from(1),
+            keyset_id,
+            Secret::new("s".repeat(crate::mint::verification::MAX_PROOF_CONTENT_LEN + 1)),
+            SecretKey::generate().public_key(),
+        );
+        let oversized_secret_proofs = vec![oversized_secret];
+        let secret_err = mint
+            .verify_federation_inputs_with_config(&runtime_config, &oversized_secret_proofs)
+            .expect_err("oversized federation proof secret should fail");
+
+        assert!(
+            matches!(
+                secret_err,
+                Error::ProofContentTooLarge {
+                    actual,
+                    max: crate::mint::verification::MAX_PROOF_CONTENT_LEN,
+                } if actual == crate::mint::verification::MAX_PROOF_CONTENT_LEN + 1
+            ),
+            "expected oversized federation secret ProofContentTooLarge, got: {:?}",
+            secret_err
+        );
+
+        let mut oversized_witness = Proof::new(
+            Amount::from(1),
+            keyset_id,
+            Secret::new("small-secret"),
+            SecretKey::generate().public_key(),
+        );
+        oversized_witness.witness = Some(Witness::P2PKWitness(P2PKWitness {
+            signatures: vec!["s".repeat(crate::mint::verification::MAX_PROOF_CONTENT_LEN + 1)],
+        }));
+        let oversized_witness_proofs = vec![oversized_witness];
+        let witness_err = mint
+            .verify_federation_inputs_with_config(&runtime_config, &oversized_witness_proofs)
+            .expect_err("oversized federation proof witness should fail");
+
+        assert!(
+            matches!(
+                witness_err,
+                Error::ProofContentTooLarge {
+                    max: crate::mint::verification::MAX_PROOF_CONTENT_LEN,
+                    ..
+                }
+            ),
+            "expected oversized federation witness ProofContentTooLarge, got: {:?}",
+            witness_err
+        );
+    }
+
     struct BackendAgnosticPaymentProcessor;
 
     #[async_trait]

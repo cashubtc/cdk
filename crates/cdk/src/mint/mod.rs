@@ -1679,6 +1679,8 @@ mod tests {
         seed: &'a [u8],
         mint_info: MintInfo,
         supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
+        max_inputs: Option<usize>,
+        max_outputs: Option<usize>,
     }
 
     async fn create_mint(config: MintConfig<'_>) -> Mint {
@@ -1725,11 +1727,123 @@ mod tests {
             signatory,
             localstore,
             HashMap::new(),
-            1000,
-            1000,
+            config.max_inputs.unwrap_or(1000),
+            config.max_outputs.unwrap_or(1000),
         )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn restore_rejects_requests_above_max_outputs() {
+        use cdk_common::nuts::{RestoreRequest, SecretKey};
+
+        let mut supported_units = HashMap::new();
+        let amounts: Vec<u64> = (0..8).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
+
+        let mint = create_mint(MintConfig::<'_> {
+            supported_units,
+            max_outputs: Some(1),
+            ..Default::default()
+        })
+        .await;
+
+        let current_keysets: Vec<SignatoryKeySet> = mint.keysets.load().as_ref().clone();
+        let keyset_id = current_keysets[0].id;
+        let outputs = vec![
+            BlindedMessage::new(
+                Amount::from(1),
+                keyset_id,
+                SecretKey::generate().public_key(),
+            ),
+            BlindedMessage::new(
+                Amount::from(1),
+                keyset_id,
+                SecretKey::generate().public_key(),
+            ),
+        ];
+
+        let err = mint
+            .restore(RestoreRequest { outputs })
+            .await
+            .expect_err("restore above max outputs should fail");
+
+        assert!(
+            matches!(err, Error::MaxOutputsExceeded { actual: 2, max: 1 }),
+            "expected MaxOutputsExceeded, got: {:?}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_inputs_rejects_oversized_secret_and_witness_content() {
+        use cdk_common::nuts::{P2PKWitness, Proof, SecretKey, Witness};
+        use cdk_common::secret::Secret;
+
+        let mut supported_units = HashMap::new();
+        let amounts: Vec<u64> = (0..8).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
+
+        let mint = create_mint(MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        })
+        .await;
+
+        let current_keysets: Vec<SignatoryKeySet> = mint.keysets.load().as_ref().clone();
+        let keyset_id = current_keysets[0].id;
+
+        let oversized_secret = Proof::new(
+            Amount::from(1),
+            keyset_id,
+            Secret::new("s".repeat(super::verification::MAX_PROOF_CONTENT_LEN + 1)),
+            SecretKey::generate().public_key(),
+        );
+        let oversized_secret_proofs = vec![oversized_secret];
+        let secret_err = mint
+            .verify_inputs(&oversized_secret_proofs)
+            .await
+            .expect_err("oversized proof secret should fail");
+
+        assert!(
+            matches!(
+                secret_err,
+                Error::ProofContentTooLarge {
+                    actual,
+                    max: super::verification::MAX_PROOF_CONTENT_LEN,
+                } if actual == super::verification::MAX_PROOF_CONTENT_LEN + 1
+            ),
+            "expected oversized secret ProofContentTooLarge, got: {:?}",
+            secret_err
+        );
+
+        let mut oversized_witness = Proof::new(
+            Amount::from(1),
+            keyset_id,
+            Secret::new("small-secret"),
+            SecretKey::generate().public_key(),
+        );
+        oversized_witness.witness = Some(Witness::P2PKWitness(P2PKWitness {
+            signatures: vec!["s".repeat(super::verification::MAX_PROOF_CONTENT_LEN + 1)],
+        }));
+        let oversized_witness_proofs = vec![oversized_witness];
+        let witness_err = mint
+            .verify_inputs(&oversized_witness_proofs)
+            .await
+            .expect_err("oversized proof witness should fail");
+
+        assert!(
+            matches!(
+                witness_err,
+                Error::ProofContentTooLarge {
+                    max: super::verification::MAX_PROOF_CONTENT_LEN,
+                    ..
+                }
+            ),
+            "expected oversized witness ProofContentTooLarge, got: {:?}",
+            witness_err
+        );
     }
 
     #[derive(Debug, Default)]
