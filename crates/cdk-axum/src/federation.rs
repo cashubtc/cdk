@@ -318,6 +318,7 @@ where
     T: Transport,
 {
     let mut synced = 0;
+    let mut evidence_peers = Vec::with_capacity(peers.len());
     for peer in peers {
         let now = Instant::now();
         if let Some(backoff) = backoff.as_ref() {
@@ -332,6 +333,7 @@ where
         match client.sync_once_from_member(state, peer).await {
             Ok(status) => {
                 synced += 1;
+                evidence_peers.push(peer);
                 if let Some(backoff) = backoff.as_mut() {
                     backoff.record_success(peer.member_id);
                 }
@@ -373,7 +375,11 @@ where
             }
         }
     }
-    let collected = collect_session_outcome_evidence_round(state, client, peers).await;
+    if evidence_peers.is_empty() {
+        return synced;
+    }
+
+    let collected = collect_session_outcome_evidence_round(state, client, &evidence_peers).await;
     if collected > 0 {
         tracing::debug!(
             session_outcomes = collected,
@@ -417,7 +423,7 @@ fn record_federation_peer_sync_metrics(
 async fn collect_session_outcome_evidence_round<T>(
     state: &MintState,
     client: &FederationRestPeerClient<T>,
-    peers: &[MemberConfigPublic],
+    peers: &[&MemberConfigPublic],
 ) -> usize
 where
     T: Transport,
@@ -504,7 +510,7 @@ where
         }
     };
 
-    for peer in peers {
+    for &peer in peers {
         let entries_to_collect =
             unverified_session_outcome_entries(&entries, quorum_status.as_ref());
         if entries_to_collect.is_empty() {
@@ -611,8 +617,8 @@ where
         .sync_once_from_member(state, primary_member)
         .await
         .map_err(|err| cdk::Error::Custom(err.to_string()))?;
-    collect_session_outcome_evidence_round(state, &client, std::slice::from_ref(primary_member))
-        .await;
+    let primary_peers = [primary_member];
+    collect_session_outcome_evidence_round(state, &client, &primary_peers).await;
 
     if let Some((sender, sequence)) = sequence {
         state.persist_federation_sequence(sender, sequence).await?;
@@ -4599,6 +4605,69 @@ mod tests {
             transport.status_requests().len(),
             4,
             "successful peer sync must clear reconnect backoff"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn peer_sync_round_skips_evidence_for_failed_or_backing_off_peer() {
+        let (state, public_config, local_private, _) =
+            federation_route_state_with_local_private().await;
+        let federation_id = public_config.federation_id;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let entry = restore_envelope(
+            federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        state
+            .submit_federation_envelope(entry)
+            .await
+            .expect("local accepted operation");
+        let transport = MockFederationTransport::default();
+        let client = FederationRestPeerClient::new_with_config(
+            transport.clone(),
+            &public_config,
+            local_private,
+            FederationPeerSyncConfig {
+                reconnect_initial_backoff: Duration::from_secs(2),
+                reconnect_max_backoff: Duration::from_secs(8),
+                ..FederationPeerSyncConfig::default()
+            },
+        )
+        .expect("client");
+        let mut backoff = FederationPeerReconnectBackoff::default();
+
+        let synced = run_federation_peer_sync_round_with_backoff(
+            &state,
+            &client,
+            std::slice::from_ref(peer_member),
+            &mut backoff,
+        )
+        .await;
+        assert_eq!(synced, 0);
+        assert_eq!(transport.status_requests().len(), 1);
+        assert_eq!(
+            transport.catch_up_requests().len(),
+            0,
+            "failed status sync must not immediately retry the peer through evidence collection"
+        );
+
+        let synced = run_federation_peer_sync_round_with_backoff(
+            &state,
+            &client,
+            std::slice::from_ref(peer_member),
+            &mut backoff,
+        )
+        .await;
+        assert_eq!(synced, 0);
+        assert_eq!(
+            transport.status_requests().len(),
+            1,
+            "backing-off peer should not receive another status request"
+        );
+        assert_eq!(
+            transport.catch_up_requests().len(),
+            0,
+            "backing-off peer should not receive evidence catch-up requests"
         );
     }
 
