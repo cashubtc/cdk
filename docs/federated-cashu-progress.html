@@ -521,19 +521,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 484 checked items and 103 remaining items. SQLite federation storage and hot-path query-plan coverage were rerun successfully.</span>
+          <span class="value">The implementation plan audit tracks 491 checked items and 96 remaining items. The default five-member fake-wallet federation smoke now passes after fixing generated startup portability on macOS Bash.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: record sqlite federation storage gate</span>
+          <span class="value">fix: start generated federation smoke without empty env arrays</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Reran the full `cdk-sqlite` mint/federation test suite and the dedicated query-plan regression for federation journal, session-outcome, and payment-observation hot paths.</span>
+          <span class="value">Fixed the generated smoke script so empty mintd env overrides do not trip `set -u`, then reran the full default 5-member/3-threshold fake-wallet federation smoke plus cleanup.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with bounded REST queues/backpressure, exact storage hot-path index review, dedicated signature-share persistence, and broader storage-backed recovery coverage.</span>
+          <span class="value">Continue with bounded REST queues/backpressure, dedicated signature-share persistence, broader storage-backed recovery coverage, and the remaining real-backend/BFT follow-ups.</span>
         </div>
       </aside>
     </header>
@@ -544,7 +544,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 484 checked entries and 103 remaining entries. The
+          checklist has 491 checked entries and 96 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -3011,14 +3011,14 @@
             <tr>
               <td>Local federation helper recipes</td>
               <td><span class="status done">Passed</span></td>
-              <td>`just --summary` lists `fed-regtest`, `fed-regtest-generate`, `fed-regtest-start`, `fed-regtest-start-member`, `fed-regtest-stop-member`, `fed-regtest-stop`, `fed-regtest-status`, and `fed-regtest-clean`. `fed-regtest-status` now requires readiness, convergence, session-outcome quorum evidence, and no digest alerts. `just --show` passed for the smoke, start, status, stop, and clean recipes. `just fed-regtest-generate` produced a three-member, two-threshold fake-wallet federation bundle, and the generated smoke script passed `bash -n`.</td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1` passed all 10 generator tests, including the startup branch that avoids empty Bash array expansion under `set -u`. `just fed-regtest` generated and ran the default five-member, three-threshold fake-wallet federation; `just fed-regtest-clean` then removed the generated local state.</td>
               <td>Use these helpers for repeatable live smoke drills and add storage-backed variants once Postgres is available.</td>
             </tr>
             <tr>
               <td>Repo-level federation helper smoke</td>
               <td><span class="status done">Passed</span></td>
-              <td>`just fed-regtest` passed with a three-member, two-threshold fake-wallet federation. The helper path built `cdk-mintd`, generated member configs, ran standard wallet mint/swap/check-state/melt/restore, kept one member offline across three wallet-operation batches, restarted it, waited for convergence, required status-level session-outcome quorum evidence, finalized paid and failed pending melts through the remaining threshold, repeated the convergence-plus-evidence recovery gate, injected a quarantine while a member was offline, checked the restarted member's status quorum evidence again, and ended with signed convergence plus clean process shutdown.</td>
-              <td>Run the default five-member helper smoke periodically and reuse the quorum-gated recipe for future Postgres-backed process smoke once a service is available.</td>
+              <td>`just fed-regtest` passed with the default five-member, three-threshold fake-wallet federation after the generated startup fix. The helper built `cdk-mintd`, generated member configs, ran wallet mint/swap/check-state/melt/restore, kept member 2 offline across three complete wallet-operation batches, restarted it, verified convergence/session-outcome evidence, finalized paid and failed pending melts through the remaining threshold, injected and replayed quarantine evidence, rotated keysets while a member was offline, restored and spent old-keyset proofs, ran post-rotation mint/melt/restore, restarted the offline member, reached final signed convergence, and stopped all members.</td>
+              <td>Reuse the default five-member helper smoke after consensus/storage changes and repeat the same quorum-gated recipe for Postgres-backed process smoke once a service is available.</td>
             </tr>
             <tr>
               <td>Long-partition helper smoke</td>

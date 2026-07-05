@@ -1490,16 +1490,23 @@ start_member() {{
   local config
   local work_dir
   local mintd_env=()
+  local mintd_env_count=0
   config="$(member_config "$member")"
   work_dir="$(member_work_dir "$member")"
   mkdir -p "$work_dir"
   if [[ "$CHECK_PROMETHEUS_METRICS" != "1" ]]; then
     mintd_env+=(CDK_MINTD_PROMETHEUS_ENABLED=false)
+    mintd_env_count=$((mintd_env_count + 1))
   fi
   if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
     mintd_env+=(CDK_FEDERATION_DISABLE_PEER_SYNC=1)
+    mintd_env_count=$((mintd_env_count + 1))
   fi
-  env "${{mintd_env[@]}}" "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
+  if (( mintd_env_count == 0 )); then
+    "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
+  else
+    env "${{mintd_env[@]}}" "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
+  fi
   PIDS[$member]=$!
   printf 'started member %s with pid %s\n' "$member" "${{PIDS[$member]}}"
 }}
@@ -2630,6 +2637,10 @@ mod tests {
         assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES"));
         assert!(smoke_script.contains("CHECK_PROMETHEUS_METRICS"));
         assert!(smoke_script.contains("CDK_MINTD_PROMETHEUS_ENABLED=false"));
+        assert!(smoke_script.contains("local mintd_env_count=0"));
+        assert!(smoke_script.contains("if (( mintd_env_count == 0 )); then"));
+        assert!(smoke_script
+            .contains("\"$CDK_MINTD_BIN\" --work-dir \"$work_dir\" --config \"$config\""));
         assert!(smoke_script.contains("env \"${mintd_env[@]}\" \"$CDK_MINTD_BIN\""));
         assert!(smoke_script.contains("validate_smoke_settings()"));
         assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES must be a positive integer"));

@@ -927,20 +927,20 @@ Local multi-mint federation harness:
 Tests and success criteria:
 
 - [x] `just fed-regtest` target and generated smoke scripts exist for fake-wallet federation runs.
-- [ ] Re-run `just fed-regtest` and record that it starts a 5-member fake-wallet federation.
+- [x] Re-run `just fed-regtest` and record that it starts a 5-member fake-wallet federation.
 - [x] Connector and local smoke coverage exist for mint, swap, restore, and check-state flows.
-- [ ] Re-run full regtest proving a CDK wallet can mint, swap, restore, and check state against the federation.
+- [x] Re-run full regtest proving a CDK wallet can mint, swap, restore, and check state against the federation.
 - [x] Code and tests exist for fake-wallet federated melt and aggregated change signatures.
-- [ ] Re-run full regtest proving a CDK wallet can melt through the fake-wallet federation and receive aggregated change signatures when change is expected.
+- [x] Re-run full regtest proving a CDK wallet can melt through the fake-wallet federation and receive aggregated change signatures when change is expected.
 - [x] Stop/start tooling and catch-up tests exist for threshold liveness and member recovery.
-- [ ] Re-run regtest proving stopping one member still allows operations if threshold and consensus quorum allow.
-- [ ] Re-run regtest proving restarting the stopped member reconnects, catches up from peers, and reaches the same state digest.
+- [x] Re-run regtest proving stopping one member still allows operations if threshold and consensus quorum allow.
+- [x] Re-run regtest proving restarting the stopped member reconnects, catches up from peers, and reaches the same state digest.
 - [x] State digest comparison command exists.
-- [ ] Re-run regtest proving state digest comparison reports all members equal after each test.
+- [x] Re-run regtest proving state digest comparison reports all members equal after each test.
 - [x] Local private REST peer authentication rejects unknown members, wrong federation IDs, wrong claimed member IDs, and invalid signatures on localhost.
 - [x] Local status commands clearly show connected, offline, lagging, catching-up, and healthy members.
 - [x] `just fed-regtest-clean` target exists.
-- [ ] Re-run `just fed-regtest-clean` and verify it leaves no running member processes or generated local state.
+- [x] Re-run `just fed-regtest-clean` and verify it leaves no running member processes or generated local state.
 
 ## Milestone 18: storage backend coverage
 
