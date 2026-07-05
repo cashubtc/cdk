@@ -518,15 +518,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 459 checked items and 128 remaining items. Canonical federation operation IDs now prove input witnesses are bound into the operation hash.</span>
+          <span class="value">The implementation plan audit now tracks 460 checked items and 127 remaining items. Canonical federation operation encoding now has a checked-in v1 golden vector.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover witness-bound operation hashes</span>
+          <span class="value">test: cover canonical operation golden vector</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Changing a swap input proof witness now changes both canonical operation bytes and the federation operation ID before consensus signing.</span>
+          <span class="value">A fixed mint operation now asserts its exact canonical envelope bytes and domain-separated operation ID.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -541,7 +541,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 459 checked entries and 128 remaining entries. The
+          checklist has 460 checked entries and 127 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -781,6 +781,10 @@
         <h2>Unlocked</h2>
         <div class="stack">
           <article class="item">
+            <h3>Golden vector pinned</h3>
+            <p>Canonical operation encoding now has a v1 mint-envelope fixture that pins exact JSON bytes and the resulting domain-separated operation hash.</p>
+          </article>
+          <article class="item">
             <h3>Witness-bound hashes</h3>
             <p>Canonical swap operation tests now prove that mutating an input proof witness changes both the serialized consensus envelope and the operation ID used before signing.</p>
           </article>
@@ -822,7 +826,7 @@
           </article>
           <article class="item">
             <h3>Plan audit refreshed</h3>
-            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 459 checked items and 128 explicit next items.</p>
+            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 460 checked items and 127 explicit next items.</p>
           </article>
           <article class="item">
             <h3>Router startup replay proven</h3>
@@ -2942,6 +2946,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation router_startup_replays_accepted_journal_before_serving_local_status -- --test-threads 1` proved the router startup path used by mintd replays a durable accepted mint-quote journal entry before signed local-status can report authoritative materialized state. `cargo test -p cdk-axum --features federation peer_sync -- --test-threads 1`, `cargo test -p cdk-axum --features federation session_outcome -- --test-threads 1`, and the full escalated `cargo test -p cdk-axum --features federation -- --test-threads 1` passed after peer sync was changed to collect only unverified session-outcome suffixes.</td>
               <td>Use the startup replay proof as the recovery gate while cleaning fakewallet-specific federation semantics out of the production payment-observation path.</td>
+            </tr>
+            <tr>
+              <td>Canonical operation golden vector</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation canonical_operation_encoding_matches_v1_golden_vector -- --test-threads 1` passed, pinning exact v1 mint-operation canonical JSON bytes and the resulting domain-separated operation hash.</td>
+              <td>Add more vectors only when the envelope version changes or when binary canonical encoding is introduced.</td>
             </tr>
             <tr>
               <td>Witness-bound operation hashes</td>

@@ -1503,6 +1503,32 @@ mod tests {
     }
 
     #[test]
+    fn canonical_operation_encoding_matches_v1_golden_vector() {
+        let envelope = envelope(mint_operation(
+            "quote-golden",
+            vec![output(
+                1,
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            )],
+        ));
+        let encoded = envelope.canonical_bytes().expect("canonical bytes");
+        let encoded = std::str::from_utf8(&encoded).expect("canonical utf8");
+
+        assert_eq!(
+            encoded,
+            concat!(
+                r#"{"federation_id":"0707070707070707070707070707070707070707070707070707070707070707","#,
+                r#""operation":{"data":{"request":{"data":{"outputs":[{"B_":"0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41","#,
+                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":1}"#
+            )
+        );
+        assert_eq!(
+            envelope.operation_id().expect("operation id").to_hex(),
+            "f3c0714fa42d9af1c4ac53555c9d854ee66fc4bc2d28710bbdb26acde2278bcd"
+        );
+    }
+
+    #[test]
     fn envelope_size_limit_uses_canonical_bytes() {
         let oversized = oversized_mint_quote_envelope();
         let err = oversized
