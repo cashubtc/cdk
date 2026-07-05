@@ -1100,7 +1100,7 @@ Implementation checklist:
 - [ ] Suggested mint split: config/runtime, apply, mint, swap, melt, restore/check-state, payment observations, keysets, and tests.
 - [ ] Suggested wallet split: connector, member fanout, share aggregation, keyset validation, quote/status aggregation, melt/change aggregation, and tests.
 - [ ] Suggested Axum split: routes, peer client, sync loop, status, catch-up, DKG/setup routes, payment-observation routes, and tests.
-- [ ] Move large inline federation test fixtures, local connectors, and fakewallet helpers into dedicated test modules or integration-test helpers. The `cdk-common` consensus tests and fixtures have been extracted to `federation/consensus/tests.rs`, and the wallet federation connector tests now live in `wallet/federation/tests.rs`; larger mint, Axum, local connector, and smoke/helper splits remain open.
+- [ ] Move large inline federation test fixtures, local connectors, and fakewallet helpers into dedicated test modules or integration-test helpers. The `cdk-common` consensus tests and fixtures have been extracted to `federation/consensus/tests.rs`, the wallet federation connector tests now live in `wallet/federation/tests.rs`, and the Axum private REST federation tests now live in `federation/tests.rs`; larger mint, local connector, and smoke/helper splits remain open.
 - [x] Gate any remaining smoke/regtest-only federation helpers behind test-only code or explicit dev features.
 - [x] Audit `cdk`, `cdk-common`, `cdk-axum`, `cdk-mintd`, and storage crates for accidental fakewallet coupling in federation code.
 - [x] Audit generated example configs so fakewallet-backed development federation examples are clearly marked development-only and cannot be mistaken for production templates.

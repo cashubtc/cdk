@@ -525,15 +525,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The consensus runtime and wallet connector test fixtures now live in dedicated modules, keeping production federation files focused while the focused suites remain green.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The consensus runtime, wallet connector, and Axum private REST federation test fixtures now live in dedicated modules, keeping production federation files focused while the focused suites remain green.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: split wallet federation tests</span>
+          <span class="value">refactor: split axum federation tests</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk::wallet::federation` now keeps connector code in `federation.rs` and moves its 54-test fixture suite into `wallet/federation/tests.rs`.</span>
+          <span class="value">`cdk-axum::federation` now keeps private REST route code in `federation.rs` and moves its 100-test route, peer-sync, catch-up, DKG, and status suite into `federation/tests.rs`.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Axum tests split out</h3>
+            <p>The private REST federation route file is now focused on production handlers, while the large route, mock transport, peer sync, catch-up, DKG setup, payment observation, and status fixture suite lives in a dedicated test module.</p>
+          </article>
           <article class="item">
             <h3>Wallet tests split out</h3>
             <p>The wallet federation connector file is now focused on production code, while the large invite, fanout, keyset validation, quote-status, melt-change, restore, and share-aggregation fixture suite lives in a dedicated test module.</p>
@@ -2212,7 +2216,13 @@
               <td>Wallet federation test module split</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --features wallet,mint,federation wallet::federation::tests -- --test-threads 1` passed 54 wallet federation connector tests after moving the large inline wallet fixtures into `crates/cdk/src/wallet/federation/tests.rs`.</td>
-              <td>Keep splitting the remaining large mint, Axum, local connector, and smoke-helper federation fixtures in small behavior-neutral checkpoints.</td>
+              <td>Keep splitting the remaining large mint, local connector, and smoke-helper federation fixtures in small behavior-neutral checkpoints.</td>
+            </tr>
+            <tr>
+              <td>Axum federation test module split</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation federation::tests:: -- --test-threads 1` passed 100 tests after moving the large inline private REST route fixtures into `crates/cdk-axum/src/federation/tests.rs`. The loopback HTTP DKG route test required localhost bind permission outside the sandbox.</td>
+              <td>Continue the same behavior-neutral split pattern for the remaining mint, local connector, and smoke-helper federation fixtures.</td>
             </tr>
             <tr>
               <td>Standalone mint and DbSignatory regressions</td>
