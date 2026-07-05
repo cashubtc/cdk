@@ -24,6 +24,8 @@ use crate::proto::{TryFromProtoAmount, *};
 
 type ResponseStream = Pin<Box<dyn Stream<Item = Result<PaymentEventResponse, Status>> + Send>>;
 
+const PAYMENT_EVENT_STREAM_RETRY_DELAY: Duration = Duration::from_secs(5);
+
 /// Payment Processor
 #[derive(Clone)]
 pub struct PaymentProcessorServer {
@@ -586,14 +588,34 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                                         }
                                         Err(item) => {
                                             tracing::error!("Error adding payment event to stream: {}", item);
-                                            break;
+                                            return;
                                         }
                                     }
+                                }
+
+                                tracing::warn!(
+                                    "Payment event stream ended; retrying after {:?}",
+                                    PAYMENT_EVENT_STREAM_RETRY_DELAY
+                                );
+                                tokio::select! {
+                                    _ = shutdown_clone.notified() => {
+                                        tracing::info!("Shutdown signal received, stopping task");
+                                        ln.cancel_payment_event_stream();
+                                        break;
+                                    }
+                                    _ = sleep(PAYMENT_EVENT_STREAM_RETRY_DELAY) => {}
                                 }
                             }
                             Err(err) => {
                                 tracing::warn!("Could not get invoice stream: {}", err);
-                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                                tokio::select! {
+                                    _ = shutdown_clone.notified() => {
+                                        tracing::info!("Shutdown signal received, stopping task");
+                                        ln.cancel_payment_event_stream();
+                                        break;
+                                    }
+                                    _ = sleep(PAYMENT_EVENT_STREAM_RETRY_DELAY) => {}
+                                }
                             }
                         }
                     }
