@@ -325,6 +325,14 @@ async fn session_outcome_quorum_status(
     Ok(contiguous_session_outcome_quorum_prefix(&quorums_by_start))
 }
 
+pub(crate) async fn session_outcome_quorum_operation_count(
+    state: &MintState,
+) -> Result<Option<u64>, cdk::Error> {
+    Ok(session_outcome_quorum_status(state)
+        .await?
+        .map(|quorum| quorum.operation_count))
+}
+
 fn contiguous_session_outcome_quorum_prefix(
     quorums_by_start: &BTreeMap<u64, Vec<FederationSessionOutcomeQuorum>>,
 ) -> Option<SessionOutcomeQuorumStatus> {

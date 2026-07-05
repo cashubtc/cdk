@@ -530,15 +530,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add axum quorum verified catch up</span>
+          <span class="value">feat: gate startup replay on quorum evidence</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Axum REST peer sync now gathers matching session-outcome evidence from enough peers and applies catch-up through quorum-verified replay before appending peer journal entries.</span>
+          <span class="value">Startup replay now keeps a restarted member out of value-changing service until the replayed durable journal height has contiguous quorum session-outcome evidence.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Audit startup durable replay with the production finalized-item recovery design, then connect the adapter boundary to an actual AlephBFT runtime/network task.</span>
+          <span class="value">Connect the adapter boundary to an actual AlephBFT runtime/network task, then re-audit startup recovery against the production finalized-item store.</span>
         </div>
       </aside>
     </header>
@@ -3779,7 +3779,13 @@
               <td>Axum quorum-certified catch-up</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation rest_peer_client_catches_up_local_consensus_from_member -- --test-threads 1`, `rest_peer_client_rejects_unsigned_nonempty_catch_up_response`, `rest_peer_client_sync_requires_quorum_evidence_before_public_submit`, `rest_peer_client_detects_catch_up_materialized_state_mismatch`, and `peer_sync_round_catches_up_from_configured_peer` passed. `cargo test -p cdk-axum --features federation peer_sync_round -- --test-threads 1` passed all 8 peer-sync regressions, and `cargo check -p cdk-axum --features federation` passed warning-free. REST catch-up now collects matching session-outcome evidence from enough peers for the exact returned range, applies through quorum-verified replay, persists the accepted entries and evidence together, rejects unsigned non-empty ranges, and still waits for the materialized-state digest before reopening value-changing routes.</td>
-              <td>Carry the same evidence-before-append invariant into startup recovery once the production AlephBFT finalized-item store is wired.</td>
+              <td>Carry the same evidence-before-append invariant into the production AlephBFT finalized-item store once that backend is wired.</td>
+            </tr>
+            <tr>
+              <td>Startup quorum-evidence readiness</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation startup_requires_session_outcome_quorum_for_replayed_journal -- --test-threads 1`, `startup_returns_healthy_when_replayed_journal_has_session_outcome_quorum`, `cargo test -p cdk-axum --features federation startup_ -- --test-threads 1`, `cargo test -p cdk-axum --features federation peer_sync_round -- --test-threads 1`, and `cargo check -p cdk-axum --features federation` passed. Router startup now restores persisted sync status, then compares replayed durable journal height against the persisted contiguous quorum session-outcome prefix. A restarted member with uncertified durable entries re-enters `verifying_session_outcome` and blocks public value-changing submissions; a member whose durable evidence already covers the replayed height returns to healthy.</td>
+              <td>Re-run this startup readiness path with the production AlephBFT finalized-item store once that backend owns durable recovery.</td>
             </tr>
             <tr>
               <td>Fakewallet wording audit</td>

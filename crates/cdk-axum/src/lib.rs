@@ -1749,6 +1749,72 @@ impl MintState {
         }
     }
 
+    pub(crate) async fn restore_federation_startup_readiness(&self) {
+        let Some(sync) = &self.federation_sync else {
+            return;
+        };
+        let Some(config) = self.mint.federation_config() else {
+            return;
+        };
+        let current_status = sync.lock().await.status();
+        match current_status {
+            FederationSyncStatus::Healthy
+            | FederationSyncStatus::VerifyingSessionOutcome { .. } => {}
+            FederationSyncStatus::Lagging { .. }
+            | FederationSyncStatus::CatchingUp { .. }
+            | FederationSyncStatus::MaterializedStateMismatch { .. }
+            | FederationSyncStatus::Halted { .. } => return,
+        }
+
+        let entries = match self
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+        {
+            Ok(entries) => entries,
+            Err(err) => {
+                self.mark_federation_halted(format!(
+                    "could not inspect federation startup journal for quorum evidence: {err}"
+                ))
+                .await;
+                return;
+            }
+        };
+        let operation_count = entries.len() as u64;
+        if operation_count == 0 {
+            return;
+        }
+
+        let verified_operation_count =
+            match crate::federation::session_outcome_quorum_operation_count(self).await {
+                Ok(Some(count)) => count,
+                Ok(None) => 0,
+                Err(err) => {
+                    self.mark_federation_halted(format!(
+                        "could not inspect federation startup session outcome quorum: {err}"
+                    ))
+                    .await;
+                    return;
+                }
+            };
+        if verified_operation_count >= operation_count {
+            self.mark_federation_healthy_if_session_outcome_verified(verified_operation_count)
+                .await;
+            return;
+        }
+
+        let peer = config
+            .public_config()
+            .members
+            .values()
+            .find(|member| member.member_id != config.member_id())
+            .map(|member| member.member_id)
+            .unwrap_or_else(|| config.member_id());
+        self.mark_federation_verifying_session_outcome(peer, operation_count)
+            .await;
+    }
+
     async fn persist_federation_sync_status(&self, status: &FederationSyncStatus) {
         let Some(config) = self.mint.federation_config() else {
             return;
@@ -2201,6 +2267,8 @@ async fn create_mint_router_with_custom_cache_inner(
     };
     #[cfg(feature = "federation")]
     state.restore_federation_sync_status().await;
+    #[cfg(feature = "federation")]
+    state.restore_federation_startup_readiness().await;
     #[cfg(feature = "federation")]
     state.start_federation_finalization_loop();
 

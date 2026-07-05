@@ -6555,6 +6555,107 @@ async fn startup_restores_persisted_federation_sync_status() {
 }
 
 #[tokio::test]
+async fn startup_requires_session_outcome_quorum_for_replayed_journal() {
+    let (state, public_config, _, peer_private, _) =
+        federation_route_state_three_with_local_private().await;
+    let peer_member = peer_private.member_id;
+    state
+        .submit_federation_envelope(restore_envelope(
+            public_config.federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        ))
+        .await
+        .expect("persist accepted operation");
+
+    let mut restarted = state.clone();
+    restarted.federation_sync = Some(Arc::new(tokio::sync::Mutex::new(
+        crate::FederationSyncState::default(),
+    )));
+    restarted.restore_federation_startup_readiness().await;
+
+    assert_eq!(
+        restarted.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::VerifyingSessionOutcome {
+            peer: peer_member,
+            operation_count: 1,
+        })
+    );
+
+    let blocked = restarted
+        .submit_federation_envelope(restore_envelope(
+            public_config.federation_id,
+            "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+        ))
+        .await;
+    assert!(matches!(blocked, Err(cdk::Error::Custom(_))));
+}
+
+#[tokio::test]
+async fn startup_returns_healthy_when_replayed_journal_has_session_outcome_quorum() {
+    let (state, public_config, _, peer_private, witness_private) =
+        federation_route_state_three_with_local_private().await;
+    let peer_member = peer_private.member_id;
+    state
+        .submit_federation_envelope(restore_envelope(
+            public_config.federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        ))
+        .await
+        .expect("persist accepted operation");
+    let entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal entries");
+    let journal = InMemoryFederationJournal::from_entries(entries).expect("startup journal");
+    let mut response = FederationJournalCatchUpResponse::from_journal(
+        public_config.federation_id,
+        &journal,
+        &FederationJournalCatchUpRequest::new(0),
+        100,
+        100,
+    );
+    response.state_digest = local_peer_status(&state)
+        .await
+        .expect("local status")
+        .state_digest;
+    let peer_outcome = signed_catch_up_response(response.clone(), &peer_private)
+        .session_outcome
+        .expect("peer session outcome");
+    let witness_outcome = signed_catch_up_response(response, &witness_private)
+        .session_outcome
+        .expect("witness session outcome");
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin evidence transaction");
+    tx.add_federation_session_outcome(&peer_outcome)
+        .await
+        .expect("persist peer outcome");
+    tx.add_federation_session_outcome(&witness_outcome)
+        .await
+        .expect("persist witness outcome");
+    tx.commit().await.expect("commit evidence");
+
+    let mut restarted = state.clone();
+    restarted.federation_sync = Some(Arc::new(tokio::sync::Mutex::new(
+        crate::FederationSyncState::default(),
+    )));
+    restarted
+        .mark_federation_verifying_session_outcome(peer_member, 1)
+        .await;
+    restarted.restore_federation_startup_readiness().await;
+
+    assert_eq!(
+        restarted.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::Healthy)
+    );
+}
+
+#[tokio::test]
 async fn private_local_status_route_reports_verifying_session_outcome_state() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let local_member = state
