@@ -28,6 +28,7 @@ use cdk::federation::{
     FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::time::{self, Duration, MissedTickBehavior};
@@ -38,12 +39,76 @@ use crate::MintState;
 type ConsensusHandle = std::sync::Arc<tokio::sync::Mutex<FederationConsensusRuntime>>;
 type SequenceHandle = std::sync::Arc<tokio::sync::Mutex<FederationRestSequenceTracker>>;
 
-const FEDERATION_PEER_SYNC_INTERVAL: Duration = Duration::from_secs(5);
+const DEFAULT_FEDERATION_PEER_SYNC_INTERVAL: Duration = Duration::from_secs(5);
+const DEFAULT_FEDERATION_PEER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_FEDERATION_OPERATION_SUBMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 const FEDERATION_DISABLE_PEER_SYNC_ENV_VAR: &str = "CDK_FEDERATION_DISABLE_PEER_SYNC";
-const FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT: usize = 1000;
-const FEDERATION_STATE_DIGEST_RECHECK_ATTEMPTS: usize = 20;
-const FEDERATION_STATE_DIGEST_RECHECK_DELAY: Duration = Duration::from_millis(100);
+const DEFAULT_FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_SIZE: usize = 1000;
+const DEFAULT_FEDERATION_CATCH_UP_LIMIT: u16 = 100;
+const DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_ATTEMPTS: usize = 20;
+const DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_DELAY: Duration = Duration::from_millis(100);
 static FEDERATION_REST_SEQUENCE_SEED: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FederationPeerSyncConfig {
+    peer_sync_interval: Duration,
+    peer_request_timeout: Duration,
+    operation_submission_timeout: Duration,
+    catch_up_limit: u16,
+    digest_recheck_attempts: usize,
+    digest_recheck_delay: Duration,
+    session_outcome_evidence_chunk_size: usize,
+}
+
+impl Default for FederationPeerSyncConfig {
+    fn default() -> Self {
+        Self {
+            peer_sync_interval: DEFAULT_FEDERATION_PEER_SYNC_INTERVAL,
+            peer_request_timeout: DEFAULT_FEDERATION_PEER_REQUEST_TIMEOUT,
+            operation_submission_timeout: DEFAULT_FEDERATION_OPERATION_SUBMISSION_TIMEOUT,
+            catch_up_limit: DEFAULT_FEDERATION_CATCH_UP_LIMIT,
+            digest_recheck_attempts: DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_ATTEMPTS,
+            digest_recheck_delay: DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_DELAY,
+            session_outcome_evidence_chunk_size:
+                DEFAULT_FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_SIZE,
+        }
+    }
+}
+
+impl FederationPeerSyncConfig {
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.peer_sync_interval.is_zero() {
+            anyhow::bail!("federation peer sync interval must be greater than zero");
+        }
+        if self.peer_request_timeout.is_zero() {
+            anyhow::bail!("federation peer request timeout must be greater than zero");
+        }
+        if self.operation_submission_timeout.is_zero() {
+            anyhow::bail!("federation operation submission timeout must be greater than zero");
+        }
+        if self.catch_up_limit == 0 {
+            anyhow::bail!("federation catch-up limit must be greater than zero");
+        }
+        if self.digest_recheck_attempts == 0 {
+            anyhow::bail!("federation digest recheck attempts must be greater than zero");
+        }
+        if self.digest_recheck_delay.is_zero() {
+            anyhow::bail!("federation digest recheck delay must be greater than zero");
+        }
+        if self.session_outcome_evidence_chunk_size == 0 {
+            anyhow::bail!(
+                "federation session outcome evidence chunk size must be greater than zero"
+            );
+        }
+        if self.session_outcome_evidence_chunk_size > usize::from(u16::MAX) {
+            anyhow::bail!(
+                "federation session outcome evidence chunk size must fit in a catch-up request limit"
+            );
+        }
+
+        Ok(())
+    }
+}
 
 pub(crate) fn create_federation_router() -> Router<MintState> {
     Router::new()
@@ -61,6 +126,17 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
 }
 
 pub(crate) fn spawn_federation_peer_sync_loop(state: MintState) {
+    spawn_federation_peer_sync_loop_with_config(state, FederationPeerSyncConfig::default());
+}
+
+pub(crate) fn spawn_federation_peer_sync_loop_with_config(
+    state: MintState,
+    sync_config: FederationPeerSyncConfig,
+) {
+    if let Err(err) = sync_config.validate() {
+        tracing::error!("Could not start federation peer sync loop: {}", err);
+        return;
+    }
     if federation_peer_sync_disabled_by_env() {
         tracing::warn!("Federation peer sync loop disabled by environment");
         return;
@@ -84,15 +160,19 @@ pub(crate) fn spawn_federation_peer_sync_loop(state: MintState) {
 
     let private_config = config.private_config().clone();
     tokio::spawn(async move {
-        let client =
-            match FederationRestPeerClient::new(Async::default(), &public_config, private_config) {
-                Ok(client) => client,
-                Err(err) => {
-                    tracing::error!("Could not start federation peer sync loop: {}", err);
-                    return;
-                }
-            };
-        let mut interval = time::interval(FEDERATION_PEER_SYNC_INTERVAL);
+        let client = match FederationRestPeerClient::new_with_config(
+            Async::default(),
+            &public_config,
+            private_config,
+            sync_config,
+        ) {
+            Ok(client) => client,
+            Err(err) => {
+                tracing::error!("Could not start federation peer sync loop: {}", err);
+                return;
+            }
+        };
+        let mut interval = time::interval(sync_config.peer_sync_interval);
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         loop {
@@ -210,6 +290,7 @@ where
                 &entries,
                 peer_status.latest_order_digest,
                 peer_status.state_digest,
+                client.sync_config.session_outcome_evidence_chunk_size,
             )
             .await
         }
@@ -239,8 +320,14 @@ where
     }
 
     for peer in peers {
-        collected +=
-            collect_session_outcome_evidence_from_peer(state, client, peer, &entries).await;
+        collected += collect_session_outcome_evidence_from_peer(
+            state,
+            client,
+            peer,
+            &entries,
+            client.sync_config.session_outcome_evidence_chunk_size,
+        )
+        .await;
     }
 
     mark_healthy_after_session_outcome_quorum(state, operation_count).await;
@@ -328,9 +415,10 @@ async fn persist_local_session_outcome_evidence_chunks(
     entries: &[FederationJournalEntry],
     latest_order_digest: FederationJournalDigest,
     state_digest: FederationStateDigest,
+    chunk_size: usize,
 ) -> usize {
     let mut persisted = 0;
-    for chunk in entries.chunks(FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT) {
+    for chunk in entries.chunks(chunk_size) {
         let outcome = match FederationSessionOutcome::new_signed(
             runtime_config.federation_id(),
             chunk,
@@ -366,12 +454,13 @@ async fn collect_session_outcome_evidence_from_peer<T>(
     client: &FederationRestPeerClient<T>,
     peer: &MemberConfigPublic,
     entries: &[FederationJournalEntry],
+    chunk_size: usize,
 ) -> usize
 where
     T: Transport,
 {
     let mut collected = 0;
-    for chunk in entries.chunks(FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT) {
+    for chunk in entries.chunks(chunk_size) {
         let Some(first) = chunk.first() else {
             continue;
         };
@@ -1138,6 +1227,7 @@ pub(crate) struct FederationRestPeerClient<T = Async> {
     public_config: FederationConfig,
     federation_id: FederationId,
     private_config: MemberConfigPrivate,
+    sync_config: FederationPeerSyncConfig,
     next_sequence: Arc<AtomicU64>,
 }
 
@@ -1151,14 +1241,56 @@ where
         public_config: &FederationConfig,
         private_config: MemberConfigPrivate,
     ) -> anyhow::Result<Self> {
+        Self::new_with_config(
+            transport,
+            public_config,
+            private_config,
+            FederationPeerSyncConfig::default(),
+        )
+    }
+
+    pub(crate) fn new_with_config(
+        transport: T,
+        public_config: &FederationConfig,
+        private_config: MemberConfigPrivate,
+        sync_config: FederationPeerSyncConfig,
+    ) -> anyhow::Result<Self> {
+        sync_config.validate()?;
         private_config.validate_against_public(public_config)?;
         Ok(Self {
             transport,
             public_config: public_config.clone(),
             federation_id: public_config.federation_id,
             private_config,
+            sync_config,
             next_sequence: Arc::new(AtomicU64::new(initial_federation_rest_sequence())),
         })
+    }
+
+    async fn http_post_with_timeout<P, R>(
+        &self,
+        member: &MemberConfigPublic,
+        endpoint: &str,
+        operation: &str,
+        payload: &P,
+        timeout: Duration,
+    ) -> anyhow::Result<R>
+    where
+        P: Serialize + Send + Sync,
+        R: DeserializeOwned,
+    {
+        let request =
+            self.transport
+                .http_post(federation_endpoint(member, endpoint)?, None, payload);
+        match time::timeout(timeout, request).await {
+            Ok(result) => Ok(result?),
+            Err(_) => anyhow::bail!(
+                "federation peer {} {} timed out after {:?}",
+                member.member_id,
+                operation,
+                timeout
+            ),
+        }
     }
 
     pub(crate) async fn peer_status(
@@ -1171,8 +1303,13 @@ where
             FederationPeerStatusRequest::default(),
         )?;
         let status = self
-            .transport
-            .http_post(federation_endpoint(member, "status")?, None, &request)
+            .http_post_with_timeout(
+                member,
+                "status",
+                "status request",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
             .await?;
         validate_peer_status(self.federation_id, member, &status)?;
         Ok(status)
@@ -1191,8 +1328,13 @@ where
             request.clone(),
         )?;
         let response: FederationSubmitOperationResponse = self
-            .transport
-            .http_post(federation_endpoint(member, "operations")?, None, &request)
+            .http_post_with_timeout(
+                member,
+                "operations",
+                "operation submission",
+                &request,
+                self.sync_config.operation_submission_timeout,
+            )
             .await?;
 
         if response.operation_id != expected_operation_id {
@@ -1216,11 +1358,12 @@ where
         let request =
             self.signed_request(member, FederationRestMessageKind::DkgCommitment, *request)?;
         let response: FederationDkgSetupResponse = self
-            .transport
-            .http_post(
-                federation_endpoint(member, "dkg/commitments")?,
-                None,
+            .http_post_with_timeout(
+                member,
+                "dkg/commitments",
+                "DKG commitment submission",
                 &request,
+                self.sync_config.peer_request_timeout,
             )
             .await?;
         response.validate(
@@ -1244,8 +1387,13 @@ where
             request.clone(),
         )?;
         let response: FederationDkgSetupResponse = self
-            .transport
-            .http_post(federation_endpoint(member, "dkg/reveals")?, None, &request)
+            .http_post_with_timeout(
+                member,
+                "dkg/reveals",
+                "DKG reveal submission",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
             .await?;
         response.validate(
             self.federation_id,
@@ -1272,11 +1420,12 @@ where
             request.clone(),
         )?;
         let response: FederationDkgSetupResponse = self
-            .transport
-            .http_post(
-                federation_endpoint(member, "dkg/secret-shares")?,
-                None,
+            .http_post_with_timeout(
+                member,
+                "dkg/secret-shares",
+                "DKG secret-share submission",
                 &request,
+                self.sync_config.peer_request_timeout,
             )
             .await?;
         response.validate(
@@ -1300,11 +1449,12 @@ where
             *request,
         )?;
         let response: FederationDkgSetupResponse = self
-            .transport
-            .http_post(
-                federation_endpoint(member, "dkg/transcript-signatures")?,
-                None,
+            .http_post_with_timeout(
+                member,
+                "dkg/transcript-signatures",
+                "DKG transcript-signature submission",
                 &request,
+                self.sync_config.peer_request_timeout,
             )
             .await?;
         response.validate(
@@ -1324,8 +1474,13 @@ where
         let request =
             self.signed_request(member, FederationRestMessageKind::CatchUp, request.clone())?;
         let response: FederationJournalCatchUpResponse = self
-            .transport
-            .http_post(federation_endpoint(member, "journal")?, None, &request)
+            .http_post_with_timeout(
+                member,
+                "journal",
+                "catch-up request",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
             .await?;
         if response.version != FEDERATION_REST_API_VERSION {
             anyhow::bail!(
@@ -1360,7 +1515,9 @@ where
             .ok_or_else(|| anyhow::anyhow!("mint is not configured as a federation member"))?;
         let request = {
             let consensus = consensus.lock().await;
-            consensus.catch_up_request()
+            consensus
+                .catch_up_request()
+                .with_limit(self.sync_config.catch_up_limit)
         };
         let response = self.catch_up(member, &request).await?;
         let applied = state.apply_federation_catch_up_response(&response).await?;
@@ -1451,6 +1608,7 @@ where
                 member,
                 local_status.operation_count,
                 expected_state_digest,
+                self.sync_config,
             )
             .await?;
         }
@@ -1600,8 +1758,9 @@ async fn wait_for_local_materialized_state_digest(
     member: &MemberConfigPublic,
     operation_count: u64,
     expected_state_digest: FederationStateDigest,
+    sync_config: FederationPeerSyncConfig,
 ) -> anyhow::Result<()> {
-    for attempt in 1..=FEDERATION_STATE_DIGEST_RECHECK_ATTEMPTS {
+    for attempt in 1..=sync_config.digest_recheck_attempts {
         let local_status = local_peer_status(state).await?;
         if local_status.state_digest == expected_state_digest {
             tracing::debug!(
@@ -1613,8 +1772,8 @@ async fn wait_for_local_materialized_state_digest(
             return Ok(());
         }
 
-        if attempt < FEDERATION_STATE_DIGEST_RECHECK_ATTEMPTS {
-            time::sleep(FEDERATION_STATE_DIGEST_RECHECK_DELAY).await;
+        if attempt < sync_config.digest_recheck_attempts {
+            time::sleep(sync_config.digest_recheck_delay).await;
         }
     }
 
@@ -2068,6 +2227,53 @@ mod tests {
         }
     }
 
+    #[test]
+    fn federation_peer_sync_config_rejects_invalid_values() {
+        let valid = FederationPeerSyncConfig::default();
+        let cases = [
+            FederationPeerSyncConfig {
+                peer_sync_interval: Duration::ZERO,
+                ..valid
+            },
+            FederationPeerSyncConfig {
+                peer_request_timeout: Duration::ZERO,
+                ..valid
+            },
+            FederationPeerSyncConfig {
+                operation_submission_timeout: Duration::ZERO,
+                ..valid
+            },
+            FederationPeerSyncConfig {
+                catch_up_limit: 0,
+                ..valid
+            },
+            FederationPeerSyncConfig {
+                digest_recheck_attempts: 0,
+                ..valid
+            },
+            FederationPeerSyncConfig {
+                digest_recheck_delay: Duration::ZERO,
+                ..valid
+            },
+            FederationPeerSyncConfig {
+                session_outcome_evidence_chunk_size: 0,
+                ..valid
+            },
+            FederationPeerSyncConfig {
+                session_outcome_evidence_chunk_size: usize::from(u16::MAX) + 1,
+                ..valid
+            },
+        ];
+
+        for config in cases {
+            assert!(
+                config.validate().is_err(),
+                "invalid peer sync config should fail: {config:?}"
+            );
+        }
+        assert!(valid.validate().is_ok());
+    }
+
     #[derive(Debug, Default)]
     struct MockFederationTransportState {
         status_response: Option<FederationPeerStatus>,
@@ -2087,6 +2293,19 @@ mod tests {
     #[derive(Debug, Clone, Default)]
     struct MockFederationTransport {
         state: Arc<Mutex<MockFederationTransportState>>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct DelayTransport {
+        delay: Duration,
+    }
+
+    impl Default for DelayTransport {
+        fn default() -> Self {
+            Self {
+                delay: Duration::from_secs(60),
+            }
+        }
     }
 
     struct TempMintDbFile {
@@ -2215,6 +2434,44 @@ mod tests {
                 .expect("mock transport lock")
                 .catch_up_requests
                 .clone()
+        }
+    }
+
+    #[async_trait]
+    impl Transport for DelayTransport {
+        fn with_proxy(
+            &mut self,
+            _proxy: url::Url,
+            _host_matcher: Option<&str>,
+            _accept_invalid_certs: bool,
+        ) -> Result<(), HttpError> {
+            Ok(())
+        }
+
+        async fn http_get<R>(
+            &self,
+            _url: url::Url,
+            _auth: Option<AuthToken>,
+        ) -> Result<R, HttpError>
+        where
+            R: DeserializeOwned,
+        {
+            time::sleep(self.delay).await;
+            Err(HttpError::Other("delayed GET completed".to_string()))
+        }
+
+        async fn http_post<P, R>(
+            &self,
+            _url: url::Url,
+            _auth_token: Option<AuthToken>,
+            _payload: &P,
+        ) -> Result<R, HttpError>
+        where
+            P: Serialize + Send + Sync,
+            R: DeserializeOwned,
+        {
+            time::sleep(self.delay).await;
+            Err(HttpError::Other("delayed POST completed".to_string()))
         }
     }
 
@@ -3012,6 +3269,81 @@ mod tests {
         assert_eq!(requests[0].kind, FederationRestMessageKind::Status);
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn rest_peer_client_applies_configured_peer_request_timeout() {
+        let (public_config, local_private, _) = transport_config();
+        let member = public_config
+            .member(member_id(2))
+            .expect("peer member")
+            .clone();
+        let timeout = Duration::from_secs(2);
+        let client = FederationRestPeerClient::new_with_config(
+            DelayTransport {
+                delay: timeout + Duration::from_secs(60),
+            },
+            &public_config,
+            local_private,
+            FederationPeerSyncConfig {
+                peer_request_timeout: timeout,
+                ..FederationPeerSyncConfig::default()
+            },
+        )
+        .expect("client");
+
+        let task = tokio::spawn(async move { client.peer_status(&member).await });
+        tokio::task::yield_now().await;
+        tokio::time::advance(timeout).await;
+        let err = task
+            .await
+            .expect("peer status task")
+            .expect_err("peer status should time out");
+
+        assert!(
+            err.to_string().contains("status request timed out"),
+            "unexpected timeout error: {err}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rest_peer_client_applies_configured_operation_submission_timeout() {
+        let (public_config, local_private, _) = transport_config();
+        let federation_id = public_config.federation_id;
+        let member = public_config
+            .member(member_id(2))
+            .expect("peer member")
+            .clone();
+        let timeout = Duration::from_secs(2);
+        let request = FederationSubmitOperationRequest::new(restore_envelope(
+            federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        ));
+        let client = FederationRestPeerClient::new_with_config(
+            DelayTransport {
+                delay: timeout + Duration::from_secs(60),
+            },
+            &public_config,
+            local_private,
+            FederationPeerSyncConfig {
+                operation_submission_timeout: timeout,
+                ..FederationPeerSyncConfig::default()
+            },
+        )
+        .expect("client");
+
+        let task = tokio::spawn(async move { client.submit_operation(&member, &request).await });
+        tokio::task::yield_now().await;
+        tokio::time::advance(timeout).await;
+        let err = task
+            .await
+            .expect("operation submission task")
+            .expect_err("operation submission should time out");
+
+        assert!(
+            err.to_string().contains("operation submission timed out"),
+            "unexpected timeout error: {err}"
+        );
+    }
+
     #[tokio::test]
     async fn rest_peer_client_initial_sequence_advances_across_clients() {
         let (public_config, local_private, _) = transport_config();
@@ -3488,9 +3820,16 @@ mod tests {
             .expect("peer catch-up response");
         let transport = MockFederationTransport::default()
             .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private));
-        let client =
-            FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
-                .expect("client");
+        let client = FederationRestPeerClient::new_with_config(
+            transport.clone(),
+            &public_config,
+            local_private,
+            FederationPeerSyncConfig {
+                catch_up_limit: 7,
+                ..FederationPeerSyncConfig::default()
+            },
+        )
+        .expect("client");
 
         let applied = client
             .catch_up_state_from_member(&state, peer_member)
@@ -3529,6 +3868,7 @@ mod tests {
             .verify(&public_config, peer_member.member_id)
             .expect("signed catch-up request");
         assert_eq!(requests[0].payload.next_index, 1);
+        assert_eq!(requests[0].payload.limit, Some(7));
     }
 
     #[tokio::test]
@@ -3858,14 +4198,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn peer_sync_round_collects_chunked_session_outcome_evidence() {
+    async fn peer_sync_round_collects_configured_chunked_session_outcome_evidence() {
         let (state, public_config, local_private, peer_private) =
             federation_route_state_with_local_private().await;
         let federation_id = public_config.federation_id;
         let peer_member = public_config.member(member_id(2)).expect("peer member");
         let mut peer_consensus =
             InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
-        for index in 0..=FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT as u64 {
+        let chunk_size = 2;
+        let operation_count = chunk_size + 1;
+        for index in 0..operation_count as u64 {
             let entry = indexed_restore_envelope(federation_id, index);
             state
                 .submit_federation_envelope(entry.clone())
@@ -3876,7 +4218,10 @@ mod tests {
                 .expect("peer accepted operation");
         }
         state
-            .mark_federation_verifying_session_outcome(peer_member.member_id, 1001)
+            .mark_federation_verifying_session_outcome(
+                peer_member.member_id,
+                operation_count as u64,
+            )
             .await;
 
         let entries = state
@@ -3885,20 +4230,13 @@ mod tests {
             .get_federation_journal_entries()
             .await
             .expect("journal entries");
-        assert_eq!(
-            entries.len(),
-            FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT + 1
-        );
+        assert_eq!(entries.len(), operation_count);
         let first_request = FederationJournalCatchUpRequest::new(0)
-            .with_limit(FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT as u16)
+            .with_limit(chunk_size as u16)
             .with_known_order_digest(FederationJournalDigest::genesis());
-        let second_request = FederationJournalCatchUpRequest::new(
-            FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT as u64,
-        )
-        .with_limit(1)
-        .with_known_order_digest(
-            entries[FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT].previous_order_digest,
-        );
+        let second_request = FederationJournalCatchUpRequest::new(chunk_size as u64)
+            .with_limit(1)
+            .with_known_order_digest(entries[chunk_size].previous_order_digest);
         let first_response =
             catch_up_response_with_materialized_digest(&state, &peer_consensus, &first_request)
                 .await;
@@ -3910,9 +4248,16 @@ mod tests {
             .with_status_response(peer_status)
             .with_catch_up_response(signed_catch_up_response(first_response, &peer_private))
             .with_catch_up_response(signed_catch_up_response(second_response, &peer_private));
-        let client =
-            FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
-                .expect("client");
+        let client = FederationRestPeerClient::new_with_config(
+            transport.clone(),
+            &public_config,
+            local_private.clone(),
+            FederationPeerSyncConfig {
+                session_outcome_evidence_chunk_size: chunk_size,
+                ..FederationPeerSyncConfig::default()
+            },
+        )
+        .expect("client");
 
         let synced =
             run_federation_peer_sync_round(&state, &client, std::slice::from_ref(peer_member))
@@ -3922,22 +4267,16 @@ mod tests {
         let requests = transport.catch_up_requests();
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].payload.next_index, 0);
-        assert_eq!(
-            requests[0].payload.limit,
-            Some(FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT as u16)
-        );
-        assert_eq!(
-            requests[1].payload.next_index,
-            FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_LIMIT as u64
-        );
+        assert_eq!(requests[0].payload.limit, Some(chunk_size as u16));
+        assert_eq!(requests[1].payload.next_index, chunk_size as u64);
         assert_eq!(requests[1].payload.limit, Some(1));
         let quorum = session_outcome_quorum_status(&state)
             .await
             .expect("quorum status")
             .expect("chunked quorum evidence");
         assert_eq!(quorum.from_index, 0);
-        assert_eq!(quorum.operation_count, 1001);
-        assert_eq!(quorum.latest_index, 1000);
+        assert_eq!(quorum.operation_count, operation_count as u64);
+        assert_eq!(quorum.latest_index, operation_count as u64 - 1);
         assert!(quorum.signers.contains(&local_private.member_id));
         assert!(quorum.signers.contains(&peer_private.member_id));
         assert!(matches!(
@@ -4092,7 +4431,7 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn rest_peer_client_detects_catch_up_materialized_state_mismatch() {
         let (state, public_config, local_private, _) =
             federation_route_state_with_local_private().await;
@@ -4118,10 +4457,34 @@ mod tests {
         let transport = MockFederationTransport::default()
             .with_status_response(peer_consensus.peer_status())
             .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private));
-        let client = FederationRestPeerClient::new(transport, &public_config, local_private)
-            .expect("client");
+        let digest_recheck_delay = Duration::from_secs(2);
+        let client = FederationRestPeerClient::new_with_config(
+            transport,
+            &public_config,
+            local_private,
+            FederationPeerSyncConfig {
+                digest_recheck_attempts: 2,
+                digest_recheck_delay,
+                ..FederationPeerSyncConfig::default()
+            },
+        )
+        .expect("client");
 
-        let sync = client.sync_once_from_member(&state, peer_member).await;
+        let state_for_sync = state.clone();
+        let peer_member_for_sync = peer_member.clone();
+        let task = tokio::spawn(async move {
+            client
+                .sync_once_from_member(&state_for_sync, &peer_member_for_sync)
+                .await
+        });
+        tokio::task::yield_now().await;
+
+        assert!(
+            !task.is_finished(),
+            "digest mismatch should wait for the configured recheck delay before halting"
+        );
+        tokio::time::advance(digest_recheck_delay).await;
+        let sync = task.await.expect("digest recheck task");
 
         assert!(sync.is_err());
         assert!(matches!(
