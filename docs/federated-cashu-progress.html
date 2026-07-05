@@ -523,15 +523,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 537 checked items and 52 remaining items. Federation minting and melting payment paths are now locked to backend-agnostic quote/payment observations with production source audits and generic mock-backend quorum tests.</span>
+          <span class="value">The implementation plan audit tracks 538 checked items and 51 remaining items. Federation mint members now run an always-on mint quote payment observer that rechecks unissued quotes through the configured backend and submits paid observations through consensus.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: audit backend-agnostic payment paths</span>
+          <span class="value">feat: observe federated mint quote payments</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Production federation mint/melt payment paths now have source audits against concrete backend coupling, and runtime quorum tests keep mint and melt finalization on generic payment observations.</span>
+          <span class="value">Federated mint members now have a periodic payment observer that scans unpaid or paid-but-unissued quotes, checks them with the configured payment backend, and submits idempotent mint quote payment observations.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -546,7 +546,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 537 checked entries and 52 remaining entries. The
+          checklist has 538 checked entries and 51 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -3523,6 +3523,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --lib --features federation production_federation_payment_paths_are_backend_agnostic -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation_payment_observation_handlers_are_backend_agnostic -- --test-threads 1`, `cargo test -p cdk --lib --features federation real_policy_mint_payment_observations_finalize_from_stored_quorum -- --test-threads 1`, and `cargo test -p cdk --lib --features federation real_policy_melt_payment_observations_finalize_from_stored_quorum -- --test-threads 1` passed. The new source audits prove production federation mint/melt apply code and Axum payment-observation handlers do not branch on fakewallet, CLN, LND, LNBits, LDK Node, or other concrete backend names, while the runtime quorum tests keep mint and melt finalization on generic payment observations from a backend-agnostic mock `MintPayment` implementation.</td>
               <td>Keep future payment backends behind the existing CDK payment traits and quote/status response surfaces.</td>
+            </tr>
+            <tr>
+              <td>Mint payment observer</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation mint_payment_observer -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation_payment_observation_handlers_are_backend_agnostic -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation_payment_observation -- --test-threads 1`, `cargo test -p cdk-axum --features federation custom_handlers -- --test-threads 1`, and `cargo check -p cdk-axum --features federation` passed. The observer round scans unissued mint quotes in bounded batches, rechecks quote status through the configured backend, submits paid observations through the existing consensus envelope path, skips unpaid quotes, and remains idempotent on duplicate rounds.</td>
+              <td>Broaden this from focused unit coverage into process smoke once multi-member payment timing scenarios are expanded again.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>

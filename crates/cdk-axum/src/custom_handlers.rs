@@ -29,6 +29,11 @@ use crate::router_handlers::into_response;
 use crate::MintState;
 
 const PREFER_HEADER_KEY: &str = "Prefer";
+#[cfg(feature = "federation")]
+const FEDERATION_MINT_PAYMENT_OBSERVER_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(5);
+#[cfg(feature = "federation")]
+const FEDERATION_MINT_PAYMENT_OBSERVER_BATCH_SIZE: usize = 100;
 
 /// Header extractor for the Prefer header
 ///
@@ -191,14 +196,14 @@ async fn submit_federation_mint_quote_operation(
 async fn submit_federation_mint_quote_payment_observation(
     state: &MintState,
     response: &cdk::mint::MintQuoteResponse<QuoteId>,
-) -> Result<(), cdk::Error> {
+) -> Result<bool, cdk::Error> {
     let Some(config) = state.mint.federation_config() else {
-        return Ok(());
+        return Ok(false);
     };
     let (amount_paid, amount_issued) = mint_quote_response_amounts(response);
     if response.state() != Some(cdk::nuts::MintQuoteState::Paid) || amount_paid == cdk::Amount::ZERO
     {
-        return Ok(());
+        return Ok(false);
     }
     let observation = cdk::federation::FederationMintQuotePaymentObservation {
         quote: response.quote().to_string(),
@@ -224,7 +229,7 @@ async fn submit_federation_mint_quote_payment_observation(
                 && record.observation.matches_payment_evidence(&candidate)
         });
     if already_recorded {
-        return Ok(());
+        return Ok(false);
     }
 
     let envelope = config.operation_envelope(
@@ -233,7 +238,67 @@ async fn submit_federation_mint_quote_payment_observation(
     state
         .submit_federation_payment_observation_envelope(envelope)
         .await?;
-    Ok(())
+    Ok(true)
+}
+
+#[cfg(feature = "federation")]
+pub(crate) async fn submit_federation_mint_quote_payment_observation_round(
+    state: &MintState,
+) -> Result<usize, cdk::Error> {
+    if state.mint.federation_config().is_none() {
+        return Ok(0);
+    }
+
+    let quotes = state.mint.localstore().get_mint_quotes().await?;
+    let quote_ids = quotes
+        .into_iter()
+        .filter(|quote| quote.state() != cdk::nuts::MintQuoteState::Issued)
+        .map(|quote| quote.id)
+        .collect::<Vec<_>>();
+    if quote_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let mut submitted = 0usize;
+    for chunk in quote_ids.chunks(FEDERATION_MINT_PAYMENT_OBSERVER_BATCH_SIZE) {
+        let responses = state.mint.check_mint_quotes(chunk).await?;
+        for response in responses {
+            if submit_federation_mint_quote_payment_observation(state, &response).await? {
+                submitted = submitted.saturating_add(1);
+            }
+        }
+    }
+
+    Ok(submitted)
+}
+
+#[cfg(feature = "federation")]
+pub(crate) fn spawn_federation_mint_payment_observer_loop(state: MintState) {
+    if state.mint.federation_config().is_none() {
+        return;
+    }
+
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(FEDERATION_MINT_PAYMENT_OBSERVER_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+
+        loop {
+            interval.tick().await;
+            match submit_federation_mint_quote_payment_observation_round(&state).await {
+                Ok(submitted) if submitted > 0 => {
+                    tracing::debug!(
+                        submitted,
+                        "Federation mint payment observer submitted observations"
+                    );
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    tracing::warn!("Federation mint payment observer failed: {}", err);
+                }
+            }
+        }
+    });
 }
 
 #[cfg(feature = "federation")]
@@ -1253,6 +1318,16 @@ mod tests {
         );
         assert!(mint_observation.contains("method: response.method()"));
         assert!(mint_observation.contains(".submit_federation_payment_observation_envelope("));
+        assert_contains_in_order(
+            mint_observation,
+            ".get_mint_quotes().await?",
+            ".filter(|quote| quote.state() != cdk::nuts::MintQuoteState::Issued)",
+        );
+        assert_contains_in_order(
+            mint_observation,
+            ".filter(|quote| quote.state() != cdk::nuts::MintQuoteState::Issued)",
+            ".check_mint_quotes(chunk).await?",
+        );
 
         let melt_observation = source_slice(
             custom_handlers,
@@ -2751,6 +2826,100 @@ mod tests {
         assert!(
             federation_operation_kinds(&state).await.is_empty(),
             "unpaid mint quote checks should not submit payment observations"
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn mint_payment_observer_round_submits_paid_quote_observation() {
+        let state = create_federated_test_state().await;
+        let quote: MintQuoteBolt11Response<QuoteId> = state
+            .mint
+            .get_mint_quote(
+                MintQuoteBolt11Request {
+                    amount: Amount::from(2u64),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                }
+                .into(),
+            )
+            .await
+            .expect("mint quote")
+            .try_into()
+            .expect("bolt11 quote");
+
+        let mut submitted = 0;
+        for _ in 0..10 {
+            submitted = submit_federation_mint_quote_payment_observation_round(&state)
+                .await
+                .expect("observer round");
+            if submitted == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert_eq!(submitted, 1);
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::MintQuotePayment]
+        );
+        let checked = state
+            .mint
+            .check_mint_quotes(std::slice::from_ref(&quote.quote))
+            .await
+            .expect("stored quote status");
+        assert_eq!(checked[0].state(), Some(cdk::nuts::MintQuoteState::Paid));
+
+        let duplicate = submit_federation_mint_quote_payment_observation_round(&state)
+            .await
+            .expect("duplicate observer round");
+        assert_eq!(duplicate, 0);
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::MintQuotePayment]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn mint_payment_observer_round_skips_unpaid_quotes() {
+        let fake = FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 0.0,
+            },
+            HashMap::default(),
+            HashSet::default(),
+            60,
+            CurrencyUnit::Sat,
+        );
+        let state = create_federated_test_state_with_backend(Arc::new(fake)).await;
+        let _quote: MintQuoteBolt11Response<QuoteId> = state
+            .mint
+            .get_mint_quote(
+                MintQuoteBolt11Request {
+                    amount: Amount::from(2u64),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                }
+                .into(),
+            )
+            .await
+            .expect("mint quote")
+            .try_into()
+            .expect("bolt11 quote");
+
+        let submitted = submit_federation_mint_quote_payment_observation_round(&state)
+            .await
+            .expect("observer round");
+
+        assert_eq!(submitted, 0);
+        assert!(
+            federation_operation_kinds(&state).await.is_empty(),
+            "unpaid observer rounds should not submit payment observations"
         );
     }
 

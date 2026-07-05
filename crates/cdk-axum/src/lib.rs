@@ -1755,6 +1755,7 @@ async fn create_mint_router_with_custom_cache_inner(
 
     #[cfg(feature = "federation")]
     if state.federation_consensus.is_some() {
+        custom_handlers::spawn_federation_mint_payment_observer_loop(state.clone());
         federation::spawn_federation_peer_sync_loop_with_config(
             state.clone(),
             federation_peer_sync_config,
