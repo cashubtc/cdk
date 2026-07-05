@@ -10,6 +10,7 @@ use bls12_381::{pairing, G1Affine, G1Projective, G2Affine, G2Projective, Gt, Sca
 use group::Curve;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2_09::Sha256;
+use zeroize::Zeroize;
 
 use super::Error;
 
@@ -37,20 +38,23 @@ impl BlsSecretKey {
         for (dst, src) in wide.iter_mut().zip(bytes.iter().rev()) {
             *dst = *src;
         }
-        Self {
-            scalar: Scalar::from_bytes_wide(&wide),
-        }
+        let scalar = Scalar::from_bytes_wide(&wide);
+        wide.zeroize();
+
+        Self { scalar }
     }
 
     /// Parse a canonical scalar from 32 big-endian bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
-        let mut bytes: [u8; 32] = bytes.try_into().map_err(|_| Error::InvalidSecretKeySize {
-            expected: 32,
-            found: bytes.len(),
-        })?;
-        bytes.reverse();
-        let scalar =
-            Option::<Scalar>::from(Scalar::from_bytes(&bytes)).ok_or(Error::InvalidSecretKey)?;
+        let mut secret_bytes: [u8; 32] =
+            bytes.try_into().map_err(|_| Error::InvalidSecretKeySize {
+                expected: 32,
+                found: bytes.len(),
+            })?;
+        secret_bytes.reverse();
+        let scalar = Option::<Scalar>::from(Scalar::from_bytes(&secret_bytes));
+        secret_bytes.zeroize();
+        let scalar = scalar.ok_or(Error::InvalidSecretKey)?;
         Ok(Self { scalar })
     }
 
@@ -80,9 +84,15 @@ impl BlsSecretKey {
     }
 }
 
+impl Zeroize for BlsSecretKey {
+    fn zeroize(&mut self) {
+        self.scalar = Scalar::zero();
+    }
+}
+
 impl Drop for BlsSecretKey {
     fn drop(&mut self) {
-        self.scalar = Scalar::zero();
+        self.zeroize();
     }
 }
 
@@ -343,7 +353,9 @@ impl BlsSecretKeyShare {
         let mut bytes = [0u8; 35];
         bytes[0] = BLS_THRESHOLD_SHARE_VERSION;
         bytes[1..3].copy_from_slice(&self.signer_id.to_bytes());
-        bytes[3..].copy_from_slice(&self.secret_key.to_bytes());
+        let mut secret_bytes = self.secret_key.to_bytes();
+        bytes[3..].copy_from_slice(&secret_bytes);
+        secret_bytes.zeroize();
         bytes
     }
 
@@ -364,12 +376,24 @@ impl BlsSecretKeyShare {
 }
 
 #[cfg(feature = "federation")]
+impl Zeroize for BlsSecretKeyShare {
+    fn zeroize(&mut self) {
+        self.secret_key.zeroize();
+    }
+}
+
+#[cfg(feature = "federation")]
 impl Serialize for BlsSecretKeyShare {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        serializer.serialize_str(&crate::util::hex::encode(self.to_bytes()))
+        let mut bytes = self.to_bytes();
+        let mut encoded = crate::util::hex::encode(bytes);
+        bytes.zeroize();
+        let result = serializer.serialize_str(&encoded);
+        encoded.zeroize();
+        result
     }
 }
 
@@ -379,9 +403,13 @@ impl<'de> Deserialize<'de> for BlsSecretKeyShare {
     where
         D: Deserializer<'de>,
     {
-        let value = String::deserialize(deserializer)?;
-        let bytes = crate::util::hex::decode(&value).map_err(serde::de::Error::custom)?;
-        Self::from_bytes(&bytes).map_err(serde::de::Error::custom)
+        let mut value = String::deserialize(deserializer)?;
+        let bytes = crate::util::hex::decode(&value);
+        value.zeroize();
+        let mut bytes = bytes.map_err(serde::de::Error::custom)?;
+        let secret_share = Self::from_bytes(&bytes).map_err(serde::de::Error::custom);
+        bytes.zeroize();
+        secret_share
     }
 }
 
@@ -1590,6 +1618,23 @@ mod tests {
                 found: 2
             })
         ));
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn test_threshold_bls_secret_share_zeroize_clears_secret_material() {
+        let coefficients = vec![bls_key(31), bls_key(37), bls_key(41)];
+        let keyset =
+            trusted_dealer_keygen(&coefficients, &signer_ids(&[1, 2, 3, 4, 5])).expect("keyset");
+        let mut secret_share = keyset.secret_shares()[0].clone();
+        let signer_id = secret_share.signer_id();
+
+        assert_ne!(secret_share.to_secret_bytes(), [0u8; 32]);
+
+        secret_share.zeroize();
+
+        assert_eq!(secret_share.signer_id(), signer_id);
+        assert_eq!(secret_share.to_secret_bytes(), [0u8; 32]);
     }
 
     #[cfg(feature = "federation")]

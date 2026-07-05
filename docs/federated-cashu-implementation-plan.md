@@ -336,7 +336,7 @@ Implementation checklist:
 - [x] Verify aggregate blind signatures with existing `verify_bls_blind_signature`.
 - [x] Unblind aggregate signatures with existing BLS unblinding logic and verify final proofs with existing `verify_bls_message`.
 - [x] Add serialization for share types with explicit versioning and no secret key debug leakage.
-- [ ] Add zeroization for secret shares where practical.
+- [x] Add zeroization for secret shares where practical.
 
 Tests and success criteria:
 

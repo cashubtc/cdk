@@ -519,15 +519,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 470 checked items and 117 remaining items. Federation PRs now have a dedicated review checklist for consensus, signing, digests, attacks, and standalone safety.</span>
+          <span class="value">The implementation plan audit now tracks 471 checked items and 116 remaining items. Threshold BLS secret shares now support explicit zeroization and wipe temporary secret serialization buffers where practical.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: add federation review checklist</span>
+          <span class="value">feat: zeroize threshold bls secret shares</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Added `docs/federated-cashu-review-checklist.md` so reviewers can trace federation changes through consensus-before-signing, operation binding, state replay, networking, storage, payments, and attack regressions.</span>
+          <span class="value">Added explicit zeroization support for BLS secret keys and federation secret shares, plus cleanup of temporary secret-share serde buffers and a regression proving secret-share bytes clear to zero.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -542,7 +542,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 470 checked entries and 117 remaining entries. The
+          checklist has 471 checked entries and 116 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -781,6 +781,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>BLS secret shares zeroize</h3>
+            <p>Threshold BLS secret keys and federation secret shares now implement explicit zeroization, drop through the same clearing path, and wipe temporary secret-share serialization buffers where practical.</p>
+          </article>
           <article class="item">
             <h3>Swap input reuse blocked</h3>
             <p>Federated swap apply now rejects spent, pending, reserved, or pending-spent input proofs before generating fresh member shares, while exact accepted-operation replay remains idempotent.</p>
@@ -2007,6 +2011,12 @@
               <td>Record the next broad workspace test gate in both the implementation plan and dashboard.</td>
             </tr>
             <tr>
+              <td>Threshold BLS secret-share zeroization</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cashu --features federation threshold_bls -- --test-threads 1` passed 9 tests, including the new regression proving explicit zeroization clears federation secret-share scalar bytes while preserving the public signer ID.</td>
+              <td>Keep future BLS secret material changes on the threshold BLS suite and add memory-hardening checks only where the Rust type system can verify them safely.</td>
+            </tr>
+            <tr>
               <td>Feature-gated standalone behavior</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo check -p cdk --lib` passed with federation disabled.</td>
@@ -3017,7 +3027,7 @@
             <tr>
               <td>Seeded threshold BLS property coverage</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cashu --features federation test_threshold_bls_seeded_random_messages_thresholds_and_subsets -- --test-threads 1` passed a deterministic randomized regression over messages, thresholds, roster sizes, and quorum subsets. `cargo test -p cashu --features federation threshold_bls -- --test-threads 1` passed the broader threshold BLS suite with 8 tests.</td>
+              <td>`cargo test -p cashu --features federation test_threshold_bls_seeded_random_messages_thresholds_and_subsets -- --test-threads 1` passed a deterministic randomized regression over messages, thresholds, roster sizes, and quorum subsets. `cargo test -p cashu --features federation threshold_bls -- --test-threads 1` passed the broader threshold BLS suite with 9 tests, including secret-share zeroization.</td>
               <td>Keep future cryptographic changes on this seeded path so threshold quorum aggregation stays reproducible in CI.</td>
             </tr>
             <tr>
