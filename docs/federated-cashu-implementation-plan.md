@@ -610,7 +610,7 @@ Tests and success criteria:
 - [x] Same quote with different outputs cannot obtain threshold shares for both output sets.
 - [x] On member crash after consensus acceptance but before HTTP response, retry returns stored shares.
 - [x] On member crash before consensus acceptance, retry submits the same operation hash.
-- [ ] Add or re-run explicit federated NUT-20 locked quote regression tests.
+- [x] Add or re-run explicit federated NUT-20 locked quote regression tests.
 
 ## Milestone 10: federated wallet connector and aggregation
 

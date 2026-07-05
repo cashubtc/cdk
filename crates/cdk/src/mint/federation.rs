@@ -864,8 +864,6 @@ impl Mint {
             .iter()
             .map(|output| output.blinded_secret)
             .collect::<Vec<PublicKey>>();
-        let signatures =
-            federation_share_signatures(config.mint_signature_shares(operation_id, &input)?);
 
         let mut tx = self.localstore.begin_transaction().await?;
         let quote_ids = input.quote_ids();
@@ -897,6 +895,8 @@ impl Mint {
                 0,
             ));
         }
+
+        validate_federation_mint_quote_signatures(&input, &quotes)?;
 
         let existing_signatures = tx.get_blind_signatures(&blinded_secrets).await?;
         let signatures_present = existing_signatures
@@ -933,6 +933,8 @@ impl Mint {
         };
 
         if signatures_present == 0 {
+            let signatures =
+                federation_share_signatures(config.mint_signature_shares(operation_id, &input)?);
             let quote_id = match input.is_batch() {
                 true => None,
                 false => quote_ids.first().cloned(),
@@ -1700,6 +1702,50 @@ fn validate_federation_mint_quotes(
     Ok((payment_method, unit))
 }
 
+fn validate_federation_mint_quote_signatures(
+    input: &MintInput,
+    quotes: &[database::mint::Acquired<MintQuote>],
+) -> Result<(), Error> {
+    match input {
+        MintInput::Single(request) => {
+            let quote = quotes.first().ok_or(Error::UnknownQuote)?;
+            match quote.pubkey.as_ref() {
+                Some(pubkey) => request
+                    .verify_signature(*pubkey)
+                    .map_err(|_| Error::SignatureMissingOrInvalid),
+                None if request.signature.is_some() => Err(Error::SignatureMissingOrInvalid),
+                None => Ok(()),
+            }
+        }
+        MintInput::Batch(request) => {
+            for (index, quote) in quotes.iter().enumerate() {
+                let signature = request
+                    .signatures
+                    .as_ref()
+                    .and_then(|signatures| signatures.get(index))
+                    .and_then(Option::as_ref);
+
+                match quote.pubkey.as_ref() {
+                    Some(pubkey) => {
+                        let signature = signature.ok_or(Error::SignatureMissingOrInvalid)?;
+                        let quote_id = request
+                            .quotes
+                            .get(index)
+                            .ok_or(Error::SignatureMissingOrInvalid)?;
+                        request
+                            .verify_quote_signature(quote_id, signature, pubkey)
+                            .map_err(|_| Error::SignatureMissingOrInvalid)?;
+                    }
+                    None if signature.is_some() => return Err(Error::SignatureMissingOrInvalid),
+                    None => {}
+                }
+            }
+
+            Ok(())
+        }
+    }
+}
+
 fn expected_federation_mint_amounts(
     input: &MintInput,
     quotes: &[database::mint::Acquired<MintQuote>],
@@ -2082,6 +2128,17 @@ mod tests {
             .expect("apply journal entry");
     }
 
+    async fn persist_journal_entry(
+        localstore: &Arc<MintSqliteDatabase>,
+        entry: &FederationJournalEntry,
+    ) {
+        let mut tx = localstore.begin_transaction().await.expect("begin");
+        tx.add_federation_journal_entry(entry)
+            .await
+            .expect("persist journal entry");
+        tx.commit().await.expect("commit journal entry");
+    }
+
     fn mint_payment_observation_envelope(
         runtime_config: &FederationRuntimeConfig,
         quote: &QuoteId,
@@ -2317,6 +2374,15 @@ mod tests {
         })
     }
 
+    fn locked_bolt11_quote_request(amount: u64, pubkey: PublicKey) -> MintQuoteRequest {
+        MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
+            amount: Amount::from(amount),
+            unit: CurrencyUnit::Sat,
+            description: None,
+            pubkey: Some(pubkey),
+        })
+    }
+
     fn bolt11_quote_response(quote: &QuoteId, amount: u64) -> MintQuoteResponse<String> {
         MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
             quote: quote.to_string(),
@@ -2327,6 +2393,54 @@ mod tests {
             expiry: None,
             pubkey: None,
         })
+    }
+
+    fn locked_bolt11_quote_response(
+        quote: &QuoteId,
+        amount: u64,
+        pubkey: PublicKey,
+    ) -> MintQuoteResponse<String> {
+        MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
+            quote: quote.to_string(),
+            request: format!("invoice-{quote}"),
+            amount: Some(Amount::from(amount)),
+            unit: Some(CurrencyUnit::Sat),
+            state: MintQuoteState::Unpaid,
+            expiry: None,
+            pubkey: Some(pubkey),
+        })
+    }
+
+    async fn persist_paid_locked_mint_quote(
+        mint: &Mint,
+        journal: &mut InMemoryFederationJournal,
+        runtime_config: &FederationRuntimeConfig,
+        quote: &QuoteId,
+        pubkey: PublicKey,
+        payment_proof: &str,
+    ) {
+        let quote_entry = appended_entry(
+            journal,
+            runtime_config.mint_quote_operation(
+                quote.clone(),
+                locked_bolt11_quote_request(1, pubkey),
+                locked_bolt11_quote_response(quote, 1, pubkey),
+            ),
+        );
+        persist_and_apply_entry(mint, &quote_entry).await;
+
+        let paid_entry = appended_entry(
+            journal,
+            runtime_config.mint_quote_payment_observation(
+                quote.clone(),
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintQuoteState::Paid,
+                Amount::from(1),
+                Amount::ZERO,
+                Some(payment_proof.to_string()),
+            ),
+        );
+        persist_and_apply_entry(mint, &paid_entry).await;
     }
 
     #[test]
@@ -2604,6 +2718,157 @@ mod tests {
             .expect("rotated blind signature");
         assert_eq!(signature.keyset_id, next_keyset.id);
         assert_eq!(signature.amount, Amount::from(1));
+    }
+
+    #[tokio::test]
+    async fn apply_federation_mint_accepts_nut20_locked_quote() {
+        let runtime_config = runtime_config();
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let signing_key = SecretKey::generate();
+        let quote = QuoteId::new();
+        persist_paid_locked_mint_quote(
+            &mint,
+            &mut journal,
+            &runtime_config,
+            &quote,
+            signing_key.public_key(),
+            "nut20-valid-payment",
+        )
+        .await;
+
+        let output = output_for_runtime(&runtime_config, b"nut20 valid mint output");
+        let mut request = MintRequest {
+            quote: quote.clone(),
+            outputs: vec![output.clone()],
+            signature: None,
+        };
+        request.sign(&signing_key).expect("nut20 signature");
+        let mint_entry = appended_entry(
+            &mut journal,
+            runtime_config
+                .mint_operation(MintInput::Single(request))
+                .expect("locked mint operation"),
+        );
+        persist_and_apply_entry(&mint, &mint_entry).await;
+
+        let signatures = localstore
+            .get_blind_signatures(&[output.blinded_secret])
+            .await
+            .expect("stored locked mint signature");
+        assert!(
+            signatures[0].is_some(),
+            "valid NUT-20 locked quote must receive a member share"
+        );
+        let quote_state = localstore
+            .get_mint_quote(&quote)
+            .await
+            .expect("quote lookup")
+            .expect("quote");
+        assert_eq!(quote_state.state(), MintQuoteState::Issued);
+        assert_eq!(
+            quote_state.amount_issued(),
+            Amount::new(1, CurrencyUnit::Sat)
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_federation_mint_rejects_missing_nut20_signature_before_signing() {
+        let runtime_config = runtime_config();
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let signing_key = SecretKey::generate();
+        let quote = QuoteId::new();
+        persist_paid_locked_mint_quote(
+            &mint,
+            &mut journal,
+            &runtime_config,
+            &quote,
+            signing_key.public_key(),
+            "nut20-missing-payment",
+        )
+        .await;
+
+        let output = output_for_runtime(&runtime_config, b"nut20 missing signature output");
+        let input = MintInput::Single(MintRequest {
+            quote: quote.clone(),
+            outputs: vec![output.clone()],
+            signature: None,
+        });
+        let mint_entry = appended_entry(
+            &mut journal,
+            runtime_config
+                .mint_operation(input)
+                .expect("missing signature mint operation"),
+        );
+        persist_journal_entry(&localstore, &mint_entry).await;
+
+        assert!(matches!(
+            mint.apply_federation_journal_entries(std::slice::from_ref(&mint_entry))
+                .await,
+            Err(cdk_common::Error::SignatureMissingOrInvalid)
+        ));
+
+        let signatures = localstore
+            .get_blind_signatures(&[output.blinded_secret])
+            .await
+            .expect("missing signature output lookup");
+        assert_eq!(
+            signatures,
+            vec![None],
+            "missing NUT-20 signature must fail before any member share is stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_federation_mint_rejects_nut20_output_mutation_before_signing() {
+        let runtime_config = runtime_config();
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let signing_key = SecretKey::generate();
+        let quote = QuoteId::new();
+        persist_paid_locked_mint_quote(
+            &mint,
+            &mut journal,
+            &runtime_config,
+            &quote,
+            signing_key.public_key(),
+            "nut20-mutated-payment",
+        )
+        .await;
+
+        let signed_output = output_for_runtime(&runtime_config, b"nut20 signed mint output");
+        let mutated_output = output_for_runtime(&runtime_config, b"nut20 mutated mint output");
+        let mut request = MintRequest {
+            quote: quote.clone(),
+            outputs: vec![signed_output.clone()],
+            signature: None,
+        };
+        request.sign(&signing_key).expect("nut20 signature");
+        request.outputs = vec![mutated_output.clone()];
+        let mint_entry = appended_entry(
+            &mut journal,
+            runtime_config
+                .mint_operation(MintInput::Single(request))
+                .expect("mutated locked mint operation"),
+        );
+        persist_journal_entry(&localstore, &mint_entry).await;
+
+        assert!(matches!(
+            mint.apply_federation_journal_entries(std::slice::from_ref(&mint_entry))
+                .await,
+            Err(cdk_common::Error::SignatureMissingOrInvalid)
+        ));
+
+        let signatures = localstore
+            .get_blind_signatures(&[signed_output.blinded_secret, mutated_output.blinded_secret])
+            .await
+            .expect("mutated signature lookup");
+        assert_eq!(
+            signatures,
+            vec![None, None],
+            "mutated NUT-20 output set must fail before any member share is stored"
+        );
     }
 
     #[tokio::test]
