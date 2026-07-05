@@ -3357,6 +3357,8 @@ fn append_bytes(transcript: &mut Vec<u8>, value: &[u8]) {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::Path;
     use std::str::FromStr;
 
     use crate::nuts::nut02::KeySetVersion;
@@ -3766,6 +3768,50 @@ mod tests {
                 .and_then(|policy| policy.get("type"))
                 .and_then(serde_json::Value::as_str),
             Some("development_single_observation")
+        );
+    }
+
+    #[test]
+    fn production_federation_modules_do_not_import_fakewallet_backend() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace root");
+        let production_modules = [
+            "crates/cdk-common/src/federation.rs",
+            "crates/cdk-common/src/federation/consensus.rs",
+            "crates/cdk-common/src/federation/journal.rs",
+            "crates/cdk-common/src/federation/operation.rs",
+            "crates/cdk-common/src/federation/signing.rs",
+            "crates/cdk-common/src/federation/transport.rs",
+            "crates/cdk-common/src/federation/trusted_dealer.rs",
+            "crates/cdk/src/mint/federation.rs",
+            "crates/cdk/src/wallet/federation.rs",
+            "crates/cdk-axum/src/custom_handlers.rs",
+            "crates/cdk-axum/src/federation.rs",
+        ];
+        let forbidden = ["cdk_fake_wallet", "FakeWallet"];
+
+        let mut violations = Vec::new();
+        for module in production_modules {
+            let path = repo_root.join(module);
+            let source = fs::read_to_string(&path).expect("federation source file");
+            let production_source = match source.find("#[cfg(test)]") {
+                Some(test_start) => &source[..test_start],
+                None => source.as_str(),
+            };
+
+            for token in forbidden {
+                if production_source.contains(token) {
+                    violations.push(format!("{module} contains `{token}` outside tests"));
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "production federation modules must stay payment-backend agnostic:\n{}",
+            violations.join("\n")
         );
     }
 

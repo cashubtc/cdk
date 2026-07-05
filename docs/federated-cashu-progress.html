@@ -522,15 +522,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 512 checked items and 76 remaining items. Federation journal admission now rejects operation-local negative balance audits before accepting new consensus items.</span>
+          <span class="value">The implementation plan audit tracks 513 checked items and 75 remaining items. Production federation modules now have a source-level guard against direct fakewallet backend coupling outside tests.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: audit federation operation balances</span>
+          <span class="value">test: guard federation fakewallet isolation</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Accepted federation operations now compute an operation-local balance summary before journal append, so negative mint payment, swap, and melt-change requests fail before advancing consensus-visible order.</span>
+          <span class="value">A shared federation regression now scans production federation modules and rejects direct `cdk-fake-wallet` imports or `FakeWallet` type use before the test-only boundary.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -545,7 +545,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 512 checked entries and 76 remaining entries. The
+          checklist has 513 checked entries and 75 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -784,6 +784,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Fakewallet coupling guard</h3>
+            <p>Production federation modules now have an executable source audit that fails if direct `cdk-fake-wallet` imports or `FakeWallet` type references appear outside test-only code. Mintd backend setup and local smoke tooling remain the explicit development/regtest boundary.</p>
+          </article>
           <article class="item">
             <h3>Operation balance audit</h3>
             <p>Federation journal admission now computes an operation-local balance summary before accepting new entries. Mint payment observations reject issued-greater-than-paid values, swaps reject outputs greater than inputs, and melts reject change greater than inputs before the journal index advances.</p>
@@ -2112,6 +2116,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation operation_balance_audit -- --test-threads 1`, `cargo test -p cdk-common --features federation journal_append_rejects_negative -- --test-threads 1`, `cargo test -p cdk-common --features federation federation::operation -- --test-threads 1`, and `cargo test -p cdk-common --features federation federation::journal -- --test-threads 1` passed. The tests prove balance summaries for mint payment observations, swaps, melts, and melt payment observations, plus hard journal rejection for negative swap and melt-change requests before `next_index` changes.</td>
               <td>Persist aggregate audit history only if operators need a queryable long-term solvency report beyond operation-local admission checks.</td>
+            </tr>
+            <tr>
+              <td>Fakewallet isolation guard</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation production_federation_modules_do_not_import_fakewallet_backend -- --test-threads 1` and `cargo test -p cdk-common --features federation federation::tests -- --test-threads 1` passed. The new source audit scans shared, mint, wallet, and Axum federation modules and fails on direct `cdk-fake-wallet` imports or `FakeWallet` type use outside the `#[cfg(test)]` module boundary.</td>
+              <td>Continue removing production-facing fakewallet wording from older status labels while keeping normal mintd fakewallet backend setup and local smoke tooling explicit.</td>
             </tr>
             <tr>
               <td>Standalone fakewallet backend</td>
