@@ -525,15 +525,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The consensus runtime, mint, wallet connector, Axum private REST, mintd setup-generator, and mintd smoke-operation federation test fixtures now live in dedicated modules, keeping production federation files focused while the focused suites remain green.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The consensus runtime, mint, wallet connector, Axum private REST, mintd setup-generator, smoke-operation, and status federation test fixtures now live in dedicated modules, keeping production federation files focused while the focused suites remain green.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: split federation smoke tests</span>
+          <span class="value">refactor: split federation status tests</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk-mintd::federation_smoke` now keeps the smoke-operation driver in `federation_smoke.rs`, with argument-validation tests in `federation_smoke/tests.rs`.</span>
+          <span class="value">`cdk-mintd::federation_status` now keeps status querying and guard code in `federation_status.rs`, with status command fixtures and guard tests in `federation_status/tests.rs`.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Status tests split out</h3>
+            <p>The mintd federation status command file is now focused on query, printing, and guard logic, while its signed-status transport fixture and readiness, convergence, digest, invalid-operation, and payment-observation guard tests live in a dedicated sibling module.</p>
+          </article>
           <article class="item">
             <h3>Smoke tests split out</h3>
             <p>The mintd smoke-operation driver is now focused on live federation wallet flows, while its argument validation tests live in a dedicated sibling module.</p>
@@ -2253,6 +2257,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_smoke::tests -- --test-threads 1` passed 4 smoke-operation argument tests after moving them into `crates/cdk-mintd/src/federation_smoke/tests.rs`. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite smoke_operations -- --test-threads 1` also passed 5 CLI parser tests for the smoke-operation subcommands.</td>
               <td>Keep the remaining cleanup focused on local connector fixtures and any future helper splits with a clear production-file benefit.</td>
+            </tr>
+            <tr>
+              <td>Mintd status test module split</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_status -- --test-threads 1` passed 39 status command, signed local-status transport, readiness, convergence, digest-alert, session-outcome, invalid-operation, and payment-observation guard tests after moving fixtures into `crates/cdk-mintd/src/federation_status/tests.rs`.</td>
+              <td>Continue reducing inline DKG-status, quarantine, and remaining helper fixtures where the split keeps operator command files focused.</td>
             </tr>
             <tr>
               <td>Standalone mint and DbSignatory regressions</td>
