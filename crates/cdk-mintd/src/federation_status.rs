@@ -16,6 +16,15 @@ use serde::{Deserialize, Serialize};
 use crate::cli::{CLIArgs, FederationStatusArgs};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct FederationInvalidOperationAlertSummary {
+    pub(crate) source: String,
+    pub(crate) alerting_buckets: u64,
+    pub(crate) max_count: u64,
+    pub(crate) threshold: u64,
+    pub(crate) window_secs: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct FederationLocalStatusResponse {
     pub(crate) version: u16,
     pub(crate) peer_status: FederationPeerStatus,
@@ -32,6 +41,8 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) invalid_operation_alerts: Vec<FederationInvalidOperationAlertSummary>,
 }
 
 pub(crate) async fn run_status_command(
@@ -74,6 +85,9 @@ pub(crate) async fn run_status_command(
     }
     if args.require_no_payment_observation_alerts {
         ensure_statuses_no_payment_observation_alerts(&statuses)?;
+    }
+    if args.require_no_invalid_operation_alerts {
+        ensure_statuses_no_invalid_operation_alerts(&statuses)?;
     }
 
     Ok(())
@@ -271,8 +285,9 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
     let session_outcome_quorum_signers = member_list(&status.session_outcome_quorum_signers);
     let (payment_reports, payment_conflicts, payment_unresolved, payment_stale, payment_quarantine) =
         payment_report_counts(status);
+    let invalid_operation_alerts = invalid_operation_alert_count(status);
     format!(
-        "member {}: consensus_backend={} sync={} ready={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} session_outcome_quorum_operations={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} message={}",
+        "member {}: consensus_backend={} sync={} ready={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} session_outcome_quorum_operations={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} message={}",
         peer.member_id,
         peer.consensus_backend,
         status.sync_state,
@@ -289,8 +304,39 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         payment_unresolved,
         payment_stale,
         payment_quarantine,
+        invalid_operation_alerts,
         redact_federation_operator_message(&status.sync_message)
     )
+}
+
+fn invalid_operation_alert_count(status: &FederationLocalStatusResponse) -> u64 {
+    status
+        .invalid_operation_alerts
+        .iter()
+        .map(|alert| alert.alerting_buckets)
+        .sum()
+}
+
+fn ensure_statuses_no_invalid_operation_alerts(
+    statuses: &[FederationLocalStatusResponse],
+) -> Result<()> {
+    for status in statuses {
+        for alert in &status.invalid_operation_alerts {
+            if alert.alerting_buckets > 0 {
+                bail!(
+                    "federation member {} invalid operation alert: source={} alerting_buckets={} max_count={} threshold={} window_secs={}",
+                    status.peer_status.member_id,
+                    alert.source,
+                    alert.alerting_buckets,
+                    alert.max_count,
+                    alert.threshold,
+                    alert.window_secs
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn payment_report_counts(
@@ -786,6 +832,7 @@ mod tests {
             session_outcome_quorum_signers: Vec::new(),
             payment_observation_reports: Vec::new(),
             materialized_state_rows: Vec::new(),
+            invalid_operation_alerts: Vec::new(),
         }
     }
 
@@ -1209,6 +1256,62 @@ mod tests {
 
         assert!(member_line.contains("session_outcome_quorum_operations=3"));
         assert!(member_line.contains("session_outcome_quorum_signers=1,2"));
+    }
+
+    #[test]
+    fn status_line_includes_invalid_operation_alert_count() {
+        let (public_config, _) = status_fixture();
+        let mut status = local_status(&public_config, 1, 3);
+        status.invalid_operation_alerts = vec![
+            FederationInvalidOperationAlertSummary {
+                source: "auth_token".to_string(),
+                alerting_buckets: 2,
+                max_count: 25,
+                threshold: 20,
+                window_secs: 60,
+            },
+            FederationInvalidOperationAlertSummary {
+                source: "client_ip".to_string(),
+                alerting_buckets: 1,
+                max_count: 20,
+                threshold: 20,
+                window_secs: 60,
+            },
+        ];
+
+        let member_line = member_status_line(&status);
+
+        assert!(member_line.contains("invalid_operation_alerts=3"));
+        assert!(!member_line.contains("token-a"));
+    }
+
+    #[test]
+    fn status_invalid_operation_alert_guard_accepts_empty_alerts() {
+        let (public_config, _) = status_fixture();
+        let status = local_status(&public_config, 1, 3);
+
+        ensure_statuses_no_invalid_operation_alerts(&[status])
+            .expect("empty invalid-operation alerts are accepted");
+    }
+
+    #[test]
+    fn status_invalid_operation_alert_guard_rejects_alerting_bucket() {
+        let (public_config, _) = status_fixture();
+        let mut status = local_status(&public_config, 1, 3);
+        status.invalid_operation_alerts = vec![FederationInvalidOperationAlertSummary {
+            source: "auth_token".to_string(),
+            alerting_buckets: 1,
+            max_count: 21,
+            threshold: 20,
+            window_secs: 60,
+        }];
+
+        let err = ensure_statuses_no_invalid_operation_alerts(&[status])
+            .expect_err("invalid-operation alert should fail");
+
+        assert!(err.to_string().contains("invalid operation alert"));
+        assert!(err.to_string().contains("source=auth_token"));
+        assert!(err.to_string().contains("max_count=21"));
     }
 
     #[test]

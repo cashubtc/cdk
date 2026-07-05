@@ -258,6 +258,8 @@ mod tests {
             federation_finalizer: None,
             #[cfg(feature = "federation")]
             federation_private_rest_admission: None,
+            #[cfg(feature = "federation")]
+            federation_invalid_operation_alerts: None,
         };
         let (publisher, _receiver) = tokio::sync::mpsc::channel(100);
         WsContext {

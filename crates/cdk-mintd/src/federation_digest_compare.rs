@@ -532,6 +532,7 @@ mod tests {
             session_outcome_quorum_signers: Vec::new(),
             payment_observation_reports: Vec::new(),
             materialized_state_rows: Vec::new(),
+            invalid_operation_alerts: Vec::new(),
         }
         .with_state_digest(state_digest)
     }

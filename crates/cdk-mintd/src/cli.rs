@@ -350,6 +350,9 @@ pub struct FederationStatusArgs {
     /// Fail if queried members report stale, conflicting, or quarantined payment observations.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub require_no_payment_observation_alerts: bool,
+    /// Fail if queried members report invalid-operation alert buckets.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub require_no_invalid_operation_alerts: bool,
 }
 
 #[cfg(all(test, feature = "federation"))]
@@ -874,6 +877,7 @@ mod tests {
             "--require-session-outcome-quorum",
             "--require-no-digest-alerts",
             "--require-no-payment-observation-alerts",
+            "--require-no-invalid-operation-alerts",
         ])
         .expect("status command parses");
 
@@ -898,5 +902,6 @@ mod tests {
         assert!(status.require_session_outcome_quorum);
         assert!(status.require_no_digest_alerts);
         assert!(status.require_no_payment_observation_alerts);
+        assert!(status.require_no_invalid_operation_alerts);
     }
 }

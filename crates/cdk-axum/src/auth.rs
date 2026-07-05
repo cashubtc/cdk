@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{get_keyset_pubkeys, into_response, MintState};
 
-const CLEAR_AUTH_KEY: &str = "Clear-auth";
-const BLIND_AUTH_KEY: &str = "Blind-auth";
+pub(crate) const CLEAR_AUTH_KEY: &str = "Clear-auth";
+pub(crate) const BLIND_AUTH_KEY: &str = "Blind-auth";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthHeader {

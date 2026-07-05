@@ -1662,7 +1662,7 @@ member_quorum_status_line() {{
   local member="$1"
   local private_config
   private_config="$(member_private_config "$member")"
-  "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready --require-session-outcome-quorum --require-no-digest-alerts | awk '/^member / {{ print; exit }}'
+  "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready --require-session-outcome-quorum --require-no-digest-alerts --require-no-invalid-operation-alerts | awk '/^member / {{ print; exit }}'
 }}
 
 member_payment_report_lines() {{
@@ -2675,6 +2675,7 @@ mod tests {
         assert!(smoke_script.contains("member_quorum_status_line()"));
         assert!(smoke_script.contains("--require-session-outcome-quorum"));
         assert!(smoke_script.contains("--require-no-digest-alerts"));
+        assert!(smoke_script.contains("--require-no-invalid-operation-alerts"));
         assert!(smoke_script.contains("private_config=\"$(member_private_config \"$member\")\""));
         assert!(!smoke_script
             .contains("private_config=\"$(member_private_config \"$PRIMARY_MEMBER\")\""));

@@ -522,19 +522,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 519 checked items and 69 remaining items. Rotation activation now requires a local BLS proof-of-possession before a member adopts a new aggregate keyset.</span>
+          <span class="value">The implementation plan audit tracks 522 checked items and 66 remaining items. Federation members now raise privacy-preserving invalid-operation alerts by auth-token, client-IP, or anonymous bucket without exposing raw identifiers.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: require rotation proof of possession</span>
+          <span class="value">feat: add invalid operation alerts</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federated keyset rotation now derives a domain-separated challenge per member and amount, signs it with the local secret share, and verifies the proof before activating the rotation view.</span>
+          <span class="value">Signed local status and `cdk-mintd federation status` now surface invalid-operation alert buckets for repeated bad operation submissions while keeping tokens and IP addresses out of status output.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, real-backend payment-observation cleanup, and the remaining BFT follow-ups.</span>
+          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, real-backend payment-observation cleanup, module splits, and the remaining BFT follow-ups.</span>
         </div>
       </aside>
     </header>
@@ -545,7 +545,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 519 checked entries and 69 remaining entries. The
+          checklist has 522 checked entries and 66 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -1589,6 +1589,10 @@
           <article class="item">
             <h3>Federation operation metrics completed</h3>
             <p>Prometheus now exposes pending consensus work, accepted and rejected federation operations, BLS signing-share latency, wallet aggregation failures, and materialized state-digest mismatch counters with low-cardinality labels only.</p>
+          </article>
+          <article class="item">
+            <h3>Invalid-operation alerts added</h3>
+            <p>Axum now records repeated client-error responses on federation operation paths into per-process salted auth-token, client-IP, or anonymous buckets. Signed local status and mintd status expose only aggregate alert counts, and the new mintd guard can fail clean-status checks when any bucket is alerting.</p>
           </article>
           <article class="item">
             <h3>Metrics smoke gate added</h3>
@@ -3087,7 +3091,13 @@
               <td>Federation operation metrics</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-prometheus federation_ -- --test-threads 1`, `cargo test -p cdk-axum --features federation,prometheus submit_federation_envelope_records_prometheus_operation_metrics -- --test-threads 1`, `cargo test -p cdk --features federation,prometheus federated_mint_connector_aggregates_mint_signature_shares -- --test-threads 1`, `cargo test -p cdk --features federation,prometheus runtime_config_signs_accepted_ -- --test-threads 1`, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite,prometheus` passed. The generated smoke script now requires the pending-mempool gauge without adding sensitive metric labels.</td>
-              <td>Design a privacy-preserving invalid-operation alert before adding any per-client IP or auth-token bucketing.</td>
+              <td>Carry the low-cardinality metrics discipline into future production BFT backend instrumentation.</td>
+            </tr>
+            <tr>
+              <td>Invalid-operation alerting</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation invalid_operation -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite invalid_operation_alert -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite parses_federation_status_subcommand -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1`, `cargo test -p cdk-axum --features federation private_local_status_route_returns_consensus_and_sync_state -- --test-threads 1`, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed. Coverage proves threshold alerts, bucket separation, expiry, connect-info source classification, redacted signed local status, mintd status output, CLI guard parsing, guard failure, generated smoke-script use, and mintd serving with peer connect-info.</td>
+              <td>Exercise the guard in a longer live smoke once repeated invalid-operation traffic generation is added to the process harness.</td>
             </tr>
             <tr>
               <td>Private REST admission backpressure</td>

@@ -747,7 +747,8 @@ fed-regtest-postgres-status dir="target/cdk-fed-regtest-postgres" signer="1":
     --require-ready \
     --require-converged \
     --require-session-outcome-quorum \
-    --require-no-digest-alerts
+    --require-no-digest-alerts \
+    --require-no-invalid-operation-alerts
 
 # Drop generated PostgreSQL member schemas for fake-wallet federation smoke
 fed-regtest-postgres-reset-schemas members="5" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":
@@ -876,7 +877,8 @@ fed-regtest-status dir="target/cdk-fed-regtest" signer="1":
     --require-ready \
     --require-converged \
     --require-session-outcome-quorum \
-    --require-no-digest-alerts
+    --require-no-digest-alerts \
+    --require-no-invalid-operation-alerts
 
 # Remove generated local fake-wallet federation state
 fed-regtest-clean dir="target/cdk-fed-regtest":

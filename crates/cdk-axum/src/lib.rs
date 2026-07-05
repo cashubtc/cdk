@@ -26,6 +26,8 @@ use cdk::federation::{
 };
 use cdk::mint::Mint;
 use router_handlers::*;
+#[cfg(feature = "federation")]
+use sha2::{Digest, Sha256};
 
 mod metrics;
 
@@ -52,6 +54,259 @@ type FederationNotificationHandle = Arc<FederationOperationNotifications>;
 type FederationFinalizationHandle = tokio::sync::mpsc::Sender<FederationFinalizationRequest>;
 #[cfg(feature = "federation")]
 type FederationRestAdmissionHandle = Arc<tokio::sync::Semaphore>;
+#[cfg(feature = "federation")]
+type FederationInvalidOperationAlertHandle =
+    Arc<tokio::sync::Mutex<FederationInvalidOperationAlertTracker>>;
+
+#[cfg(feature = "federation")]
+const FEDERATION_INVALID_OPERATION_ALERT_THRESHOLD: u64 = 20;
+#[cfg(feature = "federation")]
+const FEDERATION_INVALID_OPERATION_ALERT_WINDOW: std::time::Duration =
+    std::time::Duration::from_secs(60);
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum FederationInvalidOperationSourceKind {
+    AuthToken,
+    ClientIp,
+    Anonymous,
+}
+
+#[cfg(feature = "federation")]
+impl FederationInvalidOperationSourceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AuthToken => "auth_token",
+            Self::ClientIp => "client_ip",
+            Self::Anonymous => "anonymous",
+        }
+    }
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct FederationInvalidOperationAlertSummary {
+    pub(crate) source: String,
+    pub(crate) alerting_buckets: u64,
+    pub(crate) max_count: u64,
+    pub(crate) threshold: u64,
+    pub(crate) window_secs: u64,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FederationInvalidOperationBucket {
+    source: FederationInvalidOperationSourceKind,
+    digest: [u8; 32],
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone)]
+struct FederationInvalidOperationBucketState {
+    window_started: std::time::Instant,
+    count: u64,
+    alerted: bool,
+}
+
+#[cfg(feature = "federation")]
+impl FederationInvalidOperationBucketState {
+    fn new(now: std::time::Instant) -> Self {
+        Self {
+            window_started: now,
+            count: 0,
+            alerted: false,
+        }
+    }
+
+    fn reset_if_expired(&mut self, now: std::time::Instant, window: std::time::Duration) {
+        if now.duration_since(self.window_started) >= window {
+            self.window_started = now;
+            self.count = 0;
+            self.alerted = false;
+        }
+    }
+
+    fn is_alerting(&self, threshold: u64) -> bool {
+        self.count >= threshold
+    }
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone)]
+struct FederationInvalidOperationAlertEvent {
+    source: FederationInvalidOperationSourceKind,
+    count: u64,
+    threshold: u64,
+    window_secs: u64,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone)]
+struct FederationInvalidOperationAlertTracker {
+    salt: [u8; 32],
+    threshold: u64,
+    window: std::time::Duration,
+    buckets: HashMap<FederationInvalidOperationBucket, FederationInvalidOperationBucketState>,
+}
+
+#[cfg(feature = "federation")]
+impl Default for FederationInvalidOperationAlertTracker {
+    fn default() -> Self {
+        Self::new(
+            FEDERATION_INVALID_OPERATION_ALERT_THRESHOLD,
+            FEDERATION_INVALID_OPERATION_ALERT_WINDOW,
+        )
+    }
+}
+
+#[cfg(feature = "federation")]
+impl FederationInvalidOperationAlertTracker {
+    fn new(threshold: u64, window: std::time::Duration) -> Self {
+        Self {
+            salt: federation_invalid_operation_alert_salt(),
+            threshold,
+            window,
+            buckets: HashMap::new(),
+        }
+    }
+
+    fn record(
+        &mut self,
+        source: FederationInvalidOperationSource,
+        now: std::time::Instant,
+    ) -> Option<FederationInvalidOperationAlertEvent> {
+        let bucket = self.bucket_for(&source);
+        let state = self
+            .buckets
+            .entry(bucket)
+            .or_insert_with(|| FederationInvalidOperationBucketState::new(now));
+        state.reset_if_expired(now, self.window);
+        state.count = state.count.saturating_add(1);
+        if state.is_alerting(self.threshold) && !state.alerted {
+            state.alerted = true;
+            return Some(FederationInvalidOperationAlertEvent {
+                source: source.kind,
+                count: state.count,
+                threshold: self.threshold,
+                window_secs: self.window.as_secs(),
+            });
+        }
+
+        None
+    }
+
+    fn summaries(
+        &mut self,
+        now: std::time::Instant,
+    ) -> Vec<FederationInvalidOperationAlertSummary> {
+        self.prune_expired(now);
+        let mut summaries = BTreeMap::<
+            FederationInvalidOperationSourceKind,
+            FederationInvalidOperationAlertSummary,
+        >::new();
+        for (bucket, state) in &self.buckets {
+            if !state.is_alerting(self.threshold) {
+                continue;
+            }
+            let entry = summaries.entry(bucket.source).or_insert_with(|| {
+                FederationInvalidOperationAlertSummary {
+                    source: bucket.source.as_str().to_string(),
+                    alerting_buckets: 0,
+                    max_count: 0,
+                    threshold: self.threshold,
+                    window_secs: self.window.as_secs(),
+                }
+            });
+            entry.alerting_buckets = entry.alerting_buckets.saturating_add(1);
+            entry.max_count = entry.max_count.max(state.count);
+        }
+
+        summaries.into_values().collect()
+    }
+
+    fn bucket_for(
+        &self,
+        source: &FederationInvalidOperationSource,
+    ) -> FederationInvalidOperationBucket {
+        let mut hasher = Sha256::new();
+        hasher.update(self.salt);
+        hasher.update(source.kind.as_str().as_bytes());
+        hasher.update(&source.material);
+        FederationInvalidOperationBucket {
+            source: source.kind,
+            digest: hasher.finalize().into(),
+        }
+    }
+
+    fn prune_expired(&mut self, now: std::time::Instant) {
+        let window = self.window;
+        self.buckets
+            .retain(|_, state| now.duration_since(state.window_started) < window);
+    }
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone)]
+struct FederationInvalidOperationSource {
+    kind: FederationInvalidOperationSourceKind,
+    material: Vec<u8>,
+}
+
+#[cfg(feature = "federation")]
+impl FederationInvalidOperationSource {
+    fn auth_token(token_kind: &'static str, token: &[u8]) -> Self {
+        let mut material = Vec::with_capacity(token_kind.len() + 1 + token.len());
+        material.extend_from_slice(token_kind.as_bytes());
+        material.push(0);
+        material.extend_from_slice(token);
+        Self {
+            kind: FederationInvalidOperationSourceKind::AuthToken,
+            material,
+        }
+    }
+
+    fn client_ip(ip: std::net::IpAddr) -> Self {
+        Self {
+            kind: FederationInvalidOperationSourceKind::ClientIp,
+            material: ip.to_string().into_bytes(),
+        }
+    }
+
+    fn anonymous() -> Self {
+        Self {
+            kind: FederationInvalidOperationSourceKind::Anonymous,
+            material: b"anonymous".to_vec(),
+        }
+    }
+
+    fn from_request(req: &axum::http::Request<axum::body::Body>) -> Self {
+        if let Some(token) = req.headers().get(auth::CLEAR_AUTH_KEY) {
+            return Self::auth_token("clear", token.as_bytes());
+        }
+        if let Some(token) = req.headers().get(auth::BLIND_AUTH_KEY) {
+            return Self::auth_token("blind", token.as_bytes());
+        }
+        if let Some(axum::extract::ConnectInfo(address)) =
+            req.extensions()
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        {
+            return Self::client_ip(address.ip());
+        }
+
+        Self::anonymous()
+    }
+}
+
+#[cfg(feature = "federation")]
+fn federation_invalid_operation_alert_salt() -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    hasher.update(now.to_be_bytes());
+    hasher.finalize().into()
+}
 
 #[cfg(all(feature = "federation", feature = "prometheus"))]
 fn usize_to_i64_saturating(value: usize) -> i64 {
@@ -411,6 +666,125 @@ mod tests {
             _ => panic!("expected halted status"),
         }
     }
+
+    #[test]
+    fn invalid_operation_alert_tracker_reports_threshold_without_raw_source() {
+        let mut tracker =
+            FederationInvalidOperationAlertTracker::new(3, std::time::Duration::from_secs(60));
+        let now = std::time::Instant::now();
+
+        assert!(tracker
+            .record(
+                FederationInvalidOperationSource::auth_token("clear", b"secret-token"),
+                now
+            )
+            .is_none());
+        assert!(tracker
+            .record(
+                FederationInvalidOperationSource::auth_token("clear", b"secret-token"),
+                now
+            )
+            .is_none());
+        let event = tracker
+            .record(
+                FederationInvalidOperationSource::auth_token("clear", b"secret-token"),
+                now,
+            )
+            .expect("threshold crossing alert");
+
+        assert_eq!(
+            event.source,
+            FederationInvalidOperationSourceKind::AuthToken
+        );
+        assert_eq!(event.count, 3);
+        let summaries = tracker.summaries(now);
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].source, "auth_token");
+        assert_eq!(summaries[0].alerting_buckets, 1);
+        assert_eq!(summaries[0].max_count, 3);
+        let serialized = serde_json::to_string(&summaries).expect("serialize summaries");
+        assert!(!serialized.contains("secret-token"));
+    }
+
+    #[test]
+    fn invalid_operation_alert_tracker_keeps_auth_buckets_separate() {
+        let mut tracker =
+            FederationInvalidOperationAlertTracker::new(2, std::time::Duration::from_secs(60));
+        let now = std::time::Instant::now();
+
+        assert!(tracker
+            .record(
+                FederationInvalidOperationSource::auth_token("clear", b"token-a"),
+                now
+            )
+            .is_none());
+        assert!(tracker
+            .record(
+                FederationInvalidOperationSource::auth_token("clear", b"token-b"),
+                now
+            )
+            .is_none());
+        assert!(tracker.summaries(now).is_empty());
+        assert!(tracker
+            .record(
+                FederationInvalidOperationSource::auth_token("clear", b"token-a"),
+                now
+            )
+            .is_some());
+
+        let summaries = tracker.summaries(now);
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].alerting_buckets, 1);
+    }
+
+    #[test]
+    fn invalid_operation_alert_tracker_expires_old_buckets() {
+        let mut tracker =
+            FederationInvalidOperationAlertTracker::new(1, std::time::Duration::from_secs(5));
+        let now = std::time::Instant::now();
+        assert!(tracker
+            .record(FederationInvalidOperationSource::anonymous(), now)
+            .is_some());
+        assert_eq!(tracker.summaries(now).len(), 1);
+
+        assert!(tracker
+            .summaries(now + std::time::Duration::from_secs(5))
+            .is_empty());
+    }
+
+    #[test]
+    fn invalid_operation_source_prefers_auth_token_then_connect_info() {
+        let mut auth_req = axum::http::Request::builder()
+            .uri("/v1/swap")
+            .header(auth::CLEAR_AUTH_KEY, "clear-token")
+            .body(axum::body::Body::empty())
+            .expect("request");
+        auth_req.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:8080"
+                .parse::<std::net::SocketAddr>()
+                .expect("socket address"),
+        ));
+        let auth_source = FederationInvalidOperationSource::from_request(&auth_req);
+        assert_eq!(
+            auth_source.kind,
+            FederationInvalidOperationSourceKind::AuthToken
+        );
+
+        let mut ip_req = axum::http::Request::builder()
+            .uri("/v1/swap")
+            .body(axum::body::Body::empty())
+            .expect("request");
+        ip_req.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:8080"
+                .parse::<std::net::SocketAddr>()
+                .expect("socket address"),
+        ));
+        let ip_source = FederationInvalidOperationSource::from_request(&ip_req);
+        assert_eq!(
+            ip_source.kind,
+            FederationInvalidOperationSourceKind::ClientIp
+        );
+    }
 }
 
 /// CDK Mint State
@@ -433,6 +807,8 @@ pub struct MintState {
     federation_finalizer: Option<FederationFinalizationHandle>,
     #[cfg(feature = "federation")]
     federation_private_rest_admission: Option<FederationRestAdmissionHandle>,
+    #[cfg(feature = "federation")]
+    federation_invalid_operation_alerts: Option<FederationInvalidOperationAlertHandle>,
 }
 
 #[cfg(feature = "federation")]
@@ -496,6 +872,38 @@ impl MintState {
             Some(consensus) => consensus.lock().await.pending_mempool_len(),
             None => 0,
         }
+    }
+
+    pub(crate) async fn federation_invalid_operation_alert_summaries(
+        &self,
+    ) -> Vec<FederationInvalidOperationAlertSummary> {
+        match &self.federation_invalid_operation_alerts {
+            Some(alerts) => alerts.lock().await.summaries(std::time::Instant::now()),
+            None => Vec::new(),
+        }
+    }
+
+    async fn record_federation_invalid_operation_alert(
+        &self,
+        source: FederationInvalidOperationSource,
+    ) {
+        let Some(alerts) = &self.federation_invalid_operation_alerts else {
+            return;
+        };
+        let Some(event) = alerts
+            .lock()
+            .await
+            .record(source, std::time::Instant::now())
+        else {
+            return;
+        };
+        tracing::warn!(
+            source = event.source.as_str(),
+            count = event.count,
+            threshold = event.threshold,
+            window_secs = event.window_secs,
+            "Federation invalid operation alert threshold reached"
+        );
     }
 
     #[cfg(feature = "prometheus")]
@@ -1192,6 +1600,48 @@ async fn cors_middleware(
     response
 }
 
+#[cfg(feature = "federation")]
+async fn federation_invalid_operation_alert_middleware(
+    axum::extract::State(state): axum::extract::State<MintState>,
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    let monitor = federation_invalid_operation_alert_path(req.method(), req.uri().path());
+    let source = monitor.then(|| FederationInvalidOperationSource::from_request(&req));
+    let response = next.run(req).await;
+    if monitor && federation_invalid_operation_alert_status(response.status()) {
+        if let Some(source) = source {
+            state
+                .record_federation_invalid_operation_alert(source)
+                .await;
+        }
+    }
+
+    response
+}
+
+#[cfg(feature = "federation")]
+fn federation_invalid_operation_alert_path(method: &axum::http::Method, path: &str) -> bool {
+    if *method != axum::http::Method::POST {
+        return false;
+    }
+
+    path == "/v1/swap"
+        || path == "/v1/restore"
+        || path == "/v1/checkstate"
+        || path == "/v1/auth/blind/mint"
+        || path == "/federation/v1/operations"
+        || path.starts_with("/v1/mint/")
+        || path.starts_with("/v1/melt/")
+}
+
+#[cfg(feature = "federation")]
+fn federation_invalid_operation_alert_status(status: axum::http::StatusCode) -> bool {
+    status.is_client_error()
+        && status != axum::http::StatusCode::NOT_FOUND
+        && status != axum::http::StatusCode::METHOD_NOT_ALLOWED
+}
+
 /// Create mint [`Router`] with required endpoints for cashu mint with a custom
 /// backend for cache
 ///
@@ -1281,6 +1731,12 @@ async fn create_mint_router_with_custom_cache_inner(
                 federation_peer_sync_config.private_rest_inbound_concurrency_limit,
             ))
         }),
+        #[cfg(feature = "federation")]
+        federation_invalid_operation_alerts: federation_consensus.as_ref().map(|_| {
+            Arc::new(tokio::sync::Mutex::new(
+                FederationInvalidOperationAlertTracker::default(),
+            ))
+        }),
     };
     #[cfg(feature = "federation")]
     state.start_federation_finalization_loop();
@@ -1334,6 +1790,12 @@ async fn create_mint_router_with_custom_cache_inner(
     } else {
         mint_router
     };
+
+    #[cfg(feature = "federation")]
+    let mint_router = mint_router.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        federation_invalid_operation_alert_middleware,
+    ));
 
     #[cfg(feature = "prometheus")]
     let mint_router = mint_router.layer(axum::middleware::from_fn_with_state(

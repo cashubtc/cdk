@@ -1902,7 +1902,11 @@ async fn start_services_with_shutdown(
     };
 
     // Wait for axum server to complete with custom shutdown signal
-    let axum_result = axum::serve(listener, mint_service).with_graceful_shutdown(axum_shutdown);
+    let axum_result = axum::serve(
+        listener,
+        mint_service.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(axum_shutdown);
 
     match axum_result.await {
         Ok(_) => {

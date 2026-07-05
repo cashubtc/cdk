@@ -889,6 +889,7 @@ async fn post_local_status(
         .await
         .map_err(cdk_error_response)?;
     let pending_mempool_items = state.federation_pending_mempool_len().await;
+    let invalid_operation_alerts = state.federation_invalid_operation_alert_summaries().await;
     let response = FederationLocalStatusResponse::new(
         peer_status,
         sync_status,
@@ -896,6 +897,7 @@ async fn post_local_status(
         payment_observation_reports,
         materialized_state_rows,
         usize_to_u64_saturating(pending_mempool_items),
+        invalid_operation_alerts,
     );
     #[cfg(feature = "prometheus")]
     record_federation_local_status_metrics(&response);
@@ -1200,6 +1202,8 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) invalid_operation_alerts: Vec<crate::FederationInvalidOperationAlertSummary>,
 }
 
 impl FederationLocalStatusResponse {
@@ -1210,6 +1214,7 @@ impl FederationLocalStatusResponse {
         payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
         materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
         pending_mempool_items: u64,
+        invalid_operation_alerts: Vec<crate::FederationInvalidOperationAlertSummary>,
     ) -> Self {
         let session_outcome_quorum_operation_count = session_outcome_quorum
             .as_ref()
@@ -1228,6 +1233,7 @@ impl FederationLocalStatusResponse {
             session_outcome_quorum_signers,
             payment_observation_reports,
             materialized_state_rows,
+            invalid_operation_alerts,
         }
     }
 }
@@ -3323,6 +3329,9 @@ mod tests {
             federation_finalizer: None,
             federation_private_rest_admission: Some(Arc::new(tokio::sync::Semaphore::new(
                 FederationPeerSyncConfig::default().private_rest_inbound_concurrency_limit,
+            ))),
+            federation_invalid_operation_alerts: Some(Arc::new(tokio::sync::Mutex::new(
+                crate::FederationInvalidOperationAlertTracker::default(),
             ))),
         }
     }
@@ -8404,6 +8413,7 @@ mod tests {
         assert!(response.session_outcome_quorum_signers.is_empty());
         assert!(response.payment_observation_reports.is_empty());
         assert!(response.materialized_state_rows.is_empty());
+        assert!(response.invalid_operation_alerts.is_empty());
 
         let request = signed_status_request_with_payload(
             &public_config,
@@ -8420,6 +8430,35 @@ mod tests {
         let status_json = serde_json::to_string(&response).expect("status json");
         assert!(!status_json
             .contains("0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41"));
+    }
+
+    #[tokio::test]
+    async fn private_local_status_route_reports_invalid_operation_alerts() {
+        let (state, public_config, peer_private) = federation_route_state().await;
+        let local_member = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .member_id();
+        for _ in 0..crate::FEDERATION_INVALID_OPERATION_ALERT_THRESHOLD {
+            state
+                .record_federation_invalid_operation_alert(
+                    crate::FederationInvalidOperationSource::auth_token("clear", b"secret-token"),
+                )
+                .await;
+        }
+
+        let request = signed_status_request(&public_config, &peer_private, local_member, 1);
+        let response = post_local_status(State(state), Json(request))
+            .await
+            .expect("local status response")
+            .0;
+
+        assert_eq!(response.invalid_operation_alerts.len(), 1);
+        assert_eq!(response.invalid_operation_alerts[0].source, "auth_token");
+        assert_eq!(response.invalid_operation_alerts[0].alerting_buckets, 1);
+        let status_json = serde_json::to_string(&response).expect("status json");
+        assert!(!status_json.contains("secret-token"));
     }
 
     #[tokio::test]
