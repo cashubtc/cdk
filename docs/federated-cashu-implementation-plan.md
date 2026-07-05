@@ -457,6 +457,316 @@ Tests and success criteria:
 - [ ] AlephBFT integration test finalizes sessions for 4 nodes and 5 nodes.
 - [x] Consensus halts or rejects when fewer than the required quorum is reachable.
 
+## Milestone 4A: AlephBFT strict-order consensus and idempotent federation APIs
+
+Objective: replace the development consensus path with a production BFT ordering
+engine and make federated mint, swap, and melt APIs behave like Fedimint-style
+submit-and-await APIs. Public wallet requests must only validate and enqueue
+operations. All safety-critical state changes, signature-share creation, proof
+spending, quote finalization, payment-attempt state, and response persistence
+must happen only after the exact operation envelope comes out of AlephBFT in the
+finalized order.
+
+Fedimint lessons to adopt:
+
+- Treat AlephBFT as an atomic broadcast engine, not as mint business logic.
+- Submit paths run admission or dry-run validation only; they do not commit
+  state and do not produce usable blind-signature shares.
+- The ordered consensus stream is the only source of truth for applying
+  transactions.
+- Exact duplicate submissions are harmless and converge to the same operation
+  hash, accepted outcome, and cached response.
+- A member can receive a wallet request after it has already processed the same
+  operation through consensus; the API must return the persisted result rather
+  than trying to process the operation again.
+- Signature-share endpoints are lookups of persisted consensus outcomes, never
+  fresh local signing decisions.
+- Waiting APIs must handle both races: the operation may already be accepted, or
+  it may be accepted after the HTTP request starts waiting.
+- Signed session outcomes, accepted item logs, and state digests are catch-up
+  and replay evidence. A lagging member must not serve signing shares or
+  authoritative state until replay has certified convergence.
+
+Architecture checklist:
+
+- [ ] Add a production `AlephBftFederationConsensus` backend behind the existing
+  consensus abstraction, using Fedimint's AlephBFT integration as the reference
+  for data provider, finalization handler, keychain, network, session outcome,
+  crash recovery, and catch-up design.
+- [ ] Keep Cashu/CDK simpler than Fedimint where possible: CDK needs strict
+  operation ordering and deterministic mint execution, not Fedimint's full module
+  system or wallet state-machine stack.
+- [ ] Define the AlephBFT unit payload as canonical CDK consensus items:
+  `Operation(FederationOperation)`, payment observation facts, session
+  signatures, default/compatibility items, and future module facts.
+- [ ] Ensure every unit payload includes or commits to federation ID, consensus
+  item version, operation hash, submitting member, accepted session/index, body
+  hash, and protocol-version metadata.
+- [ ] Reuse the existing signed private REST envelope as the authenticated
+  admission and transport envelope where practical, but make it explicitly
+  mappable into AlephBFT proposals without changing the canonical operation
+  bytes.
+- [ ] Add peer identity allowlist validation before any AlephBFT message,
+  private REST submit, catch-up response, or signed session outcome is accepted.
+- [ ] Add a Fedimint-like data-provider loop that drains a bounded pending queue,
+  deduplicates operation hashes locally per session, enforces max byte limits,
+  and batches items without busy loops.
+- [ ] Add a Fedimint-like finalization handler that converts finalized AlephBFT
+  units into an ordered stream consumed by exactly one deterministic CDK apply
+  loop.
+- [ ] Store accepted session number, item index, operation hash, operation
+  outcome hash, state digest, and signed session outcome in the federation
+  journal before considering an item durable.
+- [ ] Persist enough AlephBFT unit state and accepted item state to recover after
+  crashes without replaying an item twice or losing a finalized item.
+- [ ] On startup, rebuild the consensus runtime from durable state, fetch missing
+  signed session outcomes or journal ranges from peers, replay unapplied items,
+  and only then enable public federation mint/swap/melt/restore/check-state
+  routes.
+- [ ] If the AlephBFT backend is configured but unavailable, fail startup or keep
+  federation routes in a not-ready state; never silently fall back to local
+  signing or single-member processing.
+- [ ] Add backpressure and admission limits for pending wallet submissions,
+  consensus messages, catch-up ranges, and response waiters.
+- [ ] Expose status for AlephBFT session, round, consensus height, pending item
+  count, finalized item count, signed session outcome height, catch-up state,
+  member lag, response-cache hit rate, and duplicate submissions.
+
+Mint-side restructuring checklist:
+
+- [ ] Create explicit admission validation functions for federated operations:
+  `validate_federated_mint_submission`, `validate_federated_swap_submission`,
+  `validate_federated_melt_submission`, and equivalent quote/payment
+  observation admission checks.
+- [ ] Admission validation may read local consensus-visible state to reject
+  malformed or obviously invalid requests, but it must not commit state, mark
+  proofs pending, mark proofs spent, mutate quotes, attempt payments, or create
+  signature shares.
+- [ ] Keep final consensus apply stricter than admission validation. Admission
+  checks are mempool policy; accepted-order apply is the authoritative validity
+  decision against the current ordered state.
+- [ ] Add a single deterministic accepted-operation entrypoint such as
+  `apply_accepted_federation_operation` and require journal replay, live
+  finalization, and catch-up to use the same path.
+- [ ] Audit public Axum routes and `Mint::process_*` federation branches so no
+  federated mint, swap, melt, restore, or change-output path can call standalone
+  signing or mutation helpers before consensus acceptance.
+- [ ] Split or wrap existing standalone mint issuance logic into reusable
+  validation and apply helpers where this reduces duplication, while keeping
+  standalone non-federation behavior unchanged.
+- [ ] Split or wrap existing swap saga logic so federation admission can verify
+  proofs, spending conditions, output validity, and balance without creating
+  local pending state; accepted consensus apply marks inputs spent and stores
+  output signature shares atomically.
+- [ ] Split or wrap existing melt saga logic so federation admission validates
+  quote/proofs/change outputs without attempting an external payment; accepted
+  consensus apply records reserve/payment-attempt state, and accepted payment
+  observations drive finalize or rollback.
+- [ ] Treat external payment reads and payment attempts as non-deterministic side
+  effects outside the pure apply path. Their results must enter consensus as
+  signed observations or deterministic payment-attempt/finalization operations.
+- [ ] Select the real outgoing melt payment actor deterministically from accepted
+  consensus state, and use an idempotency key so duplicate wallet requests,
+  retries, crashes, or catch-up never make two outgoing payments.
+- [ ] Ensure no blind-signature share is created until the accepted operation
+  hash, output index, blinded message, amount, keyset ID, member ID, and
+  accepted session/index are known and persisted together.
+- [ ] Make all federation output paths v3/BLS-only: admission rejects non-v3
+  output keysets, accepted apply rechecks the same condition, and startup
+  rejects non-v3 aggregate federation keysets.
+- [ ] Add an operation response cache keyed by operation hash and response type
+  for mint, swap, melt, restore, and quote state responses that need idempotent
+  public API behavior.
+- [ ] Add a waiter registry keyed by operation hash so duplicate HTTP requests
+  join the same pending consensus wait rather than submitting unbounded copies.
+- [ ] Define retryable timeout semantics: if consensus has not finalized before
+  the public API timeout, return a clear pending/retryable error without
+  changing operation state; retrying the exact request must later return the
+  finalized response.
+- [ ] Ensure accepted conflicting operations produce deterministic rejected
+  outcomes that are persisted and returned idempotently where appropriate.
+
+Federated public API checklist:
+
+- [ ] `post_mint` and `post_batch_mint` compute the canonical mint operation
+  hash, check for an accepted/cached response, run admission validation if
+  needed, submit the operation to AlephBFT, await the accepted outcome, and
+  return this member's persisted signature shares in normal Cashu response
+  shape.
+- [ ] `post_swap` computes the canonical swap operation hash, checks for a
+  cached response, validates the request without pending/spent mutations,
+  submits to AlephBFT, awaits accepted apply, and returns persisted output
+  shares in request-output order.
+- [ ] `post_melt` computes the canonical melt operation hash, checks for cached
+  reserve/final response, validates proofs and change outputs without payment
+  side effects, submits to AlephBFT, awaits accepted reserve/finalization
+  according to the configured fake or real payment observation policy, and
+  returns the same response on duplicate requests.
+- [ ] Mint quote creation and melt quote creation remain idempotent around quote
+  IDs and quote request payloads; duplicate quote operations return the
+  accepted quote response, while conflicting quote payloads are rejected.
+- [ ] Payment observation submission is idempotent by payment ID, quote ID,
+  observer, method, amount, state, and proof material.
+- [ ] Restore and check-state remain read-only, but they must refuse
+  authoritative answers from lagging members and must only return shares or
+  states derived from accepted consensus-visible state.
+- [ ] Public APIs must support the race where the accepted operation arrives
+  between admission validation and queue submission: the submit path should then
+  return the cached accepted response.
+- [ ] Public APIs must support the race where the accepted operation arrives
+  before the wallet reaches this member: the handler should compute the same
+  operation hash and immediately return the persisted response.
+
+Wallet checklist:
+
+- [ ] Keep the CDK wallet simple. Do not add a Fedimint-style persistent client
+  state-machine stack unless a later requirement proves it necessary.
+- [ ] The federated connector continues to fan out the same mint, swap, and melt
+  request to all configured members, accepts threshold compatible responses,
+  validates member shares, aggregates BLS shares, and returns ordinary Cashu
+  wallet results.
+- [ ] The connector treats member timeouts and pending/retryable responses as
+  normal retry inputs, not as proof construction failures unless threshold
+  cannot be reached.
+- [ ] The connector rejects members advertising mismatched federation IDs,
+  mismatched aggregate keysets, mismatched protocol versions, or non-v3/BLS
+  aggregate federation keysets before submitting value-changing requests.
+- [ ] The connector tolerates a member that already processed the operation and
+  another member that is still waiting, as long as a threshold of valid final
+  responses can be collected.
+
+AlephBFT and consensus unit tests:
+
+- [ ] A 4-member AlephBFT test finalizes ordered sessions with one faulty or
+  offline member and all honest members store identical accepted item order.
+- [ ] A 5-member AlephBFT test finalizes ordered sessions with one faulty or
+  offline member and all honest members store identical accepted item order.
+- [ ] Duplicate proposals from multiple members produce at most one applied
+  operation outcome and identical idempotent responses.
+- [ ] Delayed, reordered, and duplicated AlephBFT network messages do not change
+  the final accepted order seen by honest members.
+- [ ] Byzantine equivocation or malformed unit data from one member is rejected
+  or ignored without causing honest members to diverge.
+- [ ] Consensus stalls safely when fewer than the BFT quorum are connected and
+  resumes when enough members return.
+- [ ] Restart during unit creation, after finalization before apply, and after
+  apply before response persistence all recover to the same journal and state
+  digest.
+- [ ] Catch-up from signed session outcomes and journal ranges rejects bad
+  signatures, wrong federation IDs, wrong protocol versions, truncated ranges,
+  and state-digest mismatches.
+- [ ] The data provider never spins at 100 percent CPU when the pending queue is
+  empty, full, or repeatedly receiving duplicate operations.
+- [ ] Bounded queues apply backpressure under load and do not drop finalized
+  consensus items.
+
+Mint operation tests:
+
+- [ ] Admission validation for mint rejects malformed requests, unpaid quotes,
+  expired quotes, amount mismatches, duplicate outputs, NUT-20 failures, and
+  non-v3/BLS keysets without writing quote issuance or signature-share rows.
+- [ ] Accepted mint apply persists quote issuance, blinded messages, member
+  signature shares, completed operation response, and state digest atomically.
+- [ ] Same quote plus same outputs is idempotent before submission, while
+  pending, after acceptance, after restart, and after catch-up.
+- [ ] Same quote plus different outputs is rejected before any threshold of
+  shares can be collected.
+- [ ] A mint operation already accepted by consensus before the HTTP request
+  reaches a member returns the same persisted `MintResponse`.
+- [ ] A mint request that times out while pending can be retried and later
+  returns the accepted response without issuing twice.
+- [ ] Restore of accepted mint outputs returns persisted or deterministically
+  regenerated shares tied to the original operation hash and output index.
+
+Swap operation tests:
+
+- [ ] Admission validation for swap rejects malformed proofs, duplicate inputs,
+  duplicate outputs, bad signatures, P2PK/HTLC/SIG_ALL failures, balance/fee
+  errors, non-v3/BLS output keysets, and obviously spent inputs without marking
+  proofs pending or spent.
+- [ ] Accepted swap apply marks inputs spent and stores output signature shares
+  in one deterministic DB transaction.
+- [ ] Exact duplicate swaps return the same persisted shares before submission,
+  while pending, after acceptance, after restart, and after catch-up.
+- [ ] Concurrent conflicting swaps spending the same proof result in exactly one
+  accepted spend and deterministic rejected outcomes for the losers.
+- [ ] The overlapping-window quorum-cover attack fails for mint issuance and
+  swap: different output sets cannot be mixed into threshold aggregate notes.
+- [ ] A swap accepted by consensus before the wallet reaches a member returns
+  the same persisted `SwapResponse`.
+
+Melt operation tests:
+
+- [ ] Admission validation for melt rejects malformed proofs, duplicate inputs,
+  bad spending conditions, invalid quote state, invalid change outputs,
+  non-v3/BLS change keysets, and balance/fee errors without marking proofs spent
+  and without attempting payment.
+- [ ] Accepted melt reserve records pending inputs and payment-attempt intent
+  before any external outgoing payment can be attempted.
+- [ ] Fake-wallet happy path records successful outgoing payment observations,
+  finalizes the melt, marks inputs spent, signs change outputs when present, and
+  returns the same response to every duplicate API request.
+- [ ] Fake-wallet failure path records failed observations, rolls back or
+  releases pending inputs according to the accepted state machine, and returns
+  deterministic idempotent errors.
+- [ ] Long-pending fake-wallet path keeps inputs pending, returns retryable
+  pending status, and later finalizes or rolls back only after an accepted
+  observation.
+- [ ] Only the deterministic payment actor attempts a real outgoing melt payment,
+  and retries/crashes cannot cause duplicate outgoing payments.
+- [ ] A member offline during payment observation catches up without attempting a
+  duplicate payment and then returns the same final melt/change response.
+
+Race and wallet scenario tests:
+
+- [ ] Many concurrent identical mint requests sent to all members produce one
+  accepted operation, one response cache entry per member, and threshold
+  aggregate proofs.
+- [ ] Many concurrent identical swap requests sent to all members produce one
+  accepted operation, one input spend, one response cache entry per member, and
+  threshold aggregate proofs.
+- [ ] Many concurrent identical melt requests sent to all members produce one
+  accepted reserve/finalization path and at most one outgoing payment attempt.
+- [ ] Conflicting mint, swap, and melt requests submitted concurrently from
+  different members are serialized by AlephBFT and converge on identical
+  accepted/rejected outcomes on all honest members.
+- [ ] The accepted operation arrives between admission validation and queue
+  submission; the handler returns the cached accepted response without
+  resubmitting a conflicting operation.
+- [ ] The accepted operation arrives before the HTTP request reaches the member;
+  the handler returns immediately from durable state.
+- [ ] The member crashes after accepted apply but before waking HTTP waiters;
+  retry returns the persisted response.
+- [ ] The member is catching up while a wallet request arrives; value-changing
+  routes return not-ready or retryable errors until catch-up certification
+  succeeds.
+- [ ] A wallet can mint, swap, melt, restore, and check state with only a
+  threshold of live reachable members while one member is offline.
+- [ ] A wallet tolerates one slow member, one offline member, and one bad
+  signature share as long as enough valid shares are returned.
+- [ ] A full fake-backend scenario runs mint -> swap -> melt with member
+  restarts, delayed payment observation, duplicate wallet retries, catch-up, and
+  final state-digest equality.
+
+Success criteria:
+
+- [ ] No federated mint, swap, melt, restore, or change-output path can return a
+  usable signature share unless the exact operation was accepted by AlephBFT or
+  was already accepted earlier and retrieved from durable state.
+- [ ] Every safety-critical federation mutation is reachable from ordered
+  consensus apply, replay, or catch-up; no public route commits those mutations
+  directly.
+- [ ] Mint, swap, and melt public APIs are idempotent across duplicate requests,
+  retries, timeouts, accepted-before-request races, member restarts, and catch-up.
+- [ ] Wallet behavior remains close to current CDK behavior: request, wait for
+  compatible member responses, verify shares, aggregate threshold BLS signatures,
+  and return ordinary Cashu proofs/responses.
+- [ ] AlephBFT-backed 4-member and 5-member integration tests pass for mint,
+  swap, melt, restore, check-state, restart, offline member, catch-up, duplicate
+  submission, and conflicting operation scenarios.
+- [ ] Standalone non-federated mint and wallet tests remain unchanged, including
+  non-federation keyset support.
+
 ## Milestone 5: federation DB journal and state digests
 
 Objective: keep replicated operation history separate from materialized mint state.
@@ -1176,7 +1486,7 @@ MVP 1: local deterministic federation
 MVP 2: networked development-backend federation
 
 - Separate member processes.
-- AlephBFT consensus.
+- AlephBFT strict-order consensus and idempotent mint/swap/melt APIs from Milestone 4A.
 - SQLite federation DB.
 - Member restart and catch-up.
 - Fake-wallet melt reserve, pending, failure, finalize, and change signing.
@@ -1205,7 +1515,7 @@ MVP 3: payments and production hardening
 9. Add sliding-window mint attack regression.
 10. Refactor and implement federated swap.
 11. Add sliding-window swap attack regression.
-12. Add networked consensus and cdk-mintd fake federation harness.
+12. Add Milestone 4A AlephBFT strict-order consensus, idempotent federation APIs, and the cdk-mintd fake federation harness.
 13. Add development-backend melt reserve, pending, failure, finalize, and change signing.
 14. Add restore/check-state.
 15. Add state convergence, catch-up certification, and database-equivalence gates.

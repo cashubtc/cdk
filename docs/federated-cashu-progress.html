@@ -520,24 +520,25 @@
           <a class="link-pill" href="./federated-cashu-payment-trust-model.md">Payment trust model</a>
           <a class="link-pill" href="./federated-cashu-sql-lock-ordering.md">SQL lock ordering</a>
           <a class="link-pill" href="./federated-cashu-storage-scope.md">Storage scope</a>
+          <a class="link-pill" href="./fedimint_consensus_review.md">Fedimint consensus review</a>
         </div>
       </div>
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The repo now has a fast `fed-regtest-check` helper for federation smoke/setup cargo-test coverage, and Axum peer-sync policy, signed peer-client code, private DKG setup routes, signed catch-up routes, and private status routes now live in focused child modules.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 118 remaining items after expanding Milestone 4A into an explicit AlephBFT strict-order consensus and idempotent mint/swap/melt API checklist. The repo now has a fast `fed-regtest-check` helper for federation smoke/setup cargo-test coverage, and Axum peer-sync policy, signed peer-client code, private DKG setup routes, signed catch-up routes, and private status routes now live in focused child modules.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: split axum status routes</span>
+          <span class="value">docs: add fedimint consensus review</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`crates/cdk-axum/src/federation/status_routes.rs` now owns private status and local-status handlers plus `FederationLocalStatusResponse`, covering signed status sequence persistence, sync readiness, quorum evidence, payment-observation summaries, materialized status rows, and local-status metrics.</span>
+          <span class="value">Milestone 4A now captures the production consensus target: AlephBFT orders canonical CDK federation items, public mint/swap/melt handlers become admission-and-wait APIs, and signature shares are returned only from persisted accepted outcomes.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue the Axum split toward sync loop and payment-observation route modules, then return to production DKG, broader storage-backed recovery checks, larger-roster partition drills, and the remaining BFT follow-ups.</span>
+          <span class="value">Continue the Axum split toward sync loop and payment-observation route modules, then start replacing the development consensus backend with the Milestone 4A AlephBFT data-provider/finalization path.</span>
         </div>
       </aside>
     </header>
@@ -787,6 +788,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Fedimint consensus lessons captured</h3>
+            <p>`fedimint_consensus_review.md` now records the production design lesson: AlephBFT should order canonical operation envelopes, while CDK applies mint, swap, melt, payment-observation, and session-outcome state deterministically after finalization.</p>
+          </article>
           <article class="item">
             <h3>Axum status routes split out</h3>
             <p>The private status and local-status routes now live in `federation/status_routes.rs`, covering signed status sequence persistence, sync readiness, quorum evidence, payment-observation summaries, materialized status rows, and local-status metrics.</p>
@@ -2343,6 +2348,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo check -p cdk-axum --features federation`, `cargo test -p cdk-axum --features federation private_status -- --test-threads 1`, and `cargo test -p cdk-axum --features federation private_local_status_route -- --test-threads 1` passed after moving private status/local-status handling and `FederationLocalStatusResponse` into `crates/cdk-axum/src/federation/status_routes.rs`.</td>
               <td>Continue the Axum split toward sync loop and payment-observation route modules while shared quorum/report helpers remain in the parent until their ownership is clearer.</td>
+            </tr>
+            <tr>
+              <td>Fedimint consensus review and Milestone 4A</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`git diff --check` passed for the Fedimint consensus review, Milestone 4A AlephBFT strict-order checklist, and dashboard update. A docs PII/local-path scan found no local filesystem paths, credentials, or key material in the checkpointed files.</td>
+              <td>Use Milestone 4A to guide the next implementation slices: AlephBFT data-provider/finalization wiring, idempotent admission-and-wait public APIs, and persisted accepted-response lookups for mint, swap, melt, restore, and change outputs.</td>
             </tr>
             <tr>
               <td>Federation smoke argument validation</td>
