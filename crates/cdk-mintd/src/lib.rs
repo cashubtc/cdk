@@ -705,6 +705,7 @@ fn federation_peer_sync_config(settings: &config::Settings) -> cdk_axum::Federat
         reconnect_max_backoff: std::time::Duration::from_secs(peer_sync.reconnect_max_backoff_secs),
         private_rest_inbound_concurrency_limit: peer_sync.private_rest_inbound_concurrency_limit,
         private_rest_outbound_concurrency_limit: peer_sync.private_rest_outbound_concurrency_limit,
+        state_digest_checkpoint_retention: peer_sync.state_digest_checkpoint_retention,
     }
 }
 
@@ -2425,6 +2426,7 @@ mod tests {
                     reconnect_max_backoff_secs: 37,
                     private_rest_inbound_concurrency_limit: 41,
                     private_rest_outbound_concurrency_limit: 43,
+                    state_digest_checkpoint_retention: 47,
                 },
             }),
             ..Default::default()
@@ -2461,6 +2463,7 @@ mod tests {
         );
         assert_eq!(sync_config.private_rest_inbound_concurrency_limit, 41);
         assert_eq!(sync_config.private_rest_outbound_concurrency_limit, 43);
+        assert_eq!(sync_config.state_digest_checkpoint_retention, 47);
         sync_config.validate().expect("valid sync config");
     }
 

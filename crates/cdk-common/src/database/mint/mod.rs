@@ -648,6 +648,12 @@ pub trait FederationJournalTransaction {
         checkpoint: &FederationStateDigestCheckpoint,
     ) -> Result<(), Self::Err>;
 
+    /// Retain only the newest materialized state digest checkpoints.
+    async fn prune_federation_state_digest_checkpoints(
+        &mut self,
+        keep_latest: usize,
+    ) -> Result<(), Self::Err>;
+
     /// Persist one payment observation extracted from an accepted federation operation.
     async fn add_federation_payment_observation(
         &mut self,

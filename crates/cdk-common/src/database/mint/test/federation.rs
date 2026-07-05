@@ -617,6 +617,47 @@ where
         .await
         .expect("ranged state digest checkpoints");
     assert_eq!(ranged, vec![second_checkpoint]);
+
+    let third = appended(
+        journal
+            .append(mint_quote_envelope("digest-quote-2", 34))
+            .expect("append third digest entry"),
+    );
+    let fourth = appended(
+        journal
+            .append(payment_observation_envelope("digest-quote-2"))
+            .expect("append fourth digest entry"),
+    );
+    let third_checkpoint =
+        FederationStateDigestCheckpoint::new(&third, FederationStateDigest::from_bytes([44; 32]));
+    let fourth_checkpoint =
+        FederationStateDigestCheckpoint::new(&fourth, FederationStateDigest::from_bytes([55; 32]));
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin retention transaction");
+    tx.add_federation_journal_entry(&third)
+        .await
+        .expect("persist third journal entry");
+    tx.add_federation_journal_entry(&fourth)
+        .await
+        .expect("persist fourth journal entry");
+    tx.add_federation_state_digest_checkpoint(&third_checkpoint)
+        .await
+        .expect("persist third state digest checkpoint");
+    tx.add_federation_state_digest_checkpoint(&fourth_checkpoint)
+        .await
+        .expect("persist fourth state digest checkpoint");
+    tx.prune_federation_state_digest_checkpoints(2)
+        .await
+        .expect("prune state digest checkpoints");
+    tx.commit().await.expect("commit retention transaction");
+
+    let retained = db
+        .get_federation_state_digest_checkpoints()
+        .await
+        .expect("retained state digest checkpoints");
+    assert_eq!(retained, vec![third_checkpoint, fourth_checkpoint]);
 }
 
 /// Assert threshold signature shares persist independently from final blind signatures.

@@ -1111,6 +1111,9 @@ pub struct FederationPeerSync {
     /// Maximum concurrent private REST requests sent by one peer client.
     #[serde(default = "default_federation_private_rest_outbound_concurrency_limit")]
     pub private_rest_outbound_concurrency_limit: usize,
+    /// Number of materialized state digest checkpoints retained locally.
+    #[serde(default = "default_federation_state_digest_checkpoint_retention")]
+    pub state_digest_checkpoint_retention: usize,
 }
 
 #[cfg(feature = "federation")]
@@ -1133,6 +1136,8 @@ impl Default for FederationPeerSync {
                 default_federation_private_rest_inbound_concurrency_limit(),
             private_rest_outbound_concurrency_limit:
                 default_federation_private_rest_outbound_concurrency_limit(),
+            state_digest_checkpoint_retention: default_federation_state_digest_checkpoint_retention(
+            ),
         }
     }
 }
@@ -1190,6 +1195,11 @@ fn default_federation_private_rest_inbound_concurrency_limit() -> usize {
 #[cfg(feature = "federation")]
 fn default_federation_private_rest_outbound_concurrency_limit() -> usize {
     64
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_state_digest_checkpoint_retention() -> usize {
+    10_000
 }
 
 /// Transaction limits configuration

@@ -523,15 +523,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 540 checked items and 49 remaining items. Federation storage now persists materialized state digest checkpoints in a dedicated table and records the current journal-tip checkpoint after successful Axum finalization.</span>
+          <span class="value">The implementation plan audit tracks 542 checked items and 47 remaining items. Federation storage now persists materialized state digest checkpoints in a dedicated table and prunes them with configurable runtime retention after successful Axum finalization.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: persist federation state digest checkpoints</span>
+          <span class="value">feat: prune federation state digest checkpoints</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federation storage now has a dedicated `federation_state_digest` table for checkpoint history, shared SQLite/Postgres persistence methods, and runtime checkpoint recording after successful materialized apply.</span>
+          <span class="value">Federation storage now has a dedicated `federation_state_digest` table, shared SQLite/Postgres persistence and pruning methods, a mintd retention setting, and runtime checkpoint recording plus pruning after successful materialized apply.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -546,7 +546,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 540 checked entries and 49 remaining entries. The
+          checklist has 542 checked entries and 47 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -3533,8 +3533,8 @@
             <tr>
               <td>State digest checkpoints</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-sqlite --features federation federation_state_digest_checkpoint_persistence -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_migrations_apply_to_empty_sqlite_and_keep_standalone_tables -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_journal_hot_path_indexes_are_used -- --test-threads 1`, `cargo test -p cdk-axum --features federation submit_federation_envelope -- --test-threads 1`, `cargo check -p cdk-axum --features federation`, `cargo check -p cdk-postgres --features federation`, and `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed. The checkpoint stores operation index, operation id, order digest, and materialized state digest in a dedicated SQL table, rejects conflicting replay, and records the journal-tip checkpoint after finalization.</td>
-              <td>Add configurable checkpoint retention or pruning policy when the production session-boundary strategy is finalized.</td>
+              <td>`cargo test -p cdk-sqlite --features federation federation_state_digest_checkpoint_persistence -- --test-threads 1`, `cargo test -p cdk-axum --features federation submit_federation_envelope_prunes_state_digest_checkpoints_to_retention -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation_peer_sync_config_rejects_invalid_values -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_peer_sync_config -- --test-threads 1`, `cargo check -p cdk-axum --features federation`, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed. The checkpoint stores operation index, operation id, order digest, and materialized state digest in a dedicated SQL table, rejects conflicting replay, maps configurable retention through mintd, rejects zero retention, and prunes old checkpoints atomically after finalization.</td>
+              <td>Run live Postgres migration/application coverage when a Postgres service is available, then fold checkpoint retention into broader storage-backed recovery tests.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>

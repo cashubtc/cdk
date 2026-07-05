@@ -1435,8 +1435,14 @@ impl MintState {
                 ))
             })?;
         let checkpoint = FederationStateDigestCheckpoint::new(latest_entry, state_digest);
+        let retention = self
+            .federation_peer_sync_config
+            .unwrap_or_default()
+            .state_digest_checkpoint_retention;
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_state_digest_checkpoint(&checkpoint)
+            .await?;
+        tx.prune_federation_state_digest_checkpoints(retention)
             .await?;
         tx.commit().await?;
         Ok(())

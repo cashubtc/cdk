@@ -499,6 +499,31 @@ where
         Ok(())
     }
 
+    async fn prune_federation_state_digest_checkpoints(
+        &mut self,
+        keep_latest: usize,
+    ) -> Result<(), Self::Err> {
+        query(
+            r#"
+            DELETE FROM federation_state_digest
+            WHERE operation_index NOT IN (
+                SELECT operation_index
+                FROM (
+                    SELECT operation_index
+                    FROM federation_state_digest
+                    ORDER BY operation_index DESC
+                    LIMIT :keep_latest
+                ) AS retained
+            )
+            "#,
+        )?
+        .bind("keep_latest", keep_latest as i64)
+        .execute(&self.inner)
+        .await?;
+
+        Ok(())
+    }
+
     async fn add_federation_payment_observation(
         &mut self,
         observation: &FederationPaymentObservationRecord,

@@ -51,6 +51,7 @@ const DEFAULT_FEDERATION_RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_se
 const DEFAULT_FEDERATION_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(60);
 const DEFAULT_FEDERATION_PRIVATE_REST_INBOUND_CONCURRENCY_LIMIT: usize = 128;
 const DEFAULT_FEDERATION_PRIVATE_REST_OUTBOUND_CONCURRENCY_LIMIT: usize = 64;
+const DEFAULT_FEDERATION_STATE_DIGEST_CHECKPOINT_RETENTION: usize = 10_000;
 static FEDERATION_REST_SEQUENCE_SEED: AtomicU64 = AtomicU64::new(0);
 
 /// Private federation peer synchronization policy.
@@ -78,6 +79,8 @@ pub struct FederationPeerSyncConfig {
     pub private_rest_inbound_concurrency_limit: usize,
     /// Maximum concurrent private REST requests sent by one peer client.
     pub private_rest_outbound_concurrency_limit: usize,
+    /// Number of materialized state digest checkpoints retained locally.
+    pub state_digest_checkpoint_retention: usize,
 }
 
 impl Default for FederationPeerSyncConfig {
@@ -97,6 +100,7 @@ impl Default for FederationPeerSyncConfig {
                 DEFAULT_FEDERATION_PRIVATE_REST_INBOUND_CONCURRENCY_LIMIT,
             private_rest_outbound_concurrency_limit:
                 DEFAULT_FEDERATION_PRIVATE_REST_OUTBOUND_CONCURRENCY_LIMIT,
+            state_digest_checkpoint_retention: DEFAULT_FEDERATION_STATE_DIGEST_CHECKPOINT_RETENTION,
         }
     }
 }
@@ -152,6 +156,9 @@ impl FederationPeerSyncConfig {
             anyhow::bail!(
                 "federation private REST outbound concurrency limit must be greater than zero"
             );
+        }
+        if self.state_digest_checkpoint_retention == 0 {
+            anyhow::bail!("federation state digest checkpoint retention must be greater than zero");
         }
 
         Ok(())
@@ -2785,6 +2792,10 @@ mod tests {
             },
             FederationPeerSyncConfig {
                 private_rest_outbound_concurrency_limit: 0,
+                ..valid
+            },
+            FederationPeerSyncConfig {
+                state_digest_checkpoint_retention: 0,
                 ..valid
             },
         ];
@@ -8061,6 +8072,33 @@ mod tests {
         assert_eq!(checkpoints[0].operation_id, response.operation_id);
         assert_eq!(checkpoints[0].order_digest, entry.order_digest);
         assert_eq!(checkpoints[0].state_digest, expected_state_digest);
+    }
+
+    #[tokio::test]
+    async fn submit_federation_envelope_prunes_state_digest_checkpoints_to_retention() {
+        let (mut state, _, _) = federation_route_state().await;
+        state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
+            state_digest_checkpoint_retention: 2,
+            ..FederationPeerSyncConfig::default()
+        });
+
+        for _ in 0..3 {
+            let quote_id = QuoteId::new();
+            state
+                .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
+                .await
+                .expect("submit mint quote");
+        }
+
+        let checkpoints = state
+            .mint
+            .localstore()
+            .get_federation_state_digest_checkpoints()
+            .await
+            .expect("state digest checkpoints");
+        assert_eq!(checkpoints.len(), 2);
+        assert_eq!(checkpoints[0].operation_index, 1);
+        assert_eq!(checkpoints[1].operation_index, 2);
     }
 
     #[cfg(feature = "prometheus")]
