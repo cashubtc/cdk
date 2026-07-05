@@ -523,15 +523,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 525 checked items and 63 remaining items. Fakewallet setup is now directly asserted to satisfy the normal CDK `MintPayment` backend boundary used by mintd registration.</span>
+          <span class="value">The implementation plan audit tracks 526 checked items and 62 remaining items. The focused federation attack regression suite was re-run and recorded across signing, mint, swap, operation-ID, admission, and private REST rejection paths.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: assert fakewallet backend interface</span>
+          <span class="value">test: record federation attack suite rerun</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Focused mintd tests prove fakewallet setup, dispatcher unit selection, and generic backend method registration still use the normal payment backend interface.</span>
+          <span class="value">Sliding-window, transcript mutation, witness-bound operation hash, oversized admission, and private REST before-mutation rejection regressions passed.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -546,7 +546,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 525 checked entries and 63 remaining entries. The
+          checklist has 526 checked entries and 62 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -3441,6 +3441,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features fakewallet,sqlite fake_wallet_setup_filters_custom_methods_by_unit -- --test-threads 1`, `fakewallet_dispatcher_uses_ln_entry_unit`, and `configure_backend_for_methods_registers_websockets_and_fee` passed. The setup test now includes a direct `MintPayment` trait-bound assertion for the returned fakewallet backend.</td>
               <td>Run the full generated regtest smoke where local process ports are available.</td>
+            </tr>
+            <tr>
+              <td>Federation attack suite rerun</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation naive_local_signing_allows_sliding_window_quorum_cover`, `cargo test -p cdk --lib --features federation sliding_window`, `output_mutation`, and `missing_nut20`, `cargo test -p cdk-common --features federation operation_id_tracks_`, `oversized`, plus Axum `private_operation_route_rejects_` and `oversized` all passed.</td>
+              <td>Complete formal review signoff for direct signing paths and operation canonicalization before mainnet use.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>

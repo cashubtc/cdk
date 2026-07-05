@@ -1156,7 +1156,7 @@ Tests and success criteria:
 - [x] Ensure an independent reviewer can trace every signature share to an accepted operation hash after the signature-share persistence decision is finalized.
 - [x] Add federation operation fuzz targets for operation decoding and request conversion.
 - [x] Attack regression tests exist.
-- [ ] Re-run and record the full attack regression suite.
+- [x] Re-run and record the full attack regression suite.
 - [x] Code paths appear consensus-gated in federation mode.
 - [ ] Complete final security-review signoff that no route signs directly in federation mode.
 
