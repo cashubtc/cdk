@@ -525,15 +525,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The consensus runtime, wallet connector, and Axum private REST federation test fixtures now live in dedicated modules, keeping production federation files focused while the focused suites remain green.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The consensus runtime, mint, wallet connector, and Axum private REST federation test fixtures now live in dedicated modules, keeping production federation files focused while the focused suites remain green.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: split axum federation tests</span>
+          <span class="value">refactor: split mint federation tests</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk-axum::federation` now keeps private REST route code in `federation.rs` and moves its 100-test route, peer-sync, catch-up, DKG, and status suite into `federation/tests.rs`.</span>
+          <span class="value">`cdk::mint::federation` now keeps mint federation runtime code in `federation.rs` and moves its 51-test mint, swap, melt, restore, keyset, and payment-observation suite into `mint/federation/tests.rs`.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Mint tests split out</h3>
+            <p>The mint federation runtime file is now focused on production state-machine code, while the large mint, swap, melt, restore, keyset rotation, payment observation, and source-audit fixture suite lives in a dedicated test module.</p>
+          </article>
           <article class="item">
             <h3>Axum tests split out</h3>
             <p>The private REST federation route file is now focused on production handlers, while the large route, mock transport, peer sync, catch-up, DKG setup, payment observation, and status fixture suite lives in a dedicated test module.</p>
@@ -2222,7 +2226,13 @@
               <td>Axum federation test module split</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation federation::tests:: -- --test-threads 1` passed 100 tests after moving the large inline private REST route fixtures into `crates/cdk-axum/src/federation/tests.rs`. The loopback HTTP DKG route test required localhost bind permission outside the sandbox.</td>
-              <td>Continue the same behavior-neutral split pattern for the remaining mint, local connector, and smoke-helper federation fixtures.</td>
+              <td>Continue the same behavior-neutral split pattern for the remaining local connector and smoke-helper federation fixtures.</td>
+            </tr>
+            <tr>
+              <td>Mint federation test module split</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --features mint,federation mint::federation::tests -- --test-threads 1` passed 51 tests after moving the large inline mint runtime fixtures into `crates/cdk/src/mint/federation/tests.rs` and updating the production-source audit marker.</td>
+              <td>Keep the remaining cleanup focused on local connector and smoke-helper fixtures, plus any future production submodule splits that reduce real complexity.</td>
             </tr>
             <tr>
               <td>Standalone mint and DbSignatory regressions</td>
