@@ -906,6 +906,171 @@ impl FederationAlephBftFinalizationHandler {
     }
 }
 
+/// AlephBFT-facing adapter boundary for operation submission and finalization.
+///
+/// This does not run AlephBFT networking. It owns the CDK side of the boundary:
+/// wallet/public handlers can enqueue operations, an AlephBFT task can pull
+/// canonical unit payloads from the data provider, and finalized units are
+/// converted back into deterministic journal responses.
+#[derive(Debug, Clone)]
+pub struct FederationAlephBftConsensusAdapter {
+    data_provider: FederationAlephBftUnitDataProvider,
+    finalization_handler: FederationAlephBftFinalizationHandler,
+    journal: InMemoryFederationJournal,
+    finalized_items: Vec<FederationAlephBftFinalizedItem>,
+}
+
+impl FederationAlephBftConsensusAdapter {
+    /// Create an AlephBFT adapter boundary with default limits.
+    #[must_use]
+    pub fn new(federation_id: FederationId, local_member: MemberId, session: u64) -> Self {
+        Self {
+            data_provider: FederationAlephBftUnitDataProvider::new(
+                federation_id,
+                local_member,
+                session,
+            ),
+            finalization_handler: FederationAlephBftFinalizationHandler::with_limits(
+                federation_id,
+                session,
+                0,
+                FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+            )
+            .expect("default AlephBFT finalization limits are non-zero"),
+            journal: InMemoryFederationJournal::new(),
+            finalized_items: Vec::new(),
+        }
+    }
+
+    /// Create an AlephBFT adapter boundary with explicit limits.
+    pub fn with_limits(
+        federation_id: FederationId,
+        local_member: MemberId,
+        session: u64,
+        max_item_bytes: usize,
+        max_items_per_unit: usize,
+        max_unit_body_bytes: usize,
+        max_unit_payload_bytes: usize,
+    ) -> Result<Self> {
+        Ok(Self {
+            data_provider: FederationAlephBftUnitDataProvider::with_limits(
+                federation_id,
+                local_member,
+                session,
+                max_item_bytes,
+                max_items_per_unit,
+                max_unit_body_bytes,
+            )?,
+            finalization_handler: FederationAlephBftFinalizationHandler::with_limits(
+                federation_id,
+                session,
+                0,
+                max_unit_payload_bytes,
+            )?,
+            journal: InMemoryFederationJournal::new(),
+            finalized_items: Vec::new(),
+        })
+    }
+
+    /// Return the backend kind represented by this adapter boundary.
+    #[must_use]
+    pub fn backend_kind(&self) -> FederationConsensusBackendKind {
+        FederationConsensusBackendKind::AlephBft
+    }
+
+    /// Return the current AlephBFT session.
+    #[must_use]
+    pub fn session(&self) -> u64 {
+        self.data_provider.session()
+    }
+
+    /// Return the number of locally queued consensus items.
+    #[must_use]
+    pub fn queued_len(&self) -> usize {
+        self.data_provider.queued_len()
+    }
+
+    /// Return the next unit index that the local data provider will use.
+    #[must_use]
+    pub fn next_unit_index(&self) -> u64 {
+        self.data_provider.next_unit_index()
+    }
+
+    /// Return the next global finalized item index.
+    #[must_use]
+    pub fn next_item_index(&self) -> u64 {
+        self.finalization_handler.next_item_index()
+    }
+
+    /// Return accepted-operation journal state produced from finalized units.
+    #[must_use]
+    pub fn journal(&self) -> &InMemoryFederationJournal {
+        &self.journal
+    }
+
+    /// Return finalized consensus items in local finalization order.
+    #[must_use]
+    pub fn finalized_items(&self) -> &[FederationAlephBftFinalizedItem] {
+        &self.finalized_items
+    }
+
+    /// Return this member's current peer status from finalized operations.
+    #[must_use]
+    pub fn peer_status(
+        &self,
+        federation_id: FederationId,
+        member_id: MemberId,
+    ) -> FederationPeerStatus {
+        FederationPeerStatus::from_journal_with_backend(
+            federation_id,
+            member_id,
+            &self.journal,
+            FederationConsensusBackendKind::AlephBft,
+        )
+    }
+
+    /// Begin a later AlephBFT session for both data-provider and finalizer.
+    pub fn begin_session(&mut self, session: u64) -> Result<()> {
+        self.finalization_handler.begin_session(session)?;
+        self.data_provider.begin_session(session);
+        Ok(())
+    }
+
+    /// Queue one operation envelope for AlephBFT unit construction.
+    pub fn submit_operation(
+        &mut self,
+        envelope: FederationOperationEnvelope,
+    ) -> Result<FederationConsensusItemAdmission> {
+        self.data_provider.submit_operation(envelope)
+    }
+
+    /// Pull the next local unit payload for the AlephBFT data provider.
+    pub fn next_unit_payload(&mut self) -> Result<Option<FederationAlephBftUnitPayload>> {
+        self.data_provider.next_unit_payload()
+    }
+
+    /// Apply one finalized AlephBFT unit to the local accepted-operation journal.
+    pub fn finalize_unit(
+        &mut self,
+        payload: FederationAlephBftUnitPayload,
+    ) -> Result<Vec<FederationSubmitOperationResponse>> {
+        let outcome = self.finalization_handler.finalize_next_unit(payload)?;
+        let mut responses = Vec::new();
+
+        for finalized_item in outcome.items {
+            if let FederationConsensusItem::Operation(envelope) = &finalized_item.item {
+                let response = FederationSubmitOperationResponse::from_outcome(
+                    self.journal.append(envelope.clone())?,
+                );
+                responses.push(response);
+            }
+            self.finalized_items.push(finalized_item);
+        }
+
+        Ok(responses)
+    }
+}
+
 fn ensure_non_zero_consensus_limit(field: &'static str, value: usize) -> Result<()> {
     if value == 0 {
         return Err(FederationError::InvalidConsensusLimit { field, value: 0 });

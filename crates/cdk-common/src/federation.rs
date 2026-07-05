@@ -25,18 +25,18 @@ mod transport;
 mod trusted_dealer;
 
 pub use self::consensus::{
-    FederationAlephBftFinalizationHandler, FederationAlephBftFinalizedItem,
-    FederationAlephBftFinalizedItemStatus, FederationAlephBftFinalizedUnitOutcome,
-    FederationAlephBftUnitBodyHash, FederationAlephBftUnitDataProvider,
-    FederationAlephBftUnitPayload, FederationConsensusBackendAdapter,
-    FederationConsensusBackendAdapterRuntime, FederationConsensusBackendKind,
-    FederationConsensusDefaultItem, FederationConsensusEngine, FederationConsensusItem,
-    FederationConsensusItemAdmission, FederationConsensusItemQueue, FederationConsensusModuleFact,
-    FederationConsensusRuntime, InMemoryFederationConsensus, InMemoryFederationConsensusAdapter,
-    InMemoryFederationConsensusNetwork, FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION,
-    FEDERATION_CONSENSUS_ITEM_VERSION, FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES,
-    FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS, FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
-    FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
+    FederationAlephBftConsensusAdapter, FederationAlephBftFinalizationHandler,
+    FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
+    FederationAlephBftFinalizedUnitOutcome, FederationAlephBftUnitBodyHash,
+    FederationAlephBftUnitDataProvider, FederationAlephBftUnitPayload,
+    FederationConsensusBackendAdapter, FederationConsensusBackendAdapterRuntime,
+    FederationConsensusBackendKind, FederationConsensusDefaultItem, FederationConsensusEngine,
+    FederationConsensusItem, FederationConsensusItemAdmission, FederationConsensusItemQueue,
+    FederationConsensusModuleFact, FederationConsensusRuntime, InMemoryFederationConsensus,
+    InMemoryFederationConsensusAdapter, InMemoryFederationConsensusNetwork,
+    FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION, FEDERATION_CONSENSUS_ITEM_VERSION,
+    FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES, FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
+    FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES, FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
 };
 pub use self::journal::{
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,

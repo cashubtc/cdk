@@ -516,14 +516,19 @@ Architecture checklist:
   and batches items without busy loops. The synchronous
   `FederationAlephBftUnitDataProvider` primitive now performs bounded,
   byte-limited, duplicate-aware unit construction; the production async
-  AlephBFT loop still needs to call it.
+  AlephBFT loop still needs to call it. `FederationAlephBftConsensusAdapter`
+  now wires the primitive to the CDK-side operation submission boundary so tests
+  can verify queued operations become canonical unit payloads.
 - [ ] Add a Fedimint-like finalization handler that converts finalized AlephBFT
   units into an ordered stream consumed by exactly one deterministic CDK apply
   loop. The `FederationAlephBftFinalizationHandler` primitive now verifies
   finalized unit payloads, assigns accepted item indexes, preserves
   session/unit metadata, rejects wrong federation/session/replayed units, and
   flags duplicate operation IDs; the production AlephBFT adapter still needs to
-  feed this stream into the durable journal/apply loop.
+  feed this stream into the durable journal/apply loop. The current
+  `FederationAlephBftConsensusAdapter` accepts externally finalized units,
+  validates them, appends operation outcomes to the in-memory accepted-operation
+  journal, and records finalized item metadata for the next persistence slice.
 - [ ] Store accepted session number, item index, operation hash, operation
   outcome hash, state digest, and signed session outcome in the federation
   journal before considering an item durable.

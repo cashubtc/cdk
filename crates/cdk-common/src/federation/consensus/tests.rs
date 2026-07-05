@@ -865,6 +865,171 @@ fn aleph_bft_finalization_handler_advances_to_later_sessions() {
 }
 
 #[test]
+fn aleph_bft_consensus_adapter_builds_units_and_applies_finalized_operations() {
+    let federation_id = federation_id(13);
+    let first = mint_envelope(
+        federation_id,
+        "quote-1",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let first_id = first.operation_id().expect("first operation id");
+    let second = mint_envelope(
+        federation_id,
+        "quote-2",
+        "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+    );
+    let second_id = second.operation_id().expect("second operation id");
+    let mut adapter = FederationAlephBftConsensusAdapter::new(federation_id, member_id_value(1), 0);
+
+    assert_eq!(
+        adapter.submit_operation(first).expect("submit first"),
+        FederationConsensusItemAdmission::Accepted
+    );
+    assert_eq!(
+        adapter.submit_operation(second).expect("submit second"),
+        FederationConsensusItemAdmission::Accepted
+    );
+    assert_eq!(
+        adapter.backend_kind(),
+        FederationConsensusBackendKind::AlephBft
+    );
+    assert_eq!(adapter.queued_len(), 2);
+
+    let unit = adapter
+        .next_unit_payload()
+        .expect("next unit")
+        .expect("unit present");
+    assert_eq!(unit.submitting_member, member_id_value(1));
+    assert_eq!(unit.session, 0);
+    assert_eq!(unit.unit_index, 0);
+    assert_eq!(unit.operation_ids, vec![first_id, second_id]);
+    assert_eq!(adapter.queued_len(), 0);
+    assert_eq!(adapter.next_unit_index(), 1);
+
+    let responses = adapter.finalize_unit(unit).expect("finalize unit");
+    assert_eq!(responses.len(), 2);
+    assert_eq!(responses[0].operation_id, first_id);
+    assert_eq!(responses[0].outcome.entry().index, 0);
+    assert_eq!(responses[1].operation_id, second_id);
+    assert_eq!(responses[1].outcome.entry().index, 1);
+    assert_eq!(adapter.journal().len(), 2);
+    assert_eq!(adapter.finalized_items().len(), 2);
+    assert_eq!(
+        adapter
+            .finalized_items()
+            .iter()
+            .map(|item| item.operation_id)
+            .collect::<Vec<_>>(),
+        vec![Some(first_id), Some(second_id)]
+    );
+    assert_eq!(
+        adapter
+            .peer_status(federation_id, member_id_value(1))
+            .consensus_backend,
+        FederationConsensusBackendKind::AlephBft
+    );
+}
+
+#[test]
+fn aleph_bft_consensus_adapter_marks_duplicate_finalized_operations_idempotently() {
+    let federation_id = federation_id(13);
+    let envelope = mint_envelope(
+        federation_id,
+        "quote-1",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let operation_id = envelope.operation_id().expect("operation id");
+    let first_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        0,
+        0,
+        vec![FederationConsensusItem::operation(envelope.clone())],
+    )
+    .expect("first unit");
+    let duplicate_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(3),
+        0,
+        0,
+        vec![FederationConsensusItem::operation(envelope)],
+    )
+    .expect("duplicate unit");
+    let mut adapter = FederationAlephBftConsensusAdapter::new(federation_id, member_id_value(1), 0);
+
+    let first_response = adapter
+        .finalize_unit(first_unit)
+        .expect("first finalization");
+    let duplicate_response = adapter
+        .finalize_unit(duplicate_unit)
+        .expect("duplicate finalization");
+
+    assert_eq!(first_response.len(), 1);
+    assert_eq!(first_response[0].outcome.entry().index, 0);
+    assert_eq!(duplicate_response.len(), 1);
+    assert_eq!(duplicate_response[0].operation_id, operation_id);
+    assert_eq!(duplicate_response[0].outcome.entry().index, 0);
+    assert_eq!(adapter.journal().len(), 1);
+    assert_eq!(
+        adapter.finalized_items()[1].status,
+        FederationAlephBftFinalizedItemStatus::DuplicateOperation
+    );
+}
+
+#[test]
+fn aleph_bft_consensus_adapter_rejects_invalid_finalized_units_before_journal_append() {
+    let federation = federation_id(13);
+    let wrong_federation = federation_id(14);
+    let wrong_federation_unit =
+        FederationAlephBftUnitPayload::new(wrong_federation, member_id_value(2), 0, 0, Vec::new())
+            .expect("wrong federation unit");
+    let mut tampered_unit =
+        FederationAlephBftUnitPayload::new(federation, member_id_value(2), 0, 0, Vec::new())
+            .expect("tampered unit");
+    tampered_unit.body_hash = FederationAlephBftUnitBodyHash::from_bytes([3; 32]);
+    let mut adapter = FederationAlephBftConsensusAdapter::new(federation, member_id_value(1), 0);
+
+    assert!(matches!(
+        adapter.finalize_unit(wrong_federation_unit),
+        Err(FederationError::FederationIdMismatch { .. })
+    ));
+    assert!(matches!(
+        adapter.finalize_unit(tampered_unit),
+        Err(FederationError::AlephBftUnitBodyHashMismatch { .. })
+    ));
+    assert_eq!(adapter.journal().len(), 0);
+    assert!(adapter.finalized_items().is_empty());
+}
+
+#[test]
+fn aleph_bft_consensus_adapter_advances_sessions_for_units_and_finalization() {
+    let federation_id = federation_id(13);
+    let mut adapter = FederationAlephBftConsensusAdapter::new(federation_id, member_id_value(1), 0);
+    adapter.begin_session(1).expect("begin next session");
+    assert_eq!(adapter.session(), 1);
+    assert_eq!(adapter.next_unit_index(), 0);
+
+    let envelope = mint_envelope(
+        federation_id,
+        "quote-session-1",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let operation_id = envelope.operation_id().expect("operation id");
+    adapter
+        .submit_operation(envelope)
+        .expect("submit operation in session 1");
+    let unit = adapter
+        .next_unit_payload()
+        .expect("next unit")
+        .expect("unit present");
+
+    assert_eq!(unit.session, 1);
+    assert_eq!(unit.unit_index, 0);
+    assert_eq!(unit.operation_ids, vec![operation_id]);
+    assert_eq!(adapter.finalize_unit(unit).expect("finalize").len(), 1);
+}
+
+#[test]
 fn multi_node_engine_converges_with_reordered_duplicate_delayed_messages() {
     let federation_id = federation_id(13);
     let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
