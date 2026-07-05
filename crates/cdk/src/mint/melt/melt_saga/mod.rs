@@ -707,6 +707,27 @@ impl MeltSaga<SetupComplete> {
         })))
     }
 
+    #[cfg(feature = "federation")]
+    pub async fn make_payment_if_elected(
+        self,
+        settlement: SettlementDecision,
+        should_attempt_external_payment: bool,
+    ) -> Result<PaymentOutcome, Error> {
+        match settlement {
+            SettlementDecision::RequiresExternalPayment if !should_attempt_external_payment => {
+                tracing::info!(
+                    "Federation member reserved melt quote {} and deferred external payment to the elected member",
+                    self.state_data.quote.id
+                );
+                Ok(PaymentOutcome::Pending {
+                    #[cfg(feature = "prometheus")]
+                    metrics: self.metrics,
+                })
+            }
+            settlement => self.make_payment(settlement).await,
+        }
+    }
+
     fn handle_internal_payment(&self, amount: Amount<CurrencyUnit>) -> MakePaymentResponse {
         tracing::info!(
             "Payment settled internally for {} {}",

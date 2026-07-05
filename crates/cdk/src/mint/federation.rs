@@ -106,6 +106,35 @@ impl FederationRuntimeConfig {
             .any(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
     }
 
+    pub(crate) fn elected_melt_payment_member(
+        &self,
+        operation_id: FederationOperationId,
+    ) -> MemberId {
+        let members = self
+            .public_config
+            .members
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        let operation_bytes = operation_id.to_bytes();
+        let mut selector_bytes = [0_u8; 8];
+        selector_bytes.copy_from_slice(&operation_bytes[..8]);
+        let selector = u64::from_be_bytes(selector_bytes);
+        let index = (selector % members.len() as u64) as usize;
+        members[index]
+    }
+
+    pub(crate) fn should_attempt_melt_payment(&self, operation_id: FederationOperationId) -> bool {
+        let policy = *self
+            .public_config
+            .payment_verification_policy(FederationPaymentObservationContext::MeltQuote);
+        if policy.permits_single_observation_finality() {
+            return true;
+        }
+
+        self.elected_melt_payment_member(operation_id) == self.member_id()
+    }
+
     /// Return a new runtime config with a replaced public config.
     pub fn with_public_config(&self, public_config: FederationConfig) -> Result<Self, Error> {
         Self::new_with_consensus_backend(
@@ -1927,6 +1956,7 @@ mod tests {
     use std::collections::{BTreeMap, HashMap, HashSet};
     use std::pin::Pin;
     use std::str::FromStr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     use async_trait::async_trait;
@@ -1941,7 +1971,7 @@ mod tests {
         generate_trusted_dealer_configs, FederatedKeyset, FederationError, FederationJournalEntry,
         FederationKeysetRotationOperation, FederationMeltQuotePaymentObservation,
         FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
-        FederationOperationEnvelope, FederationOperationStatus,
+        FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
         FederationPaymentObservationContext, FederationPaymentObservationPolicy,
         FederationPaymentObservationQuarantineReason, FederationPaymentTrustModel,
         InMemoryFederationConsensus, InMemoryFederationJournal, MemberId, ThresholdParams,
@@ -2343,6 +2373,81 @@ mod tests {
         }
     }
 
+    struct CountingBackendAgnosticPaymentProcessor {
+        make_payment_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl MintPayment for CountingBackendAgnosticPaymentProcessor {
+        type Err = payment::Error;
+
+        async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+            BackendAgnosticPaymentProcessor.get_settings().await
+        }
+
+        async fn create_incoming_payment_request(
+            &self,
+            options: IncomingPaymentOptions,
+        ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+            BackendAgnosticPaymentProcessor
+                .create_incoming_payment_request(options)
+                .await
+        }
+
+        async fn get_payment_quote(
+            &self,
+            unit: &CurrencyUnit,
+            options: OutgoingPaymentOptions,
+        ) -> Result<PaymentQuoteResponse, Self::Err> {
+            BackendAgnosticPaymentProcessor
+                .get_payment_quote(unit, options)
+                .await
+        }
+
+        async fn make_payment(
+            &self,
+            unit: &CurrencyUnit,
+            options: OutgoingPaymentOptions,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            self.make_payment_calls.fetch_add(1, Ordering::Relaxed);
+            BackendAgnosticPaymentProcessor
+                .make_payment(unit, options)
+                .await
+        }
+
+        async fn wait_payment_event(
+            &self,
+        ) -> Result<Pin<Box<dyn futures::Stream<Item = Event> + Send>>, Self::Err> {
+            BackendAgnosticPaymentProcessor.wait_payment_event().await
+        }
+
+        fn is_payment_event_stream_active(&self) -> bool {
+            BackendAgnosticPaymentProcessor.is_payment_event_stream_active()
+        }
+
+        fn cancel_payment_event_stream(&self) {
+            BackendAgnosticPaymentProcessor.cancel_payment_event_stream();
+        }
+
+        async fn check_incoming_payment_status(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+            BackendAgnosticPaymentProcessor
+                .check_incoming_payment_status(payment_identifier)
+                .await
+        }
+
+        async fn check_outgoing_payment(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            BackendAgnosticPaymentProcessor
+                .check_outgoing_payment(payment_identifier)
+                .await
+        }
+    }
+
     async fn federated_test_mint_with_backend_agnostic_payment(
         runtime_config: FederationRuntimeConfig,
     ) -> (Mint, Arc<MintSqliteDatabase>) {
@@ -2431,6 +2536,12 @@ mod tests {
                 failure_reason: fixture.failure_reason.map(str::to_string),
             },
         ))
+    }
+
+    fn operation_id_with_selector(selector: u64) -> FederationOperationId {
+        let mut bytes = [0; 32];
+        bytes[..8].copy_from_slice(&selector.to_be_bytes());
+        FederationOperationId::from_bytes(bytes)
     }
 
     fn pending_melt_quote_request(amount_msat: u64) -> MeltQuoteRequest {
@@ -4450,6 +4561,88 @@ mod tests {
             err.to_string().contains("quarantined"),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn real_policy_non_elected_melt_member_reserves_without_payment_attempt() {
+        let policy = FederationPaymentObservationPolicy::member_quorum(
+            2,
+            FederationPaymentTrustModel::SharedBackendReadOnly,
+        );
+        let runtime_config = runtime_config_with_payment_policy(policy);
+        let operation_id = operation_id_with_selector(1);
+        assert_eq!(
+            runtime_config.elected_melt_payment_member(operation_id),
+            MemberId::new(2).expect("member two")
+        );
+        assert!(!runtime_config.should_attempt_melt_payment(operation_id));
+
+        let make_payment_calls = Arc::new(AtomicUsize::new(0));
+        let payment_processor = Arc::new(CountingBackendAgnosticPaymentProcessor {
+            make_payment_calls: Arc::clone(&make_payment_calls),
+        });
+        let (mint, localstore) =
+            federated_test_mint_with_payment_processor(runtime_config.clone(), payment_processor)
+                .await;
+        let quote = QuoteId::new();
+        mint.get_federation_melt_quote(quote.clone(), pending_melt_quote_request(1_000))
+            .await
+            .expect("federation melt quote");
+        let input_ys;
+        let request = {
+            let proofs = vec![
+                proof_for_runtime(&runtime_config, "non-elected-melt-input-one"),
+                proof_for_runtime(&runtime_config, "non-elected-melt-input-two"),
+            ];
+            input_ys = proofs.ys().expect("input ys");
+            MeltRequest::new(quote.clone(), proofs, None)
+        };
+
+        let response = mint
+            .melt_federation(&request, operation_id)
+            .await
+            .expect("non-elected federation melt reserve");
+
+        assert_eq!(response.state(), MeltQuoteState::Pending);
+        assert_eq!(make_payment_calls.load(Ordering::Relaxed), 0);
+        assert!(
+            localstore
+                .get_melt_saga_by_quote_id(&quote)
+                .await
+                .expect("melt saga lookup")
+                .is_some(),
+            "non-elected member should keep pending saga for later payment observation"
+        );
+        assert_eq!(
+            localstore
+                .get_proofs_states(&input_ys)
+                .await
+                .expect("proof states"),
+            vec![Some(State::Pending), Some(State::Pending)]
+        );
+    }
+
+    #[test]
+    fn melt_payment_actor_selection_is_deterministic_for_real_policies() {
+        let policy = FederationPaymentObservationPolicy::member_quorum(
+            2,
+            FederationPaymentTrustModel::SharedBackendReadOnly,
+        );
+        let real_policy_config = runtime_config_with_payment_policy(policy);
+        let member_one_operation = operation_id_with_selector(0);
+        let member_two_operation = operation_id_with_selector(1);
+
+        assert_eq!(
+            real_policy_config.elected_melt_payment_member(member_one_operation),
+            MemberId::new(1).expect("member one")
+        );
+        assert!(real_policy_config.should_attempt_melt_payment(member_one_operation));
+        assert_eq!(
+            real_policy_config.elected_melt_payment_member(member_two_operation),
+            MemberId::new(2).expect("member two")
+        );
+        assert!(!real_policy_config.should_attempt_melt_payment(member_two_operation));
+        assert!(runtime_config().should_attempt_melt_payment(member_two_operation));
     }
 
     #[tokio::test]

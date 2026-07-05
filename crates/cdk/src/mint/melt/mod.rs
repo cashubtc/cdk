@@ -1199,10 +1199,13 @@ impl Mint {
         melt_request: &MeltRequest<QuoteId>,
         federation_operation_id: FederationOperationId,
     ) -> Result<MeltQuoteResponse<QuoteId>, Error> {
-        self.effective_federation_config()
+        let federation_config = self
+            .effective_federation_config()
             .await?
-            .ok_or(Error::Internal)?
-            .validate_melt_change_outputs(melt_request)?;
+            .ok_or(Error::Internal)?;
+        federation_config.validate_melt_change_outputs(melt_request)?;
+        let should_attempt_external_payment =
+            federation_config.should_attempt_melt_payment(federation_operation_id);
 
         if let Some(outputs) = melt_request.outputs() {
             let outputs_count = outputs.len();
@@ -1252,7 +1255,10 @@ impl Mint {
             .await?;
         let (setup_saga, settlement) = setup_saga.attempt_internal_settlement(melt_request).await?;
 
-        match setup_saga.make_payment(settlement).await? {
+        match setup_saga
+            .make_payment_if_elected(settlement, should_attempt_external_payment)
+            .await?
+        {
             PaymentOutcome::Confirmed(payment_saga) => {
                 payment_saga
                     .finalize_federation(federation_operation_id)
