@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 408 checked items and 105 remaining items. Wallet federation member-call policy is explicit, payment event streams back off after ending, and Axum federation peer-sync policy now has configurable request timeouts, operation submission timeout, catch-up limit, digest recheck timing, and session-outcome evidence chunk size.</span>
+          <span class="value">The implementation plan audit now tracks 434 checked items and 153 remaining items. Private REST status, local-status, and journal catch-up responses now rebuild their peer view from the durable mint database journal instead of trusting the in-memory runtime journal.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: configure federation peer sync policy</span>
+          <span class="value">feat: serve federation peer reads from durable journal</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`FederationPeerSyncConfig` preserves existing defaults while allowing tests and operators to tune peer sync interval, peer request timeout, operation submission timeout, catch-up limit, digest recheck attempts/delay, and session-outcome evidence chunk size.</span>
+          <span class="value">Private REST peer status and catch-up serving now validate persisted federation journal entries, derive order status from durable rows, compute materialized digests from those rows, and keep signed session-outcome evidence independent of a volatile runtime journal.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue production cleanup by replacing remaining in-memory federation status and catch-up reads with durable database-backed reads, then rerun larger roster and Postgres-backed live smokes.</span>
+          <span class="value">Add explicit crash-recovery tests for accepted-but-unapplied federation operations, then continue startup replay and larger roster/Postgres-backed live smokes.</span>
         </div>
       </aside>
     </header>
@@ -541,7 +541,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 408 checked entries and 105 remaining entries. The
+          checklist has 434 checked entries and 153 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -782,7 +782,11 @@
         <div class="stack">
           <article class="item">
             <h3>Plan audit refreshed</h3>
-            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 408 checked items and 105 explicit next items.</p>
+            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 434 checked items and 153 explicit next items.</p>
+          </article>
+          <article class="item">
+            <h3>Durable private REST reads ready</h3>
+            <p>Private REST status, local-status, and journal catch-up routes now rebuild their accepted-order view from persisted federation journal rows, so peer read responses survive a cleared runtime journal.</p>
           </article>
           <article class="item">
             <h3>Peer sync policy configurable</h3>
@@ -1009,6 +1013,10 @@
           <article class="item">
             <h3>Peer sync retry knobs are explicit</h3>
             <p>Hardcoded private REST peer-sync waits have been collected into a validated policy object, making slow-peer, catch-up, and digest recheck behavior testable without changing default production behavior.</p>
+          </article>
+          <article class="item">
+            <h3>Volatile peer reads removed</h3>
+            <p>A member that has durable accepted-operation rows no longer depends on the in-memory consensus journal to answer private status, local-status, or catch-up requests, reducing the restart/catch-up surface that can drift after a runtime reset.</p>
           </article>
           <article class="item">
             <h3>Scope clarified</h3>
@@ -2860,6 +2868,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`FederationPeerSyncConfig` now validates private REST peer request timeout, operation submission timeout, catch-up limit, digest recheck attempts and delay, session-outcome evidence chunk size, and peer sync interval. Focused tests passed invalid config rejection, configured peer request timeout, configured operation submission timeout, configured catch-up request limit, configured digest recheck delay, and configured session-outcome evidence chunking.</td>
               <td>Expose these policy values through mintd config once the production cleanup pass settles the final operator-facing names and defaults.</td>
+            </tr>
+            <tr>
+              <td>Durable private REST peer reads</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation private_status_routes_read_persisted_journal_after_runtime_reset -- --test-threads 1` and `cargo test -p cdk-axum --features federation private_journal_route_returns_signed_session_outcome -- --test-threads 1` proved private status, local-status, and signed journal catch-up responses still report persisted accepted operations after the in-memory runtime journal is reset. `cargo test -p cdk-axum --features federation private_ -- --test-threads 1` passed the wider private route cluster.</td>
+              <td>Add an explicit accepted-but-unapplied crash-recovery test so startup replay proves the next recovery boundary as strongly as the read-path reset tests now do.</td>
             </tr>
             <tr>
               <td>Wallet federation auth state</td>

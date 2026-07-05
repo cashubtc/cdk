@@ -12,11 +12,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 use cdk::federation::{
-    FederatedKeyset, FederationConfig, FederationConsensusEngine, FederationConsensusRuntime,
-    FederationDkgCommitmentRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
-    FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest, FederationError,
-    FederationId, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationJournalDigest, FederationJournalEntry, FederationMaterializedStateRow,
+    FederatedKeyset, FederationConfig, FederationConsensusEngine, FederationDkgCommitmentRequest,
+    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
+    FederationDkgTranscriptSignatureRequest, FederationError, FederationId,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalDigest,
+    FederationJournalEntry, FederationMaterializedStateRow,
     FederationMaterializedStateRowFingerprint, FederationMaterializedStateSnapshot,
     FederationOperation, FederationOperationEnvelope, FederationOperationId,
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
@@ -24,8 +24,8 @@ use cdk::federation::{
     FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
     FederationRestSequenceTracker, FederationSessionOutcome, FederationSessionOutcomeQuorum,
     FederationSignedRequest, FederationStateDigest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, MemberConfigPrivate, MemberConfigPublic, MemberId,
-    FEDERATION_REST_API_VERSION,
+    FederationSubmitOperationResponse, InMemoryFederationJournal, MemberConfigPrivate,
+    MemberConfigPublic, MemberId, FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, Transport};
 use serde::de::DeserializeOwned;
@@ -36,7 +36,6 @@ use tracing::instrument;
 
 use crate::MintState;
 
-type ConsensusHandle = std::sync::Arc<tokio::sync::Mutex<FederationConsensusRuntime>>;
 type SequenceHandle = std::sync::Arc<tokio::sync::Mutex<FederationRestSequenceTracker>>;
 
 const DEFAULT_FEDERATION_PEER_SYNC_INTERVAL: Duration = Duration::from_secs(5);
@@ -45,6 +44,7 @@ const DEFAULT_FEDERATION_OPERATION_SUBMISSION_TIMEOUT: Duration = Duration::from
 const FEDERATION_DISABLE_PEER_SYNC_ENV_VAR: &str = "CDK_FEDERATION_DISABLE_PEER_SYNC";
 const DEFAULT_FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_SIZE: usize = 1000;
 const DEFAULT_FEDERATION_CATCH_UP_LIMIT: u16 = 100;
+const MAX_FEDERATION_CATCH_UP_LIMIT: u16 = 1000;
 const DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_ATTEMPTS: usize = 20;
 const DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_DELAY: Duration = Duration::from_millis(100);
 static FEDERATION_REST_SEQUENCE_SEED: AtomicU64 = AtomicU64::new(0);
@@ -746,22 +746,13 @@ async fn post_journal(
         .persist_federation_sequence(verified.sender, verified.sequence)
         .await
         .map_err(cdk_error_response)?;
-    let consensus = federation_consensus(&state)?;
     let private_config = federation_runtime_config(&state)?.private_config().clone();
     tracing::debug!(
         next_index = payload.payload.next_index,
         limit = ?payload.payload.limit,
         "Received federation journal catch-up request"
     );
-    let (mut response, entries) = {
-        let consensus = consensus.lock().await;
-        (
-            consensus
-                .catch_up_checked(&payload.payload)
-                .map_err(federation_error_response)?,
-            consensus.journal().entries().to_vec(),
-        )
-    };
+    let (mut response, entries) = durable_catch_up_response(&state, &payload.payload).await?;
     response.state_digest = materialized_state_digest(&state, &entries)
         .await
         .map_err(anyhow_response)?;
@@ -769,6 +760,47 @@ async fn post_journal(
         .with_signed_session_outcome(&private_config)
         .map_err(federation_error_response)?;
     Ok(Json(response))
+}
+
+async fn durable_catch_up_response(
+    state: &MintState,
+    request: &FederationJournalCatchUpRequest,
+) -> Result<
+    (
+        FederationJournalCatchUpResponse,
+        Vec<FederationJournalEntry>,
+    ),
+    Response,
+> {
+    let runtime_config = federation_runtime_config(state)?;
+    let journal = durable_federation_journal(state)
+        .await
+        .map_err(anyhow_response)?;
+
+    if let Some(known_order_digest) = request.known_order_digest {
+        if let Some(expected_digest) = journal.order_digest_before(request.next_index) {
+            if expected_digest != known_order_digest {
+                return Err(federation_error_response(
+                    FederationError::CatchUpDigestMismatch {
+                        index: request.next_index,
+                        expected: expected_digest,
+                        found: known_order_digest,
+                    },
+                ));
+            }
+        }
+    }
+
+    let response = FederationJournalCatchUpResponse::from_journal(
+        runtime_config.federation_id(),
+        &journal,
+        request,
+        DEFAULT_FEDERATION_CATCH_UP_LIMIT,
+        MAX_FEDERATION_CATCH_UP_LIMIT,
+    );
+    let entries = journal.entries().to_vec();
+
+    Ok((response, entries))
 }
 
 async fn verify_federation_request<T>(
@@ -1165,13 +1197,6 @@ fn federation_runtime_config(
     state
         .mint
         .federation_config()
-        .ok_or_else(federation_not_configured)
-}
-
-fn federation_consensus(state: &MintState) -> Result<ConsensusHandle, Response> {
-    state
-        .federation_consensus
-        .clone()
         .ok_or_else(federation_not_configured)
 }
 
@@ -1827,18 +1852,30 @@ async fn local_peer_status_with_materialized_rows(
 async fn local_peer_status_and_entries(
     state: &MintState,
 ) -> anyhow::Result<(FederationPeerStatus, Vec<FederationJournalEntry>)> {
-    let consensus = state
-        .federation_consensus
-        .as_ref()
+    let runtime_config = state
+        .mint
+        .federation_config()
         .ok_or_else(|| anyhow::anyhow!("mint is not configured as a federation member"))?;
-    let (status, entries) = {
-        let consensus = consensus.lock().await;
-        (
-            consensus.peer_status(),
-            consensus.journal().entries().to_vec(),
-        )
-    };
+    let journal = durable_federation_journal(state).await?;
+    let status = FederationPeerStatus::from_journal_with_backend(
+        runtime_config.federation_id(),
+        runtime_config.member_id(),
+        &journal,
+        runtime_config.consensus_backend(),
+    );
+    let entries = journal.entries().to_vec();
     Ok((status, entries))
+}
+
+async fn durable_federation_journal(
+    state: &MintState,
+) -> anyhow::Result<InMemoryFederationJournal> {
+    let entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await?;
+    Ok(InMemoryFederationJournal::from_entries(entries)?)
 }
 
 async fn materialized_state_digest(
@@ -2186,10 +2223,11 @@ mod tests {
     use bip39::Mnemonic;
     use cdk::cdk_payment::PaymentIdentifier;
     use cdk::federation::{
-        generate_trusted_dealer_configs, FederationDkgSetupMethod, FederationDkgTranscript,
-        FederationDkgTranscriptSignature, FederationKeysetRotationOperation,
-        FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-        FederationOperationKind, FederationOperationStatus, FederationPaymentObservationPolicy,
+        generate_trusted_dealer_configs, FederationConsensusRuntime, FederationDkgSetupMethod,
+        FederationDkgTranscript, FederationDkgTranscriptSignature,
+        FederationKeysetRotationOperation, FederationMintQuotePaymentObservation,
+        FederationOperation, FederationOperationEnvelope, FederationOperationKind,
+        FederationOperationStatus, FederationPaymentObservationPolicy,
         FederationPaymentObservationQuarantineReason, FederationPaymentObservationReportAction,
         FederationPaymentTrustModel, FederationRestoreOperation, InMemoryFederationConsensus,
         MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
@@ -3000,6 +3038,18 @@ mod tests {
             .await
             .peer_status()
             .operation_count
+    }
+
+    fn reset_federation_runtime_journal(state: &mut MintState) {
+        let runtime_config = state.mint.federation_config().expect("federation config");
+        state.federation_consensus = Some(Arc::new(tokio::sync::Mutex::new(
+            FederationConsensusRuntime::with_backend(
+                runtime_config.consensus_backend(),
+                runtime_config.federation_id(),
+                runtime_config.member_id(),
+            )
+            .expect("empty federation runtime"),
+        )));
     }
 
     async fn peer_status_with_materialized_digest(
@@ -7353,6 +7403,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn private_status_routes_read_persisted_journal_after_runtime_reset() {
+        let (mut state, public_config, peer_private) = federation_route_state().await;
+        let local_member = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .member_id();
+        let envelope = restore_envelope(
+            public_config.federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        let operation_id = envelope.operation_id().expect("operation id");
+        state
+            .submit_federation_envelope(envelope)
+            .await
+            .expect("submit restore");
+        let entries = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal entries");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].operation_id, operation_id);
+
+        reset_federation_runtime_journal(&mut state);
+        assert_eq!(consensus_operation_count(&state).await, 0);
+
+        let status_request = signed_status_request(&public_config, &peer_private, local_member, 1);
+        let status = post_status(State(state.clone()), Json(status_request))
+            .await
+            .expect("status response")
+            .0;
+        assert_eq!(status.operation_count, 1);
+        assert_eq!(status.latest_index, Some(0));
+        assert_eq!(status.latest_order_digest, entries[0].order_digest);
+
+        let local_status_request =
+            signed_status_request(&public_config, &peer_private, local_member, 2);
+        let local_status = post_local_status(State(state), Json(local_status_request))
+            .await
+            .expect("local status response")
+            .0;
+        assert_eq!(local_status.peer_status.operation_count, 1);
+        assert_eq!(local_status.peer_status.latest_index, Some(0));
+        assert_eq!(
+            local_status.peer_status.latest_order_digest,
+            entries[0].order_digest
+        );
+        assert!(!local_status.materialized_state_rows.is_empty());
+    }
+
+    #[tokio::test]
     async fn private_local_status_route_reports_lagging_sync_state() {
         let (state, public_config, peer_private) = federation_route_state().await;
         let local_member = state
@@ -7406,7 +7509,7 @@ mod tests {
 
     #[tokio::test]
     async fn private_journal_route_returns_signed_session_outcome() {
-        let (state, public_config, peer_private) = federation_route_state().await;
+        let (mut state, public_config, peer_private) = federation_route_state().await;
         let local_member = state
             .mint
             .federation_config()
@@ -7419,6 +7522,9 @@ mod tests {
             ))
             .await
             .expect("submit restore");
+        reset_federation_runtime_journal(&mut state);
+        assert_eq!(consensus_operation_count(&state).await, 0);
+
         let request = signed_catch_up_request(
             &public_config,
             &peer_private,
