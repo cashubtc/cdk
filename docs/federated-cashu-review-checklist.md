@@ -70,6 +70,9 @@ If any answer is yes, review the relevant sections below before approving.
   idempotent replay, conflicting replay, and standalone mode compatibility.
 - Indexes must exist for hot lookups by quote ID, proof Y, blinded message,
   operation ID, journal index, and member/session identifiers when applicable.
+- SQL-backed federation writes that touch multiple resources must follow the
+  deterministic lock ordering rules in
+  `docs/federated-cashu-sql-lock-ordering.md`.
 - If signature shares move into a dedicated table, reviewers must be able to
   trace every stored share to operation hash, output index, member ID, amount,
   keyset ID, and blinded message.

@@ -953,7 +953,7 @@ Implementation checklist:
 - [ ] Decide whether Redb is wallet-only and therefore out of scope for mint federation.
 - [x] Keep migrations additive and compatible with standalone mode.
 - [x] Conflict keys and concurrent request stress tests exist.
-- [ ] Document SQL lock ordering rules for all conflict keys to avoid deadlocks.
+- [x] Document SQL lock ordering rules for all conflict keys to avoid deadlocks.
 - [x] Add federation journal/payment/session indexes for operation/session/payment hot paths.
 - [ ] Review and add exact indexes for quote ID, proof Y, blinded message, and dedicated signature-share rows after the final federation schema settles.
 

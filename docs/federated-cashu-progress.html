@@ -514,20 +514,21 @@
           <a class="link-pill" href="./federated-cashu-rfc.md">Milestone 0 RFC</a>
           <a class="link-pill" href="./federated-cashu-review-checklist.md">Review checklist</a>
           <a class="link-pill" href="./federated-cashu-payment-trust-model.md">Payment trust model</a>
+          <a class="link-pill" href="./federated-cashu-sql-lock-ordering.md">SQL lock ordering</a>
         </div>
       </div>
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 480 checked items and 107 remaining items. Failed private REST peer sync attempts now reconnect with per-peer exponential backoff.</span>
+          <span class="value">The implementation plan audit now tracks 481 checked items and 106 remaining items. SQL-backed federation writes now have documented conflict-key lock ordering rules.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: back off federation peer reconnects</span>
+          <span class="value">docs: document federation SQL lock ordering</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Added reconnect initial/max backoff policy, per-peer retry state, and paused-time tests proving failed peer sync attempts are skipped until their backoff expires and reset after success.</span>
+          <span class="value">Added a SQL lock-ordering contract for operation IDs, conflict keys, materialized quote/proof rows, and future federation signature-share rows.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -542,7 +543,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 480 checked entries and 107 remaining entries. The
+          checklist has 481 checked entries and 106 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -1550,6 +1551,10 @@
           <article class="item">
             <h3>Concurrent journal writes covered</h3>
             <p>A shared storage regression now persists a valid consensus journal from concurrent writer tasks, verifies ordered readback and catch-up ranges in SQLite, and wires the same scenario into Postgres for live-service execution.</p>
+          </article>
+          <article class="item">
+            <h3>SQL lock ordering documented</h3>
+            <p>Federation storage now has a checked-in lock ordering contract for operation IDs, canonical conflict-key labels, materialized quote/proof/output rows, and future signature-share rows.</p>
           </article>
           <article class="item">
             <h3>Concurrent federation metadata covered</h3>
@@ -2849,6 +2854,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-sqlite --features "mint federation" federation_journal_concurrent_writes -- --test-threads 1`, `cargo test -p cdk-sqlite --features "mint federation" federation_journal -- --test-threads 1`, `cargo test -p cdk-postgres --features federation federation_journal_concurrent_writes --no-run`, `cargo check -p cdk-sqlite --features "mint federation"`, `cargo check -p cdk-postgres --features federation`, `cargo fmt --all`, and `git diff --check` passed, proving a file-backed SQLite mint database can commit 16 accepted federation journal entries from concurrent writer tasks, then read them back in consensus order and serve catch-up ranges.</td>
               <td>Run the same concurrent journal test against a live Postgres instance, then extend stress coverage to concurrent session-outcome and sequence watermark updates.</td>
+            </tr>
+            <tr>
+              <td>Federation SQL lock ordering</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`docs/federated-cashu-sql-lock-ordering.md` now defines deterministic lock labels for operation IDs, canonical conflict keys, materialized quote/proof/output rows, future signature-share rows, digest-history rows, and member-status rows. `cargo test -p cdk-common --features federation operation_kind_and_keys_cover_core_flows -- --test-threads 1` and `cargo test -p cdk-sqlite --features "mint federation" federation_journal_concurrent_writes -- --test-threads 1` passed.</td>
+              <td>Apply the documented ordering when adding the dedicated `federation_signature_share` table or any SQL-level conflict-key table.</td>
             </tr>
             <tr>
               <td>Concurrent federation metadata storage</td>
