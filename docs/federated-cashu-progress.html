@@ -519,15 +519,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 476 checked items and 111 remaining items. Federated NUT-20 issuance coverage now includes locked batch mint requests.</span>
+          <span class="value">The implementation plan audit now tracks 477 checked items and 110 remaining items. Federation operation fuzzing now covers both envelope decoding and request-conversion projections.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover federated batch nut20 issuance</span>
+          <span class="value">test: fuzz federation request conversion</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Added runtime tests proving federated batch mint accepts valid per-quote NUT-20 signatures and rejects missing or output-mutated signatures before storing any member share.</span>
+          <span class="value">Added a structured federation request-conversion fuzz target that exercises canonical envelope round trips, request transcripts, conflict keys, payment-observation records, quarantine records, and redacted observation reports.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -542,7 +542,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 476 checked entries and 111 remaining entries. The
+          checklist has 477 checked entries and 110 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -814,8 +814,8 @@
             <p>A seeded threshold BLS regression now varies messages, roster sizes, thresholds, and quorum subsets while checking share verification, aggregate signatures, aggregate public keys, and order independence.</p>
           </article>
           <article class="item">
-            <h3>Operation decode fuzzed</h3>
-            <p>Federation operation envelopes now reject unsupported versions before admission or hashing, with a seeded fuzz target covering valid v1, future-version, unknown-type, and truncated payloads.</p>
+            <h3>Operation conversion fuzzed</h3>
+            <p>Federation operation fuzzing now covers both envelope decoding and the conversion projections used by consensus and storage: request transcripts, conflict keys, payment-observation records, quarantine records, and redacted observation reports.</p>
           </article>
           <article class="item">
             <h3>Golden vector pinned</h3>
@@ -3071,10 +3071,10 @@
               <td>Keep future cryptographic changes on this seeded path so threshold quorum aggregation stays reproducible in CI.</td>
             </tr>
             <tr>
-              <td>Federation operation decode fuzzing</td>
+              <td>Federation operation and request-conversion fuzzing</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-common --features federation operation_envelope -- --test-threads 1` passed unsupported-version and malformed-payload decode regressions. `cargo check --manifest-path fuzz/Cargo.toml --bin fuzz_federation_operation` passed after allowing Cargo to fetch the fuzz dependencies needed for the new target.</td>
-              <td>Extend federation fuzzing to request conversion when the remaining operation/request conversion fuzz item is scheduled.</td>
+              <td>`cargo test -p cdk-common --features federation operation_envelope -- --test-threads 1` passed unsupported-version and malformed-payload decode regressions. `cargo check --manifest-path fuzz/Cargo.toml --bin fuzz_federation_operation` and `cargo check --manifest-path fuzz/Cargo.toml --bin fuzz_federation_request_conversion` both passed, covering envelope decode plus structured operation/request-conversion projections.</td>
+              <td>Extend fuzzing again when the dedicated signature-share schema introduces new traceability projections.</td>
             </tr>
             <tr>
               <td>Canonical operation golden vector</td>

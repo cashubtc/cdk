@@ -1144,7 +1144,7 @@ Tests and success criteria:
 
 - [x] Operation IDs are tied to share generation in federation apply paths.
 - [ ] Ensure an independent reviewer can trace every signature share to an accepted operation hash after the signature-share persistence decision is finalized.
-- [ ] Add federation operation fuzz targets for operation decoding and request conversion.
+- [x] Add federation operation fuzz targets for operation decoding and request conversion.
 - [x] Attack regression tests exist.
 - [ ] Re-run and record the full attack regression suite.
 - [x] Code paths appear consensus-gated in federation mode.
