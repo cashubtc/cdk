@@ -515,24 +515,25 @@
           <a class="link-pill" href="./federated-cashu-review-checklist.md">Review checklist</a>
           <a class="link-pill" href="./federated-cashu-payment-trust-model.md">Payment trust model</a>
           <a class="link-pill" href="./federated-cashu-sql-lock-ordering.md">SQL lock ordering</a>
+          <a class="link-pill" href="./federated-cashu-storage-scope.md">Storage scope</a>
         </div>
       </div>
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 481 checked items and 106 remaining items. SQL-backed federation writes now have documented conflict-key lock ordering rules.</span>
+          <span class="value">The implementation plan audit now tracks 482 checked items and 105 remaining items. Redb is explicitly scoped as a wallet-only backend and is not a mint federation storage blocker.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: document federation SQL lock ordering</span>
+          <span class="value">docs: scope redb out of mint federation</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Added a SQL lock-ordering contract for operation IDs, conflict keys, materialized quote/proof rows, and future federation signature-share rows.</span>
+          <span class="value">Recorded that `cdk-redb` implements wallet storage only; federation mint storage remains scoped to mint database backends such as SQLite, Postgres, and in-memory test storage.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with the remaining consensus/storage follow-ups, especially production BFT ordering, dedicated signature-share persistence, and broader storage-backed recovery coverage.</span>
+          <span class="value">Continue with the remaining storage follow-ups that apply to mint backends: exact hot-path indexes, dedicated signature-share persistence, SQLite/Postgres query-plan checks, and broader storage-backed recovery coverage.</span>
         </div>
       </aside>
     </header>
@@ -543,7 +544,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 481 checked entries and 106 remaining entries. The
+          checklist has 482 checked entries and 105 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -782,6 +783,14 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Redb scoped to wallet</h3>
+            <p>`cdk-redb` is documented as a wallet-only backend, so federation mint storage parity is tracked against mint database backends and Redb is not a blocker unless it later grows a mint database implementation.</p>
+          </article>
+          <article class="item">
+            <h3>Peer evidence respects backoff</h3>
+            <p>Private REST peer sync now collects session-outcome evidence only from peers whose sync succeeded in the current round, preventing failed or backing-off peers from being retried through the evidence path every interval.</p>
+          </article>
           <article class="item">
             <h3>Batch NUT-20 covered</h3>
             <p>Federated batch mint issuance now has runtime coverage for locked quotes: valid per-quote NUT-20 signatures issue member shares, while a missing quote signature or a post-signature output mutation fails before any share is persisted.</p>
@@ -2860,6 +2869,18 @@
               <td><span class="status done">Passed</span></td>
               <td>`docs/federated-cashu-sql-lock-ordering.md` now defines deterministic lock labels for operation IDs, canonical conflict keys, materialized quote/proof/output rows, future signature-share rows, digest-history rows, and member-status rows. `cargo test -p cdk-common --features federation operation_kind_and_keys_cover_core_flows -- --test-threads 1` and `cargo test -p cdk-sqlite --features "mint federation" federation_journal_concurrent_writes -- --test-threads 1` passed.</td>
               <td>Apply the documented ordering when adding the dedicated `federation_signature_share` table or any SQL-level conflict-key table.</td>
+            </tr>
+            <tr>
+              <td>Redb federation storage scope</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`docs/federated-cashu-storage-scope.md` records that `cdk-redb` exposes wallet storage only, implements `WalletDatabase`, and does not implement `MintDatabase` or federation mint journal/session/payment/setup storage APIs. `cargo check -p cdk-redb` passed.</td>
+              <td>Revisit Redb only if a future Redb mint database backend is introduced, then require the same federation mint storage and restart/catch-up tests as SQLite and Postgres.</td>
+            </tr>
+            <tr>
+              <td>Peer evidence backoff</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation peer_sync_round_skips_evidence_for_failed_or_backing_off_peer -- --test-threads 1`, `cargo test -p cdk-axum --features federation peer_sync -- --test-threads 1`, and `cargo check -p cdk-axum --features federation,prometheus` passed. The sync loop now avoids `/journal` evidence retries for failed or backing-off peers.</td>
+              <td>Keep evidence collection tied to successful peer sync rounds when adding REST queues, alternative transports, or production consensus backends.</td>
             </tr>
             <tr>
               <td>Concurrent federation metadata storage</td>

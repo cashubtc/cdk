@@ -73,6 +73,9 @@ If any answer is yes, review the relevant sections below before approving.
 - SQL-backed federation writes that touch multiple resources must follow the
   deterministic lock ordering rules in
   `docs/federated-cashu-sql-lock-ordering.md`.
+- Redb remains wallet-only and out of scope for mint federation storage until a
+  future Redb mint backend implements the federation mint storage APIs described
+  in `docs/federated-cashu-storage-scope.md`.
 - If signature shares move into a dedicated table, reviewers must be able to
   trace every stored share to operation hash, output index, member ID, amount,
   keyset ID, and blinded message.
