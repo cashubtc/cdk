@@ -1484,6 +1484,190 @@ mod tests {
     use crate::mint::melt::melt_saga::{MeltSaga, PaymentOutcome};
     use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
 
+    fn source_before_cfg_tests(source: &str) -> &str {
+        source
+            .split_once("\n#[cfg(test)]")
+            .map(|(production, _tests)| production)
+            .expect("source contains cfg(test) marker")
+    }
+
+    fn count_occurrences(source: &str, needle: &str) -> usize {
+        source.match_indices(needle).count()
+    }
+
+    fn assert_occurrences(file: &str, source: &str, needle: &str, expected: usize) {
+        assert_eq!(
+            count_occurrences(source, needle),
+            expected,
+            "{file} must contain exactly {expected} reviewed occurrence(s) of `{needle}`"
+        );
+    }
+
+    #[test]
+    fn direct_signing_paths_are_reviewed_and_allowlisted() {
+        let mint_mod = source_before_cfg_tests(include_str!("mod.rs"));
+        assert_occurrences(
+            "cdk/src/mint/mod.rs",
+            mint_mod,
+            "pub async fn blind_sign(",
+            1,
+        );
+        assert_occurrences(
+            "cdk/src/mint/mod.rs",
+            mint_mod,
+            "self.signatory.blind_sign(blinded_message).await",
+            1,
+        );
+
+        let issue_mint = source_before_cfg_tests(include_str!("issue/mod.rs"));
+        assert_occurrences(
+            "cdk/src/mint/issue/mod.rs",
+            issue_mint,
+            "self.blind_sign(input.outputs().to_vec()).await?",
+            1,
+        );
+
+        let swap_saga = include_str!("swap/swap_saga/mod.rs");
+        assert_occurrences(
+            "cdk/src/mint/swap/swap_saga/mod.rs",
+            swap_saga,
+            ".blind_sign(self.state_data.blinded_messages.clone())",
+            1,
+        );
+
+        let melt_shared = include_str!("melt/shared.rs");
+        assert_occurrences(
+            "cdk/src/mint/melt/shared.rs",
+            melt_shared,
+            "mint.blind_sign(blinded_messages_to_sign.clone()).await?",
+            1,
+        );
+        assert_occurrences(
+            "cdk/src/mint/melt/shared.rs",
+            melt_shared,
+            ".sign_blinded_messages(",
+            1,
+        );
+
+        let federation = source_before_cfg_tests(include_str!("federation.rs"));
+        assert_occurrences(
+            "cdk/src/mint/federation.rs",
+            federation,
+            ".sign_blinded_messages(",
+            2,
+        );
+        assert!(federation.contains("operation_id,\n            input.outputs(),"));
+        assert!(federation.contains("operation_id,\n            request.outputs(),"));
+
+        let auth = source_before_cfg_tests(include_str!("auth/mod.rs"));
+        assert_occurrences(
+            "cdk/src/mint/auth/mod.rs",
+            auth,
+            "pub async fn auth_blind_sign(",
+            1,
+        );
+        assert_occurrences(
+            "cdk/src/mint/auth/mod.rs",
+            auth,
+            ".blind_sign(vec![blinded_message.to_owned()])",
+            1,
+        );
+
+        let issue_auth = include_str!("issue/auth.rs");
+        assert_occurrences(
+            "cdk/src/mint/issue/auth.rs",
+            issue_auth,
+            "self.auth_blind_sign(blinded_message).await?",
+            1,
+        );
+
+        let common_signing = source_before_cfg_tests(include_str!(
+            "../../../cdk-common/src/federation/signing.rs"
+        ));
+        assert_occurrences(
+            "cdk-common/src/federation/signing.rs",
+            common_signing,
+            "pub fn sign_blinded_messages(",
+            1,
+        );
+        assert_occurrences(
+            "cdk-common/src/federation/signing.rs",
+            common_signing,
+            ".blind_sign_share(&blinded_secret)",
+            1,
+        );
+        assert!(common_signing.contains("operation_id,\n                member_id: self.member_id"));
+        assert!(common_signing.contains("operation_id,\n            member_id: self.member_id"));
+
+        let bls = source_before_cfg_tests(include_str!("../../../cashu/src/nuts/nut01/bls.rs"));
+        assert_occurrences(
+            "cashu/src/nuts/nut01/bls.rs",
+            bls,
+            "pub fn blind_sign_share(&self, blinded_message: &BlsG1PublicKey)",
+            1,
+        );
+
+        let signatory_trait =
+            source_before_cfg_tests(include_str!("../../../cdk-signatory/src/signatory.rs"));
+        assert_occurrences(
+            "cdk-signatory/src/signatory.rs",
+            signatory_trait,
+            "async fn blind_sign(",
+            1,
+        );
+
+        let db_signatory =
+            source_before_cfg_tests(include_str!("../../../cdk-signatory/src/db_signatory.rs"));
+        assert_occurrences(
+            "cdk-signatory/src/db_signatory.rs",
+            db_signatory,
+            "async fn blind_sign(",
+            1,
+        );
+
+        let embedded_signatory = include_str!("../../../cdk-signatory/src/embedded.rs");
+        assert_occurrences(
+            "cdk-signatory/src/embedded.rs",
+            embedded_signatory,
+            "handler.blind_sign(blinded_message).await",
+            1,
+        );
+        assert_occurrences(
+            "cdk-signatory/src/embedded.rs",
+            embedded_signatory,
+            "async fn blind_sign(",
+            1,
+        );
+
+        let rpc_server = include_str!("../../../cdk-signatory/src/proto/server.rs");
+        assert_occurrences(
+            "cdk-signatory/src/proto/server.rs",
+            rpc_server,
+            "async fn blind_sign(",
+            1,
+        );
+        assert_occurrences(
+            "cdk-signatory/src/proto/server.rs",
+            rpc_server,
+            "signatory.blind_sign(converted_messages).await",
+            1,
+        );
+
+        let rpc_client = include_str!("../../../cdk-signatory/src/proto/client.rs");
+        assert_occurrences(
+            "cdk-signatory/src/proto/client.rs",
+            rpc_client,
+            "async fn blind_sign(&self, request: Vec<BlindedMessage>)",
+            1,
+        );
+        assert_occurrences(
+            "cdk-signatory/src/proto/client.rs",
+            rpc_client,
+            ".blind_sign(tonic::Request::new(req))",
+            1,
+        );
+    }
+
     #[derive(Default)]
     struct MintConfig<'a> {
         active_keysets: HashMap<CurrencyUnit, Id>,

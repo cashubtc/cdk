@@ -1138,7 +1138,7 @@ Implementation checklist:
 - [ ] Complete formal review of threshold choice and BFT assumptions.
 - [x] Implement canonical JSON operation hashing.
 - [ ] Complete formal review of operation canonicalization and transcript binding, including the binary-encoding decision and dedicated SIG_ALL transcript behavior.
-- [ ] Complete final review of all paths that can call `blind_sign` or `blind_sign_share`.
+- [x] Complete final review of all paths that can call `blind_sign` or `blind_sign_share`.
 - [x] Public handlers are wired through federation paths in federation mode.
 - [ ] Complete final security review proving no public endpoint can bypass consensus in federation mode.
 - [x] Complete final review and/or tests for NUT-20 signature verification in federated batch issuance.
