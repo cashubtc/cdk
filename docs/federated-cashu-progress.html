@@ -525,15 +525,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The consensus runtime, mint, wallet connector, Axum private REST, and mintd setup-generator federation test fixtures now live in dedicated modules, keeping production federation files focused while the focused suites remain green.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The consensus runtime, mint, wallet connector, Axum private REST, mintd setup-generator, and mintd smoke-operation federation test fixtures now live in dedicated modules, keeping production federation files focused while the focused suites remain green.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: split federation setup tests</span>
+          <span class="value">refactor: split federation smoke tests</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk-mintd::federation_setup` now keeps trusted-dealer and setup script generation code in `federation_setup.rs`, with core setup tests in `federation_setup/core_tests.rs` and local fakewallet smoke-artifact tests in `federation_setup/tests.rs`.</span>
+          <span class="value">`cdk-mintd::federation_smoke` now keeps the smoke-operation driver in `federation_smoke.rs`, with argument-validation tests in `federation_smoke/tests.rs`.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Smoke tests split out</h3>
+            <p>The mintd smoke-operation driver is now focused on live federation wallet flows, while its argument validation tests live in a dedicated sibling module.</p>
+          </article>
           <article class="item">
             <h3>Setup tests split out</h3>
             <p>The mintd trusted-dealer setup generator is now focused on production artifact creation, while backend-agnostic core setup tests and development fakewallet smoke-artifact tests live in dedicated sibling modules.</p>
@@ -2243,6 +2247,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1` passed 13 setup-generator tests after moving backend-agnostic core setup tests into `crates/cdk-mintd/src/federation_setup/core_tests.rs` and local fakewallet smoke-artifact tests into `crates/cdk-mintd/src/federation_setup/tests.rs`.</td>
               <td>Continue separating remaining smoke-operation helper tests and local connector fixtures where it reduces production-file noise.</td>
+            </tr>
+            <tr>
+              <td>Mintd smoke test module split</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_smoke::tests -- --test-threads 1` passed 4 smoke-operation argument tests after moving them into `crates/cdk-mintd/src/federation_smoke/tests.rs`. `cargo test -p cdk-mintd --features federation,fakewallet,sqlite smoke_operations -- --test-threads 1` also passed 5 CLI parser tests for the smoke-operation subcommands.</td>
+              <td>Keep the remaining cleanup focused on local connector fixtures and any future helper splits with a clear production-file benefit.</td>
             </tr>
             <tr>
               <td>Standalone mint and DbSignatory regressions</td>
