@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 436 checked items and 151 remaining items. Accepted-but-unapplied federation journal entries now have an explicit restart replay test that proves deterministic apply recovers the missing mint state and converges to the same materialized state digest as a fully applied control member.</span>
+          <span class="value">The implementation plan audit now tracks 437 checked items and 150 remaining items. Peer sync session-outcome evidence collection now skips already-verified journal prefixes, and router startup now proves accepted-but-unapplied federation journal entries are replayed before signed local status is served.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: prove federation accepted-operation replay</span>
+          <span class="value">test: prove router startup federation replay</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">A focused crash-window regression persists an accepted mint-quote journal row without applying its mint quote, verifies the materialized digest is incomplete, runs federation runtime startup replay, and verifies the recovered digest matches a fully applied control member.</span>
+          <span class="value">A router-level crash-window regression persists an accepted mint-quote journal row without applying its mint quote, constructs the Axum router through the same startup path used by mintd, calls signed local-status, and verifies the recovered materialized digest matches a fully applied control member.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue the broader startup proof by exercising the same replay path through router/mintd construction and then larger roster/Postgres-backed live smokes.</span>
+          <span class="value">Continue production-cleanup work by removing fakewallet-specific federation semantics, strengthening backend-agnostic payment observation tests, and broadening storage-backed process coverage.</span>
         </div>
       </aside>
     </header>
@@ -541,7 +541,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 436 checked entries and 151 remaining entries. The
+          checklist has 437 checked entries and 150 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -782,11 +782,15 @@
         <div class="stack">
           <article class="item">
             <h3>Plan audit refreshed</h3>
-            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 436 checked items and 151 explicit next items.</p>
+            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 437 checked items and 150 explicit next items.</p>
           </article>
           <article class="item">
-            <h3>Accepted-operation replay proven</h3>
-            <p>A restart replay regression now covers the exact crash window where a journal entry is durable but its deterministic mint-state side effect has not been applied yet.</p>
+            <h3>Router startup replay proven</h3>
+            <p>The Axum router construction path used by mintd now has a signed local-status regression proving durable accepted journal entries are replayed before authoritative federation status is served.</p>
+          </article>
+          <article class="item">
+            <h3>Peer sync prefix work removed</h3>
+            <p>Session-outcome evidence collection now resumes from the unverified journal suffix, avoiding repeated full-history signing and peer catch-up requests after quorum evidence already covers earlier operations.</p>
           </article>
           <article class="item">
             <h3>Durable private REST reads ready</h3>
@@ -2887,7 +2891,13 @@
               <td>Accepted-but-unapplied replay</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation startup_replays_accepted_but_unapplied_journal_entry_to_same_state_digest -- --test-threads 1` persists an accepted mint-quote journal row without applying the quote, verifies the pre-replay state digest is incomplete, runs federation runtime startup replay, then verifies the quote row is applied, the journal status is `Applied`, and the recovered materialized state digest matches a fully applied control member.</td>
-              <td>Lift the same crash-window assertion through router or mintd startup construction so the end-to-end daemon boot path is covered too.</td>
+              <td>Keep extending the same replay invariant to larger storage-backed process smokes and eventually the production ordering backend.</td>
+            </tr>
+            <tr>
+              <td>Router startup replay and peer-sync suffixing</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation router_startup_replays_accepted_journal_before_serving_local_status -- --test-threads 1` proved the router startup path used by mintd replays a durable accepted mint-quote journal entry before signed local-status can report authoritative materialized state. `cargo test -p cdk-axum --features federation peer_sync -- --test-threads 1`, `cargo test -p cdk-axum --features federation session_outcome -- --test-threads 1`, and the full escalated `cargo test -p cdk-axum --features federation -- --test-threads 1` passed after peer sync was changed to collect only unverified session-outcome suffixes.</td>
+              <td>Use the startup replay proof as the recovery gate while cleaning fakewallet-specific federation semantics out of the production payment-observation path.</td>
             </tr>
             <tr>
               <td>Wallet federation auth state</td>

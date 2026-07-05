@@ -2289,6 +2289,7 @@ mod tests {
     use cdk_http_client::HttpError;
     use serde::de::DeserializeOwned;
     use serde::Serialize;
+    use tower::ServiceExt;
 
     use super::*;
 
@@ -6670,6 +6671,108 @@ mod tests {
         assert_eq!(replayed_consensus.peer_status().operation_count, 1);
         assert_eq!(
             replayed_consensus.journal().entries()[0].status,
+            FederationOperationStatus::Applied
+        );
+    }
+
+    #[tokio::test]
+    async fn router_startup_replays_accepted_journal_before_serving_local_status() {
+        let (public_config, local_private, peer_private) = transport_config();
+        let control_state =
+            federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
+        let restarted_state =
+            federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
+        let quote_id = QuoteId::new();
+        let envelope = mint_quote_envelope(&control_state, &quote_id);
+        control_state
+            .submit_federation_envelope(envelope.clone())
+            .await
+            .expect("control submit");
+        let control_status = local_peer_status(&control_state)
+            .await
+            .expect("control status");
+
+        let mut crashed_consensus =
+            InMemoryFederationConsensus::new(public_config.federation_id, local_private.member_id);
+        let response = crashed_consensus
+            .submit_envelope(envelope)
+            .expect("accepted before crash");
+        let entry = response.outcome.entry().clone();
+        let mut tx = restarted_state
+            .mint
+            .localstore()
+            .begin_transaction()
+            .await
+            .expect("begin crash window transaction");
+        tx.add_federation_journal_entry(&entry)
+            .await
+            .expect("persist accepted journal entry");
+        tx.commit().await.expect("commit crash window journal");
+        assert!(restarted_state
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup before router startup")
+            .is_none());
+
+        let router = crate::create_mint_router(
+            restarted_state.mint.clone(),
+            vec![KnownMethod::Bolt11.to_string()],
+        )
+        .await
+        .expect("mint router");
+        let request =
+            signed_status_request(&public_config, &peer_private, local_private.member_id, 1);
+        let response = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method(axum::http::Method::POST)
+                    .uri("/federation/v1/local-status")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&request).expect("request json"),
+                    ))
+                    .expect("local status request"),
+            )
+            .await
+            .expect("local status response");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("local status body");
+        let local_status: FederationLocalStatusResponse =
+            serde_json::from_slice(&body).expect("local status json");
+
+        assert_eq!(local_status.peer_status.operation_count, 1);
+        assert_eq!(
+            local_status.peer_status.state_digest,
+            control_status.state_digest
+        );
+        assert!(
+            local_status
+                .materialized_state_rows
+                .iter()
+                .any(|row| row.table == "mint_quotes"),
+            "router startup should materialize the accepted mint quote before serving status"
+        );
+
+        let replayed_quote = restarted_state
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup after router startup")
+            .expect("mint quote replayed");
+        assert_eq!(replayed_quote.request, format!("invoice-{quote_id}"));
+        let replayed_entries = restarted_state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("replayed journal entries");
+        assert_eq!(
+            replayed_entries[0].status,
             FederationOperationStatus::Applied
         );
     }

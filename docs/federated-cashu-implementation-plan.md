@@ -81,14 +81,14 @@ Fedimint source areas:
 
 ## Current implementation status audit
 
-Last code-confirmed audit: 2026-07-04. This checklist marks items as done only when the repository contains a concrete implementation or a concrete checked-in test for that item. Broad "test suite passes" checkboxes remain open unless the suite was run during the audit. Some completed items are implemented with CDK-native names and modules rather than the exact names originally proposed here; those are marked done when the safety property is present, with notes where the original mechanism is still missing.
+Last code-confirmed audit: 2026-07-05. This checklist marks items as done only when the repository contains a concrete implementation or a concrete checked-in test for that item. Broad "test suite passes" checkboxes remain open unless the suite was run during the audit. Some completed items are implemented with CDK-native names and modules rather than the exact names originally proposed here; those are marked done when the safety property is present, with notes where the original mechanism is still missing.
 
 Current confirmed shape:
 
 - Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes, in-memory consensus scaffold, private REST peer envelopes, federation journal persistence, mint/swap/melt/restore/check-state apply paths, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
 - Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, exact deterministic binary operation encoding, a separate `federation_signature_share` table, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
-- Test-suite status: this audit read code and tests but did not run the full workspace test suite.
-- Latest checkpoint: generated live smoke scripts now disable Prometheus startup when metric checks are disabled, wallet federation keyset discovery returns after threshold-valid member advertisements, stateful first-healthy-member wallet calls have a bounded per-member fallback timeout, and smoke quote-status polling no longer waits forever on one slow member. Focused wallet and mintd tests passed for these paths. A bounded five-member live smoke now reaches `standard.mint.quote-paid.start`; the next blocker is making fake-wallet mint payment observation submission idempotent, bounded, and catch-up friendly enough for all members to converge on paid quote state without a stuck status endpoint.
+- Test-suite status: focused federation replay, peer-sync, session-outcome, and `cdk-axum` federation tests were run for the latest checkpoints; the full workspace test suite remains open.
+- Latest checkpoint: federation peer sync now skips quorum-verified session-outcome prefixes instead of re-signing and re-requesting the full journal every round, preventing long-running mints from turning catch-up evidence collection into continuous CPU work. Router startup now has a crash-window regression proving the `create_mint_router` path used by `cdk-mintd` replays durable accepted-but-unapplied journal entries before serving signed local federation status.
 
 ## Key observations
 
@@ -1084,7 +1084,7 @@ Implementation checklist:
 - [x] Add federation config for peer sync interval, peer request timeout, operation submission timeout, catch-up limits, digest recheck attempts, digest recheck delay, session outcome evidence chunk size, and related retry policy.
 - [x] Add wallet federation connector configuration for per-member fallback timeout, quote-status polling timeout, and fanout concurrency.
 - [x] Replace production reads from in-memory federation journal/runtime state with durable mint database reads for peer status, catch-up responses, state digests, and session outcomes.
-- [ ] On `cdk-mintd` startup, reconstruct federation runtime state from the database and replay unapplied accepted journal entries before serving signing shares or authoritative status.
+- [x] On `cdk-mintd` startup, reconstruct federation runtime state from the database and replay unapplied accepted journal entries before serving signing shares or authoritative status.
 - [x] Ensure a crash after consensus acceptance but before deterministic apply recovers from the database and converges to the same state digest.
 - [ ] Split large federation modules into logical submodules when useful, following existing CDK layout conventions.
 - [ ] Suggested mint split: config/runtime, apply, mint, swap, melt, restore/check-state, payment observations, keysets, and tests.
