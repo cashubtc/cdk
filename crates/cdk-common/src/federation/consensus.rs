@@ -699,9 +699,14 @@ impl InMemoryFederationConsensusNetwork {
         let mut applied = Vec::new();
 
         while member.peer_status().operation_count < peer_status.operation_count {
+            let before = member.peer_status().operation_count;
             let request = member.catch_up_request();
             let response = peer.catch_up_checked(&request)?;
-            applied.extend(member.apply_catch_up_response(&response)?);
+            let next_applied = member.apply_catch_up_response(&response)?;
+            if member.peer_status().operation_count == before {
+                return Err(FederationError::CatchUpNoProgress { index: before });
+            }
+            applied.extend(next_applied);
         }
 
         self.members.insert(member_id, member);
@@ -1231,6 +1236,11 @@ impl InMemoryFederationConsensus {
             return Err(FederationError::CatchUpIndexMismatch {
                 expected: expected_from_index,
                 found: response.from_index,
+            });
+        }
+        if response.entries.is_empty() && !response.complete {
+            return Err(FederationError::CatchUpNoProgress {
+                index: expected_from_index,
             });
         }
 
@@ -2370,6 +2380,28 @@ mod tests {
         assert!(matches!(
             local.apply_catch_up_response(&response),
             Err(FederationError::CatchUpDigestMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn dummy_consensus_rejects_empty_incomplete_catch_up_response() {
+        let federation_id = federation_id(13);
+        let mut local = InMemoryFederationConsensus::new(federation_id, member_id());
+        let response = FederationJournalCatchUpResponse {
+            version: super::super::FEDERATION_REST_API_VERSION,
+            federation_id,
+            from_index: 0,
+            entries: Vec::new(),
+            latest_index: Some(0),
+            latest_order_digest: super::super::FederationJournalDigest::genesis(),
+            state_digest: FederationStateDigest::genesis(),
+            session_outcome: None,
+            complete: false,
+        };
+
+        assert!(matches!(
+            local.apply_catch_up_response(&response),
+            Err(FederationError::CatchUpNoProgress { index: 0 })
         ));
     }
 

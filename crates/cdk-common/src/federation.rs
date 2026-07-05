@@ -683,6 +683,12 @@ pub enum FederationError {
         /// Operation ID carried by the entry.
         found: FederationOperationId,
     },
+    /// Catch-up response did not advance the local journal.
+    #[error("Federation catch-up made no progress at index {index}")]
+    CatchUpNoProgress {
+        /// Journal index that still needs a catch-up entry.
+        index: u64,
+    },
     /// Stored journal conflict metadata did not match the canonical operation.
     #[error("Federation journal conflict metadata mismatch at index {index}")]
     JournalConflictKeysMismatch {
