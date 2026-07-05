@@ -90,6 +90,19 @@ where
         .validate_against_public(public_config)
         .context("private federation config does not match public federation config")?;
 
+    query_local_statuses_prevalidated(transport, public_config, private_config, selected_members)
+        .await
+}
+
+pub(crate) async fn query_local_statuses_prevalidated<T>(
+    transport: T,
+    public_config: &FederationConfig,
+    private_config: &MemberConfigPrivate,
+    selected_members: &[u16],
+) -> Result<Vec<FederationLocalStatusResponse>>
+where
+    T: Transport,
+{
     let targets = status_targets(public_config, selected_members)?;
     let mut sequence = initial_status_sequence();
     let mut statuses = Vec::with_capacity(targets.len());
@@ -829,6 +842,39 @@ mod tests {
         assert!(err
             .to_string()
             .contains("federation member status mismatch"));
+    }
+
+    #[tokio::test]
+    async fn prevalidated_status_query_skips_private_share_validation() {
+        let (public_config, mut private_config) = status_fixture();
+        private_config.keyset_secret_shares.clear();
+
+        let err = query_local_statuses(
+            MockStatusTransport::new(vec![local_status(&public_config, 1, 0)]),
+            &public_config,
+            &private_config,
+            &[1],
+        )
+        .await
+        .expect_err("normal status query should validate private shares");
+        assert!(err
+            .to_string()
+            .contains("private federation config does not match public federation config"));
+
+        let statuses = query_local_statuses_prevalidated(
+            MockStatusTransport::new(vec![local_status(&public_config, 1, 0)]),
+            &public_config,
+            &private_config,
+            &[1],
+        )
+        .await
+        .expect("prevalidated status query");
+
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(
+            statuses[0].peer_status.member_id,
+            MemberId::new(1).expect("member id")
+        );
     }
 
     #[test]
