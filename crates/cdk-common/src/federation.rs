@@ -3816,6 +3816,83 @@ mod tests {
     }
 
     #[test]
+    fn federation_manifests_keep_fakewallet_dev_or_backend_scoped() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace root");
+
+        for manifest in [
+            "crates/cashu/Cargo.toml",
+            "crates/cdk-common/Cargo.toml",
+            "crates/cdk-http-client/Cargo.toml",
+        ] {
+            let contents = fs::read_to_string(repo_root.join(manifest)).expect("manifest");
+            assert!(
+                !contents.contains("cdk-fake-wallet"),
+                "{manifest} must not depend on the fakewallet backend"
+            );
+        }
+
+        for manifest in ["crates/cdk/Cargo.toml", "crates/cdk-axum/Cargo.toml"] {
+            let contents = fs::read_to_string(repo_root.join(manifest)).expect("manifest");
+            let hits = manifest_lines_for_dependency(&contents, "cdk-fake-wallet");
+            assert!(
+                !hits.is_empty(),
+                "{manifest} should keep fakewallet test coverage explicit"
+            );
+            assert!(
+                hits.iter()
+                    .all(|(section, _line)| section == "dev-dependencies"),
+                "{manifest} must keep cdk-fake-wallet under [dev-dependencies]: {hits:?}"
+            );
+        }
+
+        let mintd_manifest = "crates/cdk-mintd/Cargo.toml";
+        let contents = fs::read_to_string(repo_root.join(mintd_manifest)).expect("mintd manifest");
+        let hits = manifest_lines_for_dependency(&contents, "cdk-fake-wallet");
+        assert!(
+            hits.iter().any(|(section, line)| {
+                section == "features" && line.trim() == "fakewallet = [\"dep:cdk-fake-wallet\"]"
+            }),
+            "{mintd_manifest} must expose fakewallet only as an explicit backend feature"
+        );
+        assert!(
+            hits.iter().any(|(section, line)| {
+                section == "dependencies"
+                    && line.contains("cdk-fake-wallet")
+                    && line.contains("optional = true")
+            }),
+            "{mintd_manifest} must keep cdk-fake-wallet optional"
+        );
+        assert!(
+            hits.iter().all(|(section, _line)| {
+                matches!(section.as_str(), "features" | "dependencies")
+            }),
+            "{mintd_manifest} has unexpected fakewallet manifest entries: {hits:?}"
+        );
+    }
+
+    fn manifest_lines_for_dependency(manifest: &str, needle: &str) -> Vec<(String, String)> {
+        let mut section = String::new();
+        let mut hits = Vec::new();
+
+        for line in manifest.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                section = trimmed.trim_matches(['[', ']']).to_string();
+                continue;
+            }
+
+            if trimmed.contains(needle) {
+                hits.push((section.clone(), trimmed.to_string()));
+            }
+        }
+
+        hits
+    }
+
+    #[test]
     fn dkg_commitment_round_validates_pre_reveal_hashes() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let config =
