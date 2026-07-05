@@ -103,11 +103,33 @@ pub struct TrustedDealerConfigBundle {
     pub private_configs: BTreeMap<MemberId, MemberConfigPrivate>,
 }
 
+/// Options for trusted-dealer config generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TrustedDealerGenerationOptions {
+    /// Use no-aux-rand Schnorr signatures for reproducible fixture output.
+    pub no_aux_rand_signatures: bool,
+}
+
 /// Generate a federation config bundle with locally computed threshold shares.
 pub fn generate_trusted_dealer_configs(
     threshold_params: ThresholdParams,
     members: Vec<TrustedDealerMember>,
     keysets: Vec<TrustedDealerKeysetSpec>,
+) -> Result<TrustedDealerConfigBundle> {
+    generate_trusted_dealer_configs_with_options(
+        threshold_params,
+        members,
+        keysets,
+        TrustedDealerGenerationOptions::default(),
+    )
+}
+
+/// Generate a federation config bundle with locally computed threshold shares and options.
+pub fn generate_trusted_dealer_configs_with_options(
+    threshold_params: ThresholdParams,
+    members: Vec<TrustedDealerMember>,
+    keysets: Vec<TrustedDealerKeysetSpec>,
+    options: TrustedDealerGenerationOptions,
 ) -> Result<TrustedDealerConfigBundle> {
     threshold_params.validate()?;
     if usize::from(threshold_params.member_count) != members.len() {
@@ -227,8 +249,12 @@ pub fn generate_trusted_dealer_configs(
     for private_config in private_configs.values_mut() {
         private_config.federation_id = Some(federation_id);
     }
-    let setup_transcript =
-        FederationDkgTranscript::trusted_dealer(&public_config, &private_configs)?;
+    let setup_transcript = match options.no_aux_rand_signatures {
+        true => {
+            FederationDkgTranscript::trusted_dealer_no_aux_rand(&public_config, &private_configs)?
+        }
+        false => FederationDkgTranscript::trusted_dealer(&public_config, &private_configs)?,
+    };
     let setup_transcript_hash = setup_transcript.transcript_hash;
     public_config.setup_transcript = Some(setup_transcript);
     public_config.validate()?;

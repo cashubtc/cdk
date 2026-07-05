@@ -14,15 +14,17 @@ use anyhow::{anyhow, bail, Context, Result};
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 use bip39::Mnemonic;
 #[cfg(feature = "federation")]
+use bitcoin::hashes::{sha256, Hash};
+#[cfg(feature = "federation")]
 use cdk_common::federation::{
-    generate_trusted_dealer_configs, FederatedKeyset, FederationConfig,
+    generate_trusted_dealer_configs_with_options, FederatedKeyset, FederationConfig,
     FederationDkgCommitmentRequest, FederationDkgCommitmentRound,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
     FederationDkgTranscript, FederationDkgTranscriptSignature,
     FederationDkgTranscriptSignatureRequest, FederationRestMessageKind, FederationSignedRequest,
     MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerConfigBundle,
-    TrustedDealerKeysetSpec, TrustedDealerMember,
+    TrustedDealerGenerationOptions, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 #[cfg(feature = "federation")]
 use cdk_common::mint_url::MintUrl;
@@ -201,7 +203,13 @@ fn generate_trusted_dealer_core_generation(
     let threshold_params = ThresholdParams::with_bft_consensus(args.members, args.threshold)?;
     let unit = CurrencyUnit::from_str(&args.unit)
         .with_context(|| format!("invalid federation unit {}", args.unit))?;
-    let members = trusted_dealer_members(args.members, &args.host, args.port_start)?;
+    let deterministic_test_seed = args.deterministic_test_seed.as_deref();
+    let members = trusted_dealer_members(
+        args.members,
+        &args.host,
+        args.port_start,
+        deterministic_test_seed,
+    )?;
     print_trusted_dealer_stage("setup.roster.done", setup_started_at);
 
     print_trusted_dealer_stage("setup.active-keyset.start", setup_started_at);
@@ -212,6 +220,8 @@ fn generate_trusted_dealer_core_generation(
         args.final_expiry,
         args.threshold,
         &args.amounts,
+        deterministic_test_seed,
+        "active",
     )?;
     print_trusted_dealer_stage("setup.active-keyset.done", setup_started_at);
 
@@ -223,14 +233,19 @@ fn generate_trusted_dealer_core_generation(
         args.final_expiry,
         args.threshold,
         &args.amounts,
+        deterministic_test_seed,
+        "rotation",
     )?;
     print_trusted_dealer_stage("setup.rotation-keyset.done", setup_started_at);
 
     print_trusted_dealer_stage("setup.bundle.start", setup_started_at);
-    let bundle = generate_trusted_dealer_configs(
+    let bundle = generate_trusted_dealer_configs_with_options(
         threshold_params,
         members,
         vec![keyset_spec, rotation_keyset_spec],
+        TrustedDealerGenerationOptions {
+            no_aux_rand_signatures: deterministic_test_seed.is_some(),
+        },
     )
     .context("failed to generate trusted-dealer federation configs")?;
     print_trusted_dealer_stage("setup.bundle.done", setup_started_at);
@@ -251,6 +266,7 @@ fn generate_trusted_dealer_core_generation(
             args.final_expiry,
             args.threshold,
             &args.amounts,
+            deterministic_test_seed,
             args.force,
         )?;
         print_trusted_dealer_stage("setup.dkg-probes.done", setup_started_at);
@@ -372,6 +388,7 @@ pub(crate) fn generate_trusted_dealer_artifacts(
             &work_dir,
             &generation.unit,
             &database_config,
+            args.deterministic_test_seed.as_deref(),
         )?;
         write_text_file(&config_path, &config_toml, args.force)?;
         let dkg_setup_config_toml = member_config_toml(
@@ -387,6 +404,7 @@ pub(crate) fn generate_trusted_dealer_artifacts(
             &dkg_setup_work_dir,
             &generation.unit,
             &database_config,
+            args.deterministic_test_seed.as_deref(),
         )?;
         write_text_file(&dkg_setup_config_path, &dkg_setup_config_toml, args.force)?;
 
@@ -471,6 +489,12 @@ fn validate_trusted_dealer_args(args: &FederationTrustedDealerArgs) -> Result<()
     if args.amounts.iter().any(|amount| *amount == 0) {
         bail!("federation trusted-dealer amounts must be non-zero");
     }
+    if matches!(
+        args.deterministic_test_seed.as_deref(),
+        Some(seed) if seed.trim().is_empty()
+    ) {
+        bail!("--deterministic-test-seed must not be empty");
+    }
     match args.database_engine {
         FederationTrustedDealerDatabaseEngine::Sqlite => {
             if args.postgres_url_template.is_some() || args.postgres_base_url.is_some() {
@@ -543,6 +567,7 @@ fn trusted_dealer_members(
     member_count: u16,
     host: &str,
     port_start: u16,
+    deterministic_test_seed: Option<&str>,
 ) -> Result<Vec<TrustedDealerMember>> {
     (1..=member_count)
         .map(|id| {
@@ -552,11 +577,19 @@ fn trusted_dealer_members(
                 .ok_or_else(|| anyhow!("member ports overflow u16"))?;
             let url = MintUrl::from_str(&format!("http://{host}:{port}"))
                 .with_context(|| format!("invalid generated URL for member {member_id}"))?;
+            let identity_secret_key = match deterministic_test_seed {
+                Some(seed) => deterministic_test_secp256k1_secret(
+                    seed,
+                    "member-identity",
+                    &[&member_id.get().to_string()],
+                )?,
+                None => SecretKey::generate(),
+            };
             Ok(TrustedDealerMember::new(
                 member_id,
                 url.clone(),
                 url,
-                SecretKey::generate(),
+                identity_secret_key,
             ))
         })
         .collect()
@@ -570,10 +603,16 @@ fn trusted_dealer_keyset_spec(
     final_expiry: Option<u64>,
     threshold: u16,
     amounts: &[u64],
+    deterministic_test_seed: Option<&str>,
+    keyset_label: &str,
 ) -> Result<TrustedDealerKeysetSpec> {
     let mut amount_coefficients = BTreeMap::new();
     for amount in amounts {
-        let coefficients = random_bls_coefficients(threshold)?;
+        let coefficients = bls_coefficients(
+            threshold,
+            deterministic_test_seed,
+            &[keyset_label, &amount.to_string()],
+        )?;
         if amount_coefficients
             .insert(Amount::from(*amount), coefficients)
             .is_some()
@@ -592,13 +631,85 @@ fn trusted_dealer_keyset_spec(
 }
 
 #[cfg(feature = "federation")]
-fn random_bls_coefficients(threshold: u16) -> Result<Vec<BlsSecretKey>> {
-    (0..threshold)
-        .map(|_| {
-            let secret_key = SecretKey::generate_bls();
-            Ok(secret_key.as_bls()?.clone())
-        })
-        .collect()
+fn bls_coefficients(
+    threshold: u16,
+    deterministic_test_seed: Option<&str>,
+    labels: &[&str],
+) -> Result<Vec<BlsSecretKey>> {
+    match deterministic_test_seed {
+        Some(seed) => (0..threshold)
+            .map(|coefficient_index| {
+                let coefficient_index = coefficient_index.to_string();
+                let mut coefficient_labels = labels.to_vec();
+                coefficient_labels.push(&coefficient_index);
+                Ok(deterministic_test_bls_secret(
+                    seed,
+                    "bls-coefficient",
+                    &coefficient_labels,
+                ))
+            })
+            .collect(),
+        None => (0..threshold)
+            .map(|_| {
+                let secret_key = SecretKey::generate_bls();
+                Ok(secret_key.as_bls()?.clone())
+            })
+            .collect(),
+    }
+}
+
+#[cfg(feature = "federation")]
+fn deterministic_test_bytes(seed: &str, domain: &str, labels: &[&str]) -> [u8; 32] {
+    let mut transcript = Vec::new();
+    append_deterministic_test_field(
+        &mut transcript,
+        b"cdk-federation-trusted-dealer-test-seed-v1",
+    );
+    append_deterministic_test_field(&mut transcript, seed.as_bytes());
+    append_deterministic_test_field(&mut transcript, domain.as_bytes());
+    for label in labels {
+        append_deterministic_test_field(&mut transcript, label.as_bytes());
+    }
+
+    sha256::Hash::hash(&transcript).to_byte_array()
+}
+
+#[cfg(feature = "federation")]
+fn append_deterministic_test_field(transcript: &mut Vec<u8>, value: &[u8]) {
+    transcript.extend_from_slice(&(value.len() as u64).to_be_bytes());
+    transcript.extend_from_slice(value);
+}
+
+#[cfg(feature = "federation")]
+fn deterministic_test_secp256k1_secret(
+    seed: &str,
+    domain: &str,
+    labels: &[&str],
+) -> Result<SecretKey> {
+    for attempt in 0..16 {
+        let attempt = attempt.to_string();
+        let mut attempt_labels = labels.to_vec();
+        attempt_labels.push(&attempt);
+        let bytes = deterministic_test_bytes(seed, domain, &attempt_labels);
+        if let Ok(secret_key) = SecretKey::from_slice(&bytes) {
+            return Ok(secret_key);
+        }
+    }
+
+    bail!("failed to derive deterministic secp256k1 key for {domain} after 16 attempts");
+}
+
+#[cfg(feature = "federation")]
+fn deterministic_test_bls_secret(seed: &str, domain: &str, labels: &[&str]) -> BlsSecretKey {
+    let bytes = deterministic_test_bytes(seed, domain, labels);
+    BlsSecretKey::from_reduced_bytes(&bytes)
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+fn deterministic_test_mnemonic(seed: &str, labels: &[&str]) -> Result<Mnemonic> {
+    let entropy = deterministic_test_bytes(seed, "member-mnemonic", labels);
+    Mnemonic::from_entropy(&entropy[..16])
+        .map_err(|err| anyhow!("failed to derive deterministic member mnemonic: {err}"))
 }
 
 #[cfg(feature = "federation")]
@@ -630,9 +741,12 @@ fn write_dkg_setup_route_probe_requests(
     final_expiry: Option<u64>,
     threshold: u16,
     amounts: &[u64],
+    deterministic_test_seed: Option<&str>,
     force: bool,
 ) -> Result<BTreeMap<MemberId, PathBuf>> {
-    let coefficients = dkg_probe_coefficients(public_config, threshold, amounts)?;
+    let deterministic_test_signatures = deterministic_test_seed.is_some();
+    let coefficients =
+        dkg_probe_coefficients(public_config, threshold, amounts, deterministic_test_seed)?;
     let reveals = coefficients
         .keys()
         .map(|member_id| {
@@ -713,13 +827,20 @@ fn write_dkg_setup_route_probe_requests(
     let transcript_signature_payloads = private_configs
         .iter()
         .map(|(sender_id, private_config)| {
+            let signature = match deterministic_test_signatures {
+                true => FederationDkgTranscriptSignature::sign_no_aux_rand(
+                    transcript_hash,
+                    private_config,
+                )?,
+                false => FederationDkgTranscriptSignature::sign(transcript_hash, private_config)?,
+            };
             Ok((
                 *sender_id,
                 FederationDkgTranscriptSignatureRequest::new(
                     final_public_config.federation_id,
                     *sender_id,
                     transcript_hash,
-                    FederationDkgTranscriptSignature::sign(transcript_hash, private_config)?,
+                    signature,
                 ),
             ))
         })
@@ -760,6 +881,7 @@ fn write_dkg_setup_route_probe_requests(
                 FederationRestMessageKind::DkgCommitment,
                 commitment_payload,
                 &dkg_probe_request_path(&receiver_dir, sender_id, "commitment"),
+                deterministic_test_signatures,
                 force,
             )?;
 
@@ -779,6 +901,7 @@ fn write_dkg_setup_route_probe_requests(
                 FederationRestMessageKind::DkgReveal,
                 reveal_payload,
                 &dkg_probe_request_path(&receiver_dir, sender_id, "reveal"),
+                deterministic_test_signatures,
                 force,
             )?;
 
@@ -799,6 +922,7 @@ fn write_dkg_setup_route_probe_requests(
                 FederationRestMessageKind::DkgSecretShare,
                 secret_share_payload,
                 &dkg_probe_request_path(&receiver_dir, sender_id, "secret-share"),
+                deterministic_test_signatures,
                 force,
             )?;
 
@@ -815,6 +939,7 @@ fn write_dkg_setup_route_probe_requests(
                 FederationRestMessageKind::DkgTranscriptSignature,
                 transcript_signature_payload,
                 &dkg_probe_request_path(&receiver_dir, sender_id, "transcript-signature"),
+                deterministic_test_signatures,
                 force,
             )?;
         }
@@ -897,13 +1022,22 @@ fn dkg_probe_coefficients(
     public_config: &FederationConfig,
     threshold: u16,
     amounts: &[u64],
+    deterministic_test_seed: Option<&str>,
 ) -> Result<BTreeMap<MemberId, BTreeMap<Amount, Vec<BlsSecretKey>>>> {
     let mut coefficients = BTreeMap::new();
     for member_id in public_config.members.keys().copied() {
         let mut member_coefficients = BTreeMap::new();
         for amount in amounts {
+            let member_label = member_id.get().to_string();
             if member_coefficients
-                .insert(Amount::from(*amount), random_bls_coefficients(threshold)?)
+                .insert(
+                    Amount::from(*amount),
+                    bls_coefficients(
+                        threshold,
+                        deterministic_test_seed,
+                        &["dkg-route-probe", &member_label, &amount.to_string()],
+                    )?,
+                )
                 .is_some()
             {
                 bail!("duplicate federation amount {amount}");
@@ -979,19 +1113,30 @@ fn write_signed_dkg_probe_request<T>(
     kind: FederationRestMessageKind,
     payload: T,
     path: &Path,
+    deterministic_test_signatures: bool,
     force: bool,
 ) -> Result<()>
 where
     T: serde::Serialize,
 {
-    let request = FederationSignedRequest::new_signed(
-        public_config.federation_id,
-        receiver_id,
-        sequence,
-        kind,
-        payload,
-        private_config,
-    )?;
+    let request = match deterministic_test_signatures {
+        true => FederationSignedRequest::new_signed_no_aux_rand(
+            public_config.federation_id,
+            receiver_id,
+            sequence,
+            kind,
+            payload,
+            private_config,
+        )?,
+        false => FederationSignedRequest::new_signed(
+            public_config.federation_id,
+            receiver_id,
+            sequence,
+            kind,
+            payload,
+            private_config,
+        )?,
+    };
     request.verify(public_config, receiver_id)?;
     write_json_file(path, &request, force)
 }
@@ -1030,10 +1175,15 @@ fn member_config_toml(
     work_dir: &Path,
     unit: &CurrencyUnit,
     database_config: &str,
+    deterministic_test_seed: Option<&str>,
 ) -> Result<String> {
-    let mnemonic = Mnemonic::generate(12)
-        .map_err(|err| anyhow!("failed to generate member mnemonic: {err}"))?
-        .to_string();
+    let member_label = member_id.get().to_string();
+    let mnemonic = match deterministic_test_seed {
+        Some(seed) => deterministic_test_mnemonic(seed, &[&member_label])?,
+        None => Mnemonic::generate(12)
+            .map_err(|err| anyhow!("failed to generate member mnemonic: {err}"))?,
+    }
+    .to_string();
     let public_config_path = path_to_string(public_config_path);
     let private_config_path = path_to_string(private_config_path);
     let config_path = path_to_string(config_path);
@@ -2044,7 +2194,51 @@ mod core_tests {
             postgres_url_template: None,
             postgres_base_url: None,
             dkg_setup_route_probes: true,
+            deterministic_test_seed: None,
             force: false,
+        }
+    }
+
+    fn relative_file_contents(root: &Path) -> BTreeMap<String, String> {
+        fn visit(root: &Path, dir: &Path, out: &mut BTreeMap<String, String>) {
+            for entry in std::fs::read_dir(dir).expect("read generated directory") {
+                let entry = entry.expect("generated directory entry");
+                let path = entry.path();
+                if path.is_dir() {
+                    visit(root, &path, out);
+                    continue;
+                }
+
+                let relative_path = path
+                    .strip_prefix(root)
+                    .expect("generated path is under root")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let contents = std::fs::read_to_string(&path).expect("generated text file");
+                out.insert(relative_path, contents);
+            }
+        }
+
+        let mut contents = BTreeMap::new();
+        visit(root, root, &mut contents);
+        contents
+    }
+
+    fn assert_relative_file_contents_equal(
+        left: &BTreeMap<String, String>,
+        right: &BTreeMap<String, String>,
+    ) {
+        if left.keys().collect::<Vec<_>>() != right.keys().collect::<Vec<_>>() {
+            panic!("deterministic generation produced different relative file sets");
+        }
+
+        for (path, left_contents) in left {
+            let right_contents = right
+                .get(path)
+                .expect("right file set contains the same relative path");
+            if left_contents != right_contents {
+                panic!("deterministic generation produced different contents for {path}");
+            }
         }
     }
 
@@ -2155,6 +2349,46 @@ mod core_tests {
 
         let _ = std::fs::remove_dir_all(&output_dir);
     }
+
+    #[test]
+    fn deterministic_test_seed_reproduces_core_artifacts_byte_for_byte() {
+        let first_output_dir = temp_output_dir("deterministic_first");
+        let second_output_dir = temp_output_dir("deterministic_second");
+        let third_output_dir = temp_output_dir("deterministic_third");
+        let _ = std::fs::remove_dir_all(&first_output_dir);
+        let _ = std::fs::remove_dir_all(&second_output_dir);
+        let _ = std::fs::remove_dir_all(&third_output_dir);
+
+        let mut first_args = generator_args(first_output_dir.clone());
+        first_args.deterministic_test_seed = Some("repeatable federation setup".to_string());
+        let mut second_args = generator_args(second_output_dir.clone());
+        second_args.deterministic_test_seed = first_args.deterministic_test_seed.clone();
+        let mut third_args = generator_args(third_output_dir.clone());
+        third_args.deterministic_test_seed = Some("different federation setup".to_string());
+
+        generate_trusted_dealer_core_artifacts(&first_args)
+            .expect("first deterministic trusted dealer artifacts");
+        generate_trusted_dealer_core_artifacts(&second_args)
+            .expect("second deterministic trusted dealer artifacts");
+        generate_trusted_dealer_core_artifacts(&third_args)
+            .expect("third deterministic trusted dealer artifacts");
+
+        assert_relative_file_contents_equal(
+            &relative_file_contents(&first_output_dir),
+            &relative_file_contents(&second_output_dir),
+        );
+        let first_public_config =
+            std::fs::read_to_string(first_output_dir.join(PUBLIC_CONFIG_FILE))
+                .expect("first public config");
+        let third_public_config =
+            std::fs::read_to_string(third_output_dir.join(PUBLIC_CONFIG_FILE))
+                .expect("third public config");
+        assert_ne!(first_public_config, third_public_config);
+
+        let _ = std::fs::remove_dir_all(&first_output_dir);
+        let _ = std::fs::remove_dir_all(&second_output_dir);
+        let _ = std::fs::remove_dir_all(&third_output_dir);
+    }
 }
 
 #[cfg(all(test, feature = "federation", feature = "fakewallet"))]
@@ -2185,6 +2419,7 @@ mod tests {
             postgres_url_template: None,
             postgres_base_url: None,
             dkg_setup_route_probes: false,
+            deterministic_test_seed: None,
             force: false,
         }
     }
@@ -2633,6 +2868,51 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&output_dir);
+    }
+
+    #[test]
+    fn deterministic_test_seed_reproduces_member_config_mnemonic() {
+        let member_id = MemberId::new(1).expect("member id");
+        let database_config = "[database]\nengine = \"sqlite\"\n";
+        let config = || {
+            member_config_toml(
+                &member_id,
+                "127.0.0.1",
+                "http://127.0.0.1:8085",
+                "http://127.0.0.1:8085",
+                8085,
+                8088,
+                Path::new("federation-public.json"),
+                Path::new("member-1/federation-private.json"),
+                Path::new("member-1/config.toml"),
+                Path::new("member-1/work"),
+                &CurrencyUnit::Sat,
+                database_config,
+                Some("repeatable local smoke setup"),
+            )
+            .expect("deterministic member config")
+        };
+        let first = config();
+        let second = config();
+        assert_eq!(first, second);
+
+        let different = member_config_toml(
+            &member_id,
+            "127.0.0.1",
+            "http://127.0.0.1:8085",
+            "http://127.0.0.1:8085",
+            8085,
+            8088,
+            Path::new("federation-public.json"),
+            Path::new("member-1/federation-private.json"),
+            Path::new("member-1/config.toml"),
+            Path::new("member-1/work"),
+            &CurrencyUnit::Sat,
+            database_config,
+            Some("different local smoke setup"),
+        )
+        .expect("different deterministic member config");
+        assert_ne!(first, different);
     }
 
     #[test]

@@ -250,6 +250,9 @@ pub struct FederationTrustedDealerArgs {
     /// Generate signed setup-route probe request fixtures for DKG route testing.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub dkg_setup_route_probes: bool,
+    /// Deterministic test seed for reproducible local federation material. Do not use for production.
+    #[arg(long)]
+    pub deterministic_test_seed: Option<String>,
     /// Overwrite files previously generated at the target paths.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub force: bool,
@@ -408,6 +411,8 @@ mod tests {
             "3",
             "--amounts",
             "1,2,4",
+            "--deterministic-test-seed",
+            "fixture-seed",
         ])
         .expect("trusted-dealer command parses");
 
@@ -427,6 +432,10 @@ mod tests {
         assert_eq!(trusted_dealer.postgres_url_template, None);
         assert_eq!(trusted_dealer.postgres_base_url, None);
         assert!(!trusted_dealer.dkg_setup_route_probes);
+        assert_eq!(
+            trusted_dealer.deterministic_test_seed.as_deref(),
+            Some("fixture-seed")
+        );
     }
 
     #[test]

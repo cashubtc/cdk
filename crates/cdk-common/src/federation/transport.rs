@@ -197,7 +197,34 @@ impl FederationRestSignature {
     }
 
     fn sign(transcript: &[u8], private_config: &MemberConfigPrivate) -> Result<Self> {
-        let signature = private_config.identity_secret_key.sign(transcript)?;
+        Self::sign_with(
+            transcript,
+            private_config,
+            FederationRestSigningMode::RandomAux,
+        )
+    }
+
+    fn sign_no_aux_rand(transcript: &[u8], private_config: &MemberConfigPrivate) -> Result<Self> {
+        Self::sign_with(
+            transcript,
+            private_config,
+            FederationRestSigningMode::NoAuxRand,
+        )
+    }
+
+    fn sign_with(
+        transcript: &[u8],
+        private_config: &MemberConfigPrivate,
+        mode: FederationRestSigningMode,
+    ) -> Result<Self> {
+        let signature = match mode {
+            FederationRestSigningMode::RandomAux => {
+                private_config.identity_secret_key.sign(transcript)?
+            }
+            FederationRestSigningMode::NoAuxRand => private_config
+                .identity_secret_key
+                .sign_no_aux_rand(transcript)?,
+        };
         Ok(Self(signature.serialize()))
     }
 
@@ -239,6 +266,12 @@ impl<'de> Deserialize<'de> for FederationRestSignature {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FederationRestSigningMode {
+    RandomAux,
+    NoAuxRand,
+}
+
 /// Signed private REST request between two federation members.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederationSignedRequest<T> {
@@ -275,11 +308,58 @@ where
         payload: T,
         private_config: &MemberConfigPrivate,
     ) -> Result<Self> {
+        Self::new_signed_with_mode(
+            federation_id,
+            receiver,
+            sequence,
+            kind,
+            payload,
+            private_config,
+            FederationRestSigningMode::RandomAux,
+        )
+    }
+
+    /// Sign a private REST request without auxiliary randomness.
+    pub fn new_signed_no_aux_rand(
+        federation_id: FederationId,
+        receiver: MemberId,
+        sequence: u64,
+        kind: FederationRestMessageKind,
+        payload: T,
+        private_config: &MemberConfigPrivate,
+    ) -> Result<Self> {
+        Self::new_signed_with_mode(
+            federation_id,
+            receiver,
+            sequence,
+            kind,
+            payload,
+            private_config,
+            FederationRestSigningMode::NoAuxRand,
+        )
+    }
+
+    fn new_signed_with_mode(
+        federation_id: FederationId,
+        receiver: MemberId,
+        sequence: u64,
+        kind: FederationRestMessageKind,
+        payload: T,
+        private_config: &MemberConfigPrivate,
+        mode: FederationRestSigningMode,
+    ) -> Result<Self> {
         let sender = private_config.member_id;
         let body_hash = FederationRestBodyHash::for_payload(&payload)?;
         let transcript =
             signing_transcript(federation_id, sender, receiver, sequence, kind, body_hash);
-        let signature = FederationRestSignature::sign(&transcript, private_config)?;
+        let signature = match mode {
+            FederationRestSigningMode::RandomAux => {
+                FederationRestSignature::sign(&transcript, private_config)?
+            }
+            FederationRestSigningMode::NoAuxRand => {
+                FederationRestSignature::sign_no_aux_rand(&transcript, private_config)?
+            }
+        };
 
         Ok(Self {
             version: FEDERATION_REST_API_VERSION,

@@ -126,6 +126,19 @@ impl SecretKey {
         Ok(SECP256K1.sign_schnorr(&msg, &Keypair::from_secret_key(&SECP256K1, inner)))
     }
 
+    /// Deterministic Schnorr Signature on Message without auxiliary randomness.
+    ///
+    /// Prefer [`Self::sign`] for normal operation. This helper is intended for
+    /// reproducible fixtures where byte-for-byte stable signatures are needed.
+    pub fn sign_no_aux_rand(&self, msg: &[u8]) -> Result<Signature, Error> {
+        let Self::Secp256k1(inner) = self else {
+            return Err(Error::WrongKeyKind);
+        };
+        let hash: Sha256Hash = Sha256Hash::hash(msg);
+        let msg = Message::from_digest_slice(hash.as_ref())?;
+        Ok(SECP256K1.sign_schnorr_no_aux_rand(&msg, &Keypair::from_secret_key(&SECP256K1, inner)))
+    }
+
     /// Get public key.
     pub fn public_key(&self) -> PublicKey {
         match self {

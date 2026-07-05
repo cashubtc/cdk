@@ -62,7 +62,8 @@ pub use self::transport::{
     FEDERATION_SESSION_OUTCOME_VERSION,
 };
 pub use self::trusted_dealer::{
-    generate_trusted_dealer_configs, TrustedDealerConfigBundle, TrustedDealerKeysetSpec,
+    generate_trusted_dealer_configs, generate_trusted_dealer_configs_with_options,
+    TrustedDealerConfigBundle, TrustedDealerGenerationOptions, TrustedDealerKeysetSpec,
     TrustedDealerMember,
 };
 
@@ -2393,9 +2394,39 @@ impl FederationDkgTranscriptSignature {
         transcript_hash: FederationDkgTranscriptHash,
         private_config: &MemberConfigPrivate,
     ) -> Result<Self> {
-        let signature = private_config
-            .identity_secret_key
-            .sign(&dkg_signature_transcript(transcript_hash))?;
+        Self::sign_with(
+            transcript_hash,
+            private_config,
+            FederationSchnorrSigningMode::RandomAux,
+        )
+    }
+
+    /// Sign a DKG/setup transcript hash without auxiliary randomness.
+    pub fn sign_no_aux_rand(
+        transcript_hash: FederationDkgTranscriptHash,
+        private_config: &MemberConfigPrivate,
+    ) -> Result<Self> {
+        Self::sign_with(
+            transcript_hash,
+            private_config,
+            FederationSchnorrSigningMode::NoAuxRand,
+        )
+    }
+
+    fn sign_with(
+        transcript_hash: FederationDkgTranscriptHash,
+        private_config: &MemberConfigPrivate,
+        mode: FederationSchnorrSigningMode,
+    ) -> Result<Self> {
+        let transcript = dkg_signature_transcript(transcript_hash);
+        let signature = match mode {
+            FederationSchnorrSigningMode::RandomAux => {
+                private_config.identity_secret_key.sign(&transcript)?
+            }
+            FederationSchnorrSigningMode::NoAuxRand => private_config
+                .identity_secret_key
+                .sign_no_aux_rand(&transcript)?,
+        };
         Ok(Self(signature.serialize()))
     }
 
@@ -2422,6 +2453,12 @@ impl fmt::Display for FederationDkgTranscriptSignature {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_hex())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FederationSchnorrSigningMode {
+    RandomAux,
+    NoAuxRand,
 }
 
 impl FromStr for FederationDkgTranscriptSignature {
@@ -2559,10 +2596,24 @@ impl FederationDkgTranscript {
         public_config: &FederationConfig,
         private_configs: &BTreeMap<MemberId, MemberConfigPrivate>,
     ) -> Result<Self> {
-        Self::signed_setup(
+        Self::signed_setup_with_mode(
             FederationDkgSetupMethod::TrustedDealer,
             public_config,
             private_configs,
+            FederationSchnorrSigningMode::RandomAux,
+        )
+    }
+
+    /// Create a trusted-dealer transcript with reproducible no-aux-rand signatures.
+    pub fn trusted_dealer_no_aux_rand(
+        public_config: &FederationConfig,
+        private_configs: &BTreeMap<MemberId, MemberConfigPrivate>,
+    ) -> Result<Self> {
+        Self::signed_setup_with_mode(
+            FederationDkgSetupMethod::TrustedDealer,
+            public_config,
+            private_configs,
+            FederationSchnorrSigningMode::NoAuxRand,
         )
     }
 
@@ -2571,17 +2622,19 @@ impl FederationDkgTranscript {
         public_config: &FederationConfig,
         private_configs: &BTreeMap<MemberId, MemberConfigPrivate>,
     ) -> Result<Self> {
-        Self::signed_setup(
+        Self::signed_setup_with_mode(
             FederationDkgSetupMethod::PedersenDkg,
             public_config,
             private_configs,
+            FederationSchnorrSigningMode::RandomAux,
         )
     }
 
-    fn signed_setup(
+    fn signed_setup_with_mode(
         setup_method: FederationDkgSetupMethod,
         public_config: &FederationConfig,
         private_configs: &BTreeMap<MemberId, MemberConfigPrivate>,
+        mode: FederationSchnorrSigningMode,
     ) -> Result<Self> {
         let payload = Self::payload_from_config(setup_method, public_config);
         let transcript_hash = FederationDkgTranscriptHash::for_payload(&payload)?;
@@ -2595,7 +2648,7 @@ impl FederationDkgTranscript {
                     })?;
             signatures.insert(
                 *member_id,
-                FederationDkgTranscriptSignature::sign(transcript_hash, private_config)?,
+                FederationDkgTranscriptSignature::sign_with(transcript_hash, private_config, mode)?,
             );
         }
 

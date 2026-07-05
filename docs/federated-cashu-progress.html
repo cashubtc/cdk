@@ -519,15 +519,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 473 checked items and 114 remaining items. Milestone 0 broad feature-disabled and feature-enabled workspace gates are now recorded as passing.</span>
+          <span class="value">The implementation plan audit now tracks 474 checked items and 113 remaining items. Milestone 2 now includes deterministic trusted-dealer fixture generation.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: close federation workspace gates</span>
+          <span class="value">feat: add deterministic federation setup seed</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Closed Milestone 0's broad gates after fixing the NUT-10 helper keyset-version mismatch, the melt-token example's invoice-signing key type, and the feature-unified transport DNS TXT trait shape.</span>
+          <span class="value">Fixed deterministic test-seed generation by making seeded trusted-dealer configs, setup transcript signatures, generated DKG route-probe requests, and fake-wallet member mnemonics byte-for-byte reproducible while preserving randomized production signing.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -542,7 +542,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 473 checked entries and 114 remaining entries. The
+          checklist has 474 checked entries and 113 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -781,6 +781,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Deterministic setup seed</h3>
+            <p>The trusted-dealer generator now has an explicit deterministic test seed that reproduces member identity keys, BLS coefficients, fake-wallet mnemonics, setup transcript signatures, and generated DKG route-probe request signatures byte-for-byte. The previous noisy failing path came from seeded data being signed with randomized Schnorr signatures.</p>
+          </article>
           <article class="item">
             <h3>Workspace gates closed</h3>
             <p>The broad feature-disabled library test gate and feature-enabled all-targets compile gate now pass and are recorded in the implementation plan. The checkpoint also fixed the NUT-10 keyset-version helper mismatch, the melt-token example's secp256k1 signing key import, and the transport DNS TXT trait shape across feature combinations.</p>
@@ -2013,6 +2017,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test --lib --workspace --exclude cdk-postgres` passed with federation disabled. `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed after the example key-type fix and stable transport DNS TXT method.</td>
               <td>Move back to the remaining consensus/storage follow-ups with the broad feature gates green.</td>
+            </tr>
+            <tr>
+              <td>Deterministic trusted-dealer fixtures</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,sqlite deterministic_test_seed -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,sqlite trusted_dealer -- --test-threads 1`, `cargo test -p cdk-common --features federation trusted_dealer -- --test-threads 1`, `cargo check -p cdk-mintd --features federation,sqlite`, `cargo fmt --all`, and `git diff --check` passed. The root cause was deterministic seeded setup material still flowing through randomized Schnorr signatures.</td>
+              <td>Use the seeded generator for reproducible local federation fixtures and keep normal production signing randomized.</td>
             </tr>
             <tr>
               <td>Docs/dashboard</td>
