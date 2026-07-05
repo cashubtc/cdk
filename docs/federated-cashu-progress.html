@@ -523,19 +523,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 531 checked items and 58 remaining items. Public endpoint consensus-bypass review is complete for the current Axum surface, including quote, mint, swap, melt, keyset, and restore paths.</span>
+          <span class="value">The implementation plan audit tracks 532 checked items and 57 remaining items. The DB conflict-key and index review is now recorded, backed by migration parity and SQLite query-plan gates.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: audit public endpoint consensus gates</span>
+          <span class="value">docs: record DB index review</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk-axum` now source-audits public federation endpoints so mutating routes submit consensus evidence and restore remains a stored-share read path with no signing calls.</span>
+          <span class="value">`cdk-sql-common` and `cdk-sqlite` focused tests were rerun for federation migration parity and hot-path query plans covering journal, payment-observation, session-outcome, and signature-share rows.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, DB conflict/index review, module splits, DoS review, and the remaining BFT follow-ups.</span>
+          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, module splits, DoS review, and the remaining BFT follow-ups.</span>
         </div>
       </aside>
     </header>
@@ -546,7 +546,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 531 checked entries and 58 remaining entries. The
+          checklist has 532 checked entries and 57 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -785,6 +785,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>DB index review</h3>
+            <p>Federation journal conflict keys, member sequences, session outcomes, payment observations, and signature-share rows now have a recorded review checkpoint backed by SQL migration parity and SQLite query-plan coverage.</p>
+          </article>
           <article class="item">
             <h3>Endpoint consensus gate</h3>
             <p>The Axum test suite now source-audits the current public federation endpoint surface: key advertisement uses aggregate federation metadata, quote routes submit consensus operations or observations, mint/swap/melt submit accepted envelopes before shares, and restore only reads stored shares.</p>
@@ -3486,7 +3490,13 @@
               <td>Public endpoint consensus gates</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation public_endpoints_are_consensus_gated_in_federation_mode -- --test-threads 1`, `public_handlers_do_not_directly_sign_in_production`, `post_restore_accepts_v3_restore_placeholders`, and `post_restore_rejects_non_v3_outputs` passed. The audit covers federation key advertisement, quote operations, payment observations, mint/swap/melt share responses, and restore as a stored-share read path.</td>
-              <td>Continue with DB conflict/index review, DoS review, and production BFT ordering work.</td>
+              <td>Continue with DoS review, production BFT ordering work, and live Postgres reruns when available.</td>
+            </tr>
+            <tr>
+              <td>DB conflict/index review</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-sql-common --features federation federation_mint_migrations_cover_sqlite_and_postgres -- --test-threads 1` and `cargo test -p cdk-sqlite --features federation federation_journal_hot_path_indexes_are_used -- --test-threads 1` passed. These gates cover SQLite/Postgres migration parity plus indexed searches for journal catch-up, operation ID updates, session outcomes, payment observations, and signature shares.</td>
+              <td>Keep live Postgres migration/application reruns open until a Postgres service is available.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
