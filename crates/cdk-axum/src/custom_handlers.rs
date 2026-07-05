@@ -1139,6 +1139,15 @@ mod tests {
     }
 
     #[cfg(feature = "federation")]
+    fn assert_occurrences(source: &str, needle: &str, expected: usize) {
+        assert_eq!(
+            source.match_indices(needle).count(),
+            expected,
+            "source must contain exactly {expected} reviewed occurrence(s) of `{needle}`"
+        );
+    }
+
+    #[cfg(feature = "federation")]
     #[test]
     fn public_handlers_do_not_directly_sign_in_production() {
         let custom_handlers = production_section(
@@ -1196,6 +1205,155 @@ mod tests {
             "state.submit_federation_envelope(envelope).await?",
             "config.swap_share_response(response.operation_id, payload)?",
         );
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn public_endpoints_are_consensus_gated_in_federation_mode() {
+        let custom_handlers = production_section(
+            include_str!("custom_handlers.rs"),
+            "\n#[cfg(test)]\nmod tests {",
+        );
+        let router_handlers = include_str!("router_handlers.rs");
+        let mint_mod = production_section(
+            include_str!("../../cdk/src/mint/mod.rs"),
+            "\n#[cfg(test)]\nmod tests {",
+        );
+
+        let get_keys = source_slice(
+            router_handlers,
+            "pub(crate) async fn get_keys",
+            "/// Get the public keys of a specific keyset",
+        );
+        assert!(get_keys.contains(".effective_federation_pubkeys()"));
+
+        let get_keyset_pubkeys = source_slice(
+            router_handlers,
+            "pub(crate) async fn get_keyset_pubkeys",
+            "/// Get all active keyset IDs of the mint",
+        );
+        assert!(get_keyset_pubkeys.contains(".effective_federation_keyset_pubkeys(&keyset_id)"));
+
+        let get_keysets = source_slice(
+            router_handlers,
+            "pub(crate) async fn get_keysets",
+            "#[instrument(skip_all)]\npub(crate) async fn ws_handler",
+        );
+        assert!(get_keysets.contains(".effective_federation_keysets()"));
+
+        let mint_quote = source_slice(
+            custom_handlers,
+            "pub async fn post_mint_custom_quote",
+            "pub async fn get_check_mint_custom_quote",
+        );
+        assert_occurrences(
+            mint_quote,
+            "submit_federation_mint_quote_operation(&state",
+            4,
+        );
+
+        let mint_quote_status = source_slice(
+            custom_handlers,
+            "pub async fn get_check_mint_custom_quote",
+            "/// Batch check mint quote status",
+        );
+        assert_contains_in_order(
+            mint_quote_status,
+            ".check_mint_quotes(&[quote_id])",
+            "submit_federation_mint_quote_payment_observation(&state, &quote_response)",
+        );
+
+        let batch_mint_quote_status = source_slice(
+            custom_handlers,
+            "pub async fn post_batch_check_mint_quote",
+            "pub async fn post_melt_custom_quote",
+        );
+        assert_contains_in_order(
+            batch_mint_quote_status,
+            ".check_mint_quotes(&payload.quotes)",
+            "submit_federation_mint_quote_payment_observation(&state, response)",
+        );
+
+        let mint_submit = source_slice(
+            custom_handlers,
+            "async fn process_federation_mint_input",
+            "fn mint_quote_response_to_string",
+        );
+        assert_contains_in_order(
+            mint_submit,
+            "submit_federation_mint_operation(state, input.clone()).await?",
+            "config.mint_share_response(operation_id, input)?",
+        );
+
+        let swap_submit = source_slice(
+            router_handlers,
+            "async fn process_federation_swap",
+            "/// Restores blind signature",
+        );
+        assert_contains_in_order(
+            swap_submit,
+            "state.submit_federation_envelope(envelope).await?",
+            "config.swap_share_response(response.operation_id, payload)?",
+        );
+
+        let melt_quote = source_slice(
+            custom_handlers,
+            "pub async fn post_melt_custom_quote",
+            "/// Get custom payment method melt quote status",
+        );
+        assert_contains_in_order(
+            melt_quote,
+            ".get_melt_quote(quote_request.clone())",
+            "submit_federation_melt_quote_operation(&state, quote_request, &response)",
+        );
+
+        let melt_quote_status = source_slice(
+            custom_handlers,
+            "pub async fn get_check_melt_custom_quote",
+            "async fn process_melt_request",
+        );
+        assert_contains_in_order(
+            melt_quote_status,
+            ".check_melt_quote(&quote_id)",
+            "submit_federation_melt_quote_payment_observation(&state, &quote)",
+        );
+
+        let melt_submit = source_slice(
+            custom_handlers,
+            "async fn process_federation_melt_request",
+            "async fn federation_melt_response_from_store",
+        );
+        assert_contains_in_order(
+            melt_submit,
+            "state.submit_federation_envelope(envelope).await?",
+            "federation_melt_response_from_store(state, payload.quote()).await?",
+        );
+
+        let restore_handler = source_slice(
+            router_handlers,
+            "pub(crate) async fn post_restore",
+            "#[cfg(feature = \"info-page\")]",
+        );
+        assert!(restore_handler.contains("state.mint.restore(payload).await"));
+
+        let restore_impl = source_slice(
+            mint_mod,
+            "pub async fn restore",
+            "/// Get the total amount issed by keyset",
+        );
+        assert!(restore_impl.contains("config.validate_restore_outputs(&request)?"));
+        assert!(restore_impl.contains("get_federation_signature_shares_for_blinded_message"));
+        for forbidden in [
+            ".blind_sign(",
+            ".sign_blinded_messages(",
+            "blind_sign_share(",
+            "auth_blind_sign(",
+        ] {
+            assert!(
+                !restore_impl.contains(forbidden),
+                "federation restore must not call `{forbidden}`"
+            );
+        }
     }
 
     fn create_test_request(prefer_header: Option<&str>) -> Request<()> {

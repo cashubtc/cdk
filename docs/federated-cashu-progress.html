@@ -523,19 +523,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 530 checked items and 59 remaining items. Route-level direct-signing signoff is complete: public mint, swap, and melt handlers are source-audited to submit consensus before returning shares.</span>
+          <span class="value">The implementation plan audit tracks 531 checked items and 58 remaining items. Public endpoint consensus-bypass review is complete for the current Axum surface, including quote, mint, swap, melt, keyset, and restore paths.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: record route signing signoff</span>
+          <span class="value">test: audit public endpoint consensus gates</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The implementation plan now closes the narrow route-direct-signing signoff, backed by the Axum production-handler audit and the mint/signatory direct-signing allowlist.</span>
+          <span class="value">`cdk-axum` now source-audits public federation endpoints so mutating routes submit consensus evidence and restore remains a stored-share read path with no signing calls.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, full public-endpoint consensus-bypass review, module splits, and the remaining BFT follow-ups.</span>
+          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, DB conflict/index review, module splits, DoS review, and the remaining BFT follow-ups.</span>
         </div>
       </aside>
     </header>
@@ -546,7 +546,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 530 checked entries and 59 remaining entries. The
+          checklist has 531 checked entries and 58 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -786,8 +786,12 @@
         <h2>Unlocked</h2>
         <div class="stack">
           <article class="item">
+            <h3>Endpoint consensus gate</h3>
+            <p>The Axum test suite now source-audits the current public federation endpoint surface: key advertisement uses aggregate federation metadata, quote routes submit consensus operations or observations, mint/swap/melt submit accepted envelopes before shares, and restore only reads stored shares.</p>
+          </article>
+          <article class="item">
             <h3>Route signing signoff</h3>
-            <p>The implementation plan now closes the narrow security-review item that no public federation-mode route signs directly. The broader public-endpoint consensus-bypass review remains open for the remaining pre-mainnet pass.</p>
+            <p>The implementation plan now closes the narrow security-review item that no public federation-mode route signs directly, backed by the route source audit and the direct signing allowlist.</p>
           </article>
           <article class="item">
             <h3>Direct signing allowlist</h3>
@@ -3476,7 +3480,13 @@
               <td>Direct signing allowlist</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --lib direct_signing_paths_are_reviewed_and_allowlisted -- --test-threads 1` and `cargo test -p cdk --lib --features federation direct_signing_paths_are_reviewed_and_allowlisted -- --test-threads 1` passed. The audit enumerates every reviewed `blind_sign`, `auth_blind_sign`, `sign_blinded_messages`, and `blind_sign_share` boundary.</td>
-              <td>Keep the broader public-endpoint consensus-bypass review open until the full pre-mainnet review is complete.</td>
+              <td>Continue with DB conflict/index review, DoS review, and production BFT ordering work.</td>
+            </tr>
+            <tr>
+              <td>Public endpoint consensus gates</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation public_endpoints_are_consensus_gated_in_federation_mode -- --test-threads 1`, `public_handlers_do_not_directly_sign_in_production`, `post_restore_accepts_v3_restore_placeholders`, and `post_restore_rejects_non_v3_outputs` passed. The audit covers federation key advertisement, quote operations, payment observations, mint/swap/melt share responses, and restore as a stored-share read path.</td>
+              <td>Continue with DB conflict/index review, DoS review, and production BFT ordering work.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>

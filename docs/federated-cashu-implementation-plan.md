@@ -1140,7 +1140,7 @@ Implementation checklist:
 - [ ] Complete formal review of operation canonicalization and transcript binding, including the binary-encoding decision and dedicated SIG_ALL transcript behavior.
 - [x] Complete final review of all paths that can call `blind_sign` or `blind_sign_share`.
 - [x] Public handlers are wired through federation paths in federation mode.
-- [ ] Complete final security review proving no public endpoint can bypass consensus in federation mode.
+- [x] Complete final security review proving no public endpoint can bypass consensus in federation mode.
 - [x] Complete final review and/or tests for NUT-20 signature verification in federated batch issuance.
 - [x] Complete final review and/or tests for P2PK, HTLC, and SIG_ALL transcript construction.
 - [x] Review real payment observation policies.
