@@ -72,8 +72,8 @@ pub use self::trusted_dealer::{
 
 use crate::nuts::nut01::{
     aggregate_public_key_commitments, aggregate_public_key_shares, aggregate_secret_key_shares,
-    evaluate_public_key_commitments, BlsAggregatePublicKey, BlsPublicKeyShare, BlsSecretKeyShare,
-    BlsSignerId,
+    evaluate_public_key_commitments, verify_blind_signature_share, BlsAggregatePublicKey,
+    BlsG1PublicKey, BlsPublicKeyShare, BlsSecretKeyShare, BlsSignerId,
 };
 use crate::nuts::nut02::{KeySet, KeySetVersion};
 use crate::{
@@ -85,6 +85,7 @@ const FEDERATION_DKG_COMMITMENT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-commi
 const FEDERATION_DKG_TRANSCRIPT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-transcript-v1";
 const FEDERATION_DKG_TRANSCRIPT_SIGNATURE_VERSION: &[u8] =
     b"cdk-federation-dkg-transcript-signature-v1";
+const FEDERATION_KEYSET_ROTATION_PROOF_VERSION: &[u8] = b"cdk-federation-keyset-rotation-pop-v1";
 const FEDERATION_OPERATOR_REDACTED_VALUE: &str = "[REDACTED]";
 const FEDERATION_OPERATOR_REDACTED_PATH: &str = "[REDACTED_PATH]";
 const FEDERATION_OPERATOR_REDACTED_URL_CREDENTIAL: &str = "redacted";
@@ -557,6 +558,18 @@ pub enum FederationError {
         /// Keyset ID being validated.
         keyset_id: Id,
         /// Amount whose aggregate key did not match.
+        amount: Amount,
+    },
+    /// A local member could not prove possession of the rotation secret share.
+    #[error(
+        "Federated keyset {keyset_id} proof-of-possession failed for member {member_id} amount {amount}"
+    )]
+    KeysetProofOfPossessionFailed {
+        /// Keyset ID being activated.
+        keyset_id: Id,
+        /// Member whose local secret share was checked.
+        member_id: MemberId,
+        /// Amount whose rotation proof failed.
         amount: Amount,
     },
     /// Private config contains a keyset that is not in the public config.
@@ -1658,6 +1671,111 @@ impl FederatedKeyset {
         }
 
         Ok(())
+    }
+
+    /// Validate that one member controls the local secret shares for this rotation keyset.
+    ///
+    /// This is an activation-time proof gate: the member signs a deterministic,
+    /// domain-separated challenge for each amount with its local BLS secret share
+    /// and immediately verifies the proof against the published public share.
+    pub fn validate_member_rotation_proof_of_possession(
+        &self,
+        federation_id: FederationId,
+        member_id: MemberId,
+        secret_shares: &BTreeMap<Amount, BlsSecretKeyShare>,
+    ) -> Result<()> {
+        let public_member_shares =
+            self.public_shares
+                .get(&member_id)
+                .ok_or(FederationError::MissingPublicShares {
+                    keyset_id: self.id,
+                    member_id,
+                })?;
+
+        for (amount, aggregate_key) in &self.aggregate_keys {
+            let secret_share =
+                secret_shares
+                    .get(amount)
+                    .ok_or(FederationError::MissingSecretShare {
+                        keyset_id: self.id,
+                        amount: *amount,
+                    })?;
+            if secret_share.signer_id().get() != member_id.get() {
+                return Err(FederationError::SecretShareSignerMismatch {
+                    keyset_id: self.id,
+                    member_id,
+                    signer_id: secret_share.signer_id().get(),
+                });
+            }
+
+            let public_share = public_member_shares.get(amount).ok_or(
+                FederationError::MissingPublicShareAmount {
+                    keyset_id: self.id,
+                    member_id,
+                    amount: *amount,
+                },
+            )?;
+            if secret_share.public_key_share() != *public_share {
+                return Err(FederationError::PrivateShareMismatch {
+                    keyset_id: self.id,
+                    member_id,
+                    amount: *amount,
+                });
+            }
+
+            let challenge = self.rotation_proof_challenge(
+                federation_id,
+                member_id,
+                *amount,
+                aggregate_key,
+                public_share,
+            );
+            let proof = secret_share.blind_sign_share(&challenge);
+            let proof_valid = verify_blind_signature_share(&proof, &challenge, public_share)
+                .map_err(|_| FederationError::KeysetProofOfPossessionFailed {
+                    keyset_id: self.id,
+                    member_id,
+                    amount: *amount,
+                })?;
+            if !proof_valid {
+                return Err(FederationError::KeysetProofOfPossessionFailed {
+                    keyset_id: self.id,
+                    member_id,
+                    amount: *amount,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    fn rotation_proof_challenge(
+        &self,
+        federation_id: FederationId,
+        member_id: MemberId,
+        amount: Amount,
+        aggregate_key: &BlsAggregatePublicKey,
+        public_share: &BlsPublicKeyShare,
+    ) -> BlsG1PublicKey {
+        let mut transcript = Vec::new();
+        append_bytes(&mut transcript, FEDERATION_KEYSET_ROTATION_PROOF_VERSION);
+        append_bytes(&mut transcript, &federation_id.to_bytes());
+        append_str(&mut transcript, &self.id.to_string());
+        append_str(&mut transcript, &self.unit.to_string());
+        append_bytes(&mut transcript, &self.input_fee_ppk.to_be_bytes());
+        match self.final_expiry {
+            Some(expiry) => {
+                append_bytes(&mut transcript, &[1]);
+                append_bytes(&mut transcript, &expiry.to_be_bytes());
+            }
+            None => append_bytes(&mut transcript, &[0]),
+        }
+        append_bytes(&mut transcript, &member_id.get().to_be_bytes());
+        append_str(&mut transcript, &amount.to_string());
+        append_bytes(&mut transcript, &aggregate_key.to_bytes());
+        append_bytes(&mut transcript, &public_share.to_bytes());
+
+        BlsG1PublicKey::hash_to_curve(&transcript)
     }
 
     fn validate_advertised_by_member(
@@ -4800,6 +4918,48 @@ mod tests {
             serde_json::from_value::<FederationConfig>(json).is_err(),
             "secp-style public key must not deserialize as a BLS aggregate key"
         );
+    }
+
+    #[test]
+    fn federated_keyset_validates_member_rotation_proof_of_possession() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let (keyset, private_shares) = test_keyset_with_seed(&members, 7);
+        let config = FederationConfig::new(params, members, vec![keyset.clone()]).expect("config");
+        let member_id = member_id(1);
+        let member_shares = private_shares
+            .get(&member_id)
+            .expect("member private shares");
+
+        keyset
+            .validate_member_rotation_proof_of_possession(
+                config.federation_id,
+                member_id,
+                member_shares,
+            )
+            .expect("member proves rotation share possession");
+    }
+
+    #[test]
+    fn federated_keyset_rejects_wrong_member_rotation_secret_share() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let members = test_roster();
+        let (keyset, _) = test_keyset_with_seed(&members, 7);
+        let (_, wrong_private_shares) = test_keyset_with_seed(&members, 9);
+        let config = FederationConfig::new(params, members, vec![keyset.clone()]).expect("config");
+        let member_id = member_id(1);
+        let member_shares = wrong_private_shares
+            .get(&member_id)
+            .expect("wrong member private shares");
+
+        assert!(matches!(
+            keyset.validate_member_rotation_proof_of_possession(
+                config.federation_id,
+                member_id,
+                member_shares,
+            ),
+            Err(FederationError::PrivateShareMismatch { .. })
+        ));
     }
 
     #[test]

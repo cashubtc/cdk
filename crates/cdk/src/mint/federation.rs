@@ -110,6 +110,20 @@ impl FederationRuntimeConfig {
         &self,
         operation: &FederationKeysetRotationOperation,
     ) -> Result<Self, Error> {
+        let secret_shares = self
+            .private_config
+            .keyset_secret_shares
+            .get(&operation.keyset.id)
+            .ok_or(FederationError::MissingPrivateKeyset {
+                keyset_id: operation.keyset.id,
+            })?;
+        operation
+            .keyset
+            .validate_member_rotation_proof_of_possession(
+                self.public_config.federation_id,
+                self.private_config.member_id,
+                secret_shares,
+            )?;
         self.with_public_config(self.public_config.apply_keyset_rotation(operation)?)
     }
 
@@ -1846,6 +1860,7 @@ mod tests {
         MintDatabase, MintFederationJournalDatabase, MintProofsDatabase, MintQuotesDatabase,
         MintSignaturesDatabase,
     };
+    use cdk_common::error::Error;
     use cdk_common::federation::{
         generate_trusted_dealer_configs, FederatedKeyset, FederationError, FederationJournalEntry,
         FederationKeysetRotationOperation, FederationMeltQuotePaymentObservation,
@@ -2546,6 +2561,75 @@ mod tests {
             runtime_config.public_config().federation_id
         );
         assert_eq!(runtime_config.member_id().get(), 1);
+    }
+
+    #[test]
+    fn runtime_config_keyset_rotation_requires_local_secret_share() {
+        let mut runtime_config = runtime_config_with_inactive_rotation_keyset();
+        let mut next_keyset = runtime_config
+            .public_config()
+            .keysets
+            .iter()
+            .find(|keyset| !keyset.active)
+            .expect("inactive rotation keyset")
+            .clone();
+        next_keyset.active = true;
+        runtime_config
+            .private_config
+            .keyset_secret_shares
+            .remove(&next_keyset.id);
+
+        let err = runtime_config
+            .apply_keyset_rotation(&FederationKeysetRotationOperation {
+                keyset: next_keyset,
+            })
+            .expect_err("rotation without local secret share must fail");
+
+        assert!(matches!(
+            err,
+            Error::Federation(FederationError::MissingPrivateKeyset { .. })
+        ));
+    }
+
+    #[test]
+    fn runtime_config_keyset_rotation_rejects_wrong_local_secret_share() {
+        let mut runtime_config = runtime_config_with_inactive_rotation_keyset();
+        let old_keyset = runtime_config
+            .public_config()
+            .keysets
+            .iter()
+            .find(|keyset| keyset.active)
+            .expect("active keyset")
+            .clone();
+        let mut next_keyset = runtime_config
+            .public_config()
+            .keysets
+            .iter()
+            .find(|keyset| !keyset.active)
+            .expect("inactive rotation keyset")
+            .clone();
+        next_keyset.active = true;
+        let wrong_shares = runtime_config
+            .private_config
+            .keyset_secret_shares
+            .get(&old_keyset.id)
+            .expect("old keyset secret shares")
+            .clone();
+        runtime_config
+            .private_config
+            .keyset_secret_shares
+            .insert(next_keyset.id, wrong_shares);
+
+        let err = runtime_config
+            .apply_keyset_rotation(&FederationKeysetRotationOperation {
+                keyset: next_keyset,
+            })
+            .expect_err("rotation with wrong local secret share must fail");
+
+        assert!(matches!(
+            err,
+            Error::Federation(FederationError::PrivateShareMismatch { .. })
+        ));
     }
 
     #[test]

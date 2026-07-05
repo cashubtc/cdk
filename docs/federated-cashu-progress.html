@@ -522,19 +522,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 518 checked items and 70 remaining items. Consensus item admission, runtime replay, and catch-up now reject stale or future federation encoding versions before local state advances.</span>
+          <span class="value">The implementation plan audit tracks 519 checked items and 69 remaining items. Rotation activation now requires a local BLS proof-of-possession before a member adopts a new aggregate keyset.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: reject stale consensus item versions</span>
+          <span class="value">feat: require rotation proof of possession</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The consensus boundary now validates module/default item versions, persisted replay refuses future operation envelopes, and catch-up refuses future-version accepted entries before advancing the local journal.</span>
+          <span class="value">Federated keyset rotation now derives a domain-separated challenge per member and amount, signs it with the local secret share, and verifies the proof before activating the rotation view.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, proof-of-possession gating for rotations, and the remaining real-backend/BFT follow-ups.</span>
+          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, real-backend payment-observation cleanup, and the remaining BFT follow-ups.</span>
         </div>
       </aside>
     </header>
@@ -545,7 +545,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 518 checked entries and 70 remaining entries. The
+          checklist has 519 checked entries and 69 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -784,6 +784,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Rotation proof-of-possession gate</h3>
+            <p>Each member now signs and verifies a domain-separated BLS rotation challenge with its local secret share before accepting a new aggregate keyset into its runtime view. Missing or mismatched local rotation shares fail before activation.</p>
+          </article>
           <article class="item">
             <h3>Consensus stale-upgrade guard</h3>
             <p>Consensus item admission now rejects unsupported module/default item versions, and future-version operation entries are refused during persisted replay and catch-up before local consensus state can advance.</p>
@@ -3380,6 +3384,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite digest_comparison -- --test-threads 1` passed seven digest-compare regressions, including backend mismatch grouping and the new `consensus_backend_mismatch` diagnostic. `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed.</td>
               <td>Carry backend grouping into any future machine-readable digest report output and live smoke assertions.</td>
+            </tr>
+            <tr>
+              <td>Key rotation proof-of-possession</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federated_keyset -- --test-threads 1` passed the member proof-of-possession helper tests, including wrong-share rejection. `cargo test -p cdk --features mint,federation runtime_config_keyset_rotation -- --test-threads 1` passed runtime activation tests for missing and mismatched local rotation shares. `cargo test -p cdk-common --features federation keyset_rotation -- --test-threads 1` and `cargo test -p cdk --features mint,federation keyset_rotation -- --test-threads 1` kept the existing rotation replay path green.</td>
+              <td>Carry the same proof boundary into future dealer-free rotation governance when all members exchange DKG-derived activation approvals.</td>
             </tr>
             <tr>
               <td>Offline keyset rotation process smoke</td>

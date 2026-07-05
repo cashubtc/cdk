@@ -1028,7 +1028,7 @@ Implementation checklist:
 - [x] Add consensus operation `KeysetRotation`.
 - [x] New aggregate keysets become active only after consensus acceptance.
 - [x] Validate configured key shares against public shares.
-- [ ] Add an explicit rotation-time proof-of-possession gate before activating a new keyset.
+- [x] Add an explicit rotation-time proof-of-possession gate before activating a new keyset.
 - [x] Wallet sees NUT-02 keyset changes consistently across members.
 - [x] Add protocol version negotiation in federation metadata.
 - [x] Add migration plan for changing operation encoding versions.
