@@ -406,11 +406,14 @@ pub async fn new_wallet_pg_database(conn_str: &str) -> Result<WalletPgDatabase, 
 
 #[cfg(test)]
 mod test {
+    #[cfg(feature = "federation")]
+    use std::collections::BTreeSet;
+
     use cdk_common::{mint_db_test, wallet_db_test};
 
     use super::*;
 
-    async fn provide_mint_db(test_id: String) -> MintPgDatabase {
+    fn test_db_url_with_schema(test_id: &str) -> String {
         let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
             .or_else(|_| std::env::var("PG_DB_URL")) // Fallback for compatibility
             .unwrap_or(
@@ -418,7 +421,17 @@ mod test {
                     .to_owned(),
             );
 
-        let db_url = format!("{db_url} schema={test_id}");
+        format!("{db_url} schema={test_id}")
+    }
+
+    #[cfg(feature = "federation")]
+    fn unique_federation_test_id(test_name: &str) -> String {
+        let prefix = test_name.chars().take(24).collect::<String>();
+        format!("fed_{prefix}_{}", uuid::Uuid::new_v4().simple())
+    }
+
+    async fn provide_mint_db(test_id: String) -> MintPgDatabase {
+        let db_url = test_db_url_with_schema(&test_id);
 
         MintPgDatabase::new(db_url.as_str())
             .await
@@ -428,14 +441,7 @@ mod test {
     mint_db_test!(provide_mint_db);
 
     async fn provide_wallet_db(test_id: String) -> WalletPgDatabase {
-        let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
-            .or_else(|_| std::env::var("PG_DB_URL")) // Fallback for compatibility
-            .unwrap_or(
-                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
-                    .to_owned(),
-            );
-
-        let db_url = format!("{db_url} schema={test_id}");
+        let db_url = test_db_url_with_schema(&test_id);
 
         WalletPgDatabase::new(db_url.as_str())
             .await
@@ -448,7 +454,7 @@ mod test {
     #[tokio::test]
     async fn federation_config_persistence() {
         cdk_common::database::mint::test::federation_config_persistence(
-            provide_mint_db("federation_config_persistence".to_string()).await,
+            provide_mint_db(unique_federation_test_id("federation_config_persistence")).await,
         )
         .await;
     }
@@ -457,7 +463,7 @@ mod test {
     #[tokio::test]
     async fn federation_journal_persistence() {
         cdk_common::database::mint::test::federation_journal_persistence(
-            provide_mint_db("federation_journal_persistence".to_string()).await,
+            provide_mint_db(unique_federation_test_id("federation_journal_persistence")).await,
         )
         .await;
     }
@@ -466,7 +472,10 @@ mod test {
     #[tokio::test]
     async fn federation_payment_observation_persistence() {
         cdk_common::database::mint::test::federation_payment_observation_persistence(
-            provide_mint_db("federation_payment_observation_persistence".to_string()).await,
+            provide_mint_db(unique_federation_test_id(
+                "federation_payment_observation_persistence",
+            ))
+            .await,
         )
         .await;
     }
@@ -475,7 +484,10 @@ mod test {
     #[tokio::test]
     async fn federation_member_status_persistence() {
         cdk_common::database::mint::test::federation_member_status_persistence(
-            provide_mint_db("federation_member_status_persistence".to_string()).await,
+            provide_mint_db(unique_federation_test_id(
+                "federation_member_status_persistence",
+            ))
+            .await,
         )
         .await;
     }
@@ -484,7 +496,10 @@ mod test {
     #[tokio::test]
     async fn federation_state_digest_checkpoint_persistence() {
         cdk_common::database::mint::test::federation_state_digest_checkpoint_persistence(
-            provide_mint_db("federation_state_digest_checkpoint_persistence".to_string()).await,
+            provide_mint_db(unique_federation_test_id(
+                "federation_state_digest_checkpoint_persistence",
+            ))
+            .await,
         )
         .await;
     }
@@ -493,7 +508,10 @@ mod test {
     #[tokio::test]
     async fn federation_signature_share_persistence() {
         cdk_common::database::mint::test::federation_signature_share_persistence(
-            provide_mint_db("federation_signature_share_persistence".to_string()).await,
+            provide_mint_db(unique_federation_test_id(
+                "federation_signature_share_persistence",
+            ))
+            .await,
         )
         .await;
     }
@@ -502,7 +520,10 @@ mod test {
     #[tokio::test]
     async fn federation_dkg_setup_state_persistence() {
         cdk_common::database::mint::test::federation_dkg_setup_state_persistence(
-            provide_mint_db("federation_dkg_setup_state_persistence".to_string()).await,
+            provide_mint_db(unique_federation_test_id(
+                "federation_dkg_setup_state_persistence",
+            ))
+            .await,
         )
         .await;
     }
@@ -511,7 +532,10 @@ mod test {
     #[tokio::test]
     async fn federation_dkg_member_keyset_share_persistence() {
         cdk_common::database::mint::test::federation_dkg_member_keyset_share_persistence(
-            provide_mint_db("federation_dkg_member_keyset_share_persistence".to_string()).await,
+            provide_mint_db(unique_federation_test_id(
+                "federation_dkg_member_keyset_share_persistence",
+            ))
+            .await,
         )
         .await;
     }
@@ -520,8 +544,10 @@ mod test {
     #[tokio::test]
     async fn federation_dkg_secret_share_contribution_persistence() {
         cdk_common::database::mint::test::federation_dkg_secret_share_contribution_persistence(
-            provide_mint_db("federation_dkg_secret_share_contribution_persistence".to_string())
-                .await,
+            provide_mint_db(unique_federation_test_id(
+                "federation_dkg_secret_share_contribution_persistence",
+            ))
+            .await,
         )
         .await;
     }
@@ -530,7 +556,10 @@ mod test {
     #[tokio::test]
     async fn federation_dkg_transcript_signature_persistence() {
         cdk_common::database::mint::test::federation_dkg_transcript_signature_persistence(
-            provide_mint_db("federation_dkg_transcript_signature_persistence".to_string()).await,
+            provide_mint_db(unique_federation_test_id(
+                "federation_dkg_transcript_signature_persistence",
+            ))
+            .await,
         )
         .await;
     }
@@ -539,7 +568,10 @@ mod test {
     #[tokio::test]
     async fn federation_journal_concurrent_writes() {
         cdk_common::database::mint::test::federation_journal_concurrent_writes(
-            provide_mint_db("federation_journal_concurrent_writes".to_string()).await,
+            provide_mint_db(unique_federation_test_id(
+                "federation_journal_concurrent_writes",
+            ))
+            .await,
         )
         .await;
     }
@@ -548,9 +580,114 @@ mod test {
     #[tokio::test]
     async fn federation_journal_concurrent_metadata_updates() {
         cdk_common::database::mint::test::federation_journal_concurrent_metadata_updates(
-            provide_mint_db("federation_journal_concurrent_metadata_updates".to_string()).await,
+            provide_mint_db(unique_federation_test_id(
+                "federation_journal_concurrent_metadata_updates",
+            ))
+            .await,
         )
         .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn federation_migrations_apply_to_empty_postgres_and_keep_standalone_tables() {
+        let test_id = unique_federation_test_id("migrate_empty");
+        let db_url = test_db_url_with_schema(&test_id);
+        let migrated = MintPgDatabase::new(db_url.as_str())
+            .await
+            .expect("migrated postgres database");
+
+        drop(migrated);
+
+        let config = PgConfig::from(db_url.as_str());
+        let schema = config.schema.clone().expect("test schema");
+        let (client, connection) = connect(&config.url, NoTls)
+            .await
+            .expect("postgres connection");
+        let connection_handle = tokio::spawn(async move {
+            let _ = connection.await;
+        });
+
+        let table_rows = client
+            .query(
+                r#"
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = $1
+                "#,
+                &[&schema],
+            )
+            .await
+            .expect("postgres table rows");
+        let table_names = table_rows
+            .into_iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<BTreeSet<_>>();
+
+        for table in [
+            "proof",
+            "keyset",
+            "mint_quote",
+            "melt_quote",
+            "blind_signature",
+            "saga_state",
+            "completed_operations",
+            "federation_journal_entries",
+            "federation_member_sequences",
+            "federation_session_outcomes",
+            "federation_state_digest",
+            "federation_payment_observations",
+            "federation_member_status",
+            "federation_config",
+            "federation_signature_shares",
+            "federation_dkg_setup_messages",
+            "federation_dkg_member_keyset_shares",
+            "federation_dkg_secret_share_contributions",
+            "federation_dkg_transcript_signatures",
+        ] {
+            assert!(
+                table_names.contains(table),
+                "missing migrated table {table}"
+            );
+        }
+
+        let index_rows = client
+            .query(
+                r#"
+                SELECT indexname
+                FROM pg_indexes
+                WHERE schemaname = $1
+                "#,
+                &[&schema],
+            )
+            .await
+            .expect("postgres index rows");
+        let index_names = index_rows
+            .into_iter()
+            .map(|row| row.get::<_, String>(0))
+            .collect::<BTreeSet<_>>();
+
+        for index in [
+            "idx_federation_journal_operation_id",
+            "idx_federation_session_outcomes_from_index",
+            "idx_federation_state_digest_state",
+            "idx_federation_payment_observations_member_state",
+            "idx_federation_payment_observations_quote",
+            "idx_federation_signature_shares_operation_output",
+            "idx_federation_signature_shares_blinded_message",
+            "idx_federation_dkg_setup_member",
+            "idx_federation_dkg_member_keyset_shares_member",
+            "idx_federation_dkg_secret_share_contributions_receiver",
+            "idx_federation_dkg_transcript_signatures_member",
+            "blind_signature_quote_id_index",
+        ] {
+            assert!(
+                index_names.contains(index),
+                "missing migrated index {index}"
+            );
+        }
+
+        connection_handle.abort();
     }
 
     #[tokio::test]

@@ -525,19 +525,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 558 checked items and 31 remaining items. Federation-aware wallets now verify threshold quote visibility after quote creation, and quote-status fanout waits for a matching quorum before aggregation.</span>
+          <span class="value">The implementation plan audit tracks 560 checked items and 29 remaining items. Live Postgres migration application now has an empty-schema table/index proof, and the federation storage suite is rerunnable against fresh schemas.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: wait for matching mint quote status quorum</span>
+          <span class="value">test: verify live postgres federation storage</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`post_mint_quote` now refuses federation quotes that are not visible to a threshold, and mint quote status collection no longer stops on a nonmatching paid/unpaid quorum race.</span>
+          <span class="value">Postgres federation tests now prove empty-schema migration application, standalone table preservation, federation table/index presence, and live storage round-trips across the full crate suite.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with live Postgres migration/application coverage, production DKG, broader storage-backed recovery checks, and the remaining BFT follow-ups.</span>
+          <span class="value">Continue with production DKG, broader storage-backed recovery checks, larger-roster partition drills, and the remaining BFT follow-ups.</span>
         </div>
       </aside>
     </header>
@@ -548,7 +548,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 558 checked entries and 31 remaining entries. The
+          checklist has 560 checked entries and 29 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Live Postgres storage verified</h3>
+            <p>The Postgres federation tests now create fresh schemas for explicit storage cases, prove empty-schema migration application, and pass the full live `cdk-postgres` suite with federation enabled.</p>
+          </article>
           <article class="item">
             <h3>Quote visibility gate</h3>
             <p>Federated mint quote creation now confirms the created quote is visible to a threshold before returning it, and mint quote status fanout waits for a matching threshold view instead of stopping on the first nonmatching pair of responses.</p>
@@ -2176,19 +2180,25 @@
               <td>Federation signature-share storage</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-sqlite --features federation federation_signature_share_persistence -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_journal_hot_path_indexes_are_used -- --test-threads 1`, and the focused cdk mint, swap, and melt-change apply tests passed. The tests cover idempotent replay, conflicting share rejection, operation/output lookup, blinded-message lookup, indexed query plans for both share lookups, and apply-path writes.</td>
-              <td>Re-run Postgres-backed migration/storage coverage when a Postgres instance is available, then include the share table in broader catch-up/recovery process tests.</td>
+              <td>Include the share table in broader catch-up/recovery process tests and keep the live Postgres suite in the storage regression rotation.</td>
             </tr>
             <tr>
               <td>SQLite federation migration application</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-sqlite --features federation federation_migrations_apply_to_empty_sqlite_and_keep_standalone_tables -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_journal_hot_path_indexes_are_used -- --test-threads 1`, `cargo test -p cdk-sql-common --features federation federation_mint_migrations_cover_sqlite_and_postgres -- --test-threads 1`, and feature-disabled `cargo test -p cdk-sqlite open_legacy_and_migrate -- --test-threads 1` passed. The new regression creates a fresh file-backed mint database, reopens it through the normal mint constructor, and verifies standalone mint tables plus federation journal, session-outcome, payment-observation, signature-share, and DKG tables are present.</td>
-              <td>Run live Postgres migration application against an available Postgres instance, then add the same empty-database table-presence proof for Postgres.</td>
+              <td>Keep SQLite and Postgres migration parity checks aligned whenever federation storage tables or indexes change.</td>
+            </tr>
+            <tr>
+              <td>Live Postgres federation migration/storage</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-postgres --features federation federation_migrations_apply_to_empty_postgres_and_keep_standalone_tables -- --test-threads 1`, `cargo test -p cdk-postgres --features federation federation -- --test-threads 1`, `cargo test -p cdk-postgres --features federation -- --test-threads 1`, and `cargo test -p cdk-sql-common --features federation federation_mint_migrations_cover_sqlite_and_postgres -- --test-threads 1` passed. The live Postgres runs used the local helper database, verified empty-schema migration application, and now allocate fresh schemas for explicit federation storage tests so reruns do not collide with old journal or DKG rows.</td>
+              <td>Use the live Postgres suite after future migration changes and carry the fresh-schema harness into any new explicit storage tests.</td>
             </tr>
             <tr>
               <td>Standalone mint and DbSignatory regressions</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --features mint mint::issue -- --test-threads 1` passed 11 tests. `cargo test -p cdk --features mint mint::swap -- --test-threads 1` passed 69 tests. `cargo test -p cdk --features mint mint::builder::tests::test_standalone_builder_honors_non_federation_keyset_versions -- --test-threads 1` passed. `cargo test -p cdk-signatory db_signatory -- --test-threads 1` passed 5 signatory tests.</td>
-              <td>Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, and the remaining real-backend/BFT follow-ups.</td>
+              <td>Continue with broader storage-backed recovery checks and the remaining real-backend/BFT follow-ups.</td>
             </tr>
             <tr>
               <td>Federation restore share lookup</td>
@@ -3316,7 +3326,7 @@
               <td>Mixed-version config rejection</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --features mint,federation runtime_config_rejects_unsupported_protocol_versions -- --test-threads 1` and `cargo test -p cdk --features wallet,mint,federation federated_mint_connector_rejects_unsupported_protocol_versions -- --test-threads 1` passed focused entry-point regressions. `cargo test -p cdk-common --features federation federation::tests -- --test-threads 1`, `cargo test -p cdk --features mint,federation mint::federation::tests -- --test-threads 1`, and `cargo test -p cdk --features wallet,mint,federation federated_mint_connector -- --test-threads 1` passed the broader suites.</td>
-              <td>Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, and the remaining real-backend/BFT follow-ups.</td>
+              <td>Continue with broader storage-backed recovery checks and the remaining real-backend/BFT follow-ups.</td>
             </tr>
             <tr>
               <td>Stale consensus item rejection</td>
@@ -3598,7 +3608,7 @@
               <td>State digest checkpoints</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-sqlite --features federation federation_state_digest_checkpoint_persistence -- --test-threads 1`, `cargo test -p cdk-axum --features federation submit_federation_envelope_prunes_state_digest_checkpoints_to_retention -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation_peer_sync_config_rejects_invalid_values -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_peer_sync_config -- --test-threads 1`, `cargo check -p cdk-axum --features federation`, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed. The checkpoint stores operation index, operation id, order digest, and materialized state digest in a dedicated SQL table, rejects conflicting replay, maps configurable retention through mintd, rejects zero retention, and prunes old checkpoints atomically after finalization.</td>
-              <td>Run live Postgres migration/application coverage when a Postgres service is available, then fold checkpoint retention into broader storage-backed recovery tests.</td>
+              <td>Fold checkpoint retention into broader storage-backed recovery tests and keep the live Postgres suite in the storage regression rotation.</td>
             </tr>
             <tr>
               <td>Durable public federation config</td>
