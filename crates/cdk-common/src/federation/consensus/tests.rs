@@ -895,6 +895,38 @@ fn aleph_bft_finalization_handler_rejects_duplicate_member_unit_replay() {
 }
 
 #[test]
+fn aleph_bft_finalization_handler_rejects_unknown_submitter_before_state_change() {
+    let federation_id = federation_id(13);
+    let mut handler = FederationAlephBftFinalizationHandler::with_allowed_members(
+        federation_id,
+        0,
+        0,
+        FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+        [member_id_value(1), member_id_value(2), member_id_value(3)],
+    )
+    .expect("handler");
+    let unknown_unit =
+        FederationAlephBftUnitPayload::new(federation_id, member_id_value(4), 0, 0, Vec::new())
+            .expect("unknown member unit");
+
+    assert!(matches!(
+        handler.finalize_next_unit(unknown_unit),
+        Err(FederationError::UnknownMember { member_id })
+            if member_id == member_id_value(4)
+    ));
+    assert_eq!(handler.next_unit_finalization_index(), 0);
+    assert_eq!(handler.next_item_index(), 0);
+
+    let known_unit =
+        FederationAlephBftUnitPayload::new(federation_id, member_id_value(2), 0, 0, Vec::new())
+            .expect("known member unit");
+    handler
+        .finalize_next_unit(known_unit)
+        .expect("known member unit finalized");
+    assert_eq!(handler.next_unit_finalization_index(), 1);
+}
+
+#[test]
 fn aleph_bft_finalization_handler_advances_to_later_sessions() {
     let federation_id = federation_id(13);
     let mut handler = FederationAlephBftFinalizationHandler::new(federation_id);
@@ -1687,6 +1719,67 @@ fn backend_adapter_runtime_aleph_bft_validates_roster_before_queueing() {
         FederationError::UnknownMember { member_id }
             if member_id == member_id_value(4)
     ));
+}
+
+#[test]
+fn backend_adapter_runtime_aleph_bft_rejects_finalized_unit_from_unknown_member() {
+    let federation_id = federation_id(13);
+    let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+    let mut adapter = FederationConsensusBackendAdapterRuntime::with_backend(
+        FederationConsensusBackendKind::AlephBft,
+        federation_id,
+        members,
+        2,
+        members[0],
+    )
+    .expect("aleph-bft adapter runtime");
+    let unknown_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(4),
+        0,
+        0,
+        vec![FederationConsensusItem::operation(mint_envelope(
+            federation_id,
+            "quote-unknown",
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        ))],
+    )
+    .expect("unknown member unit");
+
+    assert!(matches!(
+        adapter.finalize_aleph_bft_unit(unknown_unit),
+        Err(FederationError::UnknownMember { member_id })
+            if member_id == member_id_value(4)
+    ));
+    assert!(adapter
+        .aleph_bft_finalized_items()
+        .expect("finalized items")
+        .is_empty());
+
+    let known_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        0,
+        0,
+        vec![FederationConsensusItem::operation(mint_envelope(
+            federation_id,
+            "quote-known",
+            "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+        ))],
+    )
+    .expect("known member unit");
+    let responses = adapter
+        .finalize_aleph_bft_unit(known_unit)
+        .expect("known member unit finalizes");
+
+    assert_eq!(responses.len(), 1);
+    assert_eq!(
+        adapter
+            .aleph_bft_finalized_items()
+            .expect("finalized items")
+            .len(),
+        1
+    );
 }
 
 #[test]

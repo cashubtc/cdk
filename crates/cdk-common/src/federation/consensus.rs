@@ -761,6 +761,7 @@ pub struct FederationAlephBftFinalizationHandler {
     next_unit_finalization_index: u64,
     next_item_index: u64,
     max_unit_payload_bytes: usize,
+    allowed_members: Option<BTreeSet<MemberId>>,
     finalized_units: BTreeSet<(u64, MemberId, u64)>,
     finalized_operation_ids: BTreeSet<FederationOperationId>,
 }
@@ -792,9 +793,31 @@ impl FederationAlephBftFinalizationHandler {
             next_unit_finalization_index: 0,
             next_item_index,
             max_unit_payload_bytes,
+            allowed_members: None,
             finalized_units: BTreeSet::new(),
             finalized_operation_ids: BTreeSet::new(),
         })
+    }
+
+    /// Create a finalization handler that only accepts units from known members.
+    pub fn with_allowed_members<I>(
+        federation_id: FederationId,
+        session: u64,
+        next_item_index: u64,
+        max_unit_payload_bytes: usize,
+        allowed_members: I,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = MemberId>,
+    {
+        let mut handler = Self::with_limits(
+            federation_id,
+            session,
+            next_item_index,
+            max_unit_payload_bytes,
+        )?;
+        handler.allowed_members = Some(allowed_members.into_iter().collect());
+        Ok(handler)
     }
 
     /// Return the session accepted by this handler.
@@ -846,6 +869,13 @@ impl FederationAlephBftFinalizationHandler {
                 expected: self.session,
                 found: payload.session,
             });
+        }
+        if let Some(allowed_members) = &self.allowed_members {
+            if !allowed_members.contains(&payload.submitting_member) {
+                return Err(FederationError::UnknownMember {
+                    member_id: payload.submitting_member,
+                });
+            }
         }
 
         let unit_key = (
@@ -941,6 +971,34 @@ impl FederationAlephBftConsensusAdapter {
             journal: InMemoryFederationJournal::new(),
             finalized_items: Vec::new(),
         }
+    }
+
+    /// Create an AlephBFT adapter boundary that only accepts finalized units from known members.
+    pub fn for_members<I>(
+        federation_id: FederationId,
+        local_member: MemberId,
+        session: u64,
+        allowed_members: I,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = MemberId>,
+    {
+        Ok(Self {
+            data_provider: FederationAlephBftUnitDataProvider::new(
+                federation_id,
+                local_member,
+                session,
+            ),
+            finalization_handler: FederationAlephBftFinalizationHandler::with_allowed_members(
+                federation_id,
+                session,
+                0,
+                FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+                allowed_members,
+            )?,
+            journal: InMemoryFederationJournal::new(),
+            finalized_items: Vec::new(),
+        })
     }
 
     /// Create an AlephBFT adapter boundary with explicit limits.
@@ -1782,14 +1840,29 @@ impl FederationConsensusBackendAdapterRuntime {
         })
     }
 
-    /// Create an AlephBFT adapter runtime boundary.
-    #[must_use]
-    pub fn aleph_bft(federation_id: FederationId, local_member: MemberId, session: u64) -> Self {
-        Self {
+    /// Create an AlephBFT adapter runtime boundary for a configured roster.
+    pub fn aleph_bft<I>(
+        federation_id: FederationId,
+        member_ids: I,
+        consensus_threshold: u16,
+        local_member: MemberId,
+        session: u64,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = MemberId>,
+    {
+        let allowed_members =
+            validate_adapter_roster(member_ids, consensus_threshold, local_member)?;
+        Ok(Self {
             backend: FederationConsensusBackendAdapterRuntimeBackend::AlephBft(
-                FederationAlephBftConsensusAdapter::new(federation_id, local_member, session),
+                FederationAlephBftConsensusAdapter::for_members(
+                    federation_id,
+                    local_member,
+                    session,
+                    allowed_members,
+                )?,
             ),
-        }
+        })
     }
 
     /// Create an adapter runtime for the selected backend.
@@ -1807,10 +1880,13 @@ impl FederationConsensusBackendAdapterRuntime {
             FederationConsensusBackendKind::InMemory => {
                 Self::in_memory(federation_id, member_ids, consensus_threshold, local_member)
             }
-            FederationConsensusBackendKind::AlephBft => {
-                validate_adapter_roster(member_ids, consensus_threshold, local_member)?;
-                Ok(Self::aleph_bft(federation_id, local_member, 0))
-            }
+            FederationConsensusBackendKind::AlephBft => Self::aleph_bft(
+                federation_id,
+                member_ids,
+                consensus_threshold,
+                local_member,
+                0,
+            ),
         }
     }
 
@@ -1870,7 +1946,7 @@ fn validate_adapter_roster<I>(
     member_ids: I,
     consensus_threshold: u16,
     local_member: MemberId,
-) -> Result<()>
+) -> Result<BTreeSet<MemberId>>
 where
     I: IntoIterator<Item = MemberId>,
 {
@@ -1894,7 +1970,7 @@ where
         });
     }
 
-    Ok(())
+    Ok(members)
 }
 
 fn requires_external_finalization_error() -> FederationError {

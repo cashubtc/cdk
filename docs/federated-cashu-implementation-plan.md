@@ -517,6 +517,14 @@ Architecture checklist:
   bytes.
 - [ ] Add peer identity allowlist validation before any AlephBFT message,
   private REST submit, catch-up response, or signed session outcome is accepted.
+  The existing signed private REST envelope verifies sender membership against
+  `FederationConfig`, and signed session-outcome quorum verification rejects
+  unknown signers. The AlephBFT adapter runtime now constructs a roster-bound
+  finalization handler from the configured members and rejects finalized units
+  whose `submitting_member` is not in the roster before advancing unit indexes,
+  marking duplicates, appending journal entries, or recording finalized items.
+  Future AlephBFT wire messages still need to reuse the same roster check at
+  the networking boundary.
 - [ ] Add a Fedimint-like data-provider loop that drains a bounded pending queue,
   deduplicates operation hashes locally per session, enforces max byte limits,
   and batches items without busy loops. The synchronous
