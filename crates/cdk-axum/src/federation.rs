@@ -871,9 +871,16 @@ async fn post_local_status(
         .persist_federation_sequence(verified.sender, verified.sequence)
         .await
         .map_err(cdk_error_response)?;
-    let (peer_status, materialized_state_rows) = local_peer_status_with_materialized_rows(&state)
-        .await
-        .map_err(anyhow_response)?;
+    let (peer_status, materialized_state_rows) = if payload.payload.include_materialized_rows {
+        local_peer_status_with_materialized_rows(&state)
+            .await
+            .map_err(anyhow_response)?
+    } else {
+        (
+            local_peer_status(&state).await.map_err(anyhow_response)?,
+            Vec::new(),
+        )
+    };
     let sync_status = state.federation_sync_status().await.unwrap_or_default();
     let session_outcome_quorum = session_outcome_quorum_status(&state)
         .await
@@ -3251,12 +3258,28 @@ mod tests {
         receiver: MemberId,
         sequence: u64,
     ) -> FederationSignedRequest<FederationPeerStatusRequest> {
+        signed_status_request_with_payload(
+            public_config,
+            private_config,
+            receiver,
+            sequence,
+            FederationPeerStatusRequest::default(),
+        )
+    }
+
+    fn signed_status_request_with_payload(
+        public_config: &FederationConfig,
+        private_config: &MemberConfigPrivate,
+        receiver: MemberId,
+        sequence: u64,
+        payload: FederationPeerStatusRequest,
+    ) -> FederationSignedRequest<FederationPeerStatusRequest> {
         FederationSignedRequest::new_signed(
             public_config.federation_id,
             receiver,
             sequence,
             FederationRestMessageKind::Status,
-            FederationPeerStatusRequest::default(),
+            payload,
             private_config,
         )
         .expect("signed status request")
@@ -8219,7 +8242,7 @@ mod tests {
             .expect("submit restore");
 
         let request = signed_status_request(&public_config, &peer_private, local_member, 1);
-        let response = post_local_status(State(state), Json(request))
+        let response = post_local_status(State(state.clone()), Json(request))
             .await
             .expect("local status response")
             .0;
@@ -8233,6 +8256,19 @@ mod tests {
         assert_eq!(response.session_outcome_quorum_operation_count, None);
         assert!(response.session_outcome_quorum_signers.is_empty());
         assert!(response.payment_observation_reports.is_empty());
+        assert!(response.materialized_state_rows.is_empty());
+
+        let request = signed_status_request_with_payload(
+            &public_config,
+            &peer_private,
+            local_member,
+            2,
+            FederationPeerStatusRequest::with_materialized_rows(),
+        );
+        let response = post_local_status(State(state), Json(request))
+            .await
+            .expect("local status response with rows")
+            .0;
         assert!(!response.materialized_state_rows.is_empty());
         let status_json = serde_json::to_string(&response).expect("status json");
         assert!(!status_json
@@ -8511,8 +8547,13 @@ mod tests {
         assert_eq!(status.latest_index, Some(0));
         assert_eq!(status.latest_order_digest, entries[0].order_digest);
 
-        let local_status_request =
-            signed_status_request(&public_config, &peer_private, local_member, 2);
+        let local_status_request = signed_status_request_with_payload(
+            &public_config,
+            &peer_private,
+            local_member,
+            2,
+            FederationPeerStatusRequest::with_materialized_rows(),
+        );
         let local_status = post_local_status(State(state), Json(local_status_request))
             .await
             .expect("local status response")

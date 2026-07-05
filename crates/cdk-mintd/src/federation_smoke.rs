@@ -1006,6 +1006,7 @@ async fn wait_for_ready_members_after_consensus(
             public_config,
             &private_config,
             &[],
+            false,
         )
         .await
         {

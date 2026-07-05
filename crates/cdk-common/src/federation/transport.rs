@@ -562,9 +562,27 @@ impl FederationRestSequenceTracker {
     }
 }
 
-/// Empty signed payload used to request a peer status snapshot.
+/// Signed payload used to request a peer status snapshot.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FederationPeerStatusRequest {}
+pub struct FederationPeerStatusRequest {
+    /// Include per-row materialized state fingerprints for operator diffing.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub include_materialized_rows: bool,
+}
+
+impl FederationPeerStatusRequest {
+    /// Request materialized-state row fingerprints in addition to status digests.
+    #[must_use]
+    pub const fn with_materialized_rows() -> Self {
+        Self {
+            include_materialized_rows: true,
+        }
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 
 /// Signed request payload carrying one member's pre-reveal DKG commitment hash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1941,6 +1959,22 @@ mod tests {
         let decoded: FederationSignedRequest<FederationPeerStatusRequest> =
             serde_json::from_str(&json).expect("decoded request");
         decoded.verify(&config, receiver).expect("decoded verifies");
+    }
+
+    #[test]
+    fn peer_status_request_materialized_rows_are_opt_in() {
+        let default_json =
+            serde_json::to_string(&FederationPeerStatusRequest::default()).expect("default json");
+        assert_eq!(default_json, "{}");
+
+        let opt_in_json =
+            serde_json::to_string(&FederationPeerStatusRequest::with_materialized_rows())
+                .expect("opt-in json");
+        assert_eq!(opt_in_json, r#"{"include_materialized_rows":true}"#);
+
+        let legacy: FederationPeerStatusRequest =
+            serde_json::from_str("{}").expect("legacy status request");
+        assert!(!legacy.include_materialized_rows);
     }
 
     #[test]

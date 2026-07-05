@@ -7,7 +7,9 @@ use cdk_common::federation::{
 use cdk_http_client::Async;
 
 use crate::cli::{CLIArgs, FederationCompareDigestsArgs};
-use crate::federation_status::{query_local_statuses, FederationLocalStatusResponse};
+use crate::federation_status::{
+    query_local_statuses_with_materialized_rows, FederationLocalStatusResponse,
+};
 
 pub(crate) async fn run_compare_digests_command(
     cli_args: &CLIArgs,
@@ -23,11 +25,12 @@ pub(crate) async fn run_compare_digests_command(
         crate::read_federation_json(&public_config_path, "public federation config")?;
     let private_config: MemberConfigPrivate =
         crate::read_federation_json(&private_config_path, "private federation config")?;
-    let statuses = query_local_statuses(
+    let statuses = query_local_statuses_with_materialized_rows(
         Async::default(),
         &public_config,
         &private_config,
         &args.members,
+        true,
     )
     .await
     .context("failed to query signed federation digest status")?;

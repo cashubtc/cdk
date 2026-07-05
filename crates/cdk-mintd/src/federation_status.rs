@@ -86,12 +86,38 @@ pub(crate) async fn query_local_statuses<T>(
 where
     T: Transport,
 {
+    query_local_statuses_with_materialized_rows(
+        transport,
+        public_config,
+        private_config,
+        selected_members,
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn query_local_statuses_with_materialized_rows<T>(
+    transport: T,
+    public_config: &FederationConfig,
+    private_config: &MemberConfigPrivate,
+    selected_members: &[u16],
+    include_materialized_rows: bool,
+) -> Result<Vec<FederationLocalStatusResponse>>
+where
+    T: Transport,
+{
     private_config
         .validate_against_public(public_config)
         .context("private federation config does not match public federation config")?;
 
-    query_local_statuses_prevalidated(transport, public_config, private_config, selected_members)
-        .await
+    query_local_statuses_prevalidated(
+        transport,
+        public_config,
+        private_config,
+        selected_members,
+        include_materialized_rows,
+    )
+    .await
 }
 
 pub(crate) async fn query_local_statuses_prevalidated<T>(
@@ -99,6 +125,7 @@ pub(crate) async fn query_local_statuses_prevalidated<T>(
     public_config: &FederationConfig,
     private_config: &MemberConfigPrivate,
     selected_members: &[u16],
+    include_materialized_rows: bool,
 ) -> Result<Vec<FederationLocalStatusResponse>>
 where
     T: Transport,
@@ -108,9 +135,15 @@ where
     let mut statuses = Vec::with_capacity(targets.len());
     for member in targets {
         sequence = sequence.saturating_add(1);
-        let status =
-            query_local_status(&transport, public_config, private_config, &member, sequence)
-                .await?;
+        let status = query_local_status(
+            &transport,
+            public_config,
+            private_config,
+            &member,
+            sequence,
+            include_materialized_rows,
+        )
+        .await?;
         statuses.push(status);
     }
 
@@ -123,16 +156,22 @@ async fn query_local_status<T>(
     private_config: &MemberConfigPrivate,
     member: &MemberConfigPublic,
     sequence: u64,
+    include_materialized_rows: bool,
 ) -> Result<FederationLocalStatusResponse>
 where
     T: Transport,
 {
+    let payload = if include_materialized_rows {
+        FederationPeerStatusRequest::with_materialized_rows()
+    } else {
+        FederationPeerStatusRequest::default()
+    };
     let request = FederationSignedRequest::new_signed(
         public_config.federation_id,
         member.member_id,
         sequence,
         FederationRestMessageKind::Status,
-        FederationPeerStatusRequest::default(),
+        payload,
         private_config,
     )?;
     let url = member
@@ -811,6 +850,8 @@ mod tests {
         assert_eq!(requests[0].sender, private_config.member_id);
         assert_eq!(requests[0].receiver, MemberId::new(1).expect("member id"));
         assert_eq!(requests[1].receiver, MemberId::new(3).expect("member id"));
+        assert!(!requests[0].payload.include_materialized_rows);
+        assert!(!requests[1].payload.include_materialized_rows);
         assert!(requests[1].sequence > requests[0].sequence);
         requests[0]
             .verify(&public_config, MemberId::new(1).expect("member id"))
@@ -828,6 +869,30 @@ mod tests {
             urls[1].as_str(),
             "http://127.0.0.1:8087/federation/v1/local-status"
         );
+    }
+
+    #[tokio::test]
+    async fn status_query_materialized_rows_are_opt_in() {
+        let (public_config, private_config) = status_fixture();
+        let transport = MockStatusTransport::new(vec![local_status(&public_config, 1, 0)]);
+
+        let statuses = query_local_statuses_with_materialized_rows(
+            transport.clone(),
+            &public_config,
+            &private_config,
+            &[1],
+            true,
+        )
+        .await
+        .expect("status query");
+
+        assert_eq!(statuses.len(), 1);
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].payload.include_materialized_rows);
+        requests[0]
+            .verify(&public_config, MemberId::new(1).expect("member id"))
+            .expect("request verifies");
     }
 
     #[tokio::test]
@@ -866,6 +931,7 @@ mod tests {
             &public_config,
             &private_config,
             &[1],
+            false,
         )
         .await
         .expect("prevalidated status query");
