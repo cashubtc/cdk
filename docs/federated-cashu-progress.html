@@ -523,19 +523,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 529 checked items and 60 remaining items. Direct signing and threshold-share signing paths now have an executable allowlist covering mint, swap, melt, auth, signatory, RPC, and BLS share boundaries.</span>
+          <span class="value">The implementation plan audit tracks 530 checked items and 59 remaining items. Route-level direct-signing signoff is complete: public mint, swap, and melt handlers are source-audited to submit consensus before returning shares.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: audit direct signing path allowlist</span>
+          <span class="value">docs: record route signing signoff</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk` now tests every reviewed direct signing boundary, including standalone final signing, auth signing, federation share signing, signatory adapters, RPC forwarding, and the BLS share primitive.</span>
+          <span class="value">The implementation plan now closes the narrow route-direct-signing signoff, backed by the Axum production-handler audit and the mint/signatory direct-signing allowlist.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, route-level security signoff, module splits, and the remaining BFT follow-ups.</span>
+          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, full public-endpoint consensus-bypass review, module splits, and the remaining BFT follow-ups.</span>
         </div>
       </aside>
     </header>
@@ -546,7 +546,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 529 checked entries and 60 remaining entries. The
+          checklist has 530 checked entries and 59 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -785,6 +785,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Route signing signoff</h3>
+            <p>The implementation plan now closes the narrow security-review item that no public federation-mode route signs directly. The broader public-endpoint consensus-bypass review remains open for the remaining pre-mainnet pass.</p>
+          </article>
           <article class="item">
             <h3>Direct signing allowlist</h3>
             <p>The mint test suite now enumerates every reviewed direct signing boundary across CDK mint issuance, swap, melt change, auth token issuance, federation signature shares, signatory adapters, RPC forwarding, and the Cashu BLS share primitive.</p>
@@ -3466,13 +3470,13 @@
               <td>Public handler signing gate</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation public_handlers_do_not_directly_sign_in_production -- --test-threads 1` passed. The mint, swap, and melt route regressions also passed: `submit_batch_mint_records_federation_mint_operation`, `post_swap_returns_federation_signature_shares`, and `process_melt_request_returns_federated_change_shares`. The guard scans production Axum handler code for direct signing helpers and checks consensus-before-response ordering for mint, swap, and melt.</td>
-              <td>Complete the broader manual review of all remaining signing call sites before mainnet use.</td>
+              <td>Route direct-signing signoff is complete; continue the broader public-endpoint consensus-bypass review before mainnet use.</td>
             </tr>
             <tr>
               <td>Direct signing allowlist</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --lib direct_signing_paths_are_reviewed_and_allowlisted -- --test-threads 1` and `cargo test -p cdk --lib --features federation direct_signing_paths_are_reviewed_and_allowlisted -- --test-threads 1` passed. The audit enumerates every reviewed `blind_sign`, `auth_blind_sign`, `sign_blinded_messages`, and `blind_sign_share` boundary.</td>
-              <td>Keep the remaining route-level security signoff open until the full pre-mainnet review is complete.</td>
+              <td>Keep the broader public-endpoint consensus-bypass review open until the full pre-mainnet review is complete.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>
