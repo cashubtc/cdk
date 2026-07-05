@@ -18,13 +18,13 @@ use cdk::federation::{
     redact_federation_operator_message, FederationConfig, FederationConfigSnapshot,
     FederationConsensusEngine, FederationConsensusRuntime, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSecretShareRequest, FederationDkgSetupState,
-    FederationDkgTranscriptSignatureRequest, FederationError, FederationJournalAppendOutcome,
-    FederationJournalCatchUpResponse, FederationJournalEntry, FederationMemberStatusKind,
-    FederationMemberStatusSnapshot, FederationOperation, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationRestSequenceTracker,
-    FederationSessionOutcome, FederationStateDigestCheckpoint, FederationSubmitOperationResponse,
-    MemberId,
+    FederationDkgSecretShareRequest, FederationDkgSetupMethod, FederationDkgSetupState,
+    FederationDkgTranscript, FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest,
+    FederationError, FederationJournalAppendOutcome, FederationJournalCatchUpResponse,
+    FederationJournalEntry, FederationMemberStatusKind, FederationMemberStatusSnapshot,
+    FederationOperation, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationRestSequenceTracker, FederationSessionOutcome,
+    FederationStateDigestCheckpoint, FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -1375,6 +1375,20 @@ impl MintState {
     ) -> Result<(), cdk::Error> {
         let public_config = self.federation_public_config()?;
         signature.validate_sender(&public_config, sender)?;
+        let expected_hash = self
+            .expected_federation_dkg_transcript_hash(&public_config)
+            .await?;
+        if signature.transcript_hash != expected_hash {
+            return Err(cdk::Error::Federation(
+                FederationError::DkgTranscriptMismatch {
+                    reason: format!(
+                        "transcript signature hash {} does not match locally derived DKG transcript {}",
+                        signature.transcript_hash,
+                        expected_hash
+                    ),
+                },
+            ));
+        }
 
         let db = self.mint.localstore();
         let mut tx = db.begin_transaction().await?;
@@ -1384,6 +1398,68 @@ impl MintState {
         tx.commit().await?;
         self.record_federation_sequence(sender, sequence).await;
         Ok(())
+    }
+
+    async fn expected_federation_dkg_transcript_hash(
+        &self,
+        setup_public_config: &FederationConfig,
+    ) -> Result<FederationDkgTranscriptHash, cdk::Error> {
+        let runtime_config = self.mint.federation_config().ok_or_else(|| {
+            cdk::Error::Custom("federation mint is missing its runtime config".to_string())
+        })?;
+        let local_member = runtime_config.member_id();
+        let keyset_shares = self
+            .mint
+            .localstore()
+            .get_federation_dkg_member_keyset_shares()
+            .await?;
+        let mut keysets_by_id = BTreeMap::new();
+        for share in keyset_shares {
+            if share.federation_id != setup_public_config.federation_id {
+                return Err(cdk::Error::Federation(
+                    FederationError::FederationIdMismatch {
+                        expected: setup_public_config.federation_id,
+                        found: share.federation_id,
+                    },
+                ));
+            }
+            if share.member_id != local_member {
+                return Err(cdk::Error::Federation(FederationError::MemberIdMismatch {
+                    expected: local_member,
+                    found: share.member_id,
+                }));
+            }
+            let keyset_id = share.keyset.id;
+            let keyset = share.keyset;
+            match keysets_by_id.insert(keyset_id, keyset.clone()) {
+                Some(existing) if existing != keyset => {
+                    return Err(cdk::Error::Federation(
+                        FederationError::DkgTranscriptMismatch {
+                            reason: format!("conflicting local DKG keyset {keyset_id}"),
+                        },
+                    ));
+                }
+                Some(_) | None => {}
+            }
+        }
+        if keysets_by_id.is_empty() {
+            return Err(cdk::Error::Federation(
+                FederationError::DkgTranscriptMismatch {
+                    reason: "missing local DKG keyset share before transcript signature"
+                        .to_string(),
+                },
+            ));
+        }
+
+        let mut final_public_config = setup_public_config.clone();
+        final_public_config.keysets = keysets_by_id.into_values().collect();
+        final_public_config.setup_transcript = None;
+        final_public_config.validate()?;
+
+        Ok(FederationDkgTranscript::hash_for_config(
+            FederationDkgSetupMethod::PedersenDkg,
+            &final_public_config,
+        )?)
     }
 
     async fn derive_federation_dkg_member_keyset_share_if_ready(

@@ -525,15 +525,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The consensus runtime, wallet local connector, mint, wallet connector, Axum private REST, mintd setup-generator, smoke-operation, status, DKG-status, and operator command federation test fixtures now live in dedicated modules, keeping production federation files focused while the focused suites remain green.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. DKG transcript-signature private REST acceptance now binds every accepted signature to the receiver's locally derived DKG keyset-share transcript hash before advancing sequence state, while full production DKG remains an open milestone.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: split mintd operator federation tests</span>
+          <span class="value">fix: bind DKG transcript signatures to local keysets</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Mintd quarantine, digest-compare, payment-observations, and inspect command tests now live in sibling `tests.rs` modules while the command files stay focused on production/operator logic.</span>
+          <span class="value">The DKG transcript-signature route now rejects premature signatures before local keyset-share derivation and rejects validly signed but wrong transcript hashes before sequence persistence.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>DKG transcript signatures bound to local shares</h3>
+            <p>Private REST no longer stores a transcript-signature approval just because a roster member signed an arbitrary hash; the receiving member first derives the expected Pedersen-DKG transcript hash from its durable local keyset-share record and fails closed on premature or mismatched hashes.</p>
+          </article>
           <article class="item">
             <h3>Operator command tests split out</h3>
             <p>Mintd quarantine, digest comparison, payment-observation filtering, and federation inspect tests now live in dedicated sibling modules, leaving the operator command files focused on request construction, status analysis, and report rendering.</p>
@@ -2537,8 +2541,8 @@
             <tr>
               <td>DKG transcript signature exchange</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-common --features federation signed_dkg -- --test-threads 1` passed 5 signed DKG transport tests, including transcript-signature sender/signature validation. `cargo test -p cdk-axum --features federation dkg_transcript_signature -- --test-threads 1` passed the accepted-route and bad-signature-before-sequence tests. `cargo test -p cdk-axum --features federation rest_peer_client_submits_dkg_setup_messages -- --test-threads 1`, `cargo test -p cdk-common --features federation federation -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation -- --test-threads 1`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, and `cargo fmt --all` passed.</td>
-              <td>Persist exchanged transcript signatures, rebuild them after restart, and assemble final setup transcripts from durable signature records.</td>
+              <td>`cargo test -p cdk-axum --features federation dkg_transcript_signature -- --test-threads 1` passed 4 transcript-signature route tests covering accepted route-derived signatures, bad identity signatures, premature signatures before local keyset-share derivation, and validly signed wrong transcript hashes. `cargo test -p cdk-axum --features federation dkg -- --test-threads 1` passed 15 DKG route/client/restart tests outside the sandbox for localhost bind coverage, `cargo test -p cdk-axum --features federation dkg_setup -- --test-threads 1` passed with the same bind allowance, and `cargo check -p cdk-axum --features federation` passed.</td>
+              <td>Continue hardening the remaining production-DKG gap against the Fedimint reference, especially setup governance, multi-keyset DKG, and operator recovery around partial transcript-signature exchange.</td>
             </tr>
             <tr>
               <td>DKG transcript-signature persistence</td>

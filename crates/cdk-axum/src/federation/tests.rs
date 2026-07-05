@@ -8,13 +8,14 @@ use cdk::cdk_database::MintDatabase;
 use cdk::cdk_payment::PaymentIdentifier;
 use cdk::federation::{
     generate_trusted_dealer_configs, FederationConfigSnapshot, FederationConsensusRuntime,
-    FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptSignature,
-    FederationKeysetRotationOperation, FederationMemberStatusKind,
-    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-    FederationOperationKind, FederationOperationStatus, FederationPaymentObservationPolicy,
-    FederationPaymentObservationQuarantineReason, FederationPaymentObservationReportAction,
-    FederationPaymentTrustModel, FederationRestoreOperation, InMemoryFederationConsensus,
-    MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignature, FederationKeysetRotationOperation,
+    FederationMemberStatusKind, FederationMintQuotePaymentObservation, FederationOperation,
+    FederationOperationEnvelope, FederationOperationKind, FederationOperationStatus,
+    FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
+    FederationPaymentObservationReportAction, FederationPaymentTrustModel,
+    FederationRestoreOperation, InMemoryFederationConsensus, MemberConfigPrivate, MemberId,
+    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
@@ -958,6 +959,95 @@ fn dkg_transcript_signature_request(
         private_config.member_id,
         transcript.transcript_hash,
         signature,
+    )
+}
+
+async fn route_derived_dkg_transcript_fixture() -> (
+    MintState,
+    FederationConfig,
+    MemberConfigPrivate,
+    MemberConfigPrivate,
+    FederationDkgTranscriptHash,
+) {
+    let (trusted_public_config, local_private, peer_private) = transport_config();
+    let mut setup_public_config = trusted_public_config.clone();
+    setup_public_config.keysets.clear();
+    setup_public_config.setup_transcript = None;
+    setup_public_config.validate().expect("setup public config");
+
+    let mut setup_local_private = local_private.clone();
+    setup_local_private.keyset_secret_shares.clear();
+    setup_local_private.setup_transcript_hash = None;
+    setup_local_private
+        .validate_against_public(&setup_public_config)
+        .expect("setup local private config");
+    let mut setup_peer_private = peer_private.clone();
+    setup_peer_private.keyset_secret_shares.clear();
+    setup_peer_private.setup_transcript_hash = None;
+    setup_peer_private
+        .validate_against_public(&setup_public_config)
+        .expect("setup peer private config");
+
+    let state = federation_route_state_for_private(
+        setup_public_config.clone(),
+        setup_local_private.clone(),
+    )
+    .await;
+    let local_member = setup_local_private.member_id;
+    persist_complete_dkg_round(
+        &state,
+        &setup_public_config,
+        &setup_local_private,
+        &setup_peer_private,
+    )
+    .await;
+    let local_contribution =
+        dkg_secret_share_request(&setup_public_config, local_member, local_member, 11);
+    state
+        .persist_federation_dkg_secret_share_contribution(&local_contribution, local_member, 3)
+        .await
+        .expect("persist local secret-share contribution");
+    let peer_contribution = dkg_secret_share_request(
+        &setup_public_config,
+        setup_peer_private.member_id,
+        local_member,
+        21,
+    );
+    state
+        .persist_federation_dkg_secret_share_contribution(
+            &peer_contribution,
+            setup_peer_private.member_id,
+            3,
+        )
+        .await
+        .expect("persist peer secret-share contribution");
+    let keyset_share = state
+        .mint
+        .localstore()
+        .get_federation_dkg_member_keyset_shares()
+        .await
+        .expect("route-derived keyset shares")
+        .into_iter()
+        .next()
+        .expect("route-derived keyset share");
+    let final_public_config = FederationConfig::new(
+        setup_public_config.threshold_params,
+        setup_public_config.members.clone(),
+        vec![keyset_share.keyset],
+    )
+    .expect("final public config");
+    let transcript_hash = FederationDkgTranscript::hash_for_config(
+        FederationDkgSetupMethod::PedersenDkg,
+        &final_public_config,
+    )
+    .expect("route-derived transcript hash");
+
+    (
+        state,
+        setup_public_config,
+        setup_local_private,
+        setup_peer_private,
+        transcript_hash,
     )
 }
 
@@ -6884,18 +6974,21 @@ async fn federation_restart_activates_route_derived_dkg_records() {
 
 #[tokio::test]
 async fn private_dkg_transcript_signature_route_accepts_signed_peer_request() {
-    let (state, public_config, peer_private) = federation_route_state().await;
-    let local_member = state
-        .mint
-        .federation_config()
-        .expect("federation config")
-        .member_id();
-    let payload = dkg_transcript_signature_request(&public_config, &peer_private);
+    let (state, public_config, local_private, peer_private, transcript_hash) =
+        route_derived_dkg_transcript_fixture().await;
+    let local_member = local_private.member_id;
+    let payload = FederationDkgTranscriptSignatureRequest::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        transcript_hash,
+        FederationDkgTranscriptSignature::sign(transcript_hash, &peer_private)
+            .expect("transcript signature"),
+    );
     let request = signed_dkg_transcript_signature_request(
         &public_config,
         &peer_private,
         local_member,
-        1,
+        4,
         payload,
     );
 
@@ -6918,7 +7011,7 @@ async fn private_dkg_transcript_signature_route_accepts_signed_peer_request() {
         .get_federation_member_sequences()
         .await
         .expect("persisted sequences");
-    assert_eq!(sequences.get(&peer_private.member_id), Some(&1));
+    assert_eq!(sequences.get(&peer_private.member_id), Some(&4));
     let signatures = state
         .mint
         .localstore()
@@ -6926,6 +7019,87 @@ async fn private_dkg_transcript_signature_route_accepts_signed_peer_request() {
         .await
         .expect("persisted transcript signatures");
     assert_eq!(signatures, vec![payload]);
+}
+
+#[tokio::test]
+async fn private_dkg_transcript_signature_route_rejects_before_local_keyset_share() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    let local_member = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .member_id();
+    let payload = dkg_transcript_signature_request(&public_config, &peer_private);
+    let request = signed_dkg_transcript_signature_request(
+        &public_config,
+        &peer_private,
+        local_member,
+        1,
+        payload,
+    );
+
+    let response = post_dkg_transcript_signature(State(state.clone()), Json(request))
+        .await
+        .expect_err("transcript signature must wait for local keyset share");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let sequences = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("persisted sequences");
+    assert!(sequences.is_empty());
+    let signatures = state
+        .mint
+        .localstore()
+        .get_federation_dkg_transcript_signatures()
+        .await
+        .expect("persisted transcript signatures");
+    assert!(signatures.is_empty());
+}
+
+#[tokio::test]
+async fn private_dkg_transcript_signature_route_rejects_wrong_hash_before_sequence() {
+    let (state, public_config, local_private, peer_private, expected_hash) =
+        route_derived_dkg_transcript_fixture().await;
+    let local_member = local_private.member_id;
+    let wrong_hash = FederationDkgTranscriptHash::from_bytes([42; 32]);
+    assert_ne!(wrong_hash, expected_hash);
+    let payload = FederationDkgTranscriptSignatureRequest::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        wrong_hash,
+        FederationDkgTranscriptSignature::sign(wrong_hash, &peer_private)
+            .expect("wrong transcript signature"),
+    );
+    let request = signed_dkg_transcript_signature_request(
+        &public_config,
+        &peer_private,
+        local_member,
+        4,
+        payload,
+    );
+
+    let response = post_dkg_transcript_signature(State(state.clone()), Json(request))
+        .await
+        .expect_err("wrong transcript hash must fail");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let sequences = state
+        .mint
+        .localstore()
+        .get_federation_member_sequences()
+        .await
+        .expect("persisted sequences");
+    assert_eq!(sequences.get(&peer_private.member_id), Some(&3));
+    let signatures = state
+        .mint
+        .localstore()
+        .get_federation_dkg_transcript_signatures()
+        .await
+        .expect("persisted transcript signatures");
+    assert!(signatures.is_empty());
 }
 
 #[tokio::test]

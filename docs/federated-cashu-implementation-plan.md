@@ -999,7 +999,7 @@ Implementation checklist:
 - [ ] Complete a production-ready dealer-free Pedersen DKG replacement for BLS G2, using Fedimint's DKG as a reference.
 - [x] Run DKG over authenticated private REST setup routes, accepting DKG messages only from identity public keys in the federation roster.
 - [x] Include federation ID, member roster, member identity public keys, participant order, commitments, BLS public shares, and aggregate public keys in the DKG transcript.
-- [x] Require each participant to sign the final DKG transcript with its federation identity key.
+- [x] Require each participant to sign the final DKG transcript with its federation identity key. Private REST transcript-signature acceptance now also requires the receiver to have a locally derived DKG keyset-share record and rejects transcript hashes that do not match that local final public config before advancing the sender sequence.
 - [x] Commit hash of polynomial commitments before revealing commitments.
 - [x] Verify secret shares against public commitments.
 - [x] Derive public shares and aggregate public keys deterministically.
