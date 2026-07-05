@@ -40,7 +40,10 @@ use cdk_axum::cache::HttpCache;
 use cdk_common::common::QuoteTTL;
 use cdk_common::database::DynMintDatabase;
 #[cfg(feature = "federation")]
-use cdk_common::federation::{FederationConfig, MemberConfigPrivate};
+use cdk_common::federation::{
+    FederationConfig, FederationPaymentObservationContext, FederationPaymentVerificationPolicy,
+    MemberConfigPrivate,
+};
 // internal crate modules
 #[cfg(feature = "prometheus")]
 use cdk_common::payment::MetricsMintPayment;
@@ -587,8 +590,13 @@ fn configure_federation(
         anyhow!("federation.private_config_path must be set when federation is enabled")
     })?;
 
-    let public_config: FederationConfig =
-        read_federation_json(public_config_path, "public federation config")?;
+    let (public_config, has_explicit_payment_observation_policy) =
+        read_public_federation_config(public_config_path)?;
+    validate_federation_payment_observation_startup_policy(
+        &public_config,
+        has_explicit_payment_observation_policy,
+        federation.allow_development_payment_observation_policy,
+    )?;
     let private_config: MemberConfigPrivate =
         read_federation_json(private_config_path, "private federation config")?;
     let runtime_config = FederationRuntimeConfig::new_with_consensus_backend(
@@ -606,6 +614,70 @@ fn configure_federation(
     );
 
     Ok(mint_builder.with_federation_config(runtime_config))
+}
+
+#[cfg(feature = "federation")]
+fn read_public_federation_config(path: &Path) -> Result<(FederationConfig, bool)> {
+    let contents = std::fs::read_to_string(path).with_context(|| {
+        format!(
+            "failed to read public federation config from {}",
+            path.display()
+        )
+    })?;
+    let raw: serde_json::Value = serde_json::from_str(&contents).with_context(|| {
+        format!(
+            "failed to parse public federation config JSON from {}",
+            path.display()
+        )
+    })?;
+    let has_payment_observation_policy = raw
+        .as_object()
+        .and_then(|object| object.get("payment_observation_policy"))
+        .is_some();
+    let config = serde_json::from_value(raw).with_context(|| {
+        format!(
+            "failed to parse public federation config JSON from {}",
+            path.display()
+        )
+    })?;
+
+    Ok((config, has_payment_observation_policy))
+}
+
+#[cfg(feature = "federation")]
+fn validate_federation_payment_observation_startup_policy(
+    public_config: &FederationConfig,
+    has_explicit_payment_observation_policy: bool,
+    allow_development_payment_observation_policy: bool,
+) -> Result<()> {
+    if !has_explicit_payment_observation_policy {
+        bail!(
+            "federation public config must explicitly set payment_observation_policy; implicit fake-wallet defaults are not accepted by mintd startup"
+        );
+    }
+
+    let development_contexts = [
+        FederationPaymentObservationContext::MintQuote,
+        FederationPaymentObservationContext::MeltQuote,
+    ]
+    .into_iter()
+    .filter(|context| {
+        matches!(
+            *public_config.payment_verification_policy(*context),
+            FederationPaymentVerificationPolicy::FakeWallet
+        )
+    })
+    .map(|context| context.to_string())
+    .collect::<Vec<_>>();
+
+    if !development_contexts.is_empty() && !allow_development_payment_observation_policy {
+        bail!(
+            "federation payment_observation_policy uses development-only fake-wallet single-observation finality for {}; set federation.allow_development_payment_observation_policy=true only for local fake-wallet regtest",
+            development_contexts.join(", ")
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(feature = "federation")]
@@ -1960,6 +2032,65 @@ mod tests {
         std::env::temp_dir().join(format!("cdk_mintd_{name}_{}", std::process::id()))
     }
 
+    #[cfg(all(feature = "federation", feature = "sqlite"))]
+    fn single_member_trusted_dealer_bundle() -> (
+        cdk_common::federation::TrustedDealerConfigBundle,
+        cdk_common::federation::MemberId,
+    ) {
+        use std::collections::BTreeMap;
+        use std::str::FromStr;
+
+        use cdk_common::federation::{
+            generate_trusted_dealer_configs, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
+            TrustedDealerMember,
+        };
+        use cdk_common::mint_url::MintUrl;
+        use cdk_common::nuts::nut01::BlsSecretKey;
+        use cdk_common::{Amount, CurrencyUnit, SecretKey};
+
+        let member_id = MemberId::new(1).expect("member id");
+        let member = TrustedDealerMember::new(
+            member_id,
+            MintUrl::from_str("https://mint1.example.com").expect("public mint url"),
+            MintUrl::from_str("https://fed1.example.com").expect("federation api url"),
+            SecretKey::from_slice(&[1; 32]).expect("identity secret"),
+        );
+        let keyset = TrustedDealerKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            BTreeMap::from([(
+                Amount::from(1),
+                vec![BlsSecretKey::from_reduced_bytes(&[2; 32])],
+            )]),
+        );
+        let bundle = generate_trusted_dealer_configs(
+            ThresholdParams::with_bft_consensus(1, 1).expect("params"),
+            vec![member],
+            vec![keyset],
+        )
+        .expect("trusted dealer bundle");
+
+        (bundle, member_id)
+    }
+
+    #[cfg(all(feature = "federation", feature = "sqlite"))]
+    fn write_federation_config_fixture(
+        label: &str,
+        public_config_json: String,
+        private_config_json: String,
+    ) -> (PathBuf, PathBuf) {
+        let public_config_path = temp_seed_file(&format!("fed_public_config_{label}"));
+        let private_config_path = temp_seed_file(&format!("fed_private_config_{label}"));
+        fs::write(&public_config_path, public_config_json)
+            .expect("public config should be written");
+        fs::write(&private_config_path, private_config_json)
+            .expect("private config should be written");
+
+        (public_config_path, private_config_path)
+    }
+
     #[test]
     fn apply_seed_file_sets_mint_mnemonic_from_trimmed_file_contents() {
         let seed_file = temp_seed_file("seed_file_sets_seed");
@@ -2093,7 +2224,8 @@ mod tests {
 
         use cdk::mint::{FederationMode, MintBuilder};
         use cdk_common::federation::{
-            generate_trusted_dealer_configs, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
+            generate_trusted_dealer_configs, FederationPaymentObservationPolicy,
+            FederationPaymentTrustModel, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
             TrustedDealerMember,
         };
         use cdk_common::mint_url::MintUrl;
@@ -2118,12 +2250,18 @@ mod tests {
                 vec![BlsSecretKey::from_reduced_bytes(&[2; 32])],
             )]),
         );
-        let bundle = generate_trusted_dealer_configs(
+        let mut bundle = generate_trusted_dealer_configs(
             ThresholdParams::with_bft_consensus(1, 1).expect("params"),
             vec![member],
             vec![keyset],
         )
         .expect("trusted dealer bundle");
+        bundle.public_config.payment_observation_policy =
+            FederationPaymentObservationPolicy::member_quorum(
+                bundle.public_config.threshold_params.consensus_threshold,
+                FederationPaymentTrustModel::SharedBackendReadOnly,
+            );
+        bundle.public_config.validate().expect("public config");
 
         let public_config_path = temp_seed_file("fed_public_config");
         let private_config_path = temp_seed_file("fed_private_config");
@@ -2148,6 +2286,7 @@ mod tests {
             federation: Some(config::Federation {
                 enabled: true,
                 consensus_backend: config::FederationConsensusBackend::InMemory,
+                allow_development_payment_observation_policy: false,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
             }),
@@ -2179,6 +2318,119 @@ mod tests {
 
     #[cfg(all(feature = "federation", feature = "sqlite"))]
     #[tokio::test]
+    async fn configure_federation_rejects_implicit_payment_observation_policy() {
+        use cdk::mint::MintBuilder;
+        use cdk_sqlite::mint::memory;
+
+        let (bundle, member_id) = single_member_trusted_dealer_bundle();
+        let mut public_config_json =
+            serde_json::to_value(&bundle.public_config).expect("public config json");
+        public_config_json
+            .as_object_mut()
+            .expect("public config object")
+            .remove("payment_observation_policy");
+        let private_config_json = serde_json::to_string(
+            bundle
+                .private_configs
+                .get(&member_id)
+                .expect("private config"),
+        )
+        .expect("private config json");
+        let (public_config_path, private_config_path) = write_federation_config_fixture(
+            "implicit_payment_policy",
+            serde_json::to_string(&public_config_json).expect("public config json"),
+            private_config_json,
+        );
+
+        let settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                consensus_backend: config::FederationConsensusBackend::InMemory,
+                allow_development_payment_observation_policy: false,
+                public_config_path: Some(public_config_path.clone()),
+                private_config_path: Some(private_config_path.clone()),
+            }),
+            ..Default::default()
+        };
+        let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
+        let builder = MintBuilder::new(localstore);
+        let err = configure_federation(&settings, builder)
+            .expect_err("implicit payment-observation policy should fail startup");
+
+        assert!(
+            err.to_string()
+                .contains("must explicitly set payment_observation_policy"),
+            "error should require explicit policy: {err}"
+        );
+
+        let _ = fs::remove_file(public_config_path);
+        let _ = fs::remove_file(private_config_path);
+    }
+
+    #[cfg(all(feature = "federation", feature = "sqlite"))]
+    #[tokio::test]
+    async fn configure_federation_requires_override_for_development_payment_policy() {
+        use cdk::mint::{FederationMode, MintBuilder};
+        use cdk_sqlite::mint::memory;
+
+        let (bundle, member_id) = single_member_trusted_dealer_bundle();
+        let private_config_json = serde_json::to_string(
+            bundle
+                .private_configs
+                .get(&member_id)
+                .expect("private config"),
+        )
+        .expect("private config json");
+        let (public_config_path, private_config_path) = write_federation_config_fixture(
+            "development_payment_policy",
+            serde_json::to_string(&bundle.public_config).expect("public config json"),
+            private_config_json,
+        );
+
+        let settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                consensus_backend: config::FederationConsensusBackend::InMemory,
+                allow_development_payment_observation_policy: false,
+                public_config_path: Some(public_config_path.clone()),
+                private_config_path: Some(private_config_path.clone()),
+            }),
+            ..Default::default()
+        };
+        let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
+        let builder = MintBuilder::new(localstore);
+        let err = configure_federation(&settings, builder)
+            .expect_err("development payment policy without override should fail startup");
+
+        assert!(
+            err.to_string()
+                .contains("development-only fake-wallet single-observation finality"),
+            "error should explain development-only policy: {err}"
+        );
+
+        let settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                consensus_backend: config::FederationConsensusBackend::InMemory,
+                allow_development_payment_observation_policy: true,
+                public_config_path: Some(public_config_path.clone()),
+                private_config_path: Some(private_config_path.clone()),
+            }),
+            ..Default::default()
+        };
+        let localstore = Arc::new(memory::empty().await.expect("sqlite memory db"));
+        let builder = MintBuilder::new(localstore);
+        let builder =
+            configure_federation(&settings, builder).expect("dev override should allow startup");
+
+        assert_eq!(builder.federation_mode(), FederationMode::Member);
+
+        let _ = fs::remove_file(public_config_path);
+        let _ = fs::remove_file(private_config_path);
+    }
+
+    #[cfg(all(feature = "federation", feature = "sqlite"))]
+    #[tokio::test]
     async fn configure_federation_requires_paths_when_enabled() {
         use cdk::mint::MintBuilder;
         use cdk_sqlite::mint::memory;
@@ -2187,6 +2439,7 @@ mod tests {
             federation: Some(config::Federation {
                 enabled: true,
                 consensus_backend: config::FederationConsensusBackend::InMemory,
+                allow_development_payment_observation_policy: false,
                 public_config_path: None,
                 private_config_path: None,
             }),
@@ -2213,6 +2466,7 @@ mod tests {
             federation: Some(config::Federation {
                 enabled: true,
                 consensus_backend: config::FederationConsensusBackend::AlephBft,
+                allow_development_payment_observation_policy: false,
                 public_config_path: None,
                 private_config_path: None,
             }),
@@ -2340,6 +2594,7 @@ mod tests {
                 federation: Some(config::Federation {
                     enabled: true,
                     consensus_backend: config::FederationConsensusBackend::InMemory,
+                    allow_development_payment_observation_policy: true,
                     public_config_path: Some(public_config_path.clone()),
                     private_config_path: Some(private_config_path.clone()),
                 }),

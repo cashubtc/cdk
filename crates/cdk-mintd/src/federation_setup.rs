@@ -1085,6 +1085,7 @@ max_delay_time = 0
 
 [federation]
 enabled = true
+allow_development_payment_observation_policy = true
 public_config_path = {public_config_path}
 private_config_path = {private_config_path}
 "#,
@@ -2568,11 +2569,25 @@ mod tests {
                     .enabled
             );
             assert!(
+                settings
+                    .federation
+                    .as_ref()
+                    .expect("federation settings")
+                    .allow_development_payment_observation_policy
+            );
+            assert!(
                 dkg_setup_settings
                     .federation
                     .as_ref()
                     .expect("setup-only federation settings")
                     .enabled
+            );
+            assert!(
+                dkg_setup_settings
+                    .federation
+                    .as_ref()
+                    .expect("setup-only federation settings")
+                    .allow_development_payment_observation_policy
             );
             assert_eq!(settings.info.listen_port, 8084 + member_id.get());
             assert_eq!(dkg_setup_settings.info.listen_port, 8084 + member_id.get());

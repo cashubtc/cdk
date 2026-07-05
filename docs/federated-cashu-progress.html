@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 440 checked items and 147 remaining items. Trusted-dealer setup now has a backend-agnostic core path that generates federation public/private material without the fakewallet feature, and no-progress catch-up responses are rejected before they can spin a retry loop.</span>
+          <span class="value">The implementation plan audit now tracks 444 checked items and 143 remaining items. Mintd federation startup now requires explicit payment-observation policy, rejects dev single-observation finality unless a local fake-wallet override is set, and still supports backend-agnostic trusted-dealer generation without the fakewallet feature.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: split trusted dealer from fakewallet</span>
+          <span class="value">fix: require explicit federation payment policy</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk-mintd federation trusted-dealer` now runs with `--no-default-features --features "federation sqlite"`, writing federation public/private configs and skipping local fake-wallet TOMLs and smoke scripts unless fakewallet support is enabled.</span>
+          <span class="value">Production-mode mintd federation startup now fails if the public config omits `payment_observation_policy` or uses fake-wallet single-observation finality without `[federation].allow_development_payment_observation_policy = true`; generated local fake-wallet TOMLs set that override explicitly.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue production-cleanup work by removing remaining fakewallet-specific federation semantics, strengthening backend-agnostic payment observation tests, and broadening storage-backed process coverage.</span>
+          <span class="value">Continue production-cleanup work by renaming remaining fakewallet-specific policy semantics, adding backend-agnostic payment observation tests, and broadening storage-backed process coverage.</span>
         </div>
       </aside>
     </header>
@@ -781,8 +781,12 @@
         <h2>Unlocked</h2>
         <div class="stack">
           <article class="item">
+            <h3>Payment policy startup gate</h3>
+            <p>Mintd now rejects implicit federation payment-observation defaults and only permits fake-wallet single-observation finality when local development configs explicitly opt in.</p>
+          </article>
+          <article class="item">
             <h3>Plan audit refreshed</h3>
-            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 440 checked items and 147 explicit next items.</p>
+            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 444 checked items and 143 explicit next items.</p>
           </article>
           <article class="item">
             <h3>Router startup replay proven</h3>
@@ -2902,6 +2906,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation router_startup_replays_accepted_journal_before_serving_local_status -- --test-threads 1` proved the router startup path used by mintd replays a durable accepted mint-quote journal entry before signed local-status can report authoritative materialized state. `cargo test -p cdk-axum --features federation peer_sync -- --test-threads 1`, `cargo test -p cdk-axum --features federation session_outcome -- --test-threads 1`, and the full escalated `cargo test -p cdk-axum --features federation -- --test-threads 1` passed after peer sync was changed to collect only unverified session-outcome suffixes.</td>
               <td>Use the startup replay proof as the recovery gate while cleaning fakewallet-specific federation semantics out of the production payment-observation path.</td>
+            </tr>
+            <tr>
+              <td>Explicit federation payment policy startup</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --no-default-features --features "federation sqlite" configure_federation -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite configure_federation -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1`, `cargo check -p cdk-mintd --no-default-features --features "federation sqlite"`, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed. The no-fake startup tests cover explicit member-quorum policy acceptance, missing `payment_observation_policy` rejection, and fake-wallet single-observation policy rejection unless the development override is set.</td>
+              <td>Rename the remaining fake-wallet policy type/method names into backend-neutral dev/test policy names, then add backend-agnostic mock payment observation coverage.</td>
             </tr>
             <tr>
               <td>Trusted-dealer core without fakewallet</td>
