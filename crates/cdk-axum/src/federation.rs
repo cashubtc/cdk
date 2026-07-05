@@ -30,10 +30,12 @@ use tracing::instrument;
 
 use crate::MintState;
 
+mod catch_up_routes;
 mod dkg_routes;
 mod peer_client;
 mod sync_config;
 
+use self::catch_up_routes::post_journal;
 use self::dkg_routes::{
     post_dkg_commitment, post_dkg_reveal, post_dkg_secret_share, post_dkg_transcript_signature,
 };
@@ -57,8 +59,6 @@ use tokio::time::Duration;
 type SequenceHandle = std::sync::Arc<tokio::sync::Mutex<FederationRestSequenceTracker>>;
 
 const FEDERATION_DISABLE_PEER_SYNC_ENV_VAR: &str = "CDK_FEDERATION_DISABLE_PEER_SYNC";
-const DEFAULT_FEDERATION_CATCH_UP_LIMIT: u16 = 100;
-const MAX_FEDERATION_CATCH_UP_LIMIT: u16 = 1000;
 
 pub(crate) fn create_federation_router() -> Router<MintState> {
     Router::new()
@@ -761,75 +761,6 @@ async fn post_operation(
         .map_err(cdk_error_response)?;
     tracing::debug!("Accepted federation operation {}", response.operation_id);
     Ok(Json(response))
-}
-
-#[instrument(skip_all)]
-async fn post_journal(
-    State(state): State<MintState>,
-    Json(payload): Json<FederationSignedRequest<FederationJournalCatchUpRequest>>,
-) -> Result<Json<FederationJournalCatchUpResponse>, Response> {
-    let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::CatchUp)?;
-    let verified =
-        verify_federation_request(&state, &payload, FederationRestMessageKind::CatchUp).await?;
-    state
-        .persist_federation_sequence(verified.sender, verified.sequence)
-        .await
-        .map_err(cdk_error_response)?;
-    let private_config = federation_runtime_config(&state)?.private_config().clone();
-    tracing::debug!(
-        next_index = payload.payload.next_index,
-        limit = ?payload.payload.limit,
-        "Received federation journal catch-up request"
-    );
-    let (mut response, entries) = durable_catch_up_response(&state, &payload.payload).await?;
-    response.state_digest = materialized_state_digest(&state, &entries)
-        .await
-        .map_err(anyhow_response)?;
-    let response = response
-        .with_signed_session_outcome(&private_config)
-        .map_err(federation_error_response)?;
-    Ok(Json(response))
-}
-
-async fn durable_catch_up_response(
-    state: &MintState,
-    request: &FederationJournalCatchUpRequest,
-) -> Result<
-    (
-        FederationJournalCatchUpResponse,
-        Vec<FederationJournalEntry>,
-    ),
-    Response,
-> {
-    let runtime_config = federation_runtime_config(state)?;
-    let journal = durable_federation_journal(state)
-        .await
-        .map_err(anyhow_response)?;
-
-    if let Some(known_order_digest) = request.known_order_digest {
-        if let Some(expected_digest) = journal.order_digest_before(request.next_index) {
-            if expected_digest != known_order_digest {
-                return Err(federation_error_response(
-                    FederationError::CatchUpDigestMismatch {
-                        index: request.next_index,
-                        expected: expected_digest,
-                        found: known_order_digest,
-                    },
-                ));
-            }
-        }
-    }
-
-    let response = FederationJournalCatchUpResponse::from_journal(
-        runtime_config.federation_id(),
-        &journal,
-        request,
-        DEFAULT_FEDERATION_CATCH_UP_LIMIT,
-        MAX_FEDERATION_CATCH_UP_LIMIT,
-    );
-    let entries = journal.entries().to_vec();
-
-    Ok((response, entries))
 }
 
 async fn verify_federation_request<T>(
