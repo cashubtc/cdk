@@ -15,6 +15,7 @@ pub type MintSqliteAuthDatabase = SQLMintAuthDatabase<SqliteConnectionManager>;
 
 #[cfg(test)]
 mod test {
+    #[cfg(feature = "federation")]
     use std::collections::BTreeSet;
     use std::fs::remove_file;
     use std::time::Duration;
@@ -22,6 +23,7 @@ mod test {
     use cdk_common::mint_db_test;
     use cdk_sql_common::pool::Pool;
     use cdk_sql_common::stmt::query;
+    #[cfg(feature = "federation")]
     use cdk_sql_common::value::Value;
 
     use super::*;
@@ -139,6 +141,91 @@ mod test {
 
         cdk_common::database::mint::test::federation_journal_concurrent_metadata_updates(db).await;
 
+        let _ = remove_file(path);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn federation_migrations_apply_to_empty_sqlite_and_keep_standalone_tables() {
+        let path = std::env::temp_dir().to_path_buf().join(format!(
+            "cdk-test-federation-empty-migration-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+
+        #[cfg(feature = "sqlcipher")]
+        let db = MintSqliteDatabase::new((path.clone(), "password".to_string()))
+            .await
+            .expect("fresh federation sqlite database migrates");
+
+        #[cfg(not(feature = "sqlcipher"))]
+        let db = MintSqliteDatabase::new(path.clone())
+            .await
+            .expect("fresh federation sqlite database migrates");
+
+        drop(db);
+
+        #[cfg(feature = "sqlcipher")]
+        let reopened = MintSqliteDatabase::new((path.clone(), "password".to_string()))
+            .await
+            .expect("migrated sqlite database reopens through the normal mint path");
+
+        #[cfg(not(feature = "sqlcipher"))]
+        let reopened = MintSqliteDatabase::new(path.clone())
+            .await
+            .expect("migrated sqlite database reopens through the normal mint path");
+
+        drop(reopened);
+
+        #[cfg(feature = "sqlcipher")]
+        let config: Config = (path.clone(), "password".to_string()).into();
+        #[cfg(not(feature = "sqlcipher"))]
+        let config: Config = (&path).into();
+
+        let pool = Pool::<SqliteConnectionManager>::new(config);
+        let conn = pool.get().await.expect("valid connection");
+
+        let table_rows = query(
+            r#"
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+            "#,
+        )
+        .expect("table query")
+        .fetch_all(&*conn)
+        .await
+        .expect("sqlite table rows");
+        let table_names = table_rows
+            .into_iter()
+            .map(|row| text_column(&row, 0))
+            .collect::<BTreeSet<_>>();
+
+        for table in [
+            "proof",
+            "keyset",
+            "mint_quote",
+            "melt_quote",
+            "blind_signature",
+            "saga_state",
+            "completed_operations",
+            "federation_journal_entries",
+            "federation_member_sequences",
+            "federation_session_outcomes",
+            "federation_payment_observations",
+            "federation_signature_shares",
+            "federation_dkg_setup_messages",
+            "federation_dkg_member_keyset_shares",
+            "federation_dkg_secret_share_contributions",
+            "federation_dkg_transcript_signatures",
+        ] {
+            assert!(
+                table_names.contains(table),
+                "missing migrated table {table}"
+            );
+        }
+
+        drop(conn);
+        drop(pool);
         let _ = remove_file(path);
     }
 
