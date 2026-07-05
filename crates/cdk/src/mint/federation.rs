@@ -3673,7 +3673,7 @@ mod tests {
     #[tokio::test]
     async fn restore_returns_old_keyset_signature_after_rotation() {
         let runtime_config = runtime_config_with_inactive_rotation_keyset();
-        let (mint, _) = federated_test_mint(runtime_config.clone()).await;
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
         let mut journal = InMemoryFederationJournal::new();
         let old_keyset = runtime_config
             .public_config()
@@ -3758,6 +3758,19 @@ mod tests {
         assert_eq!(restored.outputs, vec![old_output]);
         assert_eq!(restored.signatures.len(), 1);
         assert_eq!(restored.signatures[0].keyset_id, old_keyset.id);
+
+        let share_records = localstore
+            .get_federation_signature_shares_for_blinded_message(restored.outputs[0].blinded_secret)
+            .await
+            .expect("stored federation restore signature share");
+        assert_eq!(share_records.len(), 1);
+        assert_eq!(share_records[0].operation_id, mint_entry.operation_id);
+        assert_eq!(share_records[0].output_index, 0);
+        assert_eq!(share_records[0].keyset_id, old_keyset.id);
+        assert_eq!(
+            restored.signatures[0].c,
+            PublicKey::from(share_records[0].share.signature())
+        );
     }
 
     #[tokio::test]

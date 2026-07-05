@@ -8,6 +8,8 @@ use arc_swap::ArcSwap;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 use cdk_common::database::mint::Acquired;
 use cdk_common::database::{self, DynMintAuthDatabase, DynMintDatabase};
+#[cfg(feature = "federation")]
+use cdk_common::federation::FederationSignatureShareRecord;
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id};
 use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
@@ -56,6 +58,28 @@ const CDK_MINT_CONFIG_SECONDARY_NAMESPACE: &str = "config";
 const CDK_MINT_CONFIG_KV_KEY: &str = "mint_info";
 const CDK_MINT_QUOTE_TTL_KV_KEY: &str = "quote_ttl";
 const PAYMENT_EVENT_STREAM_RETRY_DELAY: Duration = Duration::from_secs(5);
+
+#[cfg(feature = "federation")]
+fn federation_restore_share_matches_output(
+    share: &FederationSignatureShareRecord,
+    output: &BlindedMessage,
+) -> bool {
+    share.blinded_secret == output.blinded_secret
+        && share.keyset_id == output.keyset_id
+        && (output.amount == Amount::ZERO || share.amount == output.amount)
+}
+
+#[cfg(feature = "federation")]
+fn federation_signature_share_to_blind_signature(
+    share: FederationSignatureShareRecord,
+) -> BlindSignature {
+    BlindSignature {
+        amount: share.amount,
+        keyset_id: share.keyset_id,
+        c: cdk_common::PublicKey::from(share.share.signature()),
+        dleq: None,
+    }
+}
 
 /// Cashu Mint
 #[derive(Clone)]
@@ -1285,14 +1309,36 @@ impl Mint {
             let blinded_message: Vec<PublicKey> =
                 request.outputs.iter().map(|b| b.blinded_secret).collect();
 
-            let blinded_signatures = self
+            let compatibility_signatures = self
                 .localstore
                 .get_blind_signatures(&blinded_message)
                 .await?;
 
-            if blinded_signatures.len() != output_len {
+            if compatibility_signatures.len() != output_len {
                 return Err(Error::Internal);
             }
+
+            #[cfg(feature = "federation")]
+            let blinded_signatures = if effective_federation_config.is_some() {
+                let mut blinded_signatures = Vec::with_capacity(output_len);
+                for (output, fallback_signature) in
+                    request.outputs.iter().zip(compatibility_signatures)
+                {
+                    let restored_share = self
+                        .localstore
+                        .get_federation_signature_shares_for_blinded_message(output.blinded_secret)
+                        .await?
+                        .into_iter()
+                        .find(|share| federation_restore_share_matches_output(share, output))
+                        .map(federation_signature_share_to_blind_signature);
+                    blinded_signatures.push(restored_share.or(fallback_signature));
+                }
+                blinded_signatures
+            } else {
+                compatibility_signatures
+            };
+            #[cfg(not(feature = "federation"))]
+            let blinded_signatures = compatibility_signatures;
 
             for (blinded_message, blinded_signature) in
                 request.outputs.into_iter().zip(blinded_signatures)

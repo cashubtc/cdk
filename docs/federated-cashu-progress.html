@@ -521,15 +521,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 499 checked items and 88 remaining items. Federation signature shares now have dedicated durable storage with replay-safe conflict checks.</span>
+          <span class="value">The implementation plan audit tracks 500 checked items and 87 remaining items. Federation restore now reads durable signature-share rows by blinded message before falling back to compatibility rows.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: persist federation signature shares</span>
+          <span class="value">feat: restore federation shares from share table</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Added a dedicated `federation_signature_shares` table, DB APIs for operation/output and blinded-message lookup, and mint/swap/melt-change apply-path coverage.</span>
+          <span class="value">Federation restore prefers `federation_signature_shares` by blinded message, constrains restored rows by keyset and amount metadata, and preserves standalone restore behavior.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -544,7 +544,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 499 checked entries and 88 remaining entries. The
+          checklist has 500 checked entries and 87 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -1240,6 +1240,10 @@
           <article class="item">
             <h3>Restore placeholders stay federation-safe</h3>
             <p>Restore requests can use NUT-09 zero-amount blinded output placeholders, but only against active aggregate v3/BLS federation keysets.</p>
+          </article>
+          <article class="item">
+            <h3>Restore uses share-table lookup</h3>
+            <p>Federation restore now looks up local threshold BLS shares in `federation_signature_shares` by blinded message, verifies the row metadata matches the requested output, and falls back to the existing blind-signature compatibility row for older data.</p>
           </article>
           <article class="item">
             <h3>Proof state divergence is visible</h3>
@@ -2069,6 +2073,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-sqlite --features federation federation_signature_share_persistence -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_journal_hot_path_indexes_are_used -- --test-threads 1`, and the focused cdk mint, swap, and melt-change apply tests passed. The tests cover idempotent replay, conflicting share rejection, operation/output lookup, blinded-message lookup, and apply-path writes.</td>
               <td>Re-run Postgres-backed migration/storage coverage when a Postgres instance is available, then include the share table in broader catch-up/recovery process tests.</td>
+            </tr>
+            <tr>
+              <td>Federation restore share lookup</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --features federation restore_returns_old_keyset_signature_after_rotation -- --test-threads 1` and `cargo check -p cdk --lib` passed. Restore now prefers durable federation share rows while standalone cdk restore still compiles with federation disabled.</td>
+              <td>Add operation-hash/output-index restore mapping only if future restore UX needs to expose consensus provenance directly.</td>
             </tr>
             <tr>
               <td>Federated batch NUT-20 issuance</td>
