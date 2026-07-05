@@ -525,15 +525,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The consensus runtime, wallet local connector, mint, wallet connector, Axum private REST, mintd setup-generator, smoke-operation, status, and DKG-status federation test fixtures now live in dedicated modules, keeping production federation files focused while the focused suites remain green.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The consensus runtime, wallet local connector, mint, wallet connector, Axum private REST, mintd setup-generator, smoke-operation, status, DKG-status, and operator command federation test fixtures now live in dedicated modules, keeping production federation files focused while the focused suites remain green.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: split wallet federation local connector tests</span>
+          <span class="value">refactor: split mintd operator federation tests</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk::wallet::federation::tests` now keeps the in-process local member connector and local HTTP transport fixtures in `wallet/federation/tests/local_connector.rs`.</span>
+          <span class="value">Mintd quarantine, digest-compare, payment-observations, and inspect command tests now live in sibling `tests.rs` modules while the command files stay focused on production/operator logic.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Operator command tests split out</h3>
+            <p>Mintd quarantine, digest comparison, payment-observation filtering, and federation inspect tests now live in dedicated sibling modules, leaving the operator command files focused on request construction, status analysis, and report rendering.</p>
+          </article>
           <article class="item">
             <h3>Local connector split out</h3>
             <p>The wallet federation tests now keep in-process member mint connectors and their local HTTP transport adapter in a dedicated helper module, leaving the main wallet federation test suite focused on scenarios and assertions.</p>
@@ -2283,6 +2287,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --features wallet,mint,federation wallet::federation::tests -- --test-threads 1` passed 54 wallet federation tests after moving `LocalFederatedMemberConnector`, `LocalMemberHttpTransport`, and `http_member_connectors` into `crates/cdk/src/wallet/federation/tests/local_connector.rs`.</td>
               <td>Keep any remaining helper cleanup constrained to fixtures with a clear production-file or scenario-readability benefit.</td>
+            </tr>
+            <tr>
+              <td>Mintd operator command test module split</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_quarantine -- --test-threads 1` passed 5 quarantine tests, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_digest_compare -- --test-threads 1` passed 7 digest comparison tests, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_payment_observations -- --test-threads 1` passed 4 payment-observation tests, and `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_inspect -- --test-threads 1` passed 4 inspect tests after moving each inline test module into its sibling `tests.rs` file. `cargo fmt --all -- --check` passed with the known stable-rustfmt warnings, and `git diff --check` passed.</td>
+              <td>Continue any remaining helper cleanup only where it makes production federation modules easier to audit, then return to production DKG, BFT ordering, and broader storage-backed recovery checks.</td>
             </tr>
             <tr>
               <td>Standalone mint and DbSignatory regressions</td>
