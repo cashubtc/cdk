@@ -519,15 +519,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 474 checked items and 113 remaining items. Milestone 2 now includes deterministic trusted-dealer fixture generation.</span>
+          <span class="value">The implementation plan audit now tracks 475 checked items and 112 remaining items. Milestone 3 now includes canonical request transcripts for signing-sensitive wallet requests.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add deterministic federation setup seed</span>
+          <span class="value">feat: add federation request transcripts</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Fixed deterministic test-seed generation by making seeded trusted-dealer configs, setup transcript signatures, generated DKG route-probe requests, and fake-wallet member mnemonics byte-for-byte reproducible while preserving randomized production signing.</span>
+          <span class="value">Added `FederationRequestTranscript` and a domain-separated transcript hash for mint, melt, swap, and restore operations, with NUT-20 and SIG_ALL tests proving request mutations change the transcript before federation signing.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -542,7 +542,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 474 checked entries and 113 remaining entries. The
+          checklist has 475 checked entries and 112 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -781,6 +781,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Request transcripts explicit</h3>
+            <p>Mint, melt, swap, and restore operations now expose a canonical `FederationRequestTranscript` plus a domain-separated transcript hash. The operation tests prove NUT-20 mint output changes and SIG_ALL swap output changes alter the transcript that federation members can audit before signing shares.</p>
+          </article>
           <article class="item">
             <h3>Deterministic setup seed</h3>
             <p>The trusted-dealer generator now has an explicit deterministic test seed that reproduces member identity keys, BLS coefficients, fake-wallet mnemonics, setup transcript signatures, and generated DKG route-probe request signatures byte-for-byte. The previous noisy failing path came from seeded data being signed with randomized Schnorr signatures.</p>
@@ -2017,6 +2021,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test --lib --workspace --exclude cdk-postgres` passed with federation disabled. `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed after the example key-type fix and stable transport DNS TXT method.</td>
               <td>Move back to the remaining consensus/storage follow-ups with the broad feature gates green.</td>
+            </tr>
+            <tr>
+              <td>Canonical request transcripts</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation request_transcript -- --test-threads 1`, `cargo test -p cdk-common --features federation federation::operation -- --test-threads 1`, `cargo test -p cdk --features mint,federation apply_federation_mint_accepts_nut20_locked_quote -- --test-threads 1`, `cargo test -p cdk --features mint,federation apply_federation_swap_rejects_sig_all_output_mutation_before_signing -- --test-threads 1`, `cargo check -p cdk --features mint,federation`, `cargo fmt --all`, and `git diff --check` passed.</td>
+              <td>Use the transcript hash in future audit/status surfaces that need to trace wallet authorization material to accepted consensus operations.</td>
             </tr>
             <tr>
               <td>Deterministic trusted-dealer fixtures</td>

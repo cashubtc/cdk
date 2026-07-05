@@ -47,7 +47,8 @@ pub use self::operation::{
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationQuorum,
     FederationPaymentObservationRecord, FederationPaymentObservationReport,
     FederationPaymentObservationReportAction, FederationPaymentObservationReportStatus,
-    FederationPaymentObservationReportSummary, FederationRestoreOperation, FederationSwapOperation,
+    FederationPaymentObservationReportSummary, FederationRequestTranscript,
+    FederationRequestTranscriptHash, FederationRestoreOperation, FederationSwapOperation,
     FEDERATION_MAX_OPERATION_ENVELOPE_BYTES, FEDERATION_OPERATION_VERSION,
 };
 pub use self::signing::{FederationBlindSignatureShare, FederationBlindSignatureShareSet};
@@ -276,6 +277,14 @@ pub enum FederationError {
     /// A federation operation ID must be exactly 32 bytes.
     #[error("Invalid federation operation id size: expected={expected}, found={found}")]
     InvalidOperationIdSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
+    /// A federation request transcript hash must be exactly 32 bytes.
+    #[error("Invalid federation request transcript hash size: expected={expected}, found={found}")]
+    InvalidRequestTranscriptHashSize {
         /// Expected byte length.
         expected: usize,
         /// Actual byte length.
