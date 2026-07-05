@@ -17,7 +17,8 @@ use crate::federation::{
     FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationPaymentObservationReport,
     FederationPaymentObservationReportStatus, FederationSignatureShareRecord,
-    InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
+    FederationStateDigest, FederationStateDigestCheckpoint, InMemoryFederationJournal,
+    MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
 };
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::KnownMethod;
@@ -547,6 +548,75 @@ where
         .await
         .expect("wrong-context payment observations");
     assert!(wrong_context.is_empty());
+}
+
+/// Assert materialized state digest checkpoints persist in consensus order.
+pub async fn federation_state_digest_checkpoint_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let mut journal = InMemoryFederationJournal::new();
+    let first = appended(
+        journal
+            .append(mint_quote_envelope("digest-quote-1", 21))
+            .expect("append first digest entry"),
+    );
+    let second = appended(
+        journal
+            .append(payment_observation_envelope("digest-quote-1"))
+            .expect("append second digest entry"),
+    );
+    let first_checkpoint =
+        FederationStateDigestCheckpoint::new(&first, FederationStateDigest::from_bytes([11; 32]));
+    let second_checkpoint =
+        FederationStateDigestCheckpoint::new(&second, FederationStateDigest::from_bytes([22; 32]));
+    let conflicting_first =
+        FederationStateDigestCheckpoint::new(&first, FederationStateDigest::from_bytes([33; 32]));
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin");
+    tx.add_federation_journal_entry(&first)
+        .await
+        .expect("persist first journal entry");
+    tx.add_federation_journal_entry(&second)
+        .await
+        .expect("persist second journal entry");
+    tx.add_federation_state_digest_checkpoint(&first_checkpoint)
+        .await
+        .expect("persist first state digest checkpoint");
+    tx.add_federation_state_digest_checkpoint(&second_checkpoint)
+        .await
+        .expect("persist second state digest checkpoint");
+    tx.add_federation_state_digest_checkpoint(&first_checkpoint)
+        .await
+        .expect("idempotent checkpoint replay");
+    tx.commit().await.expect("commit");
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin conflicting checkpoint");
+    assert!(tx
+        .add_federation_state_digest_checkpoint(&conflicting_first)
+        .await
+        .is_err());
+    tx.rollback()
+        .await
+        .expect("rollback conflicting checkpoint");
+
+    let persisted = db
+        .get_federation_state_digest_checkpoints()
+        .await
+        .expect("state digest checkpoints");
+    assert_eq!(
+        persisted,
+        vec![first_checkpoint, second_checkpoint],
+        "state digest checkpoints should persist in operation order"
+    );
+
+    let ranged = db
+        .get_federation_state_digest_checkpoints_from(1)
+        .await
+        .expect("ranged state digest checkpoints");
+    assert_eq!(ranged, vec![second_checkpoint]);
 }
 
 /// Assert threshold signature shares persist independently from final blind signatures.

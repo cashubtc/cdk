@@ -2276,7 +2276,7 @@ async fn durable_federation_journal(
     Ok(InMemoryFederationJournal::from_entries(entries)?)
 }
 
-async fn materialized_state_digest(
+pub(crate) async fn materialized_state_digest(
     state: &MintState,
     entries: &[FederationJournalEntry],
 ) -> anyhow::Result<FederationStateDigest> {
@@ -8029,6 +8029,38 @@ mod tests {
         assert_eq!(response.operation_id, operation_id);
         assert_eq!(notified.operation_id, operation_id);
         assert_eq!(notified.outcome.entry().operation_id, operation_id);
+    }
+
+    #[tokio::test]
+    async fn submit_federation_envelope_records_state_digest_checkpoint() {
+        let (state, _, _) = federation_route_state().await;
+        let quote_id = QuoteId::new();
+        let response = state
+            .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
+            .await
+            .expect("submit mint quote");
+        let entry = response.outcome.entry();
+        let entries = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal entries");
+        let expected_state_digest = materialized_state_digest(&state, &entries)
+            .await
+            .expect("materialized state digest");
+
+        let checkpoints = state
+            .mint
+            .localstore()
+            .get_federation_state_digest_checkpoints()
+            .await
+            .expect("state digest checkpoints");
+        assert_eq!(checkpoints.len(), 1);
+        assert_eq!(checkpoints[0].operation_index, entry.index);
+        assert_eq!(checkpoints[0].operation_id, response.operation_id);
+        assert_eq!(checkpoints[0].order_digest, entry.order_digest);
+        assert_eq!(checkpoints[0].state_digest, expected_state_digest);
     }
 
     #[cfg(feature = "prometheus")]

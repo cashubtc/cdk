@@ -22,7 +22,7 @@ use cdk::federation::{
     FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
     FederationOperation, FederationOperationEnvelope, FederationOperationId,
     FederationOperationStatus, FederationRestSequenceTracker, FederationSessionOutcome,
-    FederationSubmitOperationResponse, MemberId,
+    FederationStateDigestCheckpoint, FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -1408,7 +1408,38 @@ impl MintState {
     ) -> Result<Vec<FederationOperationId>, cdk::Error> {
         let applied = self.mint.apply_federation_journal_entries(entries).await?;
         self.mark_federation_operations_applied(&applied).await?;
+        if let Some(entry) = entries.last() {
+            self.record_federation_state_digest_checkpoint(entry)
+                .await?;
+        }
         Ok(applied)
+    }
+
+    async fn record_federation_state_digest_checkpoint(
+        &self,
+        entry: &FederationJournalEntry,
+    ) -> Result<(), cdk::Error> {
+        let db = self.mint.localstore();
+        let entries = db.get_federation_journal_entries().await?;
+        let Some(latest_entry) = entries.last() else {
+            return Ok(());
+        };
+        if latest_entry.index != entry.index || latest_entry.operation_id != entry.operation_id {
+            return Ok(());
+        }
+        let state_digest = crate::federation::materialized_state_digest(self, &entries)
+            .await
+            .map_err(|err| {
+                cdk::Error::Custom(format!(
+                    "could not compute federation state digest checkpoint: {err}"
+                ))
+            })?;
+        let checkpoint = FederationStateDigestCheckpoint::new(latest_entry, state_digest);
+        let mut tx = db.begin_transaction().await?;
+        tx.add_federation_state_digest_checkpoint(&checkpoint)
+            .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     async fn mark_federation_operations_applied(

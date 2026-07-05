@@ -34,7 +34,7 @@ pub use self::journal::{
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
     FederationMaterializedStateRow, FederationMaterializedStateRowFingerprint,
     FederationMaterializedStateSnapshot, FederationOperationStatus, FederationStateDigest,
-    InMemoryFederationJournal,
+    FederationStateDigestCheckpoint, InMemoryFederationJournal,
 };
 pub use self::operation::{
     FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteOperation,

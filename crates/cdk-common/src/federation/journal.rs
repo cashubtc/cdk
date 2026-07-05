@@ -431,6 +431,32 @@ pub struct FederationJournalEntry {
     pub status: FederationOperationStatus,
 }
 
+/// Durable checkpoint for consensus-visible materialized federation state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FederationStateDigestCheckpoint {
+    /// Accepted operation index that this checkpoint certifies.
+    pub operation_index: u64,
+    /// Accepted operation id at `operation_index`.
+    pub operation_id: FederationOperationId,
+    /// Accepted journal-order digest at `operation_index`.
+    pub order_digest: FederationJournalDigest,
+    /// Materialized state digest after applying the checkpointed operation.
+    pub state_digest: FederationStateDigest,
+}
+
+impl FederationStateDigestCheckpoint {
+    /// Build a digest checkpoint for an accepted journal entry.
+    #[must_use]
+    pub fn new(entry: &FederationJournalEntry, state_digest: FederationStateDigest) -> Self {
+        Self {
+            operation_index: entry.index,
+            operation_id: entry.operation_id,
+            order_digest: entry.order_digest,
+            state_digest,
+        }
+    }
+}
+
 /// Outcome of appending an operation envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "entry", rename_all = "snake_case")]

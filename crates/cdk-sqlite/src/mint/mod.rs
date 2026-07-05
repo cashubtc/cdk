@@ -55,6 +55,15 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_state_digest_checkpoint_persistence() {
+        cdk_common::database::mint::test::federation_state_digest_checkpoint_persistence(
+            provide_db("federation_state_digest_checkpoint_persistence".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_signature_share_persistence() {
         cdk_common::database::mint::test::federation_signature_share_persistence(
             provide_db("federation_signature_share_persistence".to_string()).await,
@@ -211,6 +220,7 @@ mod test {
             "federation_journal_entries",
             "federation_member_sequences",
             "federation_session_outcomes",
+            "federation_state_digest",
             "federation_payment_observations",
             "federation_signature_shares",
             "federation_dkg_setup_messages",
@@ -265,6 +275,7 @@ mod test {
               AND tbl_name IN (
                   'federation_journal_entries',
                   'federation_session_outcomes',
+                  'federation_state_digest',
                   'federation_payment_observations',
                   'federation_signature_shares',
                   'federation_dkg_setup_messages',
@@ -289,6 +300,10 @@ mod test {
         assert!(
             index_names.contains("idx_federation_session_outcomes_from_index"),
             "missing federation session-outcome range index"
+        );
+        assert!(
+            index_names.contains("idx_federation_state_digest_state"),
+            "missing federation state-digest index"
         );
         assert!(
             index_names.contains("idx_federation_payment_observations_member_state"),
