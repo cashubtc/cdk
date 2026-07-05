@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 437 checked items and 150 remaining items. Peer sync session-outcome evidence collection now skips already-verified journal prefixes, and router startup now proves accepted-but-unapplied federation journal entries are replayed before signed local status is served.</span>
+          <span class="value">The implementation plan audit now tracks 440 checked items and 147 remaining items. Trusted-dealer setup now has a backend-agnostic core path that generates federation public/private material without the fakewallet feature, and no-progress catch-up responses are rejected before they can spin a retry loop.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: prove router startup federation replay</span>
+          <span class="value">feat: split trusted dealer from fakewallet</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">A router-level crash-window regression persists an accepted mint-quote journal row without applying its mint quote, constructs the Axum router through the same startup path used by mintd, calls signed local-status, and verifies the recovered materialized digest matches a fully applied control member.</span>
+          <span class="value">`cdk-mintd federation trusted-dealer` now runs with `--no-default-features --features "federation sqlite"`, writing federation public/private configs and skipping local fake-wallet TOMLs and smoke scripts unless fakewallet support is enabled.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue production-cleanup work by removing fakewallet-specific federation semantics, strengthening backend-agnostic payment observation tests, and broadening storage-backed process coverage.</span>
+          <span class="value">Continue production-cleanup work by removing remaining fakewallet-specific federation semantics, strengthening backend-agnostic payment observation tests, and broadening storage-backed process coverage.</span>
         </div>
       </aside>
     </header>
@@ -541,7 +541,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 437 checked entries and 150 remaining entries. The
+          checklist has 440 checked entries and 147 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -782,7 +782,7 @@
         <div class="stack">
           <article class="item">
             <h3>Plan audit refreshed</h3>
-            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 437 checked items and 150 explicit next items.</p>
+            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 440 checked items and 147 explicit next items.</p>
           </article>
           <article class="item">
             <h3>Router startup replay proven</h3>
@@ -1875,6 +1875,10 @@
             <p>The trusted-dealer generator now emits an inactive rotation keyset, the generated local smoke script runs a final keyset-rotation scenario, and the smoke command restores and spends pre-rotation proofs before minting and melting after rotation.</p>
           </article>
           <article class="item">
+            <h3>Trusted-dealer core split from fakewallet</h3>
+            <p>The trusted-dealer generator now has a backend-agnostic core path for federation public/private configs, BLS shares, aggregate keysets, and optional DKG route-probe fixtures. Fake-wallet member TOMLs and the local smoke script remain in the fakewallet-enabled development path.</p>
+          </article>
+          <article class="item">
             <h3>State convergence certification planned</h3>
             <p>The implementation plan now has Milestone 16A, an explicit gate for consensus-visible database equality, canonical snapshots, quorum-backed catch-up evidence, safe catch-up mode, digest comparison, and row-level mismatch diagnostics.</p>
           </article>
@@ -2898,6 +2902,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation router_startup_replays_accepted_journal_before_serving_local_status -- --test-threads 1` proved the router startup path used by mintd replays a durable accepted mint-quote journal entry before signed local-status can report authoritative materialized state. `cargo test -p cdk-axum --features federation peer_sync -- --test-threads 1`, `cargo test -p cdk-axum --features federation session_outcome -- --test-threads 1`, and the full escalated `cargo test -p cdk-axum --features federation -- --test-threads 1` passed after peer sync was changed to collect only unverified session-outcome suffixes.</td>
               <td>Use the startup replay proof as the recovery gate while cleaning fakewallet-specific federation semantics out of the production payment-observation path.</td>
+            </tr>
+            <tr>
+              <td>Trusted-dealer core without fakewallet</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --no-default-features --features "federation sqlite" trusted_dealer_core_artifacts_are_backend_agnostic -- --test-threads 1`, `cargo check -p cdk-mintd --no-default-features --features "federation sqlite"`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, and a no-fake `cdk-mintd federation trusted-dealer` CLI generation passed.</td>
+              <td>Continue moving production payment-observation semantics away from fakewallet-specific defaults while preserving fakewallet as an ordinary local development backend.</td>
             </tr>
             <tr>
               <td>Wallet federation auth state</td>

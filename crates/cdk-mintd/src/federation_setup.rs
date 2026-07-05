@@ -1,21 +1,19 @@
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 use std::collections::BTreeMap;
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 use std::io::{self, Write};
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 use std::path::{Path, PathBuf};
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 use std::str::FromStr;
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 use std::time::Instant;
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
-use anyhow::{anyhow, Context};
 #[cfg(feature = "federation")]
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 use bip39::Mnemonic;
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 use cdk_common::federation::{
     generate_trusted_dealer_configs, FederatedKeyset, FederationConfig,
     FederationDkgCommitmentRequest, FederationDkgCommitmentRound,
@@ -26,37 +24,63 @@ use cdk_common::federation::{
     MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerConfigBundle,
     TrustedDealerKeysetSpec, TrustedDealerMember,
 };
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 use cdk_common::mint_url::MintUrl;
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 use cdk_common::nuts::nut01::{
     aggregate_secret_key_shares, evaluate_public_key_commitments, evaluate_secret_key_coefficients,
     BlsSecretKey, BlsSecretKeyShare,
 };
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
 
 #[cfg(feature = "federation")]
 use crate::cli::{FederationTrustedDealerArgs, FederationTrustedDealerDatabaseEngine};
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 const PUBLIC_CONFIG_FILE: &str = "federation-public.json";
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 const DKG_SETUP_PUBLIC_CONFIG_FILE: &str = "dkg-setup-public.json";
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 const PRIVATE_CONFIG_FILE: &str = "federation-private.json";
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 const DKG_SETUP_PRIVATE_CONFIG_FILE: &str = "dkg-setup-private.json";
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 const MEMBER_CONFIG_FILE: &str = "config.toml";
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 const DKG_SETUP_MEMBER_CONFIG_FILE: &str = "dkg-setup-config.toml";
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 const GENERATED_GITIGNORE_FILE: &str = ".gitignore";
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 const SMOKE_SCRIPT_FILE: &str = "smoke-local-federation.sh";
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 const DKG_SETUP_ROUTE_PROBE_DIR: &str = "dkg-setup-route-probe";
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TrustedDealerCoreArtifacts {
+    pub(crate) public_config_path: PathBuf,
+    pub(crate) dkg_setup_public_config_path: PathBuf,
+    pub(crate) member_artifacts: BTreeMap<MemberId, TrustedDealerCoreMemberArtifacts>,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TrustedDealerCoreMemberArtifacts {
+    pub(crate) private_config_path: PathBuf,
+    pub(crate) dkg_setup_private_config_path: PathBuf,
+    pub(crate) dkg_setup_request_dir: PathBuf,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug)]
+#[allow(dead_code)]
+struct TrustedDealerCoreGeneration {
+    core_artifacts: TrustedDealerCoreArtifacts,
+    output_dir: PathBuf,
+    unit: CurrencyUnit,
+    bundle: TrustedDealerConfigBundle,
+}
 
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,7 +106,7 @@ pub(crate) struct TrustedDealerMemberArtifacts {
     pub(crate) prometheus_url: String,
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn print_trusted_dealer_stage(stage: &str, started_at: Instant) {
     println!(
         "federation trusted-dealer stage: stage={} elapsed_ms={}",
@@ -96,8 +120,32 @@ fn print_trusted_dealer_stage(stage: &str, started_at: Instant) {
 pub(crate) fn run_trusted_dealer_command(args: &FederationTrustedDealerArgs) -> Result<()> {
     #[cfg(not(feature = "fakewallet"))]
     {
-        let _ = args;
-        bail!("the federation trusted-dealer generator requires the fakewallet feature");
+        let artifacts = generate_trusted_dealer_core_artifacts(args)?;
+        println!(
+            "Wrote federation public config: {}",
+            artifacts.public_config_path.display()
+        );
+        println!(
+            "Wrote DKG setup public config: {}",
+            artifacts.dkg_setup_public_config_path.display()
+        );
+        for (member_id, member) in &artifacts.member_artifacts {
+            println!(
+                "Wrote member {} private config: {}",
+                member_id,
+                member.private_config_path.display()
+            );
+            println!(
+                "Wrote member {} DKG setup private config: {}",
+                member_id,
+                member.dkg_setup_private_config_path.display()
+            );
+        }
+        println!(
+            "Skipped local fake-wallet member TOMLs and smoke script because the fakewallet feature is disabled."
+        );
+
+        Ok(())
     }
 
     #[cfg(feature = "fakewallet")]
@@ -128,10 +176,18 @@ pub(crate) fn run_trusted_dealer_command(args: &FederationTrustedDealerArgs) -> 
     }
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
-pub(crate) fn generate_trusted_dealer_artifacts(
+#[cfg(feature = "federation")]
+#[cfg_attr(feature = "fakewallet", allow(dead_code))]
+pub(crate) fn generate_trusted_dealer_core_artifacts(
     args: &FederationTrustedDealerArgs,
-) -> Result<TrustedDealerArtifacts> {
+) -> Result<TrustedDealerCoreArtifacts> {
+    Ok(generate_trusted_dealer_core_generation(args)?.core_artifacts)
+}
+
+#[cfg(feature = "federation")]
+fn generate_trusted_dealer_core_generation(
+    args: &FederationTrustedDealerArgs,
+) -> Result<TrustedDealerCoreGeneration> {
     let setup_started_at = Instant::now();
     print_trusted_dealer_stage("setup.start", setup_started_at);
     validate_trusted_dealer_args(args)?;
@@ -216,12 +272,8 @@ pub(crate) fn generate_trusted_dealer_artifacts(
     print_trusted_dealer_stage("setup.public-files.done", setup_started_at);
 
     print_trusted_dealer_stage("setup.member-files.start", setup_started_at);
-    let mut member_artifacts = BTreeMap::new();
+    let mut core_member_artifacts = BTreeMap::new();
     for (member_id, private_config) in &bundle.private_configs {
-        let member = bundle
-            .public_config
-            .member(*member_id)
-            .ok_or_else(|| anyhow!("generated bundle is missing member {}", member_id))?;
         let member_dir = output_dir.join(format!("member-{}", member_id.get()));
         std::fs::create_dir_all(&member_dir)
             .with_context(|| format!("failed to create {}", member_dir.display()))?;
@@ -236,6 +288,60 @@ pub(crate) fn generate_trusted_dealer_artifacts(
             args.force,
         )?;
 
+        core_member_artifacts.insert(
+            *member_id,
+            TrustedDealerCoreMemberArtifacts {
+                private_config_path,
+                dkg_setup_private_config_path,
+                dkg_setup_request_dir: dkg_setup_request_dirs
+                    .get(member_id)
+                    .ok_or_else(|| anyhow!("missing DKG route-probe dir for member {member_id}"))?
+                    .clone(),
+            },
+        );
+    }
+    print_trusted_dealer_stage("setup.member-files.done", setup_started_at);
+
+    Ok(TrustedDealerCoreGeneration {
+        core_artifacts: TrustedDealerCoreArtifacts {
+            public_config_path,
+            dkg_setup_public_config_path,
+            member_artifacts: core_member_artifacts,
+        },
+        output_dir,
+        unit,
+        bundle,
+    })
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+pub(crate) fn generate_trusted_dealer_artifacts(
+    args: &FederationTrustedDealerArgs,
+) -> Result<TrustedDealerArtifacts> {
+    let generation = generate_trusted_dealer_core_generation(args)?;
+    let setup_started_at = Instant::now();
+    print_trusted_dealer_stage("setup.local-member-files.start", setup_started_at);
+
+    let public_config_path = generation.core_artifacts.public_config_path.clone();
+    let dkg_setup_public_config_path = generation
+        .core_artifacts
+        .dkg_setup_public_config_path
+        .clone();
+    let mut member_artifacts = BTreeMap::new();
+    for member_id in generation.bundle.private_configs.keys() {
+        let member = generation
+            .bundle
+            .public_config
+            .member(*member_id)
+            .ok_or_else(|| anyhow!("generated bundle is missing member {}", member_id))?;
+        let core_member = generation
+            .core_artifacts
+            .member_artifacts
+            .get(member_id)
+            .ok_or_else(|| anyhow!("missing core artifacts for member {member_id}"))?;
+        let member_dir = generation
+            .output_dir
+            .join(format!("member-{}", member_id.get()));
         let work_dir = member_dir.join("work");
         let dkg_setup_work_dir = member_dir.join("dkg-setup-work");
         let config_path = member_dir.join(MEMBER_CONFIG_FILE);
@@ -261,10 +367,10 @@ pub(crate) fn generate_trusted_dealer_artifacts(
             listen_port,
             prometheus_port,
             &public_config_path,
-            &private_config_path,
+            &core_member.private_config_path,
             &config_path,
             &work_dir,
-            &unit,
+            &generation.unit,
             &database_config,
         )?;
         write_text_file(&config_path, &config_toml, args.force)?;
@@ -276,10 +382,10 @@ pub(crate) fn generate_trusted_dealer_artifacts(
             listen_port,
             prometheus_port,
             &dkg_setup_public_config_path,
-            &dkg_setup_private_config_path,
+            &core_member.dkg_setup_private_config_path,
             &dkg_setup_config_path,
             &dkg_setup_work_dir,
-            &unit,
+            &generation.unit,
             &database_config,
         )?;
         write_text_file(&dkg_setup_config_path, &dkg_setup_config_toml, args.force)?;
@@ -289,24 +395,21 @@ pub(crate) fn generate_trusted_dealer_artifacts(
             TrustedDealerMemberArtifacts {
                 config_path,
                 dkg_setup_config_path,
-                private_config_path,
-                dkg_setup_private_config_path,
+                private_config_path: core_member.private_config_path.clone(),
+                dkg_setup_private_config_path: core_member.dkg_setup_private_config_path.clone(),
                 work_dir,
                 dkg_setup_work_dir,
                 public_mint_url: member_url,
                 federation_api_url,
-                dkg_setup_request_dir: dkg_setup_request_dirs
-                    .get(member_id)
-                    .ok_or_else(|| anyhow!("missing DKG route-probe dir for member {member_id}"))?
-                    .clone(),
+                dkg_setup_request_dir: core_member.dkg_setup_request_dir.clone(),
                 prometheus_url,
             },
         );
     }
-    print_trusted_dealer_stage("setup.member-files.done", setup_started_at);
+    print_trusted_dealer_stage("setup.local-member-files.done", setup_started_at);
 
     print_trusted_dealer_stage("setup.smoke-script.start", setup_started_at);
-    let smoke_script_path = output_dir.join(SMOKE_SCRIPT_FILE);
+    let smoke_script_path = generation.output_dir.join(SMOKE_SCRIPT_FILE);
     let smoke_script = local_smoke_script(
         &public_config_path,
         &dkg_setup_public_config_path,
@@ -325,7 +428,7 @@ pub(crate) fn generate_trusted_dealer_artifacts(
     })
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn dkg_setup_public_config(public_config: &FederationConfig) -> Result<FederationConfig> {
     let mut setup_public_config = public_config.clone();
     setup_public_config.keysets.clear();
@@ -336,7 +439,7 @@ fn dkg_setup_public_config(public_config: &FederationConfig) -> Result<Federatio
     Ok(setup_public_config)
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn dkg_setup_private_config(
     private_config: &MemberConfigPrivate,
     setup_public_config: &FederationConfig,
@@ -350,7 +453,7 @@ fn dkg_setup_private_config(
     Ok(setup_private_config)
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn validate_trusted_dealer_args(args: &FederationTrustedDealerArgs) -> Result<()> {
     if args.members == 0 {
         bail!("federation trusted-dealer generation needs at least one member");
@@ -417,7 +520,7 @@ fn validate_trusted_dealer_args(args: &FederationTrustedDealerArgs) -> Result<()
     Ok(())
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn create_output_dir(output_dir: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
@@ -426,7 +529,7 @@ fn create_output_dir(output_dir: &Path) -> Result<PathBuf> {
         .with_context(|| format!("failed to canonicalize {}", output_dir.display()))
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn write_generated_gitignore(output_dir: &Path, force: bool) -> Result<()> {
     write_text_file(
         &output_dir.join(GENERATED_GITIGNORE_FILE),
@@ -435,7 +538,7 @@ fn write_generated_gitignore(output_dir: &Path, force: bool) -> Result<()> {
     )
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn trusted_dealer_members(
     member_count: u16,
     host: &str,
@@ -459,7 +562,7 @@ fn trusted_dealer_members(
         .collect()
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn trusted_dealer_keyset_spec(
     unit: CurrencyUnit,
     active: bool,
@@ -488,7 +591,7 @@ fn trusted_dealer_keyset_spec(
     ))
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn random_bls_coefficients(threshold: u16) -> Result<Vec<BlsSecretKey>> {
     (0..threshold)
         .map(|_| {
@@ -498,7 +601,7 @@ fn random_bls_coefficients(threshold: u16) -> Result<Vec<BlsSecretKey>> {
         .collect()
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn dkg_setup_route_probe_dirs(
     output_dir: &Path,
     public_config: &FederationConfig,
@@ -517,7 +620,7 @@ fn dkg_setup_route_probe_dirs(
         .collect()
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn write_dkg_setup_route_probe_requests(
     output_dir: &Path,
     public_config: &FederationConfig,
@@ -720,7 +823,7 @@ fn write_dkg_setup_route_probe_requests(
     Ok(request_dirs)
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn validate_dkg_probe_member_secret_shares(
     public_config: &FederationConfig,
     round: &FederationDkgCommitmentRound,
@@ -789,7 +892,7 @@ fn validate_dkg_probe_member_secret_shares(
     Ok(())
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn dkg_probe_coefficients(
     public_config: &FederationConfig,
     threshold: u16,
@@ -811,7 +914,7 @@ fn dkg_probe_coefficients(
     Ok(coefficients)
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn dkg_probe_reveal(
     public_config: &FederationConfig,
     member_id: MemberId,
@@ -839,7 +942,7 @@ fn dkg_probe_reveal(
     })
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn dkg_probe_secret_share_request(
     public_config: &FederationConfig,
     coefficients: &BTreeMap<MemberId, BTreeMap<Amount, Vec<BlsSecretKey>>>,
@@ -867,7 +970,7 @@ fn dkg_probe_secret_share_request(
     ))
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn write_signed_dkg_probe_request<T>(
     public_config: &FederationConfig,
     private_config: &MemberConfigPrivate,
@@ -893,12 +996,12 @@ where
     write_json_file(path, &request, force)
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn dkg_probe_request_path(receiver_dir: &Path, sender_id: MemberId, label: &str) -> PathBuf {
     receiver_dir.join(format!("from-{}-{label}.json", sender_id.get()))
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn validate_bundle(bundle: &TrustedDealerConfigBundle) -> Result<()> {
     bundle
         .public_config
@@ -1057,7 +1160,7 @@ fn toml_string(value: &str) -> Result<String> {
     Ok(serde_json::to_string(value)?)
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn write_json_file<T>(path: &Path, value: &T, force: bool) -> Result<()>
 where
     T: serde::Serialize + ?Sized,
@@ -1066,7 +1169,7 @@ where
     write_text_file(path, &format!("{json}\n"), force)
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[cfg(feature = "federation")]
 fn write_text_file(path: &Path, contents: &str, force: bool) -> Result<()> {
     if path.exists() && !force {
         bail!(
@@ -1911,6 +2014,144 @@ where
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+#[cfg(all(test, feature = "federation"))]
+mod core_tests {
+    use super::*;
+    use cdk_common::federation::{FederationConfig, MemberConfigPrivate};
+
+    fn temp_output_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "cdk_mintd_federation_core_{name}_{}",
+            std::process::id()
+        ))
+    }
+
+    fn generator_args(output_dir: PathBuf) -> FederationTrustedDealerArgs {
+        FederationTrustedDealerArgs {
+            output_dir,
+            members: 3,
+            threshold: 2,
+            unit: "sat".to_string(),
+            amounts: vec![1, 2, 4],
+            input_fee_ppk: 0,
+            final_expiry: None,
+            host: "127.0.0.1".to_string(),
+            port_start: 18_085,
+            database_engine: FederationTrustedDealerDatabaseEngine::Sqlite,
+            postgres_url_template: None,
+            postgres_base_url: None,
+            dkg_setup_route_probes: true,
+            force: false,
+        }
+    }
+
+    #[test]
+    fn trusted_dealer_core_artifacts_are_backend_agnostic() {
+        let output_dir = temp_output_dir("artifacts");
+        let _ = std::fs::remove_dir_all(&output_dir);
+        let args = generator_args(output_dir.clone());
+        let artifacts =
+            generate_trusted_dealer_core_artifacts(&args).expect("core trusted dealer artifacts");
+
+        let public_json =
+            std::fs::read_to_string(&artifacts.public_config_path).expect("public config file");
+        let public_config: FederationConfig =
+            serde_json::from_str(&public_json).expect("public config json");
+        public_config.validate().expect("public config validates");
+        assert_eq!(public_config.threshold_params.member_count, 3);
+        assert_eq!(public_config.threshold_params.signature_threshold, 2);
+        assert_eq!(public_config.keysets.len(), 2);
+        let setup_transcript = public_config
+            .setup_transcript
+            .as_ref()
+            .expect("setup transcript");
+
+        let setup_public_json = std::fs::read_to_string(&artifacts.dkg_setup_public_config_path)
+            .expect("setup public config file");
+        let setup_public_config: FederationConfig =
+            serde_json::from_str(&setup_public_json).expect("setup public config json");
+        setup_public_config
+            .validate()
+            .expect("setup public config validates");
+        assert_eq!(
+            setup_public_config.federation_id,
+            public_config.federation_id
+        );
+        assert!(setup_public_config.keysets.is_empty());
+        assert!(setup_public_config.setup_transcript.is_none());
+
+        assert!(!output_dir.join("smoke-local-federation.sh").exists());
+        for member_id in public_config.members.keys() {
+            let member_artifacts = artifacts
+                .member_artifacts
+                .get(member_id)
+                .expect("member core artifacts");
+            assert!(!output_dir
+                .join(format!("member-{}", member_id.get()))
+                .join("config.toml")
+                .exists());
+            assert!(!output_dir
+                .join(format!("member-{}", member_id.get()))
+                .join("dkg-setup-config.toml")
+                .exists());
+
+            let private_json = std::fs::read_to_string(&member_artifacts.private_config_path)
+                .expect("private config file");
+            let private_config: MemberConfigPrivate =
+                serde_json::from_str(&private_json).expect("private config json");
+            assert_eq!(private_config.member_id, *member_id);
+            assert_eq!(
+                private_config.federation_id,
+                Some(public_config.federation_id)
+            );
+            assert_eq!(
+                private_config.setup_transcript_hash,
+                Some(setup_transcript.transcript_hash)
+            );
+            private_config
+                .validate_against_public(&public_config)
+                .expect("private config validates");
+
+            let setup_private_json =
+                std::fs::read_to_string(&member_artifacts.dkg_setup_private_config_path)
+                    .expect("setup private config file");
+            let setup_private_config: MemberConfigPrivate =
+                serde_json::from_str(&setup_private_json).expect("setup private config json");
+            assert_eq!(setup_private_config.member_id, *member_id);
+            assert_eq!(
+                setup_private_config.federation_id,
+                Some(public_config.federation_id)
+            );
+            assert!(setup_private_config.keyset_secret_shares.is_empty());
+            assert!(setup_private_config.setup_transcript_hash.is_none());
+            setup_private_config
+                .validate_against_public(&setup_public_config)
+                .expect("setup private config validates");
+        }
+
+        let first_member = MemberId::new(1).expect("first member id");
+        let first_probe_path = artifacts
+            .member_artifacts
+            .get(&first_member)
+            .expect("first member artifacts")
+            .dkg_setup_request_dir
+            .join("from-1-commitment.json");
+        let commitment_json =
+            std::fs::read_to_string(first_probe_path).expect("DKG commitment route-probe request");
+        let commitment_request: FederationSignedRequest<FederationDkgCommitmentRequest> =
+            serde_json::from_str(&commitment_json).expect("signed DKG commitment request");
+        commitment_request
+            .verify(&public_config, first_member)
+            .expect("commitment request verifies");
+        commitment_request
+            .payload
+            .validate_sender(&public_config, first_member)
+            .expect("commitment sender validates");
+
+        let _ = std::fs::remove_dir_all(&output_dir);
+    }
 }
 
 #[cfg(all(test, feature = "federation", feature = "fakewallet"))]

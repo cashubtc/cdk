@@ -21,8 +21,9 @@ fn main() {
         || cfg!(feature = "fakewallet")
         || cfg!(feature = "grpc-processor")
         || cfg!(feature = "ldk-node");
+    let has_federation = cfg!(feature = "federation");
 
-    if !has_lightning_backend {
+    if !has_lightning_backend && !has_federation {
         panic!(
             "cdk-mintd requires at least one Lightning backend to be enabled.\n\
              Available Lightning backends: cln, lnd, lnbits, fakewallet, grpc-processor\n\

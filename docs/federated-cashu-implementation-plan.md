@@ -87,8 +87,8 @@ Current confirmed shape:
 
 - Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes, in-memory consensus scaffold, private REST peer envelopes, federation journal persistence, mint/swap/melt/restore/check-state apply paths, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
 - Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, exact deterministic binary operation encoding, a separate `federation_signature_share` table, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
-- Test-suite status: focused federation replay, peer-sync, session-outcome, and `cdk-axum` federation tests were run for the latest checkpoints; the full workspace test suite remains open.
-- Latest checkpoint: federation peer sync now skips quorum-verified session-outcome prefixes instead of re-signing and re-requesting the full journal every round, preventing long-running mints from turning catch-up evidence collection into continuous CPU work. Router startup now has a crash-window regression proving the `create_mint_router` path used by `cdk-mintd` replays durable accepted-but-unapplied journal entries before serving signed local federation status.
+- Test-suite status: focused federation replay, peer-sync, session-outcome, trusted-dealer setup, no-fake `cdk-mintd`, and `cdk-axum` federation tests were run for the latest checkpoints; the full workspace test suite remains open.
+- Latest checkpoint: federation catch-up now rejects no-progress incomplete responses instead of allowing CPU-spinning retry loops. Trusted-dealer setup now has a backend-agnostic core generator and `cdk-mintd federation trusted-dealer` can emit public/private federation material with `federation,sqlite` and without the `fakewallet` feature, while the fake-wallet TOMLs and local smoke script remain in the fakewallet-enabled dev path.
 
 ## Key observations
 
@@ -1078,8 +1078,8 @@ Implementation checklist:
 - [ ] Make federation minting and melting depend only on generic payment observations, quote state transitions, and existing CDK payment backend traits.
 - [ ] Make federated minting and melting use the mint's configured payment backend in the same way standalone mint mode does; the federation layer must not know whether the backend is CLN, LND, LNBits, LDK Node, fakewallet, or a future backend.
 - [ ] Derive payment observations from generic quote/payment state returned by the configured backend, not from backend-specific federation branches.
-- [ ] Split trusted-dealer federation key/config generation from local fakewallet regtest config generation.
-- [ ] Allow `cdk-mintd federation trusted-dealer` or its successor setup command to generate member identities, public federation config, private member configs, BLS shares, and aggregate keysets without enabling the `fakewallet` feature.
+- [x] Split trusted-dealer federation key/config generation from local fakewallet regtest config generation.
+- [x] Allow `cdk-mintd federation trusted-dealer` or its successor setup command to generate member identities, public federation config, private member configs, BLS shares, and aggregate keysets without enabling the `fakewallet` feature.
 - [ ] Keep fakewallet-specific member config generation in a dev/regtest wrapper command, generated smoke harness, or `just` target rather than in the key generation path.
 - [x] Add federation config for peer sync interval, peer request timeout, operation submission timeout, catch-up limits, digest recheck attempts, digest recheck delay, session outcome evidence chunk size, and related retry policy.
 - [x] Add wallet federation connector configuration for per-member fallback timeout, quote-status polling timeout, and fanout concurrency.
@@ -1104,7 +1104,7 @@ Tests and success criteria:
 
 - [ ] `rg "cdk_fake_wallet|FakeWallet|fake_wallet|fake-wallet"` in production federation modules only finds test-only code, mintd backend setup, smoke tooling, or documentation that explicitly marks fakewallet as development-only.
 - [ ] A federation built with a real payment backend can start without enabling the `fakewallet` feature.
-- [ ] `cdk-mintd` can generate trusted-dealer federation configs with `federation,sqlite` features and without the `fakewallet` feature.
+- [x] `cdk-mintd` can generate trusted-dealer federation configs with `federation,sqlite` features and without the `fakewallet` feature.
 - [ ] Federated mint and melt tests pass through the same federation payment-observation path with fakewallet and with a backend-agnostic mock payment backend.
 - [ ] A production-mode federation config without an explicit payment observation policy fails startup with a clear error.
 - [ ] A production-mode federation config with a dev/test single-observation policy fails startup unless an explicit development override is set.

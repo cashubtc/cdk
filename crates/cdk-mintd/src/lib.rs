@@ -1,4 +1,16 @@
 #![allow(missing_docs)]
+#![cfg_attr(
+    not(any(
+        feature = "cln",
+        feature = "lnbits",
+        feature = "lnd",
+        feature = "ldk-node",
+        feature = "fakewallet",
+        feature = "bdk",
+        feature = "grpc-processor"
+    )),
+    allow(dead_code, unused_imports, unused_mut, unused_variables)
+)]
 //! Cdk mintd lib
 
 // std
@@ -19,15 +31,6 @@ use cdk::cdk_database::{self, KVStore, MintDatabase, MintKeysDatabase};
 use cdk::mint::FederationRuntimeConfig;
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::KnownMethod;
-#[cfg(any(
-    feature = "cln",
-    feature = "lnbits",
-    feature = "lnd",
-    feature = "ldk-node",
-    feature = "fakewallet",
-    feature = "bdk",
-    feature = "grpc-processor"
-))]
 use cdk::nuts::nut17::SupportedMethods;
 use cdk::nuts::nut19::{CachedEndpoint, Method as NUT19Method, Path as NUT19Path};
 use cdk::nuts::{
