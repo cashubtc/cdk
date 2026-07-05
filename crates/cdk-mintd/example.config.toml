@@ -376,6 +376,8 @@ max_delay_time = 3
 # session_outcome_evidence_chunk_size = 1000
 # reconnect_initial_backoff_secs = 1
 # reconnect_max_backoff_secs = 60
+# private_rest_inbound_concurrency_limit = 128
+# private_rest_outbound_concurrency_limit = 64
 
 # Transaction limits for DoS protection (optional, defaults shown)
 [limits]

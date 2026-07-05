@@ -50,6 +50,8 @@ type FederationSyncHandle = Arc<tokio::sync::Mutex<FederationSyncState>>;
 type FederationNotificationHandle = Arc<FederationOperationNotifications>;
 #[cfg(feature = "federation")]
 type FederationFinalizationHandle = tokio::sync::mpsc::Sender<FederationFinalizationRequest>;
+#[cfg(feature = "federation")]
+type FederationRestAdmissionHandle = Arc<tokio::sync::Semaphore>;
 
 #[cfg(feature = "federation")]
 struct FederationFinalizationRequest {
@@ -412,6 +414,8 @@ pub struct MintState {
     #[cfg(feature = "federation")]
     federation_consensus: Option<FederationConsensusHandle>,
     #[cfg(feature = "federation")]
+    federation_peer_sync_config: Option<FederationPeerSyncConfig>,
+    #[cfg(feature = "federation")]
     federation_sequences: Option<FederationSequenceHandle>,
     #[cfg(feature = "federation")]
     federation_sync: Option<FederationSyncHandle>,
@@ -419,6 +423,8 @@ pub struct MintState {
     federation_notifications: Option<FederationNotificationHandle>,
     #[cfg(feature = "federation")]
     federation_finalizer: Option<FederationFinalizationHandle>,
+    #[cfg(feature = "federation")]
+    federation_private_rest_admission: Option<FederationRestAdmissionHandle>,
 }
 
 #[cfg(feature = "federation")]
@@ -1176,6 +1182,10 @@ async fn create_mint_router_with_custom_cache_inner(
         #[cfg(feature = "federation")]
         federation_consensus: federation_consensus.clone(),
         #[cfg(feature = "federation")]
+        federation_peer_sync_config: federation_consensus
+            .as_ref()
+            .map(|_| federation_peer_sync_config),
+        #[cfg(feature = "federation")]
         federation_sequences,
         #[cfg(feature = "federation")]
         federation_sync: federation_consensus
@@ -1187,6 +1197,12 @@ async fn create_mint_router_with_custom_cache_inner(
             .map(|_| Arc::new(FederationOperationNotifications::default())),
         #[cfg(feature = "federation")]
         federation_finalizer: None,
+        #[cfg(feature = "federation")]
+        federation_private_rest_admission: federation_consensus.as_ref().map(|_| {
+            Arc::new(tokio::sync::Semaphore::new(
+                federation_peer_sync_config.private_rest_inbound_concurrency_limit,
+            ))
+        }),
     };
     #[cfg(feature = "federation")]
     state.start_federation_finalization_loop();

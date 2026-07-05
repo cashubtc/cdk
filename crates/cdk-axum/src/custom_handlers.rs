@@ -1180,6 +1180,8 @@ mod tests {
             #[cfg(feature = "federation")]
             federation_consensus: None,
             #[cfg(feature = "federation")]
+            federation_peer_sync_config: None,
+            #[cfg(feature = "federation")]
             federation_sequences: None,
             #[cfg(feature = "federation")]
             federation_sync: None,
@@ -1187,6 +1189,8 @@ mod tests {
             federation_notifications: None,
             #[cfg(feature = "federation")]
             federation_finalizer: None,
+            #[cfg(feature = "federation")]
+            federation_private_rest_admission: None,
         }
     }
 
@@ -1410,6 +1414,7 @@ mod tests {
                     runtime_config.member_id(),
                 ),
             ))),
+            federation_peer_sync_config: Some(crate::FederationPeerSyncConfig::default()),
             federation_sequences: Some(Arc::new(tokio::sync::Mutex::new(
                 cdk::federation::FederationRestSequenceTracker::new(),
             ))),
@@ -1420,6 +1425,9 @@ mod tests {
                 crate::FederationOperationNotifications::default(),
             )),
             federation_finalizer: None,
+            federation_private_rest_admission: Some(Arc::new(tokio::sync::Semaphore::new(
+                crate::FederationPeerSyncConfig::default().private_rest_inbound_concurrency_limit,
+            ))),
         }
     }
 
@@ -1493,6 +1501,8 @@ mod tests {
             #[cfg(feature = "federation")]
             federation_consensus: None,
             #[cfg(feature = "federation")]
+            federation_peer_sync_config: None,
+            #[cfg(feature = "federation")]
             federation_sequences: None,
             #[cfg(feature = "federation")]
             federation_sync: None,
@@ -1500,6 +1510,8 @@ mod tests {
             federation_notifications: None,
             #[cfg(feature = "federation")]
             federation_finalizer: None,
+            #[cfg(feature = "federation")]
+            federation_private_rest_admission: None,
         }
     }
 

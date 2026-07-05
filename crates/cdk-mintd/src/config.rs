@@ -1105,6 +1105,12 @@ pub struct FederationPeerSync {
     /// Maximum reconnect backoff after repeated peer sync failures.
     #[serde(default = "default_federation_reconnect_max_backoff_secs")]
     pub reconnect_max_backoff_secs: u64,
+    /// Maximum concurrent private REST requests accepted by this member.
+    #[serde(default = "default_federation_private_rest_inbound_concurrency_limit")]
+    pub private_rest_inbound_concurrency_limit: usize,
+    /// Maximum concurrent private REST requests sent by one peer client.
+    #[serde(default = "default_federation_private_rest_outbound_concurrency_limit")]
+    pub private_rest_outbound_concurrency_limit: usize,
 }
 
 #[cfg(feature = "federation")]
@@ -1123,6 +1129,10 @@ impl Default for FederationPeerSync {
                 default_federation_session_outcome_evidence_chunk_size(),
             reconnect_initial_backoff_secs: default_federation_reconnect_initial_backoff_secs(),
             reconnect_max_backoff_secs: default_federation_reconnect_max_backoff_secs(),
+            private_rest_inbound_concurrency_limit:
+                default_federation_private_rest_inbound_concurrency_limit(),
+            private_rest_outbound_concurrency_limit:
+                default_federation_private_rest_outbound_concurrency_limit(),
         }
     }
 }
@@ -1170,6 +1180,16 @@ fn default_federation_reconnect_initial_backoff_secs() -> u64 {
 #[cfg(feature = "federation")]
 fn default_federation_reconnect_max_backoff_secs() -> u64 {
     60
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_private_rest_inbound_concurrency_limit() -> usize {
+    128
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_private_rest_outbound_concurrency_limit() -> usize {
+    64
 }
 
 /// Transaction limits configuration

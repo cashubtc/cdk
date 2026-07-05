@@ -247,6 +247,8 @@ mod tests {
             #[cfg(feature = "federation")]
             federation_consensus: None,
             #[cfg(feature = "federation")]
+            federation_peer_sync_config: None,
+            #[cfg(feature = "federation")]
             federation_sequences: None,
             #[cfg(feature = "federation")]
             federation_sync: None,
@@ -254,6 +256,8 @@ mod tests {
             federation_notifications: None,
             #[cfg(feature = "federation")]
             federation_finalizer: None,
+            #[cfg(feature = "federation")]
+            federation_private_rest_admission: None,
         };
         let (publisher, _receiver) = tokio::sync::mpsc::channel(100);
         WsContext {

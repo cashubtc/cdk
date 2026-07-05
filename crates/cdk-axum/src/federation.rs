@@ -49,6 +49,8 @@ const DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_ATTEMPTS: usize = 20;
 const DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_DELAY: Duration = Duration::from_millis(100);
 const DEFAULT_FEDERATION_RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const DEFAULT_FEDERATION_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(60);
+const DEFAULT_FEDERATION_PRIVATE_REST_INBOUND_CONCURRENCY_LIMIT: usize = 128;
+const DEFAULT_FEDERATION_PRIVATE_REST_OUTBOUND_CONCURRENCY_LIMIT: usize = 64;
 static FEDERATION_REST_SEQUENCE_SEED: AtomicU64 = AtomicU64::new(0);
 
 /// Private federation peer synchronization policy.
@@ -72,6 +74,10 @@ pub struct FederationPeerSyncConfig {
     pub reconnect_initial_backoff: Duration,
     /// Maximum reconnect backoff after repeated peer sync failures.
     pub reconnect_max_backoff: Duration,
+    /// Maximum concurrent private REST requests accepted by this member.
+    pub private_rest_inbound_concurrency_limit: usize,
+    /// Maximum concurrent private REST requests sent by one peer client.
+    pub private_rest_outbound_concurrency_limit: usize,
 }
 
 impl Default for FederationPeerSyncConfig {
@@ -87,6 +93,10 @@ impl Default for FederationPeerSyncConfig {
                 DEFAULT_FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_SIZE,
             reconnect_initial_backoff: DEFAULT_FEDERATION_RECONNECT_INITIAL_BACKOFF,
             reconnect_max_backoff: DEFAULT_FEDERATION_RECONNECT_MAX_BACKOFF,
+            private_rest_inbound_concurrency_limit:
+                DEFAULT_FEDERATION_PRIVATE_REST_INBOUND_CONCURRENCY_LIMIT,
+            private_rest_outbound_concurrency_limit:
+                DEFAULT_FEDERATION_PRIVATE_REST_OUTBOUND_CONCURRENCY_LIMIT,
         }
     }
 }
@@ -133,6 +143,16 @@ impl FederationPeerSyncConfig {
                 "federation reconnect max backoff must be greater than or equal to the initial backoff"
             );
         }
+        if self.private_rest_inbound_concurrency_limit == 0 {
+            anyhow::bail!(
+                "federation private REST inbound concurrency limit must be greater than zero"
+            );
+        }
+        if self.private_rest_outbound_concurrency_limit == 0 {
+            anyhow::bail!(
+                "federation private REST outbound concurrency limit must be greater than zero"
+            );
+        }
 
         Ok(())
     }
@@ -151,6 +171,40 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         )
         .route("/operations", post(post_operation))
         .route("/journal", post(post_journal))
+}
+
+fn acquire_private_rest_admission(
+    state: &MintState,
+    kind: FederationRestMessageKind,
+) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, Response> {
+    let Some(admission) = state.federation_private_rest_admission.as_ref() else {
+        return Ok(None);
+    };
+    match admission.clone().try_acquire_owned() {
+        Ok(permit) => Ok(Some(permit)),
+        Err(tokio::sync::TryAcquireError::NoPermits) => {
+            tracing::warn!(
+                request_kind = ?kind,
+                "Federation private REST inbound queue is full"
+            );
+            Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                "federation private REST inbound queue is full",
+            )
+                .into_response())
+        }
+        Err(tokio::sync::TryAcquireError::Closed) => {
+            tracing::error!(
+                request_kind = ?kind,
+                "Federation private REST inbound admission is closed"
+            );
+            Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "federation private REST inbound admission is closed",
+            )
+                .into_response())
+        }
+    }
 }
 
 pub(crate) fn spawn_federation_peer_sync_loop_with_config(
@@ -609,10 +663,11 @@ where
     let operation_id = request
         .operation_id()
         .map_err(|err| cdk::Error::Custom(err.to_string()))?;
-    let client = FederationRestPeerClient::new(
+    let client = FederationRestPeerClient::new_with_config(
         transport,
         runtime_config.public_config(),
         runtime_config.private_config().clone(),
+        state.federation_peer_sync_config.unwrap_or_default(),
     )
     .map_err(|err| cdk::Error::Custom(err.to_string()))?;
     let response = client
@@ -758,6 +813,7 @@ async fn post_status(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationPeerStatusRequest>>,
 ) -> Result<Json<FederationPeerStatus>, Response> {
+    let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::Status)?;
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::Status).await?;
     state
@@ -775,6 +831,7 @@ async fn post_local_status(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationPeerStatusRequest>>,
 ) -> Result<Json<FederationLocalStatusResponse>, Response> {
+    let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::Status)?;
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::Status).await?;
     state
@@ -808,6 +865,7 @@ async fn post_dkg_commitment(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationDkgCommitmentRequest>>,
 ) -> Result<Json<FederationDkgSetupResponse>, Response> {
+    let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::DkgCommitment)?;
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::DkgCommitment)
             .await?;
@@ -840,6 +898,7 @@ async fn post_dkg_reveal(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationDkgRevealRequest>>,
 ) -> Result<Json<FederationDkgSetupResponse>, Response> {
+    let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::DkgReveal)?;
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::DkgReveal).await?;
     let runtime_config = federation_runtime_config(&state)?;
@@ -867,6 +926,8 @@ async fn post_dkg_secret_share(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationDkgSecretShareRequest>>,
 ) -> Result<Json<FederationDkgSetupResponse>, Response> {
+    let _permit =
+        acquire_private_rest_admission(&state, FederationRestMessageKind::DkgSecretShare)?;
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::DkgSecretShare)
             .await?;
@@ -903,6 +964,8 @@ async fn post_dkg_transcript_signature(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationDkgTranscriptSignatureRequest>>,
 ) -> Result<Json<FederationDkgSetupResponse>, Response> {
+    let _permit =
+        acquire_private_rest_admission(&state, FederationRestMessageKind::DkgTranscriptSignature)?;
     let verified = verify_federation_request(
         &state,
         &payload,
@@ -938,6 +1001,8 @@ async fn post_operation(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationSubmitOperationRequest>>,
 ) -> Result<Json<FederationSubmitOperationResponse>, Response> {
+    let _permit =
+        acquire_private_rest_admission(&state, FederationRestMessageKind::SubmitOperation)?;
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::SubmitOperation)
             .await?;
@@ -972,6 +1037,7 @@ async fn post_journal(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationJournalCatchUpRequest>>,
 ) -> Result<Json<FederationJournalCatchUpResponse>, Response> {
+    let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::CatchUp)?;
     let verified =
         verify_federation_request(&state, &payload, FederationRestMessageKind::CatchUp).await?;
     state
@@ -1486,6 +1552,7 @@ pub(crate) struct FederationRestPeerClient<T = Async> {
     private_config: MemberConfigPrivate,
     sync_config: FederationPeerSyncConfig,
     next_sequence: Arc<AtomicU64>,
+    outbound_admission: Arc<tokio::sync::Semaphore>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1521,6 +1588,9 @@ where
             private_config,
             sync_config,
             next_sequence: Arc::new(AtomicU64::new(initial_federation_rest_sequence())),
+            outbound_admission: Arc::new(tokio::sync::Semaphore::new(
+                sync_config.private_rest_outbound_concurrency_limit,
+            )),
         })
     }
 
@@ -1536,6 +1606,23 @@ where
         P: Serialize + Send + Sync,
         R: DeserializeOwned,
     {
+        let _permit = match self.outbound_admission.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(tokio::sync::TryAcquireError::NoPermits) => {
+                anyhow::bail!(
+                    "federation outbound REST queue is full for peer {} {}",
+                    member.member_id,
+                    operation
+                );
+            }
+            Err(tokio::sync::TryAcquireError::Closed) => {
+                anyhow::bail!(
+                    "federation outbound REST admission is closed for peer {} {}",
+                    member.member_id,
+                    operation
+                );
+            }
+        };
         let request =
             self.transport
                 .http_post(federation_endpoint(member, endpoint)?, None, payload);
@@ -2547,6 +2634,14 @@ mod tests {
                 reconnect_max_backoff: Duration::from_secs(1),
                 ..valid
             },
+            FederationPeerSyncConfig {
+                private_rest_inbound_concurrency_limit: 0,
+                ..valid
+            },
+            FederationPeerSyncConfig {
+                private_rest_outbound_concurrency_limit: 0,
+                ..valid
+            },
         ];
 
         for config in cases {
@@ -3076,6 +3171,7 @@ mod tests {
                     runtime_config.member_id(),
                 ),
             ))),
+            federation_peer_sync_config: Some(FederationPeerSyncConfig::default()),
             federation_sequences: Some(Arc::new(tokio::sync::Mutex::new(
                 FederationRestSequenceTracker::new(),
             ))),
@@ -3086,6 +3182,9 @@ mod tests {
                 crate::FederationOperationNotifications::default(),
             )),
             federation_finalizer: None,
+            federation_private_rest_admission: Some(Arc::new(tokio::sync::Semaphore::new(
+                FederationPeerSyncConfig::default().private_rest_inbound_concurrency_limit,
+            ))),
         }
     }
 
@@ -3698,6 +3797,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rest_peer_client_rejects_outbound_overflow_before_transport_request() {
+        let (public_config, local_private, _) = transport_config();
+        let federation_id = public_config.federation_id;
+        let member = public_config.member(member_id(2)).expect("peer member");
+        let status = FederationPeerStatus::new(
+            federation_id,
+            member.member_id,
+            0,
+            None,
+            cdk::federation::FederationJournalDigest::genesis(),
+        );
+        let transport = MockFederationTransport::default().with_status_response(status);
+        let client = FederationRestPeerClient::new_with_config(
+            transport.clone(),
+            &public_config,
+            local_private,
+            FederationPeerSyncConfig {
+                private_rest_outbound_concurrency_limit: 1,
+                ..FederationPeerSyncConfig::default()
+            },
+        )
+        .expect("client");
+        let _permit = client
+            .outbound_admission
+            .clone()
+            .try_acquire_owned()
+            .expect("held outbound permit");
+
+        let err = client
+            .peer_status(member)
+            .await
+            .expect_err("outbound overflow should fail");
+
+        assert!(
+            err.to_string().contains("outbound REST queue is full"),
+            "unexpected overflow error: {err}"
+        );
+        assert!(
+            transport.status_requests().is_empty(),
+            "overflow must be rejected before sending a REST request"
+        );
+    }
+
+    #[tokio::test]
     async fn rest_peer_client_initial_sequence_advances_across_clients() {
         let (public_config, local_private, _) = transport_config();
         let federation_id = public_config.federation_id;
@@ -4115,6 +4258,46 @@ mod tests {
             .expect("persisted journal");
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].operation_id, operation_id);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn non_primary_submit_uses_configured_operation_submission_timeout() {
+        let (public_config, _, local_private) = transport_config();
+        let federation_id = public_config.federation_id;
+        let mut state =
+            federation_route_state_for_private(public_config.clone(), local_private).await;
+        let timeout = Duration::from_secs(2);
+        state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
+            operation_submission_timeout: timeout,
+            ..FederationPeerSyncConfig::default()
+        });
+        let envelope = restore_envelope(
+            federation_id,
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        let task = tokio::spawn(async move {
+            submit_operation_to_primary_if_needed_with_transport(
+                &state,
+                envelope,
+                None,
+                DelayTransport {
+                    delay: timeout + Duration::from_secs(60),
+                },
+            )
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(timeout).await;
+        let err = task
+            .await
+            .expect("forwarding task")
+            .expect_err("forwarding should use configured timeout");
+
+        assert!(
+            err.to_string().contains("operation submission timed out"),
+            "unexpected forwarding timeout error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -8234,6 +8417,48 @@ mod tests {
             entries[0].order_digest
         );
         assert!(!local_status.materialized_state_rows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn private_status_route_rejects_inbound_overflow_before_sequence_persistence() {
+        let (mut state, public_config, peer_private) = federation_route_state().await;
+        let local_member = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .member_id();
+        state.federation_private_rest_admission = Some(Arc::new(tokio::sync::Semaphore::new(1)));
+        let held_permit = state
+            .federation_private_rest_admission
+            .as_ref()
+            .expect("admission")
+            .clone()
+            .try_acquire_owned()
+            .expect("held inbound permit");
+        let request = signed_status_request(&public_config, &peer_private, local_member, 1);
+
+        let response = post_status(State(state.clone()), Json(request.clone()))
+            .await
+            .expect_err("inbound overflow should fail");
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let sequences = state
+            .mint
+            .localstore()
+            .get_federation_member_sequences()
+            .await
+            .expect("persisted sequences");
+        assert!(
+            sequences.is_empty(),
+            "overflow must not persist the sender sequence"
+        );
+
+        drop(held_permit);
+        let status = post_status(State(state), Json(request))
+            .await
+            .expect("status response after capacity is available")
+            .0;
+        assert_eq!(status.member_id, local_member);
     }
 
     #[tokio::test]

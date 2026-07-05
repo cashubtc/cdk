@@ -778,7 +778,7 @@ Implementation checklist:
 - [x] Document that private REST alone requires reachable member endpoints or an external connectivity solution such as VPN, reverse tunnel, relay, Tor, or Iroh.
 - [x] Authenticate every peer message by member ID.
 - [x] Add consensus item size/admission limits.
-- [ ] Add bounded outbound and inbound REST queues and backpressure.
+- [x] Add bounded outbound and inbound REST queues and backpressure.
 - [x] Add a periodic peer sync loop.
 - [x] Add reconnect with exponential backoff.
 - [x] Add periodic config-digest, consensus-height, and state-digest gossip between peers.
@@ -791,7 +791,7 @@ Implementation checklist:
 Tests and success criteria:
 
 - [x] Local process tooling and smoke scripts exist for multi-member private REST federation runs.
-- [ ] Re-run and record a five-local-process private REST consensus smoke test.
+- [x] Re-run and record a five-local-process private REST consensus smoke test.
 - [x] In-memory P2P test can deterministically simulate partitions, dropped messages, reordered messages, and reconnects.
 - [x] REST retry test proves duplicate HTTP deliveries are idempotent.
 - [x] REST authentication test rejects wrong federation ID, wrong sender ID, stale sequence, invalid signature, and body-hash mismatch.
@@ -801,7 +801,7 @@ Tests and success criteria:
 - [x] Restarted member reconnects and catches up.
 - [x] Unknown peer messages are rejected.
 - [x] Size/admission tests cover oversized consensus items.
-- [ ] Queue overflow drops non-critical messages without crashing consensus.
+- [x] Queue overflow drops non-critical messages without crashing consensus.
 - [x] Signed-envelope identity mismatch prevents message acceptance.
 - [ ] Add TLS/Noise identity mismatch tests if those transports are implemented.
 - [x] Peer status shows connected, disconnected, lagging, catching-up, and halted states.
