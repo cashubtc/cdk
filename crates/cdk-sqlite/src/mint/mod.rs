@@ -309,6 +309,44 @@ mod test {
         );
         assert_uses_indexed_search(&payment_observation_plan, "federation_payment_observations");
 
+        let signature_share_output_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT share_json
+                FROM federation_signature_shares
+                WHERE operation_id = '0000000000000000000000000000000000000000000000000000000000000000'
+                  AND output_index = 0
+                ORDER BY member_id ASC
+                "#,
+            )
+            .expect("signature-share output plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("signature-share output query plan"),
+        );
+        assert_uses_indexed_search(&signature_share_output_plan, "federation_signature_shares");
+
+        let signature_share_blinded_message_plan = explain_details(
+            query(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT share_json
+                FROM federation_signature_shares
+                WHERE blinded_message = x'000102'
+                ORDER BY operation_id ASC, output_index ASC, member_id ASC
+                "#,
+            )
+            .expect("signature-share blinded-message plan query")
+            .fetch_all(&*conn)
+            .await
+            .expect("signature-share blinded-message query plan"),
+        );
+        assert_uses_indexed_search(
+            &signature_share_blinded_message_plan,
+            "federation_signature_shares",
+        );
+
         drop(conn);
         drop(pool);
         let _ = remove_file(path);

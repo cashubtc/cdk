@@ -525,11 +525,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: restore federation shares from share table</span>
+          <span class="value">test: cover signature share query plans</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federation restore prefers `federation_signature_shares` by blinded message, constrains restored rows by keyset and amount metadata, and preserves standalone restore behavior.</span>
+          <span class="value">SQLite storage tests now prove both `federation_signature_shares` hot lookups use indexed query plans.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -2071,7 +2071,7 @@
             <tr>
               <td>Federation signature-share storage</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-sqlite --features federation federation_signature_share_persistence -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_journal_hot_path_indexes_are_used -- --test-threads 1`, and the focused cdk mint, swap, and melt-change apply tests passed. The tests cover idempotent replay, conflicting share rejection, operation/output lookup, blinded-message lookup, and apply-path writes.</td>
+              <td>`cargo test -p cdk-sqlite --features federation federation_signature_share_persistence -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_journal_hot_path_indexes_are_used -- --test-threads 1`, and the focused cdk mint, swap, and melt-change apply tests passed. The tests cover idempotent replay, conflicting share rejection, operation/output lookup, blinded-message lookup, indexed query plans for both share lookups, and apply-path writes.</td>
               <td>Re-run Postgres-backed migration/storage coverage when a Postgres instance is available, then include the share table in broader catch-up/recovery process tests.</td>
             </tr>
             <tr>
