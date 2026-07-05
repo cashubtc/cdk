@@ -4,9 +4,10 @@ use async_trait::async_trait;
 use cdk_common::database::mint::{FederationJournalDatabase, FederationJournalTransaction};
 use cdk_common::database::Error;
 use cdk_common::federation::{
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest, FederationJournalEntry,
+    FederationConfigDigest, FederationConfigSnapshot, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalEntry,
     FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationConflictKey,
     FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
@@ -71,6 +72,35 @@ where
             "Invalid federation {label} column type"
         ))),
     }
+}
+
+fn sql_row_to_federation_config_snapshot(
+    row: Vec<Column>,
+) -> Result<FederationConfigSnapshot, Error> {
+    unpack_into!(let (federation_id, config_digest, config_json) = row);
+
+    let federation_id = FederationId::from_hex(column_as_string!(&federation_id))
+        .map_err(|e| Error::Internal(format!("Invalid federation id: {e}")))?;
+    let config_digest = FederationConfigDigest::from_hex(column_as_string!(&config_digest))
+        .map_err(|e| Error::Internal(format!("Invalid federation config digest: {e}")))?;
+    let config = serde_json::from_str(&column_as_string!(&config_json))
+        .map_err(|e| Error::Internal(format!("Invalid federation config JSON: {e}")))?;
+    let snapshot = FederationConfigSnapshot::new(config)
+        .map_err(|e| Error::Internal(format!("Invalid federation config snapshot: {e}")))?;
+    if snapshot.federation_id != federation_id {
+        return Err(Error::Internal(format!(
+            "Federation config row id mismatch: expected={federation_id}, found={}",
+            snapshot.federation_id
+        )));
+    }
+    if snapshot.config_digest != config_digest {
+        return Err(Error::Internal(format!(
+            "Federation config row digest mismatch: expected={config_digest}, found={}",
+            snapshot.config_digest
+        )));
+    }
+
+    Ok(snapshot)
 }
 
 fn sql_row_to_federation_journal_entry(row: Vec<Column>) -> Result<FederationJournalEntry, Error> {
@@ -386,6 +416,13 @@ fn federation_signature_share_conflict_error(share: &FederationSignatureShareRec
     ))
 }
 
+fn federation_config_conflict_error(config: &FederationConfigSnapshot) -> Error {
+    Error::Internal(format!(
+        "Conflicting federation config for federation {}",
+        config.federation_id
+    ))
+}
+
 fn federation_dkg_transcript_signature_conflict_error(
     signature: &FederationDkgTranscriptSignatureRequest,
 ) -> Error {
@@ -401,6 +438,36 @@ where
     RM: DatabasePool + 'static,
 {
     type Err = Error;
+
+    async fn set_federation_config(
+        &mut self,
+        config: &FederationConfigSnapshot,
+    ) -> Result<(), Self::Err> {
+        let rows_affected = query(
+            r#"
+            INSERT INTO federation_config
+            (federation_id, config_digest, config_json)
+            VALUES
+            (:federation_id, :config_digest, :config_json)
+            ON CONFLICT (federation_id)
+            DO UPDATE SET
+                config_digest = EXCLUDED.config_digest,
+                config_json = EXCLUDED.config_json
+            WHERE federation_config.config_digest = EXCLUDED.config_digest
+              AND federation_config.config_json = EXCLUDED.config_json
+            "#,
+        )?
+        .bind("federation_id", config.federation_id.to_string())
+        .bind("config_digest", config.config_digest.to_string())
+        .bind("config_json", serde_json::to_string(&config.config)?)
+        .execute(&self.inner)
+        .await?;
+        if rows_affected == 0 {
+            return Err(federation_config_conflict_error(config));
+        }
+
+        Ok(())
+    }
 
     async fn add_federation_journal_entry(
         &mut self,
@@ -892,6 +959,35 @@ where
     RM: DatabasePool + 'static,
 {
     type Err = Error;
+
+    async fn get_federation_config(
+        &self,
+        federation_id: FederationId,
+    ) -> Result<Option<FederationConfigSnapshot>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        let mut rows = query(
+            r#"
+            SELECT
+                federation_id,
+                config_digest,
+                config_json
+            FROM federation_config
+            WHERE federation_id = :federation_id
+            "#,
+        )?
+        .bind("federation_id", federation_id.to_string())
+        .fetch_all(&*conn)
+        .await?
+        .into_iter();
+        match rows.next() {
+            Some(row) => sql_row_to_federation_config_snapshot(row).map(Some),
+            None => Ok(None),
+        }
+    }
 
     async fn get_federation_journal_entries(
         &self,

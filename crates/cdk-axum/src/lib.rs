@@ -15,15 +15,16 @@ use axum::Router;
 use cache::HttpCache;
 #[cfg(feature = "federation")]
 use cdk::federation::{
-    redact_federation_operator_message, FederationConfig, FederationConsensusEngine,
-    FederationConsensusRuntime, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgSetupState, FederationDkgTranscriptSignatureRequest, FederationError,
-    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationRestSequenceTracker, FederationSessionOutcome, FederationStateDigestCheckpoint,
-    FederationSubmitOperationResponse, MemberId,
+    redact_federation_operator_message, FederationConfig, FederationConfigSnapshot,
+    FederationConsensusEngine, FederationConsensusRuntime, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgSecretShareRequest, FederationDkgSetupState,
+    FederationDkgTranscriptSignatureRequest, FederationError, FederationJournalAppendOutcome,
+    FederationJournalCatchUpResponse, FederationJournalEntry, FederationMemberStatusKind,
+    FederationMemberStatusSnapshot, FederationOperation, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationStatus, FederationRestSequenceTracker,
+    FederationSessionOutcome, FederationStateDigestCheckpoint, FederationSubmitOperationResponse,
+    MemberId,
 };
 use cdk::mint::Mint;
 use router_handlers::*;
@@ -2120,6 +2121,11 @@ async fn create_federation_runtime_state(
     };
 
     let db = mint.localstore();
+    let snapshot = FederationConfigSnapshot::new(config.public_config().clone())?;
+    let mut tx = db.begin_transaction().await?;
+    tx.set_federation_config(&snapshot).await?;
+    tx.commit().await?;
+
     let entries = db.get_federation_journal_entries().await?;
     let sequences = db.get_federation_member_sequences().await?;
     let mut consensus = FederationConsensusRuntime::from_entries_with_backend(

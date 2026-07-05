@@ -446,6 +446,15 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_config_persistence() {
+        cdk_common::database::mint::test::federation_config_persistence(
+            provide_mint_db("federation_config_persistence".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_journal_persistence() {
         cdk_common::database::mint::test::federation_journal_persistence(
             provide_mint_db("federation_journal_persistence".to_string()).await,

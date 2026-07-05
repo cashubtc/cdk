@@ -2628,10 +2628,11 @@ mod tests {
 
     use async_trait::async_trait;
     use bip39::Mnemonic;
+    use cdk::cdk_database::MintDatabase;
     use cdk::cdk_payment::PaymentIdentifier;
     use cdk::federation::{
-        generate_trusted_dealer_configs, FederationConsensusRuntime, FederationDkgSetupMethod,
-        FederationDkgTranscript, FederationDkgTranscriptSignature,
+        generate_trusted_dealer_configs, FederationConfigSnapshot, FederationConsensusRuntime,
+        FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptSignature,
         FederationKeysetRotationOperation, FederationMintQuotePaymentObservation,
         FederationOperation, FederationOperationEnvelope, FederationOperationKind,
         FederationOperationStatus, FederationPaymentObservationPolicy,
@@ -7427,6 +7428,74 @@ mod tests {
                 FederationError::CatchUpDigestMismatch { .. }
             ))
         ));
+    }
+
+    #[tokio::test]
+    async fn federation_runtime_startup_persists_public_config_snapshot() {
+        let (state, public_config, _) = federation_route_state().await;
+
+        crate::create_federation_runtime_state(&state.mint)
+            .await
+            .expect("runtime state");
+
+        let snapshot = state
+            .mint
+            .localstore()
+            .get_federation_config(public_config.federation_id)
+            .await
+            .expect("load federation config")
+            .expect("stored federation config");
+        assert_eq!(snapshot.config, public_config);
+        assert_eq!(
+            snapshot.config_digest,
+            snapshot.config.config_digest().expect("config digest")
+        );
+    }
+
+    #[tokio::test]
+    async fn federation_runtime_startup_rejects_conflicting_public_config_snapshot() {
+        let (public_config, local_private, _) = transport_config();
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+
+        let mut conflicting_config = public_config.clone();
+        conflicting_config
+            .payment_observation_policy
+            .max_pending_quotes += 1;
+        conflicting_config
+            .validate()
+            .expect("conflicting config validates");
+        let snapshot =
+            FederationConfigSnapshot::new(conflicting_config).expect("conflicting config snapshot");
+        assert_eq!(snapshot.federation_id, public_config.federation_id);
+        assert_ne!(
+            snapshot.config_digest,
+            public_config.config_digest().expect("public config digest")
+        );
+
+        let mut tx = db
+            .begin_transaction()
+            .await
+            .expect("begin conflicting config transaction");
+        tx.set_federation_config(&snapshot)
+            .await
+            .expect("persist conflicting config");
+        tx.commit().await.expect("commit conflicting config");
+
+        let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        let state = federation_route_state_for_private_with_db(
+            public_config,
+            local_private,
+            db,
+            &mnemonic.to_seed_normalized(""),
+        )
+        .await;
+        let err = crate::create_federation_runtime_state(&state.mint)
+            .await
+            .expect_err("conflicting config rejected");
+        assert!(
+            err.to_string().contains("Conflicting federation config"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]

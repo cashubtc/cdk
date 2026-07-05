@@ -82,6 +82,7 @@ use crate::{
 };
 
 const FEDERATION_ROSTER_HASH_VERSION: &[u8] = b"cdk-federation-roster-v1";
+const FEDERATION_CONFIG_DIGEST_VERSION: &[u8] = b"cdk-federation-config-digest-v1";
 const FEDERATION_DKG_COMMITMENT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-commitment-v1";
 const FEDERATION_DKG_TRANSCRIPT_HASH_VERSION: &[u8] = b"cdk-federation-dkg-transcript-v1";
 const FEDERATION_DKG_TRANSCRIPT_SIGNATURE_VERSION: &[u8] =
@@ -273,6 +274,14 @@ pub enum FederationError {
     /// A federation ID must be exactly 32 bytes.
     #[error("Invalid federation id size: expected={expected}, found={found}")]
     InvalidFederationIdSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
+    /// A federation config digest must be exactly 32 bytes.
+    #[error("Invalid federation config digest size: expected={expected}, found={found}")]
+    InvalidFederationConfigDigestSize {
         /// Expected byte length.
         expected: usize,
         /// Actual byte length.
@@ -1008,6 +1017,84 @@ impl Serialize for FederationId {
 }
 
 impl<'de> Deserialize<'de> for FederationId {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::from_hex(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Digest of the complete public federation config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FederationConfigDigest([u8; 32]);
+
+impl FederationConfigDigest {
+    /// Create a federation config digest from raw bytes.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Parse a federation config digest from a byte slice.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
+        let bytes: [u8; 32] =
+            bytes
+                .try_into()
+                .map_err(|_| FederationError::InvalidFederationConfigDigestSize {
+                    expected: 32,
+                    found: bytes.len(),
+                })?;
+        Ok(Self(bytes))
+    }
+
+    /// Parse a federation config digest from hex.
+    pub fn from_hex<S>(hex: S) -> Result<Self>
+    where
+        S: AsRef<str>,
+    {
+        let bytes = crate::util::hex::decode(hex.as_ref())?;
+        Self::from_slice(&bytes)
+    }
+
+    /// Return this federation config digest as bytes.
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    /// Return this federation config digest as hex.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        crate::util::hex::encode(self.0)
+    }
+}
+
+impl fmt::Display for FederationConfigDigest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
+
+impl FromStr for FederationConfigDigest {
+    type Err = FederationError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Self::from_hex(value)
+    }
+}
+
+impl Serialize for FederationConfigDigest {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for FederationConfigDigest {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -3218,6 +3305,18 @@ impl FederationConfig {
         Ok(())
     }
 
+    /// Compute a digest of the complete public federation config.
+    pub fn config_digest(&self) -> Result<FederationConfigDigest> {
+        self.validate()?;
+        let config = serde_json::to_vec(self)?;
+        let mut transcript = Vec::new();
+        append_bytes(&mut transcript, FEDERATION_CONFIG_DIGEST_VERSION);
+        append_bytes(&mut transcript, &config);
+        Ok(FederationConfigDigest::from_bytes(
+            Sha256Hash::hash(&transcript).to_byte_array(),
+        ))
+    }
+
     /// Return a validated config view after applying an accepted keyset rotation.
     pub fn apply_keyset_rotation(
         &self,
@@ -3573,6 +3672,33 @@ impl MemberConfigPrivate {
         }
 
         Ok(())
+    }
+}
+
+/// Durable public federation config snapshot.
+///
+/// This snapshot is local member startup state. It stores the public federation
+/// config and a digest so a member does not accidentally reuse a database with
+/// a different federation roster, keyset set, policy, or protocol version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationConfigSnapshot {
+    /// Federation ID derived from the static roster.
+    pub federation_id: FederationId,
+    /// Digest over the complete public config.
+    pub config_digest: FederationConfigDigest,
+    /// Public config shared by federation members.
+    pub config: FederationConfig,
+}
+
+impl FederationConfigSnapshot {
+    /// Build a validated durable snapshot from a public federation config.
+    pub fn new(config: FederationConfig) -> Result<Self> {
+        let config_digest = config.config_digest()?;
+        Ok(Self {
+            federation_id: config.federation_id,
+            config_digest,
+            config,
+        })
     }
 }
 

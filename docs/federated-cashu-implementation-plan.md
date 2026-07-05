@@ -464,8 +464,8 @@ Objective: keep replicated operation history separate from materialized mint sta
 Implementation checklist:
 
 - [x] Add DB traits for federation journal/database transactions, implemented as `FederationJournalDatabase` and `FederationJournalTransaction`.
-- [ ] Add SQL migrations for SQLite and Postgres:
-  - [ ] `federation_config`; federation config currently remains file/runtime config.
+- [x] Add SQL migrations for SQLite and Postgres:
+  - [x] `federation_config`, storing a durable public config digest snapshot and rejecting conflicting database reuse at federation startup.
   - [x] `federation_session_outcomes`.
   - [x] `federation_journal_entries` for accepted items, operation envelopes, and operation outcomes.
   - [x] `federation_signature_share`, implemented as `federation_signature_shares`.

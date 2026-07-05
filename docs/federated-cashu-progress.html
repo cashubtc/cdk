@@ -523,15 +523,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 549 checked items and 40 remaining items. Federation member sync status now has durable local SQL storage, runtime persistence on status transitions, and startup restoration for restart/catch-up visibility.</span>
+          <span class="value">The implementation plan audit tracks 551 checked items and 38 remaining items. Federation public config snapshots now have durable SQL storage, deterministic digest checking, and startup rejection for conflicting database reuse.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: persist federation member sync status</span>
+          <span class="value">feat: persist federation public config snapshot</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">SQLite and Postgres migrations now include `federation_member_status`, the mint database trait can store/read local sync snapshots, and Axum restores persisted sync state on federation router startup.</span>
+          <span class="value">SQLite and Postgres migrations now include `federation_config`, the mint database trait can store/read public config snapshots, and Axum persists the configured public digest before federation runtime replay.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -546,7 +546,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 549 checked entries and 40 remaining entries. The
+          checklist has 551 checked entries and 38 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -785,6 +785,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Public config snapshot</h3>
+            <p>Federation startup now stores a durable public config snapshot with a domain-separated digest, accepts idempotent restarts, and rejects a reused database when the configured federation digest differs.</p>
+          </article>
           <article class="item">
             <h3>DB index review</h3>
             <p>Federation journal conflict keys, member sequences, session outcomes, payment observations, and signature-share rows now have a recorded review checkpoint backed by SQL migration parity and SQLite query-plan coverage.</p>
@@ -3553,6 +3557,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-sqlite --features federation federation_state_digest_checkpoint_persistence -- --test-threads 1`, `cargo test -p cdk-axum --features federation submit_federation_envelope_prunes_state_digest_checkpoints_to_retention -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation_peer_sync_config_rejects_invalid_values -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_peer_sync_config -- --test-threads 1`, `cargo check -p cdk-axum --features federation`, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed. The checkpoint stores operation index, operation id, order digest, and materialized state digest in a dedicated SQL table, rejects conflicting replay, maps configurable retention through mintd, rejects zero retention, and prunes old checkpoints atomically after finalization.</td>
               <td>Run live Postgres migration/application coverage when a Postgres service is available, then fold checkpoint retention into broader storage-backed recovery tests.</td>
+            </tr>
+            <tr>
+              <td>Durable public federation config</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-sql-common --features federation federation_mint_migrations_cover_sqlite_and_postgres -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_config_persistence -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_migrations_apply_to_empty_sqlite_and_keep_standalone_tables -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation_runtime_startup_persists_public_config_snapshot -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation_runtime_startup_rejects_conflicting_public_config_snapshot -- --test-threads 1`, `cargo check -p cdk-common --features federation`, `cargo check -p cdk-sql-common --features federation`, `cargo check -p cdk-axum --features federation`, and `cargo test -p cdk-postgres --features federation federation_config_persistence --no-run` passed. The snapshot stores the validated public config plus digest, remains idempotent on restart, and fails startup before replay if a reused database contains a different digest for the same federation id.</td>
+              <td>Run the Postgres config persistence test against a live service during the next storage-backed smoke, then use the stored digest in operator diagnostics and generated setup/runbook checks.</td>
             </tr>
             <tr>
               <td>Durable member sync status</td>

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::database::mint::{Database, FederationJournalDatabase};
 use crate::federation::{
-    FederatedKeyset, FederationConfig, FederationDkgMemberKeysetShare,
+    FederatedKeyset, FederationConfig, FederationConfigSnapshot, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgSecretShareRequest, FederationDkgSetupMethod, FederationDkgSetupState,
     FederationDkgTranscript, FederationDkgTranscriptSignature,
@@ -398,6 +398,66 @@ where
         .expect("session outcomes from");
     assert_eq!(session_outcomes_from.len(), 1);
     assert_eq!(session_outcomes_from[0].from_index, 1);
+}
+
+/// Assert public federation config snapshots are durable and conflict-checked.
+pub async fn federation_config_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let config = dkg_public_config();
+    let snapshot = FederationConfigSnapshot::new(config.clone()).expect("config snapshot");
+    let missing = FederationId::from_bytes([9; 32]);
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin");
+    tx.set_federation_config(&snapshot)
+        .await
+        .expect("persist federation config");
+    tx.commit().await.expect("commit federation config");
+
+    assert_eq!(
+        db.get_federation_config(config.federation_id)
+            .await
+            .expect("load federation config"),
+        Some(snapshot.clone())
+    );
+    assert_eq!(
+        db.get_federation_config(missing)
+            .await
+            .expect("load missing federation config"),
+        None
+    );
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin idempotent config");
+    tx.set_federation_config(&snapshot)
+        .await
+        .expect("persist idempotent federation config");
+    tx.commit()
+        .await
+        .expect("commit idempotent federation config");
+
+    let mut conflicting_config = config;
+    conflicting_config
+        .payment_observation_policy
+        .max_pending_quotes += 1;
+    conflicting_config
+        .validate()
+        .expect("conflicting config validates");
+    let conflicting_snapshot =
+        FederationConfigSnapshot::new(conflicting_config).expect("conflicting snapshot");
+    assert_eq!(conflicting_snapshot.federation_id, snapshot.federation_id);
+    assert_ne!(conflicting_snapshot.config_digest, snapshot.config_digest);
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin conflicting config");
+    assert!(tx
+        .set_federation_config(&conflicting_snapshot)
+        .await
+        .is_err());
+    tx.rollback().await.expect("rollback conflicting config");
 }
 
 /// Assert local federation member sync status snapshots are durable and idempotent.

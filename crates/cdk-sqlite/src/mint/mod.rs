@@ -37,6 +37,15 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_config_persistence() {
+        cdk_common::database::mint::test::federation_config_persistence(
+            provide_db("federation_config_persistence".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_journal_persistence() {
         cdk_common::database::mint::test::federation_journal_persistence(
             provide_db("federation_journal_persistence".to_string()).await,
@@ -232,6 +241,7 @@ mod test {
             "federation_state_digest",
             "federation_payment_observations",
             "federation_member_status",
+            "federation_config",
             "federation_signature_shares",
             "federation_dkg_setup_messages",
             "federation_dkg_member_keyset_shares",

@@ -12,9 +12,9 @@ use cashu::Amount;
 use super::{DbTransactionFinalizer, Error};
 #[cfg(feature = "federation")]
 use crate::federation::{
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationConfigSnapshot, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgTranscriptSignatureRequest, FederationJournalEntry,
+    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalEntry,
     FederationMemberStatusSnapshot, FederationOperationId, FederationOperationStatus,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
     FederationSessionOutcome, FederationSignatureShareRecord, FederationStateDigestCheckpoint,
@@ -617,6 +617,12 @@ pub trait FederationJournalTransaction {
     /// Federation journal database error
     type Err: Into<Error> + From<Error>;
 
+    /// Persist the public federation config snapshot for this local database.
+    async fn set_federation_config(
+        &mut self,
+        config: &FederationConfigSnapshot,
+    ) -> Result<(), Self::Err>;
+
     /// Persist one accepted federation journal entry.
     async fn add_federation_journal_entry(
         &mut self,
@@ -729,6 +735,12 @@ pub trait FederationJournalTransaction {
 pub trait FederationJournalDatabase {
     /// Federation journal database error
     type Err: Into<Error> + From<Error>;
+
+    /// Get the persisted public federation config snapshot.
+    async fn get_federation_config(
+        &self,
+        federation_id: FederationId,
+    ) -> Result<Option<FederationConfigSnapshot>, Self::Err>;
 
     /// Get all accepted federation journal entries in consensus order.
     async fn get_federation_journal_entries(

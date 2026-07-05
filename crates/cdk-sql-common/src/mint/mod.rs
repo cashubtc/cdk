@@ -480,6 +480,10 @@ mod federation_migration_tests {
             include_str!("migrations/sqlite/20260703162000_add_federation_member_status.sql");
         let postgres_member_status =
             include_str!("migrations/postgres/20260703162000_add_federation_member_status.sql");
+        let sqlite_config =
+            include_str!("migrations/sqlite/20260703162500_add_federation_config.sql");
+        let postgres_config =
+            include_str!("migrations/postgres/20260703162500_add_federation_config.sql");
         let sqlite_dkg_setup =
             include_str!("migrations/sqlite/20260703143000_add_federation_dkg_setup.sql");
         let postgres_dkg_setup =
@@ -577,6 +581,18 @@ mod federation_migration_tests {
                     "operation_count",
                     "message",
                     "updated_time",
+                ],
+            );
+        }
+
+        for migration in [sqlite_config, postgres_config] {
+            assert_contains_all(
+                migration,
+                &[
+                    "federation_config",
+                    "federation_id",
+                    "config_digest",
+                    "config_json",
                 ],
             );
         }
