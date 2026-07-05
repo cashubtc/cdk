@@ -521,15 +521,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 482 checked items and 105 remaining items. `cdk-mintd` now exposes the private REST peer-sync retry policy instead of relying only on Axum defaults.</span>
+          <span class="value">The implementation plan audit tracks 484 checked items and 103 remaining items. SQLite federation storage and hot-path query-plan coverage were rerun successfully.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: expose federation peer sync policy</span>
+          <span class="value">test: record sqlite federation storage gate</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Added `[federation.peer_sync]` mintd config for sync interval, peer request timeout, operation submission timeout, catch-up limit, digest recheck policy, evidence chunking, and reconnect backoff.</span>
+          <span class="value">Reran the full `cdk-sqlite` mint/federation test suite and the dedicated query-plan regression for federation journal, session-outcome, and payment-observation hot paths.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -544,7 +544,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 482 checked entries and 105 remaining entries. The
+          checklist has 484 checked entries and 103 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -783,6 +783,14 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>SQLite storage gate rerun</h3>
+            <p>The `cdk-sqlite` mint/federation suite now has fresh evidence across 142 tests, including federation journal, session-outcome, payment-observation, DKG storage, concurrent writer, and wallet storage coverage.</p>
+          </article>
+          <article class="item">
+            <h3>SQLite hot paths indexed</h3>
+            <p>The SQLite federation query-plan regression passed, proving catch-up journal ranges, operation-ID lookup, session-outcome ranges, and payment-observation quote lookups use indexed query plans.</p>
+          </article>
           <article class="item">
             <h3>Peer sync knobs exposed</h3>
             <p>`cdk-mintd` can now configure private REST peer-sync interval, request timeouts, forwarded-operation timeout, catch-up page size, digest recheck timing, session-outcome evidence chunking, and reconnect backoff from `[federation.peer_sync]`.</p>
@@ -2891,6 +2899,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_peer_sync_config -- --test-threads 1`, `cargo check -p cdk-mintd --features federation,fakewallet,sqlite`, `cargo check -p cdk-axum --features federation`, `cargo check -p cdk-axum`, `cargo fmt --all`, and `git diff --check` passed. The Axum router now accepts a validated peer-sync policy and mintd maps `[federation.peer_sync]` settings into it.</td>
               <td>Use these knobs in local process drills before adding bounded REST queues or non-REST transports.</td>
+            </tr>
+            <tr>
+              <td>SQLite federation storage rerun</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-sqlite --features "mint federation" federation_journal_hot_path_indexes_are_used -- --test-threads 1` passed the dedicated query-plan regression. `cargo test -p cdk-sqlite --features "mint federation" -- --test-threads 1` passed 142 tests plus doc-tests, including federation journal persistence, payment observations, session outcomes, DKG setup records, concurrent writes, concurrent metadata updates, and wallet storage regressions.</td>
+              <td>Repeat the same storage gate after dedicated signature-share rows or digest-history tables are added; run Postgres integration tests when a local service is available.</td>
             </tr>
             <tr>
               <td>Concurrent federation metadata storage</td>

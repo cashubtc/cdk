@@ -87,8 +87,8 @@ Current confirmed shape:
 
 - Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes and request transcripts, in-memory consensus boundary, private REST peer envelopes, federation journal persistence, mint/swap/melt/restore/check-state apply paths, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
 - Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, exact deterministic binary operation encoding, a separate `federation_signature_share` table, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
-- Test-suite status: focused federation replay, peer-sync, peer reconnect backoff, peer evidence/backoff, mintd peer-sync config wiring, session-outcome, trusted-dealer setup, deterministic trusted-dealer fixture generation, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, fakewallet coupling audit, wallet member request timeout/retry policy tests, canonical request transcript tests for NUT-20 and SIG_ALL, federated NUT-20 single and batch issuance tests, P2PK/HTLC/SIG_ALL canonical swap transcript tests, NUT-19 retry backoff, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, federated swap input-reuse attack regression, and `cdk-axum` federation tests were run for recent checkpoints. The broad feature-disabled library gate `cargo test --lib --workspace --exclude cdk-postgres` passed on 2026-07-05, and the broad feature-enabled compile gate `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed on 2026-07-05.
-- Latest checkpoint: `cdk-mintd` now exposes and validates the private REST peer-sync retry policy, including reconnect backoff, request timeouts, catch-up limits, digest recheck timing, and session-outcome evidence chunking.
+- Test-suite status: focused federation replay, peer-sync, peer reconnect backoff, peer evidence/backoff, mintd peer-sync config wiring, SQLite federation storage/query plans, session-outcome, trusted-dealer setup, deterministic trusted-dealer fixture generation, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, fakewallet coupling audit, wallet member request timeout/retry policy tests, canonical request transcript tests for NUT-20 and SIG_ALL, federated NUT-20 single and batch issuance tests, P2PK/HTLC/SIG_ALL canonical swap transcript tests, NUT-19 retry backoff, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, federated swap input-reuse attack regression, and `cdk-axum` federation tests were run for recent checkpoints. The broad feature-disabled library gate `cargo test --lib --workspace --exclude cdk-postgres` passed on 2026-07-05, and the broad feature-enabled compile gate `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed on 2026-07-05.
+- Latest checkpoint: SQLite federation storage was rerun end to end, and the existing query-plan regression proved hot federation journal, session-outcome, and payment-observation lookups use indexed plans.
 
 ## Key observations
 
@@ -959,10 +959,10 @@ Implementation checklist:
 
 Tests and success criteria:
 
-- [ ] Re-run SQLite unit and integration tests.
+- [x] Re-run SQLite unit and integration tests.
 - [ ] Re-run Postgres integration tests when a Postgres instance is available.
 - [x] Concurrent request stress tests do not deadlock.
-- [ ] Verify query plans for hot paths use indexes.
+- [x] Verify query plans for hot paths use indexes.
 
 ## Milestone 19: real payment backend policy
 
