@@ -525,15 +525,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The repo now has a fast `fed-regtest-check` helper for federation smoke/setup cargo-test coverage that does not start local member processes.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The repo now has a fast `fed-regtest-check` helper for federation smoke/setup cargo-test coverage, and Axum peer-sync policy/backoff code now lives in a focused child module.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: add fast federation regtest check</span>
+          <span class="value">refactor: split axum peer sync config</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`just fed-regtest-check` now runs smoke-operation validation, CLI parser, and generated smoke/setup artifact tests without requiring loopback listeners.</span>
+          <span class="value">`crates/cdk-axum/src/federation/sync_config.rs` now owns peer-sync defaults, validation, env-disable parsing, interval setup, and reconnect backoff while keeping the public config re-export stable.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Axum peer sync config split out</h3>
+            <p>Peer-sync policy defaults, validation, env-disable parsing, interval setup, and per-peer reconnect backoff now live in `federation/sync_config.rs`; the parent private REST module keeps the same `FederationPeerSyncConfig` re-export for callers.</p>
+          </article>
           <article class="item">
             <h3>Fast federation smoke check</h3>
             <p>`just fed-regtest-check` now runs the mintd federation smoke validation, smoke CLI parser, and generated setup/smoke artifact tests without starting local member processes, giving the live smoke tooling a normal quick test entrypoint.</p>
@@ -2293,6 +2297,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation private_operation_route -- --test-threads 1` passed 6 route tests after moving signed submit-operation acceptance, mutation rejection, sender validation, kind mismatch, and stale-sequence regressions into `crates/cdk-axum/src/federation/tests/private_operation_route.rs`.</td>
               <td>Keep future private REST route splits focused on cohesive route surfaces that can reuse the parent federation fixture without duplicating helpers.</td>
+            </tr>
+            <tr>
+              <td>Axum peer sync config split</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation federation_peer_sync -- --test-threads 1` passed 3 policy tests, `cargo test -p cdk-axum --features federation federation_reconnect_backoff -- --test-threads 1` passed the backoff regression, and `cargo check -p cdk-axum --features federation` passed after moving peer-sync policy defaults, validation, env parsing, interval construction, and reconnect backoff into `crates/cdk-axum/src/federation/sync_config.rs`.</td>
+              <td>Continue the Axum split toward peer client, sync loop, status, catch-up, and route modules while preserving the public re-export surface.</td>
             </tr>
             <tr>
               <td>Federation smoke argument validation</td>

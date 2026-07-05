@@ -31,139 +31,27 @@ use cdk_http_client::{Async, Transport};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::time::{self, Duration, Instant, MissedTickBehavior};
+use tokio::time::{self, Duration, Instant};
 use tracing::instrument;
 
 use crate::MintState;
 
+mod sync_config;
+
+pub use self::sync_config::FederationPeerSyncConfig;
+use self::sync_config::{
+    federation_peer_sync_disabled_by_env, federation_peer_sync_interval,
+    FederationPeerReconnectBackoff,
+};
+#[cfg(test)]
+use self::sync_config::{federation_peer_sync_disabled_value, federation_reconnect_backoff_delay};
+
 type SequenceHandle = std::sync::Arc<tokio::sync::Mutex<FederationRestSequenceTracker>>;
 
-const DEFAULT_FEDERATION_PEER_SYNC_INTERVAL: Duration = Duration::from_secs(5);
-const DEFAULT_FEDERATION_PEER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-const DEFAULT_FEDERATION_OPERATION_SUBMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 const FEDERATION_DISABLE_PEER_SYNC_ENV_VAR: &str = "CDK_FEDERATION_DISABLE_PEER_SYNC";
-const DEFAULT_FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_SIZE: usize = 1000;
 const DEFAULT_FEDERATION_CATCH_UP_LIMIT: u16 = 100;
 const MAX_FEDERATION_CATCH_UP_LIMIT: u16 = 1000;
-const DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_ATTEMPTS: usize = 20;
-const DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_DELAY: Duration = Duration::from_millis(100);
-const DEFAULT_FEDERATION_RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
-const DEFAULT_FEDERATION_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(60);
-const DEFAULT_FEDERATION_PRIVATE_REST_INBOUND_CONCURRENCY_LIMIT: usize = 128;
-const DEFAULT_FEDERATION_PRIVATE_REST_OUTBOUND_CONCURRENCY_LIMIT: usize = 64;
-const DEFAULT_FEDERATION_STATE_DIGEST_CHECKPOINT_RETENTION: usize = 10_000;
 static FEDERATION_REST_SEQUENCE_SEED: AtomicU64 = AtomicU64::new(0);
-
-/// Private federation peer synchronization policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FederationPeerSyncConfig {
-    /// Interval between background private REST peer sync rounds.
-    pub peer_sync_interval: Duration,
-    /// Timeout for private peer status, catch-up, DKG, and evidence requests.
-    pub peer_request_timeout: Duration,
-    /// Timeout for forwarding a locally received operation to the primary member.
-    pub operation_submission_timeout: Duration,
-    /// Maximum number of accepted journal entries requested per catch-up page.
-    pub catch_up_limit: u16,
-    /// Number of materialized-state digest rechecks after journal catch-up.
-    pub digest_recheck_attempts: usize,
-    /// Delay between materialized-state digest rechecks.
-    pub digest_recheck_delay: Duration,
-    /// Number of journal entries covered by each session-outcome evidence chunk.
-    pub session_outcome_evidence_chunk_size: usize,
-    /// Initial reconnect backoff after a peer sync failure.
-    pub reconnect_initial_backoff: Duration,
-    /// Maximum reconnect backoff after repeated peer sync failures.
-    pub reconnect_max_backoff: Duration,
-    /// Maximum concurrent private REST requests accepted by this member.
-    pub private_rest_inbound_concurrency_limit: usize,
-    /// Maximum concurrent private REST requests sent by one peer client.
-    pub private_rest_outbound_concurrency_limit: usize,
-    /// Number of materialized state digest checkpoints retained locally.
-    pub state_digest_checkpoint_retention: usize,
-}
-
-impl Default for FederationPeerSyncConfig {
-    fn default() -> Self {
-        Self {
-            peer_sync_interval: DEFAULT_FEDERATION_PEER_SYNC_INTERVAL,
-            peer_request_timeout: DEFAULT_FEDERATION_PEER_REQUEST_TIMEOUT,
-            operation_submission_timeout: DEFAULT_FEDERATION_OPERATION_SUBMISSION_TIMEOUT,
-            catch_up_limit: DEFAULT_FEDERATION_CATCH_UP_LIMIT,
-            digest_recheck_attempts: DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_ATTEMPTS,
-            digest_recheck_delay: DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_DELAY,
-            session_outcome_evidence_chunk_size:
-                DEFAULT_FEDERATION_SESSION_OUTCOME_EVIDENCE_CHUNK_SIZE,
-            reconnect_initial_backoff: DEFAULT_FEDERATION_RECONNECT_INITIAL_BACKOFF,
-            reconnect_max_backoff: DEFAULT_FEDERATION_RECONNECT_MAX_BACKOFF,
-            private_rest_inbound_concurrency_limit:
-                DEFAULT_FEDERATION_PRIVATE_REST_INBOUND_CONCURRENCY_LIMIT,
-            private_rest_outbound_concurrency_limit:
-                DEFAULT_FEDERATION_PRIVATE_REST_OUTBOUND_CONCURRENCY_LIMIT,
-            state_digest_checkpoint_retention: DEFAULT_FEDERATION_STATE_DIGEST_CHECKPOINT_RETENTION,
-        }
-    }
-}
-
-impl FederationPeerSyncConfig {
-    /// Validate the synchronization policy before starting private peer sync.
-    pub fn validate(&self) -> anyhow::Result<()> {
-        if self.peer_sync_interval.is_zero() {
-            anyhow::bail!("federation peer sync interval must be greater than zero");
-        }
-        if self.peer_request_timeout.is_zero() {
-            anyhow::bail!("federation peer request timeout must be greater than zero");
-        }
-        if self.operation_submission_timeout.is_zero() {
-            anyhow::bail!("federation operation submission timeout must be greater than zero");
-        }
-        if self.catch_up_limit == 0 {
-            anyhow::bail!("federation catch-up limit must be greater than zero");
-        }
-        if self.digest_recheck_attempts == 0 {
-            anyhow::bail!("federation digest recheck attempts must be greater than zero");
-        }
-        if self.digest_recheck_delay.is_zero() {
-            anyhow::bail!("federation digest recheck delay must be greater than zero");
-        }
-        if self.session_outcome_evidence_chunk_size == 0 {
-            anyhow::bail!(
-                "federation session outcome evidence chunk size must be greater than zero"
-            );
-        }
-        if self.session_outcome_evidence_chunk_size > usize::from(u16::MAX) {
-            anyhow::bail!(
-                "federation session outcome evidence chunk size must fit in a catch-up request limit"
-            );
-        }
-        if self.reconnect_initial_backoff.is_zero() {
-            anyhow::bail!("federation reconnect initial backoff must be greater than zero");
-        }
-        if self.reconnect_max_backoff.is_zero() {
-            anyhow::bail!("federation reconnect max backoff must be greater than zero");
-        }
-        if self.reconnect_max_backoff < self.reconnect_initial_backoff {
-            anyhow::bail!(
-                "federation reconnect max backoff must be greater than or equal to the initial backoff"
-            );
-        }
-        if self.private_rest_inbound_concurrency_limit == 0 {
-            anyhow::bail!(
-                "federation private REST inbound concurrency limit must be greater than zero"
-            );
-        }
-        if self.private_rest_outbound_concurrency_limit == 0 {
-            anyhow::bail!(
-                "federation private REST outbound concurrency limit must be greater than zero"
-            );
-        }
-        if self.state_digest_checkpoint_retention == 0 {
-            anyhow::bail!("federation state digest checkpoint retention must be greater than zero");
-        }
-
-        Ok(())
-    }
-}
 
 pub(crate) fn create_federation_router() -> Router<MintState> {
     Router::new()
@@ -271,85 +159,6 @@ pub(crate) fn spawn_federation_peer_sync_loop_with_config(
             .await;
         }
     });
-}
-
-fn federation_peer_sync_interval(sync_config: FederationPeerSyncConfig) -> time::Interval {
-    let mut interval = time::interval(sync_config.peer_sync_interval);
-    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    interval
-}
-
-fn federation_peer_sync_disabled_by_env() -> bool {
-    match std::env::var(FEDERATION_DISABLE_PEER_SYNC_ENV_VAR) {
-        Ok(value) => federation_peer_sync_disabled_value(&value),
-        Err(_) => false,
-    }
-}
-
-fn federation_peer_sync_disabled_value(value: &str) -> bool {
-    matches!(
-        value,
-        "1" | "true" | "TRUE" | "True" | "yes" | "YES" | "Yes" | "on" | "ON" | "On"
-    )
-}
-
-#[derive(Debug, Clone, Copy)]
-struct FederationPeerReconnectBackoffEntry {
-    failures: u32,
-    retry_after: Instant,
-}
-
-#[derive(Debug, Default)]
-struct FederationPeerReconnectBackoff {
-    entries: BTreeMap<MemberId, FederationPeerReconnectBackoffEntry>,
-}
-
-impl FederationPeerReconnectBackoff {
-    fn should_attempt(&self, peer: MemberId, now: Instant) -> bool {
-        self.entries
-            .get(&peer)
-            .map(|entry| now >= entry.retry_after)
-            .unwrap_or(true)
-    }
-
-    fn record_success(&mut self, peer: MemberId) {
-        self.entries.remove(&peer);
-    }
-
-    fn record_failure(
-        &mut self,
-        peer: MemberId,
-        sync_config: FederationPeerSyncConfig,
-        now: Instant,
-    ) -> Duration {
-        let entry =
-            self.entries
-                .entry(peer)
-                .or_insert_with(|| FederationPeerReconnectBackoffEntry {
-                    failures: 0,
-                    retry_after: now,
-                });
-        let delay = federation_reconnect_backoff_delay(sync_config, entry.failures);
-        entry.failures = entry.failures.saturating_add(1);
-        entry.retry_after = now + delay;
-        delay
-    }
-}
-
-fn federation_reconnect_backoff_delay(
-    sync_config: FederationPeerSyncConfig,
-    failure_count: u32,
-) -> Duration {
-    let mut delay = sync_config.reconnect_initial_backoff;
-    for _ in 0..failure_count {
-        match delay.checked_mul(2) {
-            Some(next) if next < sync_config.reconnect_max_backoff => {
-                delay = next;
-            }
-            _ => return sync_config.reconnect_max_backoff,
-        }
-    }
-    delay.min(sync_config.reconnect_max_backoff)
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
