@@ -214,6 +214,12 @@ where
         match client.sync_once_from_member(state, peer).await {
             Ok(status) => {
                 synced += 1;
+                record_federation_peer_sync_metrics(
+                    state,
+                    peer.member_id,
+                    true,
+                    Some(status.operation_count),
+                );
                 tracing::debug!(
                     member_id = %peer.member_id,
                     operation_count = status.operation_count,
@@ -222,6 +228,7 @@ where
                 );
             }
             Err(err) => {
+                record_federation_peer_sync_metrics(state, peer.member_id, false, None);
                 tracing::warn!(
                     member_id = %peer.member_id,
                     "Federation peer sync failed: {}",
@@ -238,6 +245,37 @@ where
         );
     }
     synced
+}
+
+#[cfg(feature = "prometheus")]
+fn record_federation_peer_sync_metrics(
+    state: &MintState,
+    peer: MemberId,
+    connected: bool,
+    operation_count: Option<u64>,
+) {
+    let Some(config) = state.mint.federation_config() else {
+        return;
+    };
+    let member = config.member_id().to_string();
+    let peer = peer.to_string();
+    cdk_prometheus::METRICS.set_federation_peer_connected(&member, &peer, connected);
+    if let Some(operation_count) = operation_count {
+        cdk_prometheus::METRICS.set_federation_peer_operation_count(
+            &member,
+            &peer,
+            u64_to_i64_saturating(operation_count),
+        );
+    }
+}
+
+#[cfg(not(feature = "prometheus"))]
+fn record_federation_peer_sync_metrics(
+    _state: &MintState,
+    _peer: MemberId,
+    _connected: bool,
+    _operation_count: Option<u64>,
+) {
 }
 
 async fn collect_session_outcome_evidence_round<T>(

@@ -87,6 +87,8 @@ pub struct CdkMetrics {
     federation_sync_state: IntGaugeVec,
     federation_session_outcome_quorum_operation_count: IntGaugeVec,
     federation_payment_observation_reports: IntGaugeVec,
+    federation_peer_connected: IntGaugeVec,
+    federation_peer_operation_count: IntGaugeVec,
 }
 
 impl CdkMetrics {
@@ -125,6 +127,8 @@ impl CdkMetrics {
             federation_sync_state,
             federation_session_outcome_quorum_operation_count,
             federation_payment_observation_reports,
+            federation_peer_connected,
+            federation_peer_operation_count,
         ) = Self::create_federation_metrics(&registry)?;
 
         Ok(Self {
@@ -148,6 +152,8 @@ impl CdkMetrics {
             federation_sync_state,
             federation_session_outcome_quorum_operation_count,
             federation_payment_observation_reports,
+            federation_peer_connected,
+            federation_peer_operation_count,
         })
     }
 
@@ -343,6 +349,8 @@ impl CdkMetrics {
         IntGaugeVec,
         IntGaugeVec,
         IntGaugeVec,
+        IntGaugeVec,
+        IntGaugeVec,
     )> {
         let federation_consensus_operation_count = IntGaugeVec::new(
             prometheus::Opts::new(
@@ -391,12 +399,32 @@ impl CdkMetrics {
         )?;
         registry.register(Box::new(federation_payment_observation_reports.clone()))?;
 
+        let federation_peer_connected = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_peer_connected",
+                "Whether the latest private REST sync attempt to a federation peer succeeded",
+            ),
+            &["member", "peer"],
+        )?;
+        registry.register(Box::new(federation_peer_connected.clone()))?;
+
+        let federation_peer_operation_count = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_peer_operation_count",
+                "Latest consensus operation count reported by a federation peer",
+            ),
+            &["member", "peer"],
+        )?;
+        registry.register(Box::new(federation_peer_operation_count.clone()))?;
+
         Ok((
             federation_consensus_operation_count,
             federation_sync_ready,
             federation_sync_state,
             federation_session_outcome_quorum_operation_count,
             federation_payment_observation_reports,
+            federation_peer_connected,
+            federation_peer_operation_count,
         ))
     }
 
@@ -553,6 +581,20 @@ impl CdkMetrics {
             .with_label_values(&[member, status, action])
             .set(count);
     }
+
+    /// Set whether the latest private REST sync attempt to a federation peer succeeded.
+    pub fn set_federation_peer_connected(&self, member: &str, peer: &str, connected: bool) {
+        self.federation_peer_connected
+            .with_label_values(&[member, peer])
+            .set(if connected { 1 } else { 0 });
+    }
+
+    /// Set the latest operation count reported by a federation peer.
+    pub fn set_federation_peer_operation_count(&self, member: &str, peer: &str, count: i64) {
+        self.federation_peer_operation_count
+            .with_label_values(&[member, peer])
+            .set(count);
+    }
 }
 
 impl Default for CdkMetrics {
@@ -705,12 +747,15 @@ mod tests {
     fn federation_member_status_metrics_are_labeled_by_member() {
         let metrics = CdkMetrics::new().expect("metrics should be created");
         let member = "2";
+        let peer = "3";
 
         metrics.set_federation_consensus_operation_count(member, 7);
         metrics.set_federation_sync_ready(member, false);
         metrics.set_federation_sync_state(member, "healthy", false);
         metrics.set_federation_sync_state(member, "lagging", true);
         metrics.set_federation_session_outcome_quorum_operation_count(member, 5);
+        metrics.set_federation_peer_connected(member, peer, true);
+        metrics.set_federation_peer_operation_count(member, peer, 9);
 
         assert_eq!(
             metrics
@@ -746,6 +791,20 @@ mod tests {
                 .with_label_values(&[member])
                 .get(),
             5
+        );
+        assert_eq!(
+            metrics
+                .federation_peer_connected
+                .with_label_values(&[member, peer])
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .federation_peer_operation_count
+                .with_label_values(&[member, peer])
+                .get(),
+            9
         );
     }
 

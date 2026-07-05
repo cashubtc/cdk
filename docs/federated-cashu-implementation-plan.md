@@ -783,7 +783,7 @@ Implementation checklist:
 - [ ] Add reconnect with exponential backoff.
 - [x] Add periodic config-digest, consensus-height, and state-digest gossip between peers.
 - [x] Add admin peer status output.
-- [ ] Add peer status metrics.
+- [x] Add peer status metrics.
 - [x] Separate public HTTP API URL from private P2P URL.
 - [x] Reject messages from unknown members or wrong federation IDs.
 - [x] Define maximum message sizes and backpressure behavior for consensus proposals, signature-share responses, and catch-up data.

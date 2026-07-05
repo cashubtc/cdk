@@ -519,15 +519,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 478 checked items and 109 remaining items. Locked P2PK, HTLC, and SIG_ALL swap transcript construction now has direct transcript-hash coverage.</span>
+          <span class="value">The implementation plan audit now tracks 479 checked items and 108 remaining items. Private REST peer sync now emits per-peer connectivity and remote height metrics.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: bind locked swap transcripts</span>
+          <span class="value">feat: add federation peer sync metrics</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Added exact common-layer assertions proving locked P2PK witnesses, locked HTLC witnesses, and SIG_ALL output sets change the federation request transcript hash before signing.</span>
+          <span class="value">Added Prometheus gauges for peer sync reachability and last reported peer operation count, updated by the private REST sync loop.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -542,7 +542,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 478 checked entries and 109 remaining entries. The
+          checklist has 479 checked entries and 108 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -1514,6 +1514,10 @@
           <article class="item">
             <h3>Federation status metrics emitted</h3>
             <p>Prometheus now exposes federation local-status gauges for per-member consensus operation count, sync readiness, one-hot sync state, session-outcome quorum coverage, and redacted payment-observation report counts.</p>
+          </article>
+          <article class="item">
+            <h3>Peer sync metrics emitted</h3>
+            <p>Private REST peer sync now records whether the latest sync attempt to each federation peer succeeded and the last consensus operation count reported by that peer.</p>
           </article>
           <article class="item">
             <h3>Metrics smoke gate added</h3>
@@ -2913,6 +2917,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-prometheus` passed 7 unit tests plus 1 doc test, including federation member-status and payment-report gauge coverage. `cargo check -p cdk-axum --features federation,prometheus` passed, and `cargo test -p cdk-axum --features federation,prometheus private_local_status_route -- --test-threads 1` passed 6 signed local-status route regressions with the metrics hook enabled.</td>
               <td>Repeat metrics-enabled smoke against Postgres-backed member storage when a service is available.</td>
+            </tr>
+            <tr>
+              <td>Federation peer sync metrics</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-prometheus federation_member_status_metrics_are_labeled_by_member -- --test-threads 1` passed with peer connectivity and peer operation-count gauges asserted by local member and peer labels. `cargo check -p cdk-axum --features federation,prometheus` passed with the private REST peer sync loop recording success and failure observations.</td>
+              <td>Carry these gauges into the next metrics-enabled process smoke and add alert thresholds once production peer-sync policy settles.</td>
             </tr>
             <tr>
               <td>Fake-regtest metrics scrape</td>
