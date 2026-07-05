@@ -1,0 +1,849 @@
+use super::*;
+use crate::config;
+use cdk_common::federation::{FederationConfig, MemberConfigPrivate};
+
+fn temp_output_dir(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "cdk_mintd_federation_{name}_{}",
+        std::process::id()
+    ))
+}
+
+fn generator_args(output_dir: PathBuf) -> FederationTrustedDealerArgs {
+    FederationTrustedDealerArgs {
+        output_dir,
+        members: 3,
+        threshold: 2,
+        unit: "sat".to_string(),
+        amounts: vec![1, 2, 4],
+        input_fee_ppk: 0,
+        final_expiry: None,
+        host: "127.0.0.1".to_string(),
+        port_start: 8085,
+        database_engine: FederationTrustedDealerDatabaseEngine::Sqlite,
+        postgres_url_template: None,
+        postgres_base_url: None,
+        dkg_setup_route_probes: false,
+        local_fakewallet_configs: false,
+        deterministic_test_seed: None,
+        force: false,
+    }
+}
+
+#[test]
+fn trusted_dealer_command_defaults_to_core_only_with_fakewallet_feature() {
+    let output_dir = temp_output_dir("command_core_only");
+    let _ = std::fs::remove_dir_all(&output_dir);
+    let args = generator_args(output_dir.clone());
+
+    run_trusted_dealer_command(&args).expect("trusted dealer command");
+
+    assert!(output_dir.join(PUBLIC_CONFIG_FILE).exists());
+    assert!(output_dir.join(DKG_SETUP_PUBLIC_CONFIG_FILE).exists());
+    assert!(!output_dir.join(SMOKE_SCRIPT_FILE).exists());
+    for member_id in 1..=args.members {
+        let member_dir = output_dir.join(format!("member-{member_id}"));
+        assert!(member_dir.join(PRIVATE_CONFIG_FILE).exists());
+        assert!(member_dir.join(DKG_SETUP_PRIVATE_CONFIG_FILE).exists());
+        assert!(!member_dir.join(MEMBER_CONFIG_FILE).exists());
+        assert!(!member_dir.join(DKG_SETUP_MEMBER_CONFIG_FILE).exists());
+    }
+
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn trusted_dealer_command_generates_local_fakewallet_files_only_when_requested() {
+    let output_dir = temp_output_dir("command_local_fakewallet");
+    let _ = std::fs::remove_dir_all(&output_dir);
+    let mut args = generator_args(output_dir.clone());
+    args.local_fakewallet_configs = true;
+
+    run_trusted_dealer_command(&args).expect("trusted dealer command");
+
+    assert!(output_dir.join(PUBLIC_CONFIG_FILE).exists());
+    assert!(output_dir.join(DKG_SETUP_PUBLIC_CONFIG_FILE).exists());
+    assert!(output_dir.join(SMOKE_SCRIPT_FILE).exists());
+    for member_id in 1..=args.members {
+        let member_dir = output_dir.join(format!("member-{member_id}"));
+        assert!(member_dir.join(PRIVATE_CONFIG_FILE).exists());
+        assert!(member_dir.join(DKG_SETUP_PRIVATE_CONFIG_FILE).exists());
+        assert!(member_dir.join(MEMBER_CONFIG_FILE).exists());
+        assert!(member_dir.join(DKG_SETUP_MEMBER_CONFIG_FILE).exists());
+    }
+
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn fakewallet_is_documented_as_development_backend() {
+    let docs = [
+        include_str!("../../../../docs/federated-cashu-consensus-current.md"),
+        include_str!("../../../../docs/federated-cashu-consensus-current.html"),
+        include_str!("../../../../docs/federated-cashu-progress.html"),
+    ];
+    let forbidden_phrases = [
+        "core fake-wallet eCash flows",
+        "Core fake-wallet flows",
+        "fake-wallet phase",
+        "fake-wallet federation path",
+        "current fake-wallet path",
+        "fake wallet semantics",
+        "fake-wallet member",
+        "federated fake-wallet",
+        "fake-wallet melt",
+        "fake-wallet payment",
+        "fake-wallet flows",
+        "fake-wallet path",
+    ];
+
+    for doc in docs {
+        for phrase in forbidden_phrases {
+            assert!(
+                !doc.contains(phrase),
+                "federation docs must not describe fakewallet as federation semantics: {phrase}"
+            );
+        }
+    }
+}
+
+#[test]
+fn trusted_dealer_artifacts_are_written_and_validated() {
+    let output_dir = temp_output_dir("artifacts");
+    let _ = std::fs::remove_dir_all(&output_dir);
+    let mut args = generator_args(output_dir.clone());
+    args.dkg_setup_route_probes = true;
+    let artifacts = generate_trusted_dealer_artifacts(&args).expect("trusted dealer artifacts");
+
+    let public_json =
+        std::fs::read_to_string(&artifacts.public_config_path).expect("public config file");
+    let public_config: FederationConfig =
+        serde_json::from_str(&public_json).expect("public config json");
+    public_config.validate().expect("public config validates");
+    assert_eq!(public_config.threshold_params.member_count, 3);
+    assert_eq!(public_config.threshold_params.signature_threshold, 2);
+    assert_eq!(public_config.keysets.len(), 2);
+    assert_eq!(
+        public_config
+            .keysets
+            .iter()
+            .filter(|keyset| keyset.active)
+            .count(),
+        1
+    );
+    assert_eq!(
+        public_config
+            .keysets
+            .iter()
+            .filter(|keyset| !keyset.active)
+            .count(),
+        1
+    );
+    let setup_transcript = public_config
+        .setup_transcript
+        .as_ref()
+        .expect("setup transcript");
+    let dkg_setup_public_json = std::fs::read_to_string(&artifacts.dkg_setup_public_config_path)
+        .expect("setup-only public config file");
+    let dkg_setup_public_config: FederationConfig =
+        serde_json::from_str(&dkg_setup_public_json).expect("setup-only public config json");
+    dkg_setup_public_config
+        .validate()
+        .expect("setup-only public config validates");
+    assert_eq!(
+        dkg_setup_public_config.federation_id,
+        public_config.federation_id
+    );
+    assert!(dkg_setup_public_config.keysets.is_empty());
+    assert!(dkg_setup_public_config.setup_transcript.is_none());
+    let first_member = MemberId::new(1).expect("first member id");
+    let second_member = MemberId::new(2).expect("second member id");
+    let first_receiver_probe_dir = output_dir
+        .join(DKG_SETUP_ROUTE_PROBE_DIR)
+        .join("receiver-1");
+    let commitment_json =
+        std::fs::read_to_string(first_receiver_probe_dir.join("from-1-commitment.json"))
+            .expect("DKG commitment route-probe request");
+    let commitment_request: FederationSignedRequest<FederationDkgCommitmentRequest> =
+        serde_json::from_str(&commitment_json).expect("signed DKG commitment request");
+    commitment_request
+        .verify(&public_config, first_member)
+        .expect("commitment request verifies");
+    commitment_request
+        .payload
+        .validate_sender(&public_config, first_member)
+        .expect("commitment sender validates");
+    assert_eq!(commitment_request.sequence, 1);
+    assert_eq!(
+        commitment_request.kind,
+        FederationRestMessageKind::DkgCommitment
+    );
+    let reveal_json = std::fs::read_to_string(first_receiver_probe_dir.join("from-1-reveal.json"))
+        .expect("DKG reveal route-probe request");
+    let reveal_request: FederationSignedRequest<FederationDkgRevealRequest> =
+        serde_json::from_str(&reveal_json).expect("signed DKG reveal request");
+    reveal_request
+        .verify(&public_config, first_member)
+        .expect("reveal request verifies");
+    reveal_request
+        .payload
+        .validate_sender(&public_config, first_member)
+        .expect("reveal sender validates");
+    assert_eq!(reveal_request.sequence, 2);
+    assert_eq!(reveal_request.kind, FederationRestMessageKind::DkgReveal);
+    let secret_share_json =
+        std::fs::read_to_string(first_receiver_probe_dir.join("from-2-secret-share.json"))
+            .expect("DKG secret-share route-probe request");
+    let secret_share_request: FederationSignedRequest<FederationDkgSecretShareRequest> =
+        serde_json::from_str(&secret_share_json).expect("signed DKG secret-share request");
+    secret_share_request
+        .verify(&public_config, first_member)
+        .expect("secret-share request verifies");
+    secret_share_request
+        .payload
+        .validate_sender_receiver(&public_config, second_member, first_member)
+        .expect("secret-share sender and receiver validate");
+    assert_eq!(secret_share_request.sequence, 3);
+    assert_eq!(
+        secret_share_request.kind,
+        FederationRestMessageKind::DkgSecretShare
+    );
+    let transcript_signature_json =
+        std::fs::read_to_string(first_receiver_probe_dir.join("from-2-transcript-signature.json"))
+            .expect("DKG transcript-signature route-probe request");
+    let transcript_signature_request: FederationSignedRequest<
+        FederationDkgTranscriptSignatureRequest,
+    > = serde_json::from_str(&transcript_signature_json)
+        .expect("signed DKG transcript-signature request");
+    transcript_signature_request
+        .verify(&public_config, first_member)
+        .expect("transcript-signature request verifies");
+    transcript_signature_request
+        .payload
+        .validate_sender(&public_config, second_member)
+        .expect("transcript-signature sender validates");
+    assert_eq!(transcript_signature_request.sequence, 4);
+    assert_eq!(
+        transcript_signature_request.kind,
+        FederationRestMessageKind::DkgTranscriptSignature
+    );
+
+    let smoke_script =
+        std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
+    assert!(smoke_script.starts_with("#!/usr/bin/env bash"));
+    assert!(smoke_script.contains("federation status"));
+    assert!(smoke_script.contains("federation dkg-status"));
+    assert!(smoke_script.contains("federation payment-observations"));
+    assert!(smoke_script.contains("federation smoke-operations"));
+    assert!(smoke_script.contains("--require-ready"));
+    assert!(smoke_script.contains("--from-database"));
+    assert!(smoke_script.contains("member_status_line()"));
+    assert!(smoke_script.contains("member_dkg_status()"));
+    assert!(smoke_script.contains("compare_digests()"));
+    assert!(smoke_script.contains("local signer=\"${MEMBERS[0]}\""));
+    assert!(smoke_script.contains("private_config=\"$(member_private_config \"$signer\")\""));
+    assert!(smoke_script.contains("federation compare-digests"));
+    assert!(smoke_script.contains("compare_digests >/dev/null 2>&1"));
+    assert!(smoke_script.contains("compare_digests >&2 || true"));
+    assert!(smoke_script
+        .contains("--work-dir \"$work_dir\" --config \"$config\" federation dkg-status"));
+    assert!(smoke_script.contains("PROBE_DKG_SETUP_ROUTES"));
+    assert!(smoke_script.contains("DKG_ROUTE_PROBE_ONLY"));
+    assert!(smoke_script.contains("DKG_SETUP_PUBLIC_CONFIG"));
+    assert!(smoke_script.contains("PUBLIC_CONFIG=\"$DKG_SETUP_PUBLIC_CONFIG\""));
+    assert!(smoke_script.contains("PROBE_DKG_SETUP_ROUTES=1"));
+    assert!(smoke_script.contains("dkg setup route probe passed"));
+    assert!(smoke_script.contains("CDK_FEDERATION_DISABLE_PEER_SYNC=1"));
+    assert!(smoke_script.contains("member_dkg_setup_request_dir()"));
+    assert!(smoke_script.contains("member_mint_url()"));
+    assert!(smoke_script.contains("member_federation_url()"));
+    assert!(smoke_script.contains("probe_dkg_setup_routes()"));
+    assert!(smoke_script.contains("post_dkg_setup_request()"));
+    assert!(smoke_script.contains("wait_for_dkg_setup_records()"));
+    assert!(smoke_script.contains("wait_for_runtime_keysets()"));
+    assert!(smoke_script.contains("$mint_url/v1/keysets"));
+    assert!(smoke_script.contains("did not expose activated DKG keysets after restart"));
+    assert!(smoke_script.contains("member_dkg_completion_records_line()"));
+    assert!(smoke_script.contains("could not post DKG setup route-probe request"));
+    assert!(smoke_script.contains("/federation/v1/dkg/commitments"));
+    assert!(smoke_script.contains("/federation/v1/dkg/reveals"));
+    assert!(smoke_script.contains("/federation/v1/dkg/secret-shares"));
+    assert!(smoke_script.contains("/federation/v1/dkg/transcript-signatures"));
+    assert!(smoke_script.contains("keyset_share_records"));
+    assert!(smoke_script.contains("transcript_signature_records"));
+    assert!(smoke_script.contains(
+            "probe_dkg_setup_routes\nwait_for_dkg_setup_records\nif [[ \"$DKG_ROUTE_PROBE_ONLY\" == \"1\" ]]; then"
+        ));
+    assert!(smoke_script.contains("wait_for_dkg_status \"$member\""));
+    assert!(smoke_script.contains(
+            "stop_member \"$member\"\n  done\n  for member in \"${MEMBERS[@]}\"; do\n    start_member \"$member\""
+        ));
+    assert!(smoke_script.contains("wait_for_runtime_keysets \"$member\""));
+    assert!(smoke_script.contains("exit 0\nfi\n\nfor member in"));
+    assert!(smoke_script.contains("wait_for_dkg_status()"));
+    assert!(smoke_script.contains("print_dkg_record_runbook()"));
+    assert!(smoke_script.contains("DKG record recovery for member"));
+    assert!(smoke_script.contains("--keyset-share <keyset-share.json>"));
+    assert!(smoke_script.contains("--transcript-signature <transcript-signature.json>"));
+    assert!(smoke_script.contains("setup_records with collected commitment"));
+    assert!(smoke_script.contains("Combine --from-database"));
+    assert!(smoke_script.contains("member_quorum_status_line()"));
+    assert!(smoke_script.contains("--require-session-outcome-quorum"));
+    assert!(smoke_script.contains("--require-no-digest-alerts"));
+    assert!(smoke_script.contains("--require-no-invalid-operation-alerts"));
+    assert!(smoke_script.contains("private_config=\"$(member_private_config \"$member\")\""));
+    assert!(
+        !smoke_script.contains("private_config=\"$(member_private_config \"$PRIMARY_MEMBER\")\"")
+    );
+    assert!(smoke_script.contains("reset_member_work_dirs"));
+    assert!(smoke_script.contains("rm -rf \"$work_dir\""));
+    assert!(smoke_script.contains("PRIMARY_MEMBER"));
+    assert!(smoke_script.contains("RESTART_MEMBER"));
+    assert!(smoke_script.contains("QUARANTINE_OFFLINE_MEMBER"));
+    assert!(smoke_script.contains("unknown RESTART_MEMBER"));
+    assert!(smoke_script
+        .contains("RESTART_MEMBER must differ from PRIMARY_MEMBER for offline operation smoke"));
+    assert!(smoke_script.contains("PENDING_WALLET_DB"));
+    assert!(smoke_script.contains("FAILED_PENDING_WALLET_DB"));
+    assert!(smoke_script.contains("SMOKE_QUOTE_RETRIES"));
+    assert!(smoke_script.contains("SMOKE_QUOTE_SLEEP_MS"));
+    assert!(smoke_script.contains("SMOKE_OPERATION_TIMEOUT_SECONDS"));
+    assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES"));
+    assert!(smoke_script.contains("CHECK_PROMETHEUS_METRICS"));
+    assert!(smoke_script.contains("CDK_MINTD_PROMETHEUS_ENABLED=false"));
+    assert!(smoke_script.contains("local mintd_env_count=0"));
+    assert!(smoke_script.contains("if (( mintd_env_count == 0 )); then"));
+    assert!(
+        smoke_script.contains("\"$CDK_MINTD_BIN\" --work-dir \"$work_dir\" --config \"$config\"")
+    );
+    assert!(smoke_script.contains("env \"${mintd_env[@]}\" \"$CDK_MINTD_BIN\""));
+    assert!(smoke_script.contains("validate_smoke_settings()"));
+    assert!(smoke_script.contains("require_positive_integer()"));
+    assert!(smoke_script.contains("printf '%s must be a positive integer"));
+    assert!(smoke_script.contains("require_positive_integer STATUS_RETRIES"));
+    assert!(smoke_script.contains("require_positive_integer STATUS_SLEEP_SECONDS"));
+    assert!(smoke_script.contains("require_positive_integer SMOKE_QUOTE_RETRIES"));
+    assert!(smoke_script.contains("require_positive_integer SMOKE_QUOTE_SLEEP_MS"));
+    assert!(smoke_script.contains("require_positive_integer SMOKE_OPERATION_TIMEOUT_SECONDS"));
+    assert!(smoke_script.contains("require_positive_integer OFFLINE_OPERATION_BATCHES"));
+    assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES must be 255 or lower"));
+    assert!(smoke_script.contains("member_payment_report_lines()"));
+    assert!(smoke_script.contains("--context mint-quote"));
+    assert!(smoke_script.contains("member_prometheus_url()"));
+    assert!(smoke_script.contains("run_smoke_operations()"));
+    assert!(smoke_script.contains("local has_private_config=0"));
+    assert!(smoke_script.contains(
+        "local timeout_args=(--operation-timeout-seconds \"$SMOKE_OPERATION_TIMEOUT_SECONDS\")"
+    ));
+    assert!(smoke_script.contains("if [[ \"$arg\" == \"--private-config\" ]]; then"));
+    assert!(smoke_script.contains("--private-config \"$(member_private_config \"$signer\")\""));
+    assert!(smoke_script.contains("return\n  fi"));
+    assert!(smoke_script.contains("wait_for_prometheus_metrics()"));
+    assert!(smoke_script.contains("prometheus_metrics_are_ready()"));
+    assert!(smoke_script.contains("cdk_federation_consensus_operation_count"));
+    assert!(smoke_script.contains("cdk_federation_pending_mempool_items"));
+    assert!(smoke_script.contains("cdk_federation_sync_ready"));
+    assert!(smoke_script.contains("cdk_federation_sync_state"));
+    assert!(smoke_script.contains("cdk_federation_payment_observation_reports"));
+    assert!(smoke_script.contains("federation Prometheus metrics include a sensitive label"));
+    assert!(smoke_script.contains("wait_for_session_outcome_quorum()"));
+    assert!(
+        smoke_script.contains("member %s did not report quorum-backed session outcome evidence")
+    );
+    assert!(smoke_script.contains("--quote-retries \"$SMOKE_QUOTE_RETRIES\""));
+    assert!(smoke_script.contains("--quote-sleep-ms \"$SMOKE_QUOTE_SLEEP_MS\""));
+    assert!(smoke_script.contains("\"${timeout_args[@]}\""));
+    assert!(smoke_script.contains("wait_for_quarantine_report()"));
+    assert!(smoke_script.contains("validate_quarantine_members()"));
+    assert!(smoke_script.contains("--scenario offline-member-operations"));
+    assert!(smoke_script.contains(
+        "run_smoke_operations --scenario offline-member-operations --seed-offset \"$batch\""
+    ));
+    assert!(smoke_script.contains("--scenario pending-melt-start"));
+    assert!(smoke_script.contains("--scenario pending-melt-finish"));
+    assert!(smoke_script.contains("--scenario pending-melt-fail-start"));
+    assert!(smoke_script.contains("--scenario pending-melt-fail-finish"));
+    assert!(smoke_script.contains("--scenario quarantine-mint-conflict"));
+    assert!(smoke_script.contains("--scenario offline-member-keyset-rotation"));
+    assert!(smoke_script.contains("--wallet-db \"$PENDING_WALLET_DB\""));
+    assert!(smoke_script.contains("--wallet-db \"$FAILED_PENDING_WALLET_DB\""));
+    assert!(smoke_script.contains(
+            "--private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\" --scenario pending-melt-finish"
+        ));
+    assert!(smoke_script.contains(
+            "--private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\" --scenario pending-melt-fail-finish"
+        ));
+    assert!(smoke_script.contains(
+            "stop_member \"$RESTART_MEMBER\"\nrun_smoke_operations --private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\" --scenario pending-melt-finish"
+        ));
+    assert!(smoke_script.contains(
+            "stop_member \"$RESTART_MEMBER\"\nrun_smoke_operations --private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\" --scenario pending-melt-fail-finish"
+        ));
+    assert!(
+        smoke_script.contains("--private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\"")
+    );
+    assert!(smoke_script.contains("wait_for_quarantine_report \"$PRIMARY_MEMBER\""));
+    assert!(smoke_script.contains(
+            "federation payment-observations --public-config \"$PUBLIC_CONFIG\" --private-config \"$private_config\" --member \"$member\" --context mint-quote"
+        ));
+    assert!(smoke_script.contains("stop_member \"$QUARANTINE_OFFLINE_MEMBER\""));
+    assert!(smoke_script.contains("start_member \"$QUARANTINE_OFFLINE_MEMBER\""));
+    assert!(smoke_script.contains("wait_for_status \"$QUARANTINE_OFFLINE_MEMBER\""));
+    assert!(smoke_script.contains("wait_for_session_outcome_quorum \"$RESTART_MEMBER\""));
+    assert!(smoke_script.contains("wait_for_session_outcome_quorum \"$QUARANTINE_OFFLINE_MEMBER\""));
+    assert!(smoke_script.contains(
+            "run_smoke_operations --private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\" --scenario offline-member-keyset-rotation"
+        ));
+    assert!(smoke_script.contains(
+            "stop_member \"$RESTART_MEMBER\"\nrun_smoke_operations --private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\" --scenario offline-member-keyset-rotation"
+        ));
+    assert!(smoke_script.contains(
+            "wait_for_status \"$RESTART_MEMBER\"\nwait_for_converged\nwait_for_session_outcome_quorum \"$RESTART_MEMBER\""
+        ));
+    assert!(smoke_script.contains(
+            "wait_for_status \"$QUARANTINE_OFFLINE_MEMBER\"\n\nwait_for_converged\nwait_for_session_outcome_quorum \"$QUARANTINE_OFFLINE_MEMBER\""
+        ));
+    assert!(smoke_script.contains("wait_for_quarantine_report \"$QUARANTINE_OFFLINE_MEMBER\""));
+    assert!(smoke_script.contains("local federation smoke test passed"));
+    assert!(smoke_script.contains(&artifacts.public_config_path.to_string_lossy().to_string()));
+    assert!(smoke_script.contains(
+        &artifacts
+            .dkg_setup_public_config_path
+            .to_string_lossy()
+            .to_string()
+    ));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mode = std::fs::metadata(&artifacts.smoke_script_path)
+            .expect("smoke script metadata")
+            .permissions()
+            .mode();
+        assert_ne!(mode & 0o111, 0);
+    }
+
+    for (member_id, member_artifacts) in &artifacts.member_artifacts {
+        let private_json = std::fs::read_to_string(&member_artifacts.private_config_path)
+            .expect("private config file");
+        let private_config: MemberConfigPrivate =
+            serde_json::from_str(&private_json).expect("private config json");
+        assert_eq!(private_config.member_id, *member_id);
+        assert_eq!(
+            private_config.federation_id,
+            Some(public_config.federation_id)
+        );
+        assert_eq!(
+            private_config.setup_transcript_hash,
+            Some(setup_transcript.transcript_hash)
+        );
+        private_config
+            .validate_against_public(&public_config)
+            .expect("private config validates");
+        let dkg_setup_private_json =
+            std::fs::read_to_string(&member_artifacts.dkg_setup_private_config_path)
+                .expect("setup-only private config file");
+        let dkg_setup_private_config: MemberConfigPrivate =
+            serde_json::from_str(&dkg_setup_private_json).expect("setup-only private config json");
+        assert_eq!(dkg_setup_private_config.member_id, *member_id);
+        assert_eq!(
+            dkg_setup_private_config.federation_id,
+            Some(public_config.federation_id)
+        );
+        assert!(dkg_setup_private_config.keyset_secret_shares.is_empty());
+        assert!(dkg_setup_private_config.setup_transcript_hash.is_none());
+        dkg_setup_private_config
+            .validate_against_public(&dkg_setup_public_config)
+            .expect("setup-only private config validates");
+
+        let config_text =
+            std::fs::read_to_string(&member_artifacts.config_path).expect("member config text");
+        let dkg_setup_config_text =
+            std::fs::read_to_string(&member_artifacts.dkg_setup_config_path)
+                .expect("setup-only member config text");
+        let expected_prometheus_port = 8085 + 3 + member_id.get() - 1;
+        assert!(config_text.contains("[prometheus]"));
+        assert!(config_text.contains("enabled = true"));
+        assert!(config_text.contains("address = \"127.0.0.1\""));
+        assert!(config_text.contains(&format!("port = {expected_prometheus_port}")));
+        assert!(config_text.contains(&member_artifacts.federation_api_url));
+        assert!(config_text.contains(&member_artifacts.public_mint_url));
+        assert!(dkg_setup_config_text.contains(
+            &artifacts
+                .dkg_setup_public_config_path
+                .to_string_lossy()
+                .to_string()
+        ));
+        assert!(dkg_setup_config_text.contains(
+            &member_artifacts
+                .dkg_setup_private_config_path
+                .to_string_lossy()
+                .to_string()
+        ));
+
+        let settings = config::Settings::try_new(Some(&member_artifacts.config_path))
+            .expect("member config toml");
+        let dkg_setup_settings =
+            config::Settings::try_new(Some(&member_artifacts.dkg_setup_config_path))
+                .expect("setup-only member config toml");
+        assert_eq!(settings.database.engine, config::DatabaseEngine::Sqlite);
+        assert_eq!(
+            dkg_setup_settings.database.engine,
+            config::DatabaseEngine::Sqlite
+        );
+        assert!(
+            settings
+                .federation
+                .as_ref()
+                .expect("federation settings")
+                .enabled
+        );
+        assert!(
+            settings
+                .federation
+                .as_ref()
+                .expect("federation settings")
+                .allow_development_payment_observation_policy
+        );
+        assert!(
+            dkg_setup_settings
+                .federation
+                .as_ref()
+                .expect("setup-only federation settings")
+                .enabled
+        );
+        assert!(
+            dkg_setup_settings
+                .federation
+                .as_ref()
+                .expect("setup-only federation settings")
+                .allow_development_payment_observation_policy
+        );
+        assert_eq!(settings.info.listen_port, 8084 + member_id.get());
+        assert_eq!(dkg_setup_settings.info.listen_port, 8084 + member_id.get());
+        #[cfg(feature = "prometheus")]
+        {
+            let prometheus = settings.prometheus.expect("prometheus settings");
+            assert!(prometheus.enabled);
+            assert_eq!(prometheus.address.as_deref(), Some("127.0.0.1"));
+            assert_eq!(prometheus.port, Some(expected_prometheus_port));
+        }
+        assert!(smoke_script.contains(&member_artifacts.config_path.to_string_lossy().to_string()));
+        assert!(smoke_script.contains(
+            &member_artifacts
+                .dkg_setup_config_path
+                .to_string_lossy()
+                .to_string()
+        ));
+        assert!(smoke_script.contains(
+            &member_artifacts
+                .private_config_path
+                .to_string_lossy()
+                .to_string()
+        ));
+        assert!(smoke_script.contains(
+            &member_artifacts
+                .dkg_setup_private_config_path
+                .to_string_lossy()
+                .to_string()
+        ));
+        assert!(smoke_script.contains(&member_artifacts.work_dir.to_string_lossy().to_string()));
+        assert!(smoke_script.contains(
+            &member_artifacts
+                .dkg_setup_work_dir
+                .to_string_lossy()
+                .to_string()
+        ));
+        assert!(smoke_script.contains(&member_artifacts.public_mint_url));
+        assert!(smoke_script.contains(&member_artifacts.prometheus_url));
+    }
+
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn deterministic_test_seed_reproduces_member_config_mnemonic() {
+    let member_id = MemberId::new(1).expect("member id");
+    let database_config = "[database]\nengine = \"sqlite\"\n";
+    let config = || {
+        member_config_toml(
+            &member_id,
+            "127.0.0.1",
+            "http://127.0.0.1:8085",
+            "http://127.0.0.1:8085",
+            8085,
+            8088,
+            Path::new("federation-public.json"),
+            Path::new("member-1/federation-private.json"),
+            Path::new("member-1/config.toml"),
+            Path::new("member-1/work"),
+            &CurrencyUnit::Sat,
+            database_config,
+            Some("repeatable local smoke setup"),
+        )
+        .expect("deterministic member config")
+    };
+    let first = config();
+    let second = config();
+    assert_eq!(first, second);
+
+    let different = member_config_toml(
+        &member_id,
+        "127.0.0.1",
+        "http://127.0.0.1:8085",
+        "http://127.0.0.1:8085",
+        8085,
+        8088,
+        Path::new("federation-public.json"),
+        Path::new("member-1/federation-private.json"),
+        Path::new("member-1/config.toml"),
+        Path::new("member-1/work"),
+        &CurrencyUnit::Sat,
+        database_config,
+        Some("different local smoke setup"),
+    )
+    .expect("different deterministic member config");
+    assert_ne!(first, different);
+}
+
+#[test]
+fn trusted_dealer_artifacts_skip_dkg_route_probes_by_default() {
+    let output_dir = temp_output_dir("artifacts_without_dkg_probes");
+    let _ = std::fs::remove_dir_all(&output_dir);
+    let artifacts = generate_trusted_dealer_artifacts(&generator_args(output_dir.clone()))
+        .expect("trusted dealer artifacts");
+
+    let first_member = MemberId::new(1).expect("first member id");
+    let first_probe_path = artifacts
+        .member_artifacts
+        .get(&first_member)
+        .expect("first member artifacts")
+        .dkg_setup_request_dir
+        .join("from-1-commitment.json");
+    assert!(!first_probe_path.exists());
+    let smoke_script = std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script");
+    assert!(smoke_script.contains("PROBE_DKG_SETUP_ROUTES"));
+
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn trusted_dealer_artifacts_support_postgres_database_template() {
+    let output_dir = temp_output_dir("postgres_database_template");
+    let _ = std::fs::remove_dir_all(&output_dir);
+    let mut args = generator_args(output_dir.clone());
+    args.database_engine = FederationTrustedDealerDatabaseEngine::Postgres;
+    args.postgres_url_template =
+        Some("postgresql://cdk:cdk@localhost:5432/cdk_member_{member}".to_string());
+
+    let artifacts =
+        generate_trusted_dealer_artifacts(&args).expect("postgres trusted dealer artifacts");
+
+    for (member_id, member_artifacts) in &artifacts.member_artifacts {
+        let settings = config::Settings::try_new(Some(&member_artifacts.config_path))
+            .expect("member config toml");
+        let dkg_setup_settings =
+            config::Settings::try_new(Some(&member_artifacts.dkg_setup_config_path))
+                .expect("setup-only member config toml");
+        assert_eq!(settings.database.engine, config::DatabaseEngine::Postgres);
+        assert_eq!(
+            dkg_setup_settings.database.engine,
+            config::DatabaseEngine::Postgres
+        );
+        let postgres = settings
+            .database
+            .postgres
+            .as_ref()
+            .expect("postgres config");
+        let dkg_setup_postgres = dkg_setup_settings
+            .database
+            .postgres
+            .as_ref()
+            .expect("setup-only postgres config");
+        assert_eq!(
+            postgres.url,
+            format!(
+                "postgresql://cdk:cdk@localhost:5432/cdk_member_{}",
+                member_id.get()
+            )
+        );
+        assert_eq!(dkg_setup_postgres.url, postgres.url);
+        assert!(!postgres.url.contains("{member}"));
+        assert!(!dkg_setup_postgres.url.contains("{member}"));
+    }
+    let smoke_script =
+        std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
+    assert!(smoke_script.contains("POSTGRES_SCHEMA_RESET_URL=''"));
+    assert!(smoke_script.contains("reset_postgres_schemas()"));
+
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn trusted_dealer_artifacts_support_postgres_schema_base_url() {
+    let output_dir = temp_output_dir("postgres_schema_base_url");
+    let _ = std::fs::remove_dir_all(&output_dir);
+    let mut args = generator_args(output_dir.clone());
+    args.database_engine = FederationTrustedDealerDatabaseEngine::Postgres;
+    args.postgres_base_url = Some("postgresql://cdk:cdk@localhost:5432/cdk_mint".to_string());
+
+    let artifacts =
+        generate_trusted_dealer_artifacts(&args).expect("postgres trusted dealer artifacts");
+
+    for (member_id, member_artifacts) in &artifacts.member_artifacts {
+        let settings = config::Settings::try_new(Some(&member_artifacts.config_path))
+            .expect("member config toml");
+        let dkg_setup_settings =
+            config::Settings::try_new(Some(&member_artifacts.dkg_setup_config_path))
+                .expect("setup-only member config toml");
+        assert_eq!(settings.database.engine, config::DatabaseEngine::Postgres);
+        assert_eq!(
+            dkg_setup_settings.database.engine,
+            config::DatabaseEngine::Postgres
+        );
+        let postgres = settings
+            .database
+            .postgres
+            .as_ref()
+            .expect("postgres config");
+        let dkg_setup_postgres = dkg_setup_settings
+            .database
+            .postgres
+            .as_ref()
+            .expect("setup-only postgres config");
+        assert_eq!(
+            postgres.url,
+            format!(
+                "postgresql://cdk:cdk@localhost:5432/cdk_mint schema=cdk_federation_member_{}",
+                member_id.get()
+            )
+        );
+        assert_eq!(dkg_setup_postgres.url, postgres.url);
+    }
+    let smoke_script =
+        std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
+    assert!(smoke_script
+        .contains("POSTGRES_SCHEMA_RESET_URL='postgresql://cdk:cdk@localhost:5432/cdk_mint'"));
+    assert!(smoke_script.contains("RESET_POSTGRES_SCHEMAS=\"${RESET_POSTGRES_SCHEMAS:-0}\""));
+    assert!(smoke_script.contains("generated PostgreSQL member schemas are configured"));
+    assert!(smoke_script.contains("psql is required to reset PostgreSQL member schemas"));
+    assert!(smoke_script.contains("DROP SCHEMA IF EXISTS"));
+    assert!(smoke_script.contains("CREATE SCHEMA"));
+    for member_id in artifacts.member_artifacts.keys() {
+        assert!(smoke_script.contains(&format!("cdk_federation_member_{}", member_id.get())));
+    }
+
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn trusted_dealer_postgres_storage_options_are_validated() {
+    let output_dir = temp_output_dir("postgres_validation");
+    let mut args = generator_args(output_dir);
+    args.database_engine = FederationTrustedDealerDatabaseEngine::Postgres;
+
+    let err = validate_trusted_dealer_args(&args).expect_err("postgres storage is required");
+    assert!(err
+        .to_string()
+        .contains("--postgres-url-template or --postgres-base-url is required"));
+
+    args.postgres_url_template = Some("postgresql://cdk:cdk@localhost:5432/shared".to_string());
+    let err = validate_trusted_dealer_args(&args).expect_err("member placeholder is required");
+    assert!(err.to_string().contains("must contain {member}"));
+
+    args.postgres_url_template =
+        Some("postgresql://cdk:cdk@localhost:5432/cdk_member_{member}".to_string());
+    args.postgres_base_url = Some("postgresql://cdk:cdk@localhost:5432/cdk_mint".to_string());
+    let err = validate_trusted_dealer_args(&args).expect_err("only one postgres option");
+    assert!(err.to_string().contains("not both"));
+
+    args.postgres_url_template = None;
+    args.postgres_base_url = Some("   ".to_string());
+    let err = validate_trusted_dealer_args(&args).expect_err("base url cannot be empty");
+    assert!(err
+        .to_string()
+        .contains("--postgres-base-url must not be empty"));
+
+    args.database_engine = FederationTrustedDealerDatabaseEngine::Sqlite;
+    args.postgres_base_url = Some("postgresql://cdk:cdk@localhost:5432/cdk_mint".to_string());
+    let err = validate_trusted_dealer_args(&args).expect_err("sqlite rejects postgres options");
+    assert!(err
+        .to_string()
+        .contains("require --database-engine postgres"));
+}
+
+#[test]
+fn trusted_dealer_smoke_script_supports_five_member_matrix() {
+    let output_dir = temp_output_dir("five_member_matrix");
+    let _ = std::fs::remove_dir_all(&output_dir);
+    let mut args = generator_args(output_dir.clone());
+    args.members = 5;
+    args.threshold = 3;
+    args.port_start = 19_565;
+
+    let artifacts =
+        generate_trusted_dealer_artifacts(&args).expect("five member trusted dealer artifacts");
+    let public_json =
+        std::fs::read_to_string(&artifacts.public_config_path).expect("public config file");
+    let public_config: FederationConfig =
+        serde_json::from_str(&public_json).expect("public config json");
+    public_config.validate().expect("public config validates");
+    assert_eq!(public_config.threshold_params.member_count, 5);
+    assert_eq!(public_config.threshold_params.signature_threshold, 3);
+    assert_eq!(artifacts.member_artifacts.len(), 5);
+
+    let smoke_script =
+        std::fs::read_to_string(&artifacts.smoke_script_path).expect("smoke script file");
+    assert!(smoke_script.contains("MEMBERS=(1 2 3 4 5)"));
+    assert!(smoke_script.contains("PRIMARY_MEMBER=\"${PRIMARY_MEMBER:-1}\""));
+    assert!(smoke_script.contains("RESTART_MEMBER=\"${RESTART_MEMBER:-2}\""));
+    assert!(smoke_script
+        .contains("QUARANTINE_OFFLINE_MEMBER=\"${QUARANTINE_OFFLINE_MEMBER:-$RESTART_MEMBER}\""));
+    assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES=\"${OFFLINE_OPERATION_BATCHES:-3}\""));
+    assert!(smoke_script.contains("CHECK_PROMETHEUS_METRICS=\"${CHECK_PROMETHEUS_METRICS:-1}\""));
+    assert!(smoke_script.contains("CDK_MINTD_PROMETHEUS_ENABLED=false"));
+    assert!(smoke_script
+        .contains("SMOKE_OPERATION_TIMEOUT_SECONDS=\"${SMOKE_OPERATION_TIMEOUT_SECONDS:-300}\""));
+    assert!(smoke_script.contains("for member in \"${MEMBERS[@]}\"; do"));
+    assert!(smoke_script.contains("for batch in $(seq 1 \"$OFFLINE_OPERATION_BATCHES\"); do"));
+    assert!(smoke_script.contains("wait_for_converged"));
+    assert!(smoke_script.contains("wait_for_prometheus_metrics"));
+    assert!(smoke_script.contains("wait_for_session_outcome_quorum"));
+    assert!(smoke_script.contains("--scenario offline-member-operations"));
+    assert!(smoke_script.contains("--scenario pending-melt-fail-finish"));
+    assert!(smoke_script.contains("--scenario quarantine-mint-conflict"));
+    assert!(smoke_script.contains("federation payment-observations"));
+
+    for (member_id, member_artifacts) in &artifacts.member_artifacts {
+        assert!(smoke_script.contains(&format!("    {}) printf", member_id.get())));
+        assert!(smoke_script.contains(&member_artifacts.config_path.to_string_lossy().to_string()));
+        assert!(smoke_script.contains(
+            &member_artifacts
+                .private_config_path
+                .to_string_lossy()
+                .to_string()
+        ));
+        assert!(smoke_script.contains(&member_artifacts.work_dir.to_string_lossy().to_string()));
+        assert!(smoke_script.contains(&member_artifacts.prometheus_url));
+    }
+
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
+
+#[test]
+fn trusted_dealer_artifacts_refuse_to_overwrite_without_force() {
+    let output_dir = temp_output_dir("overwrite");
+    let _ = std::fs::remove_dir_all(&output_dir);
+    let args = generator_args(output_dir.clone());
+    generate_trusted_dealer_artifacts(&args).expect("first trusted dealer artifacts");
+
+    let err = generate_trusted_dealer_artifacts(&args)
+        .expect_err("second generation should refuse overwrite");
+    assert!(err.to_string().contains("already exists"));
+
+    let mut forced_args = args;
+    forced_args.force = true;
+    generate_trusted_dealer_artifacts(&forced_args).expect("forced generation");
+
+    let _ = std::fs::remove_dir_all(&output_dir);
+}
