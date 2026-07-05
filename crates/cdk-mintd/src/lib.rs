@@ -95,6 +95,9 @@ const REQUEST_BODY_LIMIT_BYTES: usize = 1_048_576;
 
 /// Run a one-shot CLI subcommand, returning true when no mint daemon should be started.
 pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
+    #[cfg(not(feature = "federation"))]
+    let _ = args;
+
     #[cfg(feature = "federation")]
     if let Some(command) = &args.command {
         match command {

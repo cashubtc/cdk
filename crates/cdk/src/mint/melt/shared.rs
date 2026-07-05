@@ -12,9 +12,9 @@ use cdk_common::database::{self, DynMintDatabase};
 #[cfg(feature = "federation")]
 use cdk_common::federation::{FederationOperationId, FederationSignatureShareRecord};
 use cdk_common::mint::{self as mint_types};
-use cdk_common::nuts::{
-    BlindSignature, BlindedMessage, MeltQuoteState, MintQuoteState, Proofs, State,
-};
+#[cfg(feature = "federation")]
+use cdk_common::nuts::MintQuoteState;
+use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, Proofs, State};
 use cdk_common::{Amount, CurrencyUnit, Error, PublicKey, QuoteId};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;

@@ -414,6 +414,10 @@ impl Bdk {
             return Err("BDK batch_config.target_block_time_secs must be >= 1".to_string());
         }
 
+        if self.batch_config.poll_interval_secs == 0 {
+            return Err("BDK batch_config.poll_interval_secs must be >= 1".to_string());
+        }
+
         validate_bdk_fee_options(&self.batch_config.fee_options)?;
 
         Ok(())
@@ -1723,6 +1727,24 @@ target_block_time_secs = 300
             .expect_err("zero target block time should fail");
 
         assert!(err.contains("target_block_time_secs"));
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn test_bdk_poll_interval_zero_rejected() {
+        let bdk = Bdk {
+            batch_config: BatchConfig {
+                poll_interval_secs: 0,
+                ..BatchConfig::default()
+            },
+            ..Default::default()
+        };
+
+        let err = bdk
+            .validate()
+            .expect_err("zero batch poll interval should fail");
+
+        assert!(err.contains("poll_interval_secs"));
     }
 
     #[cfg(feature = "bdk")]
