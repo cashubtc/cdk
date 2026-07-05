@@ -18,7 +18,7 @@ use cdk_common::federation::{
     FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationRecord,
-    FederationSwapOperation, MemberConfigPrivate, MemberId,
+    FederationSignatureShareRecord, FederationSwapOperation, MemberConfigPrivate, MemberId,
 };
 use cdk_common::mint::{MeltQuote, MintQuote, Operation, OperationKind};
 use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
@@ -957,9 +957,13 @@ impl Mint {
             )
         };
 
+        let share_set = config.mint_signature_shares(operation_id, &input)?;
+        let signature_share_records = FederationSignatureShareRecord::from_share_set(&share_set);
+        tx.add_federation_signature_shares(&signature_share_records)
+            .await?;
+
         if signatures_present == 0 {
-            let signatures =
-                federation_share_signatures(config.mint_signature_shares(operation_id, &input)?);
+            let signatures = federation_share_signatures(share_set);
             let quote_id = match input.is_batch() {
                 true => None,
                 false => quote_ids.first().cloned(),
@@ -1068,6 +1072,11 @@ impl Mint {
         match proofs.state {
             State::Unspent => {}
             State::Spent if signatures_present == existing_signatures.len() => {
+                let share_set = config.swap_signature_shares(operation_id, &operation.request)?;
+                let signature_share_records =
+                    FederationSignatureShareRecord::from_share_set(&share_set);
+                tx.add_federation_signature_shares(&signature_share_records)
+                    .await?;
                 tx.update_federation_operation_status(
                     operation_id,
                     FederationOperationStatus::Applied,
@@ -1096,9 +1105,12 @@ impl Mint {
         Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await?;
 
         if signatures_present == 0 {
-            let signatures = federation_share_signatures(
-                config.swap_signature_shares(operation_id, &operation.request)?,
-            );
+            let share_set = config.swap_signature_shares(operation_id, &operation.request)?;
+            let signature_share_records =
+                FederationSignatureShareRecord::from_share_set(&share_set);
+            let signatures = federation_share_signatures(share_set);
+            tx.add_federation_signature_shares(&signature_share_records)
+                .await?;
             tx.add_blinded_messages(None, operation.request.outputs(), &operation_record)
                 .await?;
             tx.add_blind_signatures(&blinded_secrets, &signatures, None)
@@ -2817,6 +2829,24 @@ mod tests {
             .expect("rotated blind signature");
         assert_eq!(signature.keyset_id, next_keyset.id);
         assert_eq!(signature.amount, Amount::from(1));
+
+        let share_records = localstore
+            .get_federation_signature_shares_for_output(mint_entry.operation_id, 0)
+            .await
+            .expect("stored federation signature shares");
+        assert_eq!(share_records.len(), 1);
+        assert_eq!(share_records[0].operation_id, mint_entry.operation_id);
+        assert_eq!(share_records[0].output_index, 0);
+        assert_eq!(share_records[0].member_id, effective.member_id());
+        assert_eq!(share_records[0].keyset_id, next_keyset.id);
+        assert_eq!(share_records[0].amount, Amount::from(1));
+        assert_eq!(share_records[0].blinded_secret, output.blinded_secret);
+
+        let blinded_message_share_records = localstore
+            .get_federation_signature_shares_for_blinded_message(output.blinded_secret)
+            .await
+            .expect("stored federation signature shares by blinded message");
+        assert_eq!(blinded_message_share_records, share_records);
     }
 
     #[tokio::test]
@@ -3324,6 +3354,18 @@ mod tests {
             .expect("rotated swap blind signature");
         assert_eq!(signature.keyset_id, next_keyset.id);
 
+        let share_records = localstore
+            .get_federation_signature_shares_for_output(swap_entry.operation_id, 0)
+            .await
+            .expect("stored federation swap signature shares");
+        assert_eq!(share_records.len(), 1);
+        assert_eq!(share_records[0].operation_id, swap_entry.operation_id);
+        assert_eq!(share_records[0].output_index, 0);
+        assert_eq!(share_records[0].member_id, effective.member_id());
+        assert_eq!(share_records[0].keyset_id, next_keyset.id);
+        assert_eq!(share_records[0].amount, Amount::from(1));
+        assert_eq!(share_records[0].blinded_secret, output.blinded_secret);
+
         let input_states = mint
             .check_state(&cdk_common::CheckStateRequest {
                 ys: vec![input.y().expect("input y")],
@@ -3614,6 +3656,18 @@ mod tests {
             change_sigs.expect("change response")[0].keyset_id,
             next_keyset.id
         );
+
+        let share_records = localstore
+            .get_federation_signature_shares_for_blinded_message(change_secret)
+            .await
+            .expect("stored federation change signature shares");
+        assert_eq!(share_records.len(), 1);
+        assert_eq!(share_records[0].operation_id, operation_id);
+        assert_eq!(share_records[0].output_index, 0);
+        assert_eq!(share_records[0].member_id, effective.member_id());
+        assert_eq!(share_records[0].keyset_id, next_keyset.id);
+        assert_eq!(share_records[0].amount, Amount::from(1));
+        assert_eq!(share_records[0].blinded_secret, change_secret);
     }
 
     #[tokio::test]

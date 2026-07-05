@@ -36,6 +36,51 @@ pub struct FederationBlindSignatureShareSet {
     pub shares: Vec<FederationBlindSignatureShare>,
 }
 
+/// Durable federation signature-share row for one operation output and member.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationSignatureShareRecord {
+    /// Operation that authorized this signature share.
+    pub operation_id: FederationOperationId,
+    /// Zero-based output index inside the accepted operation.
+    pub output_index: u32,
+    /// Federation member that produced the share.
+    pub member_id: MemberId,
+    /// Keyset used to sign the output.
+    pub keyset_id: Id,
+    /// Output amount signed by the share.
+    pub amount: Amount,
+    /// Wallet-provided blinded secret.
+    pub blinded_secret: PublicKey,
+    /// BLS blind signature share.
+    pub share: BlsBlindSignatureShare,
+}
+
+impl FederationSignatureShareRecord {
+    /// Build a durable row from a signed output share.
+    pub fn new(output_index: u32, share: FederationBlindSignatureShare) -> Self {
+        Self {
+            operation_id: share.operation_id,
+            output_index,
+            member_id: share.member_id,
+            keyset_id: share.keyset_id,
+            amount: share.amount,
+            blinded_secret: share.blinded_secret,
+            share: share.share,
+        }
+    }
+
+    /// Build durable rows for all shares in a share set.
+    pub fn from_share_set(share_set: &FederationBlindSignatureShareSet) -> Vec<Self> {
+        share_set
+            .shares
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, share)| Self::new(index as u32, share))
+            .collect()
+    }
+}
+
 impl MemberConfigPrivate {
     /// Sign blinded outputs with this member's threshold BLS secret shares.
     pub fn sign_blinded_messages(

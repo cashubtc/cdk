@@ -16,7 +16,8 @@ use crate::federation::{
     FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
     FederationDkgTranscriptSignatureRequest, FederationJournalEntry, FederationOperationId,
     FederationOperationStatus, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationSessionOutcome, MemberId,
+    FederationPaymentObservationRecord, FederationSessionOutcome, FederationSignatureShareRecord,
+    MemberId,
 };
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
@@ -647,6 +648,24 @@ pub trait FederationJournalTransaction {
         observation: &FederationPaymentObservationRecord,
     ) -> Result<(), Self::Err>;
 
+    /// Persist one local federation threshold signature share.
+    async fn add_federation_signature_share(
+        &mut self,
+        share: &FederationSignatureShareRecord,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist local federation threshold signature shares.
+    async fn add_federation_signature_shares(
+        &mut self,
+        shares: &[FederationSignatureShareRecord],
+    ) -> Result<(), Self::Err> {
+        for share in shares {
+            self.add_federation_signature_share(share).await?;
+        }
+
+        Ok(())
+    }
+
     /// Persist one DKG pre-reveal commitment.
     async fn add_federation_dkg_commitment(
         &mut self,
@@ -723,6 +742,19 @@ pub trait FederationJournalDatabase {
         context: FederationPaymentObservationContext,
         quote: &str,
     ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err>;
+
+    /// Get signature shares for one accepted operation output.
+    async fn get_federation_signature_shares_for_output(
+        &self,
+        operation_id: FederationOperationId,
+        output_index: u32,
+    ) -> Result<Vec<FederationSignatureShareRecord>, Self::Err>;
+
+    /// Get signature shares for one blinded message.
+    async fn get_federation_signature_shares_for_blinded_message(
+        &self,
+        blinded_message: PublicKey,
+    ) -> Result<Vec<FederationSignatureShareRecord>, Self::Err>;
 
     /// Get all persisted DKG pre-reveal commitments.
     async fn get_federation_dkg_commitments(

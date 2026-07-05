@@ -53,6 +53,15 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_signature_share_persistence() {
+        cdk_common::database::mint::test::federation_signature_share_persistence(
+            provide_db("federation_signature_share_persistence".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_dkg_setup_state_persistence() {
         cdk_common::database::mint::test::federation_dkg_setup_state_persistence(
             provide_db("federation_dkg_setup_state_persistence".to_string()).await,
@@ -170,6 +179,7 @@ mod test {
                   'federation_journal_entries',
                   'federation_session_outcomes',
                   'federation_payment_observations',
+                  'federation_signature_shares',
                   'federation_dkg_setup_messages',
                   'federation_dkg_member_keyset_shares',
                   'federation_dkg_secret_share_contributions',
@@ -200,6 +210,14 @@ mod test {
         assert!(
             index_names.contains("idx_federation_payment_observations_quote"),
             "missing federation payment-observation quote index"
+        );
+        assert!(
+            index_names.contains("idx_federation_signature_shares_operation_output"),
+            "missing federation signature-share operation/output index"
+        );
+        assert!(
+            index_names.contains("idx_federation_signature_shares_blinded_message"),
+            "missing federation signature-share blinded-message index"
         );
         assert!(
             index_names.contains("idx_federation_dkg_setup_member"),

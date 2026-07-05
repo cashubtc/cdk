@@ -521,19 +521,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 494 checked items and 93 remaining items. Private federation REST now has configurable inbound and outbound admission limits with overflow regressions.</span>
+          <span class="value">The implementation plan audit tracks 499 checked items and 88 remaining items. Federation signature shares now have dedicated durable storage with replay-safe conflict checks.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: bound federation private rest admission</span>
+          <span class="value">feat: persist federation signature shares</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Added configurable private REST inbound/outbound concurrency limits, verified overflow fails before state mutation or transport send, and kept mintd config mapping covered.</span>
+          <span class="value">Added a dedicated `federation_signature_shares` table, DB APIs for operation/output and blinded-message lookup, and mint/swap/melt-change apply-path coverage.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with dedicated signature-share persistence, broader storage-backed recovery coverage, fakewallet isolation cleanup, and the remaining real-backend/BFT follow-ups.</span>
+          <span class="value">Continue with broader storage-backed recovery coverage, fakewallet isolation cleanup, and the remaining real-backend/BFT follow-ups.</span>
         </div>
       </aside>
     </header>
@@ -544,7 +544,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 494 checked entries and 93 remaining entries. The
+          checklist has 499 checked entries and 88 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -1074,6 +1074,10 @@
           <article class="item">
             <h3>Runtime journal replay ready</h3>
             <p>Federation-enabled mint state now hydrates its consensus journal and signed-route sequence tracker from SQL at startup, persists accepted public/private route mutations before swapping runtime state, and records catch-up entries durably.</p>
+          </article>
+          <article class="item">
+            <h3>Signature shares stored separately</h3>
+            <p>Federation members now persist local threshold BLS shares in `federation_signature_shares`, keyed by accepted operation, output index, member, blinded message, amount, and keyset. Replays are idempotent, conflicting share material is rejected, and mint, swap, and melt-change apply paths assert the stored rows.</p>
           </article>
           <article class="item">
             <h3>Mint journal application ready</h3>
@@ -2059,6 +2063,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test --lib --workspace --exclude cdk-postgres` passed with federation disabled. `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed after the example key-type fix and stable transport DNS TXT method.</td>
               <td>Move back to the remaining consensus/storage follow-ups with the broad feature gates green.</td>
+            </tr>
+            <tr>
+              <td>Federation signature-share storage</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-sqlite --features federation federation_signature_share_persistence -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_journal_hot_path_indexes_are_used -- --test-threads 1`, and the focused cdk mint, swap, and melt-change apply tests passed. The tests cover idempotent replay, conflicting share rejection, operation/output lookup, blinded-message lookup, and apply-path writes.</td>
+              <td>Re-run Postgres-backed migration/storage coverage when a Postgres instance is available, then include the share table in broader catch-up/recovery process tests.</td>
             </tr>
             <tr>
               <td>Federated batch NUT-20 issuance</td>

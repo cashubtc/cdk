@@ -10,7 +10,7 @@ use cdk_common::amount::MSAT_IN_SAT;
 use cdk_common::database::mint::Acquired;
 use cdk_common::database::{self, DynMintDatabase};
 #[cfg(feature = "federation")]
-use cdk_common::federation::FederationOperationId;
+use cdk_common::federation::{FederationOperationId, FederationSignatureShareRecord};
 use cdk_common::mint::{self as mint_types};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, Proofs, State};
 use cdk_common::{Amount, CurrencyUnit, Error, PublicKey, QuoteId};
@@ -457,6 +457,7 @@ pub async fn process_federation_melt_change(
         federation_operation_id,
         &blinded_messages_to_sign,
     )?;
+    let signature_share_records = FederationSignatureShareRecord::from_share_set(&share_set);
     let change_sigs = share_set
         .shares
         .into_iter()
@@ -469,6 +470,9 @@ pub async fn process_federation_melt_change(
         .collect::<Vec<_>>();
 
     let mut tx = db.begin_transaction().await?;
+
+    tx.add_federation_signature_shares(&signature_share_records)
+        .await?;
 
     let blinded_secrets: Vec<_> = blinded_messages_to_sign
         .iter()

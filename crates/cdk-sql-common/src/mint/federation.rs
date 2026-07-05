@@ -9,8 +9,10 @@ use cdk_common::federation::{
     FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest, FederationJournalEntry,
     FederationOperationConflictKey, FederationOperationId, FederationOperationStatus,
     FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationSessionOutcome, MemberId,
+    FederationPaymentObservationRecord, FederationSessionOutcome, FederationSignatureShareRecord,
+    MemberId,
 };
+use cdk_common::PublicKey;
 
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
@@ -130,6 +132,14 @@ fn sql_row_to_federation_payment_observation_record(
         operation_index,
         observation,
     })
+}
+
+fn sql_row_to_federation_signature_share_record(
+    row: Vec<Column>,
+) -> Result<FederationSignatureShareRecord, Error> {
+    unpack_into!(let (share_json) = row);
+    serde_json::from_str::<FederationSignatureShareRecord>(&column_as_string!(&share_json))
+        .map_err(|e| Error::Internal(format!("Invalid federation signature share JSON: {e}")))
 }
 
 fn sql_member_id(column: Column) -> Result<MemberId, Error> {
@@ -282,6 +292,13 @@ fn federation_dkg_secret_share_conflict_error(
     Error::Internal(format!(
         "Conflicting federation DKG secret share from member {} to member {}",
         contribution.sender, contribution.receiver
+    ))
+}
+
+fn federation_signature_share_conflict_error(share: &FederationSignatureShareRecord) -> Error {
+    Error::Internal(format!(
+        "Conflicting federation signature share for operation {} output {} member {}",
+        share.operation_id, share.output_index, share.member_id
     ))
 }
 
@@ -447,6 +464,47 @@ where
         .bind("observation_json", serde_json::to_string(&observation.observation)?)
         .execute(&self.inner)
         .await?;
+
+        Ok(())
+    }
+
+    async fn add_federation_signature_share(
+        &mut self,
+        share: &FederationSignatureShareRecord,
+    ) -> Result<(), Self::Err> {
+        let rows_affected = query(
+            r#"
+            INSERT INTO federation_signature_shares
+            (operation_id, output_index, member_id, blinded_message, amount, keyset_id, signature_share, share_json)
+            VALUES
+            (:operation_id, :output_index, :member_id, :blinded_message, :amount, :keyset_id, :signature_share, :share_json)
+            ON CONFLICT (operation_id, output_index, member_id)
+            DO UPDATE SET
+                blinded_message = EXCLUDED.blinded_message,
+                amount = EXCLUDED.amount,
+                keyset_id = EXCLUDED.keyset_id,
+                signature_share = EXCLUDED.signature_share,
+                share_json = EXCLUDED.share_json
+            WHERE federation_signature_shares.blinded_message = EXCLUDED.blinded_message
+              AND federation_signature_shares.amount = EXCLUDED.amount
+              AND federation_signature_shares.keyset_id = EXCLUDED.keyset_id
+              AND federation_signature_shares.signature_share = EXCLUDED.signature_share
+              AND federation_signature_shares.share_json = EXCLUDED.share_json
+            "#,
+        )?
+        .bind("operation_id", share.operation_id.to_string())
+        .bind("output_index", i64::from(share.output_index))
+        .bind("member_id", i64::from(share.member_id.get()))
+        .bind("blinded_message", share.blinded_secret.to_bytes())
+        .bind("amount", u64::from(share.amount) as i64)
+        .bind("keyset_id", share.keyset_id.to_string())
+        .bind("signature_share", share.share.to_bytes().to_vec())
+        .bind("share_json", serde_json::to_string(share)?)
+        .execute(&self.inner)
+        .await?;
+        if rows_affected == 0 {
+            return Err(federation_signature_share_conflict_error(share));
+        }
 
         Ok(())
     }
@@ -794,6 +852,59 @@ where
         .await?
         .into_iter()
         .map(sql_row_to_federation_payment_observation_record)
+        .collect()
+    }
+
+    async fn get_federation_signature_shares_for_output(
+        &self,
+        operation_id: FederationOperationId,
+        output_index: u32,
+    ) -> Result<Vec<FederationSignatureShareRecord>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT share_json
+            FROM federation_signature_shares
+            WHERE operation_id = :operation_id
+              AND output_index = :output_index
+            ORDER BY member_id ASC
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .bind("output_index", i64::from(output_index))
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_signature_share_record)
+        .collect()
+    }
+
+    async fn get_federation_signature_shares_for_blinded_message(
+        &self,
+        blinded_message: PublicKey,
+    ) -> Result<Vec<FederationSignatureShareRecord>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT share_json
+            FROM federation_signature_shares
+            WHERE blinded_message = :blinded_message
+            ORDER BY operation_id ASC, output_index ASC, member_id ASC
+            "#,
+        )?
+        .bind("blinded_message", blinded_message.to_bytes())
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_signature_share_record)
         .collect()
     }
 

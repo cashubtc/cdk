@@ -85,10 +85,10 @@ Last code-confirmed audit: 2026-07-05. This checklist marks items as done only w
 
 Current confirmed shape:
 
-- Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes and request transcripts, in-memory consensus boundary, private REST peer envelopes, federation journal persistence, mint/swap/melt/restore/check-state apply paths, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
-- Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, exact deterministic binary operation encoding, a separate `federation_signature_share` table, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
-- Test-suite status: focused federation replay, peer-sync, peer reconnect backoff, peer evidence/backoff, mintd peer-sync config wiring, SQLite federation storage/query plans, session-outcome, trusted-dealer setup, deterministic trusted-dealer fixture generation, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, fakewallet coupling audit, wallet member request timeout/retry policy tests, canonical request transcript tests for NUT-20 and SIG_ALL, federated NUT-20 single and batch issuance tests, P2PK/HTLC/SIG_ALL canonical swap transcript tests, NUT-19 retry backoff, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, federated swap input-reuse attack regression, and `cdk-axum` federation tests were run for recent checkpoints. The broad feature-disabled library gate `cargo test --lib --workspace --exclude cdk-postgres` passed on 2026-07-05, and the broad feature-enabled compile gate `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed on 2026-07-05.
-- Latest checkpoint: SQLite federation storage was rerun end to end, and the existing query-plan regression proved hot federation journal, session-outcome, and payment-observation lookups use indexed plans.
+- Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes and request transcripts, in-memory consensus boundary, private REST peer envelopes, federation journal persistence, dedicated federation signature-share persistence, mint/swap/melt/restore/check-state apply paths, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
+- Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, exact deterministic binary operation encoding, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
+- Test-suite status: focused federation replay, peer-sync, peer reconnect backoff, peer evidence/backoff, mintd peer-sync config wiring, SQLite federation storage/query plans, session-outcome, trusted-dealer setup, deterministic trusted-dealer fixture generation, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, backend-agnostic signature-share persistence, fakewallet coupling audit, wallet member request timeout/retry policy tests, canonical request transcript tests for NUT-20 and SIG_ALL, federated NUT-20 single and batch issuance tests, P2PK/HTLC/SIG_ALL canonical swap transcript tests, NUT-19 retry backoff, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, federated swap input-reuse attack regression, and `cdk-axum` federation tests were run for recent checkpoints. The broad feature-disabled library gate `cargo test --lib --workspace --exclude cdk-postgres` passed on 2026-07-05, and the broad feature-enabled compile gate `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed on 2026-07-05.
+- Latest checkpoint: federation signature shares now persist in a dedicated SQL table with idempotent replay/conflict checks, operation/output and blinded-message lookup APIs, and mint/swap/melt-change apply-path coverage.
 
 ## Key observations
 
@@ -468,13 +468,13 @@ Implementation checklist:
   - [ ] `federation_config`; federation config currently remains file/runtime config.
   - [x] `federation_session_outcomes`.
   - [x] `federation_journal_entries` for accepted items, operation envelopes, and operation outcomes.
-  - [ ] `federation_signature_share`; federated shares currently use existing blind-signature rows.
+  - [x] `federation_signature_share`, implemented as `federation_signature_shares`.
   - [x] `federation_payment_observations`.
   - [ ] Dedicated `federation_state_digest` digest-history table; current digests are computed and reported through existing session/status data.
   - [x] `federation_member_sequences` for private REST sequence watermarks.
   - [ ] Dedicated `federation_member_status` table if runtime/admin state should become persistent.
 - [x] Keep existing mint tables as the materialized state used by existing APIs where possible.
-- [ ] Add `signature_share` rows instead of overloading final `blind_signature` semantics for federated members.
+- [x] Add `signature_share` rows instead of overloading final `blind_signature` semantics for federated members.
 - [x] Add state digest calculation over consensus-visible tables only.
 - [x] Exclude local private config, local connection status, logs, and caches from the digest.
 - [ ] Add an audit summary similar to Fedimint's balance audit after each accepted operation.
@@ -488,7 +488,7 @@ Tests and success criteria:
 - [x] Applying the same operation log to two DBs yields identical state digests.
 - [x] Local-only fields do not change state digest.
 - [ ] Negative balance audit causes a hard error in tests.
-- [ ] Signature shares can be retrieved by operation hash and output index from a dedicated federation share API/table.
+- [x] Signature shares can be retrieved by operation hash and output index from a dedicated federation share API/table.
 
 ## Milestone 6: deterministic mint state machine extraction
 
@@ -540,7 +540,7 @@ Implementation checklist:
 - [x] Prevent federated share signer from being used in standalone paths that expect final signatures.
 - [x] Ensure Cashu keyset v3 (`KeySetVersion::Version02`) BLS responses do not include DLEQ data.
 - [x] Reject all non-v3 keysets in federation signing paths unless a future protocol explicitly supports them.
-- [ ] Persist signature shares in `federation_signature_share`, keyed by operation hash, output index, member ID, blinded message, amount, and keyset ID.
+- [x] Persist signature shares in `federation_signature_share`, keyed by operation hash, output index, member ID, blinded message, amount, and keyset ID.
 - [x] Return existing share for idempotent repeat requests.
 
 Tests and success criteria:
@@ -594,8 +594,8 @@ Implementation checklist:
 - [x] `Mint` includes quote IDs and blinded outputs through `MintRequest`/`BatchMintRequest`; quote amounts are validated from accepted quote state.
 - [ ] Add explicit quote amount fields to the operation payload only if future review decides the current quote-state validation is insufficient.
 - [x] Consensus apply validates quote states, paid amounts, issued amounts, payment methods, units, v3/BLS output keysets, output uniqueness, and NUT-20 signatures.
-- [x] Consensus apply records issuance and member signature shares in the same DB transaction via existing blind-signature storage.
-- [ ] Move member signature shares to a dedicated `federation_signature_share` table if that table is added.
+- [x] Consensus apply records issuance and member signature shares in the same DB transaction via dedicated federation signature-share storage plus the current wallet-facing blind-signature compatibility rows.
+- [x] Move member signature shares to a dedicated `federation_signature_share` table if that table is added.
 - [x] The public handler waits for the operation outcome and returns this member's signature shares as `MintResponse`.
 - [x] If the same operation was already accepted, return cached shares.
 - [x] If a conflicting operation spent the quote first, return the existing CDK error that best maps to issued or unbalanced quote.

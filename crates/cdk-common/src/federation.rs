@@ -51,7 +51,9 @@ pub use self::operation::{
     FederationRequestTranscriptHash, FederationRestoreOperation, FederationSwapOperation,
     FEDERATION_MAX_OPERATION_ENVELOPE_BYTES, FEDERATION_OPERATION_VERSION,
 };
-pub use self::signing::{FederationBlindSignatureShare, FederationBlindSignatureShareSet};
+pub use self::signing::{
+    FederationBlindSignatureShare, FederationBlindSignatureShareSet, FederationSignatureShareRecord,
+};
 pub use self::transport::{
     FederationDkgCommitmentRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
     FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest,

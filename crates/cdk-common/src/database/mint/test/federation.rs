@@ -13,17 +13,21 @@ use crate::federation::{
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalAppendOutcome,
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalEntry,
     FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationOperation,
-    FederationOperationEnvelope, FederationOperationStatus, FederationPaymentObservation,
-    FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationPaymentObservationReportStatus,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationPaymentObservationReportStatus, FederationSignatureShareRecord,
     InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
 };
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::KnownMethod;
-use crate::nuts::nut01::{evaluate_secret_key_coefficients, trusted_dealer_keygen, BlsSecretKey};
+use crate::nuts::nut01::{
+    evaluate_secret_key_coefficients, trusted_dealer_keygen, BlsBlindSignatureShare,
+    BlsG1PublicKey, BlsSecretKey,
+};
 use crate::{
-    Amount, CurrencyUnit, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteRequest,
-    MintQuoteResponse, MintQuoteState, PaymentMethod, SecretKey,
+    Amount, CurrencyUnit, Id, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteRequest,
+    MintQuoteResponse, MintQuoteState, PaymentMethod, PublicKey, SecretKey,
 };
 
 fn federation_id() -> FederationId {
@@ -222,6 +226,30 @@ fn dkg_secret_share_request(
             .expect("secret share"),
         )]),
     )
+}
+
+fn signature_share_record(
+    operation_id: FederationOperationId,
+    output_index: u32,
+    member_id: MemberId,
+    blinded_message_seed: &[u8],
+    signature_seed: &[u8],
+) -> FederationSignatureShareRecord {
+    let mut keyset_id_bytes = vec![2u8];
+    keyset_id_bytes.extend([42u8; 32]);
+
+    FederationSignatureShareRecord {
+        operation_id,
+        output_index,
+        member_id,
+        keyset_id: Id::from_bytes(&keyset_id_bytes).expect("keyset id"),
+        amount: Amount::from(21),
+        blinded_secret: PublicKey::from(BlsG1PublicKey::hash_to_curve(blinded_message_seed)),
+        share: BlsBlindSignatureShare::new(
+            member_id.to_bls_signer_id(),
+            BlsG1PublicKey::hash_to_curve(signature_seed),
+        ),
+    }
 }
 
 fn dkg_transcript_signature_request(
@@ -519,6 +547,76 @@ where
         .await
         .expect("wrong-context payment observations");
     assert!(wrong_context.is_empty());
+}
+
+/// Assert threshold signature shares persist independently from final blind signatures.
+pub async fn federation_signature_share_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let operation_id = FederationOperationId::from_bytes([19; 32]);
+    let member_one = member_id(1);
+    let member_two = member_id(2);
+    let first = signature_share_record(
+        operation_id,
+        0,
+        member_one,
+        b"shared blinded message",
+        b"member one share",
+    );
+    let second = signature_share_record(
+        operation_id,
+        0,
+        member_two,
+        b"shared blinded message",
+        b"member two share",
+    );
+    let conflicting_first = signature_share_record(
+        operation_id,
+        0,
+        member_one,
+        b"shared blinded message",
+        b"conflicting member one share",
+    );
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin");
+    tx.add_federation_signature_share(&first)
+        .await
+        .expect("persist first share");
+    tx.add_federation_signature_share(&second)
+        .await
+        .expect("persist second share");
+    tx.add_federation_signature_share(&first)
+        .await
+        .expect("idempotent first share replay");
+    tx.commit().await.expect("commit");
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin conflicting share");
+    assert!(tx
+        .add_federation_signature_share(&conflicting_first)
+        .await
+        .is_err());
+    tx.rollback().await.expect("rollback conflicting share");
+
+    let output_shares = db
+        .get_federation_signature_shares_for_output(operation_id, 0)
+        .await
+        .expect("shares by output");
+    assert_eq!(output_shares, vec![first.clone(), second.clone()]);
+
+    let blinded_message_shares = db
+        .get_federation_signature_shares_for_blinded_message(first.blinded_secret)
+        .await
+        .expect("shares by blinded message");
+    assert_eq!(blinded_message_shares, vec![first, second]);
+
+    let other_output_shares = db
+        .get_federation_signature_shares_for_output(operation_id, 1)
+        .await
+        .expect("shares for other output");
+    assert!(other_output_shares.is_empty());
 }
 
 /// Assert DKG setup state persists as idempotent replayable setup material.
