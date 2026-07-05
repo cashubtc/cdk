@@ -1110,6 +1110,94 @@ mod tests {
     use super::*;
     use crate::cache::HttpCache;
 
+    #[cfg(feature = "federation")]
+    fn production_section<'a>(source: &'a str, test_marker: &str) -> &'a str {
+        source
+            .split_once(test_marker)
+            .map(|(production, _tests)| production)
+            .expect("source file contains test module marker")
+    }
+
+    #[cfg(feature = "federation")]
+    fn assert_contains_in_order(source: &str, first: &str, second: &str) {
+        let first_index = source.find(first).expect("source contains first marker");
+        let second_index = source.find(second).expect("source contains second marker");
+        assert!(
+            first_index < second_index,
+            "`{first}` must appear before `{second}`"
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    fn source_slice<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+        let start_index = source.find(start).expect("source contains start marker");
+        let end_index = source[start_index..]
+            .find(end)
+            .expect("source contains end marker")
+            + start_index;
+        &source[start_index..end_index]
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn public_handlers_do_not_directly_sign_in_production() {
+        let custom_handlers = production_section(
+            include_str!("custom_handlers.rs"),
+            "\n#[cfg(test)]\nmod tests {",
+        );
+        let router_handlers = include_str!("router_handlers.rs");
+
+        for (file, source) in [
+            ("custom_handlers.rs", custom_handlers),
+            ("router_handlers.rs", router_handlers),
+        ] {
+            for forbidden in [
+                ".blind_sign(",
+                ".sign_blinded_messages(",
+                "blind_sign_share(",
+                "auth_blind_sign(",
+            ] {
+                assert!(
+                    !source.contains(forbidden),
+                    "{file} production handlers must not call `{forbidden}` directly"
+                );
+            }
+        }
+
+        let mint_handler = source_slice(
+            custom_handlers,
+            "async fn process_federation_mint_input",
+            "fn mint_quote_response_to_string",
+        );
+        assert_contains_in_order(
+            mint_handler,
+            "submit_federation_mint_operation(state, input.clone()).await?",
+            "config.mint_share_response(operation_id, input)?",
+        );
+
+        let melt_handler = source_slice(
+            custom_handlers,
+            "async fn process_federation_melt_request",
+            "async fn federation_melt_response_from_store",
+        );
+        assert_contains_in_order(
+            melt_handler,
+            "state.submit_federation_envelope(envelope).await?",
+            "federation_melt_response_from_store(state, payload.quote()).await?",
+        );
+
+        let swap_handler = source_slice(
+            router_handlers,
+            "async fn process_federation_swap",
+            "/// Restores blind signature",
+        );
+        assert_contains_in_order(
+            swap_handler,
+            "state.submit_federation_envelope(envelope).await?",
+            "config.swap_share_response(response.operation_id, payload)?",
+        );
+    }
+
     fn create_test_request(prefer_header: Option<&str>) -> Request<()> {
         let mut req = Request::builder()
             .method("POST")

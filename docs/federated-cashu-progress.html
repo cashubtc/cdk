@@ -523,19 +523,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 527 checked items and 61 remaining items. Smoke/regtest federation helpers now have an always-run source audit proving they stay behind explicit dev feature gates.</span>
+          <span class="value">The implementation plan audit tracks 528 checked items and 61 remaining items. Public mint, swap, and melt handlers now have a source audit proving production route code stays on the consensus-before-share path.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: guard federation smoke dev features</span>
+          <span class="value">test: audit public handler signing gates</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk-mintd` now tests that federation smoke modules, CLI arguments, and scenarios stay gated by the explicit federation/fakewallet/sqlite development features.</span>
+          <span class="value">`cdk-axum` now tests that production public handlers do not call direct signing helpers and that mint, swap, and melt response shares are ordered after consensus submission.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, real-backend payment-observation cleanup, module splits, and the remaining BFT follow-ups.</span>
+          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, final direct-signing review, module splits, and the remaining BFT follow-ups.</span>
         </div>
       </aside>
     </header>
@@ -546,7 +546,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 527 checked entries and 61 remaining entries. The
+          checklist has 528 checked entries and 61 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -785,6 +785,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Public route signing gate</h3>
+            <p>The Axum handler tests now scan production mint, swap, and melt route code for direct signing helper calls and assert that share responses are produced only after the matching federation envelope is submitted to consensus.</p>
+          </article>
           <article class="item">
             <h3>Rotation proof-of-possession gate</h3>
             <p>Each member now signs and verifies a domain-separated BLS rotation challenge with its local secret share before accepting a new aggregate keyset into its runtime view. Missing or mismatched local rotation shares fail before activation.</p>
@@ -3453,6 +3457,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --no-default-features --features federation,sqlite federation_smoke_helpers_are_dev_feature_gated -- --test-threads 1` passed without fakewallet. The same source audit plus `parses_federation_smoke_operations_subcommand` passed with `federation,fakewallet,sqlite` enabled.</td>
               <td>Keep full live process smoke runs for environments where local listener binding is permitted.</td>
+            </tr>
+            <tr>
+              <td>Public handler signing gate</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation public_handlers_do_not_directly_sign_in_production -- --test-threads 1` passed. The mint, swap, and melt route regressions also passed: `submit_batch_mint_records_federation_mint_operation`, `post_swap_returns_federation_signature_shares`, and `process_melt_request_returns_federated_change_shares`. The guard scans production Axum handler code for direct signing helpers and checks consensus-before-response ordering for mint, swap, and melt.</td>
+              <td>Complete the broader manual review of all remaining signing call sites before mainnet use.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>

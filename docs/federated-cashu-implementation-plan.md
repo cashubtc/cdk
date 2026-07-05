@@ -1158,6 +1158,7 @@ Tests and success criteria:
 - [x] Attack regression tests exist.
 - [x] Re-run and record the full attack regression suite.
 - [x] Code paths appear consensus-gated in federation mode.
+- [x] Add executable source audit proving production Axum public handlers do not call direct signing helpers and preserve consensus-before-response ordering for mint, swap, and melt.
 - [ ] Complete final security-review signoff that no route signs directly in federation mode.
 
 ## MVP cut lines
