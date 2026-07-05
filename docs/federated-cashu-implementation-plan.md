@@ -1101,7 +1101,7 @@ Implementation checklist:
 - [ ] Suggested wallet split: connector, member fanout, share aggregation, keyset validation, quote/status aggregation, melt/change aggregation, and tests.
 - [ ] Suggested Axum split: routes, peer client, sync loop, status, catch-up, DKG/setup routes, payment-observation routes, and tests.
 - [ ] Move large inline federation test fixtures, local connectors, and fakewallet helpers into dedicated test modules or integration-test helpers.
-- [ ] Gate any remaining smoke/regtest-only federation helpers behind test-only code or explicit dev features.
+- [x] Gate any remaining smoke/regtest-only federation helpers behind test-only code or explicit dev features.
 - [x] Audit `cdk`, `cdk-common`, `cdk-axum`, `cdk-mintd`, and storage crates for accidental fakewallet coupling in federation code.
 - [x] Audit generated example configs so fakewallet-backed development federation examples are clearly marked development-only and cannot be mistaken for production templates.
 - [x] Audit timeout constants, fallback behavior, and member retry policies introduced for smoke tests, and make production-relevant values configurable.

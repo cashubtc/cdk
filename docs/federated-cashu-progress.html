@@ -523,15 +523,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 526 checked items and 62 remaining items. The focused federation attack regression suite was re-run and recorded across signing, mint, swap, operation-ID, admission, and private REST rejection paths.</span>
+          <span class="value">The implementation plan audit tracks 527 checked items and 61 remaining items. Smoke/regtest federation helpers now have an always-run source audit proving they stay behind explicit dev feature gates.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: record federation attack suite rerun</span>
+          <span class="value">test: guard federation smoke dev features</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Sliding-window, transcript mutation, witness-bound operation hash, oversized admission, and private REST before-mutation rejection regressions passed.</span>
+          <span class="value">`cdk-mintd` now tests that federation smoke modules, CLI arguments, and scenarios stay gated by the explicit federation/fakewallet/sqlite development features.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -546,7 +546,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 526 checked entries and 62 remaining entries. The
+          checklist has 527 checked entries and 61 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -3447,6 +3447,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation naive_local_signing_allows_sliding_window_quorum_cover`, `cargo test -p cdk --lib --features federation sliding_window`, `output_mutation`, and `missing_nut20`, `cargo test -p cdk-common --features federation operation_id_tracks_`, `oversized`, plus Axum `private_operation_route_rejects_` and `oversized` all passed.</td>
               <td>Complete formal review signoff for direct signing paths and operation canonicalization before mainnet use.</td>
+            </tr>
+            <tr>
+              <td>Smoke helper dev-feature gates</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --no-default-features --features federation,sqlite federation_smoke_helpers_are_dev_feature_gated -- --test-threads 1` passed without fakewallet. The same source audit plus `parses_federation_smoke_operations_subcommand` passed with `federation,fakewallet,sqlite` enabled.</td>
+              <td>Keep full live process smoke runs for environments where local listener binding is permitted.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>

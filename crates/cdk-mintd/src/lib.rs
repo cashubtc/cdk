@@ -2070,9 +2070,52 @@ mod tests {
 
     const TEST_MNEMONIC: &str =
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    const FEDERATION_SMOKE_CFG: &str =
+        r#"cfg(all(feature = "federation", feature = "fakewallet", feature = "sqlite"))"#;
+    const SMOKE_COMMAND_CFG: &str = r#"cfg(all(feature = "fakewallet", feature = "sqlite"))"#;
 
     fn temp_seed_file(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("cdk_mintd_{name}_{}", std::process::id()))
+    }
+
+    fn assert_cfg_near_item(source: &str, item: &str, cfg: &str) {
+        let item_index = source
+            .find(item)
+            .unwrap_or_else(|| panic!("{item} should exist"));
+        let nearby_cfg = source[..item_index]
+            .lines()
+            .rev()
+            .take(4)
+            .any(|line| line.contains(cfg));
+        assert!(nearby_cfg, "{item} should be gated by {cfg}");
+    }
+
+    #[test]
+    fn federation_smoke_helpers_are_dev_feature_gated() {
+        let lib_rs = include_str!("lib.rs");
+        let cli_rs = include_str!("cli.rs");
+
+        assert_cfg_near_item(lib_rs, "mod federation_smoke;", FEDERATION_SMOKE_CFG);
+        assert_cfg_near_item(
+            lib_rs,
+            "cli::FederationCommand::SmokeOperations(smoke)",
+            SMOKE_COMMAND_CFG,
+        );
+        assert_cfg_near_item(
+            cli_rs,
+            "SmokeOperations(FederationSmokeOperationsArgs)",
+            SMOKE_COMMAND_CFG,
+        );
+        assert_cfg_near_item(
+            cli_rs,
+            "pub struct FederationSmokeOperationsArgs",
+            FEDERATION_SMOKE_CFG,
+        );
+        assert_cfg_near_item(
+            cli_rs,
+            "pub enum FederationSmokeScenario",
+            FEDERATION_SMOKE_CFG,
+        );
     }
 
     #[cfg(all(feature = "federation", feature = "sqlite"))]
