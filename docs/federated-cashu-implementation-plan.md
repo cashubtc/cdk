@@ -675,8 +675,8 @@ Tests and success criteria:
 - [x] Concurrent swaps spending the same input result in exactly one accepted swap.
 - [x] Replay of the same swap request is idempotent.
 - [x] Different output sets for the same inputs cannot both get threshold shares.
-- [ ] Add or re-run P2PK and HTLC tests in federated mode.
-- [ ] Add federated SIG_ALL tests proving the signature commits to the exact canonical operation.
+- [x] Add or re-run P2PK and HTLC tests in federated mode.
+- [x] Add federated SIG_ALL tests proving the signature commits to the exact canonical operation.
 
 ## Milestone 12: explicit sliding-window attack regression suite
 

@@ -1774,11 +1774,11 @@ mod tests {
     use cdk_common::quote_id::QuoteId;
     use cdk_common::secret::Secret;
     use cdk_common::{
-        Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Id, MeltQuoteBolt11Request,
-        MeltQuoteRequest, MeltQuoteState, MeltRequest, MintQuoteBolt11Request,
-        MintQuoteBolt11Response, MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest,
-        PaymentMethod, Proof, ProofsMethods, PublicKey, RestoreRequest, SecretKey, State,
-        SwapRequest,
+        Amount, BatchMintRequest, BlindedMessage, Conditions, CurrencyUnit, Id,
+        MeltQuoteBolt11Request, MeltQuoteRequest, MeltQuoteState, MeltRequest,
+        MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteRequest, MintQuoteResponse,
+        MintQuoteState, MintRequest, PaymentMethod, Proof, ProofsMethods, PublicKey,
+        RestoreRequest, SecretKey, SigFlag, SpendingConditions, State, SwapRequest,
     };
     use cdk_sqlite::mint::{memory, MintSqliteDatabase};
 
@@ -2232,6 +2232,14 @@ mod tests {
 
     fn proof_for_keyset(keyset: &FederatedKeyset, aggregate_secret_seed: u8, label: &str) -> Proof {
         let secret = Secret::new(format!("federated-proof-{label}"));
+        proof_for_secret(keyset, aggregate_secret_seed, secret)
+    }
+
+    fn proof_for_secret(
+        keyset: &FederatedKeyset,
+        aggregate_secret_seed: u8,
+        secret: Secret,
+    ) -> Proof {
         let aggregate_secret = BlsSecretKey::from_reduced_bytes(&[aggregate_secret_seed; 32]);
         let signature = BlsG1PublicKey::hash_to_curve(secret.as_bytes()).mul(&aggregate_secret);
 
@@ -2241,6 +2249,48 @@ mod tests {
             secret,
             PublicKey::from(signature),
         )
+    }
+
+    fn p2pk_locked_proof_for_runtime(
+        runtime_config: &FederationRuntimeConfig,
+        sig_flag: SigFlag,
+    ) -> (Proof, SecretKey) {
+        let signing_key = SecretKey::generate();
+        let secret: Secret = SpendingConditions::new_p2pk(
+            signing_key.public_key(),
+            Some(Conditions {
+                sig_flag,
+                ..Default::default()
+            }),
+        )
+        .try_into()
+        .expect("p2pk locked secret");
+
+        (
+            proof_for_secret(&runtime_config.public_config().keysets[0], 2, secret),
+            signing_key,
+        )
+    }
+
+    fn htlc_locked_proof_for_runtime(
+        runtime_config: &FederationRuntimeConfig,
+        preimage: &str,
+        signing_key: &SecretKey,
+        sig_flag: SigFlag,
+    ) -> Proof {
+        let secret: Secret = SpendingConditions::new_htlc(
+            preimage.to_string(),
+            Some(Conditions {
+                pubkeys: Some(vec![signing_key.public_key()]),
+                sig_flag,
+                ..Default::default()
+            }),
+        )
+        .expect("htlc locked condition")
+        .try_into()
+        .expect("htlc locked secret");
+
+        proof_for_secret(&runtime_config.public_config().keysets[0], 2, secret)
     }
 
     fn non_v3_output_for_runtime(runtime_config: &FederationRuntimeConfig) -> BlindedMessage {
@@ -2694,6 +2744,127 @@ mod tests {
             .await
             .expect("input states");
         assert_eq!(input_states.states[0].state, State::Spent);
+    }
+
+    #[tokio::test]
+    async fn apply_federation_swap_accepts_p2pk_locked_input() {
+        let runtime_config = runtime_config();
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let (mut input, signing_key) =
+            p2pk_locked_proof_for_runtime(&runtime_config, SigFlag::SigInputs);
+        input.sign_p2pk(signing_key).expect("p2pk input witness");
+        let output = output_for_runtime(&runtime_config, b"p2pk federated swap output");
+
+        let entry = appended_entry(
+            &mut journal,
+            runtime_config
+                .swap_operation(SwapRequest::new(vec![input.clone()], vec![output.clone()]))
+                .expect("p2pk swap operation"),
+        );
+        persist_and_apply_entry(&mint, &entry).await;
+
+        let signatures = localstore
+            .get_blind_signatures(&[output.blinded_secret])
+            .await
+            .expect("stored p2pk swap signatures");
+        assert!(
+            signatures[0].is_some(),
+            "valid P2PK-locked federated swap output must receive a member share"
+        );
+
+        let input_states = mint
+            .check_state(&cdk_common::CheckStateRequest {
+                ys: vec![input.y().expect("input y")],
+            })
+            .await
+            .expect("input states");
+        assert_eq!(input_states.states[0].state, State::Spent);
+    }
+
+    #[tokio::test]
+    async fn apply_federation_swap_accepts_htlc_locked_input() {
+        let runtime_config = runtime_config();
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let signing_key = SecretKey::generate();
+        let preimage = crate::util::hex::encode([42; 32]);
+        let mut input = htlc_locked_proof_for_runtime(
+            &runtime_config,
+            &preimage,
+            &signing_key,
+            SigFlag::SigInputs,
+        );
+        input.add_preimage(preimage);
+        input.sign_p2pk(signing_key).expect("htlc input witness");
+        let output = output_for_runtime(&runtime_config, b"htlc federated swap output");
+
+        let entry = appended_entry(
+            &mut journal,
+            runtime_config
+                .swap_operation(SwapRequest::new(vec![input.clone()], vec![output.clone()]))
+                .expect("htlc swap operation"),
+        );
+        persist_and_apply_entry(&mint, &entry).await;
+
+        let signatures = localstore
+            .get_blind_signatures(&[output.blinded_secret])
+            .await
+            .expect("stored htlc swap signatures");
+        assert!(
+            signatures[0].is_some(),
+            "valid HTLC-locked federated swap output must receive a member share"
+        );
+
+        let input_states = mint
+            .check_state(&cdk_common::CheckStateRequest {
+                ys: vec![input.y().expect("input y")],
+            })
+            .await
+            .expect("input states");
+        assert_eq!(input_states.states[0].state, State::Spent);
+    }
+
+    #[tokio::test]
+    async fn apply_federation_swap_rejects_sig_all_output_mutation_before_signing() {
+        let runtime_config = runtime_config();
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let (input, signing_key) = p2pk_locked_proof_for_runtime(&runtime_config, SigFlag::SigAll);
+        let signed_output = output_for_runtime(&runtime_config, b"sig-all signed swap output");
+        let mutated_output = output_for_runtime(&runtime_config, b"sig-all mutated swap output");
+        let mut swap = SwapRequest::new(vec![input], vec![signed_output.clone()]);
+        swap.sign_sig_all(signing_key).expect("sig_all witness");
+        *swap.outputs_mut() = vec![mutated_output.clone()];
+
+        let entry = appended_entry(
+            &mut journal,
+            runtime_config
+                .swap_operation(swap)
+                .expect("mutated sig_all swap operation"),
+        );
+        let mut tx = localstore.begin_transaction().await.expect("begin");
+        tx.add_federation_journal_entry(&entry)
+            .await
+            .expect("persist mutated sig_all swap");
+        tx.commit().await.expect("commit mutated sig_all swap");
+
+        assert!(
+            mint.apply_federation_journal_entries(std::slice::from_ref(&entry))
+                .await
+                .is_err(),
+            "SIG_ALL witness signed for a different output set must be rejected"
+        );
+
+        let signatures = localstore
+            .get_blind_signatures(&[signed_output.blinded_secret, mutated_output.blinded_secret])
+            .await
+            .expect("sig_all output signatures");
+        assert_eq!(
+            signatures,
+            vec![None, None],
+            "SIG_ALL output mutation must fail before any federation share is stored"
+        );
     }
 
     #[tokio::test]
