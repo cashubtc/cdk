@@ -652,7 +652,7 @@ fn validate_federation_payment_observation_startup_policy(
 ) -> Result<()> {
     if !has_explicit_payment_observation_policy {
         bail!(
-            "federation public config must explicitly set payment_observation_policy; implicit fake-wallet defaults are not accepted by mintd startup"
+            "federation public config must explicitly set payment_observation_policy; implicit development single-observation defaults are not accepted by mintd startup"
         );
     }
 
@@ -664,7 +664,7 @@ fn validate_federation_payment_observation_startup_policy(
     .filter(|context| {
         matches!(
             *public_config.payment_verification_policy(*context),
-            FederationPaymentVerificationPolicy::FakeWallet
+            FederationPaymentVerificationPolicy::DevelopmentSingleObservation
         )
     })
     .map(|context| context.to_string())
@@ -672,7 +672,7 @@ fn validate_federation_payment_observation_startup_policy(
 
     if !development_contexts.is_empty() && !allow_development_payment_observation_policy {
         bail!(
-            "federation payment_observation_policy uses development-only fake-wallet single-observation finality for {}; set federation.allow_development_payment_observation_policy=true only for local fake-wallet regtest",
+            "federation payment_observation_policy uses development-only single-observation finality for {}; set federation.allow_development_payment_observation_policy=true only for local fake-wallet regtest",
             development_contexts.join(", ")
         );
     }
@@ -2404,7 +2404,7 @@ mod tests {
 
         assert!(
             err.to_string()
-                .contains("development-only fake-wallet single-observation finality"),
+                .contains("development-only single-observation finality"),
             "error should explain development-only policy: {err}"
         );
 

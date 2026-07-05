@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 444 checked items and 143 remaining items. Mintd federation startup now requires explicit payment-observation policy, rejects dev single-observation finality unless a local fake-wallet override is set, and still supports backend-agnostic trusted-dealer generation without the fakewallet feature.</span>
+          <span class="value">The implementation plan audit now tracks 446 checked items and 141 remaining items. Federation payment-observation policy now uses backend-neutral development single-observation semantics, mintd startup still rejects dev finality without an explicit local override, and trusted-dealer generation keeps working without the fakewallet feature.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: require explicit federation payment policy</span>
+          <span class="value">refactor: rename federation dev payment policy</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Production-mode mintd federation startup now fails if the public config omits `payment_observation_policy` or uses fake-wallet single-observation finality without `[federation].allow_development_payment_observation_policy = true`; generated local fake-wallet TOMLs set that override explicitly.</span>
+          <span class="value">The dev/test single-observation payment policy is now `DevelopmentSingleObservation` and serializes as `development_single_observation`; old `fake_wallet` policy JSON remains readable through an explicit legacy alias.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue production-cleanup work by renaming remaining fakewallet-specific policy semantics, adding backend-agnostic payment observation tests, and broadening storage-backed process coverage.</span>
+          <span class="value">Continue production-cleanup work by adding backend-agnostic payment observation tests, auditing remaining fakewallet references, and broadening storage-backed process coverage.</span>
         </div>
       </aside>
     </header>
@@ -781,12 +781,16 @@
         <h2>Unlocked</h2>
         <div class="stack">
           <article class="item">
+            <h3>Dev policy name is backend-neutral</h3>
+            <p>Federation public configs now serialize the local-test single-observation policy as `development_single_observation`, while legacy `fake_wallet` policy JSON still decodes for compatibility.</p>
+          </article>
+          <article class="item">
             <h3>Payment policy startup gate</h3>
-            <p>Mintd now rejects implicit federation payment-observation defaults and only permits fake-wallet single-observation finality when local development configs explicitly opt in.</p>
+            <p>Mintd now rejects implicit federation payment-observation defaults and only permits development single-observation finality when local development configs explicitly opt in.</p>
           </article>
           <article class="item">
             <h3>Plan audit refreshed</h3>
-            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 444 checked items and 143 explicit next items.</p>
+            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 446 checked items and 141 explicit next items.</p>
           </article>
           <article class="item">
             <h3>Router startup replay proven</h3>
@@ -2908,10 +2912,16 @@
               <td>Use the startup replay proof as the recovery gate while cleaning fakewallet-specific federation semantics out of the production payment-observation path.</td>
             </tr>
             <tr>
+              <td>Backend-neutral dev payment policy</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federation_payment_policy -- --test-threads 1`, `cargo test -p cdk-mintd --no-default-features --features "federation sqlite" configure_federation -- --test-threads 1`, and `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1` passed. The shared tests prove `development_single_observation` serialization plus legacy `fake_wallet` alias decoding; the trusted-dealer setup test proves generated public federation config no longer serializes the old fakewallet policy name.</td>
+              <td>Add backend-agnostic mock payment observation coverage for minting and melting, then complete the broader fakewallet reference audit.</td>
+            </tr>
+            <tr>
               <td>Explicit federation payment policy startup</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-mintd --no-default-features --features "federation sqlite" configure_federation -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite configure_federation -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1`, `cargo check -p cdk-mintd --no-default-features --features "federation sqlite"`, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed. The no-fake startup tests cover explicit member-quorum policy acceptance, missing `payment_observation_policy` rejection, and fake-wallet single-observation policy rejection unless the development override is set.</td>
-              <td>Rename the remaining fake-wallet policy type/method names into backend-neutral dev/test policy names, then add backend-agnostic mock payment observation coverage.</td>
+              <td>`cargo test -p cdk-mintd --no-default-features --features "federation sqlite" configure_federation -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite configure_federation -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_setup -- --test-threads 1`, `cargo check -p cdk-mintd --no-default-features --features "federation sqlite"`, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed. The no-fake startup tests cover explicit member-quorum policy acceptance, missing `payment_observation_policy` rejection, and development single-observation policy rejection unless the development override is set.</td>
+              <td>Add backend-agnostic mock payment observation coverage and broaden storage-backed process coverage.</td>
             </tr>
             <tr>
               <td>Trusted-dealer core without fakewallet</td>

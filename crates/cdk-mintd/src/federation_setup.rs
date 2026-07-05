@@ -2058,6 +2058,8 @@ mod core_tests {
 
         let public_json =
             std::fs::read_to_string(&artifacts.public_config_path).expect("public config file");
+        assert!(public_json.contains("development_single_observation"));
+        assert!(!public_json.contains("\"fake_wallet\""));
         let public_config: FederationConfig =
             serde_json::from_str(&public_json).expect("public config json");
         public_config.validate().expect("public config validates");

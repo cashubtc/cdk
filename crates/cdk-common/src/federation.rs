@@ -1090,10 +1090,14 @@ impl fmt::Display for FederationPaymentObservationContext {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationPaymentObservationPolicy {
     /// Incoming mint quote payment verification policy.
-    #[serde(default = "FederationPaymentVerificationPolicy::fake_wallet_for_testing")]
+    #[serde(
+        default = "FederationPaymentVerificationPolicy::development_single_observation_for_testing"
+    )]
     pub mint_quotes: FederationPaymentVerificationPolicy,
     /// Outgoing melt quote payment verification policy.
-    #[serde(default = "FederationPaymentVerificationPolicy::fake_wallet_for_testing")]
+    #[serde(
+        default = "FederationPaymentVerificationPolicy::development_single_observation_for_testing"
+    )]
     pub melt_quotes: FederationPaymentVerificationPolicy,
     /// Maximum pending quotes operators expect before back-pressure or alerting.
     #[serde(default = "default_max_pending_payment_quotes")]
@@ -1108,17 +1112,19 @@ pub struct FederationPaymentObservationPolicy {
 
 impl Default for FederationPaymentObservationPolicy {
     fn default() -> Self {
-        Self::fake_wallet_for_testing()
+        Self::development_single_observation_for_testing()
     }
 }
 
 impl FederationPaymentObservationPolicy {
-    /// Create the current fake-wallet MVP policy.
+    /// Create the development/test policy where one accepted observation finalizes.
     #[must_use]
-    pub fn fake_wallet_for_testing() -> Self {
+    pub fn development_single_observation_for_testing() -> Self {
         Self {
-            mint_quotes: FederationPaymentVerificationPolicy::fake_wallet_for_testing(),
-            melt_quotes: FederationPaymentVerificationPolicy::fake_wallet_for_testing(),
+            mint_quotes:
+                FederationPaymentVerificationPolicy::development_single_observation_for_testing(),
+            melt_quotes:
+                FederationPaymentVerificationPolicy::development_single_observation_for_testing(),
             max_pending_quotes: DEFAULT_MAX_PENDING_PAYMENT_QUOTES,
             pending_quote_ttl_secs: DEFAULT_PAYMENT_QUOTE_PENDING_TTL_SECS,
             stale_observation_secs: DEFAULT_STALE_PAYMENT_OBSERVATION_SECS,
@@ -1202,8 +1208,9 @@ pub enum FederationPaymentTrustModel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FederationPaymentVerificationPolicy {
-    /// Test-only policy for the fake wallet backend where one observation finalizes.
-    FakeWallet,
+    /// Test/development policy where one accepted observation finalizes.
+    #[serde(rename = "development_single_observation", alias = "fake_wallet")]
+    DevelopmentSingleObservation,
     /// Real-backend policy requiring matching observations from a member quorum.
     MemberQuorum {
         /// Required number of matching member observations.
@@ -1214,10 +1221,10 @@ pub enum FederationPaymentVerificationPolicy {
 }
 
 impl FederationPaymentVerificationPolicy {
-    /// Create the fake-wallet testing policy.
+    /// Create the development/test single-observation policy.
     #[must_use]
-    pub fn fake_wallet_for_testing() -> Self {
-        Self::FakeWallet
+    pub fn development_single_observation_for_testing() -> Self {
+        Self::DevelopmentSingleObservation
     }
 
     /// Create a real-backend member-quorum policy.
@@ -1232,14 +1239,14 @@ impl FederationPaymentVerificationPolicy {
     /// Return true when one accepted observation may finalize quote state.
     #[must_use]
     pub fn permits_single_observation_finality(self) -> bool {
-        matches!(self, Self::FakeWallet)
+        matches!(self, Self::DevelopmentSingleObservation)
     }
 
     /// Number of matching observations required by this policy.
     #[must_use]
     pub fn required_matching_observations(self) -> u16 {
         match self {
-            Self::FakeWallet => 1,
+            Self::DevelopmentSingleObservation => 1,
             Self::MemberQuorum { required, .. } => required,
         }
     }
@@ -1272,7 +1279,7 @@ impl FederationPaymentVerificationPolicy {
         threshold_params: ThresholdParams,
     ) -> Result<()> {
         match self {
-            Self::FakeWallet => Ok(()),
+            Self::DevelopmentSingleObservation => Ok(()),
             Self::MemberQuorum { required, .. } => {
                 if required == 0
                     || required > threshold_params.member_count
@@ -3067,7 +3074,7 @@ impl FederationConfig {
         self.payment_observation_policy.policy_for(context)
     }
 
-    /// Ensure the configured policy allows the fake-wallet single-observation path.
+    /// Ensure the configured policy allows the development single-observation path.
     pub fn ensure_single_payment_observation_can_finalize(
         &self,
         context: FederationPaymentObservationContext,
@@ -3596,25 +3603,25 @@ mod tests {
     }
 
     #[test]
-    fn federation_payment_policy_defaults_to_fake_wallet_for_legacy_configs() {
+    fn federation_payment_policy_defaults_to_development_single_observation_for_legacy_configs() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
         let members = test_roster();
         let (keyset, _) = test_keyset(&members);
         let config = FederationConfig::new(params, members, vec![keyset]).expect("config");
         assert_eq!(
             config.payment_observation_policy,
-            FederationPaymentObservationPolicy::fake_wallet_for_testing()
+            FederationPaymentObservationPolicy::development_single_observation_for_testing()
         );
         config
             .ensure_single_payment_observation_can_finalize(
                 FederationPaymentObservationContext::MintQuote,
             )
-            .expect("fake wallet mint observations can finalize singly");
+            .expect("development mint observations can finalize singly");
         config
             .ensure_single_payment_observation_can_finalize(
                 FederationPaymentObservationContext::MeltQuote,
             )
-            .expect("fake wallet melt observations can finalize singly");
+            .expect("development melt observations can finalize singly");
 
         let mut legacy_json = serde_json::to_value(&config).expect("config json");
         legacy_json
@@ -3626,9 +3633,40 @@ mod tests {
             serde_json::from_value::<FederationConfig>(legacy_json).expect("legacy config");
         assert_eq!(
             decoded.payment_observation_policy,
-            FederationPaymentObservationPolicy::fake_wallet_for_testing()
+            FederationPaymentObservationPolicy::development_single_observation_for_testing()
         );
         decoded.validate().expect("legacy config validates");
+    }
+
+    #[test]
+    fn federation_payment_policy_accepts_legacy_fake_wallet_alias() {
+        let legacy_json = serde_json::json!({
+            "mint_quotes": { "type": "fake_wallet" },
+            "melt_quotes": { "type": "fake_wallet" }
+        });
+
+        let decoded = serde_json::from_value::<FederationPaymentObservationPolicy>(legacy_json)
+            .expect("legacy fake_wallet alias decodes");
+        assert_eq!(
+            decoded,
+            FederationPaymentObservationPolicy::development_single_observation_for_testing()
+        );
+
+        let encoded = serde_json::to_value(&decoded).expect("policy json");
+        assert_eq!(
+            encoded
+                .get("mint_quotes")
+                .and_then(|policy| policy.get("type"))
+                .and_then(serde_json::Value::as_str),
+            Some("development_single_observation")
+        );
+        assert_eq!(
+            encoded
+                .get("melt_quotes")
+                .and_then(|policy| policy.get("type"))
+                .and_then(serde_json::Value::as_str),
+            Some("development_single_observation")
+        );
     }
 
     #[test]
@@ -4185,7 +4223,8 @@ mod tests {
 
     #[test]
     fn federation_payment_policy_evaluates_observation_quorum() {
-        let fake = FederationPaymentVerificationPolicy::fake_wallet_for_testing();
+        let development =
+            FederationPaymentVerificationPolicy::development_single_observation_for_testing();
         let real = FederationPaymentVerificationPolicy::member_quorum(
             2,
             FederationPaymentTrustModel::SharedBackendReadOnly,
@@ -4196,8 +4235,9 @@ mod tests {
             matching_observers: vec![member_id(1)],
             conflicting_observers: Vec::new(),
         };
-        fake.evaluate_quorum(&single)
-            .expect("fake wallet accepts one matching observer");
+        development
+            .evaluate_quorum(&single)
+            .expect("development policy accepts one matching observer");
 
         assert!(matches!(
             real.evaluate_quorum(&single),
