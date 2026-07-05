@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 463 checked items and 124 remaining items. Federated swap apply now rejects spent-input reuse before creating new member shares.</span>
+          <span class="value">The implementation plan audit now tracks 464 checked items and 123 remaining items. Wallet federation member fanout now has an explicit timeout and retry policy.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: reject federated swap input reuse</span>
+          <span class="value">fix: bound wallet federation member requests</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The swap sliding-window regression now proves conflicting swaps cannot reuse spent inputs to obtain fresh output shares, while exact replay stays idempotent.</span>
+          <span class="value">Mint, batch mint, swap, melt, restore, and check-state wallet fanout now apply a validated per-member request timeout, with opt-in retries for retryable member failures.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue production-cleanup work by auditing remaining fakewallet references, per-member retry/backpressure paths, and storage-backed process coverage.</span>
+          <span class="value">Continue production-cleanup work by auditing remaining fakewallet references, member backpressure paths, and storage-backed process coverage.</span>
         </div>
       </aside>
     </header>
@@ -541,7 +541,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 463 checked entries and 124 remaining entries. The
+          checklist has 464 checked entries and 123 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -817,6 +817,10 @@
             <p>Peer sync interval, peer request timeout, operation submission timeout, catch-up limit, digest recheck delay, wallet fallback timeout, quote-status timeout, and wallet fanout concurrency now have focused behavior tests.</p>
           </article>
           <article class="item">
+            <h3>Wallet member requests bounded</h3>
+            <p>Federated wallet mint, batch mint, swap, melt, restore, and check-state fanout now uses a validated per-member request timeout, and retryable member failures can be retried when the connector policy enables retries.</p>
+          </article>
+          <article class="item">
             <h3>Fakewallet coupling audited</h3>
             <p>Production startup wording now treats development single-observation finality as backend-neutral, and the remaining fakewallet references are confined to test fixtures, normal mintd backend setup, generated local smoke/config tooling, or legacy config compatibility.</p>
           </article>
@@ -842,7 +846,7 @@
           </article>
           <article class="item">
             <h3>Plan audit refreshed</h3>
-            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 463 checked items and 124 explicit next items.</p>
+            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 464 checked items and 123 explicit next items.</p>
           </article>
           <article class="item">
             <h3>Router startup replay proven</h3>
@@ -2936,7 +2940,7 @@
             <tr>
               <td>Wallet federation signing fanout</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk --features federation federated_mint_connector_ -- --test-threads 1` passed all 44 wallet federation connector tests after the policy refactor, including invalid policy rejection, configured fallback timeout, configured quote-status timeout, bounded state-changing fanout, bad advertisement rejection, slow extra keyset-member tolerance, mint, batch mint, swap, melt, restore, check-state, HTTP wrapper rotation, primary fallback, auth wallet propagation, and status change aggregation. `cargo check -p cdk --features wallet,mint,federation`, `cargo fmt --all -- --check`, and `git diff --check` passed.</td>
+              <td>`cargo test -p cdk --features wallet,federation federated_mint_connector_ -- --test-threads 1` passed all 46 wallet federation connector tests after the member request policy update, including invalid policy rejection, configured fallback timeout, configured member request timeout, retryable member request recovery, configured quote-status timeout, bounded state-changing fanout, bad advertisement rejection, slow extra keyset-member tolerance, mint, batch mint, swap, melt, restore, check-state, HTTP wrapper rotation, primary fallback, auth wallet propagation, and status change aggregation. `cargo check -p cdk --features wallet,mint,federation`, `cargo fmt --all -- --check`, and `git diff --check` passed.</td>
               <td>Move remaining quote visibility checks from best-effort status reads into explicit consensus-backed readiness once the production ordering backend is chosen.</td>
             </tr>
             <tr>

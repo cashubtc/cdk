@@ -87,8 +87,8 @@ Current confirmed shape:
 
 - Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes, in-memory consensus boundary, private REST peer envelopes, federation journal persistence, mint/swap/melt/restore/check-state apply paths, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
 - Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, exact deterministic binary operation encoding, a separate `federation_signature_share` table, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
-- Test-suite status: focused federation replay, peer-sync, session-outcome, trusted-dealer setup, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, fakewallet coupling audit, configurable timeout/retry policy tests, NUT-19 retry backoff, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, federated swap input-reuse attack regression, and `cdk-axum` federation tests were run for the latest checkpoints; the full workspace test suite remains open.
-- Latest checkpoint: federated swap apply now rejects already-spent or pending input proofs before generating new signature shares, while preserving idempotent replay for the exact same accepted swap operation.
+- Test-suite status: focused federation replay, peer-sync, session-outcome, trusted-dealer setup, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, fakewallet coupling audit, wallet member request timeout/retry policy tests, NUT-19 retry backoff, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, federated swap input-reuse attack regression, and `cdk-axum` federation tests were run for the latest checkpoints; the full workspace test suite remains open.
+- Latest checkpoint: wallet federation fanout now applies a validated per-member request timeout to mint, batch mint, swap, melt, restore, and check-state member calls, and can retry retryable member failures when explicitly configured.
 
 ## Key observations
 
@@ -631,7 +631,7 @@ Implementation checklist:
 - [x] Return normal aggregate `MintResponse` to the wallet saga.
 - [x] `post_swap` should do the same for swap signatures.
 - [x] Implement first-healthy fallback and threshold fanout error collection.
-- [ ] Add an explicit retry and timeout policy per member.
+- [x] Add an explicit retry and timeout policy per member.
 - [x] Track per-member errors without leaking them into proof construction unless threshold cannot be reached.
 - [x] Add a clear error when too few valid shares arrive.
 - [x] Ensure wallet-local `validate_mint_response_signatures` validates aggregate signatures under aggregate keys after aggregation.
@@ -1082,7 +1082,7 @@ Implementation checklist:
 - [x] Allow `cdk-mintd federation trusted-dealer` or its successor setup command to generate member identities, public federation config, private member configs, BLS shares, and aggregate keysets without enabling the `fakewallet` feature.
 - [ ] Keep fakewallet-specific member config generation in a dev/regtest wrapper command, generated smoke harness, or `just` target rather than in the key generation path.
 - [x] Add federation config for peer sync interval, peer request timeout, operation submission timeout, catch-up limits, digest recheck attempts, digest recheck delay, session outcome evidence chunk size, and related retry policy.
-- [x] Add wallet federation connector configuration for per-member fallback timeout, quote-status polling timeout, and fanout concurrency.
+- [x] Add wallet federation connector configuration for per-member fallback timeout, member request timeout, member request retries, quote-status polling timeout, and fanout concurrency.
 - [x] Replace production reads from in-memory federation journal/runtime state with durable mint database reads for peer status, catch-up responses, state digests, and session outcomes.
 - [x] On `cdk-mintd` startup, reconstruct federation runtime state from the database and replay unapplied accepted journal entries before serving signing shares or authoritative status.
 - [x] Ensure a crash after consensus acceptance but before deterministic apply recovers from the database and converges to the same state digest.

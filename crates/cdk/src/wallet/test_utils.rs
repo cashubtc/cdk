@@ -486,6 +486,13 @@ pub struct MockMintConnector {
         Mutex<std::collections::VecDeque<Result<MeltQuoteBolt11Response<String>, Error>>>,
     /// Response for post_mint calls
     pub post_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
+    /// Queue of responses for successive post_mint calls.
+    ///
+    /// When non-empty, each `post_mint` call pops the front entry.
+    /// Takes precedence over `post_mint_response`.
+    pub post_mint_responses: Mutex<std::collections::VecDeque<Result<MintResponse, Error>>>,
+    /// Optional delay used by tests to simulate a slow mint member.
+    pub post_mint_delay: Mutex<Option<Duration>>,
     /// Optional barrier used by tests to assert concurrent mint calls.
     pub post_mint_barrier: Mutex<Option<Arc<Barrier>>>,
     /// Response for post_batch_mint calls
@@ -547,6 +554,8 @@ impl MockMintConnector {
             melt_quote_status_response: Mutex::new(None),
             melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
             post_mint_response: Mutex::new(None),
+            post_mint_responses: Mutex::new(std::collections::VecDeque::new()),
+            post_mint_delay: Mutex::new(None),
             post_mint_barrier: Mutex::new(None),
             post_batch_mint_response: Mutex::new(None),
             post_swap_response: Mutex::new(None),
@@ -705,6 +714,15 @@ impl MockMintConnector {
 
     pub fn set_post_mint_response(&self, response: Result<MintResponse, Error>) {
         *self.post_mint_response.lock().unwrap() = Some(response);
+    }
+
+    /// Enqueue a response for the next `post_mint` call.
+    pub fn push_post_mint_response(&self, response: Result<MintResponse, Error>) {
+        self.post_mint_responses.lock().unwrap().push_back(response);
+    }
+
+    pub fn set_post_mint_delay(&self, delay: Duration) {
+        *self.post_mint_delay.lock().unwrap() = Some(delay);
     }
 
     pub fn set_post_mint_barrier(&self, barrier: Arc<Barrier>) {
@@ -890,16 +908,26 @@ impl MintConnector for MockMintConnector {
         _method: &PaymentMethod,
         _request: MintRequest<String>,
     ) -> Result<MintResponse, Error> {
+        let delay = *self.post_mint_delay.lock().unwrap();
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
+
         let barrier = self.post_mint_barrier.lock().unwrap().clone();
         if let Some(barrier) = barrier {
             barrier.wait().await;
         }
 
-        self.post_mint_response
-            .lock()
-            .unwrap()
-            .take()
-            .expect("MockMintConnector: post_mint called without configured response")
+        let queued = self.post_mint_responses.lock().unwrap().pop_front();
+        match queued {
+            Some(response) => response,
+            None => self
+                .post_mint_response
+                .lock()
+                .unwrap()
+                .take()
+                .expect("MockMintConnector: post_mint called without configured response"),
+        }
     }
 
     async fn post_melt_quote(
