@@ -1333,7 +1333,11 @@ impl SessionOutcomeQuorumStatus {
     fn append(&mut self, quorum: &FederationSessionOutcomeQuorum) {
         self.signers.extend(quorum.signers.iter().copied());
         self.latest_index = quorum.latest_index;
-        self.operation_count = self.latest_index.saturating_sub(self.from_index) + 1;
+        self.operation_count = self
+            .latest_index
+            .checked_sub(self.from_index)
+            .and_then(|span| span.checked_add(1))
+            .unwrap_or(u64::MAX);
     }
 }
 
@@ -1522,7 +1526,13 @@ fn contiguous_session_outcome_quorum_prefix(
             Some(status) => status.append(best),
             None => status = Some(best.clone().into()),
         }
-        next_index = best.latest_index.saturating_add(1);
+        if best.latest_index < next_index {
+            break;
+        }
+        let Some(after_best) = best.latest_index.checked_add(1) else {
+            break;
+        };
+        next_index = after_best;
     }
 
     status
@@ -1532,15 +1542,21 @@ fn entries_for_session_outcome_range(
     entries_by_index: &BTreeMap<u64, FederationJournalEntry>,
     range: &SessionOutcomeRangeKey,
 ) -> Option<Vec<FederationJournalEntry>> {
+    let range_span = range
+        .latest_index
+        .checked_sub(range.from_index)
+        .and_then(|span| span.checked_add(1))?;
     if range.operation_count == 0
-        || range.latest_index < range.from_index
-        || range.operation_count != range.latest_index.saturating_sub(range.from_index) + 1
+        || range.operation_count != range_span
+        || usize::try_from(range.operation_count).ok()? > entries_by_index.len()
     {
         return None;
     }
 
-    let mut entries = Vec::with_capacity(range.operation_count as usize);
-    for index in range.from_index..=range.latest_index {
+    let count = usize::try_from(range.operation_count).ok()?;
+    let mut entries = Vec::with_capacity(count);
+    for offset in 0..range.operation_count {
+        let index = range.from_index.checked_add(offset)?;
         entries.push(entries_by_index.get(&index)?.clone());
     }
     Some(entries)
@@ -2591,7 +2607,7 @@ fn verify_session_outcome_evidence_entries(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+    use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
     use std::str::FromStr;
     use std::sync::{Arc, Mutex};
 
@@ -2664,6 +2680,48 @@ mod tests {
         for value in ["", "0", "false", "no", "off"] {
             assert!(!federation_peer_sync_disabled_value(value));
         }
+    }
+
+    #[test]
+    fn session_outcome_quorum_prefix_stops_when_next_index_would_overflow() {
+        let mut signers = BTreeSet::new();
+        signers.insert(member_id(1));
+        let mut quorums = BTreeMap::new();
+        quorums.insert(
+            0,
+            vec![cdk::federation::FederationSessionOutcomeQuorum {
+                required: 1,
+                signers,
+                from_index: 0,
+                latest_index: u64::MAX,
+                operation_count: u64::MAX,
+                range_order_digest: cdk::federation::FederationJournalDigest::genesis(),
+            }],
+        );
+
+        let status =
+            contiguous_session_outcome_quorum_prefix(&quorums).expect("quorum prefix status");
+
+        assert_eq!(status.from_index, 0);
+        assert_eq!(status.latest_index, u64::MAX);
+        assert_eq!(status.operation_count, u64::MAX);
+    }
+
+    #[test]
+    fn session_outcome_range_rejects_span_larger_than_available_entries() {
+        let order_digest = cdk::federation::FederationJournalDigest::genesis();
+        let range = SessionOutcomeRangeKey {
+            from_index: 0,
+            operation_count: u64::MAX,
+            latest_index: u64::MAX - 1,
+            previous_order_digest: order_digest,
+            range_order_digest: order_digest,
+            latest_order_digest: order_digest,
+            state_digest: cdk::federation::FederationStateDigest::from_order_digest(order_digest),
+            operation_ids: Vec::new(),
+        };
+
+        assert!(entries_for_session_outcome_range(&BTreeMap::new(), &range).is_none());
     }
 
     #[test]
