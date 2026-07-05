@@ -3664,7 +3664,9 @@ mod tests {
                 state: MintQuoteState::Paid,
                 amount_paid: Amount::from(21),
                 amount_issued: Amount::ZERO,
+                payment_id: None,
                 payment_proof: Some("fake-wallet-paid".to_string()),
+                observed_time: None,
             }),
         )
     }
@@ -3735,7 +3737,9 @@ mod tests {
                 state: MintQuoteState::Paid,
                 amount_paid: Amount::from(amount_paid),
                 amount_issued: Amount::ZERO,
+                payment_id: None,
                 payment_proof: Some(payment_proof.to_string()),
+                observed_time: None,
             }),
         )
     }

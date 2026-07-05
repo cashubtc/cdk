@@ -1095,7 +1095,9 @@ async fn run_quarantine_mint_conflict(
             state: MintQuoteState::Paid,
             amount_paid: conflicting_amount,
             amount_issued: Amount::ZERO,
+            payment_id: None,
             payment_proof: Some(format!("conflicting-{quote}")),
+            observed_time: None,
         }),
     );
     let first_observation_id = first_observation

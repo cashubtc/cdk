@@ -1146,8 +1146,10 @@ mod tests {
                     state: crate::MeltQuoteState::Paid,
                     amount: Amount::from(10),
                     fee_reserve: Amount::from(1),
+                    payment_id: None,
                     payment_proof: Some("preimage".to_string()),
                     failure_reason: None,
+                    observed_time: None,
                 },
             ),
         );
@@ -1179,8 +1181,10 @@ mod tests {
                     state: crate::MeltQuoteState::Paid,
                     amount: Amount::from(10),
                     fee_reserve: Amount::from(1),
+                    payment_id: None,
                     payment_proof: Some("preimage".to_string()),
                     failure_reason: None,
+                    observed_time: None,
                 },
             ),
         );

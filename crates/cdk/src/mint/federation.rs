@@ -233,6 +233,36 @@ impl FederationRuntimeConfig {
     where
         Q: ToString,
     {
+        self.mint_quote_payment_observation_with_metadata(
+            quote,
+            method,
+            state,
+            amount_paid,
+            amount_issued,
+            payment_proof,
+            None,
+            None,
+        )
+    }
+
+    /// Build the consensus operation for observing a mint quote payment state
+    /// with optional backend payment metadata.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn mint_quote_payment_observation_with_metadata<Q>(
+        &self,
+        quote: Q,
+        method: PaymentMethod,
+        state: MintQuoteState,
+        amount_paid: Amount,
+        amount_issued: Amount,
+        payment_proof: Option<String>,
+        payment_id: Option<PaymentIdentifier>,
+        observed_time: Option<u64>,
+    ) -> FederationOperationEnvelope
+    where
+        Q: ToString,
+    {
         self.operation_envelope(FederationOperation::MintQuotePayment(
             FederationMintQuotePaymentObservation {
                 quote: quote.to_string(),
@@ -241,7 +271,9 @@ impl FederationRuntimeConfig {
                 state,
                 amount_paid,
                 amount_issued,
+                payment_id,
                 payment_proof,
+                observed_time,
             },
         ))
     }
@@ -278,6 +310,38 @@ impl FederationRuntimeConfig {
     where
         Q: ToString,
     {
+        self.melt_quote_payment_observation_with_metadata(
+            quote,
+            method,
+            state,
+            amount,
+            fee_reserve,
+            payment_proof,
+            failure_reason,
+            None,
+            None,
+        )
+    }
+
+    /// Build the consensus operation for observing an outgoing melt payment
+    /// state with optional backend payment metadata.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn melt_quote_payment_observation_with_metadata<Q>(
+        &self,
+        quote: Q,
+        method: PaymentMethod,
+        state: cdk_common::MeltQuoteState,
+        amount: Amount,
+        fee_reserve: Amount,
+        payment_proof: Option<String>,
+        failure_reason: Option<String>,
+        payment_id: Option<PaymentIdentifier>,
+        observed_time: Option<u64>,
+    ) -> FederationOperationEnvelope
+    where
+        Q: ToString,
+    {
         self.operation_envelope(FederationOperation::MeltQuotePayment(
             FederationMeltQuotePaymentObservation {
                 quote: quote.to_string(),
@@ -286,8 +350,10 @@ impl FederationRuntimeConfig {
                 state,
                 amount,
                 fee_reserve,
+                payment_id,
                 payment_proof,
                 failure_reason,
+                observed_time,
             },
         ))
     }
@@ -946,14 +1012,27 @@ impl Mint {
             let additional_amount = observed_paid
                 .checked_sub(&quote.amount_paid())
                 .map_err(|_| Error::AmountOverflow)?;
-            let payment_id = observation.payment_proof.clone().unwrap_or_else(|| {
-                format!(
-                    "federation:{}:{}",
-                    operation_id,
-                    mint_quote_state_label(observation.state)
-                )
-            });
-            quote.add_payment(additional_amount, payment_id, None)?;
+            let payment_id = observation
+                .payment_id
+                .as_ref()
+                .map(federation_payment_identifier_label)
+                .or_else(|| observation.payment_proof.clone())
+                .unwrap_or_else(|| {
+                    format!(
+                        "federation:{}:{}",
+                        operation_id,
+                        mint_quote_state_label(observation.state)
+                    )
+                });
+            quote.add_payment(
+                additional_amount,
+                payment_id,
+                Some(
+                    observation
+                        .observed_time
+                        .unwrap_or_else(|| federation_accepted_logical_time(entry)),
+                ),
+            )?;
             tx.update_mint_quote(&mut quote).await?;
             paid_notification = Some((quote.clone(), quote.amount_paid()));
         }
@@ -1613,6 +1692,10 @@ fn payment_observation_record_from_entry(
     FederationPaymentObservationRecord::from_journal_entry(entry).ok_or(Error::Internal)
 }
 
+fn federation_payment_identifier_label(payment_id: &PaymentIdentifier) -> String {
+    format!("{}:{}", payment_id.kind(), payment_id)
+}
+
 fn mint_request_from_input(input: MintInput) -> FederationMintRequest {
     match input {
         MintInput::Single(request) => FederationMintRequest::Single(MintRequest {
@@ -1815,9 +1898,13 @@ fn melt_quote_payment_response(
     quote: &MeltQuote,
     observation: &FederationMeltQuotePaymentObservation,
 ) -> Result<MakePaymentResponse, Error> {
-    let payment_lookup_id = quote.request_lookup_id.clone().unwrap_or_else(|| {
-        PaymentIdentifier::CustomId(format!("federation-melt-observation-{operation_id}"))
-    });
+    let payment_lookup_id = observation
+        .payment_id
+        .clone()
+        .or_else(|| quote.request_lookup_id.clone())
+        .unwrap_or_else(|| {
+            PaymentIdentifier::CustomId(format!("federation-melt-observation-{operation_id}"))
+        });
     let amount = observation.amount.with_unit(quote.unit.clone());
     let fee_reserve = observation.fee_reserve.with_unit(quote.unit.clone());
     let total_spent = amount
@@ -2509,17 +2596,20 @@ mod tests {
                 state: MintQuoteState::Paid,
                 amount_paid: Amount::from(amount_paid),
                 amount_issued: Amount::ZERO,
+                payment_id: None,
                 payment_proof: Some(payment_proof.to_string()),
+                observed_time: None,
             },
         ))
     }
 
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone)]
     struct MeltPaymentObservationFixture<'a> {
         observer: u16,
         state: MeltQuoteState,
         amount: Amount,
         fee_reserve: Amount,
+        payment_id: Option<PaymentIdentifier>,
         payment_proof: Option<&'a str>,
         failure_reason: Option<&'a str>,
     }
@@ -2537,8 +2627,10 @@ mod tests {
                 state: fixture.state,
                 amount: fixture.amount,
                 fee_reserve: fixture.fee_reserve,
+                payment_id: fixture.payment_id,
                 payment_proof: fixture.payment_proof.map(str::to_string),
                 failure_reason: fixture.failure_reason.map(str::to_string),
+                observed_time: None,
             },
         ))
     }
@@ -4395,6 +4487,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mint_payment_observation_metadata_sets_payment_record_id_and_time() {
+        let policy = FederationPaymentObservationPolicy::member_quorum(
+            2,
+            FederationPaymentTrustModel::SharedBackendReadOnly,
+        );
+        let runtime_config = runtime_config_with_payment_policy(policy);
+        let (mint, localstore) =
+            federated_test_mint_with_backend_agnostic_payment(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let quote = QuoteId::new();
+        let payment_id = PaymentIdentifier::CustomId("metadata-payment".to_string());
+
+        let quote_entry = appended_entry(
+            &mut journal,
+            runtime_config.mint_quote_operation(
+                quote.clone(),
+                bolt11_quote_request(7),
+                bolt11_quote_response(&quote, 7),
+            ),
+        );
+        persist_and_apply_entry(&mint, &quote_entry).await;
+
+        let first_observation = appended_entry(
+            &mut journal,
+            runtime_config.operation_envelope(FederationOperation::MintQuotePayment(
+                FederationMintQuotePaymentObservation {
+                    quote: quote.to_string(),
+                    observer: MemberId::new(1).expect("member one"),
+                    method: PaymentMethod::Known(KnownMethod::Bolt11),
+                    state: MintQuoteState::Paid,
+                    amount_paid: Amount::from(7),
+                    amount_issued: Amount::ZERO,
+                    payment_id: Some(payment_id.clone()),
+                    payment_proof: None,
+                    observed_time: Some(111),
+                },
+            )),
+        );
+        persist_and_apply_entry(&mint, &first_observation).await;
+
+        let matching_second = appended_entry(
+            &mut journal,
+            runtime_config.operation_envelope(FederationOperation::MintQuotePayment(
+                FederationMintQuotePaymentObservation {
+                    quote: quote.to_string(),
+                    observer: MemberId::new(2).expect("member two"),
+                    method: PaymentMethod::Known(KnownMethod::Bolt11),
+                    state: MintQuoteState::Paid,
+                    amount_paid: Amount::from(7),
+                    amount_issued: Amount::ZERO,
+                    payment_id: Some(payment_id.clone()),
+                    payment_proof: None,
+                    observed_time: Some(222),
+                },
+            )),
+        );
+        persist_and_apply_entry(&mint, &matching_second).await;
+
+        let stored_quote = localstore
+            .get_mint_quote(&quote)
+            .await
+            .expect("quote lookup")
+            .expect("quote");
+        assert_eq!(stored_quote.state(), MintQuoteState::Paid);
+        assert_eq!(stored_quote.payments.len(), 1);
+        assert_eq!(
+            stored_quote.payments[0].payment_id,
+            "custom:metadata-payment"
+        );
+        assert_eq!(stored_quote.payments[0].time, 222);
+    }
+
+    #[tokio::test]
     async fn payment_quarantine_blocks_mint_signing() {
         let policy = FederationPaymentObservationPolicy::member_quorum(
             2,
@@ -4781,6 +4946,7 @@ mod tests {
                     state: MeltQuoteState::Paid,
                     amount: Amount::from(1),
                     fee_reserve: Amount::from(1),
+                    payment_id: None,
                     payment_proof: Some("paid-preimage"),
                     failure_reason: None,
                 },
@@ -4830,6 +4996,7 @@ mod tests {
                     state: MeltQuoteState::Paid,
                     amount: Amount::from(1),
                     fee_reserve: Amount::from(1),
+                    payment_id: None,
                     payment_proof: Some("paid-preimage"),
                     failure_reason: None,
                 },
@@ -4873,6 +5040,7 @@ mod tests {
                     state: MeltQuoteState::Paid,
                     amount: Amount::from(1),
                     fee_reserve: Amount::from(1),
+                    payment_id: None,
                     payment_proof: Some("different-preimage"),
                     failure_reason: None,
                 },
@@ -4923,6 +5091,7 @@ mod tests {
                     state: MeltQuoteState::Paid,
                     amount: Amount::from(1),
                     fee_reserve: Amount::from(1),
+                    payment_id: None,
                     payment_proof: Some("paid-preimage"),
                     failure_reason: None,
                 },
@@ -4951,6 +5120,7 @@ mod tests {
                     state: MeltQuoteState::Pending,
                     amount: Amount::from(1),
                     fee_reserve: Amount::from(1),
+                    payment_id: None,
                     payment_proof: None,
                     failure_reason: None,
                 },
@@ -5003,6 +5173,7 @@ mod tests {
                     state: MeltQuoteState::Failed,
                     amount: Amount::from(1),
                     fee_reserve: Amount::from(1),
+                    payment_id: None,
                     payment_proof: None,
                     failure_reason: Some("route failed"),
                 },
@@ -5035,6 +5206,7 @@ mod tests {
                     state: MeltQuoteState::Pending,
                     amount: Amount::from(1),
                     fee_reserve: Amount::from(1),
+                    payment_id: None,
                     payment_proof: None,
                     failure_reason: None,
                 },
@@ -5088,6 +5260,7 @@ mod tests {
                     state: MeltQuoteState::Failed,
                     amount: Amount::from(1),
                     fee_reserve: Amount::from(1),
+                    payment_id: None,
                     payment_proof: None,
                     failure_reason: Some("route failed"),
                 },
@@ -5127,6 +5300,7 @@ mod tests {
                     state: MeltQuoteState::Failed,
                     amount: Amount::from(1),
                     fee_reserve: Amount::from(1),
+                    payment_id: None,
                     payment_proof: None,
                     failure_reason: Some("route failed"),
                 },
@@ -5166,6 +5340,7 @@ mod tests {
                     state: MeltQuoteState::Paid,
                     amount: Amount::from(1),
                     fee_reserve: Amount::from(1),
+                    payment_id: None,
                     payment_proof: Some("late-preimage"),
                     failure_reason: None,
                 },

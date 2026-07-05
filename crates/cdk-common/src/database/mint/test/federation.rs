@@ -78,7 +78,9 @@ fn payment_observation_envelope_for_member(
             state: MintQuoteState::Paid,
             amount_paid: Amount::from(amount_paid),
             amount_issued: Amount::ZERO,
+            payment_id: None,
             payment_proof: Some(payment_proof.to_string()),
+            observed_time: None,
         }),
     )
 }

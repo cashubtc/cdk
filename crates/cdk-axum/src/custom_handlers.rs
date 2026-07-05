@@ -205,35 +205,56 @@ async fn submit_federation_mint_quote_payment_observation(
     {
         return Ok(false);
     }
-    let observation = cdk::federation::FederationMintQuotePaymentObservation {
+    let mut observation = cdk::federation::FederationMintQuotePaymentObservation {
         quote: response.quote().to_string(),
         observer: config.member_id(),
         method: response.method(),
         state: cdk::nuts::MintQuoteState::Paid,
         amount_paid,
         amount_issued,
+        payment_id: None,
         payment_proof: None,
+        observed_time: None,
     };
-    let candidate = cdk::federation::FederationPaymentObservation::MintQuote(observation.clone());
-    let already_recorded = state
+    let recorded_observations = state
         .mint
         .localstore()
         .get_federation_payment_observations(
             cdk::federation::FederationPaymentObservationContext::MintQuote,
             &observation.quote,
         )
-        .await?
-        .iter()
-        .any(|record| {
-            record.observation.observer() == observation.observer
-                && record.observation.matches_payment_evidence(&candidate)
-        });
-    if already_recorded {
+        .await?;
+    if has_matching_local_mint_payment_observation(&recorded_observations, &observation) {
         return Ok(false);
     }
 
-    let envelope = config.operation_envelope(
-        cdk::federation::FederationOperation::MintQuotePayment(observation),
+    let stored_quote = state
+        .mint
+        .localstore()
+        .get_mint_quote(response.quote())
+        .await?;
+    let payment_metadata = stored_quote.as_ref().and_then(|quote| {
+        quote.payments.last().map(|payment| {
+            (
+                cdk::cdk_payment::PaymentIdentifier::CustomId(payment.payment_id.clone()),
+                payment.time,
+            )
+        })
+    });
+    observation.payment_id = payment_metadata
+        .as_ref()
+        .map(|(payment_id, _)| payment_id.clone());
+    observation.observed_time = payment_metadata.map(|(_, observed_time)| observed_time);
+
+    let envelope = config.mint_quote_payment_observation_with_metadata(
+        observation.quote.clone(),
+        observation.method.clone(),
+        observation.state,
+        observation.amount_paid,
+        observation.amount_issued,
+        observation.payment_proof.clone(),
+        observation.payment_id.clone(),
+        observation.observed_time,
     );
     state
         .submit_federation_payment_observation_envelope(envelope)
@@ -330,41 +351,95 @@ async fn submit_federation_melt_quote_payment_observation(
     ) {
         return Ok(());
     }
-    let observation = cdk::federation::FederationMeltQuotePaymentObservation {
+    let mut observation = cdk::federation::FederationMeltQuotePaymentObservation {
         quote: response.quote().to_string(),
         observer: config.member_id(),
         method: response.method(),
         state: response.state(),
         amount: response.amount(),
         fee_reserve: response.fee_reserve(),
+        payment_id: None,
         payment_proof: response.payment_proof().map(str::to_string),
         failure_reason: None,
+        observed_time: None,
     };
-    let candidate = cdk::federation::FederationPaymentObservation::MeltQuote(observation.clone());
-    let already_recorded = state
+    let recorded_observations = state
         .mint
         .localstore()
         .get_federation_payment_observations(
             cdk::federation::FederationPaymentObservationContext::MeltQuote,
             &observation.quote,
         )
-        .await?
-        .iter()
-        .any(|record| {
-            record.observation.observer() == observation.observer
-                && record.observation.matches_payment_evidence(&candidate)
-        });
-    if already_recorded {
+        .await?;
+    if has_matching_local_melt_payment_observation(&recorded_observations, &observation) {
         return Ok(());
     }
 
-    let envelope = config.operation_envelope(
-        cdk::federation::FederationOperation::MeltQuotePayment(observation),
+    let stored_quote = state
+        .mint
+        .localstore()
+        .get_melt_quote(response.quote())
+        .await?;
+    observation.payment_id = stored_quote
+        .as_ref()
+        .and_then(|quote| quote.request_lookup_id.clone());
+    observation.observed_time = stored_quote.as_ref().and_then(|quote| quote.paid_time);
+
+    let envelope = config.melt_quote_payment_observation_with_metadata(
+        observation.quote.clone(),
+        observation.method.clone(),
+        observation.state,
+        observation.amount,
+        observation.fee_reserve,
+        observation.payment_proof.clone(),
+        observation.failure_reason.clone(),
+        observation.payment_id.clone(),
+        observation.observed_time,
     );
     state
         .submit_federation_payment_observation_envelope(envelope)
         .await?;
     Ok(())
+}
+
+#[cfg(feature = "federation")]
+fn has_matching_local_mint_payment_observation(
+    records: &[cdk::federation::FederationPaymentObservationRecord],
+    candidate: &cdk::federation::FederationMintQuotePaymentObservation,
+) -> bool {
+    records.iter().any(|record| {
+        let cdk::federation::FederationPaymentObservation::MintQuote(observation) =
+            &record.observation
+        else {
+            return false;
+        };
+
+        // Mirror the consensus conflict key so the periodic observer never
+        // retries an operation this member has already committed.
+        observation.observer == candidate.observer
+            && observation.quote == candidate.quote
+            && observation.state == candidate.state
+    })
+}
+
+#[cfg(feature = "federation")]
+fn has_matching_local_melt_payment_observation(
+    records: &[cdk::federation::FederationPaymentObservationRecord],
+    candidate: &cdk::federation::FederationMeltQuotePaymentObservation,
+) -> bool {
+    records.iter().any(|record| {
+        let cdk::federation::FederationPaymentObservation::MeltQuote(observation) =
+            &record.observation
+        else {
+            return false;
+        };
+
+        // Mirror the consensus conflict key so the periodic observer never
+        // retries an operation this member has already committed.
+        observation.observer == candidate.observer
+            && observation.quote == candidate.quote
+            && observation.state == candidate.state
+    })
 }
 
 #[cfg(feature = "federation")]
@@ -2875,6 +2950,61 @@ mod tests {
         let duplicate = submit_federation_mint_quote_payment_observation_round(&state)
             .await
             .expect("duplicate observer round");
+        assert_eq!(duplicate, 0);
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::MintQuotePayment]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn mint_payment_observer_round_skips_consensus_finalized_quote() {
+        let state = create_federated_test_state().await;
+        let quote: MintQuoteBolt11Response<QuoteId> = state
+            .mint
+            .get_mint_quote(
+                MintQuoteBolt11Request {
+                    amount: Amount::from(2u64),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                }
+                .into(),
+            )
+            .await
+            .expect("mint quote")
+            .try_into()
+            .expect("bolt11 quote");
+        let config = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .clone();
+        state
+            .submit_federation_payment_observation_envelope(config.mint_quote_payment_observation(
+                quote.quote.clone(),
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintQuoteState::Paid,
+                Amount::from(2),
+                Amount::ZERO,
+                Some("settled-by-consensus".to_string()),
+            ))
+            .await
+            .expect("payment observation accepted");
+        let stored_quote = state
+            .mint
+            .localstore()
+            .get_mint_quote(&quote.quote)
+            .await
+            .expect("quote lookup")
+            .expect("quote");
+        assert_eq!(stored_quote.state(), MintQuoteState::Paid);
+
+        let duplicate = submit_federation_mint_quote_payment_observation_round(&state)
+            .await
+            .expect("observer round");
+
         assert_eq!(duplicate, 0);
         assert_eq!(
             federation_operation_kinds(&state).await,

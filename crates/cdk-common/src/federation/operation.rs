@@ -19,6 +19,7 @@ use super::{
     FederatedKeyset, FederationConfig, FederationError, FederationId,
     FederationPaymentObservationContext, MemberId, Result,
 };
+use crate::payment::PaymentIdentifier;
 use crate::{
     Amount, BatchMintRequest, BlindedMessage, Id, MeltQuoteRequest, MeltQuoteState, MeltRequest,
     MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest, PaymentMethod,
@@ -373,9 +374,18 @@ pub struct FederationMintQuotePaymentObservation {
     pub amount_paid: Amount,
     /// Amount already issued for the quote.
     pub amount_issued: Amount,
+    /// Optional stable backend payment identifier observed by this member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment_id: Option<PaymentIdentifier>,
     /// Optional method-specific proof or settlement reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payment_proof: Option<String>,
+    /// Optional observer-local Unix time when this payment state was observed.
+    ///
+    /// This is audit metadata only; quorum matching intentionally ignores it
+    /// because honest members can observe the same payment at different times.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_time: Option<u64>,
 }
 
 impl FederationMintQuotePaymentObservation {
@@ -387,6 +397,7 @@ impl FederationMintQuotePaymentObservation {
             && self.state == other.state
             && self.amount_paid == other.amount_paid
             && self.amount_issued == other.amount_issued
+            && self.payment_id == other.payment_id
             && self.payment_proof == other.payment_proof
     }
 
@@ -476,12 +487,21 @@ pub struct FederationMeltQuotePaymentObservation {
     pub amount: Amount,
     /// Fee reserve associated with the quote.
     pub fee_reserve: Amount,
+    /// Optional stable backend payment identifier observed by this member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment_id: Option<PaymentIdentifier>,
     /// Optional method-specific proof, preimage, outpoint, or settlement reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payment_proof: Option<String>,
     /// Optional failure reason when the observation records a failed payment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,
+    /// Optional observer-local Unix time when this payment state was observed.
+    ///
+    /// This is audit metadata only; quorum matching intentionally ignores it
+    /// because honest members can observe the same payment at different times.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_time: Option<u64>,
 }
 
 impl FederationMeltQuotePaymentObservation {
@@ -493,6 +513,7 @@ impl FederationMeltQuotePaymentObservation {
             && self.state == other.state
             && self.amount == other.amount
             && self.fee_reserve == other.fee_reserve
+            && self.payment_id == other.payment_id
             && self.payment_proof == other.payment_proof
             && self.failure_reason == other.failure_reason
     }
@@ -2531,8 +2552,10 @@ mod tests {
                 state: MeltQuoteState::Pending,
                 amount: Amount::from(10),
                 fee_reserve: Amount::from(1),
+                payment_id: None,
                 payment_proof: None,
                 failure_reason: None,
+                observed_time: None,
             },
         ));
         let paid = envelope(FederationOperation::MeltQuotePayment(
@@ -2543,8 +2566,10 @@ mod tests {
                 state: MeltQuoteState::Paid,
                 amount: Amount::from(10),
                 fee_reserve: Amount::from(1),
+                payment_id: None,
                 payment_proof: Some("preimage".to_string()),
                 failure_reason: None,
+                observed_time: None,
             },
         ));
         let conflicting_paid = envelope(FederationOperation::MeltQuotePayment(
@@ -2555,8 +2580,10 @@ mod tests {
                 state: MeltQuoteState::Paid,
                 amount: Amount::from(10),
                 fee_reserve: Amount::from(1),
+                payment_id: None,
                 payment_proof: Some("different-preimage".to_string()),
                 failure_reason: None,
+                observed_time: None,
             },
         ));
 
@@ -2575,10 +2602,13 @@ mod tests {
             state: MintQuoteState::Paid,
             amount_paid: Amount::from(10),
             amount_issued: Amount::ZERO,
+            payment_id: Some(PaymentIdentifier::CustomId("payment-a".to_string())),
             payment_proof: Some("settled".to_string()),
+            observed_time: Some(11),
         };
         let matching_second = FederationMintQuotePaymentObservation {
             observer: member_id(2),
+            observed_time: Some(22),
             ..first.clone()
         };
         let conflicting_third = FederationMintQuotePaymentObservation {
@@ -2590,6 +2620,11 @@ mod tests {
         let conflicting_first = FederationMintQuotePaymentObservation {
             amount_paid: Amount::from(12),
             payment_proof: Some("same-member-different-settlement".to_string()),
+            ..first.clone()
+        };
+        let different_payment_id = FederationMintQuotePaymentObservation {
+            observer: member_id(4),
+            payment_id: Some(PaymentIdentifier::CustomId("payment-b".to_string())),
             ..first.clone()
         };
 
@@ -2619,11 +2654,20 @@ mod tests {
         assert_eq!(single.matching_count(), 1);
         assert!(!single.has_conflicts());
 
-        let quorum = first.quorum([&matching_second, &conflicting_third], 2);
+        assert!(first.matches_payment_evidence(&matching_second));
+        assert!(!first.matches_payment_evidence(&different_payment_id));
+
+        let quorum = first.quorum(
+            [&matching_second, &conflicting_third, &different_payment_id],
+            2,
+        );
         assert!(quorum.is_reached());
         assert!(quorum.has_conflicts());
         assert_eq!(quorum.matching_observers, vec![member_id(1), member_id(2)]);
-        assert_eq!(quorum.conflicting_observers, vec![member_id(3)]);
+        assert_eq!(
+            quorum.conflicting_observers,
+            vec![member_id(3), member_id(4)]
+        );
     }
 
     #[test]
@@ -2637,7 +2681,9 @@ mod tests {
                 state: MintQuoteState::Paid,
                 amount_paid: Amount::from(10),
                 amount_issued: Amount::ZERO,
+                payment_id: None,
                 payment_proof: Some("settled".to_string()),
+                observed_time: None,
             }),
         );
         let matching_second = payment_record(
@@ -2649,7 +2695,9 @@ mod tests {
                 state: MintQuoteState::Paid,
                 amount_paid: Amount::from(10),
                 amount_issued: Amount::ZERO,
+                payment_id: None,
                 payment_proof: Some("settled".to_string()),
+                observed_time: None,
             }),
         );
         let conflicting_third = payment_record(
@@ -2661,7 +2709,9 @@ mod tests {
                 state: MintQuoteState::Paid,
                 amount_paid: Amount::from(11),
                 amount_issued: Amount::ZERO,
+                payment_id: None,
                 payment_proof: Some("different-settlement".to_string()),
+                observed_time: None,
             }),
         );
 
@@ -2787,7 +2837,9 @@ mod tests {
                 state: MintQuoteState::Unpaid,
                 amount_paid: Amount::ZERO,
                 amount_issued: Amount::ZERO,
+                payment_id: None,
                 payment_proof: None,
+                observed_time: None,
             }),
         );
         let paid = payment_record(
@@ -2799,7 +2851,9 @@ mod tests {
                 state: MintQuoteState::Paid,
                 amount_paid: Amount::from(10),
                 amount_issued: Amount::ZERO,
+                payment_id: None,
                 payment_proof: Some("settled".to_string()),
+                observed_time: None,
             }),
         );
 
@@ -2828,8 +2882,10 @@ mod tests {
                 state: MeltQuoteState::Pending,
                 amount: Amount::from(10),
                 fee_reserve: Amount::from(1),
+                payment_id: None,
                 payment_proof: None,
                 failure_reason: None,
+                observed_time: None,
             }),
         );
         let paid = payment_record(
@@ -2841,8 +2897,10 @@ mod tests {
                 state: MeltQuoteState::Paid,
                 amount: Amount::from(10),
                 fee_reserve: Amount::from(1),
+                payment_id: None,
                 payment_proof: Some("preimage".to_string()),
                 failure_reason: None,
+                observed_time: None,
             }),
         );
         let failed = payment_record(
@@ -2854,8 +2912,10 @@ mod tests {
                 state: MeltQuoteState::Failed,
                 amount: Amount::from(10),
                 fee_reserve: Amount::from(1),
+                payment_id: None,
                 payment_proof: None,
                 failure_reason: Some("route failed".to_string()),
+                observed_time: None,
             }),
         );
 
@@ -2911,7 +2971,9 @@ mod tests {
                 state: MintQuoteState::Paid,
                 amount_paid: Amount::from(10),
                 amount_issued: Amount::ZERO,
+                payment_id: None,
                 payment_proof: Some("settled".to_string()),
+                observed_time: None,
             });
         let mint = mint_operation(
             "mint-quote",
@@ -3011,7 +3073,9 @@ mod tests {
                 state: MintQuoteState::Paid,
                 amount_paid: Amount::from(10),
                 amount_issued: Amount::from(4),
+                payment_id: None,
                 payment_proof: Some("settled".to_string()),
+                observed_time: None,
             });
         let audit = mint_payment.balance_audit().expect("mint payment audit");
         assert_eq!(
@@ -3061,8 +3125,10 @@ mod tests {
                 state: MeltQuoteState::Paid,
                 amount: Amount::from(7),
                 fee_reserve: Amount::from(1),
+                payment_id: None,
                 payment_proof: Some("preimage".to_string()),
                 failure_reason: None,
+                observed_time: None,
             });
         let audit = melt_payment.balance_audit().expect("melt payment audit");
         assert_eq!(
@@ -3083,7 +3149,9 @@ mod tests {
                 state: MintQuoteState::Paid,
                 amount_paid: Amount::from(4),
                 amount_issued: Amount::from(5),
+                payment_id: None,
                 payment_proof: Some("settled".to_string()),
+                observed_time: None,
             });
 
         assert!(matches!(
