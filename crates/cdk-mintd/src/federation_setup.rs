@@ -1984,11 +1984,22 @@ validate_quarantine_members() {{
   fi
 }}
 
-validate_smoke_settings() {{
-  if ! [[ "$OFFLINE_OPERATION_BATCHES" =~ ^[1-9][0-9]*$ ]]; then
-    printf 'OFFLINE_OPERATION_BATCHES must be a positive integer\n' >&2
+require_positive_integer() {{
+  local name="$1"
+  local value="$2"
+  if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
+    printf '%s must be a positive integer\n' "$name" >&2
     return 1
   fi
+}}
+
+validate_smoke_settings() {{
+  require_positive_integer STATUS_RETRIES "$STATUS_RETRIES" || return 1
+  require_positive_integer STATUS_SLEEP_SECONDS "$STATUS_SLEEP_SECONDS" || return 1
+  require_positive_integer SMOKE_QUOTE_RETRIES "$SMOKE_QUOTE_RETRIES" || return 1
+  require_positive_integer SMOKE_QUOTE_SLEEP_MS "$SMOKE_QUOTE_SLEEP_MS" || return 1
+  require_positive_integer SMOKE_OPERATION_TIMEOUT_SECONDS "$SMOKE_OPERATION_TIMEOUT_SECONDS" || return 1
+  require_positive_integer OFFLINE_OPERATION_BATCHES "$OFFLINE_OPERATION_BATCHES" || return 1
   if (( OFFLINE_OPERATION_BATCHES > 255 )); then
     printf 'OFFLINE_OPERATION_BATCHES must be 255 or lower\n' >&2
     return 1
@@ -2643,7 +2654,14 @@ mod tests {
             .contains("\"$CDK_MINTD_BIN\" --work-dir \"$work_dir\" --config \"$config\""));
         assert!(smoke_script.contains("env \"${mintd_env[@]}\" \"$CDK_MINTD_BIN\""));
         assert!(smoke_script.contains("validate_smoke_settings()"));
-        assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES must be a positive integer"));
+        assert!(smoke_script.contains("require_positive_integer()"));
+        assert!(smoke_script.contains("printf '%s must be a positive integer"));
+        assert!(smoke_script.contains("require_positive_integer STATUS_RETRIES"));
+        assert!(smoke_script.contains("require_positive_integer STATUS_SLEEP_SECONDS"));
+        assert!(smoke_script.contains("require_positive_integer SMOKE_QUOTE_RETRIES"));
+        assert!(smoke_script.contains("require_positive_integer SMOKE_QUOTE_SLEEP_MS"));
+        assert!(smoke_script.contains("require_positive_integer SMOKE_OPERATION_TIMEOUT_SECONDS"));
+        assert!(smoke_script.contains("require_positive_integer OFFLINE_OPERATION_BATCHES"));
         assert!(smoke_script.contains("OFFLINE_OPERATION_BATCHES must be 255 or lower"));
         assert!(smoke_script.contains("member_payment_report_lines()"));
         assert!(smoke_script.contains("--context mint-quote"));
