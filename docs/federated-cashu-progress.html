@@ -526,19 +526,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 118 remaining items after expanding Milestone 4A into an explicit AlephBFT strict-order consensus and idempotent mint/swap/melt API checklist. The repo now has a fast `fed-regtest-check` helper for federation smoke/setup cargo-test coverage, and Axum peer-sync policy, signed peer-client code, private DKG setup routes, signed catch-up routes, private status routes, and payment-observation report assembly now live in focused child modules.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 118 remaining items after expanding Milestone 4A into an explicit AlephBFT strict-order consensus and idempotent mint/swap/melt API checklist. The repo now has a fast `fed-regtest-check` helper for federation smoke/setup cargo-test coverage, and Axum peer-sync policy, peer-sync orchestration, signed peer-client code, private DKG setup routes, signed catch-up routes, private status routes, and payment-observation report assembly now live in focused child modules.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: split axum payment observation reports</span>
+          <span class="value">refactor: split axum peer sync loop</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`crates/cdk-axum/src/federation/payment_observation.rs` now owns local-status payment-observation report assembly, including journal-derived observation/quarantine summaries and quote-age enrichment.</span>
+          <span class="value">`crates/cdk-axum/src/federation/sync_loop.rs` now owns periodic peer sync, reconnect-aware rounds, session-outcome evidence collection, primary forwarding, and peer-client catch-up/materialized-digest checks.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue the Axum split toward the peer sync loop module, then start replacing the development consensus backend with the Milestone 4A AlephBFT data-provider/finalization path.</span>
+          <span class="value">Start replacing the development consensus backend with the Milestone 4A AlephBFT data-provider/finalization path, keeping the shared status, journal, and materialized-state helpers ready for later extraction if needed.</span>
         </div>
       </aside>
     </header>
@@ -788,6 +788,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Axum peer sync loop split out</h3>
+            <p>Periodic peer sync, reconnect-aware sync rounds, session-outcome evidence collection, primary forwarding, and peer-client catch-up/materialized-digest checks now live in `federation/sync_loop.rs`.</p>
+          </article>
           <article class="item">
             <h3>Axum payment reports split out</h3>
             <p>Local-status payment-observation report assembly now lives in `federation/payment_observation.rs`, keeping journal-derived observation/quarantine summaries and quote-age enrichment out of the parent private REST route module.</p>
@@ -2358,6 +2362,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo check -p cdk-axum --features federation`, `cargo test -p cdk-axum --features federation private_local_status_route_reports_payment_observation_conflicts -- --test-threads 1`, `cargo test -p cdk-axum --features federation private_local_status_route_reports_stale_payment_observations -- --test-threads 1`, and `cargo test -p cdk-axum --features federation private_local_status_route -- --test-threads 1` passed after moving payment-observation report assembly into `crates/cdk-axum/src/federation/payment_observation.rs`.</td>
               <td>Continue the Axum split toward the peer sync loop while keeping shared quorum, durable journal, and materialized-state helpers in the parent until the next cohesive extraction.</td>
+            </tr>
+            <tr>
+              <td>Axum peer sync loop split</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo check -p cdk-axum --features federation`, `cargo test -p cdk-axum --features federation peer_sync_round -- --test-threads 1`, and `cargo test -p cdk-axum --features federation peer_sync -- --test-threads 1` passed after moving peer sync orchestration into `crates/cdk-axum/src/federation/sync_loop.rs`. `cargo test -p cdk-axum --features federation rest_peer_client -- --test-threads 1` passed 18 of 19 sandbox-runnable tests; the listener-bound `rest_peer_client_submits_dkg_setup_messages_over_http` test passed separately with loopback bind permission.</td>
+              <td>Use the sync-loop boundary as the host for the next production consensus adapter work: AlephBFT pending-item draining, finalization handling, session-outcome evidence, and catch-up readiness.</td>
             </tr>
             <tr>
               <td>Fedimint consensus review and Milestone 4A</td>
