@@ -637,6 +637,74 @@ fn transport_config_with_federation_api_urls(
     (bundle.public_config, first_private, second_private)
 }
 
+fn transport_config_three() -> (
+    FederationConfig,
+    MemberConfigPrivate,
+    MemberConfigPrivate,
+    MemberConfigPrivate,
+) {
+    let members = vec![
+        TrustedDealerMember::new(
+            member_id(1),
+            MintUrl::from_str("https://mint1.example.com").expect("public mint url"),
+            MintUrl::from_str("https://fed1.example.com/api").expect("federation api url"),
+            SecretKey::from_slice(&[1; 32]).expect("identity secret"),
+        ),
+        TrustedDealerMember::new(
+            member_id(2),
+            MintUrl::from_str("https://mint2.example.com").expect("public mint url"),
+            MintUrl::from_str("https://fed2.example.com/api").expect("federation api url"),
+            SecretKey::from_slice(&[2; 32]).expect("identity secret"),
+        ),
+        TrustedDealerMember::new(
+            member_id(3),
+            MintUrl::from_str("https://mint3.example.com").expect("public mint url"),
+            MintUrl::from_str("https://fed3.example.com/api").expect("federation api url"),
+            SecretKey::from_slice(&[3; 32]).expect("identity secret"),
+        ),
+    ];
+    let keyset = TrustedDealerKeysetSpec::new(
+        CurrencyUnit::Sat,
+        true,
+        0,
+        None,
+        BTreeMap::from([(
+            Amount::from(1),
+            vec![
+                BlsSecretKey::from_reduced_bytes(&[11; 32]),
+                BlsSecretKey::from_reduced_bytes(&[12; 32]),
+            ],
+        )]),
+    );
+    let bundle = generate_trusted_dealer_configs(
+        ThresholdParams::new(3, 2, 2).expect("threshold params"),
+        members,
+        vec![keyset],
+    )
+    .expect("trusted dealer bundle");
+    let first_private = bundle
+        .private_configs
+        .get(&member_id(1))
+        .expect("first private config")
+        .clone();
+    let second_private = bundle
+        .private_configs
+        .get(&member_id(2))
+        .expect("second private config")
+        .clone();
+    let third_private = bundle
+        .private_configs
+        .get(&member_id(3))
+        .expect("third private config")
+        .clone();
+    (
+        bundle.public_config,
+        first_private,
+        second_private,
+        third_private,
+    )
+}
+
 async fn federation_route_state_with_local_private() -> (
     MintState,
     FederationConfig,
@@ -648,6 +716,26 @@ async fn federation_route_state_with_local_private() -> (
         federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
 
     (state, public_config, local_private, peer_private)
+}
+
+async fn federation_route_state_three_with_local_private() -> (
+    MintState,
+    FederationConfig,
+    MemberConfigPrivate,
+    MemberConfigPrivate,
+    MemberConfigPrivate,
+) {
+    let (public_config, first_private, second_private, third_private) = transport_config_three();
+    let state =
+        federation_route_state_for_private(public_config.clone(), first_private.clone()).await;
+
+    (
+        state,
+        public_config,
+        first_private,
+        second_private,
+        third_private,
+    )
 }
 
 async fn federation_route_state_for_private(
@@ -1962,10 +2050,11 @@ async fn rest_peer_client_rejects_oversized_operation_before_broadcast() {
 
 #[tokio::test]
 async fn rest_peer_client_catches_up_local_consensus_from_member() {
-    let (state, public_config, local_private, peer_private) =
-        federation_route_state_with_local_private().await;
+    let (state, public_config, local_private, peer_private, witness_private) =
+        federation_route_state_three_with_local_private().await;
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
+    let witness_member = public_config.member(member_id(3)).expect("witness member");
     let first = restore_envelope(
         federation_id,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
@@ -1989,8 +2078,10 @@ async fn rest_peer_client_catches_up_local_consensus_from_member() {
     let catch_up_response = peer_consensus
         .catch_up_checked(&local_consensus.lock().await.catch_up_request())
         .expect("peer catch-up response");
+    let witness_response = signed_catch_up_response(catch_up_response.clone(), &witness_private);
     let transport = MockFederationTransport::default()
-        .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private));
+        .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private))
+        .with_catch_up_response(witness_response);
     let client = FederationRestPeerClient::new_with_config(
         transport.clone(),
         &public_config,
@@ -2030,16 +2121,29 @@ async fn rest_peer_client_catches_up_local_consensus_from_member() {
         .get_federation_session_outcomes()
         .await
         .expect("persisted session outcomes");
-    assert_eq!(persisted_outcomes.len(), 1);
+    assert_eq!(persisted_outcomes.len(), 2);
     assert_eq!(persisted_outcomes[0].from_index, 1);
-    assert_eq!(persisted_outcomes[0].signer, peer_member.member_id);
+    assert_eq!(persisted_outcomes[1].from_index, 1);
+    let persisted_signers = persisted_outcomes
+        .iter()
+        .map(|outcome| outcome.signer)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        persisted_signers,
+        BTreeSet::from([peer_member.member_id, witness_member.member_id])
+    );
     let requests = transport.catch_up_requests();
-    assert_eq!(requests.len(), 1);
+    assert_eq!(requests.len(), 2);
     requests[0]
         .verify(&public_config, peer_member.member_id)
         .expect("signed catch-up request");
     assert_eq!(requests[0].payload.next_index, 1);
     assert_eq!(requests[0].payload.limit, Some(7));
+    requests[1]
+        .verify(&public_config, witness_member.member_id)
+        .expect("signed witness catch-up request");
+    assert_eq!(requests[1].payload.next_index, 1);
+    assert_eq!(requests[1].payload.limit, Some(1));
 }
 
 #[tokio::test]
@@ -2142,10 +2246,13 @@ async fn rest_peer_client_rejects_unsigned_nonempty_catch_up_response() {
         .await
         .expect_err("unsigned response must fail");
 
-    assert!(matches!(
-        err.downcast_ref::<FederationError>(),
-        Some(FederationError::SessionOutcomeMismatch { .. })
-    ));
+    let err = err.to_string();
+    assert!(
+        err.contains(
+            "Federation session outcome mismatch: non-empty catch-up response missing outcome"
+        ),
+        "unexpected unsigned catch-up error: {err}"
+    );
     assert_eq!(
         local_consensus.lock().await.peer_status().operation_count,
         1
@@ -2210,8 +2317,8 @@ async fn divergent_non_primary_refuses_public_submit_before_forwarding() {
 
 #[tokio::test]
 async fn rest_peer_client_sync_requires_quorum_evidence_before_public_submit() {
-    let (state, public_config, local_private, peer_private) =
-        federation_route_state_with_local_private().await;
+    let (state, public_config, local_private, peer_private, witness_private) =
+        federation_route_state_three_with_local_private().await;
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
     let peer_entry = restore_envelope(
@@ -2228,9 +2335,11 @@ async fn rest_peer_client_sync_requires_quorum_evidence_before_public_submit() {
         catch_up_response_with_materialized_digest(&state, &peer_consensus, &catch_up_request)
             .await;
     let peer_status = peer_status_with_materialized_digest(&state, &peer_consensus).await;
+    let witness_response = signed_catch_up_response(catch_up_response.clone(), &witness_private);
     let transport = MockFederationTransport::default()
         .with_status_response(peer_status)
-        .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private));
+        .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private))
+        .with_catch_up_response(witness_response);
     let client =
         FederationRestPeerClient::new(transport, &public_config, local_private).expect("client");
 
@@ -2258,8 +2367,8 @@ async fn rest_peer_client_sync_requires_quorum_evidence_before_public_submit() {
 
 #[tokio::test]
 async fn peer_sync_round_catches_up_from_configured_peer() {
-    let (state, public_config, local_private, peer_private) =
-        federation_route_state_with_local_private().await;
+    let (state, public_config, local_private, peer_private, witness_private) =
+        federation_route_state_three_with_local_private().await;
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
     let peer_entry = restore_envelope(
@@ -2276,9 +2385,11 @@ async fn peer_sync_round_catches_up_from_configured_peer() {
         catch_up_response_with_materialized_digest(&state, &peer_consensus, &catch_up_request)
             .await;
     let peer_status = peer_status_with_materialized_digest(&state, &peer_consensus).await;
+    let witness_response = signed_catch_up_response(catch_up_response.clone(), &witness_private);
     let transport = MockFederationTransport::default()
         .with_status_response(peer_status)
-        .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private));
+        .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private))
+        .with_catch_up_response(witness_response);
     let client =
         FederationRestPeerClient::new(transport, &public_config, local_private).expect("client");
 
@@ -2939,8 +3050,8 @@ async fn rest_peer_client_uses_status_as_cheap_order_status() {
 
 #[tokio::test(start_paused = true)]
 async fn rest_peer_client_detects_catch_up_materialized_state_mismatch() {
-    let (state, public_config, local_private, _) =
-        federation_route_state_with_local_private().await;
+    let (state, public_config, local_private, peer_private, witness_private) =
+        federation_route_state_three_with_local_private().await;
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
     let peer_entry = restore_envelope(
@@ -2957,10 +3068,11 @@ async fn rest_peer_client_detects_catch_up_materialized_state_mismatch() {
         .catch_up_checked(&catch_up_request)
         .expect("peer catch-up response");
     catch_up_response.state_digest = cdk::federation::FederationStateDigest::from_bytes([9; 32]);
-    let peer_private = private_member(2);
+    let witness_response = signed_catch_up_response(catch_up_response.clone(), &witness_private);
     let transport = MockFederationTransport::default()
         .with_status_response(peer_consensus.peer_status())
-        .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private));
+        .with_catch_up_response(signed_catch_up_response(catch_up_response, &peer_private))
+        .with_catch_up_response(witness_response);
     let digest_recheck_delay = Duration::from_secs(2);
     let client = FederationRestPeerClient::new_with_config(
         transport,

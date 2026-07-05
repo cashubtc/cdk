@@ -88,7 +88,10 @@ Current confirmed shape:
 - Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes and request transcripts, in-memory consensus boundary, private REST peer envelopes, federation journal persistence, dedicated federation signature-share and retained state-digest checkpoint persistence, operation-hash/output-index signature-share restore provenance, mint/swap/melt/restore/check-state apply paths, deterministic single-member production melt payment attempts, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
 - Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, future deterministic binary operation encoding if a later operation version needs it, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
 - Test-suite status: focused federation replay, peer-sync, peer reconnect backoff, remote pubsub reconnect backoff, peer evidence/backoff, mintd peer-sync config wiring, SQLite federation storage/query plans, SQLite empty federation migration application, live Postgres federation migration/storage coverage, feature-disabled SQLite legacy migration, standalone mint issue/swap regressions, standalone builder keyset-version regression, standalone DbSignatory regressions, session-outcome, trusted-dealer setup, trusted-dealer fakewallet regtest opt-in, deterministic accepted-time mint quote replay, operation balance audit, source- and manifest-enforced fakewallet coupling audits, deterministic trusted-dealer fixture generation, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, payment-observation metadata/idempotence, backend-agnostic production payment-path audits, deterministic single-member production melt payment actor tests, mint storage hot-path index query-plan tests, always-on mint payment observer, durable state-digest checkpoint persistence and retention, backend-agnostic signature-share persistence, operation-hash/output-index restore provenance, fakewallet coupling audit, wallet member request timeout/retry policy tests, federation invite-code discovery tests, wallet quote-visibility and matching mint-quote status quorum tests, consensus test-module split coverage, canonical request transcript tests for NUT-20 and SIG_ALL, federated NUT-20 single and batch issuance tests, P2PK/HTLC/SIG_ALL canonical swap transcript tests, NUT-19 retry backoff, federation protocol-version metadata, mixed-version runtime and wallet rejection, stale-upgrade consensus item and catch-up rejection, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, federated swap input-reuse attack regression, and `cdk-axum` federation tests were run for recent checkpoints. The broad feature-disabled library gate `cargo test --lib --workspace --exclude cdk-postgres` passed on 2026-07-05, and the broad feature-enabled compile gate `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed on 2026-07-05.
-- Latest checkpoint: consensus runtime tests and fixtures were moved into `federation/consensus/tests.rs`, and the focused consensus suite still passes.
+- Latest checkpoint: Axum REST peer sync now gathers matching quorum-signed
+  session outcomes for a catch-up range before applying peer journal entries,
+  persists the evidence atomically with the replayed entries, and keeps the
+  materialized-state digest/readiness guard after replay.
 
 ## Key observations
 
@@ -538,9 +541,12 @@ Architecture checklist:
   journal persistence now round-trips those fields. Full signed session-outcome
   quorum linkage remains in the existing session-outcome table; core consensus
   now exposes `apply_catch_up_response_with_session_outcome_quorum` so replay can
-  require quorum-signed evidence before appending peer entries. Startup and Axum
-  sync still need to route durable replay/readiness through this certified path
-  before this item is complete.
+  require quorum-signed evidence before appending peer entries. Axum REST peer
+  sync now collects matching session outcomes from other peers for the exact
+  catch-up range, applies through the quorum-verified replay primitive, and
+  persists the accepted range plus evidence in one database transaction before
+  reopening readiness. Startup replay still needs a final audit once the
+  production BFT backend owns durable finalized-item recovery.
 - [ ] Persist enough AlephBFT unit state and accepted item state to recover after
   crashes without replaying an item twice or losing a finalized item.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing

@@ -1229,6 +1229,7 @@ impl MintState {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn apply_federation_catch_up_response(
         &self,
         response: &FederationJournalCatchUpResponse,
@@ -1249,6 +1250,78 @@ impl MintState {
 
         self.persist_federation_journal_entries(&applied, response.session_outcome.as_ref(), None)
             .await?;
+        *consensus = next_consensus;
+        drop(consensus);
+        self.apply_federation_journal_entries(&applied).await?;
+
+        Ok(applied)
+    }
+
+    pub(crate) async fn apply_federation_catch_up_response_with_session_outcome_quorum(
+        &self,
+        response: &FederationJournalCatchUpResponse,
+        additional_outcomes: &[FederationSessionOutcome],
+    ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
+        let consensus = self.federation_consensus.as_ref().ok_or_else(|| {
+            cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
+        })?;
+        let public_config = self.federation_public_config()?;
+        let mut consensus = consensus.lock().await;
+        let mut next_consensus = consensus.clone();
+        let response_to_apply = catch_up_response_suffix_for_local_journal(
+            next_consensus.journal().entries(),
+            response,
+        )?;
+        let applied = match response_to_apply.as_ref() {
+            Some(response_to_apply) => {
+                if response_to_apply.from_index != response.from_index
+                    || response_to_apply.entries.len() != response.entries.len()
+                {
+                    return Err(cdk::Error::Federation(
+                        FederationError::SessionOutcomeMismatch {
+                            reason: "signed catch-up evidence does not cover the local suffix"
+                                .to_string(),
+                        },
+                    ));
+                }
+                next_consensus
+                    .apply_catch_up_response_with_session_outcome_quorum(
+                        response_to_apply,
+                        &public_config,
+                        additional_outcomes,
+                    )?
+                    .applied_entries
+            }
+            None => Vec::new(),
+        };
+
+        let mut session_outcomes = Vec::new();
+        if let Some(session_outcome) = response.session_outcome.as_ref() {
+            session_outcomes.push(session_outcome);
+        }
+        session_outcomes.extend(additional_outcomes.iter());
+        for session_outcome in &session_outcomes {
+            let member =
+                public_config
+                    .member(session_outcome.signer)
+                    .ok_or(cdk::Error::Federation(FederationError::UnknownMember {
+                        member_id: session_outcome.signer,
+                    }))?;
+            session_outcome.verify(
+                member,
+                response.federation_id,
+                response.from_index,
+                &response.entries,
+                response.latest_order_digest,
+                response.state_digest,
+            )?;
+        }
+        self.persist_federation_journal_entries_with_session_outcomes(
+            &applied,
+            &session_outcomes,
+            None,
+        )
+        .await?;
         *consensus = next_consensus;
         drop(consensus);
         self.apply_federation_journal_entries(&applied).await?;
@@ -1611,12 +1684,27 @@ impl MintState {
         session_outcome: Option<&FederationSessionOutcome>,
         sequence: Option<(MemberId, u64)>,
     ) -> Result<(), cdk::Error> {
+        let session_outcomes = session_outcome.into_iter().collect::<Vec<_>>();
+        self.persist_federation_journal_entries_with_session_outcomes(
+            entries,
+            &session_outcomes,
+            sequence,
+        )
+        .await
+    }
+
+    async fn persist_federation_journal_entries_with_session_outcomes(
+        &self,
+        entries: &[FederationJournalEntry],
+        session_outcomes: &[&FederationSessionOutcome],
+        sequence: Option<(MemberId, u64)>,
+    ) -> Result<(), cdk::Error> {
         let db = self.mint.localstore();
         let mut tx = db.begin_transaction().await?;
         for entry in entries {
             tx.add_federation_journal_entry(entry).await?;
         }
-        if let Some(session_outcome) = session_outcome {
+        for session_outcome in session_outcomes {
             tx.add_federation_session_outcome(session_outcome).await?;
         }
         if let Some((sender, sequence)) = sequence {

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use cdk::federation::{
     FederationConsensusEngine, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
     FederationJournalEntry, FederationOperationEnvelope, FederationPeerStatus,
@@ -559,6 +561,104 @@ where
     }
 }
 
+async fn collect_catch_up_session_outcome_quorum<T>(
+    state: &MintState,
+    client: &FederationRestPeerClient<T>,
+    source_member: &MemberConfigPublic,
+    response: &FederationJournalCatchUpResponse,
+) -> anyhow::Result<Vec<FederationSessionOutcome>>
+where
+    T: Transport,
+{
+    if response.entries.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let Some(runtime_config) = state.mint.federation_config() else {
+        anyhow::bail!("mint is not configured as a federation member");
+    };
+    let public_config = runtime_config.public_config();
+    let required = usize::from(public_config.threshold_params.consensus_threshold);
+    let mut signers = BTreeSet::new();
+    if let Some(session_outcome) = response.session_outcome.as_ref() {
+        signers.insert(session_outcome.signer);
+    }
+    if signers.len() >= required {
+        return Ok(Vec::new());
+    }
+
+    let first = response
+        .entries
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("missing entries for catch-up evidence"))?;
+    let limit = u16::try_from(response.entries.len()).map_err(|_| {
+        anyhow::anyhow!(
+            "catch-up response carried too many entries for an evidence request: {}",
+            response.entries.len()
+        )
+    })?;
+    let request = FederationJournalCatchUpRequest::new(response.from_index)
+        .with_limit(limit)
+        .with_known_order_digest(first.previous_order_digest);
+    let mut additional_outcomes = Vec::new();
+
+    for peer in public_config.members.values() {
+        if peer.member_id == runtime_config.member_id()
+            || peer.member_id == source_member.member_id
+            || signers.contains(&peer.member_id)
+        {
+            continue;
+        }
+
+        let peer_response = match client.catch_up(peer, &request).await {
+            Ok(response) => response,
+            Err(err) => {
+                tracing::warn!(
+                    member_id = %peer.member_id,
+                    "Federation catch-up quorum evidence request failed: {}",
+                    err
+                );
+                continue;
+            }
+        };
+        if let Err(err) = verify_session_outcome_evidence_entries(&response.entries, &peer_response)
+        {
+            tracing::warn!(
+                member_id = %peer.member_id,
+                "Federation catch-up quorum evidence did not match peer journal range: {}",
+                err
+            );
+            continue;
+        }
+        let Some(session_outcome) = peer_response.session_outcome else {
+            continue;
+        };
+        if let Err(err) = session_outcome.verify(
+            peer,
+            response.federation_id,
+            response.from_index,
+            &response.entries,
+            response.latest_order_digest,
+            response.state_digest,
+        ) {
+            tracing::warn!(
+                member_id = %peer.member_id,
+                "Federation catch-up quorum evidence signature failed: {}",
+                err
+            );
+            continue;
+        }
+        if signers.insert(session_outcome.signer) {
+            additional_outcomes.push(session_outcome);
+        }
+        if signers.len() >= required {
+            break;
+        }
+    }
+
+    Ok(additional_outcomes)
+}
+
 async fn mark_healthy_after_session_outcome_quorum(state: &MintState, operation_count: u64) {
     match session_outcome_quorum_status(state).await {
         Ok(Some(quorum)) if quorum.from_index == 0 && quorum.operation_count >= operation_count => {
@@ -599,7 +699,14 @@ where
                 .with_limit(self.sync_config.catch_up_limit)
         };
         let response = self.catch_up(member, &request).await?;
-        let applied = state.apply_federation_catch_up_response(&response).await?;
+        let additional_outcomes =
+            collect_catch_up_session_outcome_quorum(state, self, member, &response).await?;
+        let applied = state
+            .apply_federation_catch_up_response_with_session_outcome_quorum(
+                &response,
+                &additional_outcomes,
+            )
+            .await?;
         Ok((response, applied))
     }
 
