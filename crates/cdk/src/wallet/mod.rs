@@ -34,7 +34,7 @@ use crate::nuts::{
 };
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::wallet::p2pk::{P2PK_ACCOUNT, P2PK_PURPOSE};
-use crate::Amount;
+use crate::{Amount, OidcClient};
 
 mod auth;
 pub mod bip321;
@@ -290,6 +290,11 @@ impl Wallet {
             .map_err(|e| Error::SubscriptionError(e.to_string()))
     }
 
+    /// Create an OIDC client using this wallet's mint connector transport.
+    pub fn oidc_client(&self, openid_discovery: String, client_id: Option<String>) -> OidcClient {
+        self.client.oidc_client(openid_discovery, client_id)
+    }
+
     /// Subscribe to mint quote state changes for the given quote IDs and payment method
     #[instrument(skip(self, method))]
     pub async fn subscribe_mint_quote_state(
@@ -422,7 +427,7 @@ impl Wallet {
             let protected_endpoints = mint_info.protected_endpoints();
             let oidc_client = mint_info
                 .openid_discovery()
-                .map(|url| crate::OidcClient::new(url, None));
+                .map(|url| self.oidc_client(url, None));
             let auth_enabled = !protected_endpoints.is_empty()
                 || oidc_client.is_some()
                 || mint_info.bat_max_mint().is_some();
@@ -431,16 +436,18 @@ impl Wallet {
             if auth_enabled {
                 match &*auth_wallet {
                     Some(auth_wallet) => {
-                        let mut current_protected_endpoints =
-                            auth_wallet.protected_endpoints.write().await;
-                        *current_protected_endpoints = protected_endpoints;
+                        {
+                            let mut current_protected_endpoints =
+                                auth_wallet.protected_endpoints.write().await;
+                            *current_protected_endpoints = protected_endpoints;
+                        }
                         auth_wallet.set_oidc_client(oidc_client).await;
                     }
                     None => {
                         tracing::info!("Mint has auth enabled; creating auth wallet");
 
                         let new_auth_wallet = match self.auth_connector.as_ref() {
-                            Some(auth_connector) => AuthWallet::new_with_client(
+                            Some(auth_connector) => AuthWallet::with_auth_client(
                                 self.mint_url.clone(),
                                 self.localstore.clone(),
                                 self.metadata_cache.clone(),
@@ -448,13 +455,13 @@ impl Wallet {
                                 oidc_client,
                                 auth_connector.clone(),
                             ),
-                            None => AuthWallet::new(
+                            None => AuthWallet::with_auth_client(
                                 self.mint_url.clone(),
-                                None,
                                 self.localstore.clone(),
                                 self.metadata_cache.clone(),
                                 protected_endpoints,
                                 oidc_client,
+                                self.client.auth_connector(self.mint_url.clone(), None),
                             ),
                         };
                         *auth_wallet = Some(new_auth_wallet.clone());

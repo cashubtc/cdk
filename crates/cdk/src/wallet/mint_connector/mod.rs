@@ -1,10 +1,11 @@
 //! Wallet client
 
 use std::fmt::Debug;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::{
-    MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
+    AuthToken, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
     MintQuoteResponse,
 };
 
@@ -16,7 +17,8 @@ use crate::nuts::{
     KeySet, KeysetResponse, MeltRequest, MintInfo, MintRequest, MintResponse, PaymentMethod,
     RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
-use crate::wallet::AuthWallet;
+use crate::wallet::{AuthMintConnector, AuthWallet};
+use crate::OidcClient;
 
 pub mod http_client;
 pub mod transport;
@@ -36,6 +38,20 @@ pub type TorHttpClient = http_client::HttpClient<transport::TorAsync>;
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait MintConnector: Debug {
+    /// Create an auth connector using the same underlying transport when possible.
+    fn auth_connector(
+        &self,
+        mint_url: crate::mint_url::MintUrl,
+        cat: Option<AuthToken>,
+    ) -> Arc<dyn AuthMintConnector + Send + Sync> {
+        Arc::new(AuthHttpClient::new(mint_url, cat))
+    }
+
+    /// Create an OIDC client using the same underlying transport when possible.
+    fn oidc_client(&self, openid_discovery: String, client_id: Option<String>) -> OidcClient {
+        OidcClient::new(openid_discovery, client_id)
+    }
+
     /// Connect to a WebSocket endpoint using the connector's transport.
     async fn connect_websocket(
         &self,

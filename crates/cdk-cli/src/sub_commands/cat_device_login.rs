@@ -5,7 +5,6 @@ use anyhow::Result;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::MintInfo;
 use cdk::wallet::WalletRepository;
-use cdk::OidcClient;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
@@ -32,7 +31,8 @@ pub async fn cat_device_login(
 
     let mint_info = wallet_repository.fetch_mint_info(&mint_url).await?;
 
-    let (access_token, refresh_token) = get_device_code_token(&mint_info).await;
+    let (access_token, refresh_token) =
+        get_device_code_token(wallet_repository, &mint_url, &mint_info).await?;
 
     // Save tokens to file in work directory
     if let Err(e) =
@@ -52,56 +52,57 @@ pub async fn cat_device_login(
     Ok(())
 }
 
-async fn get_device_code_token(mint_info: &MintInfo) -> (String, String) {
+async fn get_device_code_token(
+    wallet_repository: &WalletRepository,
+    mint_url: &MintUrl,
+    mint_info: &MintInfo,
+) -> Result<(String, String)> {
     let openid_discovery = mint_info
         .nuts
         .nut21
         .clone()
-        .expect("Nut21 defined")
+        .ok_or_else(|| anyhow::anyhow!("NUT-21 OIDC settings are not defined"))?
         .openid_discovery;
 
     let client_id = mint_info
         .nuts
         .nut21
         .clone()
-        .expect("Nut21 defined")
+        .ok_or_else(|| anyhow::anyhow!("NUT-21 OIDC settings are not defined"))?
         .client_id;
 
-    let oidc_client = OidcClient::new(openid_discovery, None);
+    let oidc_client = wallet_repository
+        .oidc_client_for_mint(mint_url, openid_discovery, None)
+        .await;
 
     // Get the OIDC configuration
-    let oidc_config = oidc_client
-        .get_oidc_config()
-        .await
-        .expect("Failed to get OIDC config");
+    let oidc_config = oidc_client.get_oidc_config().await?;
 
     // Get the device authorization endpoint
     let device_auth_url = oidc_config.device_authorization_endpoint;
 
     // Make the device code request
-    let client = cdk_common::HttpClient::new();
-    let device_code_data: serde_json::Value = client
+    let device_code_data: serde_json::Value = oidc_client
         .post_form(
             &device_auth_url,
-            &[
-                ("client_id", client_id.clone().as_str()),
-                ("scope", "openid offline_access"),
+            vec![
+                ("client_id".to_string(), client_id.clone()),
+                ("scope".to_string(), "openid offline_access".to_string()),
             ],
         )
-        .await
-        .expect("Failed to send device code request");
+        .await?;
 
     let device_code = device_code_data["device_code"]
         .as_str()
-        .expect("No device code in response");
+        .ok_or_else(|| anyhow::anyhow!("No device code in response"))?;
 
     let user_code = device_code_data["user_code"]
         .as_str()
-        .expect("No user code in response");
+        .ok_or_else(|| anyhow::anyhow!("No user code in response"))?;
 
     let verification_uri = device_code_data["verification_uri"]
         .as_str()
-        .expect("No verification URI in response");
+        .ok_or_else(|| anyhow::anyhow!("No verification URI in response"))?;
 
     let verification_uri_complete = device_code_data["verification_uri_complete"]
         .as_str()
@@ -122,39 +123,37 @@ async fn get_device_code_token(mint_info: &MintInfo) -> (String, String) {
     loop {
         sleep(Duration::from_secs(interval)).await;
 
-        let token_response = client
-            .post(&token_url)
-            .form(&[
-                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-                ("device_code", device_code),
-                ("client_id", client_id.clone().as_str()),
-            ])
-            .send()
-            .await
-            .expect("Failed to send token request");
+        let token_response = oidc_client
+            .post_form_response(
+                &token_url,
+                vec![
+                    (
+                        "grant_type".to_string(),
+                        "urn:ietf:params:oauth:grant-type:device_code".to_string(),
+                    ),
+                    ("device_code".to_string(), device_code.to_string()),
+                    ("client_id".to_string(), client_id.clone()),
+                ],
+            )
+            .await?;
 
         if token_response.is_success() {
-            let token_data: serde_json::Value = token_response
-                .json()
-                .await
-                .expect("Failed to parse token response");
+            let token_data: serde_json::Value = token_response.json()?;
 
             let access_token = token_data["access_token"]
                 .as_str()
-                .expect("No access token in response")
+                .ok_or_else(|| anyhow::anyhow!("No access token in response"))?
                 .to_string();
 
             let refresh_token = token_data["refresh_token"]
                 .as_str()
-                .expect("No refresh token in response")
+                .ok_or_else(|| anyhow::anyhow!("No refresh token in response"))?
                 .to_string();
 
-            return (access_token, refresh_token);
+            return Ok((access_token, refresh_token));
         } else {
-            let error_data: serde_json::Value = token_response
-                .json()
-                .await
-                .expect("Failed to parse error response");
+            let status = token_response.status();
+            let error_data: serde_json::Value = token_response.json()?;
 
             let error = error_data["error"].as_str().unwrap_or("unknown_error");
 
@@ -168,7 +167,11 @@ async fn get_device_code_token(mint_info: &MintInfo) -> (String, String) {
                 continue;
             } else {
                 // For other errors, exit with an error message
-                panic!("Authentication failed: {error}");
+                return Err(anyhow::anyhow!(
+                    "Authentication failed with status {}: {}",
+                    status,
+                    error
+                ));
             }
         }
     }

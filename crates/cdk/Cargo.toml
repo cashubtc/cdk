@@ -191,6 +191,7 @@ tracing-subscriber.workspace = true
 criterion.workspace = true
 anyhow.workspace = true
 nwc = { version = "0.44.0", default-features = false }
+serde_urlencoded = { version = "0.7", default-features = false }
 ureq = { version = "3.1.0", features = ["json"] }
 tokio = { workspace = true, features = ["full"] }
 

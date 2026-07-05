@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
+use cdk_common::auth::oidc::{OidcHttpResponse, OidcHttpTransport};
 use cdk_common::{
     nut19, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, Method,
     MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse,
@@ -28,6 +29,7 @@ use crate::nuts::{
     MintRequest, MintResponse, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use crate::wallet::auth::{AuthMintConnector, AuthWallet};
+use crate::OidcClient;
 
 type Cache = (u64, HashSet<(nut19::Method, nut19::Path)>);
 
@@ -81,6 +83,44 @@ where
     mint_url: MintUrl,
     cache_support: Arc<StdRwLock<Cache>>,
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
+}
+
+#[derive(Debug, Clone)]
+struct OidcTransportClient<T>
+where
+    T: Transport + Send + Sync + 'static,
+{
+    transport: Arc<T>,
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+impl<T> OidcHttpTransport for OidcTransportClient<T>
+where
+    T: Transport + Send + Sync + 'static,
+{
+    async fn get(&self, url: &str) -> Result<OidcHttpResponse, HttpError> {
+        let url = Url::parse(url).map_err(|e| HttpError::Other(e.to_string()))?;
+        let response = self.transport.http_get_raw(url, None).await?;
+        let status = response.status();
+        let body = response.bytes().await?;
+        Ok(OidcHttpResponse::new(status, body))
+    }
+
+    async fn post_form(
+        &self,
+        url: &str,
+        params: Vec<(String, String)>,
+    ) -> Result<OidcHttpResponse, HttpError> {
+        let url = Url::parse(url).map_err(|e| HttpError::Other(e.to_string()))?;
+        let response = self
+            .transport
+            .http_post_form_raw(url, None, &params)
+            .await?;
+        let status = response.status();
+        let body = response.bytes().await?;
+        Ok(OidcHttpResponse::new(status, body))
+    }
 }
 
 impl<T> HttpClient<T>
@@ -311,6 +351,28 @@ impl<T> MintConnector for HttpClient<T>
 where
     T: Transport + Send + Sync + 'static,
 {
+    fn auth_connector(
+        &self,
+        mint_url: MintUrl,
+        cat: Option<AuthToken>,
+    ) -> Arc<dyn AuthMintConnector + Send + Sync> {
+        Arc::new(AuthHttpClient::with_transport(
+            mint_url,
+            self.transport.as_ref().clone(),
+            cat,
+        ))
+    }
+
+    fn oidc_client(&self, openid_discovery: String, client_id: Option<String>) -> OidcClient {
+        OidcClient::with_transport(
+            openid_discovery,
+            client_id,
+            Arc::new(OidcTransportClient {
+                transport: self.transport.clone(),
+            }),
+        )
+    }
+
     async fn connect_websocket(
         &self,
         url: &str,
@@ -924,7 +986,6 @@ where
             )),
         }
     }
-
     /// Create new [`AuthHttpClient`] with a provided transport implementation.
     pub fn with_transport(mint_url: MintUrl, transport: T, cat: Option<AuthToken>) -> Self {
         Self {
@@ -1023,7 +1084,7 @@ mod tests {
 
     use async_trait::async_trait;
     use cdk_common::MintQuoteState;
-    use cdk_http_client::HttpError;
+    use cdk_http_client::{HttpError, RawResponse};
     use serde::de::DeserializeOwned;
 
     use super::*;
@@ -1084,6 +1145,21 @@ mod tests {
             serde_json::from_str(&json).map_err(|e| HttpError::Serialization(e.to_string()))
         }
 
+        async fn http_get_raw(
+            &self,
+            url: Url,
+            _auth: Option<AuthToken>,
+        ) -> Result<RawResponse, HttpError> {
+            self.get_urls.lock().expect("lock").push(url.to_string());
+            let json = self
+                .get_response
+                .lock()
+                .expect("lock")
+                .clone()
+                .expect("no mock response set");
+            Ok(RawResponse::new(200, json.into_bytes()))
+        }
+
         async fn http_post<P, R>(
             &self,
             _url: Url,
@@ -1108,6 +1184,29 @@ mod tests {
                 .clone()
                 .expect("no mock response set");
             serde_json::from_str(&json).map_err(|e| HttpError::Serialization(e.to_string()))
+        }
+
+        async fn http_post_form_raw<P>(
+            &self,
+            url: Url,
+            _auth_token: Option<AuthToken>,
+            payload: &P,
+        ) -> Result<RawResponse, HttpError>
+        where
+            P: serde::Serialize + Send + Sync,
+        {
+            self.post_urls.lock().expect("lock").push(url.to_string());
+            let value = serde_json::to_value(payload)
+                .map_err(|e| HttpError::Serialization(e.to_string()))?;
+            *self.captured_payload.lock().expect("lock") = Some(value);
+
+            let json = self
+                .post_response
+                .lock()
+                .expect("lock")
+                .clone()
+                .expect("no mock response set");
+            Ok(RawResponse::new(200, json.into_bytes()))
         }
     }
 

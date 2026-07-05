@@ -20,7 +20,7 @@ use crate::mint_url::MintUrl;
 use crate::nuts::CurrencyUnit;
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 use crate::wallet::mint_connector::transport::TorAsync;
-use crate::Wallet;
+use crate::{OidcClient, Wallet};
 
 /// Data extracted from a token
 ///
@@ -332,6 +332,20 @@ impl WalletRepository {
             .filter(|(key, _)| &key.mint_url == mint_url)
             .map(|(_, wallet)| wallet.clone())
             .collect()
+    }
+
+    /// Create an OIDC client using a wallet connector for this mint when available.
+    #[instrument(skip(self))]
+    pub async fn oidc_client_for_mint(
+        &self,
+        mint_url: &MintUrl,
+        openid_discovery: String,
+        client_id: Option<String>,
+    ) -> OidcClient {
+        match self.get_wallets_for_mint(mint_url).await.into_iter().next() {
+            Some(wallet) => wallet.oidc_client(openid_discovery, client_id),
+            None => OidcClient::new(openid_discovery, client_id),
+        }
     }
 
     /// Check if a specific wallet exists (mint URL + unit combination)

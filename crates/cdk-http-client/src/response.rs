@@ -17,7 +17,7 @@ pub struct RawResponse {
 
 impl RawResponse {
     /// Create a new RawResponse from status and body bytes
-    pub(crate) fn new(status: u16, body: Vec<u8>) -> Self {
+    pub fn new(status: u16, body: Vec<u8>) -> Self {
         Self { status, body }
     }
 
