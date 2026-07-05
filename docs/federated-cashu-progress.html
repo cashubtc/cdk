@@ -525,15 +525,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 560 checked items and 29 remaining items. Live Postgres migration application now has an empty-schema table/index proof, and the federation storage suite is rerunnable against fresh schemas.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The consensus runtime test fixtures now live in a dedicated module, keeping the production consensus file focused while the focused consensus suite remains green.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: verify live postgres federation storage</span>
+          <span class="value">refactor: split consensus federation tests</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Postgres federation tests now prove empty-schema migration application, standalone table preservation, federation table/index presence, and live storage round-trips across the full crate suite.</span>
+          <span class="value">`cdk-common::federation::consensus` now keeps runtime code in `consensus.rs` and moves its 33-test fixture suite into `federation/consensus/tests.rs`.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -548,7 +548,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 560 checked entries and 29 remaining entries. The
+          checklist has 561 checked entries and 28 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Consensus tests split out</h3>
+            <p>The consensus runtime file is now focused on production code, while the large in-memory runtime, queue, catch-up, backend-adapter, and quorum test fixtures live in a dedicated test module.</p>
+          </article>
           <article class="item">
             <h3>Live Postgres storage verified</h3>
             <p>The Postgres federation tests now create fresh schemas for explicit storage cases, prove empty-schema migration application, and pass the full live `cdk-postgres` suite with federation enabled.</p>
@@ -2193,6 +2197,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-postgres --features federation federation_migrations_apply_to_empty_postgres_and_keep_standalone_tables -- --test-threads 1`, `cargo test -p cdk-postgres --features federation federation -- --test-threads 1`, `cargo test -p cdk-postgres --features federation -- --test-threads 1`, and `cargo test -p cdk-sql-common --features federation federation_mint_migrations_cover_sqlite_and_postgres -- --test-threads 1` passed. The live Postgres runs used the local helper database, verified empty-schema migration application, and now allocate fresh schemas for explicit federation storage tests so reruns do not collide with old journal or DKG rows.</td>
               <td>Use the live Postgres suite after future migration changes and carry the fresh-schema harness into any new explicit storage tests.</td>
+            </tr>
+            <tr>
+              <td>Consensus test module split</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1` passed 33 tests after moving the large inline consensus fixtures into `crates/cdk-common/src/federation/consensus/tests.rs`.</td>
+              <td>Continue the same behavior-neutral split pattern for the larger mint, wallet, Axum, local connector, and smoke-helper federation test fixtures.</td>
             </tr>
             <tr>
               <td>Standalone mint and DbSignatory regressions</td>
