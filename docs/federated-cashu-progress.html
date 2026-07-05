@@ -522,15 +522,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 505 checked items and 83 remaining items. SQLite migration coverage now proves empty federation-enabled mint databases keep standalone mint tables and apply all federation tables cleanly.</span>
+          <span class="value">The implementation plan audit tracks 507 checked items and 81 remaining items. Standalone mint and signatory regressions remain green after the federation refactor.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover federation sqlite migration application</span>
+          <span class="value">test: record standalone federation regressions</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Added a file-backed SQLite migration regression that creates a fresh federation-enabled mint database, reopens it through the normal mint database path, and checks both standalone and federation tables.</span>
+          <span class="value">Re-ran standalone mint issue and swap tests, the standalone keyset-version builder regression, and DbSignatory behavior tests to prove the federation work did not break non-federated paths.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -545,7 +545,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 505 checked entries and 83 remaining entries. The
+          checklist has 507 checked entries and 81 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -2084,6 +2084,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-sqlite --features federation federation_migrations_apply_to_empty_sqlite_and_keep_standalone_tables -- --test-threads 1`, `cargo test -p cdk-sqlite --features federation federation_journal_hot_path_indexes_are_used -- --test-threads 1`, `cargo test -p cdk-sql-common --features federation federation_mint_migrations_cover_sqlite_and_postgres -- --test-threads 1`, and feature-disabled `cargo test -p cdk-sqlite open_legacy_and_migrate -- --test-threads 1` passed. The new regression creates a fresh file-backed mint database, reopens it through the normal mint constructor, and verifies standalone mint tables plus federation journal, session-outcome, payment-observation, signature-share, and DKG tables are present.</td>
               <td>Run live Postgres migration application against an available Postgres instance, then add the same empty-database table-presence proof for Postgres.</td>
+            </tr>
+            <tr>
+              <td>Standalone mint and DbSignatory regressions</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --features mint mint::issue -- --test-threads 1` passed 11 tests. `cargo test -p cdk --features mint mint::swap -- --test-threads 1` passed 69 tests. `cargo test -p cdk --features mint mint::builder::tests::test_standalone_builder_honors_non_federation_keyset_versions -- --test-threads 1` passed. `cargo test -p cdk-signatory db_signatory -- --test-threads 1` passed 5 signatory tests.</td>
+              <td>Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, and the remaining real-backend/BFT follow-ups.</td>
             </tr>
             <tr>
               <td>Federation restore share lookup</td>

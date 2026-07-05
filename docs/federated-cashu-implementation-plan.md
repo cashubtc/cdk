@@ -87,8 +87,8 @@ Current confirmed shape:
 
 - Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes and request transcripts, in-memory consensus boundary, private REST peer envelopes, federation journal persistence, dedicated federation signature-share persistence, mint/swap/melt/restore/check-state apply paths, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
 - Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, exact deterministic binary operation encoding, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
-- Test-suite status: focused federation replay, peer-sync, peer reconnect backoff, peer evidence/backoff, mintd peer-sync config wiring, SQLite federation storage/query plans, SQLite empty federation migration application, feature-disabled SQLite legacy migration, session-outcome, trusted-dealer setup, deterministic trusted-dealer fixture generation, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, backend-agnostic signature-share persistence, fakewallet coupling audit, wallet member request timeout/retry policy tests, canonical request transcript tests for NUT-20 and SIG_ALL, federated NUT-20 single and batch issuance tests, P2PK/HTLC/SIG_ALL canonical swap transcript tests, NUT-19 retry backoff, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, federated swap input-reuse attack regression, and `cdk-axum` federation tests were run for recent checkpoints. The broad feature-disabled library gate `cargo test --lib --workspace --exclude cdk-postgres` passed on 2026-07-05, and the broad feature-enabled compile gate `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed on 2026-07-05.
-- Latest checkpoint: SQLite migration coverage now proves a fresh federation-enabled mint database applies all federation tables, keeps normal standalone mint tables, and reopens through the normal mint database constructor; the feature-disabled legacy SQLite migration check still passes.
+- Test-suite status: focused federation replay, peer-sync, peer reconnect backoff, peer evidence/backoff, mintd peer-sync config wiring, SQLite federation storage/query plans, SQLite empty federation migration application, feature-disabled SQLite legacy migration, standalone mint issue/swap regressions, standalone builder keyset-version regression, standalone DbSignatory regressions, session-outcome, trusted-dealer setup, deterministic trusted-dealer fixture generation, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, backend-agnostic signature-share persistence, fakewallet coupling audit, wallet member request timeout/retry policy tests, canonical request transcript tests for NUT-20 and SIG_ALL, federated NUT-20 single and batch issuance tests, P2PK/HTLC/SIG_ALL canonical swap transcript tests, NUT-19 retry backoff, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, federated swap input-reuse attack regression, and `cdk-axum` federation tests were run for recent checkpoints. The broad feature-disabled library gate `cargo test --lib --workspace --exclude cdk-postgres` passed on 2026-07-05, and the broad feature-enabled compile gate `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed on 2026-07-05.
+- Latest checkpoint: standalone mint/signatory regression gates passed after the federation refactor: mint issue, mint swap, standalone builder legacy-keyset behavior, and DbSignatory behavior all remain green with federation disabled.
 
 ## Key observations
 
@@ -517,7 +517,7 @@ Implementation checklist:
 
 Tests and success criteria:
 
-- [ ] Re-run standalone mint tests after the federation refactor.
+- [x] Re-run standalone mint tests after the federation refactor.
 - [x] Applying a valid issue operation twice is idempotent.
 - [x] Applying a same-quote different-output issue after the first issue fails.
 - [x] Applying a swap with already spent inputs fails.
@@ -549,7 +549,7 @@ Tests and success criteria:
 - [x] A member cannot return a final signature in federation mode.
 - [x] A member's share verifies against its public share.
 - [x] Aggregate of shares returned by three members verifies as a normal Cashu blind signature when the configured threshold is three.
-- [ ] Re-run regression coverage proving existing standalone `DbSignatory` behavior is unchanged.
+- [x] Re-run regression coverage proving existing standalone `DbSignatory` behavior is unchanged.
 - [x] A federated member rejects non-BLS keysets for federation signing unless explicitly supported later.
 - [x] A federated member rejects v1/v2 keysets even if they are otherwise valid standalone Cashu keysets.
 
