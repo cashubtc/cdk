@@ -1783,6 +1783,89 @@ fn backend_adapter_runtime_aleph_bft_rejects_finalized_unit_from_unknown_member(
 }
 
 #[test]
+fn backend_adapter_runtime_reports_aleph_bft_status_across_queue_and_finalization() {
+    let federation_id = federation_id(13);
+    let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+    let mut adapter = FederationConsensusBackendAdapterRuntime::with_backend(
+        FederationConsensusBackendKind::AlephBft,
+        federation_id,
+        members,
+        2,
+        members[0],
+    )
+    .expect("aleph-bft adapter runtime");
+    let initial = adapter.aleph_bft_status().expect("initial status");
+
+    assert_eq!(
+        initial.consensus_backend,
+        FederationConsensusBackendKind::AlephBft
+    );
+    assert_eq!(initial.federation_id, federation_id);
+    assert_eq!(initial.local_member, members[0]);
+    assert_eq!(initial.session, 0);
+    assert_eq!(initial.next_unit_index, 0);
+    assert_eq!(initial.next_unit_finalization_index, 0);
+    assert_eq!(initial.next_item_index, 0);
+    assert_eq!(initial.queued_item_count, 0);
+    assert_eq!(initial.finalized_item_count, 0);
+    assert_eq!(initial.accepted_operation_count, 0);
+    assert_eq!(initial.latest_accepted_operation_index, None);
+    assert_eq!(initial.allowed_member_count, Some(3));
+
+    adapter
+        .submit_operation(mint_envelope(
+            federation_id,
+            "quote-status",
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        ))
+        .expect("submit operation");
+    let queued = adapter.aleph_bft_status().expect("queued status");
+    assert_eq!(queued.queued_item_count, 1);
+    assert_eq!(queued.next_unit_index, 0);
+
+    let unit = adapter
+        .next_aleph_bft_unit_payload()
+        .expect("next unit")
+        .expect("unit");
+    let pulled = adapter.aleph_bft_status().expect("pulled status");
+    assert_eq!(pulled.queued_item_count, 0);
+    assert_eq!(pulled.next_unit_index, 1);
+    assert_eq!(pulled.next_unit_finalization_index, 0);
+    assert_eq!(pulled.finalized_item_count, 0);
+
+    adapter
+        .finalize_aleph_bft_unit(unit)
+        .expect("finalize unit");
+    let finalized = adapter.aleph_bft_status().expect("finalized status");
+    assert_eq!(finalized.next_unit_index, 1);
+    assert_eq!(finalized.next_unit_finalization_index, 1);
+    assert_eq!(finalized.next_item_index, 1);
+    assert_eq!(finalized.finalized_item_count, 1);
+    assert_eq!(finalized.accepted_operation_count, 1);
+    assert_eq!(finalized.latest_accepted_operation_index, Some(0));
+}
+
+#[test]
+fn backend_adapter_runtime_rejects_aleph_bft_status_for_in_memory_backend() {
+    let federation_id = federation_id(13);
+    let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+    let adapter = FederationConsensusBackendAdapterRuntime::with_backend(
+        FederationConsensusBackendKind::InMemory,
+        federation_id,
+        members,
+        2,
+        members[0],
+    )
+    .expect("in-memory adapter runtime");
+
+    assert!(matches!(
+        adapter.aleph_bft_status(),
+        Err(FederationError::UnsupportedConsensusBackend { ref backend })
+            if backend == "aleph_bft"
+    ));
+}
+
+#[test]
 fn backend_adapter_keeps_dispatched_operation_pending_without_quorum() {
     let federation_id = federation_id(13);
     let members = [member_id_value(1), member_id_value(2), member_id_value(3)];

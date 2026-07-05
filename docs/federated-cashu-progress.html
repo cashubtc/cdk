@@ -530,11 +530,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: enforce aleph bft member allowlist</span>
+          <span class="value">feat: expose aleph bft adapter status</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The selected AlephBFT adapter runtime now carries the configured member roster into finalization and rejects finalized units from unknown submitting members before any journal or finalized-item state can change.</span>
+          <span class="value">The AlephBFT adapter runtime now exposes a typed status snapshot for session, local unit progress, finalization progress, queued items, finalized items, accepted operations, and roster-bound member count.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -807,6 +807,10 @@
           <article class="item">
             <h3>AlephBFT member allowlist</h3>
             <p>Roster-bound AlephBFT finalization now rejects units from unknown submitting members before advancing unit indexes, marking duplicates, appending accepted journal entries, or recording finalized item metadata.</p>
+          </article>
+          <article class="item">
+            <h3>AlephBFT adapter status</h3>
+            <p>`cdk-common` now exposes a typed AlephBFT adapter status snapshot with backend, federation, local member, session, next unit indexes, queued item count, finalized item count, accepted operation count, latest accepted operation index, and roster-bound member count.</p>
           </article>
           <article class="item">
             <h3>AlephBFT finalization boundary</h3>
@@ -2298,7 +2302,7 @@
             <tr>
               <td>AlephBFT unit/finalization/adapter boundary</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo check -p cdk-common --features federation`, `cargo test -p cdk-common --features federation backend_adapter_runtime_ -- --test-threads 1`, and `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1` passed. The tests cover canonical unit metadata, body-hash/order commitment, operation-ID derivation, tamper rejection, duplicate operation admission, byte-bounded batch draining, finalization metadata assignment, duplicate operation marking, replayed member-unit rejection, session advancement, wrong federation/session rejection, adapter queue draining, externally finalized operation application, accepted-item evidence population, idempotent duplicate responses, invalid-unit rejection before journal append, AlephBFT adapter runtime selection, roster validation before queueing, explicit unit-pull/finalize delivery, fail-closed generic dispatch when no external finalization has occurred, and roster-bound rejection of finalized units from unknown submitting members before state mutation.</td>
+              <td>`cargo check -p cdk-common --features federation`, `cargo test -p cdk-common --features federation backend_adapter_runtime_ -- --test-threads 1`, and `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1` passed. The tests cover canonical unit metadata, body-hash/order commitment, operation-ID derivation, tamper rejection, duplicate operation admission, byte-bounded batch draining, finalization metadata assignment, duplicate operation marking, replayed member-unit rejection, session advancement, wrong federation/session rejection, adapter queue draining, externally finalized operation application, accepted-item evidence population, idempotent duplicate responses, invalid-unit rejection before journal append, AlephBFT adapter runtime selection, roster validation before queueing, explicit unit-pull/finalize delivery, fail-closed generic dispatch when no external finalization has occurred, roster-bound rejection of finalized units from unknown submitting members before state mutation, and status snapshot counters across queue, unit-pull, and finalization transitions.</td>
               <td>Wire the explicit AlephBFT unit-pull/finalize adapter runtime methods into the real AlephBFT runtime/network task before feeding the durable accepted-item journal.</td>
             </tr>
             <tr>
@@ -3750,7 +3754,7 @@
             <tr>
               <td>Consensus adapter runtime selector</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk-common --features federation backend_adapter_runtime_ -- --test-threads 1` passed adapter runtime regressions for selected `in_memory` runtime dispatch, selected `aleph_bft` runtime queue/unit/finalize delivery, fail-closed generic `aleph_bft` dispatch without external finalization, AlephBFT roster validation before queueing, and unknown finalized-unit submitter rejection. `cargo check -p cdk-common --features federation` passed.</td>
+              <td>`cargo test -p cdk-common --features federation backend_adapter_runtime_ -- --test-threads 1` passed adapter runtime regressions for selected `in_memory` runtime dispatch, selected `aleph_bft` runtime queue/unit/finalize delivery, fail-closed generic `aleph_bft` dispatch without external finalization, AlephBFT roster validation before queueing, unknown finalized-unit submitter rejection, AlephBFT status counters, and in-memory rejection of AlephBFT-specific status. `cargo check -p cdk-common --features federation` passed.</td>
               <td>Wire the selected AlephBFT adapter runtime into a real ordering task while preserving the fail-closed separation between local admission and externally finalized responses.</td>
             </tr>
             <tr>

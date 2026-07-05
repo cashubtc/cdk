@@ -580,7 +580,15 @@ Architecture checklist:
   consensus messages, catch-up ranges, and response waiters.
 - [ ] Expose status for AlephBFT session, round, consensus height, pending item
   count, finalized item count, signed session outcome height, catch-up state,
-  member lag, response-cache hit rate, and duplicate submissions.
+  member lag, response-cache hit rate, and duplicate submissions. The
+  `FederationAlephBftAdapterStatus` snapshot now exposes the adapter-visible
+  subset: backend, federation, local member, session, next local unit index,
+  next unit finalization index, next global item index, queued item count,
+  finalized item count, accepted operation count, latest accepted operation
+  index, and roster-bound member count. Full round, signed-session-outcome
+  height, catch-up state, member lag, response-cache, duplicate-submission, and
+  Axum/mintd operator status wiring remain to be added with the production
+  AlephBFT task.
 
 Mint-side restructuring checklist:
 

@@ -307,6 +307,37 @@ impl FederationAlephBftFinalizedUnitOutcome {
     }
 }
 
+/// Operator-facing status for the AlephBFT adapter boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationAlephBftAdapterStatus {
+    /// Consensus backend represented by this status snapshot.
+    pub consensus_backend: FederationConsensusBackendKind,
+    /// Federation whose operations are being ordered.
+    pub federation_id: FederationId,
+    /// Local member producing unit payloads.
+    pub local_member: MemberId,
+    /// Current AlephBFT session accepted by the adapter.
+    pub session: u64,
+    /// Next local unit index that will be used by the data provider.
+    pub next_unit_index: u64,
+    /// Next finalized unit index expected by the finalization handler.
+    pub next_unit_finalization_index: u64,
+    /// Next global finalized consensus-item index.
+    pub next_item_index: u64,
+    /// Number of local consensus items waiting to be proposed.
+    pub queued_item_count: u64,
+    /// Number of finalized consensus items retained by the adapter.
+    pub finalized_item_count: u64,
+    /// Number of accepted operation entries in the adapter journal.
+    pub accepted_operation_count: u64,
+    /// Highest accepted operation index, if any operation has been accepted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_accepted_operation_index: Option<u64>,
+    /// Number of members allowed to submit finalized units, when roster-bound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_member_count: Option<u64>,
+}
+
 /// One item that can enter the federation consensus pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
@@ -838,6 +869,14 @@ impl FederationAlephBftFinalizationHandler {
         self.next_item_index
     }
 
+    /// Return the count of allowed unit submitters when this handler is roster-bound.
+    #[must_use]
+    pub fn allowed_member_count(&self) -> Option<u64> {
+        self.allowed_members
+            .as_ref()
+            .map(|members| u64::try_from(members.len()).expect("member count fits in u64"))
+    }
+
     /// Begin a later session and reset the per-session unit finalization index.
     pub fn begin_session(&mut self, session: u64) -> Result<()> {
         if session <= self.session {
@@ -1071,6 +1110,26 @@ impl FederationAlephBftConsensusAdapter {
     #[must_use]
     pub fn finalized_items(&self) -> &[FederationAlephBftFinalizedItem] {
         &self.finalized_items
+    }
+
+    /// Return an operator-facing status snapshot for this adapter.
+    #[must_use]
+    pub fn status(&self) -> FederationAlephBftAdapterStatus {
+        FederationAlephBftAdapterStatus {
+            consensus_backend: self.backend_kind(),
+            federation_id: self.data_provider.federation_id,
+            local_member: self.data_provider.submitting_member,
+            session: self.session(),
+            next_unit_index: self.next_unit_index(),
+            next_unit_finalization_index: self.finalization_handler.next_unit_finalization_index(),
+            next_item_index: self.next_item_index(),
+            queued_item_count: u64::try_from(self.queued_len()).expect("queue length fits in u64"),
+            finalized_item_count: u64::try_from(self.finalized_items.len())
+                .expect("finalized item count fits in u64"),
+            accepted_operation_count: self.journal.len() as u64,
+            latest_accepted_operation_index: self.journal.entries().last().map(|entry| entry.index),
+            allowed_member_count: self.finalization_handler.allowed_member_count(),
+        }
     }
 
     /// Return this member's current peer status from finalized operations.
@@ -1930,6 +1989,22 @@ impl FederationConsensusBackendAdapterRuntime {
         match &self.backend {
             FederationConsensusBackendAdapterRuntimeBackend::AlephBft(adapter) => {
                 Ok(adapter.finalized_items())
+            }
+            FederationConsensusBackendAdapterRuntimeBackend::InMemory(_) => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: FederationConsensusBackendKind::AlephBft
+                        .as_str()
+                        .to_string(),
+                })
+            }
+        }
+    }
+
+    /// Return AlephBFT adapter status when this runtime uses the AlephBFT adapter.
+    pub fn aleph_bft_status(&self) -> Result<FederationAlephBftAdapterStatus> {
+        match &self.backend {
+            FederationConsensusBackendAdapterRuntimeBackend::AlephBft(adapter) => {
+                Ok(adapter.status())
             }
             FederationConsensusBackendAdapterRuntimeBackend::InMemory(_) => {
                 Err(FederationError::UnsupportedConsensusBackend {
