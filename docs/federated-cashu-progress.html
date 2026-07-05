@@ -525,15 +525,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The consensus runtime, mint, wallet connector, Axum private REST, mintd setup-generator, smoke-operation, status, and DKG-status federation test fixtures now live in dedicated modules, keeping production federation files focused while the focused suites remain green.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The consensus runtime, wallet local connector, mint, wallet connector, Axum private REST, mintd setup-generator, smoke-operation, status, and DKG-status federation test fixtures now live in dedicated modules, keeping production federation files focused while the focused suites remain green.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: split federation dkg status tests</span>
+          <span class="value">refactor: split wallet federation local connector tests</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk-mintd::federation_dkg_status` now keeps DKG-status reporting code in `federation_dkg_status.rs`, with DKG completion, record-merge, persisted-read, and setup-record summary fixtures in `federation_dkg_status/tests.rs`.</span>
+          <span class="value">`cdk::wallet::federation::tests` now keeps the in-process local member connector and local HTTP transport fixtures in `wallet/federation/tests/local_connector.rs`.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Local connector split out</h3>
+            <p>The wallet federation tests now keep in-process member mint connectors and their local HTTP transport adapter in a dedicated helper module, leaving the main wallet federation test suite focused on scenarios and assertions.</p>
+          </article>
           <article class="item">
             <h3>DKG status tests split out</h3>
             <p>The mintd DKG-status command file is now focused on reporting and database-read logic, while DKG completion fixtures, record merge tests, persisted-record reads, and setup-record summary checks live in a dedicated sibling module.</p>
@@ -2273,6 +2277,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite dkg_status -- --test-threads 1` passed 7 DKG-status tests after moving completion fixtures, record merge tests, persisted database reads, and setup-record summary checks into `crates/cdk-mintd/src/federation_dkg_status/tests.rs`.</td>
               <td>Continue reducing inline quarantine and remaining helper fixtures where the split keeps operator command files focused.</td>
+            </tr>
+            <tr>
+              <td>Wallet local connector fixture split</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --features wallet,mint,federation wallet::federation::tests -- --test-threads 1` passed 54 wallet federation tests after moving `LocalFederatedMemberConnector`, `LocalMemberHttpTransport`, and `http_member_connectors` into `crates/cdk/src/wallet/federation/tests/local_connector.rs`.</td>
+              <td>Keep any remaining helper cleanup constrained to fixtures with a clear production-file or scenario-readability benefit.</td>
             </tr>
             <tr>
               <td>Standalone mint and DbSignatory regressions</td>
