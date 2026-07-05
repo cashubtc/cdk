@@ -3,11 +3,14 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cdk_common::federation::{FederatedKeyset, FederationConfig, FederationError, MemberId};
+use cdk_common::federation::{
+    FederatedKeyset, FederationConfig, FederationError, FederationInvite, MemberId,
+};
 use cdk_common::{
     MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
     MintQuoteResponse,
@@ -16,7 +19,7 @@ use futures::future::join_all;
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::FutureExt;
 
-use super::{AuthWallet, MintConnector};
+use super::{AuthWallet, HttpClient, MintConnector};
 use crate::nuts::nut01::{
     aggregate_blind_signature_shares, verify_blind_signature_share, BlsBlindSignatureShare,
 };
@@ -160,6 +163,50 @@ impl FederatedMintConnector {
             member_connectors,
             FederatedMintConnectorConfig::default(),
         )
+    }
+
+    /// Create a wallet connector from a federation invite code.
+    ///
+    /// The invite carries the public federation config. This constructor creates
+    /// a normal HTTP connector for every member's public Cashu mint URL.
+    pub fn from_invite_code(invite_code: &str) -> Result<Self, Error> {
+        Self::from_invite_code_with_config(invite_code, FederatedMintConnectorConfig::default())
+    }
+
+    /// Create a wallet connector from a federation invite code and call policy.
+    pub fn from_invite_code_with_config(
+        invite_code: &str,
+        config: FederatedMintConnectorConfig,
+    ) -> Result<Self, Error> {
+        let invite = FederationInvite::from_str(invite_code)?;
+        Self::from_public_config_urls_with_config(invite.config, config)
+    }
+
+    /// Create a wallet connector from public member URLs in a federation config.
+    pub fn from_public_config_urls(public_config: FederationConfig) -> Result<Self, Error> {
+        Self::from_public_config_urls_with_config(
+            public_config,
+            FederatedMintConnectorConfig::default(),
+        )
+    }
+
+    /// Create a wallet connector from public member URLs and an explicit policy.
+    pub fn from_public_config_urls_with_config(
+        public_config: FederationConfig,
+        config: FederatedMintConnectorConfig,
+    ) -> Result<Self, Error> {
+        let member_connectors = public_config
+            .members
+            .iter()
+            .map(|(member_id, member)| {
+                (
+                    *member_id,
+                    Arc::new(HttpClient::new(member.public_mint_url.clone(), None))
+                        as Arc<dyn MintConnector + Send + Sync>,
+                )
+            })
+            .collect();
+        Self::new_with_config(public_config, member_connectors, config)
     }
 
     /// Create a wallet connector with an explicit member-call policy.
@@ -1921,9 +1968,10 @@ mod tests {
     use bip39::Mnemonic;
     use cdk_common::federation::{
         generate_trusted_dealer_configs, FederatedKeyset, FederationConfig, FederationError,
-        FederationJournalEntry, FederationKeysetRotationOperation, FederationOperation,
-        FederationOperationEnvelope, FederationOperationId, InMemoryFederationJournal, MemberId,
-        ThresholdParams, TrustedDealerConfigBundle, TrustedDealerKeysetSpec, TrustedDealerMember,
+        FederationInvite, FederationJournalEntry, FederationKeysetRotationOperation,
+        FederationOperation, FederationOperationEnvelope, FederationOperationId,
+        InMemoryFederationJournal, MemberId, ThresholdParams, TrustedDealerConfigBundle,
+        TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     use cdk_common::mint::{MeltPaymentRequest, MeltQuote, MintQuote};
     use cdk_common::mint_url::MintUrl;
@@ -3533,6 +3581,37 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn federated_mint_connector_builds_http_members_from_invite_code() {
+        let bundle = threshold_bundle();
+        let invite = FederationInvite::new(bundle.public_config.clone()).expect("invite");
+        let invite_code = invite.to_invite_code().expect("invite code");
+        let config = FederatedMintConnectorConfig {
+            fanout_concurrency: 2,
+            ..FederatedMintConnectorConfig::default()
+        };
+
+        let connector = FederatedMintConnector::from_invite_code_with_config(&invite_code, config)
+            .expect("connector from invite");
+
+        assert_eq!(connector.public_config(), &bundle.public_config);
+        assert_eq!(connector.connector_config(), config);
+        assert_eq!(connector.primary_member_id, member_id(1));
+        assert_eq!(
+            connector
+                .member_connectors
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![member_id(1), member_id(2), member_id(3)]
+        );
+    }
+
+    #[test]
+    fn federated_mint_connector_rejects_invalid_invite_code() {
+        assert!(FederatedMintConnector::from_invite_code("cashuAunsupported").is_err());
     }
 
     #[test]

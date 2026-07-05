@@ -9,6 +9,8 @@ use core::fmt;
 use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet};
 
+use bitcoin::base64::engine::{general_purpose, GeneralPurpose};
+use bitcoin::base64::{alphabet, Engine as _};
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
@@ -91,6 +93,10 @@ const FEDERATION_KEYSET_ROTATION_PROOF_VERSION: &[u8] = b"cdk-federation-keyset-
 const FEDERATION_OPERATOR_REDACTED_VALUE: &str = "[REDACTED]";
 const FEDERATION_OPERATOR_REDACTED_PATH: &str = "[REDACTED_PATH]";
 const FEDERATION_OPERATOR_REDACTED_URL_CREDENTIAL: &str = "redacted";
+/// Versioned prefix for federation invite codes.
+pub const FEDERATION_INVITE_PREFIX: &str = "cashufedA";
+/// Federation invite payload version supported by this build.
+pub const FEDERATION_INVITE_VERSION: u16 = 1;
 
 /// Result alias for federation configuration validation.
 pub type Result<T> = std::result::Result<T, FederationError>;
@@ -933,6 +939,20 @@ pub enum FederationError {
         last: u64,
         /// Sequence carried by the request.
         found: u64,
+    },
+    /// A federation invite code could not be parsed.
+    #[error("Invalid federation invite: {reason}")]
+    InvalidFederationInvite {
+        /// Human-readable parse or validation failure.
+        reason: String,
+    },
+    /// A federation invite code used an unsupported payload version.
+    #[error("Federation invite version mismatch: expected={expected}, found={found}")]
+    FederationInviteVersionMismatch {
+        /// Expected invite payload version.
+        expected: u16,
+        /// Found invite payload version.
+        found: u16,
     },
     /// Hex parsing error.
     #[error(transparent)]
@@ -3675,6 +3695,98 @@ impl MemberConfigPrivate {
     }
 }
 
+/// Portable wallet bootstrap artifact for a static federation.
+///
+/// The invite intentionally contains only the public federation config. Wallets
+/// derive member HTTP connectors from the public mint URLs already committed to
+/// that config, then validate aggregate keysets against live member responses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationInvite {
+    /// Invite payload version.
+    #[serde(default = "current_federation_invite_version")]
+    pub version: u16,
+    /// Public federation config shared by every member.
+    pub config: FederationConfig,
+}
+
+impl FederationInvite {
+    /// Build a validated federation invite from a public config.
+    pub fn new(config: FederationConfig) -> Result<Self> {
+        let invite = Self {
+            version: FEDERATION_INVITE_VERSION,
+            config,
+        };
+        invite.validate()?;
+        Ok(invite)
+    }
+
+    /// Return the public federation config carried by this invite.
+    #[must_use]
+    pub fn public_config(&self) -> &FederationConfig {
+        &self.config
+    }
+
+    /// Validate the invite payload and its public config.
+    pub fn validate(&self) -> Result<()> {
+        if self.version != FEDERATION_INVITE_VERSION {
+            return Err(FederationError::FederationInviteVersionMismatch {
+                expected: FEDERATION_INVITE_VERSION,
+                found: self.version,
+            });
+        }
+        self.config.validate()
+    }
+
+    /// Encode this invite as a versioned, URL-safe invite code.
+    pub fn to_invite_code(&self) -> Result<String> {
+        self.validate()?;
+        let json =
+            serde_json::to_vec(self).map_err(|err| FederationError::InvalidFederationInvite {
+                reason: err.to_string(),
+            })?;
+        let encoded = general_purpose::URL_SAFE_NO_PAD.encode(json);
+        Ok(format!("{FEDERATION_INVITE_PREFIX}{encoded}"))
+    }
+}
+
+impl fmt::Display for FederationInvite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let invite_code = self.to_invite_code().map_err(|_| fmt::Error)?;
+        f.write_str(&invite_code)
+    }
+}
+
+impl FromStr for FederationInvite {
+    type Err = FederationError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        let payload = value
+            .strip_prefix(FEDERATION_INVITE_PREFIX)
+            .ok_or_else(|| FederationError::InvalidFederationInvite {
+                reason: "unsupported invite prefix".to_string(),
+            })?;
+
+        let decode_config = general_purpose::GeneralPurposeConfig::new()
+            .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
+        let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config)
+            .decode(payload)
+            .map_err(|err| FederationError::InvalidFederationInvite {
+                reason: format!("payload is not URL-safe base64: {err}"),
+            })?;
+        let invite = serde_json::from_slice::<Self>(&decoded).map_err(|err| {
+            FederationError::InvalidFederationInvite {
+                reason: err.to_string(),
+            }
+        })?;
+        invite.validate()?;
+        Ok(invite)
+    }
+}
+
+const fn current_federation_invite_version() -> u16 {
+    FEDERATION_INVITE_VERSION
+}
+
 /// Durable public federation config snapshot.
 ///
 /// This snapshot is local member startup state. It stores the public federation
@@ -3860,6 +3972,72 @@ mod tests {
             ),
             private_shares,
         )
+    }
+
+    fn test_public_federation_config() -> FederationConfig {
+        let members = test_roster();
+        let (keyset, _) = test_keyset(&members);
+        let params = ThresholdParams::new(3, 2, 3).expect("threshold params");
+        FederationConfig::new(params, members, vec![keyset]).expect("public config")
+    }
+
+    fn raw_invite_code(invite: &FederationInvite) -> String {
+        let json = serde_json::to_vec(invite).expect("invite json");
+        let encoded = general_purpose::URL_SAFE_NO_PAD.encode(json);
+        format!("{FEDERATION_INVITE_PREFIX}{encoded}")
+    }
+
+    #[test]
+    fn federation_invite_roundtrip_preserves_public_config() {
+        let config = test_public_federation_config();
+        let invite = FederationInvite::new(config.clone()).expect("invite");
+        let invite_code = invite.to_invite_code().expect("invite code");
+
+        assert!(invite_code.starts_with(FEDERATION_INVITE_PREFIX));
+        assert_eq!(invite_code, invite.to_string());
+
+        let parsed = FederationInvite::from_str(&invite_code).expect("parse invite");
+        assert_eq!(parsed.version, FEDERATION_INVITE_VERSION);
+        assert_eq!(parsed.public_config(), &config);
+    }
+
+    #[test]
+    fn federation_invite_rejects_bad_prefix() {
+        let err = FederationInvite::from_str("cashuAunsupported").expect_err("bad prefix");
+
+        assert!(matches!(
+            err,
+            FederationError::InvalidFederationInvite { .. }
+        ));
+    }
+
+    #[test]
+    fn federation_invite_rejects_unknown_payload_version() {
+        let config = test_public_federation_config();
+        let mut invite = FederationInvite::new(config).expect("invite");
+        invite.version = FEDERATION_INVITE_VERSION.saturating_add(1);
+        let invite_code = raw_invite_code(&invite);
+
+        assert!(matches!(
+            FederationInvite::from_str(&invite_code),
+            Err(FederationError::FederationInviteVersionMismatch {
+                expected: FEDERATION_INVITE_VERSION,
+                found,
+            }) if found == FEDERATION_INVITE_VERSION.saturating_add(1)
+        ));
+    }
+
+    #[test]
+    fn federation_invite_rejects_tampered_public_config() {
+        let config = test_public_federation_config();
+        let mut invite = FederationInvite::new(config).expect("invite");
+        invite.config.federation_id = FederationId::from_bytes([42u8; 32]);
+        let invite_code = raw_invite_code(&invite);
+
+        assert!(matches!(
+            FederationInvite::from_str(&invite_code),
+            Err(FederationError::FederationIdMismatch { .. })
+        ));
     }
 
     fn dkg_reveal(

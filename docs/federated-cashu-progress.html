@@ -525,19 +525,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 556 checked items and 33 remaining items. The federated melt operation version 1 shape is now fixed: `Melt` remains the accepted reserve/execution operation, while accepted `MeltQuotePayment` observations drive finalization or rollback.</span>
+          <span class="value">The implementation plan audit tracks 557 checked items and 32 remaining items. Federation-aware wallets can now bootstrap from a versioned invite code that carries the validated public federation config and member public mint URLs.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: record federated melt state-machine decision</span>
+          <span class="value">feat: add federation invite-code wallet discovery</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`docs/federated-cashu-melt-state-machine.md` documents why operation version 1 does not split `Melt` into separate `MeltReserve`, `FinalizeMelt`, or `RollbackMelt` variants.</span>
+          <span class="value">`FederationInvite` encodes the public config as `cashufedA...`, and `FederatedMintConnector::from_invite_code` builds validated HTTP member connectors from the roster.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, production DKG, and the remaining BFT follow-ups.</span>
+          <span class="value">Continue with quote-visibility readiness after quote creation, live Postgres migration/application coverage, production DKG, and the remaining BFT follow-ups.</span>
         </div>
       </aside>
     </header>
@@ -548,7 +548,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 556 checked entries and 33 remaining entries. The
+          checklist has 557 checked entries and 32 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Wallet invite discovery</h3>
+            <p>Federation invites now encode the validated public config in a `cashufedA` payload, and the wallet connector can construct member HTTP clients from the roster's public mint URLs before applying the existing aggregate-keyset checks.</p>
+          </article>
           <article class="item">
             <h3>Melt shape decided</h3>
             <p>Federated operation version 1 now keeps `Melt` as the accepted reserve/execution operation and derives paid finalization or failed rollback from accepted `MeltQuotePayment` observations plus durable saga recovery.</p>
@@ -2151,6 +2155,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test --lib --workspace --exclude cdk-postgres` passed with federation disabled. `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed after the example key-type fix and stable transport DNS TXT method.</td>
               <td>Move back to the remaining consensus/storage follow-ups with the broad feature gates green.</td>
+            </tr>
+            <tr>
+              <td>Federation invite-code discovery</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federation_invite -- --test-threads 1` passed the invite round-trip, bad-prefix, bad-version, and tampered-config regressions. `cargo test -p cdk --features wallet,federation invite_code -- --test-threads 1` passed the wallet connector constructor tests that build HTTP member clients from invite roster URLs and reject invalid invite codes.</td>
+              <td>Use invite codes in generated local wallet setup and revisit mint-info advertisement only if the Cashu info surface gets an agreed extension point.</td>
             </tr>
             <tr>
               <td>Formal threshold and transcript review</td>
