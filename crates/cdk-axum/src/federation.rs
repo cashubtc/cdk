@@ -266,20 +266,25 @@ where
         return 0;
     };
     let operation_count = entries.len() as u64;
-    match session_outcome_quorum_status(state).await {
+    let mut quorum_status = match session_outcome_quorum_status(state).await {
         Ok(Some(quorum)) if quorum.from_index == 0 && quorum.operation_count >= operation_count => {
             state
                 .mark_federation_healthy_if_session_outcome_verified(quorum.operation_count)
                 .await;
             return 0;
         }
-        Ok(_) => {}
+        Ok(quorum) => quorum,
         Err(err) => {
             tracing::warn!(
                 "Could not inspect federation session outcome quorum: {}",
                 err
             );
+            None
         }
+    };
+    let entries_to_collect = unverified_session_outcome_entries(&entries, quorum_status.as_ref());
+    if entries_to_collect.is_empty() {
+        return 0;
     }
 
     let mut collected = match local_peer_status(state).await {
@@ -287,7 +292,7 @@ where
             persist_local_session_outcome_evidence_chunks(
                 state,
                 runtime_config,
-                &entries,
+                entries_to_collect,
                 peer_status.latest_order_digest,
                 peer_status.state_digest,
                 client.sync_config.session_outcome_evidence_chunk_size,
@@ -303,36 +308,71 @@ where
         }
     };
 
-    match session_outcome_quorum_status(state).await {
+    quorum_status = match session_outcome_quorum_status(state).await {
         Ok(Some(quorum)) if quorum.from_index == 0 && quorum.operation_count >= operation_count => {
             state
                 .mark_federation_healthy_if_session_outcome_verified(quorum.operation_count)
                 .await;
             return 0;
         }
-        Ok(_) => {}
+        Ok(quorum) => quorum,
         Err(err) => {
             tracing::warn!(
                 "Could not inspect federation session outcome quorum: {}",
                 err
             );
+            None
         }
-    }
+    };
 
     for peer in peers {
+        let entries_to_collect =
+            unverified_session_outcome_entries(&entries, quorum_status.as_ref());
+        if entries_to_collect.is_empty() {
+            break;
+        }
         collected += collect_session_outcome_evidence_from_peer(
             state,
             client,
             peer,
-            &entries,
+            entries_to_collect,
             client.sync_config.session_outcome_evidence_chunk_size,
         )
         .await;
+        quorum_status = match session_outcome_quorum_status(state).await {
+            Ok(Some(quorum)) if quorum.from_index == 0 => Some(quorum),
+            Ok(_) => None,
+            Err(err) => {
+                tracing::warn!(
+                    "Could not inspect federation session outcome quorum after peer collection: {}",
+                    err
+                );
+                None
+            }
+        };
     }
 
     mark_healthy_after_session_outcome_quorum(state, operation_count).await;
 
     collected
+}
+
+fn unverified_session_outcome_entries<'a>(
+    entries: &'a [FederationJournalEntry],
+    quorum_status: Option<&SessionOutcomeQuorumStatus>,
+) -> &'a [FederationJournalEntry] {
+    let Some(quorum) = quorum_status else {
+        return entries;
+    };
+    if quorum.from_index != 0 {
+        return entries;
+    }
+    let next_index = quorum.latest_index.saturating_add(1);
+    let start = entries
+        .iter()
+        .position(|entry| entry.index >= next_index)
+        .unwrap_or(entries.len());
+    &entries[start..]
 }
 
 pub(crate) async fn submit_operation_to_primary_if_needed(
@@ -4333,6 +4373,108 @@ mod tests {
             state.federation_sync_status().await,
             Some(crate::FederationSyncStatus::Healthy)
         ));
+    }
+
+    #[tokio::test]
+    async fn peer_sync_round_collects_only_unverified_session_outcome_suffix() {
+        let (state, public_config, local_private, peer_private) =
+            federation_route_state_with_local_private().await;
+        let federation_id = public_config.federation_id;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
+        let chunk_size = 2;
+        let operation_count = chunk_size + 1;
+        for index in 0..operation_count as u64 {
+            let entry = indexed_restore_envelope(federation_id, index);
+            state
+                .submit_federation_envelope(entry.clone())
+                .await
+                .expect("local accepted operation");
+            peer_consensus
+                .submit_envelope(entry)
+                .expect("peer accepted operation");
+        }
+
+        let entries = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal entries");
+        let local_status = local_peer_status(&state).await.expect("local status");
+        let runtime_config = state.mint.federation_config().expect("federation config");
+        let local_chunks = persist_local_session_outcome_evidence_chunks(
+            &state,
+            runtime_config,
+            &entries[..chunk_size],
+            local_status.latest_order_digest,
+            local_status.state_digest,
+            chunk_size,
+        )
+        .await;
+        assert_eq!(local_chunks, 1);
+
+        let first_request = FederationJournalCatchUpRequest::new(0)
+            .with_limit(chunk_size as u16)
+            .with_known_order_digest(FederationJournalDigest::genesis());
+        let first_response =
+            catch_up_response_with_materialized_digest(&state, &peer_consensus, &first_request)
+                .await;
+        let first_response = signed_catch_up_response(first_response, &peer_private);
+        state
+            .persist_federation_session_outcome(
+                first_response
+                    .session_outcome
+                    .as_ref()
+                    .expect("first peer session outcome"),
+            )
+            .await
+            .expect("persist first peer session outcome");
+
+        let prefix = session_outcome_quorum_status(&state)
+            .await
+            .expect("prefix quorum status")
+            .expect("prefix quorum evidence");
+        assert_eq!(prefix.from_index, 0);
+        assert_eq!(prefix.operation_count, chunk_size as u64);
+
+        let second_request = FederationJournalCatchUpRequest::new(chunk_size as u64)
+            .with_limit(1)
+            .with_known_order_digest(entries[chunk_size].previous_order_digest);
+        let second_response =
+            catch_up_response_with_materialized_digest(&state, &peer_consensus, &second_request)
+                .await;
+        let peer_status = peer_status_with_materialized_digest(&state, &peer_consensus).await;
+        let transport = MockFederationTransport::default()
+            .with_status_response(peer_status)
+            .with_catch_up_response(signed_catch_up_response(second_response, &peer_private));
+        let client = FederationRestPeerClient::new_with_config(
+            transport.clone(),
+            &public_config,
+            local_private,
+            FederationPeerSyncConfig {
+                session_outcome_evidence_chunk_size: chunk_size,
+                ..FederationPeerSyncConfig::default()
+            },
+        )
+        .expect("client");
+
+        let synced =
+            run_federation_peer_sync_round(&state, &client, std::slice::from_ref(peer_member))
+                .await;
+
+        assert_eq!(synced, 1);
+        let requests = transport.catch_up_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].payload.next_index, chunk_size as u64);
+        assert_eq!(requests[0].payload.limit, Some(1));
+        let quorum = session_outcome_quorum_status(&state)
+            .await
+            .expect("quorum status")
+            .expect("complete quorum evidence");
+        assert_eq!(quorum.from_index, 0);
+        assert_eq!(quorum.operation_count, operation_count as u64);
     }
 
     #[tokio::test]
