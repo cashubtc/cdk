@@ -440,7 +440,8 @@ where
         return synced;
     }
 
-    let collected = collect_session_outcome_evidence_round(state, client, &evidence_peers).await;
+    let collected =
+        collect_session_outcome_evidence_round(state, client, &evidence_peers, backoff).await;
     if collected > 0 {
         tracing::debug!(
             session_outcomes = collected,
@@ -485,6 +486,7 @@ async fn collect_session_outcome_evidence_round<T>(
     state: &MintState,
     client: &FederationRestPeerClient<T>,
     peers: &[&MemberConfigPublic],
+    mut backoff: Option<&mut FederationPeerReconnectBackoff>,
 ) -> usize
 where
     T: Transport,
@@ -572,12 +574,22 @@ where
     };
 
     for &peer in peers {
+        let now = Instant::now();
+        if let Some(backoff) = backoff.as_ref() {
+            if !backoff.should_attempt(peer.member_id, now) {
+                tracing::debug!(
+                    member_id = %peer.member_id,
+                    "Federation session outcome evidence skipped until reconnect backoff expires"
+                );
+                continue;
+            }
+        }
         let entries_to_collect =
             unverified_session_outcome_entries(&entries, quorum_status.as_ref());
         if entries_to_collect.is_empty() {
             break;
         }
-        collected += collect_session_outcome_evidence_from_peer(
+        let evidence = collect_session_outcome_evidence_from_peer(
             state,
             client,
             peer,
@@ -585,6 +597,12 @@ where
             client.sync_config.session_outcome_evidence_chunk_size,
         )
         .await;
+        collected += evidence.collected;
+        if evidence.peer_failed {
+            if let Some(backoff) = backoff.as_mut() {
+                backoff.record_failure(peer.member_id, client.sync_config, Instant::now());
+            }
+        }
         quorum_status = match session_outcome_quorum_status(state).await {
             Ok(Some(quorum)) if quorum.from_index == 0 => Some(quorum),
             Ok(_) => None,
@@ -601,6 +619,12 @@ where
     mark_healthy_after_session_outcome_quorum(state, operation_count).await;
 
     collected
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct SessionOutcomeEvidenceCollection {
+    collected: usize,
+    peer_failed: bool,
 }
 
 fn unverified_session_outcome_entries<'a>(
@@ -680,7 +704,7 @@ where
         .await
         .map_err(|err| cdk::Error::Custom(err.to_string()))?;
     let primary_peers = [primary_member];
-    collect_session_outcome_evidence_round(state, &client, &primary_peers).await;
+    collect_session_outcome_evidence_round(state, &client, &primary_peers, None).await;
 
     if let Some((sender, sequence)) = sequence {
         state.persist_federation_sequence(sender, sequence).await?;
@@ -742,7 +766,7 @@ async fn collect_session_outcome_evidence_from_peer<T>(
     peer: &MemberConfigPublic,
     entries: &[FederationJournalEntry],
     chunk_size: usize,
-) -> usize
+) -> SessionOutcomeEvidenceCollection
 where
     T: Transport,
 {
@@ -762,7 +786,10 @@ where
                     "Federation session outcome evidence request failed: {}",
                     err
                 );
-                continue;
+                return SessionOutcomeEvidenceCollection {
+                    collected,
+                    peer_failed: true,
+                };
             }
         };
         if let Err(err) = verify_session_outcome_evidence_entries(chunk, &response) {
@@ -771,7 +798,10 @@ where
                 "Federation session outcome evidence did not match local journal: {}",
                 err
             );
-            continue;
+            return SessionOutcomeEvidenceCollection {
+                collected,
+                peer_failed: true,
+            };
         }
         let Some(outcome) = response.session_outcome.as_ref() else {
             continue;
@@ -788,7 +818,10 @@ where
         }
     }
 
-    collected
+    SessionOutcomeEvidenceCollection {
+        collected,
+        peer_failed: false,
+    }
 }
 
 async fn mark_healthy_after_session_outcome_quorum(state: &MintState, operation_count: u64) {
@@ -4858,6 +4891,80 @@ mod tests {
             transport.catch_up_requests().len(),
             0,
             "backing-off peer should not receive evidence catch-up requests"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn peer_sync_round_stops_evidence_after_first_peer_failure() {
+        let (state, public_config, local_private, _) =
+            federation_route_state_with_local_private().await;
+        let federation_id = public_config.federation_id;
+        let peer_member = public_config.member(member_id(2)).expect("peer member");
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
+        let operation_count = 3;
+        for index in 0..operation_count {
+            let entry = indexed_restore_envelope(federation_id, index);
+            state
+                .submit_federation_envelope(entry.clone())
+                .await
+                .expect("local accepted operation");
+            peer_consensus
+                .submit_envelope(entry)
+                .expect("peer accepted operation");
+        }
+        state
+            .mark_federation_verifying_session_outcome(peer_member.member_id, operation_count)
+            .await;
+
+        let peer_status = peer_status_with_materialized_digest(&state, &peer_consensus).await;
+        let transport = MockFederationTransport::default().with_status_response(peer_status);
+        let client = FederationRestPeerClient::new_with_config(
+            transport.clone(),
+            &public_config,
+            local_private.clone(),
+            FederationPeerSyncConfig {
+                session_outcome_evidence_chunk_size: 1,
+                reconnect_initial_backoff: Duration::from_secs(2),
+                reconnect_max_backoff: Duration::from_secs(8),
+                ..FederationPeerSyncConfig::default()
+            },
+        )
+        .expect("client");
+        let mut backoff = FederationPeerReconnectBackoff::default();
+
+        let synced = run_federation_peer_sync_round_with_backoff(
+            &state,
+            &client,
+            std::slice::from_ref(peer_member),
+            &mut backoff,
+        )
+        .await;
+        assert_eq!(synced, 1);
+        assert_eq!(transport.status_requests().len(), 1);
+        assert_eq!(
+            transport.catch_up_requests().len(),
+            1,
+            "evidence collection must stop after the first failed peer request"
+        );
+
+        let synced = run_federation_peer_sync_round_with_backoff(
+            &state,
+            &client,
+            std::slice::from_ref(peer_member),
+            &mut backoff,
+        )
+        .await;
+        assert_eq!(synced, 0);
+        assert_eq!(
+            transport.status_requests().len(),
+            1,
+            "evidence failure should put the peer into reconnect backoff"
+        );
+        assert_eq!(
+            transport.catch_up_requests().len(),
+            1,
+            "backing-off peer should not receive more evidence requests"
         );
     }
 
