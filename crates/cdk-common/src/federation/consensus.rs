@@ -1873,6 +1873,73 @@ mod tests {
     }
 
     #[test]
+    fn multi_node_engine_catches_up_offline_member_across_default_limit() {
+        let federation_id = federation_id(31);
+        let members = (1..=4).map(member_id_value).collect::<Vec<_>>();
+        let public_keys = [
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+            "0238b95dfe74856e3e3d122fef8ca3a674cce8f22388e361c1ee8b9d52386cd61c",
+        ];
+        let mut network =
+            InMemoryFederationConsensusNetwork::new(federation_id, members.clone(), 3)
+                .expect("network");
+
+        network
+            .set_online(members[3], false)
+            .expect("member 4 offline");
+
+        let mut expected_order = Vec::new();
+        for index in 0..105 {
+            let quote = format!("offline-catch-up-{index}");
+            let sender = members[index % 3];
+            expected_order.push(
+                network
+                    .submit(
+                        sender,
+                        mint_envelope(
+                            federation_id,
+                            &quote,
+                            public_keys[index % public_keys.len()],
+                        ),
+                    )
+                    .expect("submit operation"),
+            );
+        }
+
+        let delivered = network.deliver_all().expect("deliver operations");
+        assert_eq!(delivered.len(), expected_order.len());
+        for member in members.iter().take(3).copied() {
+            assert_eq!(
+                network
+                    .accepted_operation_ids(member)
+                    .expect("online accepted ids"),
+                expected_order
+            );
+        }
+        assert_eq!(
+            network
+                .member_status(members[3])
+                .expect("offline member status")
+                .operation_count,
+            0
+        );
+
+        let applied = network
+            .catch_up_member_from_peer(members[3], members[0])
+            .expect("catch up offline member");
+
+        assert_eq!(applied.len(), expected_order.len());
+        assert_eq!(
+            network
+                .accepted_operation_ids(members[3])
+                .expect("caught-up accepted ids"),
+            expected_order
+        );
+        assert!(network.all_members_converged());
+    }
+
+    #[test]
     fn multi_node_engine_scales_to_seven_members_with_threshold_partition_catch_up() {
         let federation_id = federation_id(14);
         let members = (1..=7).map(member_id_value).collect::<Vec<_>>();
