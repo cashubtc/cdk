@@ -658,8 +658,7 @@ impl Mint {
     ) -> Result<bool, Error> {
         match &entry.envelope.operation {
             FederationOperation::MintQuote(operation) => {
-                self.apply_federation_mint_quote(entry.operation_id, operation)
-                    .await?;
+                self.apply_federation_mint_quote(entry, operation).await?;
                 Ok(true)
             }
             FederationOperation::MintQuotePayment(observation) => {
@@ -746,10 +745,14 @@ impl Mint {
 
     async fn apply_federation_mint_quote(
         &self,
-        operation_id: FederationOperationId,
+        entry: &FederationJournalEntry,
         operation: &FederationMintQuoteOperation,
     ) -> Result<(), Error> {
-        let quote = mint_quote_from_federation_operation(operation)?;
+        let operation_id = entry.operation_id;
+        let quote = mint_quote_from_federation_operation(
+            operation,
+            federation_accepted_logical_time(entry),
+        )?;
         let mut tx = self.localstore.begin_transaction().await?;
 
         match tx.get_mint_quote(&quote.id).await? {
@@ -1532,6 +1535,7 @@ fn quote_id_from_federation(quote: &str) -> Result<QuoteId, Error> {
 
 fn mint_quote_from_federation_operation(
     operation: &FederationMintQuoteOperation,
+    created_time: u64,
 ) -> Result<MintQuote, Error> {
     let quote_id = quote_id_from_federation(&operation.quote)?;
     if operation.response.quote() != &operation.quote {
@@ -1558,11 +1562,17 @@ fn mint_quote_from_federation_operation(
         amount_paid,
         amount_issued,
         method,
-        cdk_common::util::unix_time(),
+        created_time,
         Vec::new(),
         Vec::new(),
         extra_json,
     ))
+}
+
+fn federation_accepted_logical_time(entry: &FederationJournalEntry) -> u64 {
+    // The MVP journal has ordered consensus but no wall-clock timestamp. Use a
+    // stable logical time so deterministic replay converges across members.
+    entry.index.saturating_add(1)
 }
 
 fn mint_quote_response_amounts(
@@ -2577,6 +2587,34 @@ mod tests {
             consensus.submit_envelope(conflict),
             Err(FederationError::ConflictingOperation { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn apply_federation_mint_quote_uses_consensus_logical_time() {
+        let runtime_config = runtime_config();
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let quote = QuoteId::new();
+        let entry = appended_entry(
+            &mut journal,
+            runtime_config.mint_quote_operation(
+                quote.clone(),
+                bolt11_quote_request(10),
+                bolt11_quote_response(&quote, 10),
+            ),
+        );
+
+        persist_and_apply_entry(&mint, &entry).await;
+
+        let stored = localstore
+            .get_mint_quote(&quote)
+            .await
+            .expect("mint quote lookup")
+            .expect("mint quote");
+        assert_eq!(
+            stored.created_time,
+            super::federation_accepted_logical_time(&entry)
+        );
     }
 
     #[test]

@@ -522,15 +522,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 508 checked items and 80 remaining items. Trusted-dealer key/config generation is now backend-agnostic by default, with local fakewallet smoke files behind an explicit development opt-in.</span>
+          <span class="value">The implementation plan audit tracks 510 checked items and 78 remaining items. Federated mint quote replay now derives quote creation time from the accepted journal order instead of local wall-clock time.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: require fakewallet regtest setup opt in</span>
+          <span class="value">fix: make federated mint quote replay time deterministic</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk-mintd federation trusted-dealer` now writes only core federation public/private config material unless `--local-fakewallet-configs` is passed; the repo-level fakewallet regtest wrappers opt in explicitly.</span>
+          <span class="value">Mint quote consensus apply now consumes the accepted journal entry as its deterministic logical time input, removing the last local `unix_time()` call from mint federation apply.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -545,7 +545,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 508 checked entries and 80 remaining entries. The
+          checklist has 510 checked entries and 78 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -2096,6 +2096,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --features federation restore_returns_old_keyset_signature_after_rotation -- --test-threads 1` and `cargo check -p cdk --lib` passed. Restore now prefers durable federation share rows while standalone cdk restore still compiles with federation disabled.</td>
               <td>Add operation-hash/output-index restore mapping only if future restore UX needs to expose consensus provenance directly.</td>
+            </tr>
+            <tr>
+              <td>Deterministic mint quote replay time</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --features federation apply_federation_mint_quote_uses_consensus_logical_time -- --test-threads 1` passed the new regression proving stored mint quote `created_time` comes from the accepted journal entry. `cargo test -p cdk --features federation mint::federation -- --test-threads 1` passed 41 mint federation tests, covering mint, swap, melt, rotation, quarantine, real-policy observations, and replay.</td>
+              <td>Replace the logical accepted-time seed with a production BFT accepted timestamp only if the final consensus engine requires wall-clock semantics.</td>
             </tr>
             <tr>
               <td>Standalone fakewallet backend</td>
