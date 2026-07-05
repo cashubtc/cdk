@@ -172,14 +172,19 @@ pub(crate) fn spawn_federation_peer_sync_loop_with_config(
                 return;
             }
         };
-        let mut interval = time::interval(sync_config.peer_sync_interval);
-        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut interval = federation_peer_sync_interval(sync_config);
 
         loop {
             interval.tick().await;
             run_federation_peer_sync_round(&state, &client, &peers).await;
         }
     });
+}
+
+fn federation_peer_sync_interval(sync_config: FederationPeerSyncConfig) -> time::Interval {
+    let mut interval = time::interval(sync_config.peer_sync_interval);
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    interval
 }
 
 fn federation_peer_sync_disabled_by_env() -> bool {
@@ -2351,6 +2356,29 @@ mod tests {
             );
         }
         assert!(valid.validate().is_ok());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn federation_peer_sync_interval_uses_configured_delay() {
+        let configured_delay = Duration::from_secs(2);
+        let mut interval = federation_peer_sync_interval(FederationPeerSyncConfig {
+            peer_sync_interval: configured_delay,
+            ..FederationPeerSyncConfig::default()
+        });
+        interval.tick().await;
+
+        let second_tick = tokio::spawn(async move {
+            interval.tick().await;
+        });
+        tokio::task::yield_now().await;
+        assert!(!second_tick.is_finished());
+
+        tokio::time::advance(configured_delay - Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert!(!second_tick.is_finished());
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        second_tick.await.expect("second configured tick");
     }
 
     #[derive(Debug, Default)]
