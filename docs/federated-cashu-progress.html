@@ -523,15 +523,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 534 checked items and 55 remaining items. Federation mint quote creation, payment, and issuance now publish wallet-visible quote events after commit, backed by live subscription and source-order gates.</span>
+          <span class="value">The implementation plan audit tracks 537 checked items and 52 remaining items. Federation minting and melting payment paths are now locked to backend-agnostic quote/payment observations with production source audits and generic mock-backend quorum tests.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: publish federated mint quote events</span>
+          <span class="value">test: audit backend-agnostic payment paths</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federated mint quote lifecycle applies now emit `Unpaid`, `Paid`, and `Issued` quote events only after consensus state commits, and a source-order guard covers standalone plus federation pubsub publish sites.</span>
+          <span class="value">Production federation mint/melt payment paths now have source audits against concrete backend coupling, and runtime quorum tests keep mint and melt finalization on generic payment observations.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -546,7 +546,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 534 checked entries and 55 remaining entries. The
+          checklist has 537 checked entries and 52 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -3517,6 +3517,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --lib pubsub_publish_sites_are_after_commit -- --test-threads 1`, `cargo test -p cdk --lib --features federation pubsub_publish_sites_are_after_commit -- --test-threads 1`, and `cargo test -p cdk --lib --features federation federation_mint_lifecycle_publishes_quote_events_after_commit -- --test-threads 1` passed. The runtime test subscribes before a federated mint quote is applied, then observes `Unpaid`, `Paid`, and `Issued` only after the corresponding accepted journal entries commit. The source-order guard covers standalone mint quote creation/payment/issuance, standalone swap and melt proof-state/quote notifications, and federation mint/swap publish sites.</td>
               <td>Broaden live pubsub subscriber coverage if future operations gain new wallet-visible event types.</td>
+            </tr>
+            <tr>
+              <td>Backend-agnostic payment paths</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --lib --features federation production_federation_payment_paths_are_backend_agnostic -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation_payment_observation_handlers_are_backend_agnostic -- --test-threads 1`, `cargo test -p cdk --lib --features federation real_policy_mint_payment_observations_finalize_from_stored_quorum -- --test-threads 1`, and `cargo test -p cdk --lib --features federation real_policy_melt_payment_observations_finalize_from_stored_quorum -- --test-threads 1` passed. The new source audits prove production federation mint/melt apply code and Axum payment-observation handlers do not branch on fakewallet, CLN, LND, LNBits, LDK Node, or other concrete backend names, while the runtime quorum tests keep mint and melt finalization on generic payment observations from a backend-agnostic mock `MintPayment` implementation.</td>
+              <td>Keep future payment backends behind the existing CDK payment traits and quote/status response surfaces.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>

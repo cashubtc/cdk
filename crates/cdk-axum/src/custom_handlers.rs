@@ -1209,6 +1209,72 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[test]
+    fn federation_payment_observation_handlers_are_backend_agnostic() {
+        let custom_handlers = production_section(
+            include_str!("custom_handlers.rs"),
+            "\n#[cfg(test)]\nmod tests {",
+        );
+
+        for forbidden in [
+            "cdk_fake_wallet",
+            "FakeWallet",
+            "fakewallet",
+            "fake_wallet",
+            "fake-wallet",
+            "CLN",
+            "Cln",
+            "LND",
+            "Lnd",
+            "LNBits",
+            "Lnbits",
+            "LDK",
+            "Ldk",
+        ] {
+            assert!(
+                !custom_handlers.contains(forbidden),
+                "production custom handlers must not branch on concrete payment backend `{forbidden}`"
+            );
+        }
+
+        let mint_observation = source_slice(
+            custom_handlers,
+            "async fn submit_federation_mint_quote_payment_observation",
+            "async fn submit_federation_melt_quote_operation",
+        );
+        assert_contains_in_order(
+            mint_observation,
+            "response: &cdk::mint::MintQuoteResponse<QuoteId>",
+            "mint_quote_response_amounts(response)",
+        );
+        assert_contains_in_order(
+            mint_observation,
+            "response.state() != Some(cdk::nuts::MintQuoteState::Paid)",
+            "cdk::federation::FederationMintQuotePaymentObservation",
+        );
+        assert!(mint_observation.contains("method: response.method()"));
+        assert!(mint_observation.contains(".submit_federation_payment_observation_envelope("));
+
+        let melt_observation = source_slice(
+            custom_handlers,
+            "async fn submit_federation_melt_quote_payment_observation",
+            "async fn submit_federation_mint_operation",
+        );
+        assert_contains_in_order(
+            melt_observation,
+            "response: &MeltQuoteResponse<QuoteId>",
+            "response.state()",
+        );
+        assert_contains_in_order(
+            melt_observation,
+            "response.state()",
+            "cdk::federation::FederationMeltQuotePaymentObservation",
+        );
+        assert!(melt_observation.contains("method: response.method()"));
+        assert!(melt_observation.contains(".submit_federation_payment_observation_envelope("));
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
     fn public_endpoints_are_consensus_gated_in_federation_mode() {
         let custom_handlers = production_section(
             include_str!("custom_handlers.rs"),

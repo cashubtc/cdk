@@ -1963,6 +1963,55 @@ mod tests {
 
     use super::{FederationMode, FederationRuntimeConfig};
 
+    fn production_source(source: &str) -> &str {
+        source
+            .split_once("\n#[cfg(test)]\nmod tests {")
+            .map(|(production, _tests)| production)
+            .expect("source file contains test module marker")
+    }
+
+    #[test]
+    fn production_federation_payment_paths_are_backend_agnostic() {
+        let source = production_source(include_str!("federation.rs"));
+
+        for forbidden in [
+            "cdk_fake_wallet",
+            "FakeWallet",
+            "fakewallet",
+            "fake_wallet",
+            "fake-wallet",
+            "CLN",
+            "Cln",
+            "LND",
+            "Lnd",
+            "LNBits",
+            "Lnbits",
+            "LDK",
+            "Ldk",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "production federation mint code must not depend on concrete payment backend `{forbidden}`"
+            );
+        }
+
+        for required in [
+            "FederationMintQuotePaymentObservation",
+            "FederationMeltQuotePaymentObservation",
+            "payment_verification_policy",
+            "MintQuoteState::Paid",
+            "MeltQuoteState::Paid",
+            "MakePaymentResponse",
+            "payment_observation_record_from_entry",
+            "federation_payment_observation_can_finalize",
+        ] {
+            assert!(
+                source.contains(required),
+                "production federation mint code should keep payment handling on generic `{required}`"
+            );
+        }
+    }
+
     fn runtime_config() -> FederationRuntimeConfig {
         let member = TrustedDealerMember::new(
             cdk_common::federation::MemberId::new(1).expect("member id"),
