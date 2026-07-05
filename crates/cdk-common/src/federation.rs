@@ -40,8 +40,8 @@ pub use self::operation::{
     FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteOperation,
     FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
-    FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationKind, FederationPaymentObservation,
+    FederationOperationBalanceAudit, FederationOperationConflictKey, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationKind, FederationPaymentObservation,
     FederationPaymentObservationEvidenceGroup, FederationPaymentObservationEvidenceGroupSummary,
     FederationPaymentObservationQuarantine, FederationPaymentObservationQuarantineReason,
     FederationPaymentObservationQuarantineRecord, FederationPaymentObservationQuorum,
@@ -642,6 +642,24 @@ pub enum FederationError {
         actual: usize,
         /// Maximum admitted canonical envelope bytes.
         max: usize,
+    },
+    /// Operation-local balance audit found more liabilities than assets.
+    #[error(
+        "Federation operation balance audit failed for {operation_kind}: assets={assets}, liabilities={liabilities}"
+    )]
+    NegativeBalanceAudit {
+        /// Operation kind being audited.
+        operation_kind: FederationOperationKind,
+        /// Assets available inside the operation-local audit scope.
+        assets: Amount,
+        /// Liabilities created inside the operation-local audit scope.
+        liabilities: Amount,
+    },
+    /// Operation-local balance audit overflowed while summing amounts.
+    #[error("Federation operation balance audit amount overflow for {operation_kind}")]
+    BalanceAuditAmountOverflow {
+        /// Operation kind being audited.
+        operation_kind: FederationOperationKind,
     },
     /// Operation envelope used an unsupported payload version.
     #[error("Federation operation version mismatch: expected={expected}, found={found}")]

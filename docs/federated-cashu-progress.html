@@ -522,15 +522,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 510 checked items and 78 remaining items. Federated mint quote replay now derives quote creation time from the accepted journal order instead of local wall-clock time.</span>
+          <span class="value">The implementation plan audit tracks 512 checked items and 76 remaining items. Federation journal admission now rejects operation-local negative balance audits before accepting new consensus items.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: make federated mint quote replay time deterministic</span>
+          <span class="value">feat: audit federation operation balances</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Mint quote consensus apply now consumes the accepted journal entry as its deterministic logical time input, removing the last local `unix_time()` call from mint federation apply.</span>
+          <span class="value">Accepted federation operations now compute an operation-local balance summary before journal append, so negative mint payment, swap, and melt-change requests fail before advancing consensus-visible order.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -545,7 +545,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 510 checked entries and 78 remaining entries. The
+          checklist has 512 checked entries and 76 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -784,6 +784,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Operation balance audit</h3>
+            <p>Federation journal admission now computes an operation-local balance summary before accepting new entries. Mint payment observations reject issued-greater-than-paid values, swaps reject outputs greater than inputs, and melts reject change greater than inputs before the journal index advances.</p>
+          </article>
           <article class="item">
             <h3>SQLite storage gate rerun</h3>
             <p>The `cdk-sqlite` mint/federation suite now has fresh evidence across 142 tests, including federation journal, session-outcome, payment-observation, DKG storage, concurrent writer, and wallet storage coverage.</p>
@@ -2102,6 +2106,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --features federation apply_federation_mint_quote_uses_consensus_logical_time -- --test-threads 1` passed the new regression proving stored mint quote `created_time` comes from the accepted journal entry. `cargo test -p cdk --features federation mint::federation -- --test-threads 1` passed 41 mint federation tests, covering mint, swap, melt, rotation, quarantine, real-policy observations, and replay.</td>
               <td>Replace the logical accepted-time seed with a production BFT accepted timestamp only if the final consensus engine requires wall-clock semantics.</td>
+            </tr>
+            <tr>
+              <td>Operation balance audit</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation operation_balance_audit -- --test-threads 1`, `cargo test -p cdk-common --features federation journal_append_rejects_negative -- --test-threads 1`, `cargo test -p cdk-common --features federation federation::operation -- --test-threads 1`, and `cargo test -p cdk-common --features federation federation::journal -- --test-threads 1` passed. The tests prove balance summaries for mint payment observations, swaps, melts, and melt payment observations, plus hard journal rejection for negative swap and melt-change requests before `next_index` changes.</td>
+              <td>Persist aggregate audit history only if operators need a queryable long-term solvency report beyond operation-local admission checks.</td>
             </tr>
             <tr>
               <td>Standalone fakewallet backend</td>

@@ -20,8 +20,9 @@ use super::{
     FederationPaymentObservationContext, MemberId, Result,
 };
 use crate::{
-    Amount, BatchMintRequest, Id, MeltQuoteRequest, MeltQuoteState, MeltRequest, MintQuoteRequest,
-    MintQuoteResponse, MintQuoteState, MintRequest, PaymentMethod, RestoreRequest, SwapRequest,
+    Amount, BatchMintRequest, BlindedMessage, Id, MeltQuoteRequest, MeltQuoteState, MeltRequest,
+    MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest, PaymentMethod,
+    RestoreRequest, SwapRequest,
 };
 
 const FEDERATION_OPERATION_HASH_VERSION: &[u8] = b"cdk-federation-operation-v1";
@@ -271,6 +272,23 @@ pub enum FederationOperationKind {
     Restore,
     /// Propose a new federated v3/BLS aggregate keyset.
     KeysetRotation,
+}
+
+impl fmt::Display for FederationOperationKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MintQuote => f.write_str("mint_quote"),
+            Self::MintQuotePayment => f.write_str("mint_quote_payment"),
+            Self::Mint => f.write_str("mint"),
+            Self::MeltQuote => f.write_str("melt_quote"),
+            Self::MeltQuotePayment => f.write_str("melt_quote_payment"),
+            Self::PaymentObservationQuarantine => f.write_str("payment_observation_quarantine"),
+            Self::Melt => f.write_str("melt"),
+            Self::Swap => f.write_str("swap"),
+            Self::Restore => f.write_str("restore"),
+            Self::KeysetRotation => f.write_str("keyset_rotation"),
+        }
+    }
 }
 
 /// Semantic key used to reject mix-and-match duplicates before signing.
@@ -1207,6 +1225,75 @@ impl FederationKeysetRotationOperation {
     }
 }
 
+/// Operation-local value accounting summary computed before journal acceptance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FederationOperationBalanceAudit {
+    /// Operation kind that produced this audit row.
+    pub operation_kind: FederationOperationKind,
+    /// Spendable value consumed by this operation, or incoming value observed for a quote.
+    pub assets: Amount,
+    /// Value signed or already issued by this operation-local scope.
+    pub liabilities: Amount,
+    /// External payment amount observed for melt quotes.
+    pub external_payment: Amount,
+    /// Fee reserve observed for melt quotes.
+    pub fee_reserve: Amount,
+    /// Non-negative remainder after subtracting liabilities from assets when locally checkable.
+    pub remainder: Amount,
+}
+
+impl FederationOperationBalanceAudit {
+    fn unchecked(operation_kind: FederationOperationKind) -> Self {
+        Self {
+            operation_kind,
+            assets: Amount::ZERO,
+            liabilities: Amount::ZERO,
+            external_payment: Amount::ZERO,
+            fee_reserve: Amount::ZERO,
+            remainder: Amount::ZERO,
+        }
+    }
+
+    fn checked(
+        operation_kind: FederationOperationKind,
+        assets: Amount,
+        liabilities: Amount,
+    ) -> Result<Self> {
+        let remainder =
+            assets
+                .checked_sub(liabilities)
+                .ok_or(FederationError::NegativeBalanceAudit {
+                    operation_kind,
+                    assets,
+                    liabilities,
+                })?;
+
+        Ok(Self {
+            operation_kind,
+            assets,
+            liabilities,
+            external_payment: Amount::ZERO,
+            fee_reserve: Amount::ZERO,
+            remainder,
+        })
+    }
+
+    fn external(
+        operation_kind: FederationOperationKind,
+        external_payment: Amount,
+        fee_reserve: Amount,
+    ) -> Self {
+        Self {
+            operation_kind,
+            assets: Amount::ZERO,
+            liabilities: Amount::ZERO,
+            external_payment,
+            fee_reserve,
+            remainder: Amount::ZERO,
+        }
+    }
+}
+
 /// Consensus operation payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
@@ -1334,6 +1421,92 @@ impl FederationOperation {
             Self::Mint(_) | Self::Melt(_) | Self::Swap(_) | Self::Restore(_)
         )
     }
+
+    /// Compute the operation-local balance audit for this consensus payload.
+    ///
+    /// This audit intentionally only checks value scopes available in the
+    /// canonical operation payload. Quote-level payment quorum checks remain in
+    /// the mint apply layer, where duplicate observer evidence can be
+    /// de-duplicated by quote and policy.
+    pub fn balance_audit(&self) -> Result<FederationOperationBalanceAudit> {
+        let operation_kind = self.kind();
+        match self {
+            Self::MintQuote(_)
+            | Self::PaymentObservationQuarantine(_)
+            | Self::KeysetRotation(_) => {
+                Ok(FederationOperationBalanceAudit::unchecked(operation_kind))
+            }
+            Self::MintQuotePayment(observation) => FederationOperationBalanceAudit::checked(
+                operation_kind,
+                observation.amount_paid,
+                observation.amount_issued,
+            ),
+            Self::Mint(operation) => Ok(FederationOperationBalanceAudit {
+                operation_kind,
+                assets: Amount::ZERO,
+                liabilities: operation.request.output_amount()?,
+                external_payment: Amount::ZERO,
+                fee_reserve: Amount::ZERO,
+                remainder: Amount::ZERO,
+            }),
+            Self::MeltQuote(_) | Self::Restore(_) => {
+                Ok(FederationOperationBalanceAudit::unchecked(operation_kind))
+            }
+            Self::MeltQuotePayment(observation) => Ok(FederationOperationBalanceAudit::external(
+                operation_kind,
+                observation.amount,
+                observation.fee_reserve,
+            )),
+            Self::Melt(operation) => FederationOperationBalanceAudit::checked(
+                operation_kind,
+                operation
+                    .request
+                    .inputs_amount()
+                    .map_err(|_| FederationError::BalanceAuditAmountOverflow { operation_kind })?,
+                output_amount(operation.request.outputs(), operation_kind)?,
+            ),
+            Self::Swap(operation) => {
+                FederationOperationBalanceAudit::checked(
+                    operation_kind,
+                    operation.request.input_amount().map_err(|_| {
+                        FederationError::BalanceAuditAmountOverflow { operation_kind }
+                    })?,
+                    operation.request.output_amount().map_err(|_| {
+                        FederationError::BalanceAuditAmountOverflow { operation_kind }
+                    })?,
+                )
+            }
+        }
+    }
+}
+
+impl FederationMintRequest {
+    fn output_amount(&self) -> Result<Amount> {
+        match self {
+            Self::Single(request) => {
+                outputs_amount(&request.outputs, FederationOperationKind::Mint)
+            }
+            Self::Batch(request) => outputs_amount(&request.outputs, FederationOperationKind::Mint),
+        }
+    }
+}
+
+fn output_amount(
+    outputs: &Option<Vec<BlindedMessage>>,
+    operation_kind: FederationOperationKind,
+) -> Result<Amount> {
+    match outputs {
+        Some(outputs) => outputs_amount(outputs, operation_kind),
+        None => Ok(Amount::ZERO),
+    }
+}
+
+fn outputs_amount(
+    outputs: &[BlindedMessage],
+    operation_kind: FederationOperationKind,
+) -> Result<Amount> {
+    Amount::try_sum(outputs.iter().map(|output| output.amount))
+        .map_err(|_| FederationError::BalanceAuditAmountOverflow { operation_kind })
 }
 
 /// Versioned envelope that binds an operation to one federation.
@@ -2826,5 +2999,149 @@ mod tests {
             assert_eq!(operation.quote(), expected_quote);
             envelope(operation).operation_id().expect("operation id");
         }
+    }
+
+    #[test]
+    fn operation_balance_audit_summarizes_core_value_flows() {
+        let mint_payment =
+            FederationOperation::MintQuotePayment(FederationMintQuotePaymentObservation {
+                quote: "mint-quote".to_string(),
+                observer: member_id(1),
+                method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Bolt11),
+                state: MintQuoteState::Paid,
+                amount_paid: Amount::from(10),
+                amount_issued: Amount::from(4),
+                payment_proof: Some("settled".to_string()),
+            });
+        let audit = mint_payment.balance_audit().expect("mint payment audit");
+        assert_eq!(
+            audit.operation_kind,
+            FederationOperationKind::MintQuotePayment
+        );
+        assert_eq!(audit.assets, Amount::from(10));
+        assert_eq!(audit.liabilities, Amount::from(4));
+        assert_eq!(audit.remainder, Amount::from(6));
+
+        let swap = FederationOperation::Swap(FederationSwapOperation {
+            request: SwapRequest::new(
+                vec![proof(8, "swap-input")],
+                vec![output(
+                    5,
+                    "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+                )],
+            ),
+        });
+        let audit = swap.balance_audit().expect("swap audit");
+        assert_eq!(audit.operation_kind, FederationOperationKind::Swap);
+        assert_eq!(audit.assets, Amount::from(8));
+        assert_eq!(audit.liabilities, Amount::from(5));
+        assert_eq!(audit.remainder, Amount::from(3));
+
+        let melt = FederationOperation::Melt(FederationMeltOperation {
+            request: MeltRequest::new(
+                "melt-quote".to_string(),
+                vec![proof(11, "melt-input")],
+                Some(vec![output(
+                    2,
+                    "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+                )]),
+            ),
+        });
+        let audit = melt.balance_audit().expect("melt audit");
+        assert_eq!(audit.operation_kind, FederationOperationKind::Melt);
+        assert_eq!(audit.assets, Amount::from(11));
+        assert_eq!(audit.liabilities, Amount::from(2));
+        assert_eq!(audit.remainder, Amount::from(9));
+
+        let melt_payment =
+            FederationOperation::MeltQuotePayment(FederationMeltQuotePaymentObservation {
+                quote: "melt-quote".to_string(),
+                observer: member_id(1),
+                method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Bolt11),
+                state: MeltQuoteState::Paid,
+                amount: Amount::from(7),
+                fee_reserve: Amount::from(1),
+                payment_proof: Some("preimage".to_string()),
+                failure_reason: None,
+            });
+        let audit = melt_payment.balance_audit().expect("melt payment audit");
+        assert_eq!(
+            audit.operation_kind,
+            FederationOperationKind::MeltQuotePayment
+        );
+        assert_eq!(audit.external_payment, Amount::from(7));
+        assert_eq!(audit.fee_reserve, Amount::from(1));
+    }
+
+    #[test]
+    fn operation_balance_audit_rejects_negative_payment_observation() {
+        let operation =
+            FederationOperation::MintQuotePayment(FederationMintQuotePaymentObservation {
+                quote: "mint-quote".to_string(),
+                observer: member_id(1),
+                method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Bolt11),
+                state: MintQuoteState::Paid,
+                amount_paid: Amount::from(4),
+                amount_issued: Amount::from(5),
+                payment_proof: Some("settled".to_string()),
+            });
+
+        assert!(matches!(
+            operation.balance_audit(),
+            Err(FederationError::NegativeBalanceAudit {
+                operation_kind: FederationOperationKind::MintQuotePayment,
+                assets,
+                liabilities,
+            }) if assets == Amount::from(4) && liabilities == Amount::from(5)
+        ));
+    }
+
+    #[test]
+    fn journal_append_rejects_negative_swap_balance_audit() {
+        let mut journal = InMemoryFederationJournal::new();
+        let operation = FederationOperation::Swap(FederationSwapOperation {
+            request: SwapRequest::new(
+                vec![proof(3, "swap-input")],
+                vec![output(
+                    5,
+                    "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+                )],
+            ),
+        });
+
+        assert!(matches!(
+            journal.append(envelope(operation)),
+            Err(FederationError::NegativeBalanceAudit {
+                operation_kind: FederationOperationKind::Swap,
+                assets,
+                liabilities,
+            }) if assets == Amount::from(3) && liabilities == Amount::from(5)
+        ));
+        assert_eq!(journal.next_index(), 0);
+    }
+
+    #[test]
+    fn journal_append_rejects_negative_melt_change_balance_audit() {
+        let mut journal = InMemoryFederationJournal::new();
+        let operation = FederationOperation::Melt(FederationMeltOperation {
+            request: MeltRequest::new(
+                "melt-quote".to_string(),
+                vec![proof(3, "melt-input")],
+                Some(vec![output(
+                    4,
+                    "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+                )]),
+            ),
+        });
+
+        assert!(matches!(
+            journal.append(envelope(operation)),
+            Err(FederationError::NegativeBalanceAudit {
+                operation_kind: FederationOperationKind::Melt,
+                assets,
+                liabilities,
+            }) if assets == Amount::from(3) && liabilities == Amount::from(4)
+        ));
+        assert_eq!(journal.next_index(), 0);
     }
 }

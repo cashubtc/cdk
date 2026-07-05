@@ -654,6 +654,7 @@ impl InMemoryFederationJournal {
             return Ok(FederationJournalAppendOutcome::Duplicate(entry));
         }
 
+        envelope.operation.balance_audit()?;
         let conflict_keys = envelope.operation.conflict_keys();
         let conflict_key = conflict_keys.first().cloned();
         let conflict_key_labels = conflict_keys
