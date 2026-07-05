@@ -526,19 +526,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 118 remaining items after expanding Milestone 4A into an explicit AlephBFT strict-order consensus and idempotent mint/swap/melt API checklist. The repo now has a fast `fed-regtest-check` helper for federation smoke/setup cargo-test coverage, and Axum peer-sync policy, signed peer-client code, private DKG setup routes, signed catch-up routes, and private status routes now live in focused child modules.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 118 remaining items after expanding Milestone 4A into an explicit AlephBFT strict-order consensus and idempotent mint/swap/melt API checklist. The repo now has a fast `fed-regtest-check` helper for federation smoke/setup cargo-test coverage, and Axum peer-sync policy, signed peer-client code, private DKG setup routes, signed catch-up routes, private status routes, and payment-observation report assembly now live in focused child modules.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: add fedimint consensus review</span>
+          <span class="value">refactor: split axum payment observation reports</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Milestone 4A now captures the production consensus target: AlephBFT orders canonical CDK federation items, public mint/swap/melt handlers become admission-and-wait APIs, and signature shares are returned only from persisted accepted outcomes.</span>
+          <span class="value">`crates/cdk-axum/src/federation/payment_observation.rs` now owns local-status payment-observation report assembly, including journal-derived observation/quarantine summaries and quote-age enrichment.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue the Axum split toward sync loop and payment-observation route modules, then start replacing the development consensus backend with the Milestone 4A AlephBFT data-provider/finalization path.</span>
+          <span class="value">Continue the Axum split toward the peer sync loop module, then start replacing the development consensus backend with the Milestone 4A AlephBFT data-provider/finalization path.</span>
         </div>
       </aside>
     </header>
@@ -788,6 +788,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Axum payment reports split out</h3>
+            <p>Local-status payment-observation report assembly now lives in `federation/payment_observation.rs`, keeping journal-derived observation/quarantine summaries and quote-age enrichment out of the parent private REST route module.</p>
+          </article>
           <article class="item">
             <h3>Fedimint consensus lessons captured</h3>
             <p>`fedimint_consensus_review.md` now records the production design lesson: AlephBFT should order canonical operation envelopes, while CDK applies mint, swap, melt, payment-observation, and session-outcome state deterministically after finalization.</p>
@@ -2348,6 +2352,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo check -p cdk-axum --features federation`, `cargo test -p cdk-axum --features federation private_status -- --test-threads 1`, and `cargo test -p cdk-axum --features federation private_local_status_route -- --test-threads 1` passed after moving private status/local-status handling and `FederationLocalStatusResponse` into `crates/cdk-axum/src/federation/status_routes.rs`.</td>
               <td>Continue the Axum split toward sync loop and payment-observation route modules while shared quorum/report helpers remain in the parent until their ownership is clearer.</td>
+            </tr>
+            <tr>
+              <td>Axum payment-observation report split</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo check -p cdk-axum --features federation`, `cargo test -p cdk-axum --features federation private_local_status_route_reports_payment_observation_conflicts -- --test-threads 1`, `cargo test -p cdk-axum --features federation private_local_status_route_reports_stale_payment_observations -- --test-threads 1`, and `cargo test -p cdk-axum --features federation private_local_status_route -- --test-threads 1` passed after moving payment-observation report assembly into `crates/cdk-axum/src/federation/payment_observation.rs`.</td>
+              <td>Continue the Axum split toward the peer sync loop while keeping shared quorum, durable journal, and materialized-state helpers in the parent until the next cohesive extraction.</td>
             </tr>
             <tr>
               <td>Fedimint consensus review and Milestone 4A</td>
