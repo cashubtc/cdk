@@ -205,11 +205,18 @@ impl Mint {
         #[cfg(feature = "federation")] federation_config: Option<FederationRuntimeConfig>,
     ) -> Result<Self, Error> {
         let keysets = signatory.keysets().await?;
-        if !keysets
+        let has_active_signatory_keyset = keysets
             .keysets
             .iter()
-            .any(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
-        {
+            .any(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth);
+        #[cfg(feature = "federation")]
+        let has_active_federation_keyset = federation_mode.is_member()
+            && federation_config
+                .as_ref()
+                .is_some_and(FederationRuntimeConfig::has_active_non_auth_keyset);
+        #[cfg(not(feature = "federation"))]
+        let has_active_federation_keyset = false;
+        if !has_active_signatory_keyset && !has_active_federation_keyset {
             return Err(Error::NoActiveKeyset);
         }
 

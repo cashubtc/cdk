@@ -99,6 +99,13 @@ impl FederationRuntimeConfig {
         &self.public_config
     }
 
+    pub(crate) fn has_active_non_auth_keyset(&self) -> bool {
+        self.public_config
+            .keysets
+            .iter()
+            .any(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
+    }
+
     /// Return a new runtime config with a replaced public config.
     pub fn with_public_config(&self, public_config: FederationConfig) -> Result<Self, Error> {
         Self::new_with_consensus_backend(

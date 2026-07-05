@@ -716,6 +716,12 @@ impl MintBuilder {
 
         #[cfg(feature = "federation")]
         let federation_mode = self.federation_mode;
+        #[cfg(feature = "federation")]
+        let federation_has_active_keyset = federation_mode.is_member()
+            && self
+                .federation_config
+                .as_ref()
+                .is_some_and(FederationRuntimeConfig::has_active_non_auth_keyset);
 
         // Check active keysets and rotate if necessary
         let active_keysets = signatory.keysets().await?;
@@ -728,6 +734,15 @@ impl MintBuilder {
         }
 
         for (unit, (fee, amounts)) in &self.supported_units {
+            #[cfg(feature = "federation")]
+            if federation_has_active_keyset && unit != &CurrencyUnit::Auth {
+                tracing::debug!(
+                    "Skipping standalone keyset rotation for federated unit {}",
+                    unit
+                );
+                continue;
+            }
+
             // Check if we have an active keyset for this unit
             let keyset = active_keysets
                 .keysets
@@ -939,6 +954,8 @@ mod tests {
     use std::pin::Pin;
     #[cfg(feature = "federation")]
     use std::str::FromStr;
+    #[cfg(feature = "federation")]
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     use async_trait::async_trait;
@@ -965,6 +982,8 @@ mod tests {
     };
     #[cfg(feature = "federation")]
     use cdk_common::SecretKey;
+    #[cfg(feature = "federation")]
+    use cdk_signatory::signatory::{SignatoryKeySet, SignatoryKeysets};
     use cdk_sqlite::mint::{memory, MintSqliteAuthDatabase, MintSqliteDatabase};
     use futures::Stream;
     use KnownMethod;
@@ -974,6 +993,54 @@ mod tests {
     // Mock payment processor for testing
     struct MockPaymentProcessor {
         settings: SettingsResponse,
+    }
+
+    #[cfg(feature = "federation")]
+    struct NoLocalKeysetSignatory {
+        rotations: Arc<AtomicUsize>,
+    }
+
+    #[cfg(feature = "federation")]
+    #[async_trait]
+    impl Signatory for NoLocalKeysetSignatory {
+        fn name(&self) -> String {
+            "No local keysets".to_string()
+        }
+
+        async fn blind_sign(
+            &self,
+            _blinded_messages: Vec<cdk_common::BlindedMessage>,
+        ) -> Result<Vec<cdk_common::BlindSignature>, cdk_common::error::Error> {
+            Err(cdk_common::error::Error::Custom(
+                "test signatory does not sign".to_string(),
+            ))
+        }
+
+        async fn verify_proofs(
+            &self,
+            _proofs: Vec<cdk_common::Proof>,
+        ) -> Result<(), cdk_common::error::Error> {
+            Err(cdk_common::error::Error::Custom(
+                "test signatory does not verify".to_string(),
+            ))
+        }
+
+        async fn keysets(&self) -> Result<SignatoryKeysets, cdk_common::error::Error> {
+            Ok(SignatoryKeysets {
+                pubkey: SecretKey::generate().public_key(),
+                keysets: Vec::new(),
+            })
+        }
+
+        async fn rotate_keyset(
+            &self,
+            _args: RotateKeyArguments,
+        ) -> Result<SignatoryKeySet, cdk_common::error::Error> {
+            self.rotations.fetch_add(1, Ordering::Relaxed);
+            Err(cdk_common::error::Error::Custom(
+                "unexpected standalone rotation".to_string(),
+            ))
+        }
     }
 
     #[async_trait]
@@ -1366,6 +1433,35 @@ mod tests {
             runtime_config.private_config().setup_transcript_hash,
             Some(setup_transcript.transcript_hash)
         );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn federated_builder_skips_standalone_rotation_with_active_aggregate_keyset() {
+        let (builder, localstore) = builder_with_bolt11_processor().await;
+        let fixture = dkg_completion_fixture(member_id(2));
+        persist_dkg_completion_records(
+            &localstore,
+            &fixture.keyset_share,
+            &fixture.transcript_signatures,
+        )
+        .await;
+        let rotations = Arc::new(AtomicUsize::new(0));
+        let signatory = Arc::new(NoLocalKeysetSignatory {
+            rotations: Arc::clone(&rotations),
+        });
+
+        let mint = builder
+            .with_federation_config(fixture.setup_runtime_config)
+            .build_with_signatory(signatory)
+            .await
+            .expect("federated mint starts from aggregate keysets");
+
+        assert_eq!(rotations.load(Ordering::Relaxed), 0);
+        assert!(mint
+            .federation_config()
+            .expect("federation config")
+            .has_active_non_auth_keyset());
     }
 
     #[cfg(feature = "federation")]
