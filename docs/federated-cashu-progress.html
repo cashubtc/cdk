@@ -515,6 +515,7 @@
           <a class="link-pill" href="./federated-cashu-rfc.md">Milestone 0 RFC</a>
           <a class="link-pill" href="./federated-cashu-review-checklist.md">Review checklist</a>
           <a class="link-pill" href="./federated-cashu-formal-review.md">Formal review</a>
+          <a class="link-pill" href="./federated-cashu-melt-state-machine.md">Melt state machine</a>
           <a class="link-pill" href="./federated-cashu-signature-share-provenance.md">Share provenance</a>
           <a class="link-pill" href="./federated-cashu-payment-trust-model.md">Payment trust model</a>
           <a class="link-pill" href="./federated-cashu-sql-lock-ordering.md">SQL lock ordering</a>
@@ -524,19 +525,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 554 checked items and 35 remaining items. Formal threshold/BFT assumptions and canonicalization/transcript-binding review are now recorded, including the operation version 1 encoding decision.</span>
+          <span class="value">The implementation plan audit tracks 556 checked items and 33 remaining items. The federated melt operation version 1 shape is now fixed: `Melt` remains the accepted reserve/execution operation, while accepted `MeltQuotePayment` observations drive finalization or rollback.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: record federation formal security review</span>
+          <span class="value">docs: record federated melt state-machine decision</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`docs/federated-cashu-formal-review.md` documents threshold assumptions, BFT production blockers, canonical sorted JSON as operation version 1, and request-transcript binding for NUT-20 and SIG_ALL.</span>
+          <span class="value">`docs/federated-cashu-melt-state-machine.md` documents why operation version 1 does not split `Melt` into separate `MeltReserve`, `FinalizeMelt`, or `RollbackMelt` variants.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, the optional explicit MeltReserve split, production DKG, and the remaining BFT follow-ups.</span>
+          <span class="value">Continue with live Postgres migration/application coverage, broader storage-backed recovery checks, production DKG, and the remaining BFT follow-ups.</span>
         </div>
       </aside>
     </header>
@@ -547,7 +548,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 554 checked entries and 35 remaining entries. The
+          checklist has 556 checked entries and 33 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -786,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Melt shape decided</h3>
+            <p>Federated operation version 1 now keeps `Melt` as the accepted reserve/execution operation and derives paid finalization or failed rollback from accepted `MeltQuotePayment` observations plus durable saga recovery.</p>
+          </article>
           <article class="item">
             <h3>Formal review recorded</h3>
             <p>The federation security review now records the threshold/BFT assumptions, production blockers, canonical JSON version-1 decision, and request-transcript binding requirements for NUT-20, P2PK, HTLC, and SIG_ALL paths.</p>
@@ -3546,6 +3551,12 @@
               <td>Keep the same conflict-key idempotence rule when adding richer backend-specific payment evidence.</td>
             </tr>
             <tr>
+              <td>Melt operation version-1 shape</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`docs/federated-cashu-melt-state-machine.md` records the decision not to split operation version 1 into explicit `MeltReserve`, `FinalizeMelt`, and `RollbackMelt` variants. `cargo test -p cdk --features federation real_policy_melt_payment_observations_finalize_from_stored_quorum -- --test-threads 1`, `cargo test -p cdk --features federation real_policy_failed_melt_observations_rollback_from_stored_quorum -- --test-threads 1`, `cargo test -p cdk-axum --features federation sqlite_restart_replays_pending_melt_then_catches_up_paid_observation -- --test-threads 1`, and `cargo test -p cdk-axum --features federation sqlite_restart_replays_pending_melt_then_catches_up_failed_observation -- --test-threads 1` passed. The tests cover real-policy paid finalization, failed rollback, and SQLite restart replay through pending melt state.</td>
+              <td>Keep any future explicit reserve/finalize/rollback wire names behind a new operation version if a production BFT backend or external protocol implementation requires them.</td>
+            </tr>
+            <tr>
               <td>Federated melt payment actor</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --features federation real_policy_non_elected_melt_member_reserves_without_payment_attempt -- --test-threads 1`, `cargo test -p cdk --features federation melt_payment -- --test-threads 1`, and `cargo test -p cdk --features federation real_policy_ -- --test-threads 1` passed. The tests prove real-backend quorum policies select one deterministic member from the accepted operation hash for the external melt payment, non-elected members reserve inputs and keep the saga pending without calling `make_payment`, and development single-observation behavior remains unchanged for local fake-wallet smoke paths.</td>
@@ -3555,7 +3566,7 @@
               <td>Atomic internal federated melt settlement</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --features federation internal_melt_to_mint_settlement_updates_both_quotes_in_accepted_melt -- --test-threads 1`, `real_policy_non_elected_melt_member_reserves_without_payment_attempt`, `real_policy_melt_payment_observations_finalize_from_stored_quorum`, and `process_federation_melt_change_signs_rotated_keyset` passed. The focused regression proves an accepted federated Melt can settle a matching mint quote and melt quote in one database transaction, spend the inputs, delete the saga, persist deterministic payment time from the accepted log entry, and avoid a separate melt payment observation.</td>
-              <td>Keep the optional protocol-shape follow-up open for splitting the public melt path into an explicit MeltReserve operation if that becomes the preferred wire shape.</td>
+              <td>Use the documented operation-version boundary if a future protocol version needs explicit reserve/finalize/rollback wire variants.</td>
             </tr>
             <tr>
               <td>Mint payment observer</td>

@@ -401,7 +401,7 @@ Implementation checklist:
 
 - [x] Define `FederatedMintOperation` enum with versioned variants.
 - [x] Add versioned federation operation variants for mint quote, mint quote payment, mint issuance, swap, melt quote, melt quote payment, melt, restore, payment-observation quarantine, and keyset rotation.
-- [ ] Decide whether to further split melt into explicit reserve/finalize/rollback operation variants instead of the current melt/payment-state plus saga-recovery representation.
+- [x] Decide whether to further split melt into explicit reserve/finalize/rollback operation variants; operation version 1 keeps the current `Melt` reserve/execution operation plus accepted `MeltQuotePayment` observations and saga recovery, as documented in `docs/federated-cashu-melt-state-machine.md`.
 - [x] Implement deterministic canonical JSON encoding with sorted object keys for consensus operation IDs.
 - [x] Decide canonical sorted JSON remains the operation version 1 encoding; a deterministic binary format must use a future operation version if it becomes a protocol requirement.
 - [x] Use `BTreeMap` and sorted vectors wherever ordering matters.
@@ -732,7 +732,7 @@ Implementation checklist:
 - [x] Split melt into consensus-visible stages.
 - [x] `MeltQuote` persists the quote across members.
 - [x] Federated melt request validates inputs and change outputs and uses consensus-visible saga/pending state.
-- [ ] Rename or split the current federated melt request into an explicit `MeltReserve` operation if that remains the preferred protocol shape.
+- [x] Keep the current federated melt request name for operation version 1; document `FederationOperation::Melt` as the accepted reserve/execution operation rather than a terminal finality operation.
 - [x] Fake-wallet happy path covers outgoing payment completion.
 - [x] Exactly one production payment actor should attempt the outgoing payment, selected deterministically from operation hash or configured as origin member.
 - [x] Before attempting payment, consensus must record `PaymentAttempted` or equivalent write-ahead state.
