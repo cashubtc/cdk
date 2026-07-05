@@ -22,6 +22,8 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) sync_state: String,
     pub(crate) sync_ready: bool,
     pub(crate) sync_message: String,
+    #[serde(default)]
+    pub(crate) pending_mempool_items: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) session_outcome_quorum_operation_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -779,6 +781,7 @@ mod tests {
             sync_state: "healthy".to_string(),
             sync_ready: true,
             sync_message: "federation member is healthy".to_string(),
+            pending_mempool_items: 0,
             session_outcome_quorum_operation_count: None,
             session_outcome_quorum_signers: Vec::new(),
             payment_observation_reports: Vec::new(),

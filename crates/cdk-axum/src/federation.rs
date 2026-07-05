@@ -888,12 +888,14 @@ async fn post_local_status(
     let payment_observation_reports = payment_observation_report_summaries(&state)
         .await
         .map_err(cdk_error_response)?;
+    let pending_mempool_items = state.federation_pending_mempool_len().await;
     let response = FederationLocalStatusResponse::new(
         peer_status,
         sync_status,
         session_outcome_quorum,
         payment_observation_reports,
         materialized_state_rows,
+        usize_to_u64_saturating(pending_mempool_items),
     );
     #[cfg(feature = "prometheus")]
     record_federation_local_status_metrics(&response);
@@ -1188,6 +1190,8 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) sync_state: String,
     pub(crate) sync_ready: bool,
     pub(crate) sync_message: String,
+    #[serde(default)]
+    pub(crate) pending_mempool_items: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) session_outcome_quorum_operation_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1205,6 +1209,7 @@ impl FederationLocalStatusResponse {
         session_outcome_quorum: Option<SessionOutcomeQuorumStatus>,
         payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
         materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
+        pending_mempool_items: u64,
     ) -> Self {
         let session_outcome_quorum_operation_count = session_outcome_quorum
             .as_ref()
@@ -1218,6 +1223,7 @@ impl FederationLocalStatusResponse {
             sync_state: sync_status.state_name().to_string(),
             sync_ready: sync_status.is_ready(),
             sync_message: sync_status.not_ready_message(),
+            pending_mempool_items,
             session_outcome_quorum_operation_count,
             session_outcome_quorum_signers,
             payment_observation_reports,
@@ -1244,6 +1250,10 @@ fn record_federation_local_status_metrics(response: &FederationLocalStatusRespon
     cdk_prometheus::METRICS.set_federation_consensus_operation_count(
         &member,
         u64_to_i64_saturating(response.peer_status.operation_count),
+    );
+    cdk_prometheus::METRICS.set_federation_pending_mempool_items(
+        &member,
+        u64_to_i64_saturating(response.pending_mempool_items),
     );
     cdk_prometheus::METRICS.set_federation_sync_ready(&member, response.sync_ready);
     for state in SYNC_STATES {
@@ -1290,6 +1300,13 @@ fn u64_to_i64_saturating(value: u64) -> i64 {
     match i64::try_from(value) {
         Ok(value) => value,
         Err(_) => i64::MAX,
+    }
+}
+
+fn usize_to_u64_saturating(value: usize) -> u64 {
+    match u64::try_from(value) {
+        Ok(value) => value,
+        Err(_) => u64::MAX,
     }
 }
 
@@ -2611,6 +2628,30 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+
+    #[cfg(feature = "prometheus")]
+    fn prometheus_metric_value(metric: &str, labels: &[(&str, &str)]) -> f64 {
+        let registry = cdk_prometheus::METRICS.registry();
+        let scrape = cdk_prometheus::prometheus::TextEncoder::new()
+            .encode_to_string(&registry.gather())
+            .expect("encode prometheus metrics");
+        scrape
+            .lines()
+            .find_map(|line| {
+                if !line.starts_with(metric) {
+                    return None;
+                }
+                for (key, value) in labels {
+                    let fragment = format!("{key}=\"{value}\"");
+                    if !line.contains(&fragment) {
+                        return None;
+                    }
+                }
+                line.rsplit_once(' ')
+                    .and_then(|(_, value)| value.parse::<f64>().ok())
+            })
+            .unwrap_or(0.0)
+    }
 
     #[test]
     fn federation_peer_sync_disable_value_accepts_truthy_values() {
@@ -7916,6 +7957,54 @@ mod tests {
         assert_eq!(response.operation_id, operation_id);
         assert_eq!(notified.operation_id, operation_id);
         assert_eq!(notified.outcome.entry().operation_id, operation_id);
+    }
+
+    #[cfg(feature = "prometheus")]
+    #[tokio::test]
+    async fn submit_federation_envelope_records_prometheus_operation_metrics() {
+        let (state, _, _) = federation_route_state().await;
+        let member = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .member_id()
+            .to_string();
+        let accepted_labels = [("member", member.as_str()), ("operation", "mint_quote")];
+        let rejected_labels = [
+            ("member", member.as_str()),
+            ("operation", "mint_quote"),
+            ("reason", "consensus"),
+        ];
+
+        let accepted_before =
+            prometheus_metric_value("cdk_federation_accepted_operations_total", &accepted_labels);
+        let quote_id = QuoteId::new();
+        state
+            .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
+            .await
+            .expect("submit mint quote");
+        let accepted_after =
+            prometheus_metric_value("cdk_federation_accepted_operations_total", &accepted_labels);
+        assert_eq!(accepted_after, accepted_before + 1.0);
+
+        let rejected_before =
+            prometheus_metric_value("cdk_federation_rejected_operations_total", &rejected_labels);
+        let mut conflicting = mint_quote_envelope(&state, &quote_id);
+        let FederationOperation::MintQuote(operation) = &mut conflicting.operation else {
+            panic!("mint quote operation");
+        };
+        let cdk::mint::MintQuoteResponse::Bolt11(response) = &mut operation.response else {
+            panic!("bolt11 mint quote response");
+        };
+        response.request.push_str("-conflict");
+
+        state
+            .submit_federation_envelope(conflicting)
+            .await
+            .expect_err("conflicting mint quote must be rejected");
+        let rejected_after =
+            prometheus_metric_value("cdk_federation_rejected_operations_total", &rejected_labels);
+        assert_eq!(rejected_after, rejected_before + 1.0);
     }
 
     #[tokio::test]

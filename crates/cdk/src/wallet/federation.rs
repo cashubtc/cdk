@@ -232,6 +232,11 @@ impl FederatedMintConnector {
             })
     }
 
+    #[cfg(feature = "prometheus")]
+    fn record_aggregation_failure(&self, operation: &str) {
+        cdk_prometheus::METRICS.record_federation_aggregation_failure("wallet", operation);
+    }
+
     async fn call_first_healthy_member<R, F, Fut>(
         &self,
         operation: &str,
@@ -1322,11 +1327,16 @@ impl MintConnector for FederatedMintConnector {
                 async move { connector.post_mint(&method, request).await }
             })
             .await?;
-        self.aggregate_member_responses(
+        let result = self.aggregate_member_responses(
             &request.outputs,
             &member_responses,
             ShareAmountValidation::Exact,
-        )
+        );
+        #[cfg(feature = "prometheus")]
+        if result.is_err() {
+            self.record_aggregation_failure("mint");
+        }
+        result
     }
 
     async fn post_batch_check_mint_quote_status(
@@ -1366,11 +1376,16 @@ impl MintConnector for FederatedMintConnector {
                 async move { connector.post_batch_mint(&method, request).await }
             })
             .await?;
-        self.aggregate_member_responses(
+        let result = self.aggregate_member_responses(
             &request.outputs,
             &member_responses,
             ShareAmountValidation::Exact,
-        )
+        );
+        #[cfg(feature = "prometheus")]
+        if result.is_err() {
+            self.record_aggregation_failure("mint");
+        }
+        result
     }
 
     async fn post_melt_quote(
@@ -1435,7 +1450,12 @@ impl MintConnector for FederatedMintConnector {
                 async move { connector.post_melt(&method, request).await }
             })
             .await?;
-        self.aggregate_melt_response(outputs.as_deref(), &member_responses)
+        let result = self.aggregate_melt_response(outputs.as_deref(), &member_responses);
+        #[cfg(feature = "prometheus")]
+        if result.is_err() {
+            self.record_aggregation_failure("melt");
+        }
+        result
     }
 
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error> {
@@ -1460,7 +1480,12 @@ impl MintConnector for FederatedMintConnector {
             request.outputs(),
             &member_responses,
             ShareAmountValidation::Exact,
-        )?;
+        );
+        #[cfg(feature = "prometheus")]
+        if response.is_err() {
+            self.record_aggregation_failure("swap");
+        }
+        let response = response?;
 
         Ok(SwapResponse {
             signatures: response.signatures,
@@ -1503,7 +1528,12 @@ impl MintConnector for FederatedMintConnector {
             })
             .await?;
 
-        self.aggregate_restore_response(&request.outputs, &member_responses)
+        let result = self.aggregate_restore_response(&request.outputs, &member_responses);
+        #[cfg(feature = "prometheus")]
+        if result.is_err() {
+            self.record_aggregation_failure("restore");
+        }
+        result
     }
 
     async fn get_auth_wallet(&self) -> Option<AuthWallet> {

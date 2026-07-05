@@ -53,6 +53,14 @@ type FederationFinalizationHandle = tokio::sync::mpsc::Sender<FederationFinaliza
 #[cfg(feature = "federation")]
 type FederationRestAdmissionHandle = Arc<tokio::sync::Semaphore>;
 
+#[cfg(all(feature = "federation", feature = "prometheus"))]
+fn usize_to_i64_saturating(value: usize) -> i64 {
+    match i64::try_from(value) {
+        Ok(value) => value,
+        Err(_) => i64::MAX,
+    }
+}
+
 #[cfg(feature = "federation")]
 struct FederationFinalizationRequest {
     response: FederationSubmitOperationResponse,
@@ -461,6 +469,45 @@ impl MintState {
         }
     }
 
+    #[cfg(feature = "prometheus")]
+    fn federation_metric_member_label(&self) -> Option<String> {
+        self.mint
+            .federation_config()
+            .map(|config| config.member_id().to_string())
+    }
+
+    #[cfg(feature = "prometheus")]
+    fn record_federation_accepted_operation_metric(&self, operation: &str) {
+        if let Some(member) = self.federation_metric_member_label() {
+            cdk_prometheus::METRICS.record_federation_accepted_operation(&member, operation);
+        }
+    }
+
+    #[cfg(feature = "prometheus")]
+    fn record_federation_rejected_operation_metric(&self, operation: &str, reason: &str) {
+        if let Some(member) = self.federation_metric_member_label() {
+            cdk_prometheus::METRICS
+                .record_federation_rejected_operation(&member, operation, reason);
+        }
+    }
+
+    pub(crate) async fn federation_pending_mempool_len(&self) -> usize {
+        match &self.federation_consensus {
+            Some(consensus) => consensus.lock().await.pending_mempool_len(),
+            None => 0,
+        }
+    }
+
+    #[cfg(feature = "prometheus")]
+    async fn record_federation_pending_mempool_metric(&self) {
+        let Some(member) = self.federation_metric_member_label() else {
+            return;
+        };
+        let pending = self.federation_pending_mempool_len().await;
+        cdk_prometheus::METRICS
+            .set_federation_pending_mempool_items(&member, usize_to_i64_saturating(pending));
+    }
+
     pub(crate) async fn submit_federation_envelope(
         &self,
         envelope: FederationOperationEnvelope,
@@ -485,18 +532,42 @@ impl MintState {
         envelope: FederationOperationEnvelope,
         sequence: Option<(MemberId, u64)>,
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
+        #[cfg(feature = "prometheus")]
+        let operation_label = envelope.operation.kind().to_string();
         let consensus = self.federation_consensus.as_ref().ok_or_else(|| {
             cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
         })?;
         let mut consensus = consensus.lock().await;
         let mut next_consensus = consensus.clone();
-        let response = next_consensus.submit_envelope(envelope)?;
+        let response = match next_consensus.submit_envelope(envelope) {
+            Ok(response) => response,
+            Err(err) => {
+                #[cfg(feature = "prometheus")]
+                self.record_federation_rejected_operation_metric(&operation_label, "consensus");
+                return Err(cdk::Error::from(err));
+            }
+        };
+        let _appended = matches!(
+            &response.outcome,
+            FederationJournalAppendOutcome::Appended(_)
+        );
         let entry = response.outcome.entry().clone();
 
-        self.persist_federation_append_outcome(&response.outcome, sequence)
-            .await?;
+        if let Err(err) = self
+            .persist_federation_append_outcome(&response.outcome, sequence)
+            .await
+        {
+            return Err(err);
+        }
         *consensus = next_consensus;
         drop(consensus);
+        #[cfg(feature = "prometheus")]
+        {
+            if _appended {
+                self.record_federation_accepted_operation_metric(&operation_label);
+            }
+            self.record_federation_pending_mempool_metric().await;
+        }
 
         let operation_id = response.operation_id;
         self.finalize_federation_operation_acceptance(response.clone(), entry, sequence)
@@ -987,6 +1058,13 @@ impl MintState {
         peer: MemberId,
         operation_count: u64,
     ) {
+        #[cfg(feature = "prometheus")]
+        {
+            if let Some(member) = self.federation_metric_member_label() {
+                cdk_prometheus::METRICS
+                    .record_federation_state_digest_mismatch(&member, &peer.to_string());
+            }
+        }
         if let Some(sync) = &self.federation_sync {
             sync.lock()
                 .await

@@ -447,6 +447,29 @@ impl FederationConsensusRuntime {
         }
     }
 
+    /// Return the number of locally queued consensus items, if the backend exposes a queue.
+    #[must_use]
+    pub fn queued_len(&self) -> usize {
+        match &self.backend {
+            FederationConsensusRuntimeBackend::InMemory(_) => 0,
+        }
+    }
+
+    /// Return the number of dispatched consensus items awaiting finalization.
+    #[must_use]
+    pub fn pending_finalization_len(&self) -> usize {
+        match &self.backend {
+            FederationConsensusRuntimeBackend::InMemory(_) => 0,
+        }
+    }
+
+    /// Return queued plus dispatched consensus items awaiting finalization.
+    #[must_use]
+    pub fn pending_mempool_len(&self) -> usize {
+        self.queued_len()
+            .saturating_add(self.pending_finalization_len())
+    }
+
     /// Rebuild an in-memory runtime from persisted journal entries.
     pub fn in_memory_from_entries(
         federation_id: FederationId,

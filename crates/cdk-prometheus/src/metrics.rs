@@ -89,6 +89,29 @@ pub struct CdkMetrics {
     federation_payment_observation_reports: IntGaugeVec,
     federation_peer_connected: IntGaugeVec,
     federation_peer_operation_count: IntGaugeVec,
+    federation_pending_mempool_items: IntGaugeVec,
+    federation_accepted_operations_total: IntCounterVec,
+    federation_rejected_operations_total: IntCounterVec,
+    federation_signing_share_latency: HistogramVec,
+    federation_aggregation_failures_total: IntCounterVec,
+    federation_state_digest_mismatches_total: IntCounterVec,
+}
+
+#[derive(Debug)]
+struct FederationMetricCollectors {
+    consensus_operation_count: IntGaugeVec,
+    sync_ready: IntGaugeVec,
+    sync_state: IntGaugeVec,
+    session_outcome_quorum_operation_count: IntGaugeVec,
+    payment_observation_reports: IntGaugeVec,
+    peer_connected: IntGaugeVec,
+    peer_operation_count: IntGaugeVec,
+    pending_mempool_items: IntGaugeVec,
+    accepted_operations_total: IntCounterVec,
+    rejected_operations_total: IntCounterVec,
+    signing_share_latency: HistogramVec,
+    aggregation_failures_total: IntCounterVec,
+    state_digest_mismatches_total: IntCounterVec,
 }
 
 impl CdkMetrics {
@@ -121,15 +144,7 @@ impl CdkMetrics {
             Self::create_mint_metrics(&registry)?;
 
         // Create and register federation metrics
-        let (
-            federation_consensus_operation_count,
-            federation_sync_ready,
-            federation_sync_state,
-            federation_session_outcome_quorum_operation_count,
-            federation_payment_observation_reports,
-            federation_peer_connected,
-            federation_peer_operation_count,
-        ) = Self::create_federation_metrics(&registry)?;
+        let federation_metrics = Self::create_federation_metrics(&registry)?;
 
         Ok(Self {
             registry,
@@ -147,13 +162,21 @@ impl CdkMetrics {
             mint_operations_total,
             mint_in_flight_requests,
             mint_operation_duration,
-            federation_consensus_operation_count,
-            federation_sync_ready,
-            federation_sync_state,
-            federation_session_outcome_quorum_operation_count,
-            federation_payment_observation_reports,
-            federation_peer_connected,
-            federation_peer_operation_count,
+            federation_consensus_operation_count: federation_metrics.consensus_operation_count,
+            federation_sync_ready: federation_metrics.sync_ready,
+            federation_sync_state: federation_metrics.sync_state,
+            federation_session_outcome_quorum_operation_count: federation_metrics
+                .session_outcome_quorum_operation_count,
+            federation_payment_observation_reports: federation_metrics.payment_observation_reports,
+            federation_peer_connected: federation_metrics.peer_connected,
+            federation_peer_operation_count: federation_metrics.peer_operation_count,
+            federation_pending_mempool_items: federation_metrics.pending_mempool_items,
+            federation_accepted_operations_total: federation_metrics.accepted_operations_total,
+            federation_rejected_operations_total: federation_metrics.rejected_operations_total,
+            federation_signing_share_latency: federation_metrics.signing_share_latency,
+            federation_aggregation_failures_total: federation_metrics.aggregation_failures_total,
+            federation_state_digest_mismatches_total: federation_metrics
+                .state_digest_mismatches_total,
         })
     }
 
@@ -341,17 +364,7 @@ impl CdkMetrics {
     ///
     /// # Errors
     /// Returns an error if any of the metrics cannot be created or registered
-    fn create_federation_metrics(
-        registry: &Registry,
-    ) -> crate::Result<(
-        IntGaugeVec,
-        IntGaugeVec,
-        IntGaugeVec,
-        IntGaugeVec,
-        IntGaugeVec,
-        IntGaugeVec,
-        IntGaugeVec,
-    )> {
+    fn create_federation_metrics(registry: &Registry) -> crate::Result<FederationMetricCollectors> {
         let federation_consensus_operation_count = IntGaugeVec::new(
             prometheus::Opts::new(
                 "cdk_federation_consensus_operation_count",
@@ -417,15 +430,79 @@ impl CdkMetrics {
         )?;
         registry.register(Box::new(federation_peer_operation_count.clone()))?;
 
-        Ok((
-            federation_consensus_operation_count,
-            federation_sync_ready,
-            federation_sync_state,
-            federation_session_outcome_quorum_operation_count,
-            federation_payment_observation_reports,
-            federation_peer_connected,
-            federation_peer_operation_count,
-        ))
+        let federation_pending_mempool_items = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_pending_mempool_items",
+                "Number of locally queued or dispatched federation consensus items awaiting finalization",
+            ),
+            &["member"],
+        )?;
+        registry.register(Box::new(federation_pending_mempool_items.clone()))?;
+
+        let federation_accepted_operations_total = IntCounterVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_accepted_operations_total",
+                "Total number of federation operations accepted into local consensus",
+            ),
+            &["member", "operation"],
+        )?;
+        registry.register(Box::new(federation_accepted_operations_total.clone()))?;
+
+        let federation_rejected_operations_total = IntCounterVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_rejected_operations_total",
+                "Total number of federation operations rejected before local consensus acceptance",
+            ),
+            &["member", "operation", "reason"],
+        )?;
+        registry.register(Box::new(federation_rejected_operations_total.clone()))?;
+
+        let federation_signing_share_latency = HistogramVec::new(
+            prometheus::HistogramOpts::new(
+                "cdk_federation_signing_share_latency_seconds",
+                "Latency for producing local federation BLS signing shares in seconds",
+            )
+            .buckets(vec![
+                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+            ]),
+            &["member", "operation"],
+        )?;
+        registry.register(Box::new(federation_signing_share_latency.clone()))?;
+
+        let federation_aggregation_failures_total = IntCounterVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_aggregation_failures_total",
+                "Total number of wallet-side federation signature aggregation failures",
+            ),
+            &["member", "operation"],
+        )?;
+        registry.register(Box::new(federation_aggregation_failures_total.clone()))?;
+
+        let federation_state_digest_mismatches_total = IntCounterVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_state_digest_mismatches_total",
+                "Total number of detected materialized-state digest mismatches with federation peers",
+            ),
+            &["member", "peer"],
+        )?;
+        registry.register(Box::new(federation_state_digest_mismatches_total.clone()))?;
+
+        Ok(FederationMetricCollectors {
+            consensus_operation_count: federation_consensus_operation_count,
+            sync_ready: federation_sync_ready,
+            sync_state: federation_sync_state,
+            session_outcome_quorum_operation_count:
+                federation_session_outcome_quorum_operation_count,
+            payment_observation_reports: federation_payment_observation_reports,
+            peer_connected: federation_peer_connected,
+            peer_operation_count: federation_peer_operation_count,
+            pending_mempool_items: federation_pending_mempool_items,
+            accepted_operations_total: federation_accepted_operations_total,
+            rejected_operations_total: federation_rejected_operations_total,
+            signing_share_latency: federation_signing_share_latency,
+            aggregation_failures_total: federation_aggregation_failures_total,
+            state_digest_mismatches_total: federation_state_digest_mismatches_total,
+        })
     }
 
     /// Get the metrics registry
@@ -595,6 +672,58 @@ impl CdkMetrics {
             .with_label_values(&[member, peer])
             .set(count);
     }
+
+    /// Set the number of federation consensus items awaiting finalization.
+    pub fn set_federation_pending_mempool_items(&self, member: &str, count: i64) {
+        self.federation_pending_mempool_items
+            .with_label_values(&[member])
+            .set(count);
+    }
+
+    /// Record a federation operation accepted into local consensus.
+    pub fn record_federation_accepted_operation(&self, member: &str, operation: &str) {
+        self.federation_accepted_operations_total
+            .with_label_values(&[member, operation])
+            .inc();
+    }
+
+    /// Record a federation operation rejected before local consensus acceptance.
+    pub fn record_federation_rejected_operation(
+        &self,
+        member: &str,
+        operation: &str,
+        reason: &str,
+    ) {
+        self.federation_rejected_operations_total
+            .with_label_values(&[member, operation, reason])
+            .inc();
+    }
+
+    /// Record local federation signing-share production latency.
+    pub fn record_federation_signing_share_latency(
+        &self,
+        member: &str,
+        operation: &str,
+        duration_seconds: f64,
+    ) {
+        self.federation_signing_share_latency
+            .with_label_values(&[member, operation])
+            .observe(duration_seconds);
+    }
+
+    /// Record a wallet-side federation signature aggregation failure.
+    pub fn record_federation_aggregation_failure(&self, member: &str, operation: &str) {
+        self.federation_aggregation_failures_total
+            .with_label_values(&[member, operation])
+            .inc();
+    }
+
+    /// Record a materialized-state digest mismatch with a federation peer.
+    pub fn record_federation_state_digest_mismatch(&self, member: &str, peer: &str) {
+        self.federation_state_digest_mismatches_total
+            .with_label_values(&[member, peer])
+            .inc();
+    }
 }
 
 impl Default for CdkMetrics {
@@ -756,6 +885,8 @@ mod tests {
         metrics.set_federation_session_outcome_quorum_operation_count(member, 5);
         metrics.set_federation_peer_connected(member, peer, true);
         metrics.set_federation_peer_operation_count(member, peer, 9);
+        metrics.set_federation_pending_mempool_items(member, 2);
+        metrics.record_federation_state_digest_mismatch(member, peer);
 
         assert_eq!(
             metrics
@@ -806,6 +937,20 @@ mod tests {
                 .get(),
             9
         );
+        assert_eq!(
+            metrics
+                .federation_pending_mempool_items
+                .with_label_values(&[member])
+                .get(),
+            2
+        );
+        assert_eq!(
+            metrics
+                .federation_state_digest_mismatches_total
+                .with_label_values(&[member, peer])
+                .get(),
+            1
+        );
     }
 
     #[test]
@@ -826,5 +971,54 @@ mod tests {
                 .get(),
             3
         );
+    }
+
+    #[test]
+    fn federation_operation_metrics_are_low_cardinality() {
+        let metrics = CdkMetrics::new().expect("metrics should be created");
+
+        metrics.record_federation_accepted_operation("2", "mint");
+        metrics.record_federation_rejected_operation("2", "swap", "conflict");
+        metrics.record_federation_signing_share_latency("2", "mint", 0.01);
+        metrics.record_federation_aggregation_failure("wallet", "restore");
+
+        assert_eq!(
+            metrics
+                .federation_accepted_operations_total
+                .with_label_values(&["2", "mint"])
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .federation_rejected_operations_total
+                .with_label_values(&["2", "swap", "conflict"])
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .federation_signing_share_latency
+                .with_label_values(&["2", "mint"])
+                .get_sample_count(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .federation_aggregation_failures_total
+                .with_label_values(&["wallet", "restore"])
+                .get(),
+            1
+        );
+
+        let scrape = prometheus::TextEncoder::new()
+            .encode_to_string(&metrics.registry().gather())
+            .expect("encode metrics");
+        assert!(!scrape.contains("quote="));
+        assert!(!scrape.contains("invoice="));
+        assert!(!scrape.contains("proof="));
+        assert!(!scrape.contains("secret="));
+        assert!(!scrape.contains("token="));
+        assert!(!scrape.contains("ip="));
     }
 }

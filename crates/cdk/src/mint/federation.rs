@@ -6,6 +6,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
+#[cfg(feature = "prometheus")]
+use std::time::Instant;
 
 use cdk_common::database;
 use cdk_common::error::Error;
@@ -360,11 +362,20 @@ impl FederationRuntimeConfig {
         operation_id: FederationOperationId,
         input: &MintInput,
     ) -> Result<FederationBlindSignatureShareSet, Error> {
-        Ok(self.private_config.sign_blinded_messages(
+        #[cfg(feature = "prometheus")]
+        let started = Instant::now();
+        let result = self.private_config.sign_blinded_messages(
             &self.public_config,
             operation_id,
             input.outputs(),
-        )?)
+        );
+        #[cfg(feature = "prometheus")]
+        cdk_prometheus::METRICS.record_federation_signing_share_latency(
+            &self.member_id().to_string(),
+            "mint",
+            started.elapsed().as_secs_f64(),
+        );
+        Ok(result?)
     }
 
     /// Convert an accepted mint operation into this member's wallet-facing share response.
@@ -430,11 +441,20 @@ impl FederationRuntimeConfig {
         operation_id: FederationOperationId,
         request: &SwapRequest,
     ) -> Result<FederationBlindSignatureShareSet, Error> {
-        Ok(self.private_config.sign_blinded_messages(
+        #[cfg(feature = "prometheus")]
+        let started = Instant::now();
+        let result = self.private_config.sign_blinded_messages(
             &self.public_config,
             operation_id,
             request.outputs(),
-        )?)
+        );
+        #[cfg(feature = "prometheus")]
+        cdk_prometheus::METRICS.record_federation_signing_share_latency(
+            &self.member_id().to_string(),
+            "swap",
+            started.elapsed().as_secs_f64(),
+        );
+        Ok(result?)
     }
 
     /// Convert an accepted swap operation into this member's wallet-facing share response.

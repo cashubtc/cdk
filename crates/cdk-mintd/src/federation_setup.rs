@@ -1710,6 +1710,7 @@ prometheus_metrics_are_ready() {{
   local metric
   for metric in \
     cdk_federation_consensus_operation_count \
+    cdk_federation_pending_mempool_items \
     cdk_federation_sync_ready \
     cdk_federation_sync_state \
     cdk_federation_session_outcome_quorum_operation_count \
@@ -2723,6 +2724,7 @@ mod tests {
         assert!(smoke_script.contains("wait_for_prometheus_metrics()"));
         assert!(smoke_script.contains("prometheus_metrics_are_ready()"));
         assert!(smoke_script.contains("cdk_federation_consensus_operation_count"));
+        assert!(smoke_script.contains("cdk_federation_pending_mempool_items"));
         assert!(smoke_script.contains("cdk_federation_sync_ready"));
         assert!(smoke_script.contains("cdk_federation_sync_state"));
         assert!(smoke_script.contains("cdk_federation_payment_observation_reports"));

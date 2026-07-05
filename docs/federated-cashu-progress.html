@@ -1587,6 +1587,10 @@
             <p>Private REST peer sync now records whether the latest sync attempt to each federation peer succeeded and the last consensus operation count reported by that peer.</p>
           </article>
           <article class="item">
+            <h3>Federation operation metrics completed</h3>
+            <p>Prometheus now exposes pending consensus work, accepted and rejected federation operations, BLS signing-share latency, wallet aggregation failures, and materialized state-digest mismatch counters with low-cardinality labels only.</p>
+          </article>
+          <article class="item">
             <h3>Metrics smoke gate added</h3>
             <p>Trusted-dealer local member configs now enable per-member Prometheus endpoints, and the generated fake-wallet smoke script scrapes every member for federation gauges while rejecting sensitive metric labels.</p>
           </article>
@@ -3078,6 +3082,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-prometheus federation_member_status_metrics_are_labeled_by_member -- --test-threads 1` passed with peer connectivity and peer operation-count gauges asserted by local member and peer labels. `cargo check -p cdk-axum --features federation,prometheus` passed with the private REST peer sync loop recording success and failure observations.</td>
               <td>Carry these gauges into the next metrics-enabled process smoke and add alert thresholds once production peer-sync policy settles.</td>
+            </tr>
+            <tr>
+              <td>Federation operation metrics</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-prometheus federation_ -- --test-threads 1`, `cargo test -p cdk-axum --features federation,prometheus submit_federation_envelope_records_prometheus_operation_metrics -- --test-threads 1`, `cargo test -p cdk --features federation,prometheus federated_mint_connector_aggregates_mint_signature_shares -- --test-threads 1`, `cargo test -p cdk --features federation,prometheus runtime_config_signs_accepted_ -- --test-threads 1`, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite,prometheus` passed. The generated smoke script now requires the pending-mempool gauge without adding sensitive metric labels.</td>
+              <td>Design a privacy-preserving invalid-operation alert before adding any per-client IP or auth-token bucketing.</td>
             </tr>
             <tr>
               <td>Private REST admission backpressure</td>

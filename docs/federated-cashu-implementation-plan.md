@@ -1059,7 +1059,7 @@ Objective: make failures diagnosable without exposing private user data.
 Implementation checklist:
 
 - [x] Add admin/status reporting for consensus height, digests, lag, and peer state.
-- [ ] Add comprehensive metrics for consensus height, pending mempool items, accepted operations, rejected operations, signing share latency, aggregation failures, state digest mismatches, and peer connectivity.
+- [x] Add comprehensive metrics for consensus height, pending mempool items, accepted operations, rejected operations, signing share latency, aggregation failures, state digest mismatches, and peer connectivity.
 - [x] Add structured logs with short operation hashes, not full secrets or PII.
 - [x] Add admin command to compare state digests across members.
 - [x] Add admin command to list pending payment observations by quote ID.
@@ -1070,7 +1070,7 @@ Implementation checklist:
 Tests and success criteria:
 
 - [x] Log snapshot tests verify redaction of secrets and private config.
-- [ ] Metrics are emitted in fake regtest.
+- [x] Metrics are emitted in fake regtest.
 - [x] Digest mismatch alert fires in an injected-divergence test.
 
 ## Milestone 23: production cleanup and payment-backend isolation

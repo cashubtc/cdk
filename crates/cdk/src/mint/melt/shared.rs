@@ -452,11 +452,20 @@ pub async fn process_federation_melt_change(
         blinded_messages_to_sign.push(blinded_message);
     }
 
+    #[cfg(feature = "prometheus")]
+    let started = std::time::Instant::now();
     let share_set = config.private_config().sign_blinded_messages(
         config.public_config(),
         federation_operation_id,
         &blinded_messages_to_sign,
-    )?;
+    );
+    #[cfg(feature = "prometheus")]
+    METRICS.record_federation_signing_share_latency(
+        &config.member_id().to_string(),
+        "melt",
+        started.elapsed().as_secs_f64(),
+    );
+    let share_set = share_set?;
     let signature_share_records = FederationSignatureShareRecord::from_share_set(&share_set);
     let change_sigs = share_set
         .shares
