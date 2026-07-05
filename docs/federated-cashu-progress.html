@@ -525,15 +525,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The Axum private operation route regressions now live beside the DKG route tests in focused child modules while the parent federation route fixture stays shared for the broader private REST suite.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The mintd federation smoke command now rejects invalid operation prerequisites through fast cargo-test-covered validation before generated scripts reach networked member operations.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: split axum private operation route tests</span>
+          <span class="value">test: harden federation smoke argument validation</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`crates/cdk-axum/src/federation/tests/private_operation_route.rs` now owns the signed submit-operation acceptance, mutation rejection, sender validation, kind mismatch, and stale-sequence private REST route tests.</span>
+          <span class="value">`crates/cdk-mintd/src/federation_smoke.rs` now fails early for zero mint amounts and missing scenario-specific wallet/private config paths, with coverage in `federation_smoke/tests.rs`.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Smoke prerequisites fail fast</h3>
+            <p>The `federation smoke-operations` driver now validates zero mint amounts plus resumable-wallet and signed-operation scenario prerequisites before reading configs or touching member endpoints, and the checks run as focused mintd unit tests.</p>
+          </article>
           <article class="item">
             <h3>Axum private operation route tests split out</h3>
             <p>The signed submit-operation acceptance, oversized payload, tampered payload, unknown sender, wrong-kind, and stale-sequence tests now live in a focused child module while shared federation route builders remain in the parent fixture.</p>
@@ -2285,6 +2289,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation private_operation_route -- --test-threads 1` passed 6 route tests after moving signed submit-operation acceptance, mutation rejection, sender validation, kind mismatch, and stale-sequence regressions into `crates/cdk-axum/src/federation/tests/private_operation_route.rs`.</td>
               <td>Keep future private REST route splits focused on cohesive route surfaces that can reuse the parent federation fixture without duplicating helpers.</td>
+            </tr>
+            <tr>
+              <td>Federation smoke argument validation</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_smoke -- --test-threads 1` covers zero mint-amount rejection, polling guardrails, resumable scenario `--wallet-db` requirements, signed-operation scenario `--private-config` requirements, and ordinary standard/offline scenario acceptance without optional paths.</td>
+              <td>Keep broad live smoke repetition for loopback-enabled environments while promoting more generated-script prerequisites into fast unit tests where possible.</td>
             </tr>
             <tr>
               <td>Mint federation test module split</td>

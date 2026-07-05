@@ -36,6 +36,17 @@ fn smoke_operation_args_reject_zero_quote_retries() {
 }
 
 #[test]
+fn smoke_operation_args_reject_zero_mint_amount() {
+    let mut args = smoke_args();
+    args.mint_amount = 0;
+
+    let err = validate_smoke_operation_args(&args)
+        .expect_err("zero smoke mint amount should be rejected");
+
+    assert!(err.to_string().contains("--mint-amount"));
+}
+
+#[test]
 fn smoke_operation_args_reject_zero_quote_sleep() {
     let mut args = smoke_args();
     args.quote_sleep_ms = 0;
@@ -55,4 +66,63 @@ fn smoke_operation_args_reject_zero_timeout() {
         .expect_err("zero smoke operation timeout should be rejected");
 
     assert!(err.to_string().contains("--operation-timeout-seconds"));
+}
+
+#[test]
+fn smoke_operation_args_require_wallet_db_for_resumable_scenarios() {
+    for scenario in [
+        FederationSmokeScenario::PendingMeltStart,
+        FederationSmokeScenario::PendingMeltFinish,
+        FederationSmokeScenario::PendingMeltFailStart,
+        FederationSmokeScenario::PendingMeltFailFinish,
+    ] {
+        let mut args = smoke_args();
+        args.scenario = scenario;
+
+        let err = validate_smoke_operation_args(&args)
+            .expect_err("resumable smoke scenario should require a wallet database");
+
+        assert!(err.to_string().contains("--wallet-db"));
+        assert!(err.to_string().contains(smoke_scenario_name(scenario)));
+
+        args.wallet_db = Some(PathBuf::from("wallet.sqlite"));
+        validate_smoke_operation_args(&args)
+            .expect("resumable smoke scenario validates with a wallet database");
+    }
+}
+
+#[test]
+fn smoke_operation_args_require_private_config_for_signed_operation_scenarios() {
+    for scenario in [
+        FederationSmokeScenario::QuarantineMintConflict,
+        FederationSmokeScenario::KeysetRotation,
+        FederationSmokeScenario::OfflineMemberKeysetRotation,
+    ] {
+        let mut args = smoke_args();
+        args.scenario = scenario;
+
+        let err = validate_smoke_operation_args(&args)
+            .expect_err("signed-operation smoke scenario should require private config");
+
+        assert!(err.to_string().contains("--private-config"));
+        assert!(err.to_string().contains(smoke_scenario_name(scenario)));
+
+        args.private_config = Some(PathBuf::from("member-1/federation-private.json"));
+        validate_smoke_operation_args(&args)
+            .expect("signed-operation smoke scenario validates with private config");
+    }
+}
+
+#[test]
+fn smoke_operation_args_allow_standard_and_offline_without_optional_paths() {
+    for scenario in [
+        FederationSmokeScenario::Standard,
+        FederationSmokeScenario::OfflineMemberOperations,
+    ] {
+        let mut args = smoke_args();
+        args.scenario = scenario;
+
+        validate_smoke_operation_args(&args)
+            .expect("plain smoke scenario should not require optional paths");
+    }
 }

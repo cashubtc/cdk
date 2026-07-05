@@ -235,6 +235,9 @@ pub(crate) async fn run_smoke_operations_command(
 }
 
 fn validate_smoke_operation_args(args: &FederationSmokeOperationsArgs) -> Result<()> {
+    if args.mint_amount == 0 {
+        bail!("--mint-amount must be greater than zero");
+    }
     if args.quote_retries == 0 {
         bail!("--quote-retries must be greater than zero");
     }
@@ -244,8 +247,39 @@ fn validate_smoke_operation_args(args: &FederationSmokeOperationsArgs) -> Result
     if args.operation_timeout_seconds == Some(0) {
         bail!("--operation-timeout-seconds must be greater than zero");
     }
+    if scenario_requires_wallet_db(args.scenario) && args.wallet_db.is_none() {
+        bail!(
+            "--wallet-db is required for federation smoke scenario {}",
+            smoke_scenario_name(args.scenario)
+        );
+    }
+    if scenario_requires_private_config(args.scenario) && args.private_config.is_none() {
+        bail!(
+            "--private-config is required for federation smoke scenario {}",
+            smoke_scenario_name(args.scenario)
+        );
+    }
 
     Ok(())
+}
+
+fn scenario_requires_wallet_db(scenario: FederationSmokeScenario) -> bool {
+    matches!(
+        scenario,
+        FederationSmokeScenario::PendingMeltStart
+            | FederationSmokeScenario::PendingMeltFinish
+            | FederationSmokeScenario::PendingMeltFailStart
+            | FederationSmokeScenario::PendingMeltFailFinish
+    )
+}
+
+fn scenario_requires_private_config(scenario: FederationSmokeScenario) -> bool {
+    matches!(
+        scenario,
+        FederationSmokeScenario::QuarantineMintConflict
+            | FederationSmokeScenario::KeysetRotation
+            | FederationSmokeScenario::OfflineMemberKeysetRotation
+    )
 }
 
 fn smoke_scenario_name(scenario: FederationSmokeScenario) -> &'static str {
