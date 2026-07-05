@@ -1426,14 +1426,16 @@ order_digest_i = sha256(
 
             <h3>10.4 Run and Harden the Live Multi-Process Harness</h3>
             <p>
-              The trusted-dealer generator now emits local member configs and a
-              guarded smoke script, and <code>cdk-mintd federation status</code>
-              can require members to be ready and converged. The remaining
-              validation is to run that harness where loopback listeners are
-              permitted: start multiple fake-wallet members, issue mint/swap/
-              melt/restore/check-state traffic, stop and restart one member,
-              observe catch-up, and verify the roster returns to the same
-              height and digest.
+              The trusted-dealer generator now emits backend-agnostic
+              public/private federation config by default, with local
+              fake-wallet member configs and the guarded smoke script available
+              through the explicit development/regtest opt-in.
+              <code>cdk-mintd federation status</code> can require members to
+              be ready and converged. The remaining validation is to run that
+              harness where loopback listeners are permitted: start multiple
+              fake-wallet members, issue mint/swap/melt/restore/check-state
+              traffic, stop and restart one member, observe catch-up, and
+              verify the roster returns to the same height and digest.
             </p>
             <p>
               Private REST is the MVP transport because it is simple and fits

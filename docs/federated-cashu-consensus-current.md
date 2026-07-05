@@ -270,7 +270,7 @@ Catch-up currently verifies digest-chain continuity from a peer, but real produc
 
 ### 10.4 Run and Harden the Live Multi-Process Harness
 
-The trusted-dealer generator now emits local member configs and a guarded smoke script, and `cdk-mintd federation status` can require members to be ready and converged. The remaining validation is to run that harness where loopback listeners are permitted: start multiple fake-wallet members, issue mint/swap/melt/restore/check-state traffic, stop and restart one member, observe catch-up, and verify the roster returns to the same height and digest.
+The trusted-dealer generator now emits backend-agnostic public/private federation config by default, with local fake-wallet member configs and the guarded smoke script available through the explicit development/regtest opt-in. `cdk-mintd federation status` can require members to be ready and converged. The remaining validation is to run that harness where loopback listeners are permitted: start multiple fake-wallet members, issue mint/swap/melt/restore/check-state traffic, stop and restart one member, observe catch-up, and verify the roster returns to the same height and digest.
 
 Private REST is the MVP transport because it is simple and fits existing CDK patterns, but it requires reachable private member endpoints. Later deployments may add TCP/TLS, Noise, Tor, VPN, reverse tunnels, or an Iroh adapter for members behind NATs and firewalls. Those transports should stay behind the same signed federation message and consensus interfaces.
 

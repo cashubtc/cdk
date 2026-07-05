@@ -522,15 +522,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 507 checked items and 81 remaining items. Standalone mint and signatory regressions remain green after the federation refactor.</span>
+          <span class="value">The implementation plan audit tracks 508 checked items and 80 remaining items. Trusted-dealer key/config generation is now backend-agnostic by default, with local fakewallet smoke files behind an explicit development opt-in.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: record standalone federation regressions</span>
+          <span class="value">feat: require fakewallet regtest setup opt in</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Re-ran standalone mint issue and swap tests, the standalone keyset-version builder regression, and DbSignatory behavior tests to prove the federation work did not break non-federated paths.</span>
+          <span class="value">`cdk-mintd federation trusted-dealer` now writes only core federation public/private config material unless `--local-fakewallet-configs` is passed; the repo-level fakewallet regtest wrappers opt in explicitly.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -545,7 +545,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 507 checked entries and 81 remaining entries. The
+          checklist has 508 checked entries and 80 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -1122,7 +1122,7 @@
           </article>
           <article class="item">
             <h3>Local trusted-dealer CLI ready</h3>
-            <p>`cdk-mintd federation trusted-dealer` now writes a shared public federation config, per-member private share configs, and runnable fake-wallet member TOMLs from the existing validated trusted-dealer setup path.</p>
+            <p>`cdk-mintd federation trusted-dealer` now writes shared public federation config and per-member private share configs by default; runnable fakewallet member TOMLs require the explicit `--local-fakewallet-configs` development/regtest opt-in.</p>
           </article>
           <article class="item">
             <h3>Restart-safe REST sequence seed ready</h3>
@@ -1138,7 +1138,7 @@
           </article>
           <article class="item">
             <h3>Generated smoke script ready</h3>
-            <p>The trusted-dealer output now includes an executable local smoke script that starts every generated fake-wallet member, waits for signed status, prints roster status, restarts one member, and checks status again.</p>
+            <p>The trusted-dealer development opt-in output includes an executable local smoke script that starts every generated fakewallet member, waits for signed status, prints roster status, restarts one member, and checks status again.</p>
           </article>
           <article class="item">
             <h3>Status convergence guards ready</h3>
@@ -2024,7 +2024,7 @@
           </article>
           <article class="item">
             <h3>Trusted-dealer core split from fakewallet</h3>
-            <p>The trusted-dealer generator now has a backend-agnostic core path for federation public/private configs, BLS shares, aggregate keysets, and optional DKG route-probe fixtures. Fake-wallet member TOMLs and the local smoke script remain in the fakewallet-enabled development path.</p>
+            <p>The trusted-dealer generator now has a backend-agnostic core path for federation public/private configs, BLS shares, aggregate keysets, and optional DKG route-probe fixtures. Fakewallet member TOMLs and the local smoke script remain behind an explicit fakewallet-enabled development opt-in.</p>
           </article>
           <article class="item">
             <h3>State convergence certification planned</h3>
@@ -2102,6 +2102,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-fake-wallet -- --test-threads 1` passed 2 tests. `cargo test -p cdk-mintd --features fakewallet,sqlite fakewallet -- --test-threads 1` passed 13 tests covering fakewallet config parsing, backend combinations, dispatcher unit selection, onchain behavior, and missing-config errors.</td>
               <td>Keep fakewallet scoped to development/regtest plumbing while federation minting and melting continue to use generic payment-observation paths.</td>
+            </tr>
+            <tr>
+              <td>Trusted-dealer fakewallet regtest opt-in</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --no-default-features --features "federation sqlite" trusted_dealer -- --test-threads 1` passed 4 no-fakewallet trusted-dealer/parser tests. `cargo test -p cdk-mintd --no-default-features --features "federation fakewallet sqlite" trusted_dealer -- --test-threads 1` passed 14 tests, including command-level proof that local fakewallet member TOMLs and smoke scripts are omitted by default and generated only with `--local-fakewallet-configs`.</td>
+              <td>Run the full `just fed-regtest` smoke when local process ports are available, then continue the broader fakewallet-isolation cleanup and real-backend policy checks.</td>
             </tr>
             <tr>
               <td>Federated batch NUT-20 issuance</td>

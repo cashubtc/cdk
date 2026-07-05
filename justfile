@@ -592,6 +592,7 @@ fed-regtest-generate dir="target/cdk-fed-regtest" members="5" threshold="3" port
   target/debug/cdk-mintd federation trusted-dealer \
     --output-dir "{{dir}}" \
     --force \
+    --local-fakewallet-configs \
     --members "{{members}}" \
     --threshold "{{threshold}}" \
     --port-start "{{port_start}}" \
@@ -642,6 +643,7 @@ fed-regtest-postgres-generate dir="target/cdk-fed-regtest-postgres" members="5" 
   target/debug/cdk-mintd federation trusted-dealer \
     --output-dir "{{dir}}" \
     --force \
+    --local-fakewallet-configs \
     --members "{{members}}" \
     --threshold "{{threshold}}" \
     --port-start "{{port_start}}" \

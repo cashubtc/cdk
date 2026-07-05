@@ -120,38 +120,8 @@ fn print_trusted_dealer_stage(stage: &str, started_at: Instant) {
 
 #[cfg(feature = "federation")]
 pub(crate) fn run_trusted_dealer_command(args: &FederationTrustedDealerArgs) -> Result<()> {
-    #[cfg(not(feature = "fakewallet"))]
-    {
-        let artifacts = generate_trusted_dealer_core_artifacts(args)?;
-        println!(
-            "Wrote federation public config: {}",
-            artifacts.public_config_path.display()
-        );
-        println!(
-            "Wrote DKG setup public config: {}",
-            artifacts.dkg_setup_public_config_path.display()
-        );
-        for (member_id, member) in &artifacts.member_artifacts {
-            println!(
-                "Wrote member {} private config: {}",
-                member_id,
-                member.private_config_path.display()
-            );
-            println!(
-                "Wrote member {} DKG setup private config: {}",
-                member_id,
-                member.dkg_setup_private_config_path.display()
-            );
-        }
-        println!(
-            "Skipped local fake-wallet member TOMLs and smoke script because the fakewallet feature is disabled."
-        );
-
-        Ok(())
-    }
-
     #[cfg(feature = "fakewallet")]
-    {
+    if args.local_fakewallet_configs {
         let artifacts = generate_trusted_dealer_artifacts(args)?;
         println!(
             "Wrote federation public config: {}",
@@ -159,7 +129,7 @@ pub(crate) fn run_trusted_dealer_command(args: &FederationTrustedDealerArgs) -> 
         );
         for (member_id, member) in &artifacts.member_artifacts {
             println!(
-                "Wrote member {} config: {}",
+                "Wrote member {} local fakewallet config: {}",
                 member_id,
                 member.config_path.display()
             );
@@ -174,8 +144,36 @@ pub(crate) fn run_trusted_dealer_command(args: &FederationTrustedDealerArgs) -> 
             artifacts.smoke_script_path.display()
         );
 
-        Ok(())
+        return Ok(());
     }
+
+    let artifacts = generate_trusted_dealer_core_artifacts(args)?;
+    println!(
+        "Wrote federation public config: {}",
+        artifacts.public_config_path.display()
+    );
+    println!(
+        "Wrote DKG setup public config: {}",
+        artifacts.dkg_setup_public_config_path.display()
+    );
+    for (member_id, member) in &artifacts.member_artifacts {
+        println!(
+            "Wrote member {} private config: {}",
+            member_id,
+            member.private_config_path.display()
+        );
+        println!(
+            "Wrote member {} DKG setup private config: {}",
+            member_id,
+            member.dkg_setup_private_config_path.display()
+        );
+    }
+    #[cfg(feature = "fakewallet")]
+    println!(
+        "Skipped local fakewallet member TOMLs and smoke script; pass --local-fakewallet-configs for development/regtest files."
+    );
+
+    Ok(())
 }
 
 #[cfg(feature = "federation")]
@@ -2212,6 +2210,8 @@ mod core_tests {
             postgres_url_template: None,
             postgres_base_url: None,
             dkg_setup_route_probes: true,
+            #[cfg(feature = "fakewallet")]
+            local_fakewallet_configs: false,
             deterministic_test_seed: None,
             force: false,
         }
@@ -2437,9 +2437,55 @@ mod tests {
             postgres_url_template: None,
             postgres_base_url: None,
             dkg_setup_route_probes: false,
+            local_fakewallet_configs: false,
             deterministic_test_seed: None,
             force: false,
         }
+    }
+
+    #[test]
+    fn trusted_dealer_command_defaults_to_core_only_with_fakewallet_feature() {
+        let output_dir = temp_output_dir("command_core_only");
+        let _ = std::fs::remove_dir_all(&output_dir);
+        let args = generator_args(output_dir.clone());
+
+        run_trusted_dealer_command(&args).expect("trusted dealer command");
+
+        assert!(output_dir.join(PUBLIC_CONFIG_FILE).exists());
+        assert!(output_dir.join(DKG_SETUP_PUBLIC_CONFIG_FILE).exists());
+        assert!(!output_dir.join(SMOKE_SCRIPT_FILE).exists());
+        for member_id in 1..=args.members {
+            let member_dir = output_dir.join(format!("member-{member_id}"));
+            assert!(member_dir.join(PRIVATE_CONFIG_FILE).exists());
+            assert!(member_dir.join(DKG_SETUP_PRIVATE_CONFIG_FILE).exists());
+            assert!(!member_dir.join(MEMBER_CONFIG_FILE).exists());
+            assert!(!member_dir.join(DKG_SETUP_MEMBER_CONFIG_FILE).exists());
+        }
+
+        let _ = std::fs::remove_dir_all(&output_dir);
+    }
+
+    #[test]
+    fn trusted_dealer_command_generates_local_fakewallet_files_only_when_requested() {
+        let output_dir = temp_output_dir("command_local_fakewallet");
+        let _ = std::fs::remove_dir_all(&output_dir);
+        let mut args = generator_args(output_dir.clone());
+        args.local_fakewallet_configs = true;
+
+        run_trusted_dealer_command(&args).expect("trusted dealer command");
+
+        assert!(output_dir.join(PUBLIC_CONFIG_FILE).exists());
+        assert!(output_dir.join(DKG_SETUP_PUBLIC_CONFIG_FILE).exists());
+        assert!(output_dir.join(SMOKE_SCRIPT_FILE).exists());
+        for member_id in 1..=args.members {
+            let member_dir = output_dir.join(format!("member-{member_id}"));
+            assert!(member_dir.join(PRIVATE_CONFIG_FILE).exists());
+            assert!(member_dir.join(DKG_SETUP_PRIVATE_CONFIG_FILE).exists());
+            assert!(member_dir.join(MEMBER_CONFIG_FILE).exists());
+            assert!(member_dir.join(DKG_SETUP_MEMBER_CONFIG_FILE).exists());
+        }
+
+        let _ = std::fs::remove_dir_all(&output_dir);
     }
 
     #[test]

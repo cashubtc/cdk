@@ -73,7 +73,7 @@ pub enum FederationCommand {
     /// Run a local fake-wallet operation smoke through the federation wallet connector.
     #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
     SmokeOperations(FederationSmokeOperationsArgs),
-    /// Generate local trusted-dealer federation configs for fake-wallet testing.
+    /// Generate trusted-dealer federation key and config material.
     TrustedDealer(FederationTrustedDealerArgs),
     /// Query signed local status from federation members.
     Status(FederationStatusArgs),
@@ -250,6 +250,10 @@ pub struct FederationTrustedDealerArgs {
     /// Generate signed setup-route probe request fixtures for DKG route testing.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub dkg_setup_route_probes: bool,
+    /// Also generate local fakewallet member TOMLs and a smoke script for development/regtest.
+    #[cfg(feature = "fakewallet")]
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub local_fakewallet_configs: bool,
     /// Deterministic test seed for reproducible local federation material. Do not use for production.
     #[arg(long)]
     pub deterministic_test_seed: Option<String>,
@@ -436,6 +440,30 @@ mod tests {
             trusted_dealer.deterministic_test_seed.as_deref(),
             Some("fixture-seed")
         );
+        #[cfg(feature = "fakewallet")]
+        assert!(!trusted_dealer.local_fakewallet_configs);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn parses_federation_trusted_dealer_local_fakewallet_opt_in() {
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "trusted-dealer",
+            "--output-dir",
+            "fed-local",
+            "--local-fakewallet-configs",
+        ])
+        .expect("trusted-dealer local fakewallet command parses");
+
+        let Some(CliCommand::Federation(federation)) = args.command else {
+            panic!("expected federation command");
+        };
+        let FederationCommand::TrustedDealer(trusted_dealer) = federation.command else {
+            panic!("expected federation trusted-dealer command");
+        };
+        assert!(trusted_dealer.local_fakewallet_configs);
     }
 
     #[test]
