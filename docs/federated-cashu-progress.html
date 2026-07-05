@@ -514,6 +514,7 @@
           <a class="link-pill" href="./federated-cashu-codex-goal-prompt.md">Goal prompt</a>
           <a class="link-pill" href="./federated-cashu-rfc.md">Milestone 0 RFC</a>
           <a class="link-pill" href="./federated-cashu-review-checklist.md">Review checklist</a>
+          <a class="link-pill" href="./federated-cashu-formal-review.md">Formal review</a>
           <a class="link-pill" href="./federated-cashu-signature-share-provenance.md">Share provenance</a>
           <a class="link-pill" href="./federated-cashu-payment-trust-model.md">Payment trust model</a>
           <a class="link-pill" href="./federated-cashu-sql-lock-ordering.md">SQL lock ordering</a>
@@ -523,15 +524,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 551 checked items and 38 remaining items. Federation public config snapshots now have durable SQL storage, deterministic digest checking, and startup rejection for conflicting database reuse.</span>
+          <span class="value">The implementation plan audit tracks 554 checked items and 35 remaining items. Formal threshold/BFT assumptions and canonicalization/transcript-binding review are now recorded, including the operation version 1 encoding decision.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: persist federation public config snapshot</span>
+          <span class="value">docs: record federation formal security review</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">SQLite and Postgres migrations now include `federation_config`, the mint database trait can store/read public config snapshots, and Axum persists the configured public digest before federation runtime replay.</span>
+          <span class="value">`docs/federated-cashu-formal-review.md` documents threshold assumptions, BFT production blockers, canonical sorted JSON as operation version 1, and request-transcript binding for NUT-20 and SIG_ALL.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -546,7 +547,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 551 checked entries and 38 remaining entries. The
+          checklist has 554 checked entries and 35 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -785,6 +786,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Formal review recorded</h3>
+            <p>The federation security review now records the threshold/BFT assumptions, production blockers, canonical JSON version-1 decision, and request-transcript binding requirements for NUT-20, P2PK, HTLC, and SIG_ALL paths.</p>
+          </article>
           <article class="item">
             <h3>Public config snapshot</h3>
             <p>Federation startup now stores a durable public config snapshot with a domain-separated digest, accepts idempotent restarts, and rejects a reused database when the configured federation digest differs.</p>
@@ -2141,6 +2146,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test --lib --workspace --exclude cdk-postgres` passed with federation disabled. `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed after the example key-type fix and stable transport DNS TXT method.</td>
               <td>Move back to the remaining consensus/storage follow-ups with the broad feature gates green.</td>
+            </tr>
+            <tr>
+              <td>Formal threshold and transcript review</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`docs/federated-cashu-formal-review.md` records the threshold/BFT assumptions and the canonicalization/transcript-binding decision. `cargo test -p cdk-common --features federation threshold -- --test-threads 1`, `cargo test -p cdk-common --features federation request_transcript -- --test-threads 1`, and `cargo test -p cdk-common --features federation sig_all_signature_and_operation_id_track_exact_swap_outputs -- --test-threads 1` passed. The review keeps canonical sorted JSON for federation operation version 1, requires any binary format to use a future operation version, and keeps production blocked on real BFT ordering plus production DKG.</td>
+              <td>Use the recorded blockers to scope the AlephBFT/backend decision and production DKG implementation rather than weakening the current safety assumptions.</td>
             </tr>
             <tr>
               <td>Federation signature-share storage</td>

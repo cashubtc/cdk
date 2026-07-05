@@ -86,9 +86,9 @@ Last code-confirmed audit: 2026-07-05. This checklist marks items as done only w
 Current confirmed shape:
 
 - Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes and request transcripts, in-memory consensus boundary, private REST peer envelopes, federation journal persistence, dedicated federation signature-share and retained state-digest checkpoint persistence, operation-hash/output-index signature-share restore provenance, mint/swap/melt/restore/check-state apply paths, deterministic single-member production melt payment attempts, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
-- Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, exact deterministic binary operation encoding, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
+- Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, future deterministic binary operation encoding if a later operation version needs it, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
 - Test-suite status: focused federation replay, peer-sync, peer reconnect backoff, remote pubsub reconnect backoff, peer evidence/backoff, mintd peer-sync config wiring, SQLite federation storage/query plans, SQLite empty federation migration application, feature-disabled SQLite legacy migration, standalone mint issue/swap regressions, standalone builder keyset-version regression, standalone DbSignatory regressions, session-outcome, trusted-dealer setup, trusted-dealer fakewallet regtest opt-in, deterministic accepted-time mint quote replay, operation balance audit, source- and manifest-enforced fakewallet coupling audits, deterministic trusted-dealer fixture generation, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, payment-observation metadata/idempotence, backend-agnostic production payment-path audits, deterministic single-member production melt payment actor tests, mint storage hot-path index query-plan tests, always-on mint payment observer, durable state-digest checkpoint persistence and retention, backend-agnostic signature-share persistence, operation-hash/output-index restore provenance, fakewallet coupling audit, wallet member request timeout/retry policy tests, canonical request transcript tests for NUT-20 and SIG_ALL, federated NUT-20 single and batch issuance tests, P2PK/HTLC/SIG_ALL canonical swap transcript tests, NUT-19 retry backoff, federation protocol-version metadata, mixed-version runtime and wallet rejection, stale-upgrade consensus item and catch-up rejection, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, federated swap input-reuse attack regression, and `cdk-axum` federation tests were run for recent checkpoints. The broad feature-disabled library gate `cargo test --lib --workspace --exclude cdk-postgres` passed on 2026-07-05, and the broad feature-enabled compile gate `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed on 2026-07-05.
-- Latest checkpoint: SQLite storage query-plan coverage now proves indexed lookups for federation signature shares, blind-signature quote IDs, blind-signature blinded messages, and proof Y hot paths.
+- Latest checkpoint: `docs/federated-cashu-formal-review.md` now records the threshold/BFT assumptions review and the canonicalization/transcript-binding decision for federation operation version 1.
 
 ## Key observations
 
@@ -403,7 +403,7 @@ Implementation checklist:
 - [x] Add versioned federation operation variants for mint quote, mint quote payment, mint issuance, swap, melt quote, melt quote payment, melt, restore, payment-observation quarantine, and keyset rotation.
 - [ ] Decide whether to further split melt into explicit reserve/finalize/rollback operation variants instead of the current melt/payment-state plus saga-recovery representation.
 - [x] Implement deterministic canonical JSON encoding with sorted object keys for consensus operation IDs.
-- [ ] Replace or supplement canonical JSON with deterministic binary encoding if binary encoding remains a protocol requirement.
+- [x] Decide canonical sorted JSON remains the operation version 1 encoding; a deterministic binary format must use a future operation version if it becomes a protocol requirement.
 - [x] Use `BTreeMap` and sorted vectors wherever ordering matters.
 - [x] Define `OperationHash = sha256("cdk-fed-op-v1" || encoded_operation)`.
 - [x] Define per-output hashes for blinded messages and per-input proof Y identifiers.
@@ -1135,9 +1135,9 @@ Objective: make the design reviewable before mainnet use.
 Implementation checklist:
 
 - [x] Implement default threshold rules and validation.
-- [ ] Complete formal review of threshold choice and BFT assumptions.
+- [x] Complete formal review of threshold choice and BFT assumptions.
 - [x] Implement canonical JSON operation hashing.
-- [ ] Complete formal review of operation canonicalization and transcript binding, including the binary-encoding decision and dedicated SIG_ALL transcript behavior.
+- [x] Complete formal review of operation canonicalization and transcript binding, including the binary-encoding decision and dedicated SIG_ALL transcript behavior.
 - [x] Complete final review of all paths that can call `blind_sign` or `blind_sign_share`.
 - [x] Public handlers are wired through federation paths in federation mode.
 - [x] Complete final security review proving no public endpoint can bypass consensus in federation mode.
