@@ -7,12 +7,12 @@ use cdk_common::federation::{
     FederationConfigDigest, FederationConfigSnapshot, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalEntry,
-    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationConflictKey,
-    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
-    FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationSessionOutcome, FederationSignatureShareRecord, FederationStateDigestCheckpoint,
-    MemberId,
+    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalConsensusEvidence,
+    FederationJournalEntry, FederationMemberStatusKind, FederationMemberStatusSnapshot,
+    FederationOperationConflictKey, FederationOperationId, FederationOperationOutcomeHash,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationSessionOutcome, FederationSignatureShareRecord,
+    FederationStateDigest, FederationStateDigestCheckpoint, MemberId,
 };
 use cdk_common::PublicKey;
 
@@ -113,6 +113,9 @@ fn sql_row_to_federation_journal_entry(row: Vec<Column>) -> Result<FederationJou
             conflict_keys_json,
             previous_order_digest,
             order_digest,
+            operation_outcome_hash,
+            state_digest,
+            consensus_evidence_json,
             status
         ) = row
     );
@@ -133,6 +136,25 @@ fn sql_row_to_federation_journal_entry(row: Vec<Column>) -> Result<FederationJou
     let order_digest =
         cdk_common::federation::FederationJournalDigest::from_hex(column_as_string!(&order_digest))
             .map_err(|e| Error::Internal(format!("Invalid federation order digest: {e}")))?;
+    let operation_outcome_hash = match column_as_nullable_string!(&operation_outcome_hash) {
+        Some(value) => Some(
+            FederationOperationOutcomeHash::from_hex(value).map_err(|e| {
+                Error::Internal(format!("Invalid federation operation outcome hash: {e}"))
+            })?,
+        ),
+        None => None,
+    };
+    let state_digest = match column_as_nullable_string!(&state_digest) {
+        Some(value) => Some(
+            FederationStateDigest::from_hex(value)
+                .map_err(|e| Error::Internal(format!("Invalid federation state digest: {e}")))?,
+        ),
+        None => None,
+    };
+    let consensus_evidence = optional_json::<FederationJournalConsensusEvidence>(
+        &consensus_evidence_json,
+        "journal consensus evidence",
+    )?;
     let status = status_from_str(&column_as_string!(&status))?;
 
     Ok(FederationJournalEntry {
@@ -143,6 +165,9 @@ fn sql_row_to_federation_journal_entry(row: Vec<Column>) -> Result<FederationJou
         conflict_keys,
         previous_order_digest,
         order_digest,
+        operation_outcome_hash,
+        state_digest,
+        consensus_evidence,
         status,
     })
 }
@@ -476,9 +501,9 @@ where
         query(
             r#"
             INSERT INTO federation_journal_entries
-            (operation_index, operation_id, envelope_json, conflict_key_json, conflict_keys_json, previous_order_digest, order_digest, status)
+            (operation_index, operation_id, envelope_json, conflict_key_json, conflict_keys_json, previous_order_digest, order_digest, operation_outcome_hash, state_digest, consensus_evidence_json, status)
             VALUES
-            (:operation_index, :operation_id, :envelope_json, :conflict_key_json, :conflict_keys_json, :previous_order_digest, :order_digest, :status)
+            (:operation_index, :operation_id, :envelope_json, :conflict_key_json, :conflict_keys_json, :previous_order_digest, :order_digest, :operation_outcome_hash, :state_digest, :consensus_evidence_json, :status)
             "#,
         )?
         .bind("operation_index", entry.index as i64)
@@ -501,6 +526,24 @@ where
             entry.previous_order_digest.to_string(),
         )
         .bind("order_digest", entry.order_digest.to_string())
+        .bind(
+            "operation_outcome_hash",
+            entry
+                .operation_outcome_hash
+                .map(|operation_outcome_hash| operation_outcome_hash.to_string()),
+        )
+        .bind(
+            "state_digest",
+            entry.state_digest.map(|state_digest| state_digest.to_string()),
+        )
+        .bind(
+            "consensus_evidence_json",
+            entry
+                .consensus_evidence
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?,
+        )
         .bind("status", status_to_str(entry.status))
         .execute(&self.inner)
         .await?;
@@ -1007,6 +1050,9 @@ where
                 conflict_keys_json,
                 previous_order_digest,
                 order_digest,
+                operation_outcome_hash,
+                state_digest,
+                consensus_evidence_json,
                 status
             FROM federation_journal_entries
             ORDER BY operation_index ASC
@@ -1038,6 +1084,9 @@ where
                 conflict_keys_json,
                 previous_order_digest,
                 order_digest,
+                operation_outcome_hash,
+                state_digest,
+                consensus_evidence_json,
                 status
             FROM federation_journal_entries
             WHERE operation_index >= :next_index

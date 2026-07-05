@@ -531,7 +531,13 @@ Architecture checklist:
   journal, and records finalized item metadata for the next persistence slice.
 - [ ] Store accepted session number, item index, operation hash, operation
   outcome hash, state digest, and signed session outcome in the federation
-  journal before considering an item durable.
+  journal before considering an item durable. `FederationJournalEntry` now
+  stores operation outcome hashes, post-append state digests, and optional
+  accepted-item consensus evidence with session, accepted item index, finalized
+  unit position, submitting member, and member unit index. SQLite/Postgres
+  journal persistence now round-trips those fields. Full signed session-outcome
+  quorum linkage remains in the existing session-outcome table and still needs
+  to be tied into the durable apply/readiness rule before this item is complete.
 - [ ] Persist enough AlephBFT unit state and accepted item state to recover after
   crashes without replaying an item twice or losing a finalized item.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing

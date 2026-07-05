@@ -526,19 +526,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 563 checked items and 116 remaining items while Milestone 4A continues. `cdk-common` now has a testable AlephBFT adapter boundary that queues operations, emits canonical unit payloads, accepts externally finalized units, validates finalized-unit metadata, appends accepted operation outcomes, and records duplicate/replayed-item status.</span>
+          <span class="value">The implementation plan audit tracks 563 checked items and 116 remaining items while Milestone 4A continues. The accepted journal now stores deterministic outcome hashes, post-append state digests, and optional AlephBFT accepted-item evidence, with SQLite/Postgres persistence and replay validation coverage.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: wire aleph bft adapter boundary</span>
+          <span class="value">feat: persist federation journal consensus evidence</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`crates/cdk-common/src/federation/consensus.rs` now exposes `FederationAlephBftConsensusAdapter`, wiring the unit data-provider and finalization handler into the CDK-side queue/finalize/apply boundary for focused tests.</span>
+          <span class="value">`FederationJournalEntry` now carries operation outcome hashes, state digests, and `FederationJournalConsensusEvidence`; the AlephBFT adapter populates that evidence from finalized units and SQL storage round-trips it.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Persist finalized item/session metadata and connect the adapter boundary to an actual AlephBFT runtime/network task before the durable CDK journal/apply stream consumes it.</span>
+          <span class="value">Tie signed session-outcome quorum records into durable apply/readiness rules, then connect the adapter boundary to an actual AlephBFT runtime/network task.</span>
         </div>
       </aside>
     </header>
@@ -788,6 +788,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Journal consensus evidence</h3>
+            <p>Accepted journal entries now record deterministic operation outcome hashes, state digests, and optional accepted-item evidence, and SQLite/Postgres journal persistence stores the new fields for restart and catch-up work.</p>
+          </article>
           <article class="item">
             <h3>AlephBFT adapter boundary</h3>
             <p>`cdk-common` now wires unit data-provider and finalization primitives into `FederationAlephBftConsensusAdapter`, so operation submission, canonical unit construction, external finalization, duplicate handling, and accepted journal responses can be tested before adding the real runtime.</p>
@@ -2268,10 +2272,16 @@
           </thead>
           <tbody>
             <tr>
+              <td>Federation journal consensus evidence</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federation::journal::tests -- --test-threads 1`, `cargo check -p cdk-sql-common --features mint,federation`, `cargo test -p cdk-sql-common --features mint,federation federation_migration_tests -- --test-threads 1`, and `cargo test -p cdk-sqlite --features mint,federation federation_journal_persistence -- --test-threads 1` passed. The tests cover outcome-hash/state-digest creation, replay rejection for tampered metadata, migration coverage, and SQLite round-trip persistence of accepted-item evidence.</td>
+              <td>Bind signed session-outcome quorum persistence to journal readiness and catch-up replay before enabling a lagging member to serve signing shares again.</td>
+            </tr>
+            <tr>
               <td>AlephBFT unit/finalization/adapter boundary</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo check -p cdk-common --features federation`, `cargo test -p cdk-common --features federation aleph_bft -- --test-threads 1`, and `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1` passed. The tests cover canonical unit metadata, body-hash/order commitment, operation-ID derivation, tamper rejection, duplicate operation admission, byte-bounded batch draining, finalization metadata assignment, duplicate operation marking, replayed member-unit rejection, session advancement, wrong federation/session rejection, adapter queue draining, externally finalized operation application, idempotent duplicate responses, and invalid-unit rejection before journal append.</td>
-              <td>Persist finalized item metadata and wire `FederationAlephBftConsensusAdapter` into the real AlephBFT runtime/network task before feeding the durable accepted-item journal.</td>
+              <td>`cargo check -p cdk-common --features federation`, `cargo test -p cdk-common --features federation aleph_bft -- --test-threads 1`, and `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1` passed. The tests cover canonical unit metadata, body-hash/order commitment, operation-ID derivation, tamper rejection, duplicate operation admission, byte-bounded batch draining, finalization metadata assignment, duplicate operation marking, replayed member-unit rejection, session advancement, wrong federation/session rejection, adapter queue draining, externally finalized operation application, accepted-item evidence population, idempotent duplicate responses, and invalid-unit rejection before journal append.</td>
+              <td>Wire `FederationAlephBftConsensusAdapter` into the real AlephBFT runtime/network task before feeding the durable accepted-item journal.</td>
             </tr>
             <tr>
               <td>Milestone 0 broad workspace gates</td>

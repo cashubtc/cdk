@@ -466,6 +466,12 @@ mod federation_migration_tests {
             include_str!("migrations/sqlite/20260703130000_add_federation_journal.sql");
         let postgres_journal =
             include_str!("migrations/postgres/20260703130000_add_federation_journal.sql");
+        let sqlite_journal_consensus_evidence = include_str!(
+            "migrations/sqlite/20260703164000_add_federation_journal_consensus_evidence.sql"
+        );
+        let postgres_journal_consensus_evidence = include_str!(
+            "migrations/postgres/20260703164000_add_federation_journal_consensus_evidence.sql"
+        );
         let sqlite_outcomes =
             include_str!("migrations/sqlite/20260703133000_add_federation_session_outcomes.sql");
         let postgres_outcomes =
@@ -531,6 +537,21 @@ mod federation_migration_tests {
                     "federation_member_sequences",
                     "member_id",
                     "last_sequence",
+                ],
+            );
+        }
+
+        for migration in [
+            sqlite_journal_consensus_evidence,
+            postgres_journal_consensus_evidence,
+        ] {
+            assert_contains_all(
+                migration,
+                &[
+                    "federation_journal_entries",
+                    "operation_outcome_hash",
+                    "state_digest",
+                    "consensus_evidence_json",
                 ],
             );
         }

@@ -913,6 +913,19 @@ fn aleph_bft_consensus_adapter_builds_units_and_applies_finalized_operations() {
     assert_eq!(responses[1].operation_id, second_id);
     assert_eq!(responses[1].outcome.entry().index, 1);
     assert_eq!(adapter.journal().len(), 2);
+    let first_entry = &adapter.journal().entries()[0];
+    let first_evidence = first_entry.consensus_evidence.expect("first evidence");
+    assert_eq!(first_evidence.session, 0);
+    assert_eq!(first_evidence.item_index, 0);
+    assert_eq!(first_evidence.unit_finalization_index, 0);
+    assert_eq!(first_evidence.unit_submitting_member, member_id_value(1));
+    assert_eq!(first_evidence.unit_index, 0);
+    assert_eq!(
+        first_entry.operation_outcome_hash,
+        Some(first_entry.expected_operation_outcome_hash(
+            first_entry.state_digest.expect("first state digest")
+        ))
+    );
     assert_eq!(adapter.finalized_items().len(), 2);
     assert_eq!(
         adapter

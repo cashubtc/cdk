@@ -11,11 +11,11 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use super::{
     FederationError, FederationId, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationJournalEntry, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationPeerStatus,
-    FederationProtocolVersions, FederationSessionOutcome, FederationStateDigest,
-    FederationSubmitOperationRequest, FederationSubmitOperationResponse, InMemoryFederationJournal,
-    MemberId, Result, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
+    FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationPeerStatus, FederationProtocolVersions, FederationSessionOutcome,
+    FederationStateDigest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    InMemoryFederationJournal, MemberId, Result, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
 };
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -1059,8 +1059,16 @@ impl FederationAlephBftConsensusAdapter {
 
         for finalized_item in outcome.items {
             if let FederationConsensusItem::Operation(envelope) = &finalized_item.item {
+                let evidence = FederationJournalConsensusEvidence::new(
+                    finalized_item.session,
+                    finalized_item.accepted_item_index,
+                    finalized_item.unit_finalization_index,
+                    finalized_item.unit_submitting_member,
+                    finalized_item.unit_index,
+                );
                 let response = FederationSubmitOperationResponse::from_outcome(
-                    self.journal.append(envelope.clone())?,
+                    self.journal
+                        .append_with_consensus_evidence(envelope.clone(), evidence)?,
                 );
                 responses.push(response);
             }

@@ -39,11 +39,12 @@ pub use self::consensus::{
     FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES, FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
 };
 pub use self::journal::{
-    FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
-    FederationMaterializedStateRow, FederationMaterializedStateRowFingerprint,
-    FederationMaterializedStateSnapshot, FederationMemberStatusKind,
-    FederationMemberStatusSnapshot, FederationOperationStatus, FederationStateDigest,
-    FederationStateDigestCheckpoint, InMemoryFederationJournal,
+    FederationJournalAppendOutcome, FederationJournalConsensusEvidence, FederationJournalDigest,
+    FederationJournalEntry, FederationMaterializedStateRow,
+    FederationMaterializedStateRowFingerprint, FederationMaterializedStateSnapshot,
+    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationOperationOutcomeHash,
+    FederationOperationStatus, FederationStateDigest, FederationStateDigestCheckpoint,
+    InMemoryFederationJournal,
 };
 pub use self::operation::{
     FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteOperation,
@@ -302,6 +303,14 @@ pub enum FederationError {
     /// A federation operation ID must be exactly 32 bytes.
     #[error("Invalid federation operation id size: expected={expected}, found={found}")]
     InvalidOperationIdSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
+    /// A federation operation outcome hash must be exactly 32 bytes.
+    #[error("Invalid federation operation outcome hash size: expected={expected}, found={found}")]
+    InvalidOperationOutcomeHashSize {
         /// Expected byte length.
         expected: usize,
         /// Actual byte length.
@@ -834,6 +843,30 @@ pub enum FederationError {
     JournalConflictKeysMismatch {
         /// Journal index whose conflict metadata did not match.
         index: u64,
+    },
+    /// Stored journal operation outcome hash did not match the accepted entry.
+    #[error(
+        "Federation journal outcome hash mismatch at index {index}: expected={expected}, found={found}"
+    )]
+    JournalOutcomeHashMismatch {
+        /// Journal index whose outcome hash did not match.
+        index: u64,
+        /// Expected outcome hash.
+        expected: String,
+        /// Found outcome hash.
+        found: String,
+    },
+    /// Stored journal state digest did not match the accepted sequence.
+    #[error(
+        "Federation journal state digest mismatch at index {index}: expected={expected}, found={found}"
+    )]
+    JournalStateDigestMismatch {
+        /// Journal index whose state digest did not match.
+        index: u64,
+        /// Expected state digest.
+        expected: FederationStateDigest,
+        /// Found state digest.
+        found: FederationStateDigest,
     },
     /// A federation REST body hash must be exactly 32 bytes.
     #[error("Invalid federation REST body hash size: expected={expected}, found={found}")]

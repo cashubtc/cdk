@@ -11,8 +11,9 @@ use crate::federation::{
     FederationDkgSecretShareRequest, FederationDkgSetupMethod, FederationDkgSetupState,
     FederationDkgTranscript, FederationDkgTranscriptSignature,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalAppendOutcome,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationMemberStatusKind, FederationMemberStatusSnapshot, FederationMintQuoteOperation,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMemberStatusKind,
+    FederationMemberStatusSnapshot, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
@@ -280,9 +281,12 @@ where
     DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
 {
     let mut journal = InMemoryFederationJournal::new();
+    let member_one = MemberId::new(1).expect("member one");
+    let member_two = MemberId::new(2).expect("member two");
+    let first_evidence = FederationJournalConsensusEvidence::new(0, 0, 0, member_one, 0);
     let first = appended(
         journal
-            .append(mint_quote_envelope("quote-1", 21))
+            .append_with_consensus_evidence(mint_quote_envelope("quote-1", 21), first_evidence)
             .expect("append first"),
     );
     let second = appended(
@@ -291,8 +295,6 @@ where
             .expect("append second"),
     );
 
-    let member_one = MemberId::new(1).expect("member one");
-    let member_two = MemberId::new(2).expect("member two");
     let second_private = private_member(2);
     let first_session_outcome = FederationJournalCatchUpResponse::from_journal(
         federation_id(),
@@ -356,10 +358,21 @@ where
     assert_eq!(entries[0].operation_id, first.operation_id);
     assert_eq!(entries[0].status, FederationOperationStatus::Applied);
     assert_eq!(entries[0].conflict_keys, first.conflict_keys);
+    assert_eq!(
+        entries[0].operation_outcome_hash,
+        first.operation_outcome_hash
+    );
+    assert_eq!(entries[0].state_digest, first.state_digest);
+    assert_eq!(entries[0].consensus_evidence, Some(first_evidence));
     assert_eq!(entries[1].index, 1);
     assert_eq!(entries[1].operation_id, second.operation_id);
     assert_eq!(entries[1].status, FederationOperationStatus::Accepted);
     assert_eq!(entries[1].previous_order_digest, first.order_digest);
+    assert_eq!(
+        entries[1].operation_outcome_hash,
+        second.operation_outcome_hash
+    );
+    assert_eq!(entries[1].state_digest, second.state_digest);
 
     let catch_up_entries = db
         .get_federation_journal_entries_from(1)

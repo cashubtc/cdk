@@ -19,6 +19,7 @@ use super::{
 
 const FEDERATION_JOURNAL_GENESIS_VERSION: &[u8] = b"cdk-federation-journal-genesis-v1";
 const FEDERATION_JOURNAL_ENTRY_VERSION: &[u8] = b"cdk-federation-journal-entry-v1";
+const FEDERATION_OPERATION_OUTCOME_HASH_VERSION: &[u8] = b"cdk-federation-operation-outcome-v1";
 const FEDERATION_STATE_GENESIS_VERSION: &[u8] = b"cdk-federation-state-genesis-v1";
 const FEDERATION_STATE_ENTRY_VERSION: &[u8] = b"cdk-federation-state-entry-v1";
 const FEDERATION_MATERIALIZED_STATE_ROW_VERSION: &[u8] =
@@ -112,6 +113,101 @@ impl Serialize for FederationJournalDigest {
 }
 
 impl<'de> Deserialize<'de> for FederationJournalDigest {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::from_hex(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Stable hash of a consensus-accepted operation outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FederationOperationOutcomeHash([u8; 32]);
+
+impl FederationOperationOutcomeHash {
+    /// Create an outcome hash from raw bytes.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Parse an outcome hash from a byte slice.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
+        let bytes: [u8; 32] =
+            bytes
+                .try_into()
+                .map_err(|_| FederationError::InvalidOperationOutcomeHashSize {
+                    expected: 32,
+                    found: bytes.len(),
+                })?;
+        Ok(Self(bytes))
+    }
+
+    /// Parse an outcome hash from hex.
+    pub fn from_hex<S>(hex: S) -> Result<Self>
+    where
+        S: AsRef<str>,
+    {
+        let bytes = crate::util::hex::decode(hex.as_ref())?;
+        Self::from_slice(&bytes)
+    }
+
+    /// Return this outcome hash as bytes.
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    /// Return this outcome hash as hex.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        crate::util::hex::encode(self.0)
+    }
+
+    fn accepted_operation(
+        index: u64,
+        operation_id: FederationOperationId,
+        previous_order_digest: FederationJournalDigest,
+        order_digest: FederationJournalDigest,
+        state_digest: FederationStateDigest,
+    ) -> Self {
+        let mut transcript = Vec::new();
+        append_hash_bytes(&mut transcript, FEDERATION_OPERATION_OUTCOME_HASH_VERSION);
+        transcript.extend_from_slice(&index.to_be_bytes());
+        append_hash_bytes(&mut transcript, &operation_id.to_bytes());
+        append_hash_bytes(&mut transcript, &previous_order_digest.to_bytes());
+        append_hash_bytes(&mut transcript, &order_digest.to_bytes());
+        append_hash_bytes(&mut transcript, &state_digest.to_bytes());
+        Self(Sha256Hash::hash(&transcript).to_byte_array())
+    }
+}
+
+impl fmt::Display for FederationOperationOutcomeHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
+
+impl FromStr for FederationOperationOutcomeHash {
+    type Err = FederationError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Self::from_hex(value)
+    }
+}
+
+impl Serialize for FederationOperationOutcomeHash {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for FederationOperationOutcomeHash {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -408,6 +504,41 @@ pub enum FederationOperationStatus {
     Failed,
 }
 
+/// Consensus evidence attached to a journal entry accepted from an ordering backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FederationJournalConsensusEvidence {
+    /// Consensus session that finalized the item.
+    pub session: u64,
+    /// Global accepted item index assigned by the ordering backend.
+    pub item_index: u64,
+    /// Unit position in finalized order within the session.
+    pub unit_finalization_index: u64,
+    /// Member that submitted the finalized unit carrying this item.
+    pub unit_submitting_member: MemberId,
+    /// Submitting member's unit index within the session.
+    pub unit_index: u64,
+}
+
+impl FederationJournalConsensusEvidence {
+    /// Create accepted-item consensus evidence.
+    #[must_use]
+    pub fn new(
+        session: u64,
+        item_index: u64,
+        unit_finalization_index: u64,
+        unit_submitting_member: MemberId,
+        unit_index: u64,
+    ) -> Self {
+        Self {
+            session,
+            item_index,
+            unit_finalization_index,
+            unit_submitting_member,
+            unit_index,
+        }
+    }
+}
+
 /// One accepted federation operation journal entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederationJournalEntry {
@@ -427,8 +558,62 @@ pub struct FederationJournalEntry {
     pub previous_order_digest: FederationJournalDigest,
     /// Digest after this operation was appended.
     pub order_digest: FederationJournalDigest,
+    /// Stable hash of the accepted operation outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_outcome_hash: Option<FederationOperationOutcomeHash>,
+    /// Consensus-visible state digest after this operation was appended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_digest: Option<FederationStateDigest>,
+    /// Ordering-backend evidence for this accepted operation, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consensus_evidence: Option<FederationJournalConsensusEvidence>,
     /// Local application status.
     pub status: FederationOperationStatus,
+}
+
+impl FederationJournalEntry {
+    /// Return the expected accepted-operation outcome hash for this entry.
+    #[must_use]
+    pub fn expected_operation_outcome_hash(
+        &self,
+        state_digest: FederationStateDigest,
+    ) -> FederationOperationOutcomeHash {
+        FederationOperationOutcomeHash::accepted_operation(
+            self.index,
+            self.operation_id,
+            self.previous_order_digest,
+            self.order_digest,
+            state_digest,
+        )
+    }
+
+    fn validate_outcome_metadata(
+        &self,
+        expected_state_digest: FederationStateDigest,
+    ) -> Result<()> {
+        if let Some(found) = self.state_digest {
+            if found != expected_state_digest {
+                return Err(FederationError::JournalStateDigestMismatch {
+                    index: self.index,
+                    expected: expected_state_digest,
+                    found,
+                });
+            }
+        }
+
+        if let Some(found) = self.operation_outcome_hash {
+            let expected = self.expected_operation_outcome_hash(expected_state_digest);
+            if found != expected {
+                return Err(FederationError::JournalOutcomeHashMismatch {
+                    index: self.index,
+                    expected: expected.to_string(),
+                    found: found.to_string(),
+                });
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Durable checkpoint for consensus-visible materialized federation state.
@@ -692,6 +877,9 @@ impl InMemoryFederationJournal {
                     found: entry.order_digest,
                 });
             }
+            let expected_state_digest =
+                journal.state_digest_after_append(entry.index, entry.operation_id);
+            entry.validate_outcome_metadata(expected_state_digest)?;
 
             let conflict_keys = entry.envelope.operation.conflict_keys();
             let conflict_key = conflict_keys.first().cloned();
@@ -752,6 +940,23 @@ impl InMemoryFederationJournal {
         &mut self,
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationJournalAppendOutcome> {
+        self.append_inner(envelope, None)
+    }
+
+    /// Append an accepted operation envelope with consensus evidence.
+    pub fn append_with_consensus_evidence(
+        &mut self,
+        envelope: FederationOperationEnvelope,
+        evidence: FederationJournalConsensusEvidence,
+    ) -> Result<FederationJournalAppendOutcome> {
+        self.append_inner(envelope, Some(evidence))
+    }
+
+    fn append_inner(
+        &mut self,
+        envelope: FederationOperationEnvelope,
+        consensus_evidence: Option<FederationJournalConsensusEvidence>,
+    ) -> Result<FederationJournalAppendOutcome> {
         let operation_id = envelope.operation_id()?;
         if let Some(existing_index) = self.operation_indices.get(&operation_id) {
             let entry = self
@@ -783,6 +988,14 @@ impl InMemoryFederationJournal {
         let index = self.entries.len() as u64;
         let previous_order_digest = self.latest_order_digest;
         let order_digest = previous_order_digest.append(index, operation_id);
+        let state_digest = self.state_digest_after_append(index, operation_id);
+        let operation_outcome_hash = FederationOperationOutcomeHash::accepted_operation(
+            index,
+            operation_id,
+            previous_order_digest,
+            order_digest,
+            state_digest,
+        );
         let entry = FederationJournalEntry {
             index,
             operation_id,
@@ -791,6 +1004,9 @@ impl InMemoryFederationJournal {
             conflict_keys,
             previous_order_digest,
             order_digest,
+            operation_outcome_hash: Some(operation_outcome_hash),
+            state_digest: Some(state_digest),
+            consensus_evidence,
             status: FederationOperationStatus::Accepted,
         };
 
@@ -802,6 +1018,14 @@ impl InMemoryFederationJournal {
         self.latest_order_digest = order_digest;
 
         Ok(FederationJournalAppendOutcome::Appended(entry))
+    }
+
+    fn state_digest_after_append(
+        &self,
+        index: u64,
+        operation_id: FederationOperationId,
+    ) -> FederationStateDigest {
+        self.state_digest().append(index, operation_id)
     }
 
     /// Validate and append one catch-up entry from a federation peer.
@@ -849,7 +1073,11 @@ impl InMemoryFederationJournal {
             });
         }
 
-        match self.append(peer_entry.envelope.clone())? {
+        let expected_state_digest =
+            self.state_digest_after_append(peer_entry.index, peer_entry.operation_id);
+        peer_entry.validate_outcome_metadata(expected_state_digest)?;
+
+        match self.append_inner(peer_entry.envelope.clone(), peer_entry.consensus_evidence)? {
             FederationJournalAppendOutcome::Appended(entry) => Ok(entry),
             FederationJournalAppendOutcome::Duplicate(entry) => {
                 Err(FederationError::CatchUpIndexMismatch {
@@ -995,6 +1223,51 @@ mod tests {
             journal.entries_from(1)[0].operation_id,
             second_entry.operation_id
         );
+    }
+
+    #[test]
+    fn journal_records_outcome_hash_and_state_digest_for_new_entries() {
+        let mut journal = InMemoryFederationJournal::new();
+        let entry = journal
+            .append(mint_quote_envelope(1))
+            .expect("append")
+            .entry()
+            .clone();
+
+        let state_digest = entry.state_digest.expect("state digest");
+        let outcome_hash = entry.operation_outcome_hash.expect("outcome hash");
+
+        assert_eq!(state_digest, journal.state_digest());
+        assert_eq!(
+            outcome_hash,
+            entry.expected_operation_outcome_hash(state_digest)
+        );
+        InMemoryFederationJournal::from_entries(vec![entry]).expect("metadata replays");
+    }
+
+    #[test]
+    fn journal_rejects_tampered_outcome_hash_and_state_digest_on_replay() {
+        let mut journal = InMemoryFederationJournal::new();
+        let entry = journal
+            .append(mint_quote_envelope(1))
+            .expect("append")
+            .entry()
+            .clone();
+
+        let mut tampered_outcome_hash = entry.clone();
+        tampered_outcome_hash.operation_outcome_hash =
+            Some(FederationOperationOutcomeHash::from_bytes([42; 32]));
+        assert!(matches!(
+            InMemoryFederationJournal::from_entries(vec![tampered_outcome_hash]),
+            Err(FederationError::JournalOutcomeHashMismatch { .. })
+        ));
+
+        let mut tampered_state_digest = entry;
+        tampered_state_digest.state_digest = Some(FederationStateDigest::from_bytes([24; 32]));
+        assert!(matches!(
+            InMemoryFederationJournal::from_entries(vec![tampered_state_digest]),
+            Err(FederationError::JournalStateDigestMismatch { .. })
+        ));
     }
 
     #[test]
