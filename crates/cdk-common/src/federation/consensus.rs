@@ -42,6 +42,10 @@ pub const FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS: usize = 64;
 /// Default maximum canonical item-body bytes in one AlephBFT unit payload.
 pub const FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES: usize = FEDERATION_MAX_CONSENSUS_ITEM_BYTES * 4;
 
+/// Default maximum canonical bytes for one complete AlephBFT unit payload.
+pub const FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES: usize =
+    FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES + 16 * 1024;
+
 /// Digest of the ordered consensus-item body in an AlephBFT unit payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationAlephBftUnitBodyHash([u8; 32]);
@@ -229,6 +233,76 @@ impl FederationAlephBftUnitPayload {
         }
 
         Ok(())
+    }
+}
+
+/// Deterministic status for one finalized consensus item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationAlephBftFinalizedItemStatus {
+    /// The item should be considered by the deterministic apply loop.
+    Accepted,
+    /// The item wraps an operation already seen in finalized order.
+    DuplicateOperation,
+}
+
+/// One consensus item after AlephBFT finalized its containing unit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationAlephBftFinalizedItem {
+    /// Global accepted item index assigned by the local finalization handler.
+    pub accepted_item_index: u64,
+    /// AlephBFT session containing the finalized unit.
+    pub session: u64,
+    /// Unit position in finalized order within the session.
+    pub unit_finalization_index: u64,
+    /// Member that submitted the finalized unit.
+    pub unit_submitting_member: MemberId,
+    /// Submitting member's unit index within the session.
+    pub unit_index: u64,
+    /// Item index inside the finalized unit body.
+    pub item_index_in_unit: u64,
+    /// Operation ID when this item wraps an operation envelope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<FederationOperationId>,
+    /// Status to guide deterministic application.
+    pub status: FederationAlephBftFinalizedItemStatus,
+    /// Hash of the ordered unit body that produced this item.
+    pub unit_body_hash: FederationAlephBftUnitBodyHash,
+    /// Finalized consensus item body.
+    pub item: FederationConsensusItem,
+}
+
+/// Result of finalizing one AlephBFT unit payload locally.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationAlephBftFinalizedUnitOutcome {
+    /// AlephBFT session containing the finalized unit.
+    pub session: u64,
+    /// Unit position in finalized order within the session.
+    pub unit_finalization_index: u64,
+    /// Member that submitted the finalized unit.
+    pub unit_submitting_member: MemberId,
+    /// Submitting member's unit index within the session.
+    pub unit_index: u64,
+    /// Hash of the ordered unit body.
+    pub unit_body_hash: FederationAlephBftUnitBodyHash,
+    /// Ordered consensus items produced from the finalized unit.
+    pub items: Vec<FederationAlephBftFinalizedItem>,
+}
+
+impl FederationAlephBftFinalizedUnitOutcome {
+    /// Return operation IDs that were seen before this finalized unit.
+    #[must_use]
+    pub fn duplicate_operation_ids(&self) -> Vec<FederationOperationId> {
+        self.items
+            .iter()
+            .filter_map(|item| {
+                if item.status == FederationAlephBftFinalizedItemStatus::DuplicateOperation {
+                    item.operation_id
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 }
 
@@ -675,6 +749,160 @@ impl FederationAlephBftUnitDataProvider {
         )?;
         self.next_unit_index = self.next_unit_index.saturating_add(1);
         Ok(Some(payload))
+    }
+}
+
+/// Converts verified AlephBFT unit payloads into deterministic accepted items.
+#[derive(Debug, Clone)]
+pub struct FederationAlephBftFinalizationHandler {
+    federation_id: FederationId,
+    session: u64,
+    next_unit_finalization_index: u64,
+    next_item_index: u64,
+    max_unit_payload_bytes: usize,
+    finalized_units: BTreeSet<(u64, MemberId, u64)>,
+    finalized_operation_ids: BTreeSet<FederationOperationId>,
+}
+
+impl FederationAlephBftFinalizationHandler {
+    /// Create a finalization handler for session zero with default limits.
+    pub fn new(federation_id: FederationId) -> Self {
+        Self::with_limits(
+            federation_id,
+            0,
+            0,
+            FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+        )
+        .expect("default AlephBFT finalization limits are non-zero")
+    }
+
+    /// Create a finalization handler with explicit session, item index, and limits.
+    pub fn with_limits(
+        federation_id: FederationId,
+        session: u64,
+        next_item_index: u64,
+        max_unit_payload_bytes: usize,
+    ) -> Result<Self> {
+        ensure_non_zero_consensus_limit("max_unit_payload_bytes", max_unit_payload_bytes)?;
+
+        Ok(Self {
+            federation_id,
+            session,
+            next_unit_finalization_index: 0,
+            next_item_index,
+            max_unit_payload_bytes,
+            finalized_units: BTreeSet::new(),
+            finalized_operation_ids: BTreeSet::new(),
+        })
+    }
+
+    /// Return the session accepted by this handler.
+    #[must_use]
+    pub fn session(&self) -> u64 {
+        self.session
+    }
+
+    /// Return the next unit finalization index within the current session.
+    #[must_use]
+    pub fn next_unit_finalization_index(&self) -> u64 {
+        self.next_unit_finalization_index
+    }
+
+    /// Return the next global accepted item index.
+    #[must_use]
+    pub fn next_item_index(&self) -> u64 {
+        self.next_item_index
+    }
+
+    /// Begin a later session and reset the per-session unit finalization index.
+    pub fn begin_session(&mut self, session: u64) -> Result<()> {
+        if session <= self.session {
+            return Err(FederationError::AlephBftUnitSessionMismatch {
+                expected: self.session.saturating_add(1),
+                found: session,
+            });
+        }
+
+        self.session = session;
+        self.next_unit_finalization_index = 0;
+        Ok(())
+    }
+
+    /// Convert one finalized AlephBFT unit into accepted consensus items.
+    pub fn finalize_next_unit(
+        &mut self,
+        payload: FederationAlephBftUnitPayload,
+    ) -> Result<FederationAlephBftFinalizedUnitOutcome> {
+        payload.ensure_within_size_limit(self.max_unit_payload_bytes)?;
+        if payload.federation_id != self.federation_id {
+            return Err(FederationError::FederationIdMismatch {
+                expected: self.federation_id,
+                found: payload.federation_id,
+            });
+        }
+        if payload.session != self.session {
+            return Err(FederationError::AlephBftUnitSessionMismatch {
+                expected: self.session,
+                found: payload.session,
+            });
+        }
+
+        let unit_key = (
+            payload.session,
+            payload.submitting_member,
+            payload.unit_index,
+        );
+        if !self.finalized_units.insert(unit_key) {
+            return Err(FederationError::DuplicateAlephBftUnit {
+                session: payload.session,
+                member_id: payload.submitting_member,
+                unit_index: payload.unit_index,
+            });
+        }
+
+        let unit_finalization_index = self.next_unit_finalization_index;
+        let unit_submitting_member = payload.submitting_member;
+        let unit_index = payload.unit_index;
+        let unit_body_hash = payload.body_hash;
+        let mut items = Vec::with_capacity(payload.items.len());
+
+        for (item_index_in_unit, item) in payload.items.into_iter().enumerate() {
+            let operation_id = item.operation_id()?;
+            let status = match operation_id {
+                Some(operation_id) => {
+                    if self.finalized_operation_ids.insert(operation_id) {
+                        FederationAlephBftFinalizedItemStatus::Accepted
+                    } else {
+                        FederationAlephBftFinalizedItemStatus::DuplicateOperation
+                    }
+                }
+                None => FederationAlephBftFinalizedItemStatus::Accepted,
+            };
+            items.push(FederationAlephBftFinalizedItem {
+                accepted_item_index: self.next_item_index,
+                session: self.session,
+                unit_finalization_index,
+                unit_submitting_member,
+                unit_index,
+                item_index_in_unit: u64::try_from(item_index_in_unit)
+                    .expect("item index fits in u64"),
+                operation_id,
+                status,
+                unit_body_hash,
+                item,
+            });
+            self.next_item_index = self.next_item_index.saturating_add(1);
+        }
+        self.next_unit_finalization_index = self.next_unit_finalization_index.saturating_add(1);
+
+        Ok(FederationAlephBftFinalizedUnitOutcome {
+            session: self.session,
+            unit_finalization_index,
+            unit_submitting_member,
+            unit_index,
+            unit_body_hash,
+            items,
+        })
     }
 }
 

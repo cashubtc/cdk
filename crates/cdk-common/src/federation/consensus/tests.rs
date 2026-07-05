@@ -679,6 +679,192 @@ fn aleph_bft_data_provider_rejects_zero_limits() {
 }
 
 #[test]
+fn aleph_bft_finalization_handler_emits_ordered_items_with_unit_metadata() {
+    let federation_id = federation_id(13);
+    let envelope = mint_envelope(
+        federation_id,
+        "quote-1",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let operation_id = envelope.operation_id().expect("operation id");
+    let payload = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        0,
+        5,
+        vec![
+            FederationConsensusItem::operation(envelope),
+            FederationConsensusItem::ModuleFact(FederationConsensusModuleFact::new(
+                "mint",
+                "payment_observation",
+                json!({"quote": "quote-1", "paid": true}),
+            )),
+        ],
+    )
+    .expect("payload");
+    let body_hash = payload.body_hash;
+    let mut handler = FederationAlephBftFinalizationHandler::new(federation_id);
+
+    let outcome = handler
+        .finalize_next_unit(payload)
+        .expect("finalized outcome");
+
+    assert_eq!(outcome.session, 0);
+    assert_eq!(outcome.unit_finalization_index, 0);
+    assert_eq!(outcome.unit_submitting_member, member_id_value(2));
+    assert_eq!(outcome.unit_index, 5);
+    assert_eq!(outcome.unit_body_hash, body_hash);
+    assert_eq!(outcome.items.len(), 2);
+    assert!(outcome.duplicate_operation_ids().is_empty());
+
+    assert_eq!(outcome.items[0].accepted_item_index, 0);
+    assert_eq!(outcome.items[0].item_index_in_unit, 0);
+    assert_eq!(outcome.items[0].operation_id, Some(operation_id));
+    assert_eq!(
+        outcome.items[0].status,
+        FederationAlephBftFinalizedItemStatus::Accepted
+    );
+    assert_eq!(outcome.items[0].unit_body_hash, body_hash);
+
+    assert_eq!(outcome.items[1].accepted_item_index, 1);
+    assert_eq!(outcome.items[1].item_index_in_unit, 1);
+    assert_eq!(outcome.items[1].operation_id, None);
+    assert_eq!(
+        outcome.items[1].status,
+        FederationAlephBftFinalizedItemStatus::Accepted
+    );
+    assert_eq!(handler.next_unit_finalization_index(), 1);
+    assert_eq!(handler.next_item_index(), 2);
+}
+
+#[test]
+fn aleph_bft_finalization_handler_rejects_wrong_federation_and_session() {
+    let expected_federation_id = federation_id(13);
+    let wrong_federation_payload =
+        FederationAlephBftUnitPayload::new(federation_id(14), member_id(), 0, 0, Vec::new())
+            .expect("wrong federation payload");
+    let wrong_session_payload =
+        FederationAlephBftUnitPayload::new(expected_federation_id, member_id(), 1, 0, Vec::new())
+            .expect("wrong session payload");
+    let mut handler = FederationAlephBftFinalizationHandler::new(expected_federation_id);
+
+    assert!(matches!(
+        handler.finalize_next_unit(wrong_federation_payload),
+        Err(FederationError::FederationIdMismatch {
+            expected,
+            found,
+        }) if expected == expected_federation_id && found == federation_id(14)
+    ));
+    assert!(matches!(
+        handler.finalize_next_unit(wrong_session_payload),
+        Err(FederationError::AlephBftUnitSessionMismatch {
+            expected: 0,
+            found: 1,
+        })
+    ));
+}
+
+#[test]
+fn aleph_bft_finalization_handler_flags_duplicate_operations_in_order() {
+    let federation_id = federation_id(13);
+    let envelope = mint_envelope(
+        federation_id,
+        "quote-1",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let operation_id = envelope.operation_id().expect("operation id");
+    let first_payload = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        0,
+        0,
+        vec![FederationConsensusItem::operation(envelope.clone())],
+    )
+    .expect("first payload");
+    let duplicate_payload = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(3),
+        0,
+        0,
+        vec![FederationConsensusItem::operation(envelope)],
+    )
+    .expect("duplicate payload");
+    let mut handler = FederationAlephBftFinalizationHandler::new(federation_id);
+
+    let first = handler
+        .finalize_next_unit(first_payload)
+        .expect("first finalized unit");
+    let duplicate = handler
+        .finalize_next_unit(duplicate_payload)
+        .expect("duplicate finalized unit");
+
+    assert_eq!(first.items[0].accepted_item_index, 0);
+    assert_eq!(
+        first.items[0].status,
+        FederationAlephBftFinalizedItemStatus::Accepted
+    );
+    assert_eq!(duplicate.items[0].accepted_item_index, 1);
+    assert_eq!(duplicate.items[0].operation_id, Some(operation_id));
+    assert_eq!(
+        duplicate.items[0].status,
+        FederationAlephBftFinalizedItemStatus::DuplicateOperation
+    );
+    assert_eq!(duplicate.duplicate_operation_ids(), vec![operation_id]);
+    assert_eq!(handler.next_unit_finalization_index(), 2);
+    assert_eq!(handler.next_item_index(), 2);
+}
+
+#[test]
+fn aleph_bft_finalization_handler_rejects_duplicate_member_unit_replay() {
+    let federation_id = federation_id(13);
+    let payload =
+        FederationAlephBftUnitPayload::new(federation_id, member_id_value(2), 0, 0, Vec::new())
+            .expect("payload");
+    let mut handler = FederationAlephBftFinalizationHandler::new(federation_id);
+
+    handler
+        .finalize_next_unit(payload.clone())
+        .expect("first finalized unit");
+
+    assert!(matches!(
+        handler.finalize_next_unit(payload),
+        Err(FederationError::DuplicateAlephBftUnit {
+            session: 0,
+            member_id,
+            unit_index: 0,
+        }) if member_id == member_id_value(2)
+    ));
+    assert_eq!(handler.next_unit_finalization_index(), 1);
+}
+
+#[test]
+fn aleph_bft_finalization_handler_advances_to_later_sessions() {
+    let federation_id = federation_id(13);
+    let mut handler = FederationAlephBftFinalizationHandler::new(federation_id);
+    let first =
+        FederationAlephBftUnitPayload::new(federation_id, member_id_value(2), 0, 0, Vec::new())
+            .expect("first payload");
+    handler.finalize_next_unit(first).expect("first finalized");
+
+    handler.begin_session(1).expect("begin next session");
+    assert_eq!(handler.session(), 1);
+    assert_eq!(handler.next_unit_finalization_index(), 0);
+    assert_eq!(handler.next_item_index(), 0);
+
+    let next =
+        FederationAlephBftUnitPayload::new(federation_id, member_id_value(2), 1, 0, Vec::new())
+            .expect("next payload");
+    handler.finalize_next_unit(next).expect("next finalized");
+    assert!(matches!(
+        handler.begin_session(1),
+        Err(FederationError::AlephBftUnitSessionMismatch {
+            expected: 2,
+            found: 1,
+        })
+    ));
+}
+
+#[test]
 fn multi_node_engine_converges_with_reordered_duplicate_delayed_messages() {
     let federation_id = federation_id(13);
     let members = [member_id_value(1), member_id_value(2), member_id_value(3)];

@@ -25,6 +25,8 @@ mod transport;
 mod trusted_dealer;
 
 pub use self::consensus::{
+    FederationAlephBftFinalizationHandler, FederationAlephBftFinalizedItem,
+    FederationAlephBftFinalizedItemStatus, FederationAlephBftFinalizedUnitOutcome,
     FederationAlephBftUnitBodyHash, FederationAlephBftUnitDataProvider,
     FederationAlephBftUnitPayload, FederationConsensusBackendAdapter,
     FederationConsensusBackendAdapterRuntime, FederationConsensusBackendKind,
@@ -33,7 +35,8 @@ pub use self::consensus::{
     FederationConsensusRuntime, InMemoryFederationConsensus, InMemoryFederationConsensusAdapter,
     InMemoryFederationConsensusNetwork, FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION,
     FEDERATION_CONSENSUS_ITEM_VERSION, FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES,
-    FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS, FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
+    FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS, FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+    FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
 };
 pub use self::journal::{
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
@@ -438,6 +441,26 @@ pub enum FederationError {
     /// An AlephBFT unit operation ID list does not match the canonical item body.
     #[error("Federation AlephBFT unit operation ids do not match item body")]
     AlephBftUnitOperationIdsMismatch,
+    /// An AlephBFT unit belongs to a different finalization session.
+    #[error("Federation AlephBFT unit session mismatch: expected={expected}, found={found}")]
+    AlephBftUnitSessionMismatch {
+        /// Expected finalization session.
+        expected: u64,
+        /// Found payload session.
+        found: u64,
+    },
+    /// The same AlephBFT member unit was finalized more than once.
+    #[error(
+        "Duplicate federation AlephBFT unit: session={session}, member={member_id}, unit_index={unit_index}"
+    )]
+    DuplicateAlephBftUnit {
+        /// Finalization session containing the duplicate unit.
+        session: u64,
+        /// Member whose unit was duplicated.
+        member_id: MemberId,
+        /// Member-local unit index.
+        unit_index: u64,
+    },
     /// The roster has a different member count than the threshold params.
     #[error("Federation member count mismatch: expected={expected}, found={found}")]
     MemberCountMismatch {

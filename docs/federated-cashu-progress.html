@@ -526,19 +526,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 563 checked items and 116 remaining items after adding the first Milestone 4A AlephBFT boundary: canonical unit payloads now carry CDK consensus items, member/session/unit metadata, derived operation IDs, protocol-version metadata, and a body hash. The repo also has focused Axum peer-sync, peer-client, DKG, catch-up, status, and payment-observation modules plus the fast `fed-regtest-check` helper.</span>
+          <span class="value">The implementation plan audit tracks 563 checked items and 116 remaining items while Milestone 4A continues. `cdk-common` now has both sides of the backend-neutral AlephBFT boundary: canonical unit payload/data-provider construction and finalized-unit verification that assigns accepted item indexes, preserves session/unit metadata, rejects replayed units, and flags duplicate operation IDs.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add aleph bft unit payload boundary</span>
+          <span class="value">feat: add aleph bft finalization boundary</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`crates/cdk-common/src/federation/consensus.rs` now exposes `FederationAlephBftUnitPayload`, `FederationAlephBftUnitBodyHash`, and `FederationAlephBftUnitDataProvider` so the future backend can batch canonical consensus items without changing Cashu operation bytes.</span>
+          <span class="value">`crates/cdk-common/src/federation/consensus.rs` now exposes `FederationAlephBftFinalizationHandler` and finalized-item metadata so a future backend can convert verified AlephBFT units into a deterministic accepted-item stream before applying mint state.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Wire the payload/data-provider boundary into an AlephBFT backend adapter and add a finalization handler that converts finalized units into the existing deterministic journal/apply stream.</span>
+          <span class="value">Wire the data-provider and finalization boundaries into an AlephBFT backend adapter, then persist finalized item/session metadata before the existing deterministic journal/apply stream consumes it.</span>
         </div>
       </aside>
     </header>
@@ -788,6 +788,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>AlephBFT finalization boundary</h3>
+            <p>`cdk-common` now verifies finalized unit payloads, rejects wrong-federation and wrong-session units, detects replayed member units, assigns accepted item indexes, and flags duplicate operations without losing their finalized order metadata.</p>
+          </article>
           <article class="item">
             <h3>AlephBFT unit payload boundary</h3>
             <p>`cdk-common` now has canonical AlephBFT unit payloads for CDK consensus items, derived operation-ID lists, length-prefixed body hashing, zero-limit rejection, and a bounded data-provider primitive that does not emit empty units or drop an oversized front item.</p>
@@ -2260,10 +2264,10 @@
           </thead>
           <tbody>
             <tr>
-              <td>AlephBFT unit payload boundary</td>
+              <td>AlephBFT unit and finalization boundary</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo check -p cdk-common --features federation`, `cargo test -p cdk-common --features federation aleph_bft -- --test-threads 1`, and `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1` passed. The tests cover canonical unit metadata, body-hash/order commitment, operation-ID derivation, tamper rejection, duplicate operation admission, byte-bounded batch draining, zero-limit rejection, and queue preservation when a front item cannot fit the configured unit body limit.</td>
-              <td>Wire `FederationAlephBftUnitDataProvider` into the real AlephBFT backend adapter and add finalization-handler tests that convert finalized units into the durable accepted-item journal.</td>
+              <td>`cargo check -p cdk-common --features federation`, `cargo test -p cdk-common --features federation aleph_bft -- --test-threads 1`, and `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1` passed. The tests cover canonical unit metadata, body-hash/order commitment, operation-ID derivation, tamper rejection, duplicate operation admission, byte-bounded batch draining, finalization metadata assignment, duplicate operation marking, replayed member-unit rejection, session advancement, and wrong federation/session rejection.</td>
+              <td>Wire `FederationAlephBftUnitDataProvider` and `FederationAlephBftFinalizationHandler` into the real AlephBFT backend adapter, then persist finalized item metadata before feeding the durable accepted-item journal.</td>
             </tr>
             <tr>
               <td>Milestone 0 broad workspace gates</td>
@@ -3952,7 +3956,7 @@
           </article>
           <article class="item">
             <h3>Production ordering backend</h3>
-            <p>Wire the new AlephBFT unit payload and bounded data-provider primitive into a production backend adapter, then add the finalization handler that feeds the durable CDK journal/apply path.</p>
+            <p>Wire the AlephBFT unit data-provider and finalization-handler primitives into a production backend adapter, then persist finalized item metadata before feeding the durable CDK journal/apply path.</p>
           </article>
           <article class="item">
             <h3>Extended Postgres partitions</h3>
