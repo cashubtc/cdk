@@ -311,6 +311,20 @@ impl<T> MintConnector for HttpClient<T>
 where
     T: Transport + Send + Sync + 'static,
 {
+    async fn connect_websocket(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<
+        (
+            cdk_common::ws_client::WsSender,
+            cdk_common::ws_client::WsReceiver,
+        ),
+        cdk_common::ws_client::WsError,
+    > {
+        self.transport.ws_connect(url, headers).await
+    }
+
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     #[instrument(skip(self), fields(mint_url = %self.mint_url))]
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, Error> {

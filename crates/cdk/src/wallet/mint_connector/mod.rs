@@ -36,6 +36,21 @@ pub type TorHttpClient = http_client::HttpClient<transport::TorAsync>;
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait MintConnector: Debug {
+    /// Connect to a WebSocket endpoint using the connector's transport.
+    async fn connect_websocket(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<
+        (
+            cdk_common::ws_client::WsSender,
+            cdk_common::ws_client::WsReceiver,
+        ),
+        cdk_common::ws_client::WsError,
+    > {
+        cdk_common::ws_client::connect(url, headers).await
+    }
+
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     /// Resolve the DNS record getting the TXT value
     async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error>;

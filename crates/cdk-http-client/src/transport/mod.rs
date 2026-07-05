@@ -16,6 +16,15 @@ use crate::{HttpClient, HttpClientBuilder};
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait Transport: Default + Send + Sync + Debug + Clone {
+    /// Connect to a WebSocket endpoint using this transport.
+    async fn ws_connect(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<(crate::ws::WsSender, crate::ws::WsReceiver), crate::ws::WsError> {
+        crate::ws::connect(url, headers).await
+    }
+
     /// Make the transport use a proxy.
     ///
     /// SOCKS proxy schemes such as `socks5h` are available only when this crate

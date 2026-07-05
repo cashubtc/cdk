@@ -21,7 +21,7 @@ use cdk_common::pub_sub::remote_consumer::{
 };
 use cdk_common::pub_sub::{Error as PubsubError, Spec, Subscriber};
 use cdk_common::subscription::WalletParams;
-use cdk_common::ws_client::{connect as ws_connect, WsError};
+use cdk_common::ws_client::WsError;
 use cdk_common::{CheckStateRequest, Method, PaymentMethod, RoutePath};
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -528,10 +528,14 @@ async fn stream_client(
     let header_refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
     tracing::debug!("Connecting to {}", url);
-    let (mut sender, mut receiver) = ws_connect(&url_str, &header_refs).await.map_err(|err| {
-        tracing::error!("Error connecting: {err:?}");
-        map_ws_error(err)
-    })?;
+    let (mut sender, mut receiver) = client
+        .http_client
+        .connect_websocket(&url_str, &header_refs)
+        .await
+        .map_err(|err| {
+            tracing::error!("Error connecting: {err:?}");
+            map_ws_error(err)
+        })?;
 
     tracing::debug!("Connected to {}", url);
 

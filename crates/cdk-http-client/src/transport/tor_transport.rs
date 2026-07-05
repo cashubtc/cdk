@@ -295,6 +295,22 @@ impl Transport for TorAsync {
         Ok(txts)
     }
 
+    async fn ws_connect(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<(crate::ws::WsSender, crate::ws::WsReceiver), crate::ws::WsError> {
+        let parsed_url = Url::parse(url)
+            .map_err(|e| crate::ws::WsError::Connection(format!("Invalid URL: {e}")))?;
+        let pool = self
+            .ensure_pool()
+            .await
+            .map_err(|e| crate::ws::WsError::Connection(e.to_string()))?;
+        let idx = self.index_for_request(&http::Method::GET, &parsed_url, None, pool.len());
+
+        crate::ws::connect_tor(pool[idx].clone(), url, headers).await
+    }
+
     async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, HttpError>
     where
         R: DeserializeOwned,
