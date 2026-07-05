@@ -525,15 +525,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The consensus runtime, mint, wallet connector, Axum private REST, mintd setup-generator, smoke-operation, and status federation test fixtures now live in dedicated modules, keeping production federation files focused while the focused suites remain green.</span>
+          <span class="value">The implementation plan audit tracks 561 checked items and 28 remaining items. The consensus runtime, mint, wallet connector, Axum private REST, mintd setup-generator, smoke-operation, status, and DKG-status federation test fixtures now live in dedicated modules, keeping production federation files focused while the focused suites remain green.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: split federation status tests</span>
+          <span class="value">refactor: split federation dkg status tests</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`cdk-mintd::federation_status` now keeps status querying and guard code in `federation_status.rs`, with status command fixtures and guard tests in `federation_status/tests.rs`.</span>
+          <span class="value">`cdk-mintd::federation_dkg_status` now keeps DKG-status reporting code in `federation_dkg_status.rs`, with DKG completion, record-merge, persisted-read, and setup-record summary fixtures in `federation_dkg_status/tests.rs`.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -787,6 +787,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>DKG status tests split out</h3>
+            <p>The mintd DKG-status command file is now focused on reporting and database-read logic, while DKG completion fixtures, record merge tests, persisted-record reads, and setup-record summary checks live in a dedicated sibling module.</p>
+          </article>
           <article class="item">
             <h3>Status tests split out</h3>
             <p>The mintd federation status command file is now focused on query, printing, and guard logic, while its signed-status transport fixture and readiness, convergence, digest, invalid-operation, and payment-observation guard tests live in a dedicated sibling module.</p>
@@ -2263,6 +2267,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_status -- --test-threads 1` passed 39 status command, signed local-status transport, readiness, convergence, digest-alert, session-outcome, invalid-operation, and payment-observation guard tests after moving fixtures into `crates/cdk-mintd/src/federation_status/tests.rs`.</td>
               <td>Continue reducing inline DKG-status, quarantine, and remaining helper fixtures where the split keeps operator command files focused.</td>
+            </tr>
+            <tr>
+              <td>Mintd DKG-status test module split</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-mintd --features federation,fakewallet,sqlite dkg_status -- --test-threads 1` passed 7 DKG-status tests after moving completion fixtures, record merge tests, persisted database reads, and setup-record summary checks into `crates/cdk-mintd/src/federation_dkg_status/tests.rs`.</td>
+              <td>Continue reducing inline quarantine and remaining helper fixtures where the split keeps operator command files focused.</td>
             </tr>
             <tr>
               <td>Standalone mint and DbSignatory regressions</td>
