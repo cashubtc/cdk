@@ -536,8 +536,11 @@ Architecture checklist:
   accepted-item consensus evidence with session, accepted item index, finalized
   unit position, submitting member, and member unit index. SQLite/Postgres
   journal persistence now round-trips those fields. Full signed session-outcome
-  quorum linkage remains in the existing session-outcome table and still needs
-  to be tied into the durable apply/readiness rule before this item is complete.
+  quorum linkage remains in the existing session-outcome table; core consensus
+  now exposes `apply_catch_up_response_with_session_outcome_quorum` so replay can
+  require quorum-signed evidence before appending peer entries. Startup and Axum
+  sync still need to route durable replay/readiness through this certified path
+  before this item is complete.
 - [ ] Persist enough AlephBFT unit state and accepted item state to recover after
   crashes without replaying an item twice or losing a finalized item.
 - [ ] On startup, rebuild the consensus runtime from durable state, fetch missing

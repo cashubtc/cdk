@@ -10,12 +10,13 @@ use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use super::{
-    FederationError, FederationId, FederationJournalCatchUpRequest,
+    FederationConfig, FederationError, FederationId, FederationJournalCatchUpRequest,
     FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
     FederationPeerStatus, FederationProtocolVersions, FederationSessionOutcome,
-    FederationStateDigest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    InMemoryFederationJournal, MemberId, Result, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
+    FederationSessionOutcomeQuorum, FederationStateDigest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, InMemoryFederationJournal, MemberId, Result,
+    FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
 };
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -1150,12 +1151,29 @@ pub trait FederationConsensusEngine: fmt::Debug + Send {
         response: &FederationJournalCatchUpResponse,
     ) -> Result<Vec<FederationJournalEntry>>;
 
+    /// Verify a session-outcome quorum before applying a peer catch-up response.
+    fn apply_catch_up_response_with_session_outcome_quorum(
+        &mut self,
+        response: &FederationJournalCatchUpResponse,
+        config: &FederationConfig,
+        additional_outcomes: &[FederationSessionOutcome],
+    ) -> Result<FederationQuorumVerifiedCatchUp>;
+
     /// Update local application status for an accepted operation.
     fn update_status(
         &mut self,
         operation_id: FederationOperationId,
         status: FederationOperationStatus,
     ) -> Result<FederationJournalEntry>;
+}
+
+/// Catch-up entries applied after verifying quorum-signed session outcome evidence.
+#[derive(Debug, Clone)]
+pub struct FederationQuorumVerifiedCatchUp {
+    /// Entries appended to the local accepted-operation journal.
+    pub applied_entries: Vec<FederationJournalEntry>,
+    /// Verified signer quorum over the exact catch-up response range.
+    pub session_outcome_quorum: FederationSessionOutcomeQuorum,
 }
 
 /// Runtime-owned consensus engine.
@@ -1397,6 +1415,20 @@ impl FederationConsensusEngine for FederationConsensusRuntime {
         response: &FederationJournalCatchUpResponse,
     ) -> Result<Vec<FederationJournalEntry>> {
         self.engine_mut().apply_catch_up_response(response)
+    }
+
+    fn apply_catch_up_response_with_session_outcome_quorum(
+        &mut self,
+        response: &FederationJournalCatchUpResponse,
+        config: &FederationConfig,
+        additional_outcomes: &[FederationSessionOutcome],
+    ) -> Result<FederationQuorumVerifiedCatchUp> {
+        self.engine_mut()
+            .apply_catch_up_response_with_session_outcome_quorum(
+                response,
+                config,
+                additional_outcomes,
+            )
     }
 
     fn update_status(
@@ -2138,6 +2170,30 @@ impl InMemoryFederationConsensus {
         Ok(applied)
     }
 
+    /// Verify a session-outcome quorum before applying a peer catch-up response.
+    pub fn apply_catch_up_response_with_session_outcome_quorum(
+        &mut self,
+        response: &FederationJournalCatchUpResponse,
+        config: &FederationConfig,
+        additional_outcomes: &[FederationSessionOutcome],
+    ) -> Result<FederationQuorumVerifiedCatchUp> {
+        if config.federation_id != self.federation_id {
+            return Err(FederationError::CatchUpFederationMismatch {
+                expected: self.federation_id,
+                found: config.federation_id,
+            });
+        }
+
+        let session_outcome_quorum =
+            response.verify_session_outcome_quorum(config, additional_outcomes)?;
+        let applied_entries = self.apply_catch_up_response(response)?;
+
+        Ok(FederationQuorumVerifiedCatchUp {
+            applied_entries,
+            session_outcome_quorum,
+        })
+    }
+
     /// Update local application status for an accepted operation.
     pub fn update_status(
         &mut self,
@@ -2225,6 +2281,20 @@ impl FederationConsensusEngine for InMemoryFederationConsensus {
         response: &FederationJournalCatchUpResponse,
     ) -> Result<Vec<FederationJournalEntry>> {
         Self::apply_catch_up_response(self, response)
+    }
+
+    fn apply_catch_up_response_with_session_outcome_quorum(
+        &mut self,
+        response: &FederationJournalCatchUpResponse,
+        config: &FederationConfig,
+        additional_outcomes: &[FederationSessionOutcome],
+    ) -> Result<FederationQuorumVerifiedCatchUp> {
+        Self::apply_catch_up_response_with_session_outcome_quorum(
+            self,
+            response,
+            config,
+            additional_outcomes,
+        )
     }
 
     fn update_status(

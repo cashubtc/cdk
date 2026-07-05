@@ -526,19 +526,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 563 checked items and 116 remaining items while Milestone 4A continues. The accepted journal now stores deterministic outcome hashes, post-append state digests, and optional AlephBFT accepted-item evidence, with SQLite/Postgres persistence and replay validation coverage.</span>
+          <span class="value">The implementation plan audit tracks 563 checked items and 116 remaining items while Milestone 4A continues. Core consensus now has a quorum-certified catch-up replay path that verifies signed session-outcome evidence before appending peer journal entries.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: persist federation journal consensus evidence</span>
+          <span class="value">feat: add quorum verified catch up replay</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`FederationJournalEntry` now carries operation outcome hashes, state digests, and `FederationJournalConsensusEvidence`; the AlephBFT adapter populates that evidence from finalized units and SQL storage round-trips it.</span>
+          <span class="value">`InMemoryFederationConsensus` and the consensus trait now expose `apply_catch_up_response_with_session_outcome_quorum`, returning applied entries plus the verified `FederationSessionOutcomeQuorum` evidence.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Tie signed session-outcome quorum records into durable apply/readiness rules, then connect the adapter boundary to an actual AlephBFT runtime/network task.</span>
+          <span class="value">Route Axum/startup durable replay and public-route readiness through the quorum-certified catch-up path, then connect the adapter boundary to an actual AlephBFT runtime/network task.</span>
         </div>
       </aside>
     </header>
@@ -788,6 +788,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Quorum-certified replay</h3>
+            <p>Core consensus can now verify a threshold of signed session outcomes over an exact catch-up range before appending peer entries, giving startup and sync code a safe replay primitive for lagging members.</p>
+          </article>
           <article class="item">
             <h3>Journal consensus evidence</h3>
             <p>Accepted journal entries now record deterministic operation outcome hashes, state digests, and optional accepted-item evidence, and SQLite/Postgres journal persistence stores the new fields for restart and catch-up work.</p>
@@ -2271,6 +2275,12 @@
             </tr>
           </thead>
           <tbody>
+            <tr>
+              <td>Quorum-certified catch-up replay</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo check -p cdk-common --features federation`, `cargo check -p cdk-axum --features federation`, and `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1` passed. The new tests cover successful quorum-verified replay, insufficient signer rejection without journal mutation, and mismatched session-outcome rejection without journal mutation.</td>
+              <td>Use the certified replay path from Axum sync/startup readiness so a member only serves public federation routes after durable catch-up has quorum evidence.</td>
+            </tr>
             <tr>
               <td>Federation journal consensus evidence</td>
               <td><span class="status done">Passed</span></td>

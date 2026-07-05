@@ -1,11 +1,14 @@
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use serde_json::json;
 
+use super::super::{FederationConfig, MemberConfigPrivate, MemberConfigPublic, ThresholdParams};
 use super::*;
+use crate::mint_url::MintUrl;
 use crate::{
     Amount, BlindedMessage, CurrencyUnit, Id, MintQuoteBolt11Request, MintQuoteBolt11Response,
-    MintQuoteRequest, MintQuoteResponse, MintRequest, PublicKey,
+    MintQuoteRequest, MintQuoteResponse, MintRequest, PublicKey, SecretKey,
 };
 
 fn federation_id(byte: u8) -> FederationId {
@@ -83,6 +86,60 @@ fn oversized_mint_quote_envelope(federation_id: FederationId) -> FederationOpera
     };
     request.description = Some("x".repeat(super::super::FEDERATION_MAX_OPERATION_ENVELOPE_BYTES));
     envelope
+}
+
+fn identity_secret(id: u8) -> SecretKey {
+    SecretKey::from_slice(&[id; 32]).expect("identity secret")
+}
+
+fn consensus_member_config(id: u16, identity_secret: &SecretKey) -> MemberConfigPublic {
+    MemberConfigPublic {
+        member_id: member_id_value(id),
+        public_mint_url: MintUrl::from_str(&format!("https://mint{id}.example.com"))
+            .expect("public mint url"),
+        federation_api_url: MintUrl::from_str(&format!("https://fed{id}.example.com"))
+            .expect("federation api url"),
+        identity_public_key: identity_secret.public_key(),
+    }
+}
+
+fn private_member(id: u16, identity_secret: SecretKey) -> MemberConfigPrivate {
+    MemberConfigPrivate {
+        federation_id: None,
+        member_id: member_id_value(id),
+        identity_secret_key: identity_secret,
+        keyset_secret_shares: BTreeMap::new(),
+        setup_transcript_hash: None,
+    }
+}
+
+fn consensus_config_three() -> (FederationConfig, Vec<MemberConfigPrivate>) {
+    let first_secret = identity_secret(1);
+    let second_secret = identity_secret(2);
+    let third_secret = identity_secret(3);
+    let members = BTreeMap::from([
+        (
+            member_id_value(1),
+            consensus_member_config(1, &first_secret),
+        ),
+        (
+            member_id_value(2),
+            consensus_member_config(2, &second_secret),
+        ),
+        (
+            member_id_value(3),
+            consensus_member_config(3, &third_secret),
+        ),
+    ]);
+    let threshold_params = ThresholdParams::new(3, 2, 2).expect("threshold params");
+    let config =
+        FederationConfig::new(threshold_params, members, Vec::new()).expect("federation config");
+    let private_members = vec![
+        private_member(1, first_secret),
+        private_member(2, second_secret),
+        private_member(3, third_secret),
+    ];
+    (config, private_members)
 }
 
 #[test]
@@ -1670,6 +1727,115 @@ fn dummy_consensus_applies_peer_catch_up_response() {
         local.peer_status().latest_order_digest,
         peer.peer_status().latest_order_digest
     );
+}
+
+#[test]
+fn dummy_consensus_applies_catch_up_response_after_session_outcome_quorum() {
+    let (config, private_members) = consensus_config_three();
+    let federation_id = config.federation_id;
+    let mut local = InMemoryFederationConsensus::new(federation_id, private_members[2].member_id);
+    let mut peer = InMemoryFederationConsensus::new(federation_id, private_members[0].member_id);
+    peer.submit_envelope(mint_quote_envelope(federation_id))
+        .expect("peer quote submit");
+    peer.submit_envelope(mint_envelope(
+        federation_id,
+        "quote-1",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    ))
+    .expect("peer mint submit");
+
+    let request = local.catch_up_request();
+    let response = peer
+        .catch_up_checked(&request)
+        .expect("catch up")
+        .with_signed_session_outcome(&private_members[0])
+        .expect("signed catch up");
+    let second_outcome = peer
+        .catch_up_checked(&request)
+        .expect("second catch up")
+        .with_signed_session_outcome(&private_members[1])
+        .expect("second signed catch up")
+        .session_outcome
+        .expect("second outcome");
+
+    let verified = local
+        .apply_catch_up_response_with_session_outcome_quorum(&response, &config, &[second_outcome])
+        .expect("quorum verified catch up");
+
+    assert_eq!(verified.applied_entries.len(), 2);
+    assert_eq!(verified.session_outcome_quorum.required, 2);
+    assert_eq!(verified.session_outcome_quorum.operation_count, 2);
+    assert_eq!(verified.session_outcome_quorum.signers.len(), 2);
+    assert_eq!(local.journal().len(), 2);
+    assert_eq!(
+        local.peer_status().latest_order_digest,
+        peer.peer_status().latest_order_digest
+    );
+}
+
+#[test]
+fn dummy_consensus_rejects_quorum_checked_catch_up_without_enough_signers() {
+    let (config, private_members) = consensus_config_three();
+    let federation_id = config.federation_id;
+    let mut local = InMemoryFederationConsensus::new(federation_id, private_members[2].member_id);
+    let mut peer = InMemoryFederationConsensus::new(federation_id, private_members[0].member_id);
+    peer.submit_envelope(mint_quote_envelope(federation_id))
+        .expect("peer quote submit");
+
+    let response = peer
+        .catch_up_checked(&local.catch_up_request())
+        .expect("catch up")
+        .with_signed_session_outcome(&private_members[0])
+        .expect("signed catch up");
+
+    assert!(matches!(
+        local.apply_catch_up_response_with_session_outcome_quorum(&response, &config, &[]),
+        Err(FederationError::SessionOutcomeQuorumNotReached {
+            required: 2,
+            found: 1
+        })
+    ));
+    assert_eq!(local.journal().len(), 0);
+}
+
+#[test]
+fn dummy_consensus_rejects_quorum_checked_catch_up_with_mismatched_outcome() {
+    let (config, private_members) = consensus_config_three();
+    let federation_id = config.federation_id;
+    let mut local = InMemoryFederationConsensus::new(federation_id, private_members[2].member_id);
+    let mut peer = InMemoryFederationConsensus::new(federation_id, private_members[0].member_id);
+    peer.submit_envelope(mint_quote_envelope(federation_id))
+        .expect("peer quote submit");
+    peer.submit_envelope(mint_envelope(
+        federation_id,
+        "quote-1",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    ))
+    .expect("peer mint submit");
+
+    let request = local.catch_up_request();
+    let response = peer
+        .catch_up_checked(&request)
+        .expect("catch up")
+        .with_signed_session_outcome(&private_members[0])
+        .expect("signed catch up");
+    let mismatched_outcome = peer
+        .catch_up_checked(&FederationJournalCatchUpRequest::new(1))
+        .expect("mismatched catch up")
+        .with_signed_session_outcome(&private_members[1])
+        .expect("mismatched signed catch up")
+        .session_outcome
+        .expect("mismatched outcome");
+
+    assert!(matches!(
+        local.apply_catch_up_response_with_session_outcome_quorum(
+            &response,
+            &config,
+            &[mismatched_outcome],
+        ),
+        Err(FederationError::SessionOutcomeMismatch { .. })
+    ));
+    assert_eq!(local.journal().len(), 0);
 }
 
 #[test]
