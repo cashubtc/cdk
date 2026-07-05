@@ -12,7 +12,9 @@ use cdk_common::database::{self, DynMintDatabase};
 #[cfg(feature = "federation")]
 use cdk_common::federation::{FederationOperationId, FederationSignatureShareRecord};
 use cdk_common::mint::{self as mint_types};
-use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, Proofs, State};
+use cdk_common::nuts::{
+    BlindSignature, BlindedMessage, MeltQuoteState, MintQuoteState, Proofs, State,
+};
 use cdk_common::{Amount, CurrencyUnit, Error, PublicKey, QuoteId};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
@@ -386,32 +388,50 @@ pub async fn process_melt_change(
 }
 
 #[cfg(feature = "federation")]
-pub async fn process_federation_melt_change(
+struct PreparedFederationMeltChange {
+    change_sigs: Option<Vec<BlindSignature>>,
+    signature_share_records: Vec<FederationSignatureShareRecord>,
+    blinded_secrets: Vec<PublicKey>,
+}
+
+#[cfg(feature = "federation")]
+impl PreparedFederationMeltChange {
+    fn empty() -> Self {
+        Self {
+            change_sigs: None,
+            signature_share_records: Vec::new(),
+            blinded_secrets: Vec::new(),
+        }
+    }
+}
+
+#[cfg(feature = "federation")]
+pub(crate) enum FederationInternalMeltSettlement {
+    NotInternal,
+    Finalized {
+        quote: MeltQuote,
+        change_sigs: Option<Vec<BlindSignature>>,
+    },
+}
+
+#[cfg(feature = "federation")]
+#[allow(clippy::too_many_arguments)]
+async fn prepare_federation_melt_change(
     mint: &super::super::Mint,
-    db: &DynMintDatabase,
     quote_id: &QuoteId,
     federation_operation_id: FederationOperationId,
     inputs_amount: Amount<CurrencyUnit>,
     total_spent: Amount<CurrencyUnit>,
     inputs_fee: Amount<CurrencyUnit>,
     change_outputs: Vec<BlindedMessage>,
-) -> Result<
-    (
-        Option<Vec<BlindSignature>>,
-        Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
-    ),
-    Error,
-> {
+) -> Result<PreparedFederationMeltChange, Error> {
     let change_target: Amount = match inputs_amount
         .checked_sub(&total_spent)
         .ok()
         .and_then(|rem| rem.checked_sub(&inputs_fee).ok())
     {
         Some(amt) if amt.value() > 0 => amt.into(),
-        Some(_) => {
-            let tx = db.begin_transaction().await?;
-            return Ok((None, tx));
-        }
+        Some(_) => return Ok(PreparedFederationMeltChange::empty()),
         None => {
             tracing::warn!(
                 "Fee was too high for quote {}. inputs_amount: {}, total_spent: {}, inputs_fee: {}",
@@ -420,14 +440,12 @@ pub async fn process_federation_melt_change(
                 total_spent,
                 inputs_fee
             );
-            let tx = db.begin_transaction().await?;
-            return Ok((None, tx));
+            return Ok(PreparedFederationMeltChange::empty());
         }
     };
 
     if change_outputs.is_empty() {
-        let tx = db.begin_transaction().await?;
-        return Ok((None, tx));
+        return Ok(PreparedFederationMeltChange::empty());
     }
 
     let config = mint
@@ -477,21 +495,62 @@ pub async fn process_federation_melt_change(
             dleq: None,
         })
         .collect::<Vec<_>>();
-
-    let mut tx = db.begin_transaction().await?;
-
-    tx.add_federation_signature_shares(&signature_share_records)
-        .await?;
-
-    let blinded_secrets: Vec<_> = blinded_messages_to_sign
+    let blinded_secrets = blinded_messages_to_sign
         .iter()
         .map(|bm| bm.blinded_secret)
         .collect();
 
-    tx.add_blind_signatures(&blinded_secrets, &change_sigs, Some(quote_id.clone()))
-        .await?;
+    Ok(PreparedFederationMeltChange {
+        change_sigs: Some(change_sigs),
+        signature_share_records,
+        blinded_secrets,
+    })
+}
 
-    Ok((Some(change_sigs), tx))
+#[cfg(feature = "federation")]
+pub async fn process_federation_melt_change(
+    mint: &super::super::Mint,
+    db: &DynMintDatabase,
+    quote_id: &QuoteId,
+    federation_operation_id: FederationOperationId,
+    inputs_amount: Amount<CurrencyUnit>,
+    total_spent: Amount<CurrencyUnit>,
+    inputs_fee: Amount<CurrencyUnit>,
+    change_outputs: Vec<BlindedMessage>,
+) -> Result<
+    (
+        Option<Vec<BlindSignature>>,
+        Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
+    ),
+    Error,
+> {
+    let prepared_change = prepare_federation_melt_change(
+        mint,
+        quote_id,
+        federation_operation_id,
+        inputs_amount,
+        total_spent,
+        inputs_fee,
+        change_outputs,
+    )
+    .await?;
+    let mut tx = db.begin_transaction().await?;
+
+    if !prepared_change.signature_share_records.is_empty() {
+        tx.add_federation_signature_shares(&prepared_change.signature_share_records)
+            .await?;
+    }
+
+    if let Some(change_sigs) = prepared_change.change_sigs.as_ref() {
+        tx.add_blind_signatures(
+            &prepared_change.blinded_secrets,
+            change_sigs,
+            Some(quote_id.clone()),
+        )
+        .await?;
+    }
+
+    Ok((prepared_change.change_sigs, tx))
 }
 
 /// Loads a melt quote and acquires exclusive locks on all related quotes.
@@ -814,6 +873,221 @@ pub async fn finalize_federation_melt_quote(
         Some(federation_operation_id),
     )
     .await
+}
+
+#[cfg(feature = "federation")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn finalize_federation_internal_melt_quote(
+    mint: &super::super::Mint,
+    db: &DynMintDatabase,
+    pubsub: &PubSubManager,
+    quote: &MeltQuote,
+    operation_id: uuid::Uuid,
+    federation_operation_id: FederationOperationId,
+    payment_time: u64,
+) -> Result<FederationInternalMeltSettlement, Error> {
+    let request = quote.request.to_string();
+
+    let mut read_tx = db.begin_transaction().await?;
+    let Some(mint_quote) = read_tx.get_mint_quote_by_request(&request).await? else {
+        read_tx.rollback().await?;
+        return Ok(FederationInternalMeltSettlement::NotInternal);
+    };
+    if mint_quote.unit != quote.unit {
+        read_tx.rollback().await?;
+        return Ok(FederationInternalMeltSettlement::NotInternal);
+    }
+    let Some(melt_request_info) = read_tx
+        .get_melt_request_and_blinded_messages(&quote.id)
+        .await?
+    else {
+        read_tx.rollback().await?;
+        return Err(Error::Internal);
+    };
+    read_tx.rollback().await?;
+
+    let total_spent = quote.amount();
+    let prepared_change = prepare_federation_melt_change(
+        mint,
+        &quote.id,
+        federation_operation_id,
+        melt_request_info.inputs_amount.clone(),
+        total_spent.clone(),
+        melt_request_info.inputs_fee.clone(),
+        melt_request_info.change_outputs.clone(),
+    )
+    .await?;
+    let config = mint
+        .effective_federation_config()
+        .await?
+        .ok_or(Error::Internal)?;
+
+    let mut tx = db.begin_transaction().await?;
+    let mut mint_quote = match tx.get_mint_quote_by_request(&request).await? {
+        Some(mint_quote) if mint_quote.unit == quote.unit => mint_quote,
+        _ => {
+            tx.rollback().await?;
+            return Ok(FederationInternalMeltSettlement::NotInternal);
+        }
+    };
+
+    if (mint_quote.state() == MintQuoteState::Issued || mint_quote.state() == MintQuoteState::Paid)
+        && mint_quote.payment_method
+            == crate::mint::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11)
+    {
+        tx.rollback().await?;
+        return Err(Error::RequestAlreadyPaid);
+    }
+
+    let melt_request_info = match tx.get_melt_request_and_blinded_messages(&quote.id).await? {
+        Some(info) => info,
+        None => {
+            tx.rollback().await?;
+            return Err(Error::Internal);
+        }
+    };
+
+    if let Some(ref amount) = mint_quote.amount {
+        if amount > &melt_request_info.inputs_amount {
+            tx.rollback().await?;
+            return Err(Error::InsufficientFunds);
+        }
+    }
+
+    let mut locked_quote = load_melt_quotes_exclusively(&mut tx, &quote.id).await?;
+    if locked_quote.state == MeltQuoteState::Paid {
+        tx.rollback().await?;
+        return Err(Error::PaidQuote);
+    }
+
+    let input_ys = tx.get_proof_ys_by_quote_id(&quote.id).await?;
+    if input_ys.is_empty() {
+        tx.rollback().await?;
+        return Err(Error::Internal);
+    }
+
+    let net_inputs = match melt_request_info
+        .inputs_amount
+        .checked_sub(&melt_request_info.inputs_fee)
+    {
+        Ok(net_inputs) => net_inputs,
+        Err(err) => {
+            tx.rollback().await?;
+            return Err(err.into());
+        }
+    };
+    let total_spent = match total_spent.convert_to(net_inputs.unit()) {
+        Ok(total_spent) => total_spent,
+        Err(err) => {
+            tx.rollback().await?;
+            return Err(err.into());
+        }
+    };
+
+    if net_inputs < total_spent {
+        tracing::error!(
+            "Over paid internal melt quote {}: net_inputs ({}) < total_spent ({}).",
+            quote.id,
+            net_inputs.display_with_unit(),
+            total_spent.display_with_unit(),
+        );
+    }
+
+    let payment_lookup_id = quote
+        .request_lookup_id
+        .clone()
+        .unwrap_or_else(|| cdk_common::payment::PaymentIdentifier::CustomId(quote.id.to_string()));
+
+    if let Err(err) = mint_quote.add_payment(
+        total_spent.clone(),
+        quote.id.to_string(),
+        Some(payment_time),
+    ) {
+        tx.rollback().await?;
+        return Err(err);
+    }
+    tx.update_mint_quote(&mut mint_quote).await?;
+
+    tx.update_melt_quote_state(&mut locked_quote, MeltQuoteState::Paid, None)
+        .await?;
+    locked_quote.state = MeltQuoteState::Paid;
+
+    if locked_quote.request_lookup_id.as_ref() != Some(&payment_lookup_id) {
+        tx.update_melt_quote_request_lookup_id(&mut locked_quote, &payment_lookup_id)
+            .await?;
+    }
+
+    let mut proofs = tx.get_proofs(&input_ys).await?;
+    if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await {
+        tx.rollback().await?;
+        return Err(err);
+    }
+
+    if !prepared_change.signature_share_records.is_empty() {
+        tx.add_federation_signature_shares(&prepared_change.signature_share_records)
+            .await?;
+    }
+
+    if let Some(change_sigs) = prepared_change.change_sigs.as_ref() {
+        tx.add_blind_signatures(
+            &prepared_change.blinded_secrets,
+            change_sigs,
+            Some(quote.id.clone()),
+        )
+        .await?;
+    }
+
+    let fee_breakdown = mint.get_federation_proofs_fee_with_config(&config, &proofs)?;
+    let change_amount = match prepared_change.change_sigs.as_ref() {
+        Some(sigs) => match Amount::try_sum(sigs.iter().map(|sig| sig.amount)) {
+            Ok(amount) => amount,
+            Err(err) => {
+                tx.rollback().await?;
+                return Err(err.into());
+            }
+        },
+        None => Amount::default(),
+    };
+
+    tx.delete_melt_request(&quote.id).await?;
+
+    let mut operation = mint_types::Operation::new(
+        operation_id,
+        mint_types::OperationKind::Melt,
+        Amount::ZERO,
+        melt_request_info.inputs_amount.clone().into(),
+        fee_breakdown.total,
+        None,
+        Some(locked_quote.payment_method.clone()),
+    );
+    operation.add_change(change_amount);
+    operation.set_payment_details(locked_quote.amount().into(), Amount::ZERO);
+    tx.add_completed_operation(&operation, &fee_breakdown.per_keyset)
+        .await?;
+    tx.delete_saga(&operation_id).await?;
+
+    let paid_mint_quote = mint_quote.inner();
+    let paid_melt_quote = locked_quote.inner();
+    tx.commit().await?;
+
+    for pk in input_ys.iter() {
+        pubsub.proof_state((*pk, State::Spent));
+    }
+    pubsub.mint_quote_payment(&paid_mint_quote, paid_mint_quote.amount_paid());
+    pubsub.melt_quote_status(
+        &paid_melt_quote,
+        None,
+        prepared_change.change_sigs.clone(),
+        MeltQuoteState::Paid,
+    );
+
+    #[cfg(feature = "prometheus")]
+    record_confirmed_payment_metrics(&paid_melt_quote, &total_spent);
+
+    Ok(FederationInternalMeltSettlement::Finalized {
+        quote: paid_melt_quote,
+        change_sigs: prepared_change.change_sigs,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

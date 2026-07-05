@@ -476,6 +476,45 @@ impl MeltSaga<Initial> {
 }
 
 impl MeltSaga<SetupComplete> {
+    #[cfg(feature = "federation")]
+    pub(super) async fn finalize_internal_settlement_federation(
+        self,
+        federation_operation_id: FederationOperationId,
+        payment_time: u64,
+    ) -> Result<FederationInternalSettlementOutcome, Error> {
+        match shared::finalize_federation_internal_melt_quote(
+            &self.mint,
+            &self.db,
+            &self.pubsub,
+            &self.state_data.quote,
+            self.operation_id,
+            federation_operation_id,
+            payment_time,
+        )
+        .await
+        {
+            Ok(shared::FederationInternalMeltSettlement::NotInternal) => {
+                Ok(FederationInternalSettlementOutcome::External(self))
+            }
+            Ok(shared::FederationInternalMeltSettlement::Finalized { quote, change_sigs }) => {
+                self.compensations.lock().await.clear();
+
+                #[cfg(feature = "prometheus")]
+                if let Some(metrics) = self.metrics {
+                    metrics.record(true);
+                }
+
+                Ok(FederationInternalSettlementOutcome::Finalized(
+                    quote.into_response(change_sigs),
+                ))
+            }
+            Err(err) => {
+                self.compensate_all().await?;
+                Err(err)
+            }
+        }
+    }
+
     /// Attempts to settle the melt internally (melt-to-mint on same mint).
     ///
     /// This checks if the payment request corresponds to an existing mint quote
@@ -1149,6 +1188,12 @@ impl MeltSaga<PaymentConfirmed> {
         self.finalize_with_federation_operation(Some(federation_operation_id))
             .await
     }
+}
+
+#[cfg(feature = "federation")]
+pub(super) enum FederationInternalSettlementOutcome {
+    Finalized(MeltQuoteResponse<QuoteId>),
+    External(MeltSaga<SetupComplete>),
 }
 
 /// Outcome of attempting to make a melt payment.

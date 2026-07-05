@@ -741,7 +741,7 @@ Implementation checklist:
 - [x] `RollbackMelt` after threshold failed observations releases pending inputs and records quote failed.
 - [x] Unknown or pending backend states keep inputs pending until resolved or an admin policy handles timeout.
 - [x] Existing `MeltSaga` recovery concepts should be reused, but consensus state replaces member-local saga state as the source of truth.
-- [ ] Internal melt-to-mint settlement must become a single consensus operation that updates both quote families atomically.
+- [x] Internal melt-to-mint settlement must become a single consensus operation that updates both quote families atomically.
 
 Tests and success criteria:
 
@@ -750,7 +750,7 @@ Tests and success criteria:
 - [x] Pending fake wallet melt keeps inputs pending and later finalizes after observation.
 - [x] Crash after payment attempt but before finalize recovers by checking observations and finalizing.
 - [x] Two concurrent melts of the same proofs cannot both pay.
-- [ ] Internal melt-to-mint updates the mint quote and melt quote in one accepted operation.
+- [x] Internal melt-to-mint updates the mint quote and melt quote in one accepted operation.
 
 ## Milestone 15: networking and peer authentication
 

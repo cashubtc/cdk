@@ -41,6 +41,8 @@ pub(crate) mod shared;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "federation")]
+use melt_saga::FederationInternalSettlementOutcome;
 use melt_saga::{MeltSaga, PaymentOutcome};
 
 fn pending_melt_wait_timeout() -> Duration {
@@ -1199,6 +1201,19 @@ impl Mint {
         melt_request: &MeltRequest<QuoteId>,
         federation_operation_id: FederationOperationId,
     ) -> Result<MeltQuoteResponse<QuoteId>, Error> {
+        self.melt_federation_with_accepted_time(melt_request, federation_operation_id, 0)
+            .await
+    }
+
+    /// Process a federation melt after the exact request has been accepted by consensus.
+    #[cfg(feature = "federation")]
+    #[instrument(skip_all)]
+    pub(crate) async fn melt_federation_with_accepted_time(
+        &self,
+        melt_request: &MeltRequest<QuoteId>,
+        federation_operation_id: FederationOperationId,
+        accepted_time: u64,
+    ) -> Result<MeltQuoteResponse<QuoteId>, Error> {
         let federation_config = self
             .effective_federation_config()
             .await?
@@ -1253,6 +1268,13 @@ impl Mint {
         let setup_saga = init_saga
             .setup_melt(melt_request, verification, quote.payment_method.clone())
             .await?;
+        let setup_saga = match setup_saga
+            .finalize_internal_settlement_federation(federation_operation_id, accepted_time)
+            .await?
+        {
+            FederationInternalSettlementOutcome::Finalized(response) => return Ok(response),
+            FederationInternalSettlementOutcome::External(setup_saga) => setup_saga,
+        };
         let (setup_saga, settlement) = setup_saga.attempt_internal_settlement(melt_request).await?;
 
         match setup_saga

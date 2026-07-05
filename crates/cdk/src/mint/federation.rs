@@ -1451,7 +1451,12 @@ impl Mint {
             ));
         }
 
-        self.melt_federation(&request, operation_id).await?;
+        self.melt_federation_with_accepted_time(
+            &request,
+            operation_id,
+            federation_accepted_logical_time(entry),
+        )
+        .await?;
 
         let mut tx = self.localstore.begin_transaction().await?;
         tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
@@ -4643,6 +4648,114 @@ mod tests {
         );
         assert!(!real_policy_config.should_attempt_melt_payment(member_two_operation));
         assert!(runtime_config().should_attempt_melt_payment(member_two_operation));
+    }
+
+    #[tokio::test]
+    async fn internal_melt_to_mint_settlement_updates_both_quotes_in_accepted_melt() {
+        let runtime_config = runtime_config();
+        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let invoice =
+            cdk_fake_wallet::create_fake_invoice(1_000, "internal settlement".to_string());
+
+        let mint_quote = QuoteId::new();
+        let mint_quote_entry = appended_entry(
+            &mut journal,
+            runtime_config.mint_quote_operation(
+                mint_quote.clone(),
+                bolt11_quote_request(1),
+                MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
+                    quote: mint_quote.to_string(),
+                    request: invoice.to_string(),
+                    amount: Some(Amount::from(1)),
+                    unit: Some(CurrencyUnit::Sat),
+                    state: MintQuoteState::Unpaid,
+                    expiry: None,
+                    pubkey: None,
+                }),
+            ),
+        );
+        persist_and_apply_entry(&mint, &mint_quote_entry).await;
+
+        let melt_quote = QuoteId::new();
+        let melt_quote_entry = appended_entry(
+            &mut journal,
+            runtime_config.melt_quote_operation(
+                melt_quote.clone(),
+                MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+                    request: invoice,
+                    unit: CurrencyUnit::Sat,
+                    options: None,
+                }),
+            ),
+        );
+        persist_and_apply_entry(&mint, &melt_quote_entry).await;
+
+        let proofs = vec![
+            proof_for_runtime(&runtime_config, "internal-settlement-input-one"),
+            proof_for_runtime(&runtime_config, "internal-settlement-input-two"),
+        ];
+        let input_ys = proofs.ys().expect("input ys");
+        let melt_entry = appended_entry(
+            &mut journal,
+            runtime_config
+                .melt_operation(MeltRequest::new(melt_quote.clone(), proofs, None))
+                .expect("melt operation"),
+        );
+        persist_and_apply_entry(&mint, &melt_entry).await;
+
+        let stored_mint_quote = localstore
+            .get_mint_quote(&mint_quote)
+            .await
+            .expect("mint quote lookup")
+            .expect("mint quote");
+        assert_eq!(stored_mint_quote.state(), MintQuoteState::Paid);
+        assert_eq!(
+            stored_mint_quote.amount_paid(),
+            Amount::new(1, CurrencyUnit::Sat)
+        );
+        assert_eq!(stored_mint_quote.payments.len(), 1);
+        assert_eq!(
+            stored_mint_quote.payments[0].payment_id,
+            melt_quote.to_string()
+        );
+        assert_eq!(
+            stored_mint_quote.payments[0].time,
+            super::federation_accepted_logical_time(&melt_entry)
+        );
+
+        let stored_melt_quote = localstore
+            .get_melt_quote(&melt_quote)
+            .await
+            .expect("melt quote lookup")
+            .expect("melt quote");
+        assert_eq!(stored_melt_quote.state, MeltQuoteState::Paid);
+        assert!(
+            localstore
+                .get_melt_saga_by_quote_id(&melt_quote)
+                .await
+                .expect("melt saga lookup")
+                .is_none(),
+            "internal settlement should complete and delete the melt saga"
+        );
+        assert_eq!(
+            localstore
+                .get_proofs_states(&input_ys)
+                .await
+                .expect("proof states"),
+            vec![Some(State::Spent), Some(State::Spent)]
+        );
+        assert!(
+            localstore
+                .get_federation_payment_observations(
+                    FederationPaymentObservationContext::MeltQuote,
+                    &melt_quote.to_string(),
+                )
+                .await
+                .expect("melt payment observations")
+                .is_empty(),
+            "internal settlement should not require a separate melt payment observation"
+        );
     }
 
     #[tokio::test]
