@@ -524,7 +524,7 @@ Tests and success criteria:
 - [x] Applying a swap with duplicate outputs fails.
 - [x] Applying operations in the same order on multiple DB instances produces identical materialized state.
 - [x] Federation swap pubsub notifications fire after commit.
-- [ ] Add broad post-commit pubsub tests for standalone mode and all federation operations.
+- [x] Add broad post-commit pubsub tests for standalone mode and all federation operations.
 
 ## Milestone 7: federated key-share signatory
 

@@ -523,15 +523,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 533 checked items and 56 remaining items. The full DoS review is now recorded, backed by restore-spam, oversized proof-content, consensus admission, REST admission, timeout, and invalid-operation alert gates.</span>
+          <span class="value">The implementation plan audit tracks 534 checked items and 55 remaining items. Federation mint quote creation, payment, and issuance now publish wallet-visible quote events after commit, backed by live subscription and source-order gates.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover federation DoS admission limits</span>
+          <span class="value">feat: publish federated mint quote events</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Mint and federation verifier tests now reject oversized proof secrets and witnesses before expensive validation, restore rejects requests above the output cap, and existing consensus/REST/timeout/invalid-operation gates were rerun.</span>
+          <span class="value">Federated mint quote lifecycle applies now emit `Unpaid`, `Paid`, and `Issued` quote events only after consensus state commits, and a source-order guard covers standalone plus federation pubsub publish sites.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -546,7 +546,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 533 checked entries and 56 remaining entries. The
+          checklist has 534 checked entries and 55 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -1494,6 +1494,10 @@
           <article class="item">
             <h3>Operation acceptance notifications ready</h3>
             <p>Public federation submissions now publish accepted operation responses into a shared notification table after local journal application, so handlers have a stable wait point for future asynchronous consensus backends.</p>
+          </article>
+          <article class="item">
+            <h3>Federated quote pubsub ready</h3>
+            <p>Federation mint quote creation, payment observations, and mint issuance now publish the same wallet-visible quote states as standalone minting after their consensus-backed database commits.</p>
           </article>
           <article class="item">
             <h3>Consensus finalization loop ready</h3>
@@ -3507,6 +3511,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --lib --features federation oversized_secret_and_witness_content -- --test-threads 1`, `cargo test -p cdk --lib restore_rejects_requests_above_max_outputs -- --test-threads 1`, `cargo test -p cdk --lib test_process_batch_mint_enforces_max_batch_size -- --test-threads 1`, `cargo test -p cdk-common --features federation oversized -- --test-threads 1`, `cargo test -p cdk-axum --features federation oversized -- --test-threads 1`, `cargo test -p cdk-axum --features federation overflow -- --test-threads 1`, `cargo test -p cdk-axum --features federation operation_submission_timeout -- --test-threads 1`, `cargo test -p cdk-axum --features federation peer_request_timeout -- --test-threads 1`, `cargo test -p cdk-axum --features federation invalid_operation -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite invalid_operation_alert -- --test-threads 1`, `cargo test -p cdk --lib --features federation federated_mint_connector_applies_configured_member_request_timeout -- --test-threads 1`, `cargo test -p cdk --lib --features federation federated_mint_connector_applies_configured_quote_status_timeout -- --test-threads 1`, and `cargo test -p cdk --lib --features federation federated_mint_connector_falls_back_when_primary_quote_member_stalls -- --test-threads 1` passed. The review covers huge witnesses, huge batches, restore spam, oversized consensus items, REST admission overflow, slow consensus/peer paths, repeated invalid-operation alerts, and wallet fanout timeouts.</td>
               <td>Keep any future transport or AlephBFT backend under the same bounded admission and timeout expectations.</td>
+            </tr>
+            <tr>
+              <td>Post-commit pubsub</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --lib pubsub_publish_sites_are_after_commit -- --test-threads 1`, `cargo test -p cdk --lib --features federation pubsub_publish_sites_are_after_commit -- --test-threads 1`, and `cargo test -p cdk --lib --features federation federation_mint_lifecycle_publishes_quote_events_after_commit -- --test-threads 1` passed. The runtime test subscribes before a federated mint quote is applied, then observes `Unpaid`, `Paid`, and `Issued` only after the corresponding accepted journal entries commit. The source-order guard covers standalone mint quote creation/payment/issuance, standalone swap and melt proof-state/quote notifications, and federation mint/swap publish sites.</td>
+              <td>Broaden live pubsub subscriber coverage if future operations gain new wallet-visible event types.</td>
             </tr>
             <tr>
               <td>Core federation flows</td>

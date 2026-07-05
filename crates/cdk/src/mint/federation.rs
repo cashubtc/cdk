@@ -26,9 +26,10 @@ use cdk_common::mint::{MeltQuote, MintQuote, Operation, OperationKind};
 use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
 use cdk_common::{
     Amount, BatchMintRequest, BlindSignature, BlindedMessage, CurrencyUnit, MeltQuoteRequest,
-    MeltRequest, MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest, MintResponse,
-    PaymentMethod, Proofs, ProofsMethods, PublicKey, QuoteId, RestoreRequest,
-    SpendingConditionVerification, State, SwapRequest, SwapResponse,
+    MeltRequest, MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse,
+    MintQuoteOnchainResponse, MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest,
+    MintResponse, NotificationPayload, PaymentMethod, Proofs, ProofsMethods, PublicKey, QuoteId,
+    RestoreRequest, SpendingConditionVerification, State, SwapRequest, SwapResponse,
 };
 use uuid::Uuid;
 
@@ -794,13 +795,47 @@ impl Mint {
                 ensure_mint_quote_matches(&existing, &quote)?;
             }
             None => {
-                tx.add_mint_quote(quote).await?;
+                tx.add_mint_quote(quote.clone()).await?;
             }
         }
 
         tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
             .await?;
         tx.commit().await?;
+
+        self.publish_federation_mint_quote_created(&quote)?;
+
+        Ok(())
+    }
+
+    fn publish_federation_mint_quote_created(&self, quote: &MintQuote) -> Result<(), Error> {
+        match quote.payment_method {
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11) => {
+                let response: MintQuoteBolt11Response<QuoteId> = quote.clone().into();
+                self.pubsub_manager
+                    .publish(NotificationPayload::MintQuoteBolt11Response(response));
+            }
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12) => {
+                let response: MintQuoteBolt12Response<QuoteId> = quote.clone().try_into()?;
+                self.pubsub_manager
+                    .publish(NotificationPayload::MintQuoteBolt12Response(response));
+            }
+            cdk_common::PaymentMethod::Custom(ref method) => {
+                if let Ok(response) = MintQuoteCustomResponse::try_from(quote.clone()) {
+                    self.pubsub_manager
+                        .publish(NotificationPayload::CustomMintQuoteResponse(
+                            method.clone(),
+                            response,
+                        ));
+                }
+            }
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Onchain) => {
+                let response: MintQuoteOnchainResponse<QuoteId> = quote.clone().try_into()?;
+                self.pubsub_manager
+                    .publish(NotificationPayload::MintQuoteOnchainResponse(response));
+            }
+        }
+
         Ok(())
     }
 
@@ -854,6 +889,7 @@ impl Mint {
             .get_mint_quote(&quote_id)
             .await?
             .ok_or(Error::UnknownQuote)?;
+        let mut paid_notification = None;
 
         if quote.payment_method != observation.method {
             return Err(Error::InvalidPaymentMethod);
@@ -883,11 +919,17 @@ impl Mint {
             });
             quote.add_payment(additional_amount, payment_id, None)?;
             tx.update_mint_quote(&mut quote).await?;
+            paid_notification = Some((quote.clone(), quote.amount_paid()));
         }
 
         tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
             .await?;
         tx.commit().await?;
+
+        if let Some((quote, amount_paid)) = paid_notification {
+            self.pubsub_manager.mint_quote_payment(&quote, amount_paid);
+        }
+
         Ok(())
     }
 
@@ -998,6 +1040,7 @@ impl Mint {
         let signature_share_records = FederationSignatureShareRecord::from_share_set(&share_set);
         tx.add_federation_signature_shares(&signature_share_records)
             .await?;
+        let mut issued_notifications = Vec::new();
 
         if signatures_present == 0 {
             let signatures = federation_share_signatures(share_set);
@@ -1019,6 +1062,7 @@ impl Mint {
                 MintQuoteState::Paid => {
                     quote.add_issuance(amount_issued)?;
                     tx.update_mint_quote(quote).await?;
+                    issued_notifications.push((quote.clone(), quote.amount_issued()));
                 }
                 MintQuoteState::Issued => {
                     if quote.amount_issued() < amount_issued {
@@ -1034,6 +1078,11 @@ impl Mint {
         tx.update_federation_operation_status(operation_id, FederationOperationStatus::Applied)
             .await?;
         tx.commit().await?;
+
+        for (quote, amount_issued) in issued_notifications {
+            self.pubsub_manager.mint_quote_issue(&quote, amount_issued);
+        }
+
         Ok(())
     }
 
@@ -2777,6 +2826,99 @@ mod tests {
             stored.created_time,
             super::federation_accepted_logical_time(&entry)
         );
+    }
+
+    #[tokio::test]
+    async fn federation_mint_lifecycle_publishes_quote_events_after_commit() {
+        let runtime_config = runtime_config();
+        let (mint, _) = federated_test_mint(runtime_config.clone()).await;
+        let mut journal = InMemoryFederationJournal::new();
+        let quote = QuoteId::new();
+        let mut subscription = mint
+            .pubsub_manager()
+            .subscribe(cdk_common::subscription::Params {
+                kind: cdk_common::nut17::Kind::Bolt11MintQuote,
+                filters: vec![quote.to_string()],
+                id: Arc::new(cdk_common::subscription::SubId::from(
+                    "federation-mint-lifecycle",
+                )),
+            })
+            .expect("subscribe to mint quote");
+
+        let quote_entry = appended_entry(
+            &mut journal,
+            runtime_config.mint_quote_operation(
+                quote.clone(),
+                bolt11_quote_request(1),
+                bolt11_quote_response(&quote, 1),
+            ),
+        );
+        persist_and_apply_entry(&mint, &quote_entry).await;
+
+        let created_event =
+            tokio::time::timeout(std::time::Duration::from_secs(1), subscription.recv())
+                .await
+                .expect("created quote event timeout")
+                .expect("created quote event");
+        match created_event.into_inner() {
+            cdk_common::NotificationPayload::MintQuoteBolt11Response(response) => {
+                assert_eq!(response.quote, quote);
+                assert_eq!(response.state, MintQuoteState::Unpaid);
+            }
+            payload => panic!("unexpected created quote payload: {payload:?}"),
+        }
+
+        let paid_entry = appended_entry(
+            &mut journal,
+            runtime_config.mint_quote_payment_observation(
+                quote.clone(),
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintQuoteState::Paid,
+                Amount::from(1),
+                Amount::ZERO,
+                Some("federation-mint-lifecycle-payment".to_string()),
+            ),
+        );
+        persist_and_apply_entry(&mint, &paid_entry).await;
+
+        let paid_event =
+            tokio::time::timeout(std::time::Duration::from_secs(1), subscription.recv())
+                .await
+                .expect("paid quote event timeout")
+                .expect("paid quote event");
+        match paid_event.into_inner() {
+            cdk_common::NotificationPayload::MintQuoteBolt11Response(response) => {
+                assert_eq!(response.quote, quote);
+                assert_eq!(response.state, MintQuoteState::Paid);
+            }
+            payload => panic!("unexpected paid quote payload: {payload:?}"),
+        }
+
+        let output = output_for_runtime(&runtime_config, b"federation mint lifecycle output");
+        let mint_entry = appended_entry(
+            &mut journal,
+            runtime_config
+                .mint_operation(MintInput::Single(MintRequest {
+                    quote: quote.clone(),
+                    outputs: vec![output],
+                    signature: None,
+                }))
+                .expect("mint operation"),
+        );
+        persist_and_apply_entry(&mint, &mint_entry).await;
+
+        let issued_event =
+            tokio::time::timeout(std::time::Duration::from_secs(1), subscription.recv())
+                .await
+                .expect("issued quote event timeout")
+                .expect("issued quote event");
+        match issued_event.into_inner() {
+            cdk_common::NotificationPayload::MintQuoteBolt11Response(response) => {
+                assert_eq!(response.quote, quote);
+                assert_eq!(response.state, MintQuoteState::Issued);
+            }
+            payload => panic!("unexpected issued quote payload: {payload:?}"),
+        }
     }
 
     #[test]

@@ -1503,6 +1503,22 @@ mod tests {
         );
     }
 
+    fn assert_contains_in_order(source: &str, first: &str, second: &str) {
+        let first_index = source
+            .find(first)
+            .unwrap_or_else(|| panic!("source must contain first marker `{first}`"));
+        let second_offset = source[first_index + first.len()..]
+            .find(second)
+            .unwrap_or_else(|| {
+                panic!("source must contain second marker `{second}` after `{first}`")
+            });
+        let second_index = first_index + first.len() + second_offset;
+        assert!(
+            first_index < second_index,
+            "second marker must appear after first marker"
+        );
+    }
+
     #[test]
     fn direct_signing_paths_are_reviewed_and_allowlisted() {
         let mint_mod = source_before_cfg_tests(include_str!("mod.rs"));
@@ -1665,6 +1681,94 @@ mod tests {
             rpc_client,
             ".blind_sign(tonic::Request::new(req))",
             1,
+        );
+    }
+
+    #[test]
+    fn pubsub_publish_sites_are_after_commit() {
+        let issue_mint = source_before_cfg_tests(include_str!("issue/mod.rs"));
+        assert_contains_in_order(
+            issue_mint,
+            "tx.commit().await?;\n\n            if payment_method.is_bolt11()",
+            "self.pubsub_manager\n                    .publish(NotificationPayload::MintQuoteBolt11Response(res));",
+        );
+        assert_contains_in_order(
+            issue_mint,
+            "tx.commit().await?;\n\n            // Publish notification AFTER transaction commits",
+            "self.pubsub_manager.mint_quote_payment(&quote, amount_paid);",
+        );
+        assert_contains_in_order(
+            issue_mint,
+            "tx.commit().await?;\n\n            let localstore = Arc::clone(&self.localstore);",
+            "pubsub_manager.mint_quote_issue(mint_quote, mint_quote.amount_issued());",
+        );
+
+        let swap_saga = include_str!("swap/swap_saga/mod.rs");
+        assert_contains_in_order(
+            swap_saga,
+            "tx.commit().await?;\n        // Publish proof state changes\n        for pk in &ys",
+            "self.pubsub.proof_state((*pk, State::Pending));",
+        );
+        assert_contains_in_order(
+            swap_saga,
+            "tx.commit().await?;\n        // Publish proof state changes\n        for pk in &self.state_data.ys",
+            "self.pubsub.proof_state((*pk, State::Spent));",
+        );
+
+        let melt_saga = include_str!("melt/melt_saga/mod.rs");
+        assert_contains_in_order(
+            melt_saga,
+            "tx.commit().await?;\n        // Publish proof state changes\n        for pk in input_ys.iter()",
+            "self.pubsub.proof_state((*pk, State::Pending));",
+        );
+        assert_contains_in_order(
+            melt_saga,
+            "tx.commit().await?;\n        // Publish proof state changes\n        for pk in input_ys.iter()",
+            ".melt_quote_status(&quote, None, None, MeltQuoteState::Pending);",
+        );
+        assert_contains_in_order(
+            melt_saga,
+            "tx.commit().await?;\n        self.pubsub",
+            ".mint_quote_payment(&mint_quote, mint_quote.amount_paid());",
+        );
+
+        let melt_shared = include_str!("melt/shared.rs");
+        assert_contains_in_order(
+            melt_shared,
+            "tx.commit().await?;\n\n    // Publish proof state changes\n    if proofs_recovered",
+            "pubsub.proof_state((*pk, State::Unspent));",
+        );
+        assert_contains_in_order(
+            melt_shared,
+            "tx.commit().await?;\n\n    // Publish proof state changes\n    for pk in input_ys.iter()",
+            "pubsub.proof_state((*pk, State::Spent));",
+        );
+        assert_contains_in_order(
+            melt_shared,
+            "// Commit TX2 (change signatures + operation record + melt request + saga cleanup)\n    tx.commit().await?;",
+            "pubsub.melt_quote_status(",
+        );
+
+        let federation = source_before_cfg_tests(include_str!("federation.rs"));
+        assert_contains_in_order(
+            federation,
+            "tx.commit().await?;\n\n        self.publish_federation_mint_quote_created(&quote)?;",
+            "Ok(())",
+        );
+        assert_contains_in_order(
+            federation,
+            "tx.commit().await?;\n\n        if let Some((quote, amount_paid)) = paid_notification",
+            "self.pubsub_manager.mint_quote_payment(&quote, amount_paid);",
+        );
+        assert_contains_in_order(
+            federation,
+            "tx.commit().await?;\n\n        for (quote, amount_issued) in issued_notifications",
+            ".mint_quote_issue(&quote, amount_issued);",
+        );
+        assert_contains_in_order(
+            federation,
+            "tx.commit().await?;\n\n        for y in input_ys",
+            "self.pubsub_manager.proof_state((y, State::Spent));",
         );
     }
 
