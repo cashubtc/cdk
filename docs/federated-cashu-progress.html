@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 406 checked items and 107 remaining items. The federation liveness bug behind the CPU-bound smoke loop has been traced through wallet retry, member fanout, restore quorum, melt-status quorum, private REST status, and blocking HTTP paths, with focused regressions and the local federation smoke passing.</span>
+          <span class="value">The implementation plan audit now tracks 407 checked items and 106 remaining items. Wallet federation member-call policy is now explicit: fallback timeout, quote-status member timeout, and fanout concurrency are configurable while the default constructor preserves existing behavior.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: resolve federation pending melt liveness</span>
+          <span class="value">feat: configure federation wallet liveness policy</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">State-changing federation fanout now drains started member calls instead of cancelling post-threshold writes, restore and melt-status aggregation choose a matching threshold group, melt quote expiry skew is no longer treated as consensus-critical wallet status, and pending melt finalization surfaces unrecoverable recovery failures instead of silently retrying.</span>
+          <span class="value">`FederatedMintConnectorConfig` now validates wallet-side timeout and concurrency policy, `new_with_config` applies it, quote-status polling honors per-member timeout, and state-changing fanout honors bounded concurrency while still calling every member.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Repeat larger roster and Postgres-backed live smokes, then resume profiling seven-member mint request fanout now that paid and failed pending-melt recovery converge instead of spinning.</span>
+          <span class="value">Repeat larger roster and Postgres-backed live smokes with the configurable wallet policy in place, then return to seven-member mint request fanout profiling.</span>
         </div>
       </aside>
     </header>
@@ -541,7 +541,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 406 checked entries and 107 remaining entries. The
+          checklist has 407 checked entries and 106 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -782,7 +782,7 @@
         <div class="stack">
           <article class="item">
             <h3>Plan audit refreshed</h3>
-            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 406 checked items and 107 explicit next items.</p>
+            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 407 checked items and 106 explicit next items.</p>
           </article>
           <article class="item">
             <h3>DKG probe generation made opt-in</h3>
@@ -1369,6 +1369,10 @@
           <article class="item">
             <h3>Payment observations deduplicated</h3>
             <p>Mint and melt quote status handlers now submit federation payment observations only for terminal or paid states that have not already been recorded, avoiding repeated consensus submissions during polling.</p>
+          </article>
+          <article class="item">
+            <h3>Wallet liveness policy configurable</h3>
+            <p>The federation wallet connector now exposes validated policy for first-healthy fallback timeout, quote-status member timeout, and bounded fanout concurrency without changing the default constructor path.</p>
           </article>
           <article class="item">
             <h3>Federation status metrics emitted</h3>
@@ -2820,7 +2824,7 @@
             <tr>
               <td>Wallet federation signing fanout</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo test -p cdk --features wallet,mint,federation federated_mint_connector_fetches_lnurl -- --test-threads 1` passed the LNURL pay-request and invoice first-healthy-member fallback regressions. `cargo test -p cdk --features wallet,mint,federation federated_mint_connector_fans_out_mint_members_concurrently -- --test-threads 1` passed the barrier-backed signing fanout regression. Focused mint, batch mint, and melt quote-status tests passed threshold-view and primary-fallback coverage, mint and melt quote creation, mint-info reads, and LNURL pay/invoice helpers now have first-healthy-member fallback coverage, definitive quote errors stop retry, and melt-status recovery aggregates persisted change shares. `cargo test -p cdk --features wallet,mint,federation federated_mint_connector -- --test-threads 1` passed all 35 wallet federation connector tests, covering mint-info fallback, LNURL fallback, quote creation fallback, definitive quote-error handling, mint, batch mint, swap, melt, restore, keyset validation, check-state quorum views, HTTP wrapper rotation, threshold quote-status reads, primary fallback, auth wallet propagation, and status change aggregation.</td>
+              <td>`cargo test -p cdk --features federation federated_mint_connector_ -- --test-threads 1` passed all 44 wallet federation connector tests after the policy refactor, including invalid policy rejection, configured fallback timeout, configured quote-status timeout, bounded state-changing fanout, bad advertisement rejection, slow extra keyset-member tolerance, mint, batch mint, swap, melt, restore, check-state, HTTP wrapper rotation, primary fallback, auth wallet propagation, and status change aggregation. `cargo check -p cdk --features wallet,mint,federation`, `cargo fmt --all -- --check`, and `git diff --check` passed.</td>
               <td>Move remaining quote visibility checks from best-effort status reads into explicit consensus-backed readiness once the production ordering backend is chosen.</td>
             </tr>
             <tr>

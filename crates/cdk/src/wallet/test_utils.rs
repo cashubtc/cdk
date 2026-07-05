@@ -467,6 +467,8 @@ pub struct MockMintConnector {
     pub post_mint_quote_delay: Mutex<Option<Duration>>,
     /// Response for get_mint_quote_status calls
     pub mint_quote_status_response: Mutex<Option<Result<MintQuoteBolt11Response<String>, Error>>>,
+    /// Optional delay used by tests to simulate a slow mint quote status member.
+    pub mint_quote_status_delay: Mutex<Option<Duration>>,
     /// Response for post_batch_check_mint_quote_status calls
     pub batch_mint_quote_status_response:
         Mutex<Option<Result<Vec<MintQuoteResponse<String>>, Error>>>,
@@ -539,6 +541,7 @@ impl MockMintConnector {
             post_mint_quote_response: Mutex::new(None),
             post_mint_quote_delay: Mutex::new(None),
             mint_quote_status_response: Mutex::new(None),
+            mint_quote_status_delay: Mutex::new(None),
             batch_mint_quote_status_response: Mutex::new(None),
             post_melt_quote_response: Mutex::new(None),
             melt_quote_status_response: Mutex::new(None),
@@ -651,6 +654,10 @@ impl MockMintConnector {
         response: Result<MintQuoteBolt11Response<String>, Error>,
     ) {
         *self.mint_quote_status_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn set_mint_quote_status_delay(&self, delay: Duration) {
+        *self.mint_quote_status_delay.lock().unwrap() = Some(delay);
     }
 
     pub fn set_post_mint_quote_response(&self, response: Result<MintQuoteResponse<String>, Error>) {
@@ -862,6 +869,11 @@ impl MintConnector for MockMintConnector {
         _method: PaymentMethod,
         _quote_id: &str,
     ) -> Result<MintQuoteResponse<String>, Error> {
+        let delay = *self.mint_quote_status_delay.lock().unwrap();
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
+
         let response = self
             .mint_quote_status_response
             .lock()
