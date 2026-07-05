@@ -1,9 +1,8 @@
-//! Deterministic federation journal scaffold.
+//! Deterministic federation journal.
 //!
-//! This in-memory journal is intentionally small: it proves the data model for
-//! consensus-accepted operation order, duplicate handling, conflict detection,
-//! status updates, order digests, and catch-up ranges before storage backends
-//! persist the same entry shape.
+//! This in-memory journal models consensus-accepted operation order, duplicate
+//! handling, conflict detection, status updates, order digests, and catch-up
+//! ranges. Durable storage backends persist the same entry shape.
 
 use core::fmt;
 use core::str::FromStr;
@@ -499,7 +498,7 @@ impl InMemoryFederationJournal {
 
     /// Return a deterministic digest for consensus-visible state.
     ///
-    /// This scaffold is derived from the accepted operation sequence and
+    /// This digest is derived from the accepted operation sequence and
     /// intentionally excludes local application status. Durable DB-state
     /// digests can extend this API without changing operator status payloads.
     #[must_use]

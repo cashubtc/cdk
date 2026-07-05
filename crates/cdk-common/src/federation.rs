@@ -2933,7 +2933,7 @@ impl FederationConfig {
         Ok(())
     }
 
-    /// Validate melt change outputs, allowing amount-zero placeholders.
+    /// Validate melt change outputs, allowing zero-amount change outputs.
     pub fn validate_blinded_change_outputs(&self, outputs: &[BlindedMessage]) -> Result<()> {
         for output in outputs {
             self.validate_blinded_change_output(output)?;
@@ -2975,7 +2975,7 @@ impl FederationConfig {
     fn validate_blinded_output_with_amount_policy(
         &self,
         output: &BlindedMessage,
-        allow_zero_amount_placeholder: bool,
+        allow_zero_amount_change_output: bool,
         require_active_keyset: bool,
     ) -> Result<&FederatedKeyset> {
         if output.keyset_id.get_version() != KeySetVersion::Version02 {
@@ -2996,7 +2996,7 @@ impl FederationConfig {
                 keyset_id: keyset.id,
             });
         }
-        if output.amount != Amount::ZERO || !allow_zero_amount_placeholder {
+        if output.amount != Amount::ZERO || !allow_zero_amount_change_output {
             if !keyset.aggregate_keys.contains_key(&output.amount) {
                 return Err(FederationError::UnknownFederatedKeysetAmount {
                     keyset_id: keyset.id,
@@ -3005,7 +3005,7 @@ impl FederationConfig {
             }
         }
         if output.amount == Amount::ZERO
-            && allow_zero_amount_placeholder
+            && allow_zero_amount_change_output
             && keyset.aggregate_keys.is_empty()
         {
             return Err(FederationError::UnknownFederatedKeysetAmount {

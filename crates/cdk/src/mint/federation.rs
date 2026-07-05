@@ -1,9 +1,8 @@
-//! Federation mode scaffolding for CDK mints.
+//! Federation mode support for CDK mints.
 //!
-//! This module is intentionally small at first. Later federation milestones will
-//! attach consensus, peer networking, and threshold signing behavior to member
-//! mode. Until then, the default standalone mode preserves current mint
-//! behavior.
+//! This module applies accepted federation operations to local mint state,
+//! validates aggregate BLS keysets, and produces member signature shares while
+//! preserving standalone mint behavior outside federation mode.
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -47,7 +46,7 @@ pub enum FederationMode {
 }
 
 impl FederationMode {
-    /// Returns true when this mode is the federation member placeholder.
+    /// Returns true when this mint runs as a federation member.
     #[must_use]
     pub fn is_member(self) -> bool {
         matches!(self, Self::Member)

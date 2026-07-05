@@ -518,15 +518,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 448 checked items and 139 remaining items. Federation payment documentation now describes `development_single_observation` as a backend-neutral local development policy, with fakewallet only as one smoke/regtest backend.</span>
+          <span class="value">The implementation plan audit now tracks 450 checked items and 137 remaining items. Stale `scaffold`, `placeholder`, and `MVP` wording is removed from production federation comments; remaining production-module hits are test-only placeholder fixtures.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: clarify federation payment backend policy</span>
+          <span class="value">docs: remove stale federation scaffold wording</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The payment trust model and mintd federation config comments now use `development_single_observation` for local single-observation finality and keep fakewallet framed as replaceable development tooling.</span>
+          <span class="value">Production federation comments now describe the implemented mint support, deterministic consensus boundary, and durable journal shape without old MVP/scaffold labels.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -541,7 +541,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 448 checked entries and 139 remaining entries. The
+          checklist has 450 checked entries and 137 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -781,6 +781,10 @@
         <h2>Unlocked</h2>
         <div class="stack">
           <article class="item">
+            <h3>Stale scaffold wording removed</h3>
+            <p>Production federation comments now describe the current mint support, in-memory consensus boundary, journal, and peer status behavior without old scaffold or MVP labels.</p>
+          </article>
+          <article class="item">
             <h3>Payment policy docs cleaned</h3>
             <p>The payment trust model and mintd config comments now name `development_single_observation` as the local dev policy and describe fakewallet only as one replaceable smoke/regtest backend.</p>
           </article>
@@ -798,7 +802,7 @@
           </article>
           <article class="item">
             <h3>Plan audit refreshed</h3>
-            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 448 checked items and 139 explicit next items.</p>
+            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 450 checked items and 137 explicit next items.</p>
           </article>
           <article class="item">
             <h3>Router startup replay proven</h3>
@@ -2918,6 +2922,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation router_startup_replays_accepted_journal_before_serving_local_status -- --test-threads 1` proved the router startup path used by mintd replays a durable accepted mint-quote journal entry before signed local-status can report authoritative materialized state. `cargo test -p cdk-axum --features federation peer_sync -- --test-threads 1`, `cargo test -p cdk-axum --features federation session_outcome -- --test-threads 1`, and the full escalated `cargo test -p cdk-axum --features federation -- --test-threads 1` passed after peer sync was changed to collect only unverified session-outcome suffixes.</td>
               <td>Use the startup replay proof as the recovery gate while cleaning fakewallet-specific federation semantics out of the production payment-observation path.</td>
+            </tr>
+            <tr>
+              <td>Stale federation wording cleanup</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`rg "scaffold|placeholder|MVP"` across production federation modules now reports only test-only placeholder fixtures for zero-amount change outputs and trusted-dealer argument validation. Production comments now name the in-memory consensus boundary, deterministic journal, peer status, and mint federation support without scaffold/MVP labels. `cargo test -p cdk-common --features federation zero_amount_change -- --test-threads 1`, `cargo test -p cdk --features federation runtime_config_accepts_zero_amount_melt_change_placeholders -- --test-threads 1`, `cargo fmt --all -- --check`, and `git diff --check` passed.</td>
+              <td>Continue the remaining fakewallet reference audit and storage-backed process coverage.</td>
             </tr>
             <tr>
               <td>Payment policy docs clarified</td>

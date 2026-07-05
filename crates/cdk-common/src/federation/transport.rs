@@ -823,7 +823,7 @@ impl FederationPeerStatus {
         self
     }
 
-    /// Create a peer status snapshot from the in-memory journal scaffold.
+    /// Create a peer status snapshot from the in-memory journal.
     #[must_use]
     pub fn from_journal(
         federation_id: FederationId,

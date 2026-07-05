@@ -1,9 +1,9 @@
-//! Deterministic local consensus scaffold.
+//! Deterministic local consensus boundary.
 //!
-//! This is not a quorum protocol. It is the first consensus-facing boundary:
-//! validate federation identity, append operations to the journal, and expose
-//! the same status/catch-up/submit payloads used by private REST. Real peer
-//! networking can replace the decision source while keeping this API shape.
+//! This is not a production quorum protocol. It validates federation identity,
+//! appends operations to the accepted journal, and exposes the same
+//! status/catch-up/submit payloads used by private REST. Production ordering
+//! backends can replace the decision source while keeping this API shape.
 
 use core::fmt;
 use core::str::FromStr;
@@ -121,7 +121,7 @@ impl FederationConsensusModuleFact {
     }
 }
 
-/// Generic consensus item placeholder for future item classes.
+/// Generic consensus item for forward-compatible item classes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederationConsensusDefaultItem {
     /// Item format version.
@@ -304,7 +304,7 @@ pub trait FederationConsensusEngine: fmt::Debug + Send {
 
 /// Runtime-owned consensus engine.
 ///
-/// CDK keeps this small enum instead of exposing the in-memory scaffold through
+/// CDK keeps this small enum instead of exposing the in-memory backend through
 /// server state. That lets Axum and storage code depend on the consensus engine
 /// contract while future engines can be added behind this wrapper.
 #[derive(Debug, Clone)]
@@ -316,7 +316,7 @@ pub struct FederationConsensusRuntime {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum FederationConsensusBackendKind {
-    /// Deterministic local append-log backend for tests, local smoke, and MVP wiring.
+    /// Deterministic local append-log backend for tests and local smoke.
     #[default]
     InMemory,
     /// Future AlephBFT-backed production ordering backend.
@@ -366,7 +366,7 @@ enum FederationConsensusRuntimeBackend {
 }
 
 impl FederationConsensusRuntime {
-    /// Create an in-memory runtime for deterministic tests and local MVP use.
+    /// Create an in-memory runtime for deterministic tests and local use.
     #[must_use]
     pub fn in_memory(federation_id: FederationId, member_id: MemberId) -> Self {
         Self {
@@ -801,10 +801,9 @@ impl InMemoryFederationConsensusNetwork {
 
 /// Backend-neutral operation adapter used by consensus ordering engines.
 ///
-/// The MVP implementation dispatches into the deterministic in-memory
-/// simulator. A production BFT backend should implement the same admission,
-/// dispatch, and finalized-response boundary without changing public mint
-/// handlers.
+/// The in-memory implementation dispatches into the deterministic simulator. A
+/// production BFT backend should implement the same admission, dispatch, and
+/// finalized-response boundary without changing public mint handlers.
 pub trait FederationConsensusBackendAdapter: fmt::Debug + Send {
     /// Return the backend kind used by this adapter.
     fn backend_kind(&self) -> FederationConsensusBackendKind;
@@ -939,10 +938,9 @@ impl FederationConsensusBackendAdapter for FederationConsensusBackendAdapterRunt
 /// Operation-focused adapter between the pending consensus item queue and the
 /// deterministic multi-member simulator.
 ///
-/// This is still an in-memory test/MVP adapter. Its purpose is to keep public
-/// submit paths, pending consensus item admission, and finalized operation
-/// delivery connected through one narrow surface before a real BFT backend is
-/// plugged in.
+/// This in-memory adapter keeps public submit paths, pending consensus item
+/// admission, and finalized operation delivery connected through one narrow
+/// surface while production BFT backends are added behind the same trait.
 #[derive(Debug, Clone)]
 pub struct InMemoryFederationConsensusAdapter {
     local_member: MemberId,
