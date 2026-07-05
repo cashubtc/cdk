@@ -1299,7 +1299,8 @@ mod tests {
     use crate::{
         mint_url::MintUrl, BatchMintRequest, BlindedMessage, CurrencyUnit, Id,
         MeltQuoteCustomRequest, MintQuoteBolt11Request, MintQuoteBolt11Response,
-        MintQuoteCustomResponse, MintQuoteResponse, Proof, PublicKey, SecretKey,
+        MintQuoteCustomResponse, MintQuoteResponse, P2PKWitness, Proof, PublicKey, SecretKey,
+        Witness,
     };
 
     fn federation_id() -> FederationId {
@@ -1387,6 +1388,12 @@ mod tests {
             crate::secret::Secret::new(secret),
             public_key("02c97ee3d1db41cf0a3ddb601724be8711a032950811bf326f8219c50c4808d3cd"),
         )
+    }
+
+    fn p2pk_witness(marker: &str) -> Witness {
+        Witness::P2PKWitness(P2PKWitness {
+            signatures: vec![marker.repeat(64)],
+        })
     }
 
     fn mint_operation(quote: &str, outputs: Vec<BlindedMessage>) -> FederationOperation {
@@ -1715,6 +1722,34 @@ mod tests {
             second.canonical_bytes().expect("canonical bytes")
         );
         assert_eq!(
+            first.operation_id().expect("operation id"),
+            second.operation_id().expect("operation id")
+        );
+    }
+
+    #[test]
+    fn operation_id_tracks_input_witness_mutation() {
+        let mut first_proof = proof(10, "witness-bound-secret");
+        first_proof.witness = Some(p2pk_witness("11"));
+        let mut second_proof = first_proof.clone();
+        second_proof.witness = Some(p2pk_witness("22"));
+
+        let outputs = vec![output(
+            10,
+            "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39",
+        )];
+        let first = envelope(FederationOperation::Swap(FederationSwapOperation {
+            request: SwapRequest::new(vec![first_proof], outputs.clone()),
+        }));
+        let second = envelope(FederationOperation::Swap(FederationSwapOperation {
+            request: SwapRequest::new(vec![second_proof], outputs),
+        }));
+
+        assert_ne!(
+            first.canonical_bytes().expect("canonical bytes"),
+            second.canonical_bytes().expect("canonical bytes")
+        );
+        assert_ne!(
             first.operation_id().expect("operation id"),
             second.operation_id().expect("operation id")
         );

@@ -518,15 +518,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 458 checked items and 129 remaining items. Threshold BLS now has an explicit 4-of-7 aggregation regression for the release-shape quorum.</span>
+          <span class="value">The implementation plan audit now tracks 459 checked items and 128 remaining items. Canonical federation operation IDs now prove input witnesses are bound into the operation hash.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover four of seven threshold bls</span>
+          <span class="value">test: cover witness-bound operation hashes</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Two different four-share quorums from a seven-member threshold BLS keyset now aggregate to the same blind signature and aggregate public key.</span>
+          <span class="value">Changing a swap input proof witness now changes both canonical operation bytes and the federation operation ID before consensus signing.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -541,7 +541,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 458 checked entries and 129 remaining entries. The
+          checklist has 459 checked entries and 128 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -781,6 +781,10 @@
         <h2>Unlocked</h2>
         <div class="stack">
           <article class="item">
+            <h3>Witness-bound hashes</h3>
+            <p>Canonical swap operation tests now prove that mutating an input proof witness changes both the serialized consensus envelope and the operation ID used before signing.</p>
+          </article>
+          <article class="item">
             <h3>4-of-7 BLS proven</h3>
             <p>The BLS threshold tests now include a literal four-of-seven keyset, two independent four-share quorums, share verification, aggregate signature equality, pairing verification, and aggregate public-key interpolation.</p>
           </article>
@@ -818,7 +822,7 @@
           </article>
           <article class="item">
             <h3>Plan audit refreshed</h3>
-            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 458 checked items and 129 explicit next items.</p>
+            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 459 checked items and 128 explicit next items.</p>
           </article>
           <article class="item">
             <h3>Router startup replay proven</h3>
@@ -2938,6 +2942,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation router_startup_replays_accepted_journal_before_serving_local_status -- --test-threads 1` proved the router startup path used by mintd replays a durable accepted mint-quote journal entry before signed local-status can report authoritative materialized state. `cargo test -p cdk-axum --features federation peer_sync -- --test-threads 1`, `cargo test -p cdk-axum --features federation session_outcome -- --test-threads 1`, and the full escalated `cargo test -p cdk-axum --features federation -- --test-threads 1` passed after peer sync was changed to collect only unverified session-outcome suffixes.</td>
               <td>Use the startup replay proof as the recovery gate while cleaning fakewallet-specific federation semantics out of the production payment-observation path.</td>
+            </tr>
+            <tr>
+              <td>Witness-bound operation hashes</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation operation_id_tracks_input_witness_mutation -- --test-threads 1` passed, proving a mutated input proof witness changes the canonical federation operation bytes and operation ID.</td>
+              <td>Carry the same transcript-binding discipline into the remaining NUT-20, P2PK, HTLC, and SIG_ALL canonical-transcript tests.</td>
             </tr>
             <tr>
               <td>4-of-7 threshold BLS aggregation</td>
