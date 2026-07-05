@@ -87,8 +87,8 @@ Current confirmed shape:
 
 - Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes, in-memory consensus boundary, private REST peer envelopes, federation journal persistence, mint/swap/melt/restore/check-state apply paths, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
 - Partial or intentionally deferred areas: production BFT ordering, AlephBFT integration, Iroh/NAT traversal, exact deterministic binary operation encoding, a separate `federation_signature_share` table, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
-- Test-suite status: focused federation replay, peer-sync, session-outcome, trusted-dealer setup, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, fakewallet coupling audit, configurable timeout/retry policy tests, 100+ operation offline catch-up, and `cdk-axum` federation tests were run for the latest checkpoints; the full workspace test suite remains open.
-- Latest checkpoint: deterministic multi-node consensus now has an explicit 105-operation offline catch-up regression proving a member can recover across the default 100-entry catch-up page boundary and converge to the same accepted operation order.
+- Test-suite status: focused federation replay, peer-sync, session-outcome, trusted-dealer setup, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, fakewallet coupling audit, configurable timeout/retry policy tests, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, and `cdk-axum` federation tests were run for the latest checkpoints; the full workspace test suite remains open.
+- Latest checkpoint: threshold BLS now has an explicit 4-of-7 aggregation regression proving two different four-share quorums interpolate to the same blind signature and aggregate public key.
 
 ## Key observations
 
@@ -343,7 +343,7 @@ Tests and success criteria:
 - [x] Unit test 1-of-1 threshold produces the same final signature as the existing standalone BLS signer.
 - [x] Unit test 3-of-5 aggregate signatures verify under aggregate public keys.
 - [x] Unit test multi-threshold and order-permutation aggregation, including a 4-of-6 case.
-- [ ] Add an explicit 4-of-7 aggregate signature test if that exact threshold/member count remains a release criterion.
+- [x] Add an explicit 4-of-7 aggregate signature test if that exact threshold/member count remains a release criterion.
 - [x] Unit test any valid threshold subset aggregates to the same final signature.
 - [x] Unit test insufficient shares cannot aggregate.
 - [x] Unit test duplicate signer IDs are rejected.

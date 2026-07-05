@@ -1254,6 +1254,57 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[test]
+    fn test_threshold_bls_four_of_seven_aggregates_valid_quorums() {
+        let coefficients = vec![bls_key(17), bls_key(19), bls_key(23), bls_key(29)];
+        let keyset = trusted_dealer_keygen(&coefficients, &signer_ids(&[1, 2, 3, 4, 5, 6, 7]))
+            .expect("keyset");
+        let blinded_message = BlsG1PublicKey::hash_to_curve(b"threshold four of seven");
+
+        let shares = keyset
+            .secret_shares()
+            .iter()
+            .map(|share| share.blind_sign_share(&blinded_message))
+            .collect::<Vec<_>>();
+        for (share, public_share) in shares.iter().zip(keyset.public_shares()) {
+            assert!(
+                verify_blind_signature_share(share, &blinded_message, public_share)
+                    .expect("share verification result")
+            );
+        }
+
+        let subset_a = [shares[0], shares[2], shares[4], shares[6]];
+        let subset_b = [shares[1], shares[3], shares[5], shares[6]];
+        let aggregate_a =
+            aggregate_blind_signature_shares(keyset.threshold(), &subset_a).expect("signature");
+        let aggregate_b =
+            aggregate_blind_signature_shares(keyset.threshold(), &subset_b).expect("signature");
+        let direct_signature = blinded_message.mul(&coefficients[0]);
+
+        assert_eq!(keyset.threshold(), 4);
+        assert_eq!(aggregate_a, direct_signature);
+        assert_eq!(aggregate_b, direct_signature);
+        assert_eq!(aggregate_a, aggregate_b);
+        assert!(verify_blind_signature_pairing(
+            &aggregate_a,
+            &blinded_message,
+            &keyset.aggregate_public_key()
+        ));
+
+        let public_subset = [
+            keyset.public_shares()[0],
+            keyset.public_shares()[2],
+            keyset.public_shares()[4],
+            keyset.public_shares()[6],
+        ];
+        assert_eq!(
+            aggregate_public_key_shares(keyset.threshold(), &public_subset)
+                .expect("aggregate public key"),
+            keyset.aggregate_public_key()
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
     fn test_threshold_bls_subsets_and_order_permutations_match() {
         let cases = [
             (1usize, vec![bls_key(2)], vec![1u16, 2, 3]),
