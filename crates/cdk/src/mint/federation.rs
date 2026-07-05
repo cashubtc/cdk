@@ -1723,9 +1723,11 @@ fn mint_quote_state_label(state: MintQuoteState) -> &'static str {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap, HashSet};
+    use std::pin::Pin;
     use std::str::FromStr;
     use std::sync::Arc;
 
+    use async_trait::async_trait;
     use cdk_common::common::FeeReserve;
     use cdk_common::database::mint::SagaDatabase;
     use cdk_common::database::{
@@ -1745,6 +1747,11 @@ mod tests {
     use cdk_common::mint_url::MintUrl;
     use cdk_common::nuts::nut00::KnownMethod;
     use cdk_common::nuts::nut01::{verify_blind_signature_share, BlsG1PublicKey, BlsSecretKey};
+    use cdk_common::payment::{
+        self, Bolt11Settings, CreateIncomingPaymentResponse, DynMintPayment, Event,
+        IncomingPaymentOptions, MakePaymentResponse, MintPayment, OutgoingPaymentOptions,
+        PaymentIdentifier, PaymentQuoteResponse, SettingsResponse, WaitPaymentResponse,
+    };
     use cdk_common::quote_id::QuoteId;
     use cdk_common::secret::Secret;
     use cdk_common::{
@@ -1883,9 +1890,6 @@ mod tests {
     async fn federated_test_mint(
         runtime_config: FederationRuntimeConfig,
     ) -> (Mint, Arc<MintSqliteDatabase>) {
-        let localstore = Arc::new(memory::empty().await.expect("mint db"));
-        let mut builder =
-            MintBuilder::new(localstore.clone()).with_federation_config(runtime_config);
         let fake_wallet = cdk_fake_wallet::FakeWallet::new(
             FeeReserve {
                 min_fee_reserve: Amount::from(1),
@@ -1896,12 +1900,22 @@ mod tests {
             0,
             CurrencyUnit::Sat,
         );
+        federated_test_mint_with_payment_processor(runtime_config, Arc::new(fake_wallet)).await
+    }
+
+    async fn federated_test_mint_with_payment_processor(
+        runtime_config: FederationRuntimeConfig,
+        payment_processor: DynMintPayment,
+    ) -> (Mint, Arc<MintSqliteDatabase>) {
+        let localstore = Arc::new(memory::empty().await.expect("mint db"));
+        let mut builder =
+            MintBuilder::new(localstore.clone()).with_federation_config(runtime_config);
         builder
             .add_payment_processor(
                 CurrencyUnit::Sat,
                 PaymentMethod::Known(KnownMethod::Bolt11),
                 MintMeltLimits::new(1, 10_000),
-                Arc::new(fake_wallet),
+                payment_processor,
             )
             .await
             .expect("payment processor");
@@ -1911,6 +1925,122 @@ mod tests {
             .expect("mint");
 
         (mint, localstore)
+    }
+
+    struct BackendAgnosticPaymentProcessor;
+
+    #[async_trait]
+    impl MintPayment for BackendAgnosticPaymentProcessor {
+        type Err = payment::Error;
+
+        async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+            Ok(SettingsResponse {
+                unit: CurrencyUnit::Sat.to_string(),
+                bolt11: Some(Bolt11Settings {
+                    mpp: false,
+                    amountless: false,
+                    invoice_description: false,
+                }),
+                bolt12: None,
+                onchain: None,
+                custom: HashMap::new(),
+            })
+        }
+
+        async fn create_incoming_payment_request(
+            &self,
+            _options: IncomingPaymentOptions,
+        ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+
+        async fn get_payment_quote(
+            &self,
+            unit: &CurrencyUnit,
+            options: OutgoingPaymentOptions,
+        ) -> Result<PaymentQuoteResponse, Self::Err> {
+            match options {
+                OutgoingPaymentOptions::Bolt11(options) => {
+                    let amount_msat = options.bolt11.amount_milli_satoshis().ok_or_else(|| {
+                        payment::Error::Custom(
+                            "test backend requires amount-bearing Bolt11 invoices".to_string(),
+                        )
+                    })?;
+                    let amount = Amount::new(amount_msat, CurrencyUnit::Msat).convert_to(unit)?;
+                    Ok(PaymentQuoteResponse {
+                        request_lookup_id: Some(PaymentIdentifier::PaymentHash(
+                            *options.bolt11.payment_hash().as_ref(),
+                        )),
+                        amount,
+                        fee: Amount::new(1, unit.clone()),
+                        state: MeltQuoteState::Unpaid,
+                        extra_json: None,
+                        estimated_blocks: None,
+                        fee_options: None,
+                    })
+                }
+                _ => Err(payment::Error::UnsupportedPaymentOption),
+            }
+        }
+
+        async fn make_payment(
+            &self,
+            unit: &CurrencyUnit,
+            options: OutgoingPaymentOptions,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            match options {
+                OutgoingPaymentOptions::Bolt11(options) => Ok(MakePaymentResponse {
+                    payment_lookup_id: PaymentIdentifier::PaymentHash(
+                        *options.bolt11.payment_hash().as_ref(),
+                    ),
+                    payment_proof: None,
+                    status: MeltQuoteState::Pending,
+                    total_spent: Amount::new(0, unit.clone()),
+                }),
+                _ => Err(payment::Error::UnsupportedPaymentOption),
+            }
+        }
+
+        async fn wait_payment_event(
+            &self,
+        ) -> Result<Pin<Box<dyn futures::Stream<Item = Event> + Send>>, Self::Err> {
+            Ok(Box::pin(futures::stream::pending()))
+        }
+
+        fn is_payment_event_stream_active(&self) -> bool {
+            false
+        }
+
+        fn cancel_payment_event_stream(&self) {}
+
+        async fn check_incoming_payment_status(
+            &self,
+            _payment_identifier: &PaymentIdentifier,
+        ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+
+        async fn check_outgoing_payment(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            Ok(MakePaymentResponse {
+                payment_lookup_id: payment_identifier.clone(),
+                payment_proof: None,
+                status: MeltQuoteState::Pending,
+                total_spent: Amount::new(0, CurrencyUnit::Sat),
+            })
+        }
+    }
+
+    async fn federated_test_mint_with_backend_agnostic_payment(
+        runtime_config: FederationRuntimeConfig,
+    ) -> (Mint, Arc<MintSqliteDatabase>) {
+        federated_test_mint_with_payment_processor(
+            runtime_config,
+            Arc::new(BackendAgnosticPaymentProcessor),
+        )
+        .await
     }
 
     fn appended_entry(
@@ -2716,7 +2846,8 @@ mod tests {
             FederationPaymentTrustModel::SharedBackendReadOnly,
         );
         let runtime_config = runtime_config_with_payment_policy(policy);
-        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let (mint, localstore) =
+            federated_test_mint_with_backend_agnostic_payment(runtime_config.clone()).await;
         let mut journal = InMemoryFederationJournal::new();
         let quote = QuoteId::new();
 
@@ -2987,7 +3118,8 @@ mod tests {
             FederationPaymentTrustModel::SharedBackendReadOnly,
         );
         let runtime_config = runtime_config_with_payment_policy(policy);
-        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let (mint, localstore) =
+            federated_test_mint_with_backend_agnostic_payment(runtime_config.clone()).await;
         let mut journal = InMemoryFederationJournal::new();
         let (quote, input_ys) =
             setup_pending_federated_melt(&mint, &localstore, &runtime_config, &mut journal).await;
@@ -3293,7 +3425,8 @@ mod tests {
             FederationPaymentTrustModel::SharedBackendReadOnly,
         );
         let runtime_config = runtime_config_with_payment_policy(policy);
-        let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+        let (mint, localstore) =
+            federated_test_mint_with_backend_agnostic_payment(runtime_config.clone()).await;
         let mut journal = InMemoryFederationJournal::new();
         let (quote, input_ys) =
             setup_pending_federated_melt(&mint, &localstore, &runtime_config, &mut journal).await;

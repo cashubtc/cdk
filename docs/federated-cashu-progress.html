@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 446 checked items and 141 remaining items. Federation payment-observation policy now uses backend-neutral development single-observation semantics, mintd startup still rejects dev finality without an explicit local override, and trusted-dealer generation keeps working without the fakewallet feature.</span>
+          <span class="value">The implementation plan audit now tracks 447 checked items and 140 remaining items. Stored-quorum mint and melt payment-observation tests now run against a backend-agnostic mock payment backend, while fakewallet remains an ordinary development backend.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">refactor: rename federation dev payment policy</span>
+          <span class="value">test: cover backend agnostic payment observations</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The dev/test single-observation payment policy is now `DevelopmentSingleObservation` and serializes as `development_single_observation`; old `fake_wallet` policy JSON remains readable through an explicit legacy alias.</span>
+          <span class="value">The real-policy stored-quorum mint and melt payment-observation tests use a small generic Bolt11 mock backend, so accepted federation observation rows, not fakewallet behavior, drive finality.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue production-cleanup work by adding backend-agnostic payment observation tests, auditing remaining fakewallet references, and broadening storage-backed process coverage.</span>
+          <span class="value">Continue production-cleanup work by auditing remaining fakewallet references and broadening storage-backed process coverage.</span>
         </div>
       </aside>
     </header>
@@ -541,7 +541,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 440 checked entries and 147 remaining entries. The
+          checklist has 447 checked entries and 140 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -781,6 +781,10 @@
         <h2>Unlocked</h2>
         <div class="stack">
           <article class="item">
+            <h3>Backend-agnostic observation tests</h3>
+            <p>Stored-quorum mint and melt payment-observation tests now use a generic pending Bolt11 backend, proving federation finality comes from accepted observation evidence rather than fakewallet-specific behavior.</p>
+          </article>
+          <article class="item">
             <h3>Dev policy name is backend-neutral</h3>
             <p>Federation public configs now serialize the local-test single-observation policy as `development_single_observation`, while legacy `fake_wallet` policy JSON still decodes for compatibility.</p>
           </article>
@@ -790,7 +794,7 @@
           </article>
           <article class="item">
             <h3>Plan audit refreshed</h3>
-            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 446 checked items and 141 explicit next items.</p>
+            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 447 checked items and 140 explicit next items.</p>
           </article>
           <article class="item">
             <h3>Router startup replay proven</h3>
@@ -2910,6 +2914,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation router_startup_replays_accepted_journal_before_serving_local_status -- --test-threads 1` proved the router startup path used by mintd replays a durable accepted mint-quote journal entry before signed local-status can report authoritative materialized state. `cargo test -p cdk-axum --features federation peer_sync -- --test-threads 1`, `cargo test -p cdk-axum --features federation session_outcome -- --test-threads 1`, and the full escalated `cargo test -p cdk-axum --features federation -- --test-threads 1` passed after peer sync was changed to collect only unverified session-outcome suffixes.</td>
               <td>Use the startup replay proof as the recovery gate while cleaning fakewallet-specific federation semantics out of the production payment-observation path.</td>
+            </tr>
+            <tr>
+              <td>Backend-agnostic payment observations</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --features federation real_policy_ -- --test-threads 1` passed the stored-quorum mint payment finalization test plus paid and failed melt observation quorum tests using the backend-agnostic mock payment backend. `cargo fmt --all` completed with the known stable-rustfmt warnings.</td>
+              <td>Continue the remaining fakewallet reference audit and broaden storage-backed process coverage.</td>
             </tr>
             <tr>
               <td>Backend-neutral dev payment policy</td>
