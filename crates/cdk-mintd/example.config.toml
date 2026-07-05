@@ -361,7 +361,7 @@ max_delay_time = 3
 # consensus_backend = "in_memory"
 # Keep false for production. Set true only for local smoke/regtest configs
 # whose public federation config uses development_single_observation finality,
-# for example fakewallet-backed local federation tests.
+# for example generated local development smoke tests.
 # allow_development_payment_observation_policy = false
 # public_config_path = "/path/to/federation-public.json"
 # private_config_path = "/path/to/member-private.json"

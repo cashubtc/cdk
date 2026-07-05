@@ -505,8 +505,8 @@
         <p class="lede">
           Living status for the CDK work to federate Cashu mints with threshold
           BLS blind signatures, private member networking, consensus-backed
-          mint state transitions, wallet aggregation, catch-up, and fake-wallet
-          mint/swap/melt tests.
+          mint state transitions, wallet aggregation, catch-up, and
+          development fake-wallet-backed mint/swap/melt tests.
         </p>
         <div class="links" aria-label="Project documents">
           <a class="link-pill" href="./federated-cashu-implementation-plan.md">Implementation plan</a>
@@ -518,15 +518,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 450 checked items and 137 remaining items. Stale `scaffold`, `placeholder`, and `MVP` wording is removed from production federation comments; remaining production-module hits are test-only placeholder fixtures.</span>
+          <span class="value">The implementation plan audit now tracks 454 checked items and 133 remaining items. Production startup wording no longer ties development single-observation payment policy to fakewallet, and the fakewallet coupling audit has a clean allowed-hit inventory.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: remove stale federation scaffold wording</span>
+          <span class="value">fix: keep federation dev policy backend neutral</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Production federation comments now describe the implemented mint support, deterministic consensus boundary, and durable journal shape without old MVP/scaffold labels.</span>
+          <span class="value">The fakewallet reference audit confirms remaining production-module hits are test fixtures, normal mintd backend setup, generated local smoke/config tooling, or legacy config compatibility.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -541,7 +541,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 450 checked entries and 137 remaining entries. The
+          checklist has 454 checked entries and 133 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -781,6 +781,10 @@
         <h2>Unlocked</h2>
         <div class="stack">
           <article class="item">
+            <h3>Fakewallet coupling audited</h3>
+            <p>Production startup wording now treats development single-observation finality as backend-neutral, and the remaining fakewallet references are confined to test fixtures, normal mintd backend setup, generated local smoke/config tooling, or legacy config compatibility.</p>
+          </article>
+          <article class="item">
             <h3>Stale scaffold wording removed</h3>
             <p>Production federation comments now describe the current mint support, in-memory consensus boundary, journal, and peer status behavior without old scaffold or MVP labels.</p>
           </article>
@@ -802,7 +806,7 @@
           </article>
           <article class="item">
             <h3>Plan audit refreshed</h3>
-            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 450 checked items and 137 explicit next items.</p>
+            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 454 checked items and 133 explicit next items.</p>
           </article>
           <article class="item">
             <h3>Router startup replay proven</h3>
@@ -2922,6 +2926,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation router_startup_replays_accepted_journal_before_serving_local_status -- --test-threads 1` proved the router startup path used by mintd replays a durable accepted mint-quote journal entry before signed local-status can report authoritative materialized state. `cargo test -p cdk-axum --features federation peer_sync -- --test-threads 1`, `cargo test -p cdk-axum --features federation session_outcome -- --test-threads 1`, and the full escalated `cargo test -p cdk-axum --features federation -- --test-threads 1` passed after peer sync was changed to collect only unverified session-outcome suffixes.</td>
               <td>Use the startup replay proof as the recovery gate while cleaning fakewallet-specific federation semantics out of the production payment-observation path.</td>
+            </tr>
+            <tr>
+              <td>Fakewallet coupling audit</td>
+              <td><span class="status done">Passed</span></td>
+              <td>Production startup wording and the example federation config now describe `development_single_observation` as a backend-neutral local development/regtest override. `rg "cdk_fake_wallet|FakeWallet|fake_wallet|fake-wallet"` across production federation modules now reports only test fixtures, mintd backend setup, generated local smoke/config tooling, or legacy `fake_wallet` config compatibility. `cargo test -p cdk-mintd --no-default-features --features "federation sqlite" configure_federation -- --test-threads 1`, `cargo check -p cdk-mintd --no-default-features --features "federation sqlite"`, `cargo fmt --all -- --check`, and `git diff --check` passed.</td>
+              <td>Keep the broader fakewallet status-label cleanup open while broadening storage-backed process coverage.</td>
             </tr>
             <tr>
               <td>Stale federation wording cleanup</td>

@@ -672,7 +672,7 @@ fn validate_federation_payment_observation_startup_policy(
 
     if !development_contexts.is_empty() && !allow_development_payment_observation_policy {
         bail!(
-            "federation payment_observation_policy uses development-only single-observation finality for {}; set federation.allow_development_payment_observation_policy=true only for local fake-wallet regtest",
+            "federation payment_observation_policy uses development-only single-observation finality for {}; set federation.allow_development_payment_observation_policy=true only for local development or regtest",
             development_contexts.join(", ")
         );
     }
