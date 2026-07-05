@@ -3505,6 +3505,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn federated_mint_connector_rejects_unsupported_protocol_versions() {
+        let bundle = threshold_bundle();
+        let outputs = blinded_outputs(&bundle);
+        let connectors = member_connectors(&bundle, &outputs);
+        let mut public_config = bundle.public_config.clone();
+        let expected = public_config.protocol_versions.rest_api;
+        let found = expected.saturating_add(1);
+        public_config.protocol_versions.rest_api = found;
+
+        assert!(matches!(
+            FederatedMintConnector::new(public_config, connectors),
+            Err(crate::Error::Federation(
+                FederationError::ProtocolVersionMismatch {
+                    component: "rest_api",
+                    expected: actual_expected,
+                    found: actual_found,
+                }
+            )) if actual_expected == expected && actual_found == found
+        ));
+    }
+
     #[tokio::test]
     async fn federated_mint_connector_aggregates_mint_signature_shares() {
         let bundle = threshold_bundle();

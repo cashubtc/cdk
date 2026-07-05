@@ -522,15 +522,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit tracks 515 checked items and 73 remaining items. Public federation configs now advertise protocol component versions and fail closed when unsupported versions are required.</span>
+          <span class="value">The implementation plan audit tracks 516 checked items and 72 remaining items. Public federation configs now advertise protocol component versions and real mint/wallet entry points reject stale or unsupported versions.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: advertise federation protocol versions</span>
+          <span class="value">test: reject stale federation protocol versions</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">`FederationConfig` metadata now carries operation, consensus-item, private REST, and signed session-outcome versions with legacy defaults and explicit unsupported-version rejection.</span>
+          <span class="value">Mint runtime configuration and the federation-aware wallet connector now fail closed on unsupported advertised protocol components before serving member startup, fanout, or signature aggregation.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -545,7 +545,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 515 checked entries and 73 remaining entries. The
+          checklist has 516 checked entries and 72 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -784,6 +784,10 @@
       <section class="panel span-4">
         <h2>Unlocked</h2>
         <div class="stack">
+          <article class="item">
+            <h3>Stale protocol configs rejected</h3>
+            <p>Mixed-version regressions now prove unsupported advertised protocol components are rejected at mint runtime config construction and at the federation wallet connector before any member fanout or threshold aggregation begins.</p>
+          </article>
           <article class="item">
             <h3>Protocol metadata advertised</h3>
             <p>Public federation configs now advertise operation, consensus-item, private REST, and signed session-outcome component versions. Legacy configs without the field default to current versions, while unsupported explicit versions fail validation before startup or wallet/member use.</p>
@@ -3209,7 +3213,13 @@
               <td>Federation protocol metadata</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-common --features federation protocol_versions -- --test-threads 1` passed four protocol metadata tests covering current-version advertisement, legacy missing-field defaults, partial component defaults, and unsupported version rejection. `cargo test -p cdk-common --features federation federation::tests -- --test-threads 1`, `cargo check -p cdk --features federation`, and `git diff --check` passed.</td>
-              <td>Add operation-encoding migration planning and broader mixed-version federation tests that prove stale members refuse upgraded consensus cleanly.</td>
+              <td>Add operation-encoding migration planning and stale-upgrade consensus tests for future incompatible operation encodings.</td>
+            </tr>
+            <tr>
+              <td>Mixed-version config rejection</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --features mint,federation runtime_config_rejects_unsupported_protocol_versions -- --test-threads 1` and `cargo test -p cdk --features wallet,mint,federation federated_mint_connector_rejects_unsupported_protocol_versions -- --test-threads 1` passed focused entry-point regressions. `cargo test -p cdk-common --features federation federation::tests -- --test-threads 1`, `cargo test -p cdk --features mint,federation mint::federation::tests -- --test-threads 1`, and `cargo test -p cdk --features wallet,mint,federation federated_mint_connector -- --test-threads 1` passed the broader suites.</td>
+              <td>Add the operation-encoding migration plan and stale-upgrade consensus tests for future incompatible operation encodings.</td>
             </tr>
             <tr>
               <td>Federation peer sync policy</td>

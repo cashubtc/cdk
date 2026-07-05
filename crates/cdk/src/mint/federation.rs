@@ -4669,6 +4669,27 @@ mod tests {
     }
 
     #[test]
+    fn runtime_config_rejects_unsupported_protocol_versions() {
+        let runtime_config = runtime_config();
+        let mut public_config = runtime_config.public_config().clone();
+        let private_config = runtime_config.private_config().clone();
+        let expected = public_config.protocol_versions.rest_api;
+        let found = expected.saturating_add(1);
+        public_config.protocol_versions.rest_api = found;
+
+        assert!(matches!(
+            FederationRuntimeConfig::new(public_config, private_config),
+            Err(cdk_common::Error::Federation(
+                FederationError::ProtocolVersionMismatch {
+                    component: "rest_api",
+                    expected: actual_expected,
+                    found: actual_found,
+                }
+            )) if actual_expected == expected && actual_found == found
+        ));
+    }
+
+    #[test]
     fn runtime_config_rejects_non_v3_swap_restore_and_change_outputs() {
         let runtime_config = runtime_config();
         let output = non_v3_output_for_runtime(&runtime_config);

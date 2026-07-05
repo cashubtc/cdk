@@ -3659,6 +3659,24 @@ mod tests {
             .collect()
     }
 
+    fn assert_protocol_version_mismatch(
+        config: FederationConfig,
+        component: &'static str,
+        expected: u16,
+        found: u16,
+    ) {
+        assert!(matches!(
+            config.validate(),
+            Err(FederationError::ProtocolVersionMismatch {
+                component: actual_component,
+                expected: actual_expected,
+                found: actual_found,
+            }) if actual_component == component
+                && actual_expected == expected
+                && actual_found == found
+        ));
+    }
+
     fn dkg_member_secret_contributions(
         local_member_id: MemberId,
     ) -> BTreeMap<MemberId, BTreeMap<Amount, BlsSecretKeyShare>> {
@@ -3846,17 +3864,31 @@ mod tests {
     #[test]
     fn federation_config_rejects_unsupported_protocol_versions() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
-        let mut config = FederationConfig::new(params, test_roster(), Vec::new()).expect("config");
-        config.protocol_versions.rest_api = FEDERATION_REST_API_VERSION + 1;
+        let config = FederationConfig::new(params, test_roster(), Vec::new()).expect("config");
 
-        assert!(matches!(
-            config.validate(),
-            Err(FederationError::ProtocolVersionMismatch {
-                component: "rest_api",
-                expected: FEDERATION_REST_API_VERSION,
-                found,
-            }) if found == FEDERATION_REST_API_VERSION + 1
-        ));
+        let mut operation = config.clone();
+        let expected = operation.protocol_versions.operation;
+        let found = expected.saturating_add(1);
+        operation.protocol_versions.operation = found;
+        assert_protocol_version_mismatch(operation, "operation", expected, found);
+
+        let mut consensus_item = config.clone();
+        let expected = consensus_item.protocol_versions.consensus_item;
+        let found = expected.saturating_add(1);
+        consensus_item.protocol_versions.consensus_item = found;
+        assert_protocol_version_mismatch(consensus_item, "consensus_item", expected, found);
+
+        let mut rest_api = config.clone();
+        let expected = rest_api.protocol_versions.rest_api;
+        let found = expected.saturating_add(1);
+        rest_api.protocol_versions.rest_api = found;
+        assert_protocol_version_mismatch(rest_api, "rest_api", expected, found);
+
+        let mut session_outcome = config;
+        let expected = session_outcome.protocol_versions.session_outcome;
+        let found = expected.saturating_add(1);
+        session_outcome.protocol_versions.session_outcome = found;
+        assert_protocol_version_mismatch(session_outcome, "session_outcome", expected, found);
     }
 
     #[test]
