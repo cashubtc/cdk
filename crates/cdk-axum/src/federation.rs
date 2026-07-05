@@ -7588,8 +7588,13 @@ mod tests {
         )
         .await
         .expect("mint router");
-        let request =
-            signed_status_request(&public_config, &peer_private, local_private.member_id, 1);
+        let request = signed_status_request_with_payload(
+            &public_config,
+            &peer_private,
+            local_private.member_id,
+            1,
+            FederationPeerStatusRequest::with_materialized_rows(),
+        );
         let response = router
             .oneshot(
                 axum::http::Request::builder()
