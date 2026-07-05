@@ -199,6 +199,24 @@ impl WalletRepository {
         Ok(())
     }
 
+    /// Fetch mint info for a mint URL without adding it to the repository
+    ///
+    /// Routes the request through the repository's configured transport
+    /// (Tor or proxy when enabled), so it can be used to preview a mint
+    /// before adding it without leaking a clearnet request.
+    pub async fn fetch_mint_info(&self, mint_url: MintUrl) -> Result<MintInfo, FfiError> {
+        let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+
+        let inner = Arc::clone(&self.inner);
+        let info = crate::runtime::run_on_shared(async move {
+            inner.fetch_mint_info(&cdk_mint_url).await
+        })
+        .await
+        .map_err(FfiError::internal)??;
+
+        Ok(info.into())
+    }
+
     /// Remove mint from WalletRepository
     pub async fn remove_wallet(
         &self,

@@ -175,13 +175,22 @@ pub struct MintMethodSettings {
     pub max_amount: Option<Amount>,
     /// For bolt11, whether mint supports setting invoice description
     pub description: Option<bool>,
+    /// For onchain, minimum number of confirmations required
+    pub onchain_confirmations: Option<u32>,
 }
 
 impl From<cdk::nuts::nut04::MintMethodSettings> for MintMethodSettings {
     fn from(s: cdk::nuts::nut04::MintMethodSettings) -> Self {
-        let description = match s.options {
-            Some(cdk::nuts::nut04::MintMethodOptions::Bolt11 { description }) => Some(description),
-            _ => None,
+        let mut description = None;
+        let mut onchain_confirmations = None;
+        match s.options {
+            Some(cdk::nuts::nut04::MintMethodOptions::Bolt11 { description: d }) => {
+                description = Some(d)
+            }
+            Some(cdk::nuts::nut04::MintMethodOptions::Onchain { confirmations }) => {
+                onchain_confirmations = Some(confirmations)
+            }
+            _ => {}
         };
         Self {
             method: s.method.into(),
@@ -190,6 +199,7 @@ impl From<cdk::nuts::nut04::MintMethodSettings> for MintMethodSettings {
             min_amount: s.min_amount.map(Into::into),
             max_amount: s.max_amount.map(Into::into),
             description,
+            onchain_confirmations,
         }
     }
 }
@@ -202,6 +212,9 @@ impl TryFrom<MintMethodSettings> for cdk::nuts::nut04::MintMethodSettings {
             PaymentMethod::Bolt11 => s
                 .description
                 .map(|description| cdk::nuts::nut04::MintMethodOptions::Bolt11 { description }),
+            PaymentMethod::Onchain => s.onchain_confirmations.map(|confirmations| {
+                cdk::nuts::nut04::MintMethodOptions::Onchain { confirmations }
+            }),
             PaymentMethod::Custom { .. } => Some(cdk::nuts::nut04::MintMethodOptions::Custom {}),
             _ => None,
         };
