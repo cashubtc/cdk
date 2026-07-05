@@ -6442,6 +6442,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn startup_replays_accepted_but_unapplied_journal_entry_to_same_state_digest() {
+        let (public_config, local_private, _) = transport_config();
+        let control_state =
+            federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
+        let mut restarted_state =
+            federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
+        let quote_id = QuoteId::new();
+        let envelope = mint_quote_envelope(&control_state, &quote_id);
+        control_state
+            .submit_federation_envelope(envelope.clone())
+            .await
+            .expect("control submit");
+        let control_status = local_peer_status(&control_state)
+            .await
+            .expect("control status");
+
+        let mut crashed_consensus =
+            InMemoryFederationConsensus::new(public_config.federation_id, local_private.member_id);
+        let response = crashed_consensus
+            .submit_envelope(envelope)
+            .expect("accepted before crash");
+        let entry = response.outcome.entry().clone();
+        let mut tx = restarted_state
+            .mint
+            .localstore()
+            .begin_transaction()
+            .await
+            .expect("begin crash window transaction");
+        tx.add_federation_journal_entry(&entry)
+            .await
+            .expect("persist accepted journal entry");
+        tx.commit().await.expect("commit crash window journal");
+
+        assert!(restarted_state
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup before replay")
+            .is_none());
+        let missing_status = local_peer_status(&restarted_state)
+            .await
+            .expect("missing materialized status");
+        assert_ne!(missing_status.state_digest, control_status.state_digest);
+
+        let (replayed_consensus, replayed_sequences) =
+            crate::create_federation_runtime_state(&restarted_state.mint)
+                .await
+                .expect("runtime state replay");
+        restarted_state.federation_consensus = replayed_consensus;
+        restarted_state.federation_sequences = replayed_sequences;
+
+        let replayed_quote = restarted_state
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup after replay")
+            .expect("mint quote replayed");
+        assert_eq!(replayed_quote.request, format!("invoice-{quote_id}"));
+        let replayed_entries = restarted_state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("replayed journal entries");
+        assert_eq!(replayed_entries.len(), 1);
+        assert_eq!(
+            replayed_entries[0].status,
+            FederationOperationStatus::Applied
+        );
+
+        let replayed_status = local_peer_status(&restarted_state)
+            .await
+            .expect("replayed status");
+        assert_eq!(replayed_status.operation_count, 1);
+        assert_eq!(replayed_status.state_digest, control_status.state_digest);
+        let replayed_consensus = restarted_state
+            .federation_consensus
+            .as_ref()
+            .expect("replayed consensus")
+            .lock()
+            .await;
+        assert_eq!(replayed_consensus.peer_status().operation_count, 1);
+        assert_eq!(
+            replayed_consensus.journal().entries()[0].status,
+            FederationOperationStatus::Applied
+        );
+    }
+
+    #[tokio::test]
     async fn submit_mint_quote_operation_applies_quote_to_local_store() {
         let (state, _, _) = federation_route_state().await;
         let quote_id = QuoteId::new();

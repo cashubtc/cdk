@@ -518,19 +518,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit now tracks 434 checked items and 153 remaining items. Private REST status, local-status, and journal catch-up responses now rebuild their peer view from the durable mint database journal instead of trusting the in-memory runtime journal.</span>
+          <span class="value">The implementation plan audit now tracks 436 checked items and 151 remaining items. Accepted-but-unapplied federation journal entries now have an explicit restart replay test that proves deterministic apply recovers the missing mint state and converges to the same materialized state digest as a fully applied control member.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: serve federation peer reads from durable journal</span>
+          <span class="value">test: prove federation accepted-operation replay</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Private REST peer status and catch-up serving now validate persisted federation journal entries, derive order status from durable rows, compute materialized digests from those rows, and keep signed session-outcome evidence independent of a volatile runtime journal.</span>
+          <span class="value">A focused crash-window regression persists an accepted mint-quote journal row without applying its mint quote, verifies the materialized digest is incomplete, runs federation runtime startup replay, and verifies the recovered digest matches a fully applied control member.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Add explicit crash-recovery tests for accepted-but-unapplied federation operations, then continue startup replay and larger roster/Postgres-backed live smokes.</span>
+          <span class="value">Continue the broader startup proof by exercising the same replay path through router/mintd construction and then larger roster/Postgres-backed live smokes.</span>
         </div>
       </aside>
     </header>
@@ -541,7 +541,7 @@
         <p class="section-note">
           The implementation plan has 25 milestone points, including the
           explicit Milestone 16A convergence certification gate. The current
-          checklist has 434 checked entries and 153 remaining entries. The
+          checklist has 436 checked entries and 151 remaining entries. The
           ordered list below names the milestone points one by one with status
           derived from the latest implementation plan; milestones with any
           remaining checklist item stay in progress.
@@ -782,7 +782,11 @@
         <div class="stack">
           <article class="item">
             <h3>Plan audit refreshed</h3>
-            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 434 checked items and 153 explicit next items.</p>
+            <p>The implementation plan now separates code-confirmed work from remaining follow-ups, leaving 436 checked items and 151 explicit next items.</p>
+          </article>
+          <article class="item">
+            <h3>Accepted-operation replay proven</h3>
+            <p>A restart replay regression now covers the exact crash window where a journal entry is durable but its deterministic mint-state side effect has not been applied yet.</p>
           </article>
           <article class="item">
             <h3>Durable private REST reads ready</h3>
@@ -1017,6 +1021,10 @@
           <article class="item">
             <h3>Volatile peer reads removed</h3>
             <p>A member that has durable accepted-operation rows no longer depends on the in-memory consensus journal to answer private status, local-status, or catch-up requests, reducing the restart/catch-up surface that can drift after a runtime reset.</p>
+          </article>
+          <article class="item">
+            <h3>Accepted-before-apply recovery proven</h3>
+            <p>The restart replay path is now covered for the crash window after consensus journal persistence but before deterministic mint-state apply, proving replay fills in the missing materialized row and restores the expected digest.</p>
           </article>
           <article class="item">
             <h3>Scope clarified</h3>
@@ -2874,6 +2882,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation private_status_routes_read_persisted_journal_after_runtime_reset -- --test-threads 1` and `cargo test -p cdk-axum --features federation private_journal_route_returns_signed_session_outcome -- --test-threads 1` proved private status, local-status, and signed journal catch-up responses still report persisted accepted operations after the in-memory runtime journal is reset. `cargo test -p cdk-axum --features federation private_ -- --test-threads 1` passed the wider private route cluster.</td>
               <td>Add an explicit accepted-but-unapplied crash-recovery test so startup replay proves the next recovery boundary as strongly as the read-path reset tests now do.</td>
+            </tr>
+            <tr>
+              <td>Accepted-but-unapplied replay</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation startup_replays_accepted_but_unapplied_journal_entry_to_same_state_digest -- --test-threads 1` persists an accepted mint-quote journal row without applying the quote, verifies the pre-replay state digest is incomplete, runs federation runtime startup replay, then verifies the quote row is applied, the journal status is `Applied`, and the recovered materialized state digest matches a fully applied control member.</td>
+              <td>Lift the same crash-window assertion through router or mintd startup construction so the end-to-end daemon boot path is covered too.</td>
             </tr>
             <tr>
               <td>Wallet federation auth state</td>

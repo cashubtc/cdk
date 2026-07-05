@@ -1085,7 +1085,7 @@ Implementation checklist:
 - [x] Add wallet federation connector configuration for per-member fallback timeout, quote-status polling timeout, and fanout concurrency.
 - [x] Replace production reads from in-memory federation journal/runtime state with durable mint database reads for peer status, catch-up responses, state digests, and session outcomes.
 - [ ] On `cdk-mintd` startup, reconstruct federation runtime state from the database and replay unapplied accepted journal entries before serving signing shares or authoritative status.
-- [ ] Ensure a crash after consensus acceptance but before deterministic apply recovers from the database and converges to the same state digest.
+- [x] Ensure a crash after consensus acceptance but before deterministic apply recovers from the database and converges to the same state digest.
 - [ ] Split large federation modules into logical submodules when useful, following existing CDK layout conventions.
 - [ ] Suggested mint split: config/runtime, apply, mint, swap, melt, restore/check-state, payment observations, keysets, and tests.
 - [ ] Suggested wallet split: connector, member fanout, share aggregation, keyset validation, quote/status aggregation, melt/change aggregation, and tests.
@@ -1109,7 +1109,7 @@ Tests and success criteria:
 - [ ] A production-mode federation config without an explicit payment observation policy fails startup with a clear error.
 - [ ] A production-mode federation config with a dev/test single-observation policy fails startup unless an explicit development override is set.
 - [ ] Custom peer sync, catch-up, digest recheck, operation submission, and wallet fallback timeouts are honored in unit tests.
-- [ ] Restart tests prove accepted-but-unapplied federation operations are replayed from the database and converge to the same state digest.
+- [x] Restart tests prove accepted-but-unapplied federation operations are replayed from the database and converge to the same state digest.
 - [x] Private REST status, catch-up, digest, and session outcome tests read from durable database state rather than an in-memory journal scaffold.
 - [ ] Fake-wallet regtest still passes through the normal CDK payment backend interface.
 - [ ] Mint, melt, and swap federation tests still pass after fakewallet-specific naming is removed from federation semantics.
