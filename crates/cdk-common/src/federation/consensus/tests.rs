@@ -2859,6 +2859,66 @@ fn dummy_consensus_rejects_wrong_federation_catch_up_response() {
 }
 
 #[test]
+fn dummy_consensus_rejects_future_catch_up_response_version() {
+    let federation_id = federation_id(13);
+    let mut local = InMemoryFederationConsensus::new(federation_id, member_id());
+    let mut peer = InMemoryFederationConsensus::new(federation_id, member_id());
+    peer.submit_envelope(mint_quote_envelope(federation_id))
+        .expect("peer quote submit");
+    let mut response = peer
+        .catch_up_checked(&local.catch_up_request())
+        .expect("catch up");
+    response.version = super::super::FEDERATION_REST_API_VERSION + 1;
+
+    assert!(matches!(
+        local.apply_catch_up_response(&response),
+        Err(FederationError::RestVersionMismatch {
+            expected: super::super::FEDERATION_REST_API_VERSION,
+            found,
+        }) if found == super::super::FEDERATION_REST_API_VERSION + 1
+    ));
+    assert_eq!(local.peer_status().operation_count, 0);
+}
+
+#[test]
+fn dummy_consensus_rejects_future_catch_up_response_version_after_quorum_check() {
+    let (config, private_members) = consensus_config_three();
+    let federation_id = config.federation_id;
+    let mut local = InMemoryFederationConsensus::new(federation_id, private_members[2].member_id);
+    let mut peer = InMemoryFederationConsensus::new(federation_id, private_members[0].member_id);
+    peer.submit_envelope(mint_quote_envelope(federation_id))
+        .expect("peer quote submit");
+
+    let request = local.catch_up_request();
+    let mut response = peer
+        .catch_up_checked(&request)
+        .expect("catch up")
+        .with_signed_session_outcome(&private_members[0])
+        .expect("signed catch up");
+    let second_outcome = peer
+        .catch_up_checked(&request)
+        .expect("second catch up")
+        .with_signed_session_outcome(&private_members[1])
+        .expect("second signed catch up")
+        .session_outcome
+        .expect("second outcome");
+    response.version = super::super::FEDERATION_REST_API_VERSION + 1;
+
+    assert!(matches!(
+        local.apply_catch_up_response_with_session_outcome_quorum(
+            &response,
+            &config,
+            &[second_outcome],
+        ),
+        Err(FederationError::RestVersionMismatch {
+            expected: super::super::FEDERATION_REST_API_VERSION,
+            found,
+        }) if found == super::super::FEDERATION_REST_API_VERSION + 1
+    ));
+    assert_eq!(local.peer_status().operation_count, 0);
+}
+
+#[test]
 fn dummy_consensus_rejects_tampered_catch_up_operation_id() {
     let federation_id = federation_id(13);
     let mut local = InMemoryFederationConsensus::new(federation_id, member_id());

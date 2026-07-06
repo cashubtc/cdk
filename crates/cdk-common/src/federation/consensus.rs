@@ -17,7 +17,7 @@ use super::{
     FederationSessionOutcome, FederationSessionOutcomeQuorum, FederationSignedRequest,
     FederationStateDigest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
     InMemoryFederationJournal, MemberId, Result, ThresholdParams,
-    FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
+    FEDERATION_MAX_OPERATION_ENVELOPE_BYTES, FEDERATION_REST_API_VERSION,
 };
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -3097,6 +3097,12 @@ impl InMemoryFederationConsensus {
         &mut self,
         response: &FederationJournalCatchUpResponse,
     ) -> Result<Vec<FederationJournalEntry>> {
+        if response.version != FEDERATION_REST_API_VERSION {
+            return Err(FederationError::RestVersionMismatch {
+                expected: FEDERATION_REST_API_VERSION,
+                found: response.version,
+            });
+        }
         if response.federation_id != self.federation_id {
             return Err(FederationError::CatchUpFederationMismatch {
                 expected: self.federation_id,
