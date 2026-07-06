@@ -24,6 +24,7 @@ use cdk_common::federation::{
     InMemoryFederationConsensus, InMemoryFederationJournal, MemberId, ThresholdParams,
     TrustedDealerKeysetSpec, TrustedDealerMember,
 };
+use cdk_common::mint::{MeltSagaState, SagaStateEnum};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut00::KnownMethod;
 use cdk_common::nuts::nut01::{verify_blind_signature_share, BlsG1PublicKey, BlsSecretKey};
@@ -43,6 +44,7 @@ use cdk_common::{
     SwapRequest,
 };
 use cdk_sqlite::mint::{memory, MintSqliteDatabase};
+use tokio::sync::Mutex;
 
 use crate::mint::{Mint, MintBuilder, MintInput, MintMeltLimits};
 
@@ -517,6 +519,172 @@ async fn federated_test_mint_with_counting_payment_processor(
         federated_test_mint_with_payment_processor(runtime_config, payment_processor).await;
 
     (mint, localstore, make_payment_calls)
+}
+
+#[derive(Debug, Clone)]
+struct ExpectedMeltReserve {
+    quote: QuoteId,
+    input_ys: Vec<PublicKey>,
+}
+
+struct ReserveCheckingPaymentProcessor {
+    localstore: Arc<MintSqliteDatabase>,
+    expected: Arc<Mutex<Option<ExpectedMeltReserve>>>,
+    make_payment_calls: Arc<AtomicUsize>,
+}
+
+impl ReserveCheckingPaymentProcessor {
+    async fn assert_reserve_persisted_before_payment(&self) -> Result<(), payment::Error> {
+        let expected = self.expected.lock().await.clone().ok_or_else(|| {
+            payment::Error::Custom("missing melt reserve expectation".to_string())
+        })?;
+
+        let quote = self
+            .localstore
+            .get_melt_quote(&expected.quote)
+            .await
+            .map_err(|err| payment::Error::Custom(format!("melt quote lookup failed: {err}")))?
+            .ok_or_else(|| payment::Error::Custom("melt quote missing".to_string()))?;
+        if quote.state != MeltQuoteState::Pending {
+            return Err(payment::Error::Custom(format!(
+                "melt quote was not pending before payment attempt: {}",
+                quote.state
+            )));
+        }
+
+        let saga = self
+            .localstore
+            .get_melt_saga_by_quote_id(&expected.quote)
+            .await
+            .map_err(|err| payment::Error::Custom(format!("melt saga lookup failed: {err}")))?
+            .ok_or_else(|| payment::Error::Custom("melt saga missing".to_string()))?;
+        if saga.state != SagaStateEnum::Melt(MeltSagaState::PaymentAttempted) {
+            return Err(payment::Error::Custom(format!(
+                "melt saga did not record payment attempt before backend call: {}",
+                saga.state.state()
+            )));
+        }
+
+        let proof_states = self
+            .localstore
+            .get_proofs_states(&expected.input_ys)
+            .await
+            .map_err(|err| payment::Error::Custom(format!("proof state lookup failed: {err}")))?;
+        let expected_states = vec![Some(State::Pending); expected.input_ys.len()];
+        if proof_states != expected_states {
+            return Err(payment::Error::Custom(format!(
+                "proofs were not pending before payment attempt: {proof_states:?}"
+            )));
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl MintPayment for ReserveCheckingPaymentProcessor {
+    type Err = payment::Error;
+
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+        BackendAgnosticPaymentProcessor.get_settings().await
+    }
+
+    async fn create_incoming_payment_request(
+        &self,
+        options: IncomingPaymentOptions,
+    ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+        BackendAgnosticPaymentProcessor
+            .create_incoming_payment_request(options)
+            .await
+    }
+
+    async fn get_payment_quote(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<PaymentQuoteResponse, Self::Err> {
+        BackendAgnosticPaymentProcessor
+            .get_payment_quote(unit, options)
+            .await
+    }
+
+    async fn make_payment(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        self.assert_reserve_persisted_before_payment().await?;
+        self.make_payment_calls.fetch_add(1, Ordering::Relaxed);
+        BackendAgnosticPaymentProcessor
+            .make_payment(unit, options)
+            .await
+    }
+
+    async fn wait_payment_event(
+        &self,
+    ) -> Result<Pin<Box<dyn futures::Stream<Item = Event> + Send>>, Self::Err> {
+        BackendAgnosticPaymentProcessor.wait_payment_event().await
+    }
+
+    fn is_payment_event_stream_active(&self) -> bool {
+        BackendAgnosticPaymentProcessor.is_payment_event_stream_active()
+    }
+
+    fn cancel_payment_event_stream(&self) {
+        BackendAgnosticPaymentProcessor.cancel_payment_event_stream();
+    }
+
+    async fn check_incoming_payment_status(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+        BackendAgnosticPaymentProcessor
+            .check_incoming_payment_status(payment_identifier)
+            .await
+    }
+
+    async fn check_outgoing_payment(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        BackendAgnosticPaymentProcessor
+            .check_outgoing_payment(payment_identifier)
+            .await
+    }
+}
+
+async fn federated_test_mint_with_reserve_checking_payment_processor(
+    runtime_config: FederationRuntimeConfig,
+) -> (
+    Mint,
+    Arc<MintSqliteDatabase>,
+    Arc<Mutex<Option<ExpectedMeltReserve>>>,
+    Arc<AtomicUsize>,
+) {
+    let localstore = Arc::new(memory::empty().await.expect("mint db"));
+    let expected = Arc::new(Mutex::new(None));
+    let make_payment_calls = Arc::new(AtomicUsize::new(0));
+    let payment_processor = Arc::new(ReserveCheckingPaymentProcessor {
+        localstore: Arc::clone(&localstore),
+        expected: Arc::clone(&expected),
+        make_payment_calls: Arc::clone(&make_payment_calls),
+    });
+    let mut builder = MintBuilder::new(localstore.clone()).with_federation_config(runtime_config);
+    builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintMeltLimits::new(1, 10_000),
+            payment_processor,
+        )
+        .await
+        .expect("payment processor");
+    let mint = builder
+        .build_with_seed(localstore.clone(), &[9; 64])
+        .await
+        .expect("mint");
+
+    (mint, localstore, expected, make_payment_calls)
 }
 
 fn appended_entry(
@@ -4288,6 +4456,82 @@ async fn future_quarantine_does_not_suppress_prior_mint_payment_replay() {
         err.to_string().contains("quarantined"),
         "unexpected error: {err}"
     );
+}
+
+#[tokio::test]
+async fn accepted_federation_melt_persists_reserve_before_payment_attempt() {
+    let runtime_config = runtime_config();
+    let (mint, localstore, expected_reserve, make_payment_calls) =
+        federated_test_mint_with_reserve_checking_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let proofs = vec![
+        proof_for_runtime(&runtime_config, "reserve-before-payment-input-one"),
+        proof_for_runtime(&runtime_config, "reserve-before-payment-input-two"),
+    ];
+    let input_ys = proofs.ys().expect("reserve-before-payment input ys");
+    *expected_reserve.lock().await = Some(ExpectedMeltReserve {
+        quote: quote.clone(),
+        input_ys: input_ys.clone(),
+    });
+
+    let melt_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .melt_operation(MeltRequest::new(quote.clone(), proofs, None))
+            .expect("melt operation"),
+    );
+    assert!(
+        runtime_config.should_attempt_melt_payment(melt_entry.operation_id),
+        "single-member federation should attempt the accepted external melt payment"
+    );
+    persist_and_apply_entry(&mint, &melt_entry).await;
+
+    assert_eq!(make_payment_calls.load(Ordering::Relaxed), 1);
+    let stored_quote = localstore
+        .get_melt_quote(&quote)
+        .await
+        .expect("melt quote lookup")
+        .expect("melt quote");
+    assert_eq!(stored_quote.state, MeltQuoteState::Pending);
+
+    let saga = localstore
+        .get_melt_saga_by_quote_id(&quote)
+        .await
+        .expect("melt saga lookup")
+        .expect("melt saga");
+    assert_eq!(
+        saga.state,
+        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
+    );
+    assert_eq!(
+        saga.federation_operation_id,
+        Some(melt_entry.operation_id.to_string())
+    );
+    assert_eq!(
+        localstore
+            .get_proofs_states(&input_ys)
+            .await
+            .expect("proof states"),
+        vec![Some(State::Pending), Some(State::Pending)]
+    );
+
+    let stored_entries = localstore
+        .get_federation_journal_entries()
+        .await
+        .expect("journal entries");
+    let stored_entry = stored_entries
+        .iter()
+        .find(|entry| entry.operation_id == melt_entry.operation_id)
+        .expect("stored melt entry");
+    assert_eq!(stored_entry.status, FederationOperationStatus::Applied);
 }
 
 #[tokio::test]
