@@ -1128,6 +1128,12 @@ impl Mint {
                 "federation mint replay found partially persisted signatures".to_string(),
             ));
         }
+        validate_federation_mint_quote_states_for_signing(
+            &quotes,
+            &expected_amounts,
+            signatures_present,
+            existing_signatures.len(),
+        )?;
 
         let operation_record = if input.is_batch() {
             Operation::new(
@@ -2002,6 +2008,36 @@ fn validate_federation_mint_quote_signatures(
             Ok(())
         }
     }
+}
+
+fn validate_federation_mint_quote_states_for_signing(
+    quotes: &[database::mint::Acquired<MintQuote>],
+    expected_amounts: &[Amount<CurrencyUnit>],
+    signatures_present: usize,
+    expected_signature_count: usize,
+) -> Result<(), Error> {
+    if quotes.len() != expected_amounts.len() {
+        return Err(Error::Internal);
+    }
+
+    for (quote, amount_issued) in quotes.iter().zip(expected_amounts) {
+        match quote.state() {
+            MintQuoteState::Paid => {}
+            MintQuoteState::Issued => {
+                if quote.amount_issued() < amount_issued.clone() {
+                    return Err(Error::IssuedQuote);
+                }
+                if signatures_present != expected_signature_count {
+                    return Err(Error::IssuedQuote);
+                }
+            }
+            MintQuoteState::Unpaid => {
+                return Err(Error::UnpaidQuote);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn expected_federation_mint_amounts(

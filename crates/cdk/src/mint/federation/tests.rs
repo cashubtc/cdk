@@ -1400,6 +1400,90 @@ async fn apply_federation_mint_uses_rotated_keyset_for_signing() {
 }
 
 #[tokio::test]
+async fn apply_federation_mint_rejects_unpaid_quote_before_signing() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_operation(
+            quote.clone(),
+            bolt11_quote_request(1),
+            bolt11_quote_response(&quote, 1),
+        ),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let output = output_for_runtime(&runtime_config, b"unpaid federation mint output");
+    let mint_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .mint_operation(MintInput::Single(MintRequest {
+                quote: quote.clone(),
+                outputs: vec![output.clone()],
+                signature: None,
+            }))
+            .expect("mint operation"),
+    );
+    persist_journal_entry(&localstore, &mint_entry).await;
+
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&mint_entry))
+            .await,
+        Err(Error::UnpaidQuote)
+    ));
+
+    let signatures = localstore
+        .get_blind_signatures(&[output.blinded_secret])
+        .await
+        .expect("unpaid mint signature lookup");
+    assert_eq!(signatures.len(), 1);
+    assert!(
+        signatures.iter().all(Option::is_none),
+        "unpaid quote must fail before blind signature storage"
+    );
+
+    let share_records = localstore
+        .get_federation_signature_shares_for_output(mint_entry.operation_id, 0)
+        .await
+        .expect("unpaid mint share lookup");
+    assert!(
+        share_records.is_empty(),
+        "unpaid quote must fail before federation signature share storage"
+    );
+
+    let blinded_message_share_records = localstore
+        .get_federation_signature_shares_for_blinded_message(output.blinded_secret)
+        .await
+        .expect("unpaid blinded-message share lookup");
+    assert!(
+        blinded_message_share_records.is_empty(),
+        "unpaid quote must fail before blinded-message share storage"
+    );
+
+    let stored_quote = localstore
+        .get_mint_quote(&quote)
+        .await
+        .expect("quote lookup")
+        .expect("quote");
+    assert_eq!(stored_quote.state(), MintQuoteState::Unpaid);
+
+    let stored_entries = localstore
+        .get_federation_journal_entries()
+        .await
+        .expect("journal lookup");
+    let stored_mint_entry = stored_entries
+        .iter()
+        .find(|entry| entry.operation_id == mint_entry.operation_id)
+        .expect("stored mint entry");
+    assert_eq!(
+        stored_mint_entry.status,
+        FederationOperationStatus::Accepted
+    );
+}
+
+#[tokio::test]
 async fn apply_federation_mint_accepts_nut20_locked_quote() {
     let runtime_config = runtime_config();
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
