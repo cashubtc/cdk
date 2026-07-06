@@ -1182,6 +1182,156 @@ fn aleph_bft_consensus_adapter_marks_duplicate_finalized_operations_idempotently
 }
 
 #[test]
+fn aleph_bft_consensus_adapter_recovers_from_finalized_items() {
+    let federation_id = federation_id(13);
+    let envelope = mint_envelope(
+        federation_id,
+        "quote-1",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let operation_id = envelope.operation_id().expect("operation id");
+    let first_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        0,
+        0,
+        vec![FederationConsensusItem::operation(envelope.clone())],
+    )
+    .expect("first unit");
+    let duplicate_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(3),
+        0,
+        0,
+        vec![FederationConsensusItem::operation(envelope.clone())],
+    )
+    .expect("duplicate unit");
+    let later_duplicate_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        0,
+        1,
+        vec![FederationConsensusItem::operation(envelope)],
+    )
+    .expect("later duplicate unit");
+    let mut adapter = FederationAlephBftConsensusAdapter::for_members(
+        federation_id,
+        member_id_value(1),
+        0,
+        [member_id_value(1), member_id_value(2), member_id_value(3)],
+    )
+    .expect("adapter");
+
+    adapter.finalize_unit(first_unit).expect("first finalized");
+    adapter
+        .finalize_unit(duplicate_unit.clone())
+        .expect("duplicate finalized");
+    let finalized_items = adapter.finalized_items().to_vec();
+
+    let mut recovered =
+        FederationAlephBftConsensusAdapter::recover_for_members_from_finalized_items(
+            federation_id,
+            member_id_value(1),
+            0,
+            [member_id_value(1), member_id_value(2), member_id_value(3)],
+            finalized_items,
+        )
+        .expect("recovered adapter");
+
+    assert_eq!(recovered.journal().len(), 1);
+    assert_eq!(recovered.journal().entries()[0].operation_id, operation_id);
+    assert_eq!(recovered.finalized_items().len(), 2);
+    assert_eq!(recovered.next_item_index(), 2);
+    assert_eq!(recovered.status().next_unit_finalization_index, 2);
+    assert!(matches!(
+        recovered.finalize_unit(duplicate_unit),
+        Err(FederationError::DuplicateAlephBftUnit {
+            session: 0,
+            member_id,
+            unit_index: 0,
+        }) if member_id == member_id_value(3)
+    ));
+
+    let duplicate_response = recovered
+        .finalize_unit(later_duplicate_unit)
+        .expect("later duplicate finalized");
+    assert_eq!(duplicate_response.len(), 1);
+    assert_eq!(duplicate_response[0].operation_id, operation_id);
+    assert_eq!(duplicate_response[0].outcome.entry().index, 0);
+    assert_eq!(recovered.journal().len(), 1);
+    assert_eq!(
+        recovered.finalized_items()[2].status,
+        FederationAlephBftFinalizedItemStatus::DuplicateOperation
+    );
+}
+
+#[test]
+fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
+    let federation_id = federation_id(13);
+    let envelope = mint_envelope(
+        federation_id,
+        "quote-1",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let other_envelope = mint_envelope(
+        federation_id,
+        "quote-2",
+        "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+    );
+    let mut adapter = FederationAlephBftConsensusAdapter::new(federation_id, member_id_value(1), 0);
+    let unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        0,
+        0,
+        vec![FederationConsensusItem::operation(envelope)],
+    )
+    .expect("unit");
+    adapter.finalize_unit(unit).expect("finalized");
+    let finalized_items = adapter.finalized_items().to_vec();
+
+    let mut gap = finalized_items.clone();
+    gap[0].accepted_item_index = 7;
+    assert!(matches!(
+        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+            federation_id,
+            member_id_value(1),
+            0,
+            gap,
+        ),
+        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
+            if reason.contains("non-contiguous accepted item index")
+    ));
+
+    let mut mismatched_operation_id = finalized_items.clone();
+    mismatched_operation_id[0].operation_id =
+        Some(other_envelope.operation_id().expect("other operation id"));
+    assert!(matches!(
+        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+            federation_id,
+            member_id_value(1),
+            0,
+            mismatched_operation_id,
+        ),
+        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
+            if reason.contains("operation id does not match")
+    ));
+
+    let mut impossible_duplicate = finalized_items;
+    impossible_duplicate[0].status = FederationAlephBftFinalizedItemStatus::DuplicateOperation;
+    assert!(matches!(
+        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+            federation_id,
+            member_id_value(1),
+            0,
+            impossible_duplicate,
+        ),
+        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
+            if reason.contains("duplicate operation finalized before")
+    ));
+}
+
+#[test]
 fn aleph_bft_consensus_adapter_rejects_invalid_finalized_units_before_journal_append() {
     let federation = federation_id(13);
     let wrong_federation = federation_id(14);

@@ -308,6 +308,20 @@ impl FederationAlephBftFinalizedUnitOutcome {
     }
 }
 
+impl FederationAlephBftFinalizedItem {
+    /// Return consensus evidence matching this finalized item.
+    #[must_use]
+    pub fn consensus_evidence(&self) -> FederationJournalConsensusEvidence {
+        FederationJournalConsensusEvidence::new(
+            self.session,
+            self.accepted_item_index,
+            self.unit_finalization_index,
+            self.unit_submitting_member,
+            self.unit_index,
+        )
+    }
+}
+
 /// Operator-facing status for the AlephBFT adapter boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationAlephBftAdapterStatus {
@@ -913,6 +927,119 @@ impl FederationAlephBftFinalizationHandler {
         Ok(handler)
     }
 
+    fn recover_from_finalized_items(
+        federation_id: FederationId,
+        session: u64,
+        max_unit_payload_bytes: usize,
+        allowed_members: Option<BTreeSet<MemberId>>,
+        finalized_items: &[FederationAlephBftFinalizedItem],
+    ) -> Result<Self> {
+        ensure_non_zero_consensus_limit("max_unit_payload_bytes", max_unit_payload_bytes)?;
+
+        let mut finalized_units = BTreeSet::new();
+        let mut finalized_unit_metadata = BTreeMap::new();
+        let mut finalized_operation_ids = BTreeSet::new();
+        let mut next_unit_finalization_index = 0;
+        let mut next_item_index = 0;
+
+        for (expected_index, finalized_item) in finalized_items.iter().enumerate() {
+            let expected_index =
+                u64::try_from(expected_index).expect("finalized item count fits in u64");
+            if finalized_item.accepted_item_index != expected_index {
+                return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                    reason: format!(
+                        "non-contiguous accepted item index: expected {expected_index}, found {}",
+                        finalized_item.accepted_item_index
+                    ),
+                });
+            }
+            if finalized_item.session > session {
+                return Err(FederationError::AlephBftUnitSessionMismatch {
+                    expected: session,
+                    found: finalized_item.session,
+                });
+            }
+            if let Some(allowed_members) = &allowed_members {
+                if !allowed_members.contains(&finalized_item.unit_submitting_member) {
+                    return Err(FederationError::UnknownMember {
+                        member_id: finalized_item.unit_submitting_member,
+                    });
+                }
+            }
+
+            let computed_operation_id = finalized_item.item.operation_id()?;
+            if computed_operation_id != finalized_item.operation_id {
+                return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                    reason: "finalized item operation id does not match item body".to_string(),
+                });
+            }
+
+            match (finalized_item.status, finalized_item.operation_id) {
+                (FederationAlephBftFinalizedItemStatus::Accepted, Some(operation_id)) => {
+                    if !finalized_operation_ids.insert(operation_id) {
+                        return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                            reason: "accepted finalized item repeats an operation id".to_string(),
+                        });
+                    }
+                }
+                (FederationAlephBftFinalizedItemStatus::DuplicateOperation, Some(operation_id)) => {
+                    if finalized_operation_ids.insert(operation_id) {
+                        return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                            reason: "duplicate operation finalized before its accepted item"
+                                .to_string(),
+                        });
+                    }
+                }
+                (FederationAlephBftFinalizedItemStatus::DuplicateOperation, None) => {
+                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                        reason: "non-operation finalized item cannot be a duplicate operation"
+                            .to_string(),
+                    });
+                }
+                (FederationAlephBftFinalizedItemStatus::Accepted, None) => {}
+            }
+
+            let unit_key = (
+                finalized_item.session,
+                finalized_item.unit_submitting_member,
+                finalized_item.unit_index,
+            );
+            let unit_metadata = (
+                finalized_item.unit_finalization_index,
+                finalized_item.unit_body_hash,
+            );
+            match finalized_unit_metadata.get(&unit_key) {
+                Some(existing) if *existing != unit_metadata => {
+                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                        reason: "finalized unit metadata changed within retained items".to_string(),
+                    });
+                }
+                Some(_) => {}
+                None => {
+                    finalized_unit_metadata.insert(unit_key, unit_metadata);
+                    finalized_units.insert(unit_key);
+                }
+            }
+
+            if finalized_item.session == session {
+                next_unit_finalization_index = next_unit_finalization_index
+                    .max(finalized_item.unit_finalization_index.saturating_add(1));
+            }
+            next_item_index = finalized_item.accepted_item_index.saturating_add(1);
+        }
+
+        Ok(Self {
+            federation_id,
+            session,
+            next_unit_finalization_index,
+            next_item_index,
+            max_unit_payload_bytes,
+            allowed_members,
+            finalized_units,
+            finalized_operation_ids,
+        })
+    }
+
     /// Return the session accepted by this handler.
     #[must_use]
     pub fn session(&self) -> u64 {
@@ -1132,6 +1259,73 @@ impl FederationAlephBftConsensusAdapter {
         })
     }
 
+    /// Recover an AlephBFT adapter boundary from retained finalized items.
+    pub fn recover_from_finalized_items(
+        federation_id: FederationId,
+        local_member: MemberId,
+        session: u64,
+        finalized_items: Vec<FederationAlephBftFinalizedItem>,
+    ) -> Result<Self> {
+        Self::recover_inner(federation_id, local_member, session, None, finalized_items)
+    }
+
+    /// Recover an AlephBFT adapter boundary with a roster-bound finalization guard.
+    pub fn recover_for_members_from_finalized_items<I>(
+        federation_id: FederationId,
+        local_member: MemberId,
+        session: u64,
+        allowed_members: I,
+        finalized_items: Vec<FederationAlephBftFinalizedItem>,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = MemberId>,
+    {
+        Self::recover_inner(
+            federation_id,
+            local_member,
+            session,
+            Some(allowed_members.into_iter().collect()),
+            finalized_items,
+        )
+    }
+
+    fn recover_inner(
+        federation_id: FederationId,
+        local_member: MemberId,
+        session: u64,
+        allowed_members: Option<BTreeSet<MemberId>>,
+        finalized_items: Vec<FederationAlephBftFinalizedItem>,
+    ) -> Result<Self> {
+        let finalization_handler =
+            FederationAlephBftFinalizationHandler::recover_from_finalized_items(
+                federation_id,
+                session,
+                FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+                allowed_members,
+                &finalized_items,
+            )?;
+        let mut journal = InMemoryFederationJournal::new();
+        for finalized_item in &finalized_items {
+            if let FederationConsensusItem::Operation(envelope) = &finalized_item.item {
+                journal.append_with_consensus_evidence(
+                    envelope.clone(),
+                    finalized_item.consensus_evidence(),
+                )?;
+            }
+        }
+
+        Ok(Self {
+            data_provider: FederationAlephBftUnitDataProvider::new(
+                federation_id,
+                local_member,
+                session,
+            ),
+            finalization_handler,
+            journal,
+            finalized_items,
+        })
+    }
+
     /// Return the backend kind represented by this adapter boundary.
     #[must_use]
     pub fn backend_kind(&self) -> FederationConsensusBackendKind {
@@ -1239,16 +1433,11 @@ impl FederationAlephBftConsensusAdapter {
 
         for finalized_item in outcome.items {
             if let FederationConsensusItem::Operation(envelope) = &finalized_item.item {
-                let evidence = FederationJournalConsensusEvidence::new(
-                    finalized_item.session,
-                    finalized_item.accepted_item_index,
-                    finalized_item.unit_finalization_index,
-                    finalized_item.unit_submitting_member,
-                    finalized_item.unit_index,
-                );
                 let response = FederationSubmitOperationResponse::from_outcome(
-                    self.journal
-                        .append_with_consensus_evidence(envelope.clone(), evidence)?,
+                    self.journal.append_with_consensus_evidence(
+                        envelope.clone(),
+                        finalized_item.consensus_evidence(),
+                    )?,
                 );
                 responses.push(response);
             }

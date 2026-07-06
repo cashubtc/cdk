@@ -479,6 +479,12 @@ pub enum FederationError {
         /// Member-local unit index.
         unit_index: u64,
     },
+    /// Retained AlephBFT finalized-item metadata is not internally consistent.
+    #[error("Federation AlephBFT finalized item recovery mismatch: {reason}")]
+    AlephBftFinalizedItemRecoveryMismatch {
+        /// Human-readable mismatch reason.
+        reason: String,
+    },
     /// The roster has a different member count than the threshold params.
     #[error("Federation member count mismatch: expected={expected}, found={found}")]
     MemberCountMismatch {
