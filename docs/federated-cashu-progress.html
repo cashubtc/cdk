@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover pending melt observation</span>
+          <span class="value">test: cover pending melt retries</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Public fake-wallet pending federated melt now proves non-terminal quote polling keeps inputs pending and observation-free, then terminal quote polling spends inputs, signs change, clears saga state, and records one payment observation.</span>
+          <span class="value">Duplicate pending public federated melts now return the persisted pending response without a second outgoing payment attempt, including after SQLite restart, while deterministic actor-selection tests remain green.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -756,7 +756,7 @@
           </article>
           <article class="item">
             <h3>Payment observation safety</h3>
-            <p>Mint and melt payment observations are serialized as consensus material, deduplicated, conflict-reportable, quarantineable, backend-agnostic, and tested across paid, failed, pending, delayed, and offline catch-up paths; successful public fake-wallet melts bridge the live paid route to terminal quote-status observation rows, pending public fake-wallet melts stay observation-free until terminal settlement, failed public fake-wallet melts record guarded terminal unpaid observations after an accepted attempt, and exact duplicate failed public melts no longer attempt another outgoing payment, including after restart and catch-up.</p>
+            <p>Mint and melt payment observations are serialized as consensus material, deduplicated, conflict-reportable, quarantineable, backend-agnostic, and tested across paid, failed, pending, delayed, and offline catch-up paths; successful public fake-wallet melts bridge the live paid route to terminal quote-status observation rows, pending public fake-wallet melts stay observation-free until terminal settlement, duplicate pending melts do not trigger another outgoing payment even after restart, failed public fake-wallet melts record guarded terminal unpaid observations after an accepted attempt, and exact duplicate failed public melts no longer attempt another outgoing payment, including after restart and catch-up.</p>
           </article>
           <article class="item">
             <h3>Networking and authentication</h3>

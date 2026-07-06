@@ -6389,6 +6389,182 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn duplicate_pending_federation_melt_returns_pending_without_second_payment() {
+        let (backend, make_payment_calls) = CountingFakeWallet::new();
+        let state = create_federated_test_state_with_backend(backend).await;
+        let fake_description = FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Pending,
+            check_payment_state: MeltQuoteState::Pending,
+            pay_err: false,
+            check_err: false,
+        };
+        let quote_id = create_federated_melt_quote_with_description(
+            &state,
+            1000,
+            serde_json::to_string(&fake_description).expect("fake invoice description"),
+        )
+        .await;
+        let input = proof_for_amount(&state, 2, "duplicate-pending-melt");
+        let input_y = input.y().expect("input y");
+        let request = cdk::nuts::MeltRequest::new(quote_id.clone(), vec![input], None);
+
+        let first = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect("initial pending federated melt should return pending");
+
+        assert_eq!(first.state(), MeltQuoteState::Pending);
+        assert_eq!(make_payment_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_proofs_states(&[input_y])
+                .await
+                .expect("pending proof state lookup"),
+            vec![Some(cdk::nuts::State::Pending)]
+        );
+
+        let duplicate = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect("duplicate pending federated melt should return persisted pending state");
+
+        assert_eq!(duplicate.state(), MeltQuoteState::Pending);
+        assert_eq!(
+            make_payment_calls.load(Ordering::SeqCst),
+            1,
+            "duplicate pending melt must not attempt a second outgoing payment"
+        );
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+        let stats = state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_proofs_states(&[input_y])
+                .await
+                .expect("duplicate pending proof state lookup"),
+            vec![Some(cdk::nuts::State::Pending)]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn duplicate_pending_federation_melt_after_sqlite_restart_avoids_second_payment() {
+        let db_file = TempMintDbFile::new("cdk-axum-fed-public-pending-melt-restart");
+        let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        let seed = mnemonic.to_seed_normalized("");
+        let (backend, make_payment_calls) = CountingFakeWallet::new();
+        let db = Arc::new(
+            cdk_sqlite::MintSqliteDatabase::new(db_file.path())
+                .await
+                .expect("mint db"),
+        );
+        let state = create_federated_test_state_with_backend_db_and_seed(backend, db, &seed).await;
+        let fake_description = FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Pending,
+            check_payment_state: MeltQuoteState::Pending,
+            pay_err: false,
+            check_err: false,
+        };
+        let quote_id = create_federated_melt_quote_with_description(
+            &state,
+            1000,
+            serde_json::to_string(&fake_description).expect("fake invoice description"),
+        )
+        .await;
+        let input = proof_for_amount(&state, 2, "pending-melt-sqlite-restart");
+        let input_y = input.y().expect("input y");
+        let request = cdk::nuts::MeltRequest::new(quote_id.clone(), vec![input], None);
+
+        let first = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect("first pending federated fake-wallet melt should return pending");
+
+        assert_eq!(first.state(), MeltQuoteState::Pending);
+        assert_eq!(make_payment_calls.load(Ordering::SeqCst), 1);
+        drop(state);
+
+        let (restarted_backend, restarted_make_payment_calls) = CountingFakeWallet::new();
+        let restarted_state =
+            restart_federated_test_state_from_db_with_backend(&db_file, &seed, restarted_backend)
+                .await;
+        assert_eq!(
+            federation_operation_kinds(&restarted_state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+
+        let duplicate = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &restarted_state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect("duplicate pending melt after restart should return persisted pending state");
+
+        assert_eq!(duplicate.state(), MeltQuoteState::Pending);
+        assert_eq!(
+            restarted_make_payment_calls.load(Ordering::SeqCst),
+            0,
+            "duplicate pending melt after restart must not attempt payment"
+        );
+        assert_eq!(
+            federation_operation_kinds(&restarted_state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+        assert_eq!(
+            restarted_state
+                .mint
+                .localstore()
+                .get_proofs_states(&[input_y])
+                .await
+                .expect("restarted pending proof state lookup"),
+            vec![Some(cdk::nuts::State::Pending)]
+        );
+        let saga = restarted_state
+            .mint
+            .localstore()
+            .get_melt_saga_by_quote_id(&quote_id)
+            .await
+            .expect("restarted saga lookup")
+            .expect("pending saga after restart");
+        assert_eq!(saga.state.state(), "payment_attempted");
+        assert!(saga.federation_operation_id.is_some());
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn pending_federated_melt_quote_check_later_finalizes_with_change() {
         let backend = Arc::new(DelayedStatusFakeWallet::new(2, Some(MeltQuoteState::Paid)));
         let state = create_federated_test_state_with_backend(backend).await;
