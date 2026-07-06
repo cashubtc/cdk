@@ -5534,6 +5534,112 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn successful_federation_melt_quote_check_records_terminal_payment_observation() {
+        let state = create_federated_test_state().await;
+        let quote_id = create_federated_melt_quote(&state, 1000).await;
+        let input = proof_for_amount(&state, 4, "happy-melt-observation");
+        let input_y = input.y().expect("input y");
+        let mut change_output =
+            outputs_for_amount_with_label(&state, 2, "happy-melt-observation-change")
+                .into_iter()
+                .next()
+                .expect("change output");
+        change_output.amount = Amount::ZERO;
+        let request = cdk::nuts::MeltRequest::new(
+            quote_id.clone(),
+            vec![input],
+            Some(vec![change_output.clone()]),
+        );
+
+        let response = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect("federated fake-wallet melt should settle with change");
+
+        assert_eq!(response.state(), MeltQuoteState::Paid);
+        let response_change = response.change().expect("paid melt change");
+        assert_eq!(response_change.len(), 1);
+        assert_eq!(response_change[0].amount, Amount::from(2));
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_proofs_states(&[input_y])
+                .await
+                .expect("proof state lookup"),
+            vec![Some(cdk::nuts::State::Spent)]
+        );
+        assert!(
+            state
+                .mint
+                .localstore()
+                .get_melt_saga_by_quote_id(&quote_id)
+                .await
+                .expect("saga lookup")
+                .is_none(),
+            "paid happy-path melt should clear saga state"
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[change_output.blinded_secret])
+            .await
+            .expect("change signature lookup")[0]
+            .is_some());
+
+        let check_response = get_check_melt_custom_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path(("bolt11".to_string(), quote_id.clone())),
+        )
+        .await;
+        assert!(
+            check_response.is_ok(),
+            "terminal melt quote check should submit a payment observation"
+        );
+
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![
+                cdk::federation::FederationOperationKind::Melt,
+                cdk::federation::FederationOperationKind::MeltQuotePayment,
+            ]
+        );
+        let observations = state
+            .mint
+            .localstore()
+            .get_federation_payment_observations(
+                cdk::federation::FederationPaymentObservationContext::MeltQuote,
+                &quote_id.to_string(),
+            )
+            .await
+            .expect("melt payment observations");
+        assert_eq!(observations.len(), 1);
+        let local_member = state
+            .mint
+            .federation_config()
+            .expect("federation config")
+            .member_id();
+        assert!(matches!(
+            &observations[0].observation,
+            cdk::federation::FederationPaymentObservation::MeltQuote(observation)
+                if observation.quote == quote_id.to_string()
+                    && observation.observer == local_member
+                    && observation.state == MeltQuoteState::Paid
+                    && observation.amount == Amount::from(1)
+                    && observation.fee_reserve == Amount::from(1)
+                    && observation.payment_proof.is_some()
+        ));
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn duplicate_federation_melt_returns_persisted_response() {
         let state = create_federated_test_state().await;
         let quote_id = create_federated_melt_quote(&state, 1000).await;
