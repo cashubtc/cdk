@@ -1211,11 +1211,12 @@ mod tests {
     };
     #[cfg(feature = "federation")]
     use cdk::federation::{
-        generate_trusted_dealer_configs, FederationConfig, FederationConsensusEngine,
-        FederationJournalEntry, FederationKeysetRotationOperation, FederationOperation,
-        FederationOperationEnvelope, FederationOperationId, InMemoryFederationConsensus,
-        InMemoryFederationJournal, MemberConfigPrivate, MemberId, ThresholdParams,
-        TrustedDealerConfigBundle, TrustedDealerKeysetSpec, TrustedDealerMember,
+        generate_trusted_dealer_configs, FederationConfig, FederationConsensusBackendKind,
+        FederationConsensusEngine, FederationConsensusRuntime, FederationJournalEntry,
+        FederationKeysetRotationOperation, FederationOperation, FederationOperationEnvelope,
+        FederationOperationId, InMemoryFederationConsensus, InMemoryFederationJournal,
+        MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerConfigBundle,
+        TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     use cdk::mint::{Mint, MintBuilder, MintMeltLimits, MintQuoteResponse};
     use cdk::nuts::nut00::KnownMethod;
@@ -1935,7 +1936,52 @@ mod tests {
         db: Arc<cdk_sqlite::MintSqliteDatabase>,
         seed: &[u8],
     ) -> MintState {
+        create_federated_test_state_with_backend_db_seed_and_consensus(
+            payment_processor,
+            db,
+            seed,
+            FederationConsensusBackendKind::InMemory,
+        )
+        .await
+    }
+
+    #[cfg(feature = "federation")]
+    async fn create_aleph_bft_federated_test_state() -> MintState {
+        let fake = FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 0.0,
+            },
+            HashMap::default(),
+            HashSet::default(),
+            0,
+            CurrencyUnit::Sat,
+        );
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let mnemonic = Mnemonic::generate(12).unwrap();
+        create_federated_test_state_with_backend_db_seed_and_consensus(
+            Arc::new(fake),
+            db,
+            &mnemonic.to_seed_normalized(""),
+            FederationConsensusBackendKind::AlephBft,
+        )
+        .await
+    }
+
+    #[cfg(feature = "federation")]
+    async fn create_federated_test_state_with_backend_db_seed_and_consensus(
+        payment_processor: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync + 'static>,
+        db: Arc<cdk_sqlite::MintSqliteDatabase>,
+        seed: &[u8],
+        consensus_backend: FederationConsensusBackendKind,
+    ) -> MintState {
         let runtime_config = test_federation_runtime_config();
+        let runtime_config = cdk::mint::FederationRuntimeConfig::new_with_consensus_backend(
+            runtime_config.public_config().clone(),
+            runtime_config.private_config().clone(),
+            consensus_backend,
+        )
+        .expect("runtime config with consensus backend");
         let mut builder = MintBuilder::new(db.clone())
             .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]))
             .with_federation_config(runtime_config.clone());
@@ -1959,17 +2005,35 @@ mod tests {
             mint: Arc::new(mint),
             cache: Arc::new(HttpCache::default()),
             federation_consensus: Some(Arc::new(tokio::sync::Mutex::new(
-                cdk::federation::FederationConsensusRuntime::in_memory(
-                    runtime_config.federation_id(),
-                    runtime_config.member_id(),
-                ),
+                match consensus_backend {
+                    FederationConsensusBackendKind::InMemory => {
+                        FederationConsensusRuntime::in_memory(
+                            runtime_config.federation_id(),
+                            runtime_config.member_id(),
+                        )
+                    }
+                    FederationConsensusBackendKind::AlephBft => {
+                        FederationConsensusRuntime::aleph_bft_from_finalized_items(
+                            runtime_config.federation_id(),
+                            runtime_config.member_id(),
+                            0,
+                            runtime_config.public_config().members.keys().copied(),
+                            runtime_config
+                                .public_config()
+                                .threshold_params
+                                .consensus_threshold,
+                            Vec::new(),
+                        )
+                        .expect("AlephBFT consensus runtime")
+                    }
+                },
             ))),
             federation_peer_sync_config: Some(crate::FederationPeerSyncConfig::default()),
             federation_sequences: Some(Arc::new(tokio::sync::Mutex::new(
                 cdk::federation::FederationRestSequenceTracker::new(),
             ))),
             federation_sync: Some(Arc::new(tokio::sync::Mutex::new(
-                crate::FederationSyncState::default(),
+                crate::FederationSyncState::for_consensus_backend(consensus_backend),
             ))),
             federation_notifications: Some(Arc::new(
                 crate::FederationOperationNotifications::default(),
@@ -2839,6 +2903,55 @@ mod tests {
         String::from_utf8_lossy(&bytes).to_string()
     }
 
+    #[cfg(feature = "federation")]
+    async fn assert_aleph_bft_http_response_not_ready(response: Response) {
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_error_detail(response).await;
+        assert!(
+            body.contains("public federation submissions are disabled"),
+            "AlephBFT public route should fail closed before queueing: {body}"
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    fn assert_aleph_bft_error_not_ready(error: &cdk::Error) {
+        match error {
+            cdk::Error::Custom(detail)
+                if detail.contains("public federation submissions are disabled") => {}
+            _ => panic!("AlephBFT public submit should fail closed, got: {error}"),
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    async fn assert_no_aleph_bft_public_submit_work(state: &MintState) {
+        assert!(
+            federation_operation_kinds(state).await.is_empty(),
+            "halted AlephBFT public route must not append a journal entry"
+        );
+        let consensus = state
+            .federation_consensus
+            .as_ref()
+            .expect("federation consensus")
+            .lock()
+            .await;
+        assert_eq!(
+            consensus.queued_len(),
+            0,
+            "halted AlephBFT public route must not queue an item"
+        );
+        assert_eq!(
+            consensus.peer_status().operation_count,
+            0,
+            "halted AlephBFT public route must not accept an operation"
+        );
+        drop(consensus);
+        assert_eq!(
+            state.federation_pending_response_waiter_count(),
+            0,
+            "halted AlephBFT public route must not register a response waiter"
+        );
+    }
+
     #[tokio::test]
     async fn test_prefer_header_respond_async() {
         let req = create_test_request(Some("respond-async"));
@@ -3544,6 +3657,31 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn cache_post_batch_mint_aleph_bft_public_route_fails_closed_before_queueing() {
+        let state = create_aleph_bft_federated_test_state().await;
+        let quote_id = create_paid_bolt11_quote(&state).await;
+        let request = BatchMintRequest {
+            quotes: vec![quote_id],
+            quote_amounts: None,
+            outputs: outputs_for_amount(&state, 2),
+            signatures: None,
+        };
+
+        let error = cache_post_batch_mint(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(request),
+        )
+        .await
+        .expect_err("AlephBFT public mint should fail closed before real finality exists");
+
+        assert_aleph_bft_http_response_not_ready(error).await;
+        assert_no_aleph_bft_public_submit_work(&state).await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn duplicate_federation_batch_mint_returns_persisted_signature_shares() {
         let state = create_federated_test_state().await;
         let quote_id = create_paid_bolt11_quote(&state).await;
@@ -3868,6 +4006,27 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn post_swap_aleph_bft_public_route_fails_closed_before_queueing() {
+        let state = create_aleph_bft_federated_test_state().await;
+        let request = cdk::nuts::SwapRequest::new(
+            vec![proof_for_amount(&state, 2, "aleph-bft-halted-swap-input")],
+            outputs_for_amount_with_label(&state, 2, "aleph-bft-halted-swap-output"),
+        );
+
+        let error = crate::router_handlers::post_swap(
+            AuthHeader::None,
+            State(state.clone()),
+            Json(request),
+        )
+        .await
+        .expect_err("AlephBFT public swap should fail closed before real finality exists");
+
+        assert_aleph_bft_http_response_not_ready(error).await;
+        assert_no_aleph_bft_public_submit_work(&state).await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn duplicate_post_swap_returns_persisted_signature_shares() {
         let state = create_federated_test_state().await;
         let outputs = outputs_for_amount(&state, 2);
@@ -4166,6 +4325,40 @@ mod tests {
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::Melt]
         );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn process_melt_request_aleph_bft_public_route_fails_closed_before_queueing() {
+        let state = create_aleph_bft_federated_test_state().await;
+        let quote_id = create_federated_melt_quote(&state, 1000).await;
+        let request = cdk::nuts::MeltRequest::new(
+            quote_id.clone(),
+            vec![proof_for_amount(&state, 2, "aleph-bft-halted-melt")],
+            None,
+        );
+
+        let error = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect_err("AlephBFT public melt should fail closed before real finality exists");
+
+        assert_aleph_bft_error_not_ready(&error);
+        assert_no_aleph_bft_public_submit_work(&state).await;
+        let quote = state
+            .mint
+            .localstore()
+            .get_melt_quote(&quote_id)
+            .await
+            .expect("melt quote lookup")
+            .expect("melt quote");
+        assert_eq!(quote.state, MeltQuoteState::Unpaid);
     }
 
     #[cfg(feature = "federation")]
