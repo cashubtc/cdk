@@ -4161,6 +4161,185 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn duplicate_batch_mint_aleph_bft_pending_requests_join_one_queue_item() {
+        let mut state = create_aleph_bft_federated_test_state().await;
+        state.mark_federation_healthy().await;
+        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+            operation_submission_timeout: Duration::from_secs(5),
+            response_waiter_limit: 4,
+            ..crate::FederationPeerSyncConfig::default()
+        });
+        let quote_id = create_paid_bolt11_quote(&state).await;
+        let outputs = outputs_for_amount_with_label(&state, 2, "aleph-public-mint-pending-join");
+        let request = BatchMintRequest {
+            quotes: vec![quote_id],
+            quote_amounts: None,
+            outputs: outputs.clone(),
+            signatures: None,
+        };
+        let config = state
+            .mint
+            .effective_federation_config()
+            .await
+            .expect("effective federation config")
+            .expect("federated mint config");
+        let operation_id = config
+            .mint_operation(cdk::mint::MintInput::Batch(request.clone()))
+            .expect("mint operation")
+            .operation_id()
+            .expect("mint operation id");
+
+        let first_state = state.clone();
+        let first_request = request.clone();
+        let first = tokio::spawn(async move {
+            cache_post_batch_mint(
+                AuthHeader::None,
+                State(first_state),
+                Path("bolt11".to_string()),
+                Json(first_request),
+            )
+            .await
+        });
+        for _ in 0..100 {
+            if state.federation_pending_response_waiter_count() == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            state.federation_pending_response_waiter_count(),
+            1,
+            "first mint request should wait for AlephBFT finality"
+        );
+        {
+            let consensus = state
+                .federation_consensus
+                .as_ref()
+                .expect("federation consensus")
+                .lock()
+                .await;
+            assert_eq!(consensus.queued_len(), 1);
+            assert!(
+                consensus.journal().entries().is_empty(),
+                "pending duplicate mint test must start before finality"
+            );
+        }
+
+        let second_state = state.clone();
+        let second_request = request.clone();
+        let second = tokio::spawn(async move {
+            cache_post_batch_mint(
+                AuthHeader::None,
+                State(second_state),
+                Path("bolt11".to_string()),
+                Json(second_request),
+            )
+            .await
+        });
+        for _ in 0..100 {
+            if state.federation_pending_response_waiter_count() == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            state.federation_pending_response_waiter_count(),
+            2,
+            "duplicate pending mint request should join the existing waiter"
+        );
+        {
+            let consensus = state
+                .federation_consensus
+                .as_ref()
+                .expect("federation consensus")
+                .lock()
+                .await;
+            assert_eq!(consensus.queued_len(), 1);
+            assert!(
+                consensus.journal().entries().is_empty(),
+                "pending duplicate mint must not append before finality"
+            );
+            assert_eq!(consensus.peer_status().operation_count, 0);
+        }
+        assert!(
+            state
+                .mint
+                .localstore()
+                .get_federation_signature_shares_for_output(operation_id, 0)
+                .await
+                .expect("pending duplicate mint share lookup")
+                .is_empty(),
+            "duplicate pending mint requests must not issue before finality"
+        );
+        let stats = state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
+        assert_eq!(stats.duplicate_pending_waiter_joins, 1);
+
+        let unit = {
+            let consensus = state
+                .federation_consensus
+                .as_ref()
+                .expect("federation consensus")
+                .lock()
+                .await;
+            consensus
+                .preview_next_aleph_bft_unit_payload()
+                .expect("preview next AlephBFT unit")
+                .expect("queued AlephBFT unit")
+        };
+        let finalized = state
+            .drain_and_apply_local_federation_aleph_bft_finalized_unit(&unit)
+            .await
+            .expect("local AlephBFT finality");
+        assert_eq!(finalized.len(), 1);
+        assert_eq!(finalized[0].operation_id, operation_id);
+
+        let first_response = first
+            .await
+            .expect("first mint task should complete")
+            .expect("first pending mint should return accepted response")
+            .0;
+        let second_response = second
+            .await
+            .expect("second mint task should complete")
+            .expect("second pending mint should return accepted response")
+            .0;
+        assert_eq!(second_response, first_response);
+
+        let share_records = state
+            .mint
+            .localstore()
+            .get_federation_signature_shares_for_output(operation_id, 0)
+            .await
+            .expect("accepted duplicate mint share lookup");
+        assert_eq!(share_records.len(), 1);
+        assert_eq!(share_records[0].operation_id, operation_id);
+        assert_eq!(share_records[0].output_index, 0);
+        assert_eq!(share_records[0].blinded_secret, outputs[0].blinded_secret);
+        assert_eq!(
+            cdk::nuts::PublicKey::from(share_records[0].share.signature()),
+            first_response.signatures[0].c
+        );
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Mint]
+        );
+        assert_eq!(state.federation_response_cache_entry_count(), 1);
+        assert_eq!(state.federation_pending_response_waiter_count(), 0);
+        {
+            let consensus = state
+                .federation_consensus
+                .as_ref()
+                .expect("federation consensus")
+                .lock()
+                .await;
+            assert_eq!(consensus.queued_len(), 0);
+            assert_eq!(consensus.peer_status().operation_count, 1);
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn duplicate_federation_batch_mint_returns_persisted_signature_shares() {
         let state = create_federated_test_state().await;
         let quote_id = create_paid_bolt11_quote(&state).await;

@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover pending mint retry finality</span>
+          <span class="value">test: cover pending mint join finality</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Public batch mint now proves an AlephBFT pending-finalization timeout can be retried and later return the persisted accepted response without issuing twice.</span>
+          <span class="value">Public batch mint now proves overlapping identical AlephBFT-pending requests join one queued operation, return the same accepted response, and issue one persisted share.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -730,7 +730,7 @@
           </article>
           <article class="item">
             <h3>BFT adapter groundwork</h3>
-            <p>The consensus runtime has a simulator-backed adapter and an AlephBFT adapter boundary with queueing, preview/drain, drained-unit pending tracking, peer-decided item cleanup, finalized-unit delivery, deterministic rejected finalized conflicts, response waiters, duplicate handling, post-admission duplicate replay, pending timeout retry for public minting without double issuance, pending conflict-key rejection, and status counters including pending-finalization items.</p>
+            <p>The consensus runtime has a simulator-backed adapter and an AlephBFT adapter boundary with queueing, preview/drain, drained-unit pending tracking, peer-decided item cleanup, finalized-unit delivery, deterministic rejected finalized conflicts, response waiters, duplicate handling, post-admission duplicate replay, pending timeout retry and live duplicate waiter joining for public minting without double issuance, pending conflict-key rejection, and status counters including pending-finalization items.</p>
           </article>
         </div>
       </section>
@@ -744,7 +744,7 @@
         <div class="stack">
           <article class="item">
             <h3>Consensus-before-signing</h3>
-            <p>Naive threshold mix-and-match signing is covered by attack regressions, same-quote/different-output public mint attempts store no conflicting signature share, same-proof public swap conflicts store no loser shares and mark losing journal entries terminal, timed-out public AlephBFT batch-mint requests retry to the persisted accepted response without a second share, restore of accepted mint outputs returns persisted shares tied to the original operation and output index, catch-up replay continues past deterministic rejected swap losers, signed catch-up evidence rejects bad signatures and truncated post-signing ranges, AlephBFT finalized-unit responses are refreshed from post-apply journal status, federation signing paths are tied to accepted operation IDs, output indexes, keysets, accepted journal indexes, consensus evidence, and persisted share provenance, accepted apply rejects terminal local journal statuses before state mutation, public quote creation fails closed before local quote persistence when BFT finality is unavailable, and direct standalone member APIs fail closed.</p>
+            <p>Naive threshold mix-and-match signing is covered by attack regressions, same-quote/different-output public mint attempts store no conflicting signature share, same-proof public swap conflicts store no loser shares and mark losing journal entries terminal, timed-out and overlapping public AlephBFT batch-mint requests retry or join the pending operation and return the persisted accepted response without a second share, restore of accepted mint outputs returns persisted shares tied to the original operation and output index, catch-up replay continues past deterministic rejected swap losers, signed catch-up evidence rejects bad signatures and truncated post-signing ranges, AlephBFT finalized-unit responses are refreshed from post-apply journal status, federation signing paths are tied to accepted operation IDs, output indexes, keysets, accepted journal indexes, consensus evidence, and persisted share provenance, accepted apply rejects terminal local journal statuses before state mutation, public quote creation fails closed before local quote persistence when BFT finality is unavailable, and direct standalone member APIs fail closed.</p>
           </article>
           <article class="item">
             <h3>Federation keyset safety</h3>
@@ -849,7 +849,7 @@
           </article>
           <article class="item">
             <h3>Adapter before BFT</h3>
-            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime and Axum helper now expose explicit preview, quorum-broadcast, router-started bounded driver ticks, bounded remote finalized-unit delivery, queue-and-wait submit, duplicate pending waiter joining, public mint retry after pending-finalization timeout, semantic conflict-key rejection for queued and drained quote operations, deterministic rejected outcomes for finalized semantic conflicts, drained-unit pending-finalization accounting with peer-decided duplicate/conflict cleanup, typed retryable pending-finalization timeouts, bounded response waiters, bounded accepted-response cache retention, pending sequence handoff, pending-mempool admission backpressure, exact-drain, external-finalization calls, and signed local-status counters for queued, pending-finalization, finalized, and accepted work so future BFT wiring cannot mistake local admission for accepted consensus order or hide queued/finalized adapter state from operators.</p>
+            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime and Axum helper now expose explicit preview, quorum-broadcast, router-started bounded driver ticks, bounded remote finalized-unit delivery, queue-and-wait submit, duplicate pending waiter joining, public mint retry after pending-finalization timeout, live duplicate public mint joining while pending, semantic conflict-key rejection for queued and drained quote operations, deterministic rejected outcomes for finalized semantic conflicts, drained-unit pending-finalization accounting with peer-decided duplicate/conflict cleanup, typed retryable pending-finalization timeouts, bounded response waiters, bounded accepted-response cache retention, pending sequence handoff, pending-mempool admission backpressure, exact-drain, external-finalization calls, and signed local-status counters for queued, pending-finalization, finalized, and accepted work so future BFT wiring cannot mistake local admission for accepted consensus order or hide queued/finalized adapter state from operators.</p>
           </article>
           <article class="item">
             <h3>Digest format before DB wiring</h3>
