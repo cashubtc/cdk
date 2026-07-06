@@ -1145,11 +1145,16 @@ Race and wallet scenario tests:
   member connector and verifies one accepted mint operation, one federation
   response cache entry per member, identical wallet responses, and aggregate
   BLS signatures for every response.
-- [ ] Many concurrent identical swap requests sent to all members produce one
+- [x] Many concurrent identical swap requests sent to all members produce one
   accepted operation, one input spend, one response cache entry per member, and
   threshold aggregate proofs. Member-local public route idempotency is covered
   by `concurrent_identical_value_routes_are_idempotent`; multi-member wallet
-  fanout with aggregate proof assertions remains open.
+  fanout with aggregate proof assertions is covered by
+  `concurrent_federated_wallet_swap_fanout_aggregates_once_per_member`, which
+  sends concurrent identical wallet swap requests through a 3-of-3 direct-route
+  member connector and verifies one accepted swap operation, one spent input,
+  one federation response cache entry per member, identical wallet responses,
+  and aggregate BLS signatures for every response.
 - [ ] Many concurrent identical melt requests sent to all members produce one
   accepted reserve/finalization path and at most one outgoing payment attempt.
   Member-local public route idempotency and single fake-wallet payment-attempt

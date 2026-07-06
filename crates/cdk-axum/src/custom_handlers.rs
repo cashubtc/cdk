@@ -3103,9 +3103,28 @@ mod tests {
 
         async fn post_swap(
             &self,
-            _request: SwapRequest,
+            request: SwapRequest,
         ) -> Result<cdk::nuts::SwapResponse, cdk::Error> {
-            Err(Self::unsupported("post_swap"))
+            let config = self
+                .state
+                .mint
+                .effective_federation_config()
+                .await?
+                .ok_or_else(|| {
+                    cdk::Error::InvalidMintResponse(
+                        "direct-route member is not in federation mode".to_string(),
+                    )
+                })?;
+            let envelope = config.swap_operation(request.clone())?;
+            let response = self
+                .state
+                .submit_federation_envelope_with_sequence(envelope, None)
+                .await?;
+
+            self.state
+                .mint
+                .persisted_swap_share_response(response.operation_id, &request)
+                .await
         }
 
         async fn get_mint_info(&self) -> Result<cdk::nuts::MintInfo, cdk::Error> {
@@ -6368,6 +6387,74 @@ mod tests {
                 vec![cdk::federation::FederationOperationKind::Mint]
             );
             assert_eq!(state.federation_response_cache_entry_count(), 1);
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn concurrent_federated_wallet_swap_fanout_aggregates_once_per_member() {
+        let member_urls = static_member_urls();
+        let bundle = threshold_all_signers_bundle(&member_urls);
+        let mut states = Vec::new();
+        for member_id in [1, 2, 3].map(threshold_member_id) {
+            let private_config = bundle
+                .private_configs
+                .get(&member_id)
+                .expect("private member config")
+                .clone();
+            let mint =
+                build_threshold_member_mint(bundle.public_config.clone(), private_config).await;
+            states.push(threshold_member_state(mint).await);
+        }
+
+        let connector = FederatedMintConnector::new(
+            bundle.public_config.clone(),
+            direct_route_member_connectors(&states),
+        )
+        .expect("federated direct-route connector");
+        let connector = Arc::new(connector);
+
+        let keyset = &bundle.public_config.keysets[0];
+        let swap_input = proof_for_keyset(keyset, 2, "concurrent-direct-swap-input");
+        let input_y = swap_input.y().expect("swap proof y");
+        let swap_outputs = vec![blinded_output(keyset, 2, "concurrent-direct-swap-output")];
+        let swap_request = SwapRequest::new(vec![swap_input], swap_outputs.clone());
+        let request_count = 4;
+        let swap_results = futures::future::join_all((0..request_count).map(|_| {
+            let connector = connector.clone();
+            let request = swap_request.clone();
+            async move { connector.post_swap(request).await }
+        }))
+        .await;
+
+        let mut swap_responses = Vec::new();
+        for result in swap_results {
+            let response = result.expect("concurrent threshold direct-route swap");
+            assert_aggregate_signatures_verify(
+                &bundle.public_config,
+                &swap_outputs,
+                &response.signatures,
+            );
+            swap_responses.push(response);
+        }
+
+        for response in swap_responses.iter().skip(1) {
+            assert_eq!(response, &swap_responses[0]);
+        }
+
+        for state in &states {
+            assert_eq!(
+                federation_operation_kinds(state).await,
+                vec![cdk::federation::FederationOperationKind::Swap]
+            );
+            assert_eq!(state.federation_response_cache_entry_count(), 1);
+            let proof_states = state
+                .mint
+                .localstore()
+                .get_proofs_states(&[input_y])
+                .await
+                .expect("proof state lookup");
+            assert_eq!(proof_states, vec![Some(cdk::nuts::State::Spent)]);
         }
     }
 
