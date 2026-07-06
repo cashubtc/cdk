@@ -989,7 +989,7 @@ impl FederationAlephBftFinalizationHandler {
         let mut last_unit_key = None;
         let mut closed_unit_keys = BTreeSet::new();
         let mut next_item_index_by_unit = BTreeMap::new();
-        let mut last_unit_finalization_index_by_session = BTreeMap::new();
+        let mut next_unit_finalization_index_by_session = BTreeMap::new();
         let mut next_unit_finalization_index = 0;
         let mut next_item_index = 0;
 
@@ -1081,20 +1081,20 @@ impl FederationAlephBftFinalizationHandler {
 
             let is_new_unit = !finalized_unit_metadata.contains_key(&unit_key);
             if is_new_unit {
-                let previous_index = last_unit_finalization_index_by_session.insert(
-                    finalized_item.session,
-                    finalized_item.unit_finalization_index,
-                );
-                if let Some(previous_index) = previous_index {
-                    if finalized_item.unit_finalization_index <= previous_index {
-                        return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                            reason: format!(
-                                "unit finalization index did not advance in retained order: previous {previous_index}, found {}",
-                                finalized_item.unit_finalization_index
-                            ),
-                        });
-                    }
+                let expected_unit_finalization_index = next_unit_finalization_index_by_session
+                    .entry(finalized_item.session)
+                    .or_insert(0);
+                if finalized_item.unit_finalization_index != *expected_unit_finalization_index {
+                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                        reason: format!(
+                            "non-contiguous unit finalization index: expected {}, found {}",
+                            *expected_unit_finalization_index,
+                            finalized_item.unit_finalization_index
+                        ),
+                    });
                 }
+                *expected_unit_finalization_index =
+                    (*expected_unit_finalization_index).saturating_add(1);
             }
 
             let unit_metadata = (

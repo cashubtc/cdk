@@ -1629,7 +1629,20 @@ fn aleph_bft_consensus_adapter_recovery_rejects_corrupted_finalized_items() {
             non_advancing_unit_finalization,
         ),
         Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
-            if reason.contains("unit finalization index did not advance")
+            if reason.contains("non-contiguous unit finalization index")
+    ));
+
+    let mut skipped_unit_finalization = ordered_finalized_items.clone();
+    skipped_unit_finalization[2].unit_finalization_index = 7;
+    assert!(matches!(
+        FederationAlephBftConsensusAdapter::recover_from_finalized_items(
+            federation_id,
+            member_id_value(1),
+            0,
+            skipped_unit_finalization,
+        ),
+        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
+            if reason.contains("non-contiguous unit finalization index")
     ));
 
     let mut impossible_duplicate = finalized_items;
