@@ -7879,6 +7879,61 @@ async fn submit_federation_envelope_notifies_operation_acceptance() {
 }
 
 #[tokio::test]
+async fn submit_federation_envelope_returns_duplicate_when_acceptance_races_submission() {
+    let (state, _, _) = federation_route_state().await;
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+
+    state
+        .validate_federation_envelope_admission(&envelope)
+        .expect("operation admitted before race");
+
+    let accepted = state
+        .submit_federation_envelope(envelope.clone())
+        .await
+        .expect("operation accepted by competing path");
+    assert_eq!(accepted.operation_id, operation_id);
+    assert!(matches!(
+        accepted.outcome,
+        FederationJournalAppendOutcome::Appended(_)
+    ));
+
+    let duplicate = state
+        .submit_federation_envelope(envelope)
+        .await
+        .expect("post-race submit should return duplicate response");
+    assert_eq!(duplicate.operation_id, operation_id);
+    assert!(matches!(
+        duplicate.outcome,
+        FederationJournalAppendOutcome::Duplicate(_)
+    ));
+
+    let entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal entries");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].operation_id, operation_id);
+    assert_eq!(entries[0].status, FederationOperationStatus::Applied);
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("mint quote lookup")
+        .is_some());
+
+    let stats = state.federation_operation_notification_stats();
+    assert_eq!(stats.duplicate_submissions, 1);
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.peer_status().operation_count, 1);
+}
+
+#[tokio::test]
 async fn submit_federation_envelope_bounds_response_cache() {
     let (mut state, _, _) = federation_route_state().await;
     state.federation_peer_sync_config = Some(FederationPeerSyncConfig {

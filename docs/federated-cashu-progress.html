@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">docs: certify federation keyset gates</span>
+          <span class="value">test: cover accepted submit race</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The hard v3/BLS federation keyset constraint is now evidence-closed across startup, mint/swap/restore/melt-change admission, wallet fanout, public Axum routes, and standalone non-federation behavior.</span>
+          <span class="value">Public federation submit now covers the race where an operation passes admission, is accepted by another path, and then reaches this member as a duplicate wallet request.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
