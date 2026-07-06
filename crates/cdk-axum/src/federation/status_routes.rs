@@ -118,6 +118,8 @@ pub(crate) struct FederationLocalStatusResponse {
     #[serde(default)]
     pub(crate) response_cache_hits: u64,
     #[serde(default)]
+    pub(crate) response_cache_hit_rate_bps: u64,
+    #[serde(default)]
     pub(crate) duplicate_submissions: u64,
     #[serde(default)]
     pub(crate) duplicate_pending_waiter_joins: u64,
@@ -185,6 +187,10 @@ impl FederationLocalStatusResponse {
             response_cache_items,
             response_cache_lookups,
             response_cache_hits,
+            response_cache_hit_rate_bps: response_cache_hit_rate_bps(
+                response_cache_hits,
+                response_cache_lookups,
+            ),
             duplicate_submissions,
             duplicate_pending_waiter_joins,
             session_outcome_quorum_operation_count,
@@ -196,6 +202,19 @@ impl FederationLocalStatusResponse {
             materialized_state_rows,
             invalid_operation_alerts,
         }
+    }
+}
+
+fn response_cache_hit_rate_bps(hits: u64, lookups: u64) -> u64 {
+    if lookups == 0 {
+        return 0;
+    }
+
+    let bounded_hits = hits.min(lookups);
+    let rate = u128::from(bounded_hits) * 10_000 / u128::from(lookups);
+    match u64::try_from(rate) {
+        Ok(rate) => rate,
+        Err(_) => 10_000,
     }
 }
 
@@ -266,5 +285,19 @@ fn usize_to_u64_saturating(value: usize) -> u64 {
     match u64::try_from(value) {
         Ok(value) => value,
         Err(_) => u64::MAX,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::response_cache_hit_rate_bps;
+
+    #[test]
+    fn response_cache_hit_rate_handles_zero_and_fractional_lookups() {
+        assert_eq!(response_cache_hit_rate_bps(0, 0), 0);
+        assert_eq!(response_cache_hit_rate_bps(0, 7), 0);
+        assert_eq!(response_cache_hit_rate_bps(3, 7), 4285);
+        assert_eq!(response_cache_hit_rate_bps(7, 7), 10_000);
+        assert_eq!(response_cache_hit_rate_bps(9, 7), 10_000);
     }
 }

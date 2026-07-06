@@ -50,6 +50,8 @@ pub(crate) struct FederationLocalStatusResponse {
     #[serde(default)]
     pub(crate) response_cache_hits: u64,
     #[serde(default)]
+    pub(crate) response_cache_hit_rate_bps: u64,
+    #[serde(default)]
     pub(crate) duplicate_submissions: u64,
     #[serde(default)]
     pub(crate) duplicate_pending_waiter_joins: u64,
@@ -323,7 +325,7 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
     let invalid_operation_alerts = invalid_operation_alert_count(status);
     let aleph_bft = aleph_bft_status_fields(status);
     format!(
-        "member {}: consensus_backend={} sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} duplicate_submissions={} duplicate_pending_waiter_joins={} session_outcome_quorum_operations={} session_outcome_quorum_from={} session_outcome_quorum_latest={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} aleph_bft={} message={}",
+        "member {}: consensus_backend={} sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} response_cache_hit_rate_bps={} duplicate_submissions={} duplicate_pending_waiter_joins={} session_outcome_quorum_operations={} session_outcome_quorum_from={} session_outcome_quorum_latest={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} aleph_bft={} message={}",
         peer.member_id,
         peer.consensus_backend,
         status.sync_state,
@@ -342,6 +344,7 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         status.response_cache_items,
         status.response_cache_hits,
         status.response_cache_lookups,
+        status.response_cache_hit_rate_bps,
         status.duplicate_submissions,
         status.duplicate_pending_waiter_joins,
         session_outcome_quorum_operations,

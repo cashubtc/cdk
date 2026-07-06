@@ -166,6 +166,7 @@ fn local_status(
         response_cache_items: 0,
         response_cache_lookups: 0,
         response_cache_hits: 0,
+        response_cache_hit_rate_bps: 0,
         duplicate_submissions: 0,
         duplicate_pending_waiter_joins: 0,
         session_outcome_quorum_operation_count: None,
@@ -403,6 +404,7 @@ fn status_line_prints_consensus_backend() {
     assert!(line.contains("pending_response_waiters=0"));
     assert!(line.contains("response_cache_items=0"));
     assert!(line.contains("response_cache_hits=0/0"));
+    assert!(line.contains("response_cache_hit_rate_bps=0"));
     assert!(line.contains("duplicate_submissions=0"));
     assert!(line.contains("duplicate_pending_waiter_joins=0"));
     assert!(line.contains("aleph_bft=none"));
@@ -428,12 +430,14 @@ fn status_line_includes_response_cache_and_duplicate_counters() {
     let mut status = local_status(&public_config, 1, 2);
     status.response_cache_lookups = 7;
     status.response_cache_hits = 3;
+    status.response_cache_hit_rate_bps = 4285;
     status.duplicate_submissions = 5;
     status.duplicate_pending_waiter_joins = 2;
 
     let line = member_status_line(&status);
 
     assert!(line.contains("response_cache_hits=3/7"));
+    assert!(line.contains("response_cache_hit_rate_bps=4285"));
     assert!(line.contains("duplicate_submissions=5"));
     assert!(line.contains("duplicate_pending_waiter_joins=2"));
 }

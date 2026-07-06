@@ -34,6 +34,7 @@ fn local_status(
         response_cache_items: 0,
         response_cache_lookups: 0,
         response_cache_hits: 0,
+        response_cache_hit_rate_bps: 0,
         duplicate_submissions: 0,
         duplicate_pending_waiter_joins: 0,
         session_outcome_quorum_operation_count: None,
