@@ -526,19 +526,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits, start the bounded AlephBFT driver loop from router startup when the backend is selected, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, and run a bounded driver tick around the safe quorum-broadcast and exact-drain handoff.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits, start the bounded AlephBFT driver loop from router startup when the backend is selected, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, and run a bounded driver tick around the safe quorum-broadcast and exact-drain handoff.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: start aleph bft driver from router</span>
+          <span class="value">feat: bound aleph bft remote delivery</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Router-created federation state now starts the bounded AlephBFT driver loop for the `aleph_bft` backend, while in-memory federation remains on peer sync without the BFT driver.</span>
+          <span class="value">The AlephBFT driver now limits remote finalized-unit deliveries per unit, stops contacting peers once quorum is reached, and rejects an impossible delivery cap before sending peer requests.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Replace the private-REST finalized-unit broadcast stand-in with real AlephBFT finality and add production wire-message queue limits.</span>
+          <span class="value">Replace the private-REST finalized-unit broadcast stand-in with real AlephBFT finality and carry the same bounded-queue discipline into the live BFT transport.</span>
         </div>
       </aside>
     </header>
@@ -842,7 +842,7 @@
           </article>
           <article class="item">
             <h3>AlephBFT bounded driver tick</h3>
-            <p>Axum now wraps the safe broadcast round in a bounded driver tick and starts the driver loop from router-created federation state when `aleph_bft` is selected. Idle ticks make no peer requests, invalid zero-work configuration fails before networking, and each wakeup can only finalize a configured number of units.</p>
+            <p>Axum now wraps the safe broadcast round in a bounded driver tick and starts the driver loop from router-created federation state when `aleph_bft` is selected. Idle ticks make no peer requests, invalid zero-work configuration fails before networking, each wakeup can only finalize a configured number of units, and each unit has a bounded remote delivery cap that stops after quorum.</p>
           </article>
           <article class="item">
             <h3>AlephBFT submit waiters</h3>
@@ -2405,7 +2405,13 @@
               <td>AlephBFT router driver startup</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation aleph_bft_driver_startup_decision_spawns_only_for_aleph_bft_backend -- --test-threads 1`, `cargo test -p cdk-axum --features federation aleph_bft_driver -- --test-threads 1`, `cargo test -p cdk-axum --features federation aleph_bft_submit_envelope -- --test-threads 1`, `cargo check -p cdk-axum --features federation`, and `cargo check -p cdk-axum` passed. The startup decision regression proves router-created in-memory federation state does not start the AlephBFT driver, while `aleph_bft` state has a remote-peer driver plan.</td>
-              <td>Replace the private-REST finalized-unit broadcast stand-in with real AlephBFT finality and add production wire-message queue limits.</td>
+              <td>Replace the private-REST finalized-unit broadcast stand-in with real AlephBFT finality and extend bounded delivery to the live BFT transport queues.</td>
+            </tr>
+            <tr>
+              <td>AlephBFT remote delivery cap</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation aleph_bft_broadcast_round_stops_remote_delivery_after_quorum -- --test-threads 1`, `cargo test -p cdk-axum --features federation aleph_bft_broadcast_round_rejects_delivery_limit_below_quorum_before_peer_request -- --test-threads 1`, `cargo test -p cdk-axum --features federation aleph_bft_broadcast_round -- --test-threads 1`, and `cargo test -p cdk-axum --features federation aleph_bft_submit_envelope -- --test-threads 1` passed. The regressions prove finalized-unit private REST delivery stops after quorum in a three-member federation and rejects a remote-delivery cap that cannot reach consensus before any peer request is sent.</td>
+              <td>Carry this bounded-delivery discipline into the real AlephBFT transport after private-REST finalized-unit broadcast is replaced by BFT finality.</td>
             </tr>
             <tr>
               <td>AlephBFT response-waiter backpressure</td>
@@ -4088,7 +4094,7 @@
           </article>
           <article class="item">
             <h3>Adapter before BFT</h3>
-            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime and Axum helper now expose explicit preview, quorum-broadcast, router-started bounded driver ticks, queue-and-wait submit, duplicate pending waiter joining, typed retryable pending-finalization timeouts, bounded response waiters, bounded accepted-response cache retention, pending sequence handoff, pending-mempool admission backpressure, exact-drain, external-finalization calls, and signed local-status counters so future BFT wiring cannot mistake local admission for accepted consensus order or hide queued/finalized adapter state from operators.</p>
+            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime and Axum helper now expose explicit preview, quorum-broadcast, router-started bounded driver ticks, bounded remote finalized-unit delivery, queue-and-wait submit, duplicate pending waiter joining, typed retryable pending-finalization timeouts, bounded response waiters, bounded accepted-response cache retention, pending sequence handoff, pending-mempool admission backpressure, exact-drain, external-finalization calls, and signed local-status counters so future BFT wiring cannot mistake local admission for accepted consensus order or hide queued/finalized adapter state from operators.</p>
           </article>
           <article class="item">
             <h3>Digest format before DB wiring</h3>
@@ -4130,7 +4136,7 @@
           </article>
           <article class="item">
             <h3>Production ordering backend</h3>
-            <p>Replace the private-REST finalized-unit broadcast stand-in with real AlephBFT finality, then add production wire-message queue limits around the live BFT transport.</p>
+            <p>Replace the private-REST finalized-unit broadcast stand-in with real AlephBFT finality, then extend the current bounded-delivery policy to production live BFT transport queues.</p>
           </article>
           <article class="item">
             <h3>Extended Postgres partitions</h3>

@@ -35,6 +35,8 @@ mod sync_config;
 mod sync_loop;
 
 #[cfg(test)]
+use self::aleph_bft_driver::broadcast_next_aleph_bft_finalized_unit_round_with_config;
+#[cfg(test)]
 use self::aleph_bft_driver::{
     broadcast_next_aleph_bft_finalized_unit_round, federation_aleph_bft_driver_startup_decision,
     run_federation_aleph_bft_driver_tick, FederationAlephBftDriverStartupDecision,

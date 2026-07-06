@@ -698,6 +698,17 @@ fn transport_config_three() -> (
     MemberConfigPrivate,
     MemberConfigPrivate,
 ) {
+    transport_config_three_with_threshold(ThresholdParams::new(3, 2, 2).expect("threshold params"))
+}
+
+fn transport_config_three_with_threshold(
+    threshold_params: ThresholdParams,
+) -> (
+    FederationConfig,
+    MemberConfigPrivate,
+    MemberConfigPrivate,
+    MemberConfigPrivate,
+) {
     let members = vec![
         TrustedDealerMember::new(
             member_id(1),
@@ -731,12 +742,8 @@ fn transport_config_three() -> (
             ],
         )]),
     );
-    let bundle = generate_trusted_dealer_configs(
-        ThresholdParams::new(3, 2, 2).expect("threshold params"),
-        members,
-        vec![keyset],
-    )
-    .expect("trusted dealer bundle");
+    let bundle = generate_trusted_dealer_configs(threshold_params, members, vec![keyset])
+        .expect("trusted dealer bundle");
     let first_private = bundle
         .private_configs
         .get(&member_id(1))
@@ -6319,6 +6326,7 @@ async fn aleph_bft_driver_tick_rejects_zero_work_bound_before_peer_request() {
         std::slice::from_ref(peer),
         FederationAlephBftDriverTickConfig {
             max_finalized_units_per_tick: 0,
+            ..FederationAlephBftDriverTickConfig::default()
         },
     )
     .await
@@ -6327,6 +6335,25 @@ async fn aleph_bft_driver_tick_rejects_zero_work_bound_before_peer_request() {
     assert!(
         err.to_string()
             .contains("max finalized units per tick must be greater than zero"),
+        "unexpected error: {err}"
+    );
+    assert!(transport.aleph_bft_finalized_unit_requests().is_empty());
+
+    let err = run_federation_aleph_bft_driver_tick(
+        &state,
+        &client,
+        std::slice::from_ref(peer),
+        FederationAlephBftDriverTickConfig {
+            max_remote_peer_deliveries_per_unit: 0,
+            ..FederationAlephBftDriverTickConfig::default()
+        },
+    )
+    .await
+    .expect_err("zero remote delivery bound must reject");
+
+    assert!(
+        err.to_string()
+            .contains("max remote peer deliveries per unit must be greater than zero"),
         "unexpected error: {err}"
     );
     assert!(transport.aleph_bft_finalized_unit_requests().is_empty());
@@ -6366,6 +6393,7 @@ async fn aleph_bft_driver_tick_applies_bounded_unit_then_stops_at_idle() {
         std::slice::from_ref(peer),
         FederationAlephBftDriverTickConfig {
             max_finalized_units_per_tick: 2,
+            ..FederationAlephBftDriverTickConfig::default()
         },
     )
     .await
@@ -6375,6 +6403,7 @@ async fn aleph_bft_driver_tick_applies_bounded_unit_then_stops_at_idle() {
     assert_eq!(outcome.local_responses, 1);
     assert_eq!(outcome.remote_accepted_members, 1);
     assert_eq!(outcome.remote_failed_members, 0);
+    assert_eq!(outcome.remote_skipped_members, 0);
     assert!(outcome.reached_idle);
     assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 1);
 
@@ -6400,6 +6429,137 @@ async fn aleph_bft_driver_tick_applies_bounded_unit_then_stops_at_idle() {
             .operation_id,
         operation_id
     );
+}
+
+#[tokio::test]
+async fn aleph_bft_broadcast_round_stops_remote_delivery_after_quorum() {
+    let (public_config, local_private, second_private, third_private) = transport_config_three();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let unit = queue_local_aleph_bft_unit(&state, mint_quote_envelope(&state, &quote_id)).await;
+    let response = finalized_unit_response_for_peer(&public_config, local_private.member_id, &unit);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_finalized_unit_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let second_peer = public_config
+        .members
+        .get(&second_private.member_id)
+        .expect("second peer")
+        .clone();
+    let third_peer = public_config
+        .members
+        .get(&third_private.member_id)
+        .expect("third peer")
+        .clone();
+    let peers = vec![second_peer, third_peer];
+
+    let outcome = broadcast_next_aleph_bft_finalized_unit_round_with_config(
+        &state,
+        &client,
+        &peers,
+        FederationAlephBftDriverTickConfig {
+            max_remote_peer_deliveries_per_unit: 2,
+            ..FederationAlephBftDriverTickConfig::default()
+        },
+    )
+    .await
+    .expect("broadcast round")
+    .expect("unit broadcast");
+
+    assert_eq!(
+        outcome.remote_accepted_members,
+        vec![second_private.member_id]
+    );
+    assert_eq!(
+        outcome.remote_skipped_members,
+        vec![third_private.member_id]
+    );
+    assert!(outcome.remote_failed_members.is_empty());
+    assert_eq!(outcome.local_responses.len(), 1);
+    assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 1);
+
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 0);
+    assert_eq!(consensus.peer_status().operation_count, 1);
+}
+
+#[tokio::test]
+async fn aleph_bft_broadcast_round_rejects_delivery_limit_below_quorum_before_peer_request() {
+    let (public_config, local_private, second_private, third_private) =
+        transport_config_three_with_threshold(
+            ThresholdParams::new(3, 2, 3).expect("threshold params"),
+        );
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let unit = queue_local_aleph_bft_unit(&state, mint_quote_envelope(&state, &quote_id)).await;
+    let transport = MockFederationTransport::default();
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let second_peer = public_config
+        .members
+        .get(&second_private.member_id)
+        .expect("second peer")
+        .clone();
+    let third_peer = public_config
+        .members
+        .get(&third_private.member_id)
+        .expect("third peer")
+        .clone();
+    let peers = vec![second_peer, third_peer];
+
+    let err = broadcast_next_aleph_bft_finalized_unit_round_with_config(
+        &state,
+        &client,
+        &peers,
+        FederationAlephBftDriverTickConfig {
+            max_remote_peer_deliveries_per_unit: 1,
+            ..FederationAlephBftDriverTickConfig::default()
+        },
+    )
+    .await
+    .expect_err("delivery limit below quorum should fail");
+
+    assert!(
+        err.to_string()
+            .contains("peer delivery limit 1 is below 2 remote members required for quorum"),
+        "unexpected error: {err}"
+    );
+    assert!(transport.aleph_bft_finalized_unit_requests().is_empty());
+
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 1);
+    let still_queued = consensus
+        .preview_next_aleph_bft_unit_payload()
+        .expect("preview retained unit")
+        .expect("unit retained");
+    assert_eq!(
+        still_queued.canonical_bytes().expect("retained bytes"),
+        unit.canonical_bytes().expect("original bytes")
+    );
+    assert_eq!(consensus.peer_status().operation_count, 0);
 }
 
 #[tokio::test]

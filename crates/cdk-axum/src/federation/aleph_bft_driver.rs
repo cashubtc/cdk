@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use cdk::federation::{
     FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
     FederationAlephBftUnitPayload, FederationConsensusBackendKind,
@@ -16,12 +18,15 @@ use super::sync_config::{federation_peer_sync_interval, FederationPeerSyncConfig
 pub(crate) struct FederationAlephBftDriverTickConfig {
     /// Maximum finalized units a single driver wakeup may broadcast and apply.
     pub max_finalized_units_per_tick: usize,
+    /// Maximum remote peer deliveries attempted for one finalized unit.
+    pub max_remote_peer_deliveries_per_unit: usize,
 }
 
 impl Default for FederationAlephBftDriverTickConfig {
     fn default() -> Self {
         Self {
             max_finalized_units_per_tick: 1,
+            max_remote_peer_deliveries_per_unit: 64,
         }
     }
 }
@@ -31,6 +36,12 @@ impl FederationAlephBftDriverTickConfig {
         if self.max_finalized_units_per_tick == 0 {
             return Err(cdk::Error::Custom(
                 "AlephBFT driver max finalized units per tick must be greater than zero"
+                    .to_string(),
+            ));
+        }
+        if self.max_remote_peer_deliveries_per_unit == 0 {
+            return Err(cdk::Error::Custom(
+                "AlephBFT driver max remote peer deliveries per unit must be greater than zero"
                     .to_string(),
             ));
         }
@@ -51,6 +62,8 @@ pub(crate) struct FederationAlephBftDriverTickOutcome {
     pub remote_accepted_members: usize,
     /// Number of remote member delivery failures seen.
     pub remote_failed_members: usize,
+    /// Number of remote members intentionally left for later catch-up.
+    pub remote_skipped_members: usize,
     /// True when the local proposal queue became empty during this tick.
     pub reached_idle: bool,
 }
@@ -175,6 +188,7 @@ pub(crate) fn spawn_federation_aleph_bft_driver_loop_with_config(
                             local_responses = outcome.local_responses,
                             remote_accepted_members = outcome.remote_accepted_members,
                             remote_failed_members = outcome.remote_failed_members,
+                            remote_skipped_members = outcome.remote_skipped_members,
                             reached_idle = outcome.reached_idle,
                             "AlephBFT federation driver tick completed"
                         );
@@ -203,8 +217,13 @@ where
 
     let mut outcome = FederationAlephBftDriverTickOutcome::default();
     for _ in 0..driver_config.max_finalized_units_per_tick {
-        let Some(broadcast) =
-            broadcast_next_aleph_bft_finalized_unit_round(state, client, peers).await?
+        let Some(broadcast) = broadcast_next_aleph_bft_finalized_unit_round_with_config(
+            state,
+            client,
+            peers,
+            driver_config,
+        )
+        .await?
         else {
             outcome.reached_idle = true;
             break;
@@ -220,6 +239,9 @@ where
         outcome.remote_failed_members = outcome
             .remote_failed_members
             .saturating_add(broadcast.remote_failed_members.len());
+        outcome.remote_skipped_members = outcome
+            .remote_skipped_members
+            .saturating_add(broadcast.remote_skipped_members.len());
     }
 
     Ok(outcome)
@@ -237,6 +259,8 @@ pub(crate) struct FederationAlephBftFinalizedUnitBroadcastOutcome {
     pub remote_failed_members: Vec<MemberId>,
     /// Responses returned by accepting remote members.
     pub remote_responses: Vec<FederationAlephBftFinalizedUnitResponse>,
+    /// Remote members not contacted because the delivery round had enough quorum.
+    pub remote_skipped_members: Vec<MemberId>,
     /// Local operation responses after draining and applying the unit.
     pub local_responses: Vec<FederationSubmitOperationResponse>,
 }
@@ -257,6 +281,27 @@ pub(crate) async fn broadcast_next_aleph_bft_finalized_unit_round<T>(
 where
     T: Transport,
 {
+    broadcast_next_aleph_bft_finalized_unit_round_with_config(
+        state,
+        client,
+        peers,
+        FederationAlephBftDriverTickConfig::default(),
+    )
+    .await
+}
+
+/// Broadcast the next previewed local AlephBFT unit with an explicit driver policy.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) async fn broadcast_next_aleph_bft_finalized_unit_round_with_config<T>(
+    state: &MintState,
+    client: &FederationRestPeerClient<T>,
+    peers: &[MemberConfigPublic],
+    driver_config: FederationAlephBftDriverTickConfig,
+) -> Result<Option<FederationAlephBftFinalizedUnitBroadcastOutcome>, cdk::Error>
+where
+    T: Transport,
+{
+    driver_config.validate()?;
     let config = state.mint.federation_config().ok_or_else(|| {
         cdk::Error::Custom("AlephBFT broadcast requested without federation config".to_string())
     })?;
@@ -278,15 +323,29 @@ where
         return Ok(None);
     };
 
+    let required = usize::from(config.public_config().threshold_params.consensus_threshold);
+    let required_remote = required.saturating_sub(1);
+    if driver_config.max_remote_peer_deliveries_per_unit < required_remote {
+        return Err(cdk::Error::Custom(format!(
+            "AlephBFT finalized-unit peer delivery limit {} is below {required_remote} remote members required for quorum",
+            driver_config.max_remote_peer_deliveries_per_unit
+        )));
+    }
+
     let request = FederationAlephBftFinalizedUnitRequest::new(unit.clone());
     let local_member = config.member_id();
     let mut remote_accepted_members = Vec::new();
     let mut remote_failed_members = Vec::new();
     let mut remote_responses = Vec::new();
+    let mut attempted_members = BTreeSet::new();
     for peer in peers {
         if peer.member_id == local_member {
             continue;
         }
+        if attempted_members.len() >= driver_config.max_remote_peer_deliveries_per_unit {
+            break;
+        }
+        attempted_members.insert(peer.member_id);
         match client.submit_aleph_bft_finalized_unit(peer, &request).await {
             Ok(response) => {
                 remote_accepted_members.push(peer.member_id);
@@ -303,15 +362,23 @@ where
                 remote_failed_members.push(peer.member_id);
             }
         }
+        if remote_accepted_members.len().saturating_add(1) >= required {
+            break;
+        }
     }
 
-    let required = usize::from(config.public_config().threshold_params.consensus_threshold);
     let accepted_with_local = remote_accepted_members.len().saturating_add(1);
     if accepted_with_local < required {
         return Err(cdk::Error::Custom(format!(
             "AlephBFT finalized-unit broadcast reached {accepted_with_local} of {required} required members"
         )));
     }
+    let remote_skipped_members = peers
+        .iter()
+        .filter(|peer| peer.member_id != local_member)
+        .filter(|peer| !attempted_members.contains(&peer.member_id))
+        .map(|peer| peer.member_id)
+        .collect::<Vec<_>>();
 
     let local_responses = state
         .drain_and_apply_local_federation_aleph_bft_finalized_unit(&unit)
@@ -322,6 +389,7 @@ where
         remote_accepted_members,
         remote_failed_members,
         remote_responses,
+        remote_skipped_members,
         local_responses,
     }))
 }
