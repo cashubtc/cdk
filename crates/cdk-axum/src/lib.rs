@@ -686,6 +686,9 @@ impl Default for FederationSyncStatus {
 }
 
 #[cfg(feature = "federation")]
+const ALEPH_BFT_UNAVAILABLE_SYNC_REASON: &str = "aleph_bft consensus backend is not production-ready in this build; public federation submissions are disabled until real AlephBFT finality is enabled";
+
+#[cfg(feature = "federation")]
 impl FederationSyncStatus {
     pub(crate) fn is_ready(&self) -> bool {
         matches!(self, Self::Healthy)
@@ -880,6 +883,17 @@ pub(crate) struct FederationSyncState {
 
 #[cfg(feature = "federation")]
 impl FederationSyncState {
+    fn for_consensus_backend(backend: FederationConsensusBackendKind) -> Self {
+        let status = match backend {
+            FederationConsensusBackendKind::InMemory => FederationSyncStatus::Healthy,
+            FederationConsensusBackendKind::AlephBft => FederationSyncStatus::Halted {
+                reason: ALEPH_BFT_UNAVAILABLE_SYNC_REASON.to_string(),
+            },
+        };
+
+        Self { status }
+    }
+
     fn status(&self) -> FederationSyncStatus {
         self.status.clone()
     }
@@ -2793,6 +2807,15 @@ async fn create_mint_router_with_custom_cache_inner(
     #[cfg(feature = "federation")]
     let (federation_consensus, federation_sequences) =
         create_federation_runtime_state(&mint).await?;
+    #[cfg(feature = "federation")]
+    let federation_sync = federation_consensus
+        .as_ref()
+        .and_then(|_| mint.federation_config())
+        .map(|config| {
+            Arc::new(tokio::sync::Mutex::new(
+                FederationSyncState::for_consensus_backend(config.consensus_backend()),
+            ))
+        });
     let mut state = MintState {
         mint,
         cache: Arc::new(cache),
@@ -2805,9 +2828,7 @@ async fn create_mint_router_with_custom_cache_inner(
         #[cfg(feature = "federation")]
         federation_sequences,
         #[cfg(feature = "federation")]
-        federation_sync: federation_consensus
-            .as_ref()
-            .map(|_| Arc::new(tokio::sync::Mutex::new(FederationSyncState::default()))),
+        federation_sync,
         #[cfg(feature = "federation")]
         federation_notifications: federation_consensus
             .as_ref()

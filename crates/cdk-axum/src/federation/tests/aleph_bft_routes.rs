@@ -89,6 +89,15 @@ async fn local_status_includes_aleph_bft_adapter_counters() {
         aleph_bft_status.consensus_backend,
         FederationConsensusBackendKind::AlephBft
     );
+    assert!(!status.sync_ready);
+    assert_eq!(status.sync_state, "halted");
+    assert!(
+        status
+            .sync_message
+            .contains("public federation submissions are disabled"),
+        "unexpected sync message: {}",
+        status.sync_message
+    );
     assert_eq!(aleph_bft_status.local_member, local_member);
     assert_eq!(aleph_bft_status.session, 0);
     assert_eq!(aleph_bft_status.queued_item_count, 1);

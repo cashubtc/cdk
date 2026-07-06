@@ -526,19 +526,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits, start the bounded AlephBFT driver loop from router startup when the backend is selected, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, and run a bounded driver tick around the safe quorum-broadcast and exact-drain handoff.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits behind the internal adapter boundary, start the bounded AlephBFT driver loop from router startup when the backend is selected, keep public AlephBFT wallet submissions halted until real finality exists, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, and run a bounded driver tick around the safe quorum-broadcast and exact-drain handoff.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: bound aleph bft remote delivery</span>
+          <span class="value">feat: gate aleph bft public submits</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The AlephBFT driver now limits remote finalized-unit deliveries per unit, stops contacting peers once quorum is reached, and rejects an impossible delivery cap before sending peer requests.</span>
+          <span class="value">Axum-created AlephBFT federation state now starts halted/not-ready, local status exposes that reason, and public wallet submissions fail before queueing until real production finality is available.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Replace the private-REST finalized-unit broadcast stand-in with real AlephBFT finality and carry the same bounded-queue discipline into the live BFT transport.</span>
+          <span class="value">Replace the private-REST finalized-unit broadcast stand-in with real AlephBFT finality, then allow public AlephBFT submissions only after startup readiness proves the live backend is active.</span>
         </div>
       </aside>
     </header>
@@ -2414,6 +2414,12 @@
               <td>Carry this bounded-delivery discipline into the real AlephBFT transport after private-REST finalized-unit broadcast is replaced by BFT finality.</td>
             </tr>
             <tr>
+              <td>AlephBFT public readiness gate</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation aleph_bft_public_submit_is_not_ready_until_real_finality_backend_exists -- --test-threads 1`, `cargo test -p cdk-axum --features federation local_status_includes_aleph_bft_adapter_counters -- --test-threads 1`, and `cargo test -p cdk-axum --features federation aleph_bft_ -- --test-threads 1` passed. The regressions prove Axum-created AlephBFT state starts `halted`/not-ready, exposes the reason through signed local status, and rejects public wallet submissions before queue admission while the internal adapter and private finalized-unit routes remain testable.</td>
+              <td>Wire real AlephBFT finality and make startup readiness transition out of halted only after the live backend is active and recovered.</td>
+            </tr>
+            <tr>
               <td>AlephBFT response-waiter backpressure</td>
               <td><span class="status done">Passed</span></td>
               <td>`cargo fmt --all -- --check`, `cargo test -p cdk-axum --features federation aleph_bft_submit_envelope -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation_peer_sync_config_rejects_invalid_values -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_peer_sync_config_maps_mintd_settings -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite status_line_prints_consensus_backend -- --test-threads 1`, `cargo check -p cdk-axum --features federation`, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed. The tests cover configured waiter-limit validation, timeout cleanup, cancellation cleanup, full-waiter rejection before queue growth, pending waiter status exposure, and mintd config/status wiring.</td>
@@ -4136,7 +4142,7 @@
           </article>
           <article class="item">
             <h3>Production ordering backend</h3>
-            <p>Replace the private-REST finalized-unit broadcast stand-in with real AlephBFT finality, then extend the current bounded-delivery policy to production live BFT transport queues.</p>
+            <p>Replace the private-REST finalized-unit broadcast stand-in with real AlephBFT finality, keep public AlephBFT wallet submissions halted until the live backend is recovered, then extend the current bounded-delivery policy to production live BFT transport queues.</p>
           </article>
           <article class="item">
             <h3>Extended Postgres partitions</h3>

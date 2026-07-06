@@ -894,7 +894,7 @@ async fn federation_route_state_for_private_with_db_and_backend(
             FederationRestSequenceTracker::new(),
         ))),
         federation_sync: Some(Arc::new(tokio::sync::Mutex::new(
-            crate::FederationSyncState::default(),
+            crate::FederationSyncState::for_consensus_backend(consensus_backend),
         ))),
         federation_notifications: Some(
             Arc::new(crate::FederationOperationNotifications::default()),
@@ -5584,6 +5584,45 @@ async fn aleph_bft_driver_startup_decision_spawns_only_for_aleph_bft_backend() {
             peer_count: 1,
         }
     );
+}
+
+#[tokio::test]
+async fn aleph_bft_public_submit_is_not_ready_until_real_finality_backend_exists() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+
+    let err = state.submit_federation_envelope(envelope).await.expect_err(
+        "AlephBFT public submit should be gated while production finality is unavailable",
+    );
+
+    assert!(
+        err.to_string()
+            .contains("public federation submissions are disabled"),
+        "unexpected error: {err}"
+    );
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after gated submit")
+        .is_none());
+
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 0);
+    assert_eq!(consensus.peer_status().operation_count, 0);
 }
 
 #[tokio::test]
