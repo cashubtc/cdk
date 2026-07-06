@@ -434,15 +434,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover cross-member Aleph conflicts</span>
+          <span class="value">test: cover full catch-up scenario</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Cross-member AlephBFT finalized units now prove mint, swap, and melt conflicts converge to matching applied/rejected outcomes across member states, with loser outputs unsigned and final materialized digests equal.</span>
+          <span class="value">The offline catch-up scenario now covers mint, swap, and melt across a pending-to-paid fake-backend settlement window, duplicate retries, runtime restart from durable state, catch-up replay, final melt change recovery, and materialized digest equality.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Build the full fake-backend federation scenario with restarts, delayed payment observations, duplicate wallet retries, catch-up, and final state-digest equality.</span>
+          <span class="value">Move from finalized-unit stand-ins toward production AlephBFT finality coverage, then broaden 4-member and 5-member process-level federation smoke tests.</span>
         </div>
       </aside>
     </header>
@@ -810,9 +810,9 @@
           risks, and the next verification target.
         </p>
         <p class="section-note">
-          Current verification target: full fake-backend federation scenarios,
-          production AlephBFT finality hardening, larger wallet-operation smoke
-          repetitions, storage-backed partition windows, and compile gates.
+          Current verification target: production AlephBFT finality hardening,
+          larger wallet-operation smoke repetitions, 4-member and 5-member
+          storage-backed partition windows, and compile gates.
         </p>
       </section>
 

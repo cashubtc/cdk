@@ -5149,28 +5149,41 @@ async fn catch_up_applies_unpaid_melt_payment_observation_to_pending_melt() {
 
 #[tokio::test]
 async fn offline_member_catches_up_multiple_operations_and_converges() {
-    let (state, public_config, _) = federation_route_state().await;
+    let (mut state, public_config, _, peer_private) =
+        federation_route_state_with_local_private().await;
+    let peer_state =
+        federation_route_state_for_private(public_config.clone(), peer_private.clone()).await;
     let config = state
         .mint
         .federation_config()
         .expect("federation config")
         .clone();
-    let peer_member = public_config.member(member_id(2)).expect("peer member");
+    let peer_member = public_config
+        .member(peer_private.member_id)
+        .expect("peer member");
     let mut peer_consensus =
         InMemoryFederationConsensus::new(public_config.federation_id, peer_member.member_id);
 
     let mint_quote_id = QuoteId::new();
     let minted_output = mint_output(&state, &mint_quote_id);
-    let mint_request = MintInput::Single(MintRequest {
+    let mint_input = MintInput::Single(MintRequest {
         quote: mint_quote_id.clone(),
         outputs: vec![minted_output.clone()],
         signature: None,
     });
+    let mint_envelope = config
+        .mint_operation(mint_input.clone())
+        .expect("mint envelope");
+    let mint_operation_id = mint_envelope.operation_id().expect("mint operation id");
 
     let swap_input = proof_for_amount(&state, 1, "offline-catch-up-swap-input");
     let swap_input_y = swap_input.y().expect("swap input y");
     let swapped_output = swap_output(&state, "offline-catch-up-swap-output");
     let swap_request = cdk::nuts::SwapRequest::new(vec![swap_input], vec![swapped_output.clone()]);
+    let swap_envelope = config
+        .swap_operation(swap_request.clone())
+        .expect("swap envelope");
+    let swap_operation_id = swap_envelope.operation_id().expect("swap operation id");
 
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Pending,
@@ -5207,7 +5220,10 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
         melt_inputs,
         Some(vec![melt_change_output.clone()]),
     );
-    let melt_envelope = config.melt_operation(melt_request).expect("melt envelope");
+    let melt_envelope = config
+        .melt_operation(melt_request.clone())
+        .expect("melt envelope");
+    let melt_operation_id = melt_envelope.operation_id().expect("melt operation id");
     let melt_payment_envelope = melt_payment_observation_envelope(
         &state,
         &melt_quote_id,
@@ -5218,16 +5234,15 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
     for envelope in [
         mint_quote_envelope(&state, &mint_quote_id),
         paid_observation_envelope(&state, &mint_quote_id),
-        config
-            .mint_operation(mint_request.clone())
-            .expect("mint envelope"),
-        config
-            .swap_operation(swap_request.clone())
-            .expect("swap envelope"),
+        mint_envelope.clone(),
+        swap_envelope.clone(),
         melt_quote_envelope,
-        melt_envelope,
-        melt_payment_envelope,
+        melt_envelope.clone(),
     ] {
+        peer_state
+            .submit_federation_envelope_with_sequence(envelope.clone(), None)
+            .await
+            .expect("peer accepted operation");
         peer_consensus
             .submit_envelope(envelope)
             .expect("peer accepted operation");
@@ -5238,16 +5253,19 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
         local_consensus.lock().await.peer_status().operation_count,
         0
     );
-    let catch_up_response = peer_consensus
-        .catch_up_checked(&local_consensus.lock().await.catch_up_request())
-        .expect("peer catch-up response");
+    let catch_up_response = catch_up_response_with_materialized_digest(
+        &peer_state,
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    )
+    .await;
 
     let applied = state
         .apply_federation_catch_up_response(&catch_up_response)
         .await
         .expect("apply offline catch-up");
 
-    assert_eq!(applied.len(), 7);
+    assert_eq!(applied.len(), 6);
     assert_eq!(
         local_consensus
             .lock()
@@ -5257,13 +5275,21 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
         peer_consensus.peer_status().latest_order_digest
     );
 
+    let (replayed_consensus, replayed_sequences) =
+        crate::create_federation_runtime_state(&state.mint)
+            .await
+            .expect("restart federation runtime from durable catch-up state");
+    state.federation_consensus = replayed_consensus;
+    state.federation_sequences = replayed_sequences;
+    let local_consensus = state.federation_consensus.as_ref().expect("consensus");
+
     let persisted = state
         .mint
         .localstore()
         .get_federation_journal_entries()
         .await
         .expect("journal lookup");
-    assert_eq!(persisted.len(), 7);
+    assert_eq!(persisted.len(), 6);
     assert!(persisted
         .iter()
         .all(|entry| entry.status == FederationOperationStatus::Applied));
@@ -5300,12 +5326,100 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
         .expect("swap signature lookup");
     assert!(swap_signatures[0].is_some());
 
+    let duplicate_mint = state
+        .submit_federation_envelope(mint_envelope.clone())
+        .await
+        .expect("duplicate mint after catch-up");
+    assert!(matches!(
+        duplicate_mint.outcome,
+        FederationJournalAppendOutcome::Duplicate(_)
+    ));
+    let duplicate_mint_response = state
+        .mint
+        .persisted_mint_share_response(mint_operation_id, &mint_input)
+        .await
+        .expect("persisted duplicate mint share response");
+    assert_eq!(duplicate_mint_response.signatures.len(), 1);
+
+    let duplicate_swap = state
+        .submit_federation_envelope(swap_envelope.clone())
+        .await
+        .expect("duplicate swap after catch-up");
+    assert!(matches!(
+        duplicate_swap.outcome,
+        FederationJournalAppendOutcome::Duplicate(_)
+    ));
+    let duplicate_swap_response = state
+        .mint
+        .persisted_swap_share_response(swap_operation_id, &swap_request)
+        .await
+        .expect("persisted duplicate swap share response");
+    assert_eq!(duplicate_swap_response.signatures.len(), 1);
+
+    let duplicate_pending_melt = state
+        .submit_federation_envelope(melt_envelope.clone())
+        .await
+        .expect("duplicate pending melt after catch-up");
+    assert!(matches!(
+        duplicate_pending_melt.outcome,
+        FederationJournalAppendOutcome::Duplicate(_)
+    ));
     let melt_quote = state
         .mint
         .localstore()
         .get_melt_quote(&melt_quote_id)
         .await
         .expect("melt quote lookup")
+        .expect("melt quote persisted");
+    assert_eq!(melt_quote.state, MeltQuoteState::Pending);
+    assert!(melt_quote.payment_proof.is_none());
+    let melt_states = state
+        .mint
+        .localstore()
+        .get_proofs_states(&melt_input_ys)
+        .await
+        .expect("pending melt state lookup");
+    assert_eq!(
+        melt_states,
+        vec![
+            Some(cdk::nuts::State::Pending),
+            Some(cdk::nuts::State::Pending),
+            Some(cdk::nuts::State::Pending),
+        ]
+    );
+    let pending_change_signatures = state
+        .mint
+        .localstore()
+        .get_blind_signatures(&[melt_change_output.blinded_secret])
+        .await
+        .expect("pending melt change signature lookup");
+    assert!(pending_change_signatures[0].is_none());
+
+    peer_state
+        .submit_federation_envelope_with_sequence(melt_payment_envelope.clone(), None)
+        .await
+        .expect("peer accepted delayed paid melt observation");
+    peer_consensus
+        .submit_envelope(melt_payment_envelope)
+        .expect("peer accepted delayed paid melt observation");
+    let delayed_paid_response = catch_up_response_with_materialized_digest(
+        &peer_state,
+        &peer_consensus,
+        &local_consensus.lock().await.catch_up_request(),
+    )
+    .await;
+    let delayed_applied = state
+        .apply_federation_catch_up_response(&delayed_paid_response)
+        .await
+        .expect("apply delayed paid melt catch-up");
+    assert_eq!(delayed_applied.len(), 1);
+
+    let melt_quote = state
+        .mint
+        .localstore()
+        .get_melt_quote(&melt_quote_id)
+        .await
+        .expect("melt quote lookup after paid observation")
         .expect("melt quote persisted");
     assert_eq!(melt_quote.state, MeltQuoteState::Paid);
     assert_eq!(
@@ -5344,6 +5458,38 @@ async fn offline_member_catches_up_multiple_operations_and_converges() {
         .await
         .expect("melt change signature lookup");
     assert!(melt_change_signatures[0].is_some());
+    let duplicate_melt_response = state
+        .mint
+        .melt_federation(&melt_request, melt_operation_id)
+        .await
+        .expect("duplicate final melt response after delayed catch-up");
+    assert_eq!(duplicate_melt_response.state(), MeltQuoteState::Paid);
+    let duplicate_change = duplicate_melt_response
+        .change()
+        .expect("duplicate final melt change signatures");
+    assert_eq!(duplicate_change.len(), 1);
+
+    let local_entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("local journal lookup after delayed catch-up");
+    let peer_entries = peer_state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("peer journal lookup after delayed catch-up");
+    assert_eq!(local_entries.len(), 7);
+    assert_eq!(peer_entries.len(), 7);
+    let local_digest = materialized_state_digest(&state, &local_entries)
+        .await
+        .expect("local materialized digest");
+    let peer_digest = materialized_state_digest(&peer_state, &peer_entries)
+        .await
+        .expect("peer materialized digest");
+    assert_eq!(local_digest, peer_digest);
 
     let conflicting_output = swap_output(&state, "offline-catch-up-conflicting-mint");
     let conflicting_mint = config
