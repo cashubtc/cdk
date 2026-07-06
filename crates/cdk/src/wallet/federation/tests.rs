@@ -256,6 +256,23 @@ fn blinded_outputs(bundle: &TrustedDealerConfigBundle) -> Vec<BlindedMessage> {
     blinded_outputs_for_keyset(keyset, b"federated wallet connector output")
 }
 
+fn non_v3_blinded_outputs(bundle: &TrustedDealerConfigBundle, label: &[u8]) -> Vec<BlindedMessage> {
+    let keyset = &bundle.public_config.keysets[0];
+    let non_v3_keyset_id = Id::v2_from_data(
+        &keyset.keys(),
+        &keyset.unit,
+        keyset.input_fee_ppk,
+        keyset.final_expiry,
+    );
+    blinded_outputs_for_keyset(keyset, label)
+        .into_iter()
+        .map(|mut output| {
+            output.keyset_id = non_v3_keyset_id;
+            output
+        })
+        .collect()
+}
+
 fn blinded_outputs_for_keyset(keyset: &FederatedKeyset, label: &[u8]) -> Vec<BlindedMessage> {
     vec![
         blinded_output_for_keyset_amount(keyset, 1, label),
@@ -380,6 +397,23 @@ fn member_connectors(
             connector.set_post_swap_response(Ok(SwapResponse {
                 signatures: share_response(bundle, member_id, outputs).signatures,
             }));
+            (
+                member_id,
+                Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+            )
+        })
+        .collect()
+}
+
+fn member_connectors_with_only_keysets(
+    bundle: &TrustedDealerConfigBundle,
+) -> BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>> {
+    let advertised = advertised_keyset(bundle);
+    [member_id(1), member_id(2), member_id(3)]
+        .into_iter()
+        .map(|member_id| {
+            let connector = MockMintConnector::new();
+            connector.set_active_keyset(advertised.clone());
             (
                 member_id,
                 Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
@@ -3328,6 +3362,78 @@ async fn federated_mint_connector_rejects_non_v3_melt_change_outputs() {
 
     assert!(matches!(
         result,
+        Err(crate::Error::Federation(
+            FederationError::InvalidFederatedKeysetVersion { .. }
+        ))
+    ));
+}
+
+#[tokio::test]
+async fn federated_mint_connector_rejects_non_v3_mint_swap_and_restore_outputs_before_fanout() {
+    let bundle = threshold_bundle();
+    let connector = || {
+        FederatedMintConnector::new(
+            bundle.public_config.clone(),
+            member_connectors_with_only_keysets(&bundle),
+        )
+        .expect("federated mint connector")
+    };
+
+    let mint_result = connector()
+        .post_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            MintRequest {
+                quote: "mint-quote".to_string(),
+                outputs: non_v3_blinded_outputs(&bundle, b"non-v3 mint output"),
+                signature: None,
+            },
+        )
+        .await;
+    assert!(matches!(
+        mint_result,
+        Err(crate::Error::Federation(
+            FederationError::InvalidFederatedKeysetVersion { .. }
+        ))
+    ));
+
+    let batch_mint_result = connector()
+        .post_batch_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            BatchMintRequest {
+                quotes: vec!["batch-mint-quote".to_string()],
+                quote_amounts: None,
+                outputs: non_v3_blinded_outputs(&bundle, b"non-v3 batch mint output"),
+                signatures: None,
+            },
+        )
+        .await;
+    assert!(matches!(
+        batch_mint_result,
+        Err(crate::Error::Federation(
+            FederationError::InvalidFederatedKeysetVersion { .. }
+        ))
+    ));
+
+    let swap_result = connector()
+        .post_swap(SwapRequest::new(
+            Vec::new(),
+            non_v3_blinded_outputs(&bundle, b"non-v3 swap output"),
+        ))
+        .await;
+    assert!(matches!(
+        swap_result,
+        Err(crate::Error::Federation(
+            FederationError::InvalidFederatedKeysetVersion { .. }
+        ))
+    ));
+
+    let restore_result = connector()
+        .post_restore(RestoreRequest {
+            outputs: non_v3_blinded_outputs(&bundle, b"non-v3 restore output"),
+        })
+        .await;
+    assert!(matches!(
+        restore_result,
         Err(crate::Error::Federation(
             FederationError::InvalidFederatedKeysetVersion { .. }
         ))
