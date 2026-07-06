@@ -892,6 +892,118 @@ fn federation_mode_defaults_to_standalone() {
     assert!(FederationMode::Member.is_member());
 }
 
+#[tokio::test]
+async fn apply_accepted_federation_operation_applies_accepted_and_applying_entries() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+
+    let accepted_quote = QuoteId::new();
+    let accepted_entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_operation(
+            accepted_quote.clone(),
+            bolt11_quote_request(1),
+            bolt11_quote_response(&accepted_quote, 1),
+        ),
+    );
+    persist_journal_entry(&localstore, &accepted_entry).await;
+    assert!(mint
+        .apply_accepted_federation_operation(&accepted_entry)
+        .await
+        .expect("accepted apply"));
+    assert!(localstore
+        .get_mint_quote(&accepted_quote)
+        .await
+        .expect("accepted quote lookup")
+        .is_some());
+
+    let applying_quote = QuoteId::new();
+    let mut applying_entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_operation(
+            applying_quote.clone(),
+            bolt11_quote_request(2),
+            bolt11_quote_response(&applying_quote, 2),
+        ),
+    );
+    applying_entry.status = FederationOperationStatus::Applying;
+    persist_journal_entry(&localstore, &applying_entry).await;
+    assert!(mint
+        .apply_accepted_federation_operation(&applying_entry)
+        .await
+        .expect("applying apply"));
+    assert!(localstore
+        .get_mint_quote(&applying_quote)
+        .await
+        .expect("applying quote lookup")
+        .is_some());
+}
+
+#[tokio::test]
+async fn apply_accepted_federation_operation_skips_applied_entries() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let mut entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_operation(
+            quote.clone(),
+            bolt11_quote_request(1),
+            bolt11_quote_response(&quote, 1),
+        ),
+    );
+    entry.status = FederationOperationStatus::Applied;
+
+    assert!(!mint
+        .apply_accepted_federation_operation(&entry)
+        .await
+        .expect("applied entry skip"));
+    assert!(localstore
+        .get_mint_quote(&quote)
+        .await
+        .expect("quote lookup")
+        .is_none());
+}
+
+#[tokio::test]
+async fn apply_accepted_federation_operation_rejects_terminal_local_statuses() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+
+    for status in [
+        FederationOperationStatus::Rejected,
+        FederationOperationStatus::Failed,
+    ] {
+        let mut journal = InMemoryFederationJournal::new();
+        let quote = QuoteId::new();
+        let mut entry = appended_entry(
+            &mut journal,
+            runtime_config.mint_quote_operation(
+                quote.clone(),
+                bolt11_quote_request(1),
+                bolt11_quote_response(&quote, 1),
+            ),
+        );
+        entry.status = status;
+
+        let err = mint
+            .apply_accepted_federation_operation(&entry)
+            .await
+            .expect_err("terminal local status must not apply");
+        assert!(
+            err.to_string().contains("is not accepted for apply"),
+            "unexpected terminal-status error: {err}"
+        );
+        assert!(localstore
+            .get_mint_quote(&quote)
+            .await
+            .expect("quote lookup")
+            .is_none());
+    }
+}
+
 #[test]
 fn runtime_config_validates_public_and_private_configs() {
     let runtime_config = runtime_config();

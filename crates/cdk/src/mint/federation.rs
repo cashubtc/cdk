@@ -1009,11 +1009,7 @@ impl Mint {
         let mut applied = Vec::new();
 
         for entry in entries {
-            if entry.status == FederationOperationStatus::Applied {
-                continue;
-            }
-
-            if self.apply_federation_journal_entry(entry).await? {
+            if self.apply_accepted_federation_operation(entry).await? {
                 applied.push(entry.operation_id);
             }
         }
@@ -1021,10 +1017,30 @@ impl Mint {
         Ok(applied)
     }
 
-    async fn apply_federation_journal_entry(
+    /// Apply one accepted federation operation to this member's local mint database.
+    ///
+    /// This is the deterministic apply boundary used by journal replay, live
+    /// finalization, and catch-up. Admission checks may reject malformed
+    /// requests earlier, but accepted-order apply remains the authoritative
+    /// stateful validity decision. Already applied entries are skipped for
+    /// idempotent replay; locally rejected or failed entries are never
+    /// materialized again through this path.
+    pub async fn apply_accepted_federation_operation(
         &self,
         entry: &FederationJournalEntry,
     ) -> Result<bool, Error> {
+        match entry.status {
+            FederationOperationStatus::Accepted | FederationOperationStatus::Applying => {}
+            FederationOperationStatus::Applied => return Ok(false),
+            FederationOperationStatus::Rejected | FederationOperationStatus::Failed => {
+                return Err(Error::Custom(format!(
+                    "federation operation {} has local status {} and is not accepted for apply",
+                    entry.operation_id,
+                    federation_operation_status_label(entry.status)
+                )));
+            }
+        }
+
         match &entry.envelope.operation {
             FederationOperation::MintQuote(operation) => {
                 self.apply_federation_mint_quote(entry, operation).await?;
@@ -1932,6 +1948,16 @@ fn payment_observation_record_from_entry(
 
 fn federation_payment_identifier_label(payment_id: &PaymentIdentifier) -> String {
     format!("{}:{}", payment_id.kind(), payment_id)
+}
+
+fn federation_operation_status_label(status: FederationOperationStatus) -> &'static str {
+    match status {
+        FederationOperationStatus::Accepted => "accepted",
+        FederationOperationStatus::Applying => "applying",
+        FederationOperationStatus::Applied => "applied",
+        FederationOperationStatus::Rejected => "rejected",
+        FederationOperationStatus::Failed => "failed",
+    }
 }
 
 fn mint_request_from_input(input: MintInput) -> FederationMintRequest {
