@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover lost-waiter duplicate replay</span>
+          <span class="value">test: cover AlephBFT admission race replay</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">AlephBFT duplicate submission now returns the durable journal duplicate after accepted apply even when in-memory waiter and response-cache state have disappeared.</span>
+          <span class="value">AlephBFT duplicate submission now returns the durable journal duplicate when a competing path finalizes the same operation after local admission but before queueing.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -730,7 +730,7 @@
           </article>
           <article class="item">
             <h3>BFT adapter groundwork</h3>
-            <p>The consensus runtime has a simulator-backed adapter and an AlephBFT adapter boundary with queueing, preview/drain, drained-unit pending tracking, peer-decided item cleanup, finalized-unit delivery, deterministic rejected finalized conflicts, response waiters, duplicate handling, pending conflict-key rejection, and status counters including pending-finalization items.</p>
+            <p>The consensus runtime has a simulator-backed adapter and an AlephBFT adapter boundary with queueing, preview/drain, drained-unit pending tracking, peer-decided item cleanup, finalized-unit delivery, deterministic rejected finalized conflicts, response waiters, duplicate handling, post-admission duplicate replay, pending conflict-key rejection, and status counters including pending-finalization items.</p>
           </article>
         </div>
       </section>
@@ -768,7 +768,7 @@
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
-            <p>Known CPU spin and blocking-call issues were fixed, peer sync has backoff and timeout knobs, operation admission is size bounded, duplicate submissions replay from the durable journal after lost in-memory waiters, and wallet/member fanout tolerates slow, offline, rate-limited, pending-finalization, definitively rejecting, and bad-share peers as long as a threshold of valid final responses is available, including mint, swap, melt, restore, and check-state threshold-live coverage.</p>
+            <p>Known CPU spin and blocking-call issues were fixed, peer sync has backoff and timeout knobs, operation admission is size bounded, duplicate submissions replay from the durable journal after lost in-memory waiters or post-admission acceptance races, and wallet/member fanout tolerates slow, offline, rate-limited, pending-finalization, definitively rejecting, and bad-share peers as long as a threshold of valid final responses is available, including mint, swap, melt, restore, and check-state threshold-live coverage.</p>
           </article>
           <article class="item">
             <h3>Operator visibility</h3>

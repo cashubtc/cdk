@@ -6667,6 +6667,97 @@ async fn aleph_bft_duplicate_after_lost_waiters_returns_journal_duplicate() {
 }
 
 #[tokio::test]
+async fn aleph_bft_duplicate_after_admission_race_returns_journal_duplicate() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let peer = public_config
+        .members
+        .get(&peer_private.member_id)
+        .expect("peer member");
+
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    state
+        .validate_federation_envelope_admission(&envelope)
+        .expect("operation admitted before competing acceptance");
+
+    let competing_state = state.clone();
+    let competing_envelope = envelope.clone();
+    let competing_submit = tokio::spawn(async move {
+        competing_state
+            .submit_federation_envelope_with_sequence(competing_envelope, None)
+            .await
+    });
+    let unit = wait_for_local_aleph_bft_unit(&state).await;
+    let response = finalized_unit_response_for_peer(&public_config, local_private.member_id, &unit);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_finalized_unit_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    run_federation_aleph_bft_driver_tick(
+        &state,
+        &client,
+        std::slice::from_ref(peer),
+        FederationAlephBftDriverTickConfig::default(),
+    )
+    .await
+    .expect("driver tick");
+    let accepted = competing_submit
+        .await
+        .expect("competing submit task")
+        .expect("competing submit response");
+    assert_eq!(accepted.operation_id, operation_id);
+
+    let duplicate = state
+        .submit_federation_envelope_with_sequence(envelope, None)
+        .await
+        .expect("post-admission race submit should return duplicate");
+    assert_eq!(duplicate.operation_id, operation_id);
+    assert!(matches!(
+        duplicate.outcome,
+        FederationJournalAppendOutcome::Duplicate(_)
+    ));
+    assert_eq!(state.federation_pending_response_waiter_count(), 0);
+    assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 1);
+
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 0);
+    assert_eq!(consensus.peer_status().operation_count, 1);
+    assert_eq!(
+        consensus
+            .journal()
+            .entry_by_operation_id(operation_id)
+            .expect("accepted operation remains durable")
+            .operation_id,
+        operation_id
+    );
+    drop(consensus);
+
+    let entries = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal entries");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].operation_id, operation_id);
+    let stats = state.federation_operation_notification_stats();
+    assert_eq!(stats.duplicate_submissions, 1);
+}
+
+#[tokio::test]
 async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
