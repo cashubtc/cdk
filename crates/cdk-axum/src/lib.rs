@@ -2880,6 +2880,12 @@ impl MintState {
     }
 
     pub(crate) async fn ensure_federation_ready_for_public_submit(&self) -> Result<(), cdk::Error> {
+        self.ensure_federation_ready_for_authoritative_read().await
+    }
+
+    pub(crate) async fn ensure_federation_ready_for_authoritative_read(
+        &self,
+    ) -> Result<(), cdk::Error> {
         let Some(sync) = &self.federation_sync else {
             return Ok(());
         };

@@ -27,7 +27,7 @@ use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::nut01::{evaluate_secret_key_coefficients, BlsG1PublicKey, BlsSecretKey};
 use cdk::nuts::nut22::AuthToken;
 use cdk::nuts::{
-    BlindedMessage, CurrencyUnit, Id, MeltQuoteBolt11Request, MeltQuoteState,
+    BlindedMessage, CheckStateRequest, CurrencyUnit, Id, MeltQuoteBolt11Request, MeltQuoteState,
     MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteState, MintRequest, PaymentMethod,
     PublicKey, RestoreRequest, SecretKey,
 };
@@ -38,6 +38,8 @@ use cdk_http_client::HttpError;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tower::ServiceExt;
+
+use crate::auth::AuthHeader;
 
 use super::*;
 
@@ -623,6 +625,13 @@ where
 
 fn member_id(value: u16) -> MemberId {
     MemberId::new(value).expect("member id")
+}
+
+async fn response_error_detail(response: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body bytes");
+    String::from_utf8_lossy(&bytes).to_string()
 }
 
 fn private_member(value: u16) -> MemberConfigPrivate {
@@ -2549,6 +2558,66 @@ async fn lagging_member_refuses_public_federation_submit_until_healthy() {
         state.federation_sync_status().await,
         Some(crate::FederationSyncStatus::Healthy)
     ));
+}
+
+#[tokio::test]
+async fn lagging_member_refuses_public_restore_and_checkstate_reads_until_healthy() {
+    let (state, public_config, _) = federation_route_state().await;
+    let peer_member = public_config.member(member_id(2)).expect("peer member");
+    state
+        .mark_federation_lagging(peer_member.member_id, 0, 1)
+        .await;
+    let y = PublicKey::from(BlsG1PublicKey::hash_to_curve(
+        b"lagging member checkstate read",
+    ));
+    let restore_request = match restore_envelope_for_state(
+        &state,
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    )
+    .operation
+    {
+        FederationOperation::Restore(operation) => operation.request,
+        _ => unreachable!("helper returns restore operation"),
+    };
+
+    let check_error = crate::router_handlers::post_check(
+        AuthHeader::None,
+        State(state.clone()),
+        Json(CheckStateRequest { ys: vec![y] }),
+    )
+    .await
+    .expect_err("lagging member must not serve authoritative check-state");
+    let check_body = response_error_detail(check_error).await;
+    assert!(
+        check_body.contains("lagging behind peer"),
+        "check-state should fail closed on federation lag, got: {check_body}"
+    );
+
+    let restore_error = crate::router_handlers::post_restore(
+        AuthHeader::None,
+        State(state.clone()),
+        Json(restore_request.clone()),
+    )
+    .await
+    .expect_err("lagging member must not serve authoritative restore");
+    let restore_body = response_error_detail(restore_error).await;
+    assert!(
+        restore_body.contains("lagging behind peer"),
+        "restore should fail closed on federation lag, got: {restore_body}"
+    );
+
+    state.mark_federation_healthy().await;
+    let _ = crate::router_handlers::post_check(
+        AuthHeader::None,
+        State(state.clone()),
+        Json(CheckStateRequest { ys: vec![y] }),
+    )
+    .await
+    .expect("healthy member can serve check-state");
+    let _ =
+        crate::router_handlers::post_restore(AuthHeader::None, State(state), Json(restore_request))
+            .await
+            .expect("healthy member can serve restore");
 }
 
 #[tokio::test]

@@ -189,6 +189,12 @@ pub(crate) async fn post_check(
         .await
         .map_err(into_response)?;
 
+    #[cfg(feature = "federation")]
+    state
+        .ensure_federation_ready_for_authoritative_read()
+        .await
+        .map_err(into_response)?;
+
     let state = state.mint.check_state(&payload).await.map_err(|err| {
         tracing::error!("Could not check state of proofs");
         into_response(err)
@@ -287,6 +293,12 @@ pub(crate) async fn post_restore(
             auth.into(),
             &ProtectedEndpoint::new(Method::Post, RoutePath::Restore),
         )
+        .await
+        .map_err(into_response)?;
+
+    #[cfg(feature = "federation")]
+    state
+        .ensure_federation_ready_for_authoritative_read()
         .await
         .map_err(into_response)?;
 

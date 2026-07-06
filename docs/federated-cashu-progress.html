@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: normalize payment observation ids</span>
+          <span class="value">fix: gate federation read routes</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Payment observation operation IDs now ignore observer-local observation timestamps, so identical mint and melt evidence stays idempotent while changed proof material still conflicts.</span>
+          <span class="value">Public restore and check-state routes now refuse authoritative federation reads while a member is lagging or otherwise not sync-ready, then resume once the member is healthy.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>

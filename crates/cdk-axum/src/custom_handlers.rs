@@ -1657,12 +1657,27 @@ mod tests {
             "state.mint.melt(payload).await?",
         );
 
+        let checkstate_handler = source_slice(
+            router_handlers,
+            "pub(crate) async fn post_check",
+            "/// Mint information",
+        );
+        assert_contains_in_order(
+            checkstate_handler,
+            ".ensure_federation_ready_for_authoritative_read()",
+            "state.mint.check_state(&payload).await",
+        );
+
         let restore_handler = source_slice(
             router_handlers,
             "pub(crate) async fn post_restore",
             "#[cfg(feature = \"info-page\")]",
         );
-        assert!(restore_handler.contains("state.mint.restore(payload).await"));
+        assert_contains_in_order(
+            restore_handler,
+            ".ensure_federation_ready_for_authoritative_read()",
+            "state.mint.restore(payload).await",
+        );
 
         let restore_impl = source_slice(
             mint_mod,
