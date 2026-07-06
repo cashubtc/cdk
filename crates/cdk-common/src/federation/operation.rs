@@ -1576,6 +1576,40 @@ impl FederationOperationEnvelope {
         canonical_json_bytes(self)
     }
 
+    /// Return canonical JSON bytes covered by the operation ID.
+    ///
+    /// Payment observation timestamps are observer-local audit metadata. They
+    /// are intentionally excluded from payment-evidence matching, so they must
+    /// also be excluded from the operation ID to keep identical evidence
+    /// idempotent across retries and delayed observers.
+    fn operation_id_canonical_bytes(&self) -> Result<Vec<u8>> {
+        match &self.operation {
+            FederationOperation::MintQuotePayment(observation)
+                if observation.observed_time.is_some() =>
+            {
+                let mut normalized = self.clone();
+                if let FederationOperation::MintQuotePayment(observation) =
+                    &mut normalized.operation
+                {
+                    observation.observed_time = None;
+                }
+                canonical_json_bytes(&normalized)
+            }
+            FederationOperation::MeltQuotePayment(observation)
+                if observation.observed_time.is_some() =>
+            {
+                let mut normalized = self.clone();
+                if let FederationOperation::MeltQuotePayment(observation) =
+                    &mut normalized.operation
+                {
+                    observation.observed_time = None;
+                }
+                canonical_json_bytes(&normalized)
+            }
+            _ => self.canonical_bytes(),
+        }
+    }
+
     /// Return the canonical operation envelope size in bytes.
     pub fn canonical_size(&self) -> Result<usize> {
         Ok(self.canonical_bytes()?.len())
@@ -1603,7 +1637,7 @@ impl FederationOperationEnvelope {
     /// Compute the domain-separated operation ID.
     pub fn operation_id(&self) -> Result<FederationOperationId> {
         self.ensure_supported_version()?;
-        let canonical = self.canonical_bytes()?;
+        let canonical = self.operation_id_canonical_bytes()?;
         Ok(operation_id_from_canonical(&canonical))
     }
 
@@ -2668,6 +2702,131 @@ mod tests {
             quorum.conflicting_observers,
             vec![member_id(3), member_id(4)]
         );
+    }
+
+    #[test]
+    fn payment_observation_operation_ids_ignore_observed_time() {
+        let first_mint = FederationMintQuotePaymentObservation {
+            quote: "mint-quote".to_string(),
+            observer: member_id(1),
+            method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Bolt11),
+            state: MintQuoteState::Paid,
+            amount_paid: Amount::from(10),
+            amount_issued: Amount::ZERO,
+            payment_id: Some(PaymentIdentifier::CustomId("payment-a".to_string())),
+            payment_proof: Some("settled".to_string()),
+            observed_time: Some(11),
+        };
+        let delayed_mint = FederationMintQuotePaymentObservation {
+            observed_time: Some(22),
+            ..first_mint.clone()
+        };
+        let conflicting_mint = FederationMintQuotePaymentObservation {
+            payment_proof: Some("different-settlement".to_string()),
+            observed_time: Some(33),
+            ..first_mint.clone()
+        };
+
+        let first_mint_envelope = envelope(FederationOperation::MintQuotePayment(first_mint));
+        let delayed_mint_envelope = envelope(FederationOperation::MintQuotePayment(delayed_mint));
+        let conflicting_mint_envelope =
+            envelope(FederationOperation::MintQuotePayment(conflicting_mint));
+
+        assert_ne!(
+            first_mint_envelope
+                .canonical_bytes()
+                .expect("first mint canonical bytes"),
+            delayed_mint_envelope
+                .canonical_bytes()
+                .expect("delayed mint canonical bytes")
+        );
+        assert_eq!(
+            first_mint_envelope.operation_id().expect("first mint id"),
+            delayed_mint_envelope
+                .operation_id()
+                .expect("delayed mint id")
+        );
+        assert!(!first_mint_envelope
+            .conflicts_with(&delayed_mint_envelope)
+            .expect("delayed mint conflict check"));
+        assert_ne!(
+            first_mint_envelope.operation_id().expect("first mint id"),
+            conflicting_mint_envelope
+                .operation_id()
+                .expect("conflicting mint id")
+        );
+        assert!(first_mint_envelope
+            .conflicts_with(&conflicting_mint_envelope)
+            .expect("conflicting mint conflict check"));
+
+        let mut journal = InMemoryFederationJournal::new();
+        let first_entry = journal
+            .append(first_mint_envelope)
+            .expect("append first mint observation")
+            .entry()
+            .clone();
+        let duplicate_entry = journal
+            .append(delayed_mint_envelope)
+            .expect("append delayed mint observation")
+            .entry()
+            .clone();
+
+        assert_eq!(first_entry.operation_id, duplicate_entry.operation_id);
+        assert_eq!(journal.entries().len(), 1);
+
+        let first_melt = FederationMeltQuotePaymentObservation {
+            quote: "melt-quote".to_string(),
+            observer: member_id(1),
+            method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Bolt11),
+            state: MeltQuoteState::Paid,
+            amount: Amount::from(10),
+            fee_reserve: Amount::from(1),
+            payment_id: Some(PaymentIdentifier::CustomId("payment-b".to_string())),
+            payment_proof: Some("preimage".to_string()),
+            failure_reason: None,
+            observed_time: Some(44),
+        };
+        let delayed_melt = FederationMeltQuotePaymentObservation {
+            observed_time: Some(55),
+            ..first_melt.clone()
+        };
+        let conflicting_melt = FederationMeltQuotePaymentObservation {
+            payment_proof: Some("different-preimage".to_string()),
+            observed_time: Some(66),
+            ..first_melt.clone()
+        };
+
+        let first_melt_envelope = envelope(FederationOperation::MeltQuotePayment(first_melt));
+        let delayed_melt_envelope = envelope(FederationOperation::MeltQuotePayment(delayed_melt));
+        let conflicting_melt_envelope =
+            envelope(FederationOperation::MeltQuotePayment(conflicting_melt));
+
+        assert_ne!(
+            first_melt_envelope
+                .canonical_bytes()
+                .expect("first melt canonical bytes"),
+            delayed_melt_envelope
+                .canonical_bytes()
+                .expect("delayed melt canonical bytes")
+        );
+        assert_eq!(
+            first_melt_envelope.operation_id().expect("first melt id"),
+            delayed_melt_envelope
+                .operation_id()
+                .expect("delayed melt id")
+        );
+        assert!(!first_melt_envelope
+            .conflicts_with(&delayed_melt_envelope)
+            .expect("delayed melt conflict check"));
+        assert_ne!(
+            first_melt_envelope.operation_id().expect("first melt id"),
+            conflicting_melt_envelope
+                .operation_id()
+                .expect("conflicting melt id")
+        );
+        assert!(first_melt_envelope
+            .conflicts_with(&conflicting_melt_envelope)
+            .expect("conflicting melt conflict check"));
     }
 
     #[test]

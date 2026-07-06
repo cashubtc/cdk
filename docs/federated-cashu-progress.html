@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover accepted submit race</span>
+          <span class="value">fix: normalize payment observation ids</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Public federation submit now covers the race where an operation passes admission, is accepted by another path, and then reaches this member as a duplicate wallet request.</span>
+          <span class="value">Payment observation operation IDs now ignore observer-local observation timestamps, so identical mint and melt evidence stays idempotent while changed proof material still conflicts.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
