@@ -99,6 +99,17 @@ impl FederationRuntimeConfig {
         &self.public_config
     }
 
+    fn validate_federation_observer(&self, observer: MemberId) -> Result<(), Error> {
+        if self.public_config.members.contains_key(&observer) {
+            return Ok(());
+        }
+
+        Err(FederationError::UnknownMember {
+            member_id: observer,
+        }
+        .into())
+    }
+
     pub(crate) fn has_active_non_auth_keyset(&self) -> bool {
         self.public_config
             .keysets
@@ -219,6 +230,33 @@ impl FederationRuntimeConfig {
         ))
     }
 
+    /// Validate a federated mint quote before consensus admission.
+    ///
+    /// This checks only operation-local transcript material. Payment state and
+    /// quote persistence remain in accepted consensus apply.
+    pub fn validate_federated_mint_quote_submission(
+        &self,
+        operation: &FederationMintQuoteOperation,
+    ) -> Result<(), Error> {
+        let _quote_id = quote_id_from_federation(&operation.quote)?;
+        validate_payment_method_name(&operation.request.payment_method())?;
+        validate_payment_method_name(&operation.response.method())?;
+        if operation.request.payment_method() != operation.response.method() {
+            return Err(Error::InvalidPaymentMethod);
+        }
+        if operation.response.quote() != &operation.quote {
+            return Err(Error::UnknownQuote);
+        }
+        if operation.response.request().is_empty() {
+            return Err(Error::Custom(
+                "federation mint quote response has empty payment request".to_string(),
+            ));
+        }
+        mint_quote_response_amounts(&operation.response, &operation.request.unit())?;
+
+        Ok(())
+    }
+
     /// Build the consensus operation for observing a mint quote payment state.
     #[must_use]
     pub fn mint_quote_payment_observation<Q>(
@@ -278,6 +316,29 @@ impl FederationRuntimeConfig {
         ))
     }
 
+    /// Validate a federated mint quote payment observation before consensus admission.
+    ///
+    /// This is side-effect free: it verifies structural safety and roster
+    /// membership without mutating quote state or recording payment evidence.
+    pub fn validate_federated_mint_payment_observation_submission(
+        &self,
+        observation: &FederationMintQuotePaymentObservation,
+    ) -> Result<(), Error> {
+        let _quote_id = quote_id_from_federation(&observation.quote)?;
+        self.validate_federation_observer(observation.observer)?;
+        validate_payment_method_name(&observation.method)?;
+        if observation.amount_issued > observation.amount_paid {
+            return Err(Error::Custom(
+                "federation mint payment observation issues more than was paid".to_string(),
+            ));
+        }
+        FederationOperation::MintQuotePayment(observation.clone())
+            .balance_audit()
+            .map_err(Error::from)?;
+
+        Ok(())
+    }
+
     /// Build the consensus operation for creating a melt quote.
     pub fn melt_quote_operation<Q>(
         &self,
@@ -293,6 +354,25 @@ impl FederationRuntimeConfig {
                 request,
             },
         ))
+    }
+
+    /// Validate a federated melt quote before consensus admission.
+    ///
+    /// This checks only request-local material. Payment attempts and quote
+    /// persistence remain in accepted consensus apply.
+    pub fn validate_federated_melt_quote_submission(
+        &self,
+        operation: &FederationMeltQuoteOperation,
+    ) -> Result<(), Error> {
+        let _quote_id = quote_id_from_federation(&operation.quote)?;
+        validate_payment_method_name(&operation.request.method())?;
+        if melt_quote_request_string(&operation.request).is_empty() {
+            return Err(Error::Custom(
+                "federation melt quote request has empty payment request".to_string(),
+            ));
+        }
+
+        Ok(())
     }
 
     /// Build the consensus operation for observing an outgoing melt payment state.
@@ -358,6 +438,24 @@ impl FederationRuntimeConfig {
         ))
     }
 
+    /// Validate a federated melt quote payment observation before consensus admission.
+    ///
+    /// This is side-effect free: it verifies structural safety and roster
+    /// membership without mutating quote state or attempting external payment.
+    pub fn validate_federated_melt_payment_observation_submission(
+        &self,
+        observation: &FederationMeltQuotePaymentObservation,
+    ) -> Result<(), Error> {
+        let _quote_id = quote_id_from_federation(&observation.quote)?;
+        self.validate_federation_observer(observation.observer)?;
+        validate_payment_method_name(&observation.method)?;
+        FederationOperation::MeltQuotePayment(observation.clone())
+            .balance_audit()
+            .map_err(Error::from)?;
+
+        Ok(())
+    }
+
     /// Build the consensus operation for quarantining conflicting payment observations.
     #[must_use]
     pub fn payment_observation_quarantine<Q>(
@@ -378,6 +476,27 @@ impl FederationRuntimeConfig {
                 evidence_operation_ids,
             },
         ))
+    }
+
+    /// Validate a federated payment-observation quarantine before consensus admission.
+    ///
+    /// Quarantine is consensus-visible safety state, so this only checks the
+    /// quote scope and requires concrete evidence unless the reason is an
+    /// operator halt.
+    pub fn validate_federated_payment_observation_quarantine_submission(
+        &self,
+        operation: &FederationPaymentObservationQuarantine,
+    ) -> Result<(), Error> {
+        let _quote_id = quote_id_from_federation(&operation.quote)?;
+        if operation.evidence_operation_ids.is_empty()
+            && operation.reason != FederationPaymentObservationQuarantineReason::OperatorHalt
+        {
+            return Err(Error::Custom(
+                "federation payment observation quarantine requires evidence".to_string(),
+            ));
+        }
+
+        Ok(())
     }
 
     /// Validate outputs against the active v3/BLS aggregate keysets.
@@ -1778,6 +1897,14 @@ fn mint_input_from_federation_request(request: &FederationMintRequest) -> Result
 
 fn quote_id_from_federation(quote: &str) -> Result<QuoteId, Error> {
     Ok(QuoteId::from_str(quote)?)
+}
+
+fn validate_payment_method_name(method: &PaymentMethod) -> Result<(), Error> {
+    if method.is_valid_method_name() {
+        return Ok(());
+    }
+
+    Err(Error::InvalidPaymentMethod)
 }
 
 fn mint_quote_from_federation_operation(

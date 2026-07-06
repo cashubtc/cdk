@@ -14,7 +14,8 @@ use cdk_common::database::{
 use cdk_common::error::Error;
 use cdk_common::federation::{
     generate_trusted_dealer_configs, FederatedKeyset, FederationError, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMeltQuotePaymentObservation,
+    FederationKeysetRotationOperation, FederationMeltQuoteOperation,
+    FederationMeltQuotePaymentObservation, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationMintRequest, FederationOperation,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
     FederationPaymentObservationContext, FederationPaymentObservationPolicy,
@@ -25,6 +26,7 @@ use cdk_common::federation::{
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut00::KnownMethod;
 use cdk_common::nuts::nut01::{verify_blind_signature_share, BlsG1PublicKey, BlsSecretKey};
+use cdk_common::nuts::nut05::MeltQuoteCustomRequest;
 use cdk_common::payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, DynMintPayment, Event,
     IncomingPaymentOptions, MakePaymentResponse, MintPayment, OutgoingPaymentOptions,
@@ -1008,6 +1010,141 @@ fn runtime_config_builds_mint_quote_consensus_operations() {
         consensus.submit_envelope(conflict),
         Err(FederationError::ConflictingOperation { .. })
     ));
+}
+
+#[test]
+fn runtime_config_admission_validates_quote_and_payment_observation_submissions() {
+    let runtime_config = runtime_config();
+    let quote = QuoteId::new();
+    let mint_quote = FederationMintQuoteOperation {
+        quote: quote.to_string(),
+        request: bolt11_quote_request(10),
+        response: bolt11_quote_response(&quote, 10),
+    };
+    runtime_config
+        .validate_federated_mint_quote_submission(&mint_quote)
+        .expect("valid mint quote submission");
+
+    let mut mismatched_response_quote = mint_quote.clone();
+    mismatched_response_quote.response = bolt11_quote_response(&QuoteId::new(), 10);
+    assert!(matches!(
+        runtime_config.validate_federated_mint_quote_submission(&mismatched_response_quote),
+        Err(Error::UnknownQuote)
+    ));
+
+    let mut empty_payment_request = mint_quote.clone();
+    if let MintQuoteResponse::Bolt11(response) = &mut empty_payment_request.response {
+        response.request.clear();
+    }
+    assert!(runtime_config
+        .validate_federated_mint_quote_submission(&empty_payment_request)
+        .is_err());
+
+    let mint_observation = FederationMintQuotePaymentObservation {
+        quote: quote.to_string(),
+        observer: runtime_config.member_id(),
+        method: PaymentMethod::Known(KnownMethod::Bolt11),
+        state: MintQuoteState::Paid,
+        amount_paid: Amount::from(10),
+        amount_issued: Amount::ZERO,
+        payment_id: None,
+        payment_proof: Some("settled".to_string()),
+        observed_time: None,
+    };
+    runtime_config
+        .validate_federated_mint_payment_observation_submission(&mint_observation)
+        .expect("valid mint payment observation");
+
+    let mut unknown_mint_observer = mint_observation.clone();
+    unknown_mint_observer.observer = MemberId::new(99).expect("unknown member");
+    assert!(matches!(
+        runtime_config
+            .validate_federated_mint_payment_observation_submission(&unknown_mint_observer),
+        Err(Error::Federation(FederationError::UnknownMember { .. }))
+    ));
+
+    let mut invalid_mint_method = mint_observation.clone();
+    invalid_mint_method.method = PaymentMethod::Custom("bad/method".to_string());
+    assert!(matches!(
+        runtime_config.validate_federated_mint_payment_observation_submission(&invalid_mint_method),
+        Err(Error::InvalidPaymentMethod)
+    ));
+
+    let mut over_issued_mint = mint_observation.clone();
+    over_issued_mint.amount_issued = Amount::from(11);
+    assert!(runtime_config
+        .validate_federated_mint_payment_observation_submission(&over_issued_mint)
+        .is_err());
+
+    let melt_quote = FederationMeltQuoteOperation {
+        quote: quote.to_string(),
+        request: pending_melt_quote_request(1_000),
+    };
+    runtime_config
+        .validate_federated_melt_quote_submission(&melt_quote)
+        .expect("valid melt quote submission");
+
+    let empty_melt_quote = FederationMeltQuoteOperation {
+        quote: quote.to_string(),
+        request: MeltQuoteRequest::Custom(MeltQuoteCustomRequest {
+            method: "custom".to_string(),
+            request: String::new(),
+            unit: CurrencyUnit::Sat,
+            extra: serde_json::Value::Null,
+        }),
+    };
+    assert!(runtime_config
+        .validate_federated_melt_quote_submission(&empty_melt_quote)
+        .is_err());
+
+    let melt_observation = FederationMeltQuotePaymentObservation {
+        quote: quote.to_string(),
+        observer: runtime_config.member_id(),
+        method: PaymentMethod::Known(KnownMethod::Bolt11),
+        state: MeltQuoteState::Paid,
+        amount: Amount::from(9),
+        fee_reserve: Amount::from(1),
+        payment_id: None,
+        payment_proof: Some("preimage".to_string()),
+        failure_reason: None,
+        observed_time: None,
+    };
+    runtime_config
+        .validate_federated_melt_payment_observation_submission(&melt_observation)
+        .expect("valid melt payment observation");
+
+    let mut invalid_melt_method = melt_observation.clone();
+    invalid_melt_method.method = PaymentMethod::Custom("bad/method".to_string());
+    assert!(matches!(
+        runtime_config.validate_federated_melt_payment_observation_submission(&invalid_melt_method),
+        Err(Error::InvalidPaymentMethod)
+    ));
+
+    let quarantine = runtime_config.payment_observation_quarantine(
+        FederationPaymentObservationContext::MintQuote,
+        quote.clone(),
+        FederationPaymentObservationQuarantineReason::ConflictingEvidence,
+        vec![operation_id_with_selector(1)],
+    );
+    match &quarantine.operation {
+        FederationOperation::PaymentObservationQuarantine(operation) => runtime_config
+            .validate_federated_payment_observation_quarantine_submission(operation)
+            .expect("valid quarantine submission"),
+        operation => panic!("unexpected operation: {operation:?}"),
+    }
+
+    let empty_evidence = runtime_config.payment_observation_quarantine(
+        FederationPaymentObservationContext::MintQuote,
+        quote,
+        FederationPaymentObservationQuarantineReason::ConflictingEvidence,
+        Vec::new(),
+    );
+    match &empty_evidence.operation {
+        FederationOperation::PaymentObservationQuarantine(operation) => assert!(runtime_config
+            .validate_federated_payment_observation_quarantine_submission(operation)
+            .is_err()),
+        operation => panic!("unexpected operation: {operation:?}"),
+    }
 }
 
 #[tokio::test]
