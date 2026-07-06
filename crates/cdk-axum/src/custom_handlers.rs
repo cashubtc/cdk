@@ -552,6 +552,12 @@ pub async fn post_mint_custom_quote(
         .await
         .map_err(into_response)?;
 
+    #[cfg(feature = "federation")]
+    state
+        .ensure_federation_ready_for_public_submit()
+        .await
+        .map_err(into_response)?;
+
     match method.as_str() {
         "bolt11" => {
             let bolt11_request: MintQuoteBolt11Request =
@@ -809,6 +815,12 @@ pub async fn post_melt_custom_quote(
             auth.into(),
             &ProtectedEndpoint::new(Method::Post, RoutePath::MeltQuote(method.clone())),
         )
+        .await
+        .map_err(into_response)?;
+
+    #[cfg(feature = "federation")]
+    state
+        .ensure_federation_ready_for_public_submit()
         .await
         .map_err(into_response)?;
 
@@ -1524,6 +1536,11 @@ mod tests {
             "submit_federation_mint_quote_operation(&state",
             4,
         );
+        assert_contains_in_order(
+            mint_quote,
+            ".ensure_federation_ready_for_public_submit()",
+            ".get_mint_quote(quote_request.clone())",
+        );
 
         let mint_public_submit = source_slice(
             custom_handlers,
@@ -1595,6 +1612,11 @@ mod tests {
             custom_handlers,
             "pub async fn post_melt_custom_quote",
             "/// Get custom payment method melt quote status",
+        );
+        assert_contains_in_order(
+            melt_quote,
+            ".ensure_federation_ready_for_public_submit()",
+            ".get_melt_quote(quote_request.clone())",
         );
         assert_contains_in_order(
             melt_quote,
@@ -3190,6 +3212,41 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn post_mint_custom_quote_aleph_bft_public_route_fails_closed_before_quote_creation() {
+        let state = create_aleph_bft_federated_test_state().await;
+        let payload = serde_json::to_value(MintQuoteBolt11Request {
+            amount: Amount::from(2u64),
+            unit: CurrencyUnit::Sat,
+            description: None,
+            pubkey: None,
+        })
+        .expect("mint quote payload");
+
+        let error = post_mint_custom_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(payload),
+        )
+        .await
+        .expect_err("AlephBFT public mint quote should fail closed before local quote creation");
+
+        assert_aleph_bft_http_response_not_ready(error).await;
+        assert_no_aleph_bft_public_submit_work(&state).await;
+        assert!(
+            state
+                .mint
+                .localstore()
+                .get_mint_quotes()
+                .await
+                .expect("mint quotes lookup")
+                .is_empty(),
+            "halted AlephBFT public mint quote route must not persist a local quote"
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn post_melt_custom_quote_records_federation_quote_operation() {
         let state = create_federated_test_state().await;
         let payload = serde_json::to_value(MeltQuoteBolt11Request {
@@ -3211,6 +3268,40 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::MeltQuote]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn post_melt_custom_quote_aleph_bft_public_route_fails_closed_before_quote_creation() {
+        let state = create_aleph_bft_federated_test_state().await;
+        let payload = serde_json::to_value(MeltQuoteBolt11Request {
+            request: create_fake_invoice(1000, "aleph-bft-halted-melt-quote".to_string()),
+            unit: CurrencyUnit::Sat,
+            options: None,
+        })
+        .expect("melt quote payload");
+
+        let error = post_melt_custom_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(payload),
+        )
+        .await
+        .expect_err("AlephBFT public melt quote should fail closed before local quote creation");
+
+        assert_aleph_bft_http_response_not_ready(error).await;
+        assert_no_aleph_bft_public_submit_work(&state).await;
+        assert!(
+            state
+                .mint
+                .localstore()
+                .get_melt_quotes()
+                .await
+                .expect("melt quotes lookup")
+                .is_empty(),
+            "halted AlephBFT public melt quote route must not persist a local quote"
         );
     }
 

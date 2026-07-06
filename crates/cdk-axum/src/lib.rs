@@ -2791,7 +2791,7 @@ impl MintState {
         }
     }
 
-    async fn ensure_federation_ready_for_public_submit(&self) -> Result<(), cdk::Error> {
+    pub(crate) async fn ensure_federation_ready_for_public_submit(&self) -> Result<(), cdk::Error> {
         let Some(sync) = &self.federation_sync else {
             return Ok(());
         };
