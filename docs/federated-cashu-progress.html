@@ -526,19 +526,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now quorum-broadcast a previewed AlephBFT unit over signed private REST and exact-drain it locally only after delivery succeeds, while the live BFT engine remains intentionally unwired.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now run a bounded AlephBFT driver tick around the safe quorum-broadcast and exact-drain handoff, while the live BFT engine remains intentionally unwired.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: broadcast aleph bft finalized units safely</span>
+          <span class="value">feat: bound aleph bft driver ticks</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">The driver-facing Axum broadcast round previews the next canonical unit, submits it to peers over signed private REST, requires local plus remote acknowledgements to meet the configured consensus threshold, and only then drains and applies local state.</span>
+          <span class="value">The driver-facing tick rejects zero work bounds, returns idle without network I/O when no proposal is queued, and limits each wakeup to a configured number of broadcast/drain attempts.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Wrap this safe broadcast/drain round in a live AlephBFT proposal/finalization task and connect public route waiters to its finalized output.</span>
+          <span class="value">Wire the bounded driver into real AlephBFT production startup once the backend is enabled, then connect public route waiters to finalized output.</span>
         </div>
       </aside>
     </header>
@@ -839,6 +839,10 @@
           <article class="item">
             <h3>AlephBFT safe broadcast round</h3>
             <p>Axum now has a driver-facing round that broadcasts a previewed unit over signed private REST, requires the configured consensus threshold counting the local member, and drains/applies the local proposal only after quorum delivery. Failed delivery leaves the unit queued.</p>
+          </article>
+          <article class="item">
+            <h3>AlephBFT bounded driver tick</h3>
+            <p>Axum now wraps the safe broadcast round in a bounded driver tick and future loop hook: idle ticks make no peer requests, invalid zero-work configuration fails before networking, and each wakeup can only finalize a configured number of units.</p>
           </article>
           <article class="item">
             <h3>Signed REST consensus admission</h3>
@@ -2382,7 +2386,7 @@
             <tr>
               <td>AlephBFT safe broadcast round</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo fmt --all -- --check`, `cargo check -p cdk-axum --features federation`, and `cargo test -p cdk-axum --features federation aleph_bft_ -- --test-threads 1` passed. The 11-test slice covers signed finalized-unit private REST routing, peer-client validation, durable apply, startup reload, quorum-gated broadcast success, failed-delivery retention without queue drain or mint-state materialization, and local exact-drain mismatch safety.</td>
+              <td>`cargo fmt --all -- --check`, `cargo check -p cdk-axum --features federation`, and `cargo test -p cdk-axum --features federation aleph_bft_ -- --test-threads 1` passed. The 14-test slice covers signed finalized-unit private REST routing, peer-client validation, durable apply, startup reload, quorum-gated broadcast success, failed-delivery retention without queue drain or mint-state materialization, local exact-drain mismatch safety, idle driver ticks with no peer request, zero-work-bound rejection before networking, and bounded tick success followed by idle stop.</td>
               <td>Promote the helper into a live AlephBFT proposal/finalization task that continuously previews, broadcasts, drains, and notifies public route waiters from real BFT output.</td>
             </tr>
             <tr>
@@ -4042,7 +4046,7 @@
           </article>
           <article class="item">
             <h3>Adapter before BFT</h3>
-            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime and Axum helper now expose explicit preview, quorum-broadcast, exact-drain, and external-finalization calls so future BFT wiring cannot mistake local admission for accepted consensus order or drop proposals during transient broadcast failures.</p>
+            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime and Axum helper now expose explicit preview, quorum-broadcast, bounded driver tick, exact-drain, and external-finalization calls so future BFT wiring cannot mistake local admission for accepted consensus order or drop proposals during transient broadcast failures.</p>
           </article>
           <article class="item">
             <h3>Digest format before DB wiring</h3>
@@ -4084,7 +4088,7 @@
           </article>
           <article class="item">
             <h3>Production ordering backend</h3>
-            <p>Wrap the AlephBFT unit preview, quorum-broadcast, exact-drain, and finalization-handler primitives in a production task, then connect public route waiters to finalized output.</p>
+            <p>Wire the bounded AlephBFT driver into production startup once the backend is enabled, replace the private-REST broadcast stand-in with real AlephBFT finality, then connect public route waiters to finalized output.</p>
           </article>
           <article class="item">
             <h3>Extended Postgres partitions</h3>
