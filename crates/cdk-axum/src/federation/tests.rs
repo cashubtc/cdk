@@ -5452,6 +5452,221 @@ async fn federation_aleph_bft_finalized_unit_conflict_does_not_mutate_runtime() 
     assert_eq!(consensus.peer_status().operation_count, 0);
 }
 
+async fn queue_local_aleph_bft_unit(
+    state: &MintState,
+    envelope: FederationOperationEnvelope,
+) -> FederationAlephBftUnitPayload {
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let mut consensus = consensus.lock().await;
+    consensus
+        .submit_aleph_bft_envelope(envelope)
+        .expect("queue AlephBFT envelope");
+    consensus
+        .preview_next_aleph_bft_unit_payload()
+        .expect("preview AlephBFT unit")
+        .expect("queued unit")
+}
+
+fn finalized_unit_response_for_peer(
+    public_config: &FederationConfig,
+    local_member: MemberId,
+    unit: &FederationAlephBftUnitPayload,
+) -> FederationAlephBftFinalizedUnitResponse {
+    let mut runtime = FederationConsensusRuntime::aleph_bft_from_finalized_items(
+        public_config.federation_id,
+        local_member,
+        0,
+        public_config.members.keys().copied(),
+        public_config.threshold_params.consensus_threshold,
+        Vec::new(),
+    )
+    .expect("peer AlephBFT runtime");
+    let responses = runtime
+        .finalize_aleph_bft_unit(unit.clone())
+        .expect("peer finalizes unit");
+    FederationAlephBftFinalizedUnitResponse::new(public_config.federation_id, unit, responses)
+}
+
+#[tokio::test]
+async fn aleph_bft_broadcast_round_drains_and_applies_after_threshold_delivery() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let unit = queue_local_aleph_bft_unit(&state, envelope).await;
+    let response = finalized_unit_response_for_peer(&public_config, local_private.member_id, &unit);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_finalized_unit_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let peer = public_config
+        .members
+        .get(&peer_private.member_id)
+        .expect("peer member");
+    let wait_state = state.clone();
+    let waiter = tokio::spawn(async move {
+        wait_state
+            .wait_for_federation_operation_acceptance(operation_id)
+            .await
+            .expect("notified operation")
+    });
+    tokio::task::yield_now().await;
+
+    let outcome =
+        broadcast_next_aleph_bft_finalized_unit_round(&state, &client, std::slice::from_ref(peer))
+            .await
+            .expect("broadcast round")
+            .expect("unit broadcast");
+
+    assert_eq!(outcome.unit.body_hash, unit.body_hash);
+    assert_eq!(
+        outcome.remote_accepted_members,
+        vec![peer_private.member_id]
+    );
+    assert!(outcome.remote_failed_members.is_empty());
+    assert_eq!(outcome.remote_responses.len(), 1);
+    assert_eq!(outcome.local_responses.len(), 1);
+    assert_eq!(outcome.local_responses[0].operation_id, operation_id);
+    assert_eq!(
+        waiter.await.expect("waiter task").operation_id,
+        operation_id
+    );
+
+    let requests = transport.aleph_bft_finalized_unit_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].payload.unit.body_hash, unit.body_hash);
+
+    let replayed_quote = state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after finalization")
+        .expect("mint quote applied");
+    assert_eq!(replayed_quote.request, format!("invoice-{quote_id}"));
+
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 0);
+    assert_eq!(consensus.peer_status().operation_count, 1);
+}
+
+#[tokio::test]
+async fn aleph_bft_broadcast_round_keeps_queue_when_delivery_lacks_quorum() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let unit = queue_local_aleph_bft_unit(&state, mint_quote_envelope(&state, &quote_id)).await;
+    let transport = MockFederationTransport::default();
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let peer = public_config
+        .members
+        .get(&peer_private.member_id)
+        .expect("peer member");
+
+    let err =
+        broadcast_next_aleph_bft_finalized_unit_round(&state, &client, std::slice::from_ref(peer))
+            .await
+            .expect_err("delivery without quorum should fail");
+
+    assert!(
+        err.to_string().contains("reached 1 of 2 required"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 1);
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after rejected broadcast")
+        .is_none());
+
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 1);
+    let still_queued = consensus
+        .preview_next_aleph_bft_unit_payload()
+        .expect("preview retained unit")
+        .expect("unit retained");
+    assert_eq!(
+        still_queued.canonical_bytes().expect("retained bytes"),
+        unit.canonical_bytes().expect("original bytes")
+    );
+    assert_eq!(consensus.peer_status().operation_count, 0);
+}
+
+#[tokio::test]
+async fn aleph_bft_local_exact_drain_mismatch_keeps_queue_and_state() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let unit = queue_local_aleph_bft_unit(&state, mint_quote_envelope(&state, &quote_id)).await;
+    let mut mismatched = unit.clone();
+    mismatched.unit_index = mismatched.unit_index.saturating_add(7);
+
+    let err = state
+        .drain_and_apply_local_federation_aleph_bft_finalized_unit(&mismatched)
+        .await
+        .expect_err("mismatched preview should fail");
+
+    assert!(
+        err.to_string().contains("proposal mismatch"),
+        "unexpected error: {err}"
+    );
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after rejected drain")
+        .is_none());
+
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 1);
+    let still_queued = consensus
+        .preview_next_aleph_bft_unit_payload()
+        .expect("preview retained unit")
+        .expect("unit retained");
+    assert_eq!(
+        still_queued.canonical_bytes().expect("retained bytes"),
+        unit.canonical_bytes().expect("original bytes")
+    );
+    assert_eq!(consensus.peer_status().operation_count, 0);
+}
+
 #[tokio::test]
 async fn startup_replays_accepted_but_unapplied_journal_entry_to_same_state_digest() {
     let (public_config, local_private, _) = transport_config();

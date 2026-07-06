@@ -24,6 +24,7 @@ use tracing::instrument;
 
 use crate::MintState;
 
+mod aleph_bft_driver;
 mod aleph_bft_routes;
 mod catch_up_routes;
 mod dkg_routes;
@@ -33,6 +34,8 @@ mod status_routes;
 mod sync_config;
 mod sync_loop;
 
+#[cfg(test)]
+use self::aleph_bft_driver::broadcast_next_aleph_bft_finalized_unit_round;
 use self::aleph_bft_routes::post_aleph_bft_finalized_unit;
 use self::catch_up_routes::post_journal;
 use self::dkg_routes::{

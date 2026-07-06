@@ -526,19 +526,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. AlephBFT proposal handoff now has non-destructive preview and exact-drain primitives, while the live BFT driver remains intentionally unwired.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now quorum-broadcast a previewed AlephBFT unit over signed private REST and exact-drain it locally only after delivery succeeds, while the live BFT engine remains intentionally unwired.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: add safe aleph bft proposal handoff</span>
+          <span class="value">feat: broadcast aleph bft finalized units safely</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">AlephBFT unit providers can preview the next canonical proposal without draining the queue, then drain only when the caller presents that exact payload; mismatches leave queued operations and unit indexes unchanged.</span>
+          <span class="value">The driver-facing Axum broadcast round previews the next canonical unit, submits it to peers over signed private REST, requires local plus remote acknowledgements to meet the configured consensus threshold, and only then drains and applies local state.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Wire the live AlephBFT proposal/finalization driver so it previews a proposal, broadcasts it through authenticated delivery, drains only after success, and lets public routes wait on real BFT output.</span>
+          <span class="value">Wrap this safe broadcast/drain round in a live AlephBFT proposal/finalization task and connect public route waiters to its finalized output.</span>
         </div>
       </aside>
     </header>
@@ -835,6 +835,10 @@
           <article class="item">
             <h3>AlephBFT proposal handoff</h3>
             <p>The AlephBFT data provider, adapter, and runtime wrappers can now preview the next canonical unit without draining it, then drain only if the caller presents the exact same payload. This gives the future live driver a retry-safe handoff across transient peer failures.</p>
+          </article>
+          <article class="item">
+            <h3>AlephBFT safe broadcast round</h3>
+            <p>Axum now has a driver-facing round that broadcasts a previewed unit over signed private REST, requires the configured consensus threshold counting the local member, and drains/applies the local proposal only after quorum delivery. Failed delivery leaves the unit queued.</p>
           </article>
           <article class="item">
             <h3>Signed REST consensus admission</h3>
@@ -2374,6 +2378,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo fmt --all -- --check`, `cargo test -p cdk-common --features federation aleph_bft_data_provider_previews_without_draining_and_drains_matching_unit -- --test-threads 1`, `cargo test -p cdk-common --features federation aleph_bft_data_provider_rejects_mismatched_preview_without_draining -- --test-threads 1`, `cargo test -p cdk-common --features federation consensus_runtime_aleph_bft_previews_and_drains_matching_units -- --test-threads 1`, and `cargo test -p cdk-common --features federation backend_adapter_runtime_dispatches_selected_aleph_bft_backend -- --test-threads 1` passed. The tests cover stable repeated previews, queue and unit-index preservation during preview, exact-drain success, mismatch rejection without draining, and runtime-level handoff through the AlephBFT adapter selector.</td>
               <td>Use this two-phase handoff in the live AlephBFT proposal driver so transient delivery failures cannot silently drop queued consensus items.</td>
+            </tr>
+            <tr>
+              <td>AlephBFT safe broadcast round</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo fmt --all -- --check`, `cargo check -p cdk-axum --features federation`, and `cargo test -p cdk-axum --features federation aleph_bft_ -- --test-threads 1` passed. The 11-test slice covers signed finalized-unit private REST routing, peer-client validation, durable apply, startup reload, quorum-gated broadcast success, failed-delivery retention without queue drain or mint-state materialization, and local exact-drain mismatch safety.</td>
+              <td>Promote the helper into a live AlephBFT proposal/finalization task that continuously previews, broadcasts, drains, and notifies public route waiters from real BFT output.</td>
             </tr>
             <tr>
               <td>Milestone 0 broad workspace gates</td>
@@ -4032,7 +4042,7 @@
           </article>
           <article class="item">
             <h3>Adapter before BFT</h3>
-            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime now exposes explicit preview, exact-drain, and external-finalization calls so future BFT wiring cannot mistake local admission for accepted consensus order or drop proposals during transient broadcast failures.</p>
+            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime and Axum helper now expose explicit preview, quorum-broadcast, exact-drain, and external-finalization calls so future BFT wiring cannot mistake local admission for accepted consensus order or drop proposals during transient broadcast failures.</p>
           </article>
           <article class="item">
             <h3>Digest format before DB wiring</h3>
@@ -4074,7 +4084,7 @@
           </article>
           <article class="item">
             <h3>Production ordering backend</h3>
-            <p>Wire the AlephBFT unit data-provider preview/exact-drain and finalization-handler primitives into a production backend adapter, then persist finalized item metadata before feeding the durable CDK journal/apply path.</p>
+            <p>Wrap the AlephBFT unit preview, quorum-broadcast, exact-drain, and finalization-handler primitives in a production task, then connect public route waiters to finalized output.</p>
           </article>
           <article class="item">
             <h3>Extended Postgres partitions</h3>
