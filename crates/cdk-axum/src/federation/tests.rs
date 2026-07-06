@@ -6235,12 +6235,12 @@ async fn aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeu
 
 #[tokio::test]
 async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
-    let (public_config, local_private, _) = transport_config();
+    let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
     let mut state = federation_route_state_for_private_with_db_and_backend(
-        public_config,
-        local_private,
+        public_config.clone(),
+        local_private.clone(),
         db,
         &mnemonic.to_seed_normalized(""),
         FederationConsensusBackendKind::AlephBft,
@@ -6300,6 +6300,77 @@ async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
     let consensus = state.federation_consensus.as_ref().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);
+    let retained_unit = consensus
+        .preview_next_aleph_bft_unit_payload()
+        .expect("preview retained AlephBFT unit")
+        .expect("retained AlephBFT unit");
+    assert_eq!(
+        retained_unit
+            .items
+            .first()
+            .expect("retained consensus item")
+            .operation_id()
+            .expect("retained operation id"),
+        Some(queued_operation_id)
+    );
+    drop(consensus);
+
+    let response =
+        finalized_unit_response_for_peer(&public_config, local_private.member_id, &retained_unit);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_finalized_unit_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let peer = public_config
+        .members
+        .get(&peer_private.member_id)
+        .expect("peer member");
+
+    let outcome = run_federation_aleph_bft_driver_tick(
+        &state,
+        &client,
+        std::slice::from_ref(peer),
+        FederationAlephBftDriverTickConfig::default(),
+    )
+    .await
+    .expect("driver tick");
+
+    assert_eq!(outcome.finalized_units, 1);
+    assert_eq!(outcome.local_responses, 1);
+    assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 1);
+    let replayed_quote = state
+        .mint
+        .localstore()
+        .get_mint_quote(&queued_quote_id)
+        .await
+        .expect("quote lookup after retained operation finalizes")
+        .expect("queued mint quote applied");
+    assert_eq!(replayed_quote.request, format!("invoice-{queued_quote_id}"));
+    let stored_finalized_items = state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_finalized_items()
+        .await
+        .expect("stored finalized items");
+    assert_eq!(stored_finalized_items.len(), 1);
+    assert_eq!(
+        stored_finalized_items[0].operation_id,
+        Some(queued_operation_id)
+    );
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 0);
+    assert_eq!(consensus.peer_status().operation_count, 1);
+    assert_eq!(
+        consensus
+            .journal()
+            .entries()
+            .first()
+            .expect("journal entry")
+            .operation_id,
+        queued_operation_id
+    );
 }
 
 #[tokio::test]
