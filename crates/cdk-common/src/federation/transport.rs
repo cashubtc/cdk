@@ -19,9 +19,9 @@ use super::{
     FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignature, FederationError, FederationId,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
-    FederationOperationEnvelope, FederationOperationId, FederationStateDigest,
-    InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, Result,
-    FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationStateDigest, InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic,
+    MemberId, Result, FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
 };
 use crate::nuts::nut01::BlsSecretKeyShare;
 use crate::Amount;
@@ -1049,6 +1049,21 @@ impl FederationSubmitOperationResponse {
 
         Ok(())
     }
+
+    /// Reject terminal non-accepted consensus outcomes before callers read applied state.
+    pub fn ensure_accepted(&self) -> Result<()> {
+        match self.outcome.entry().status {
+            FederationOperationStatus::Accepted
+            | FederationOperationStatus::Applying
+            | FederationOperationStatus::Applied => Ok(()),
+            FederationOperationStatus::Rejected | FederationOperationStatus::Failed => {
+                Err(FederationError::RejectedOperation {
+                    operation_id: self.operation_id,
+                    status: self.outcome.entry().status,
+                })
+            }
+        }
+    }
 }
 
 /// Request to deliver one already-finalized AlephBFT unit to a federation peer.
@@ -1763,6 +1778,18 @@ mod tests {
         )
     }
 
+    fn set_submit_response_status(
+        response: &mut FederationSubmitOperationResponse,
+        status: FederationOperationStatus,
+    ) {
+        match &mut response.outcome {
+            FederationJournalAppendOutcome::Appended(entry)
+            | FederationJournalAppendOutcome::Duplicate(entry) => {
+                entry.status = status;
+            }
+        }
+    }
+
     #[test]
     fn peer_status_serializes_with_journal_digest() {
         let mut journal = InMemoryFederationJournal::new();
@@ -1837,6 +1864,46 @@ mod tests {
 
         assert_eq!(response.operation_id, outcome.entry().operation_id);
         serde_json::to_string(&response).expect("submit response json");
+    }
+
+    #[test]
+    fn submit_response_acceptance_allows_success_statuses() {
+        let mut journal = InMemoryFederationJournal::new();
+        let outcome = journal.append(mint_quote_envelope()).expect("append");
+
+        for status in [
+            FederationOperationStatus::Accepted,
+            FederationOperationStatus::Applying,
+            FederationOperationStatus::Applied,
+        ] {
+            let mut response = FederationSubmitOperationResponse::from_outcome(outcome.clone());
+            set_submit_response_status(&mut response, status);
+
+            response.ensure_accepted().expect("status accepted");
+        }
+    }
+
+    #[test]
+    fn submit_response_acceptance_rejects_terminal_failure_statuses() {
+        let mut journal = InMemoryFederationJournal::new();
+        let outcome = journal.append(mint_quote_envelope()).expect("append");
+
+        for status in [
+            FederationOperationStatus::Rejected,
+            FederationOperationStatus::Failed,
+        ] {
+            let mut response = FederationSubmitOperationResponse::from_outcome(outcome.clone());
+            set_submit_response_status(&mut response, status);
+            let operation_id = response.operation_id;
+
+            assert!(matches!(
+                response.ensure_accepted(),
+                Err(FederationError::RejectedOperation {
+                    operation_id: found_operation_id,
+                    status: found_status,
+                }) if found_operation_id == operation_id && found_status == status
+            ));
+        }
     }
 
     #[test]

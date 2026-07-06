@@ -325,6 +325,16 @@ fn duration_millis_u64_saturating(value: std::time::Duration) -> u64 {
     }
 }
 
+#[cfg(feature = "federation")]
+fn validate_federation_submit_response(
+    response: &FederationSubmitOperationResponse,
+    operation_id: FederationOperationId,
+) -> Result<(), cdk::Error> {
+    response.validate(operation_id)?;
+    response.ensure_accepted()?;
+    Ok(())
+}
+
 #[cfg(all(feature = "federation", feature = "prometheus"))]
 fn usize_to_i64_saturating(value: usize) -> i64 {
     match i64::try_from(value) {
@@ -1152,6 +1162,64 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "federation")]
+    fn test_mint_quote_envelope() -> FederationOperationEnvelope {
+        FederationOperationEnvelope::new(
+            cdk::federation::FederationId::from_bytes([1; 32]),
+            cdk::federation::FederationOperation::MintQuote(
+                cdk::federation::FederationMintQuoteOperation {
+                    quote: "quote-1".to_string(),
+                    request: cdk::mint::MintQuoteRequest::Bolt11(
+                        cdk::nuts::MintQuoteBolt11Request {
+                            amount: cdk::Amount::from(1),
+                            unit: cdk::nuts::CurrencyUnit::Sat,
+                            description: None,
+                            pubkey: None,
+                        },
+                    ),
+                    response: cdk::mint::MintQuoteResponse::Bolt11(
+                        cdk::nuts::MintQuoteBolt11Response {
+                            quote: "quote-1".to_string(),
+                            request: "invoice-quote-1".to_string(),
+                            amount: Some(cdk::Amount::from(1)),
+                            unit: Some(cdk::nuts::CurrencyUnit::Sat),
+                            state: cdk::nuts::MintQuoteState::Unpaid,
+                            expiry: None,
+                            pubkey: None,
+                        },
+                    ),
+                },
+            ),
+        )
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn federation_submit_validation_rejects_terminal_status_before_state_read() {
+        let envelope = test_mint_quote_envelope();
+        let operation_id = envelope.operation_id().expect("operation id");
+        let mut journal = cdk::federation::InMemoryFederationJournal::new();
+        let mut response = FederationSubmitOperationResponse::from_outcome(
+            journal.append(envelope).expect("append"),
+        );
+        match &mut response.outcome {
+            FederationJournalAppendOutcome::Appended(entry)
+            | FederationJournalAppendOutcome::Duplicate(entry) => {
+                entry.status = FederationOperationStatus::Rejected;
+            }
+        }
+
+        assert!(matches!(
+            validate_federation_submit_response(&response, operation_id),
+            Err(cdk::Error::Federation(
+                FederationError::RejectedOperation {
+                    operation_id: found_operation_id,
+                    status: FederationOperationStatus::Rejected,
+                }
+            )) if found_operation_id == operation_id
+        ));
+    }
+
     #[test]
     fn invalid_operation_alert_tracker_reports_threshold_without_raw_source() {
         let mut tracker =
@@ -1422,7 +1490,7 @@ impl MintState {
             crate::federation::submit_operation_to_primary_if_needed(self, envelope.clone(), None)
                 .await?
         {
-            response.validate(operation_id)?;
+            validate_federation_submit_response(&response, operation_id)?;
             return Ok(response);
         }
 
@@ -1431,7 +1499,7 @@ impl MintState {
         let response = self
             .submit_federation_envelope_with_sequence(envelope, None)
             .await?;
-        response.validate(operation_id)?;
+        validate_federation_submit_response(&response, operation_id)?;
         Ok(response)
     }
 
@@ -1446,7 +1514,7 @@ impl MintState {
             let response = self
                 .submit_aleph_bft_federation_envelope_with_sequence(envelope, sequence)
                 .await?;
-            response.validate(operation_id)?;
+            validate_federation_submit_response(&response, operation_id)?;
             return Ok(response);
         }
 
@@ -1475,6 +1543,20 @@ impl MintState {
                 notifications.record_duplicate_submission();
             }
         }
+
+        if matches!(
+            response.outcome.entry().status,
+            FederationOperationStatus::Rejected | FederationOperationStatus::Failed
+        ) {
+            if let Some(sequence) = sequence {
+                self.persist_federation_journal_entries(&[], None, Some(sequence))
+                    .await?;
+                self.record_federation_sequence(sequence.0, sequence.1)
+                    .await;
+            }
+            response.ensure_accepted()?;
+        }
+
         let entry = response.outcome.entry().clone();
 
         if let Err(err) = self
@@ -1497,10 +1579,12 @@ impl MintState {
         self.finalize_federation_operation_acceptance(response.clone(), entry, sequence)
             .await?;
 
-        Ok(self
+        let response = self
             .wait_for_federation_operation_acceptance(operation_id)
             .await
-            .unwrap_or(response))
+            .unwrap_or(response);
+        validate_federation_submit_response(&response, operation_id)?;
+        Ok(response)
     }
 
     pub(crate) fn validate_federation_envelope_admission(
@@ -1660,13 +1744,13 @@ impl MintState {
             crate::federation::submit_operation_to_primary_if_needed(self, envelope.clone(), None)
                 .await?
         {
-            response.validate(operation_id)?;
+            validate_federation_submit_response(&response, operation_id)?;
             return Ok(response);
         }
         let response = self
             .submit_federation_envelope_with_sequence(envelope, None)
             .await?;
-        response.validate(operation_id)?;
+        validate_federation_submit_response(&response, operation_id)?;
         Ok(response)
     }
 

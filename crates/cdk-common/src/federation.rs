@@ -460,6 +460,14 @@ pub enum FederationError {
         /// Timeout that elapsed before finalization was observed.
         timeout_ms: u64,
     },
+    /// A submitted operation was finalized but rejected by consensus validation.
+    #[error("Federation operation {operation_id} finalized with terminal status {status}")]
+    RejectedOperation {
+        /// Rejected federation operation ID.
+        operation_id: FederationOperationId,
+        /// Terminal journal status.
+        status: FederationOperationStatus,
+    },
     /// A peer returned a submit-operation response for a different operation.
     #[error("Federation submit-operation response mismatch: expected={expected}, found={found}")]
     SubmitOperationResponseMismatch {

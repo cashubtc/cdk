@@ -504,6 +504,26 @@ pub enum FederationOperationStatus {
     Failed,
 }
 
+impl FederationOperationStatus {
+    /// Stable lowercase label for operator output and error messages.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Applying => "applying",
+            Self::Applied => "applied",
+            Self::Rejected => "rejected",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl fmt::Display for FederationOperationStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Consensus evidence attached to a journal entry accepted from an ordering backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FederationJournalConsensusEvidence {

@@ -647,6 +647,22 @@ mod tests {
         assert!(!Error::from(response).is_definitive_failure());
     }
 
+    #[cfg(feature = "federation")]
+    #[test]
+    fn federation_rejected_operation_is_definitive() {
+        let operation_id = crate::federation::FederationOperationId::from_bytes([43; 32]);
+        let err = Error::Federation(crate::federation::FederationError::RejectedOperation {
+            operation_id,
+            status: crate::federation::FederationOperationStatus::Rejected,
+        });
+
+        assert!(err.is_definitive_failure());
+        let response = ErrorResponse::from(err);
+
+        assert_eq!(response.code, ErrorCode::Unknown(50000));
+        assert!(response.detail.contains("terminal status rejected"));
+    }
+
     #[test]
     fn test_max_outputs_and_inputs_error_responses_decode() {
         let max_inputs = Error::from(ErrorResponse {
@@ -756,6 +772,9 @@ impl Error {
             | Self::OnchainFeeOptionsEmpty
             | Self::OnchainFeeOptionsDuplicateIndex { .. }
             | Self::OnchainFeeIndexNotFound { .. } => true,
+
+            #[cfg(feature = "federation")]
+            Self::Federation(crate::federation::FederationError::RejectedOperation { .. }) => true,
 
             // HTTP Errors
             Self::HttpError(Some(status), _) => {
