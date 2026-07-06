@@ -526,15 +526,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, and run a bounded driver tick around the safe quorum-broadcast and exact-drain handoff.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, and run a bounded driver tick around the safe quorum-broadcast and exact-drain handoff.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: join duplicate aleph bft waiters</span>
+          <span class="value">feat: make aleph bft timeouts retryable</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Duplicate AlephBFT submits for an already pending operation now join the existing response waiter before consensus admission, keep the pending queue at one operation, and still preserve peer sequence metadata.</span>
+          <span class="value">AlephBFT submit timeouts now return a typed pending-finalization error that maps to a retryable pending Cashu response; exact retries keep one queued operation and receive the finalized result once the accepted unit applies.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -846,7 +846,7 @@
           </article>
           <article class="item">
             <h3>AlephBFT submit waiters</h3>
-            <p>AlephBFT state-layer submits now reserve bounded response waiters before queue admission, let duplicate pending requests join the existing waiter before re-entering admission, wait for finalized notifications with a timeout, release waiter slots on timeout or cancellation, and return already finalized duplicates without requeueing.</p>
+            <p>AlephBFT state-layer submits now reserve bounded response waiters before queue admission, let duplicate pending requests join the existing waiter before re-entering admission, wait for finalized notifications with a timeout, return typed retryable pending-finalization errors, release waiter slots on timeout or cancellation, and return already finalized duplicates without requeueing.</p>
           </article>
           <article class="item">
             <h3>Bounded response cache</h3>
@@ -2412,6 +2412,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk-axum --features federation aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeueing -- --test-threads 1` passed. The regression starts two identical pending submits, verifies both waiters are registered while the AlephBFT queue contains one operation, finalizes through the driver tick, and checks both callers receive the same operation response.</td>
               <td>Apply the same join-before-admission pattern to any future typed public response waiters for mint, swap, melt, restore, or quote-state flows.</td>
+            </tr>
+            <tr>
+              <td>AlephBFT retryable pending finalization</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-common --features federation federation_pending_finalization_maps_to_retryable_error_response -- --test-threads 1` and `cargo test -p cdk-axum --features federation aleph_bft_timed_out_submit_retry_receives_finalized_response_without_requeueing -- --test-threads 1` passed. The error regression maps typed pending-finalization to a retryable pending Cashu response, and the Axum regression times out one submit, retries the exact operation, verifies the queue stays at one item, finalizes through the driver tick, and receives the accepted response.</td>
+              <td>Carry this typed pending response through the future live AlephBFT task and any richer operation-specific response cache.</td>
             </tr>
             <tr>
               <td>Federation response-cache retention</td>
@@ -4076,7 +4082,7 @@
           </article>
           <article class="item">
             <h3>Adapter before BFT</h3>
-            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime and Axum helper now expose explicit preview, quorum-broadcast, bounded driver tick, queue-and-wait submit, duplicate pending waiter joining, bounded response waiters, bounded accepted-response cache retention, pending sequence handoff, pending-mempool admission backpressure, exact-drain, external-finalization calls, and signed local-status counters so future BFT wiring cannot mistake local admission for accepted consensus order or hide queued/finalized adapter state from operators.</p>
+            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime and Axum helper now expose explicit preview, quorum-broadcast, bounded driver tick, queue-and-wait submit, duplicate pending waiter joining, typed retryable pending-finalization timeouts, bounded response waiters, bounded accepted-response cache retention, pending sequence handoff, pending-mempool admission backpressure, exact-drain, external-finalization calls, and signed local-status counters so future BFT wiring cannot mistake local admission for accepted consensus order or hide queued/finalized adapter state from operators.</p>
           </article>
           <article class="item">
             <h3>Digest format before DB wiring</h3>

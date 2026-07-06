@@ -12,13 +12,14 @@ use cdk::federation::{
     FederationAlephBftUnitPayload, FederationConfigSnapshot, FederationConsensusBackendKind,
     FederationConsensusEngine, FederationConsensusItem, FederationConsensusRuntime,
     FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignature, FederationJournalAppendOutcome,
+    FederationDkgTranscriptSignature, FederationError, FederationJournalAppendOutcome,
     FederationKeysetRotationOperation, FederationMemberStatusKind,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-    FederationOperationKind, FederationOperationStatus, FederationPaymentObservationPolicy,
-    FederationPaymentObservationQuarantineReason, FederationPaymentObservationReportAction,
-    FederationPaymentTrustModel, FederationRestoreOperation, InMemoryFederationConsensus,
-    MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationOperationId, FederationOperationKind, FederationOperationStatus,
+    FederationPaymentObservationPolicy, FederationPaymentObservationQuarantineReason,
+    FederationPaymentObservationReportAction, FederationPaymentTrustModel,
+    FederationRestoreOperation, InMemoryFederationConsensus, MemberConfigPrivate, MemberId,
+    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
@@ -5520,6 +5521,27 @@ fn finalized_unit_response_for_peer(
     FederationAlephBftFinalizedUnitResponse::new(public_config.federation_id, unit, responses)
 }
 
+fn assert_pending_finalization_error(
+    err: &cdk::Error,
+    operation_id: FederationOperationId,
+    timeout_ms: u64,
+) {
+    assert!(
+        !err.is_definitive_failure(),
+        "pending finalization must remain retryable: {err}"
+    );
+    match err {
+        cdk::Error::Federation(FederationError::OperationPendingFinalization {
+            operation_id: found_operation_id,
+            timeout_ms: found_timeout_ms,
+        }) => {
+            assert_eq!(found_operation_id, &operation_id);
+            assert_eq!(*found_timeout_ms, timeout_ms);
+        }
+        _ => panic!("unexpected error: {err}"),
+    }
+}
+
 #[tokio::test]
 async fn aleph_bft_broadcast_round_drains_and_applies_after_threshold_delivery() {
     let (public_config, local_private, peer_private) = transport_config();
@@ -5740,17 +5762,15 @@ async fn aleph_bft_submit_envelope_times_out_without_finalization() {
         ..FederationPeerSyncConfig::default()
     });
     let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
 
     let err = state
-        .submit_federation_envelope_with_sequence(mint_quote_envelope(&state, &quote_id), None)
+        .submit_federation_envelope_with_sequence(envelope, None)
         .await
         .expect_err("unfinalized submit should time out");
 
-    assert!(
-        err.to_string()
-            .contains("timed out waiting for AlephBFT finalization"),
-        "unexpected error: {err}"
-    );
+    assert_pending_finalization_error(&err, operation_id, 10);
     assert_eq!(state.federation_pending_response_waiter_count(), 0);
     assert!(state
         .mint
@@ -5764,6 +5784,98 @@ async fn aleph_bft_submit_envelope_times_out_without_finalization() {
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);
     assert!(consensus.journal().entries().is_empty());
+}
+
+#[tokio::test]
+async fn aleph_bft_timed_out_submit_retry_receives_finalized_response_without_requeueing() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let mut state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
+        operation_submission_timeout: Duration::from_millis(10),
+        response_waiter_limit: 2,
+        ..FederationPeerSyncConfig::default()
+    });
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+
+    let err = state
+        .submit_federation_envelope_with_sequence(envelope.clone(), None)
+        .await
+        .expect_err("unfinalized submit should time out");
+    assert_pending_finalization_error(&err, operation_id, 10);
+    assert_eq!(state.federation_pending_response_waiter_count(), 0);
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 1);
+    drop(consensus);
+
+    state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
+        operation_submission_timeout: Duration::from_secs(5),
+        response_waiter_limit: 2,
+        ..FederationPeerSyncConfig::default()
+    });
+    let retry_state = state.clone();
+    let retry_submit = tokio::spawn(async move {
+        retry_state
+            .submit_federation_envelope_with_sequence(envelope, None)
+            .await
+    });
+    for _ in 0..50 {
+        if state.federation_pending_response_waiter_count() == 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(state.federation_pending_response_waiter_count(), 1);
+    let consensus = state.federation_consensus.as_ref().expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 1);
+    drop(consensus);
+
+    let unit = wait_for_local_aleph_bft_unit(&state).await;
+    let response = finalized_unit_response_for_peer(&public_config, local_private.member_id, &unit);
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_finalized_unit_response(response);
+    let client =
+        FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
+            .expect("peer client");
+    let peer = public_config
+        .members
+        .get(&peer_private.member_id)
+        .expect("peer member");
+    run_federation_aleph_bft_driver_tick(
+        &state,
+        &client,
+        std::slice::from_ref(peer),
+        FederationAlephBftDriverTickConfig::default(),
+    )
+    .await
+    .expect("driver tick");
+
+    let retry_response = retry_submit
+        .await
+        .expect("retry submit task")
+        .expect("retry submit response");
+    assert_eq!(retry_response.operation_id, operation_id);
+    assert_eq!(state.federation_pending_response_waiter_count(), 0);
+    assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 1);
+    assert!(state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after finalization")
+        .is_some());
 }
 
 #[tokio::test]
@@ -5784,35 +5896,23 @@ async fn aleph_bft_submit_envelope_releases_response_waiter_after_timeout() {
         response_waiter_limit: 1,
         ..FederationPeerSyncConfig::default()
     });
+    let first_envelope = mint_quote_envelope(&state, &QuoteId::new());
+    let first_operation_id = first_envelope.operation_id().expect("first operation id");
 
     let first_err = state
-        .submit_federation_envelope_with_sequence(
-            mint_quote_envelope(&state, &QuoteId::new()),
-            None,
-        )
+        .submit_federation_envelope_with_sequence(first_envelope, None)
         .await
         .expect_err("first unfinalized submit should time out");
-    assert!(
-        first_err
-            .to_string()
-            .contains("timed out waiting for AlephBFT finalization"),
-        "unexpected first error: {first_err}"
-    );
+    assert_pending_finalization_error(&first_err, first_operation_id, 10);
     assert_eq!(state.federation_pending_response_waiter_count(), 0);
+    let second_envelope = mint_quote_envelope(&state, &QuoteId::new());
+    let second_operation_id = second_envelope.operation_id().expect("second operation id");
 
     let second_err = state
-        .submit_federation_envelope_with_sequence(
-            mint_quote_envelope(&state, &QuoteId::new()),
-            None,
-        )
+        .submit_federation_envelope_with_sequence(second_envelope, None)
         .await
         .expect_err("second unfinalized submit should time out after waiter cleanup");
-    assert!(
-        second_err
-            .to_string()
-            .contains("timed out waiting for AlephBFT finalization"),
-        "unexpected second error: {second_err}"
-    );
+    assert_pending_finalization_error(&second_err, second_operation_id, 10);
     assert_eq!(state.federation_pending_response_waiter_count(), 0);
 }
 
@@ -5987,6 +6087,8 @@ async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
         ..FederationPeerSyncConfig::default()
     });
     let queued_quote_id = QuoteId::new();
+    let queued_envelope = mint_quote_envelope(&state, &queued_quote_id);
+    let queued_operation_id = queued_envelope.operation_id().expect("queued operation id");
     {
         let consensus = state
             .federation_consensus
@@ -5995,7 +6097,7 @@ async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
         consensus
             .lock()
             .await
-            .submit_aleph_bft_envelope(mint_quote_envelope(&state, &queued_quote_id))
+            .submit_aleph_bft_envelope(queued_envelope.clone())
             .expect("prequeued AlephBFT operation");
     }
     let rejected_quote_id = QuoteId::new();
@@ -6026,18 +6128,10 @@ async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
     drop(consensus);
 
     let duplicate_err = state
-        .submit_federation_envelope_with_sequence(
-            mint_quote_envelope(&state, &queued_quote_id),
-            None,
-        )
+        .submit_federation_envelope_with_sequence(queued_envelope, None)
         .await
         .expect_err("duplicate pending operation should wait on existing queue entry");
-    assert!(
-        duplicate_err
-            .to_string()
-            .contains("timed out waiting for AlephBFT finalization"),
-        "unexpected duplicate error: {duplicate_err}"
-    );
+    assert_pending_finalization_error(&duplicate_err, queued_operation_id, 10);
     let consensus = state.federation_consensus.as_ref().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);

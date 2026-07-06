@@ -627,6 +627,26 @@ mod tests {
         assert!(!Error::PendingQuote.is_definitive_failure());
     }
 
+    #[cfg(feature = "federation")]
+    #[test]
+    fn federation_pending_finalization_maps_to_retryable_error_response() {
+        let operation_id = crate::federation::FederationOperationId::from_bytes([42; 32]);
+        let err = Error::Federation(
+            crate::federation::FederationError::OperationPendingFinalization {
+                operation_id,
+                timeout_ms: 25,
+            },
+        );
+
+        assert!(!err.is_definitive_failure());
+        let response = ErrorResponse::from(err);
+
+        assert_eq!(response.code, ErrorCode::QuotePending);
+        assert!(response.detail.contains("pending AlephBFT finalization"));
+        assert!(response.detail.contains("retry the exact same request"));
+        assert!(!Error::from(response).is_definitive_failure());
+    }
+
     #[test]
     fn test_max_outputs_and_inputs_error_responses_decode() {
         let max_inputs = Error::from(ErrorResponse {
@@ -932,6 +952,15 @@ impl From<Error> for ErrorResponse {
             Error::PendingMeltTimeout { .. } => ErrorResponse {
                 code: ErrorCode::QuotePending,
                 detail: err.to_string(),
+            },
+            #[cfg(feature = "federation")]
+            Error::Federation(
+                federation_error @ crate::federation::FederationError::OperationPendingFinalization {
+                    ..
+                },
+            ) => ErrorResponse {
+                code: ErrorCode::QuotePending,
+                detail: federation_error.to_string(),
             },
             Error::TokenPending => ErrorResponse {
                 code: ErrorCode::TokenPending,

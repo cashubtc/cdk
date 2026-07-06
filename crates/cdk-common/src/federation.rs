@@ -450,6 +450,16 @@ pub enum FederationError {
         /// Maximum response waiter count.
         max: usize,
     },
+    /// A submitted operation is still pending consensus finalization.
+    #[error(
+        "Federation operation {operation_id} is pending AlephBFT finalization after {timeout_ms}ms; retry the exact same request"
+    )]
+    OperationPendingFinalization {
+        /// Pending federation operation ID.
+        operation_id: FederationOperationId,
+        /// Timeout that elapsed before finalization was observed.
+        timeout_ms: u64,
+    },
     /// A consensus batching or payload limit must be non-zero.
     #[error("Invalid federation consensus limit {field}: value={value}")]
     InvalidConsensusLimit {

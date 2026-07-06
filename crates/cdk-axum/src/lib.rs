@@ -317,6 +317,14 @@ fn federation_invalid_operation_alert_salt() -> [u8; 32] {
     hasher.finalize().into()
 }
 
+#[cfg(feature = "federation")]
+fn duration_millis_u64_saturating(value: std::time::Duration) -> u64 {
+    match u64::try_from(value.as_millis()) {
+        Ok(value) => value,
+        Err(_) => u64::MAX,
+    }
+}
+
 #[cfg(all(feature = "federation", feature = "prometheus"))]
 fn usize_to_i64_saturating(value: usize) -> i64 {
     match i64::try_from(value) {
@@ -1468,9 +1476,10 @@ impl MintState {
         tokio::time::timeout(wait_timeout, wait_registration.wait())
             .await
             .map_err(|_| {
-                cdk::Error::Custom(format!(
-                    "timed out waiting for AlephBFT finalization of federation operation {operation_id}"
-                ))
+                cdk::Error::from(FederationError::OperationPendingFinalization {
+                    operation_id,
+                    timeout_ms: duration_millis_u64_saturating(wait_timeout),
+                })
             })
     }
 
