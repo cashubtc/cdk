@@ -2184,6 +2184,121 @@ async fn apply_federation_batch_mint_rejects_quote_amount_mismatch_before_signin
 }
 
 #[tokio::test]
+async fn apply_federation_mint_persists_accepted_materialization_rows() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_operation(
+            quote.clone(),
+            bolt11_quote_request(1),
+            bolt11_quote_response(&quote, 1),
+        ),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+    let paid_entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_payment_observation(
+            quote.clone(),
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintQuoteState::Paid,
+            Amount::from(1),
+            Amount::ZERO,
+            Some("accepted-materialization-mint-payment".to_string()),
+        ),
+    );
+    persist_and_apply_entry(&mint, &paid_entry).await;
+
+    let output = output_for_runtime(&runtime_config, b"accepted materialized mint output");
+    let mint_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .mint_operation(MintInput::Single(MintRequest {
+                quote: quote.clone(),
+                outputs: vec![output.clone()],
+                signature: None,
+            }))
+            .expect("accepted materialization mint operation"),
+    );
+    persist_and_apply_entry(&mint, &mint_entry).await;
+
+    let stored_quote = localstore
+        .get_mint_quote(&quote)
+        .await
+        .expect("quote lookup")
+        .expect("quote");
+    assert_eq!(stored_quote.state(), MintQuoteState::Issued);
+    assert_eq!(
+        stored_quote.amount_issued(),
+        Amount::new(1, CurrencyUnit::Sat)
+    );
+
+    let operation_uuid = super::federation_operation_uuid(mint_entry.operation_id);
+    let completed_operation = localstore
+        .get_completed_operation(&operation_uuid)
+        .await
+        .expect("completed operation lookup")
+        .expect("completed operation");
+    assert_eq!(
+        completed_operation.kind(),
+        cdk_common::mint::OperationKind::Mint
+    );
+    assert_eq!(completed_operation.total_issued(), Amount::from(1));
+    assert_eq!(completed_operation.total_redeemed(), Amount::ZERO);
+    assert_eq!(completed_operation.fee_collected(), Amount::ZERO);
+    assert_eq!(
+        completed_operation.payment_method(),
+        Some(PaymentMethod::Known(KnownMethod::Bolt11))
+    );
+
+    let blinded_secrets = localstore
+        .get_blinded_secrets_by_operation_id(&operation_uuid)
+        .await
+        .expect("blinded secrets by operation id");
+    assert_eq!(blinded_secrets, vec![output.blinded_secret]);
+
+    let signatures = localstore
+        .get_blind_signatures(&[output.blinded_secret])
+        .await
+        .expect("stored blind signature");
+    let signature = signatures[0].as_ref().expect("accepted mint signature");
+    assert_eq!(signature.amount, Amount::from(1));
+    assert_eq!(signature.keyset_id, output.keyset_id);
+
+    let share_records = localstore
+        .get_federation_signature_shares_for_output(mint_entry.operation_id, 0)
+        .await
+        .expect("stored federation signature share");
+    assert_eq!(share_records.len(), 1);
+    assert_eq!(share_records[0].operation_id, mint_entry.operation_id);
+    assert_eq!(share_records[0].output_index, 0);
+    assert_eq!(share_records[0].member_id, runtime_config.member_id());
+    assert_eq!(share_records[0].keyset_id, output.keyset_id);
+    assert_eq!(share_records[0].amount, Amount::from(1));
+    assert_eq!(share_records[0].blinded_secret, output.blinded_secret);
+    assert_eq!(
+        share_records[0].accepted_operation_index,
+        Some(mint_entry.index)
+    );
+    assert_eq!(
+        share_records[0].consensus_evidence,
+        mint_entry.consensus_evidence
+    );
+
+    let stored_entries = localstore
+        .get_federation_journal_entries()
+        .await
+        .expect("journal lookup");
+    let stored_mint_entry = stored_entries
+        .iter()
+        .find(|entry| entry.operation_id == mint_entry.operation_id)
+        .expect("stored mint entry");
+    assert_eq!(stored_mint_entry.status, FederationOperationStatus::Applied);
+}
+
+#[tokio::test]
 async fn apply_federation_mint_accepts_nut20_locked_quote() {
     let runtime_config = runtime_config();
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;

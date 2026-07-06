@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">fix: reject expired federated mint quotes</span>
+          <span class="value">test: cover accepted mint materialization</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federated mint apply now rejects expired paid quotes using deterministic consensus logical time and proves the failure happens before quote issuance, completed-operation storage, blind signatures, or federation share persistence.</span>
+          <span class="value">Accepted federated mint apply now proves quote issuance, blinded output persistence, completed operation storage, blind signatures, member-share provenance, and applied journal status are materialized together.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -764,7 +764,7 @@
           </article>
           <article class="item">
             <h3>Storage durability</h3>
-            <p>Accepted order, signature shares, DKG material, payment evidence, config snapshots, sync status, and materialized digest rows survive restart with migration parity and indexed hot-path coverage.</p>
+            <p>Accepted order, accepted mint materialization rows, signature shares, DKG material, payment evidence, config snapshots, sync status, and materialized digest rows survive restart with migration parity and indexed hot-path coverage.</p>
           </article>
           <article class="item">
             <h3>Liveness and resource bounds</h3>
