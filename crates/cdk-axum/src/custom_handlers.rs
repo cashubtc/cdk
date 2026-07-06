@@ -967,12 +967,8 @@ async fn process_federation_melt_request(
         return Ok(None);
     };
     let envelope = config.melt_operation(payload.clone())?;
-    let response = state.submit_federation_envelope(envelope).await?;
-    if matches!(
-        response.outcome,
-        cdk::federation::FederationJournalAppendOutcome::Duplicate(_)
-    ) && federation_melt_quote_is_failed_terminal(state, payload.quote()).await?
-    {
+    state.submit_federation_envelope(envelope).await?;
+    if federation_melt_quote_is_failed_terminal(state, payload.quote()).await? {
         return Err(cdk::Error::PaymentFailed);
     }
 
@@ -2193,6 +2189,27 @@ mod tests {
         );
         let mut state =
             create_federated_test_state_with_backend_db_and_seed(Arc::new(fake), db, seed).await;
+        let (consensus, sequences) = crate::create_federation_runtime_state(&state.mint)
+            .await
+            .expect("recreate federation runtime state from sqlite");
+        state.federation_consensus = consensus;
+        state.federation_sequences = sequences;
+        state
+    }
+
+    #[cfg(feature = "federation")]
+    async fn restart_federated_test_state_from_db_with_backend(
+        db_file: &TempMintDbFile,
+        seed: &[u8],
+        payment_processor: Arc<dyn MintPayment<Err = cdk_payment::Error> + Send + Sync + 'static>,
+    ) -> MintState {
+        let db = Arc::new(
+            cdk_sqlite::MintSqliteDatabase::new(db_file.path())
+                .await
+                .expect("restarted mint db"),
+        );
+        let mut state =
+            create_federated_test_state_with_backend_db_and_seed(payment_processor, db, seed).await;
         let (consensus, sequences) = crate::create_federation_runtime_state(&state.mint)
             .await
             .expect("recreate federation runtime state from sqlite");
@@ -5548,6 +5565,185 @@ mod tests {
             ),
             "duplicate failed federated melt should leave its input released: {proof_states:?}"
         );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn duplicate_failed_federation_melt_after_sqlite_restart_stays_failed_without_payment() {
+        let db_file = TempMintDbFile::new("cdk-axum-fed-public-failed-melt-restart");
+        let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        let seed = mnemonic.to_seed_normalized("");
+        let (backend, make_payment_calls) = CountingFakeWallet::new();
+        let db = Arc::new(
+            cdk_sqlite::MintSqliteDatabase::new(db_file.path())
+                .await
+                .expect("mint db"),
+        );
+        let state = create_federated_test_state_with_backend_db_and_seed(backend, db, &seed).await;
+        let fake_description = FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Failed,
+            check_payment_state: MeltQuoteState::Failed,
+            pay_err: false,
+            check_err: false,
+        };
+        let quote_id = create_federated_melt_quote_with_description(
+            &state,
+            1000,
+            serde_json::to_string(&fake_description).expect("fake invoice description"),
+        )
+        .await;
+        let input = proof_for_amount(&state, 2, "failed-melt-sqlite-restart");
+        let input_y = input.y().expect("input y");
+        let request = cdk::nuts::MeltRequest::new(quote_id.clone(), vec![input], None);
+
+        let error = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect_err("first failed federated fake-wallet melt should fail");
+
+        assert!(matches!(error, cdk::Error::PaymentFailed));
+        assert_eq!(make_payment_calls.load(Ordering::SeqCst), 1);
+        drop(state);
+
+        let (restarted_backend, restarted_make_payment_calls) = CountingFakeWallet::new();
+        let restarted_state =
+            restart_federated_test_state_from_db_with_backend(&db_file, &seed, restarted_backend)
+                .await;
+        assert_eq!(
+            federation_operation_kinds(&restarted_state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+
+        let duplicate_error = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &restarted_state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect_err("duplicate failed melt after restart should stay failed");
+
+        assert!(matches!(duplicate_error, cdk::Error::PaymentFailed));
+        assert_eq!(
+            restarted_make_payment_calls.load(Ordering::SeqCst),
+            0,
+            "duplicate failed melt after restart must not attempt payment"
+        );
+        assert_eq!(
+            federation_operation_kinds(&restarted_state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+        let stats = restarted_state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
+        let quote = restarted_state
+            .mint
+            .localstore()
+            .get_melt_quote(&quote_id)
+            .await
+            .expect("duplicate quote lookup")
+            .expect("duplicate quote persisted");
+        assert_eq!(quote.state, MeltQuoteState::Unpaid);
+        let proof_states = restarted_state
+            .mint
+            .localstore()
+            .get_proofs_states(&[input_y])
+            .await
+            .expect("duplicate proof state lookup");
+        assert!(
+            matches!(
+                proof_states.as_slice(),
+                [None | Some(cdk::nuts::State::Unspent)]
+            ),
+            "duplicate failed melt after restart should leave its input released: {proof_states:?}"
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn duplicate_failed_federation_melt_after_catch_up_stays_failed_without_payment() {
+        let (backend, make_payment_calls) = CountingFakeWallet::new();
+        let state = create_federated_test_state_with_backend(backend).await;
+        let config = state.mint.federation_config().expect("federation config");
+        let fake_description = FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Failed,
+            check_payment_state: MeltQuoteState::Failed,
+            pay_err: false,
+            check_err: false,
+        };
+        let quote_id = create_federated_melt_quote_with_description(
+            &state,
+            1000,
+            serde_json::to_string(&fake_description).expect("fake invoice description"),
+        )
+        .await;
+        let input = proof_for_amount(&state, 2, "failed-melt-catch-up");
+        let input_y = input.y().expect("input y");
+        let request = cdk::nuts::MeltRequest::new(quote_id.clone(), vec![input], None);
+        let melt_envelope = config
+            .melt_operation(request.clone())
+            .expect("melt operation envelope");
+        let mut peer_consensus =
+            InMemoryFederationConsensus::new(config.federation_id(), config.member_id());
+        peer_consensus
+            .submit_envelope(melt_envelope)
+            .expect("peer accepted failed melt operation");
+
+        apply_peer_catch_up(&state, &peer_consensus).await;
+        assert_eq!(make_payment_calls.load(Ordering::SeqCst), 1);
+
+        let quote = state
+            .mint
+            .localstore()
+            .get_melt_quote(&quote_id)
+            .await
+            .expect("catch-up quote lookup")
+            .expect("catch-up quote persisted");
+        assert_eq!(quote.state, MeltQuoteState::Unpaid);
+        let proof_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&[input_y])
+            .await
+            .expect("catch-up proof state lookup");
+        assert!(
+            matches!(
+                proof_states.as_slice(),
+                [None | Some(cdk::nuts::State::Unspent)]
+            ),
+            "failed melt catch-up should leave its input released: {proof_states:?}"
+        );
+
+        let duplicate_error = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect_err("duplicate failed melt after catch-up should stay failed");
+
+        assert!(matches!(duplicate_error, cdk::Error::PaymentFailed));
+        assert_eq!(
+            make_payment_calls.load(Ordering::SeqCst),
+            1,
+            "duplicate failed melt after catch-up must not attempt payment again"
+        );
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+        let stats = state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
     }
 
     #[cfg(feature = "federation")]

@@ -1894,7 +1894,6 @@ impl Mint {
                 )
                 .await?;
                 tx.commit().await?;
-                return Err(Error::PaymentFailed);
             }
             Err(err) => return Err(err),
         }
