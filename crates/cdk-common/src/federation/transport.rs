@@ -2004,6 +2004,69 @@ mod tests {
     }
 
     #[test]
+    fn catch_up_response_rejects_truncated_signed_session_outcome_range() {
+        let (config, _, second_private) = transport_config();
+        let member = config
+            .member(second_private.member_id)
+            .expect("signing member");
+        let mut journal = InMemoryFederationJournal::new();
+        journal.append(mint_quote_envelope()).expect("append quote");
+        journal
+            .append(mint_envelope(
+                "quote-1",
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            ))
+            .expect("append mint");
+        let request = FederationJournalCatchUpRequest::new(0);
+        let mut response = FederationJournalCatchUpResponse::from_journal(
+            federation_id(),
+            &journal,
+            &request,
+            50,
+            100,
+        )
+        .with_signed_session_outcome(&second_private)
+        .expect("signed response");
+        response.entries.pop();
+
+        assert!(matches!(
+            response.verify_session_outcome(member),
+            Err(FederationError::SessionOutcomeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn catch_up_response_rejects_bad_session_outcome_signature() {
+        let (config, _, second_private) = transport_config();
+        let member = config
+            .member(second_private.member_id)
+            .expect("signing member");
+        let mut journal = InMemoryFederationJournal::new();
+        journal.append(mint_quote_envelope()).expect("append quote");
+        let request = FederationJournalCatchUpRequest::new(0);
+        let mut response = FederationJournalCatchUpResponse::from_journal(
+            federation_id(),
+            &journal,
+            &request,
+            50,
+            100,
+        )
+        .with_signed_session_outcome(&second_private)
+        .expect("signed response");
+        let outcome = response.session_outcome.as_mut().expect("session outcome");
+        let mut signature_bytes = outcome.signature.to_bytes();
+        signature_bytes[0] ^= 0x01;
+        outcome.signature =
+            FederationRestSignature::from_slice(&signature_bytes).expect("signature bytes");
+
+        assert!(matches!(
+            response.verify_session_outcome(member),
+            Err(FederationError::SessionOutcomeSignatureVerificationFailed { member_id })
+                if member_id == second_private.member_id
+        ));
+    }
+
+    #[test]
     fn catch_up_response_verifies_session_outcome_quorum() {
         let (config, private_members) = transport_config_three();
         let mut journal = InMemoryFederationJournal::new();
