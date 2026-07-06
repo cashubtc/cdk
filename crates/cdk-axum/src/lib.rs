@@ -694,6 +694,16 @@ impl FederationSyncStatus {
         matches!(self, Self::Healthy)
     }
 
+    fn is_startup_halt_for_backend(&self, backend: FederationConsensusBackendKind) -> bool {
+        matches!(
+            (backend, self),
+            (
+                FederationConsensusBackendKind::AlephBft,
+                Self::Halted { reason }
+            ) if reason == ALEPH_BFT_UNAVAILABLE_SYNC_REASON
+        )
+    }
+
     pub(crate) fn state_name(&self) -> &'static str {
         match self {
             Self::Healthy => "healthy",
@@ -2303,6 +2313,11 @@ impl MintState {
         let Some(config) = self.mint.federation_config() else {
             return;
         };
+        let current_status = sync.lock().await.status();
+        if current_status.is_startup_halt_for_backend(config.consensus_backend()) {
+            self.persist_federation_sync_status(&current_status).await;
+            return;
+        }
 
         match self
             .mint

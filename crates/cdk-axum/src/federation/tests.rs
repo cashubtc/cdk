@@ -5626,6 +5626,70 @@ async fn aleph_bft_public_submit_is_not_ready_until_real_finality_backend_exists
 }
 
 #[tokio::test]
+async fn aleph_bft_startup_restore_keeps_public_submit_halted_over_stale_healthy_status() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let first_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db.clone(),
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    first_state.mark_federation_healthy().await;
+    assert!(matches!(
+        first_state.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::Healthy)
+    ));
+
+    let restored_state = federation_route_state_for_private_with_db_and_backend(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    restored_state.restore_federation_sync_status().await;
+
+    assert!(matches!(
+        restored_state.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::Halted { reason })
+            if reason.contains("public federation submissions are disabled")
+    ));
+
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&restored_state, &quote_id);
+    let err = restored_state
+        .submit_federation_envelope(envelope)
+        .await
+        .expect_err("stale persisted healthy status must not reopen AlephBFT public submit");
+
+    assert!(
+        err.to_string()
+            .contains("public federation submissions are disabled"),
+        "unexpected error: {err}"
+    );
+    assert!(restored_state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup after restored gated submit")
+        .is_none());
+
+    let consensus = restored_state
+        .federation_consensus
+        .as_ref()
+        .expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.queued_len(), 0);
+    assert_eq!(consensus.peer_status().operation_count, 0);
+}
+
+#[tokio::test]
 async fn aleph_bft_broadcast_round_drains_and_applies_after_threshold_delivery() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
