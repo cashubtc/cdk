@@ -526,15 +526,15 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits, retain private REST sequence metadata until finalized units apply, bound and clean up finalized-response waiters, and run a bounded driver tick around the safe quorum-broadcast and exact-drain handoff.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits, retain private REST sequence metadata until finalized units apply, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, and run a bounded driver tick around the safe quorum-broadcast and exact-drain handoff.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: bound aleph bft response waiters</span>
+          <span class="value">feat: bound federation response cache</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">AlephBFT local submitters now reserve bounded response-waiter slots before a new operation enters the pending queue; timeout or cancellation releases the slot, and signed status exposes pending waiter counts.</span>
+          <span class="value">Accepted operation responses now use a configurable bounded cache; active waiters retain their response across eviction races, duplicates still recover through consensus, and signed status exposes cache size.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -847,6 +847,10 @@
           <article class="item">
             <h3>AlephBFT submit waiters</h3>
             <p>AlephBFT state-layer submits now reserve bounded response waiters before queue admission, wait for finalized notifications with a timeout, release waiter slots on timeout or cancellation, and return already finalized duplicates without requeueing.</p>
+          </article>
+          <article class="item">
+            <h3>Bounded response cache</h3>
+            <p>Federation operation notifications now retain accepted responses with a configurable cache limit, keep per-operation responses alive for active waiters, and expose cache size through signed local status and the mintd status line.</p>
           </article>
           <article class="item">
             <h3>AlephBFT sequence handoff</h3>
@@ -2402,6 +2406,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo fmt --all -- --check`, `cargo test -p cdk-axum --features federation aleph_bft_submit_envelope -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation_peer_sync_config_rejects_invalid_values -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_peer_sync_config_maps_mintd_settings -- --test-threads 1`, `cargo test -p cdk-mintd --features federation,fakewallet,sqlite status_line_prints_consensus_backend -- --test-threads 1`, `cargo check -p cdk-axum --features federation`, and `cargo check -p cdk-mintd --features federation,fakewallet,sqlite` passed. The tests cover configured waiter-limit validation, timeout cleanup, cancellation cleanup, full-waiter rejection before queue growth, pending waiter status exposure, and mintd config/status wiring.</td>
               <td>Carry the same bounded-waiter pattern into the live AlephBFT task once real finality replaces the current private-REST broadcast stand-in.</td>
+            </tr>
+            <tr>
+              <td>Federation response-cache retention</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk-axum --features federation submit_federation_envelope_bounds_response_cache -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation_peer_sync_config_rejects_invalid_values -- --test-threads 1`, and `cargo test -p cdk-mintd --features federation,fakewallet,sqlite federation_peer_sync_config_maps_mintd_settings -- --test-threads 1` passed. The tests cover configured cache-limit validation, bounded accepted-response retention, duplicate recovery through consensus after cache eviction, and mintd config mapping.</td>
+              <td>Extend this bounded local notification cache into typed response caches if mint, swap, melt, restore, or quote-state responses need longer retention than the local accepted-operation waiter path.</td>
             </tr>
             <tr>
               <td>Milestone 0 broad workspace gates</td>
@@ -4060,7 +4070,7 @@
           </article>
           <article class="item">
             <h3>Adapter before BFT</h3>
-            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime and Axum helper now expose explicit preview, quorum-broadcast, bounded driver tick, queue-and-wait submit, bounded response waiters, pending sequence handoff, pending-mempool admission backpressure, exact-drain, external-finalization calls, and signed local-status counters so future BFT wiring cannot mistake local admission for accepted consensus order or hide queued/finalized adapter state from operators.</p>
+            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime and Axum helper now expose explicit preview, quorum-broadcast, bounded driver tick, queue-and-wait submit, bounded response waiters, bounded accepted-response cache retention, pending sequence handoff, pending-mempool admission backpressure, exact-drain, external-finalization calls, and signed local-status counters so future BFT wiring cannot mistake local admission for accepted consensus order or hide queued/finalized adapter state from operators.</p>
           </article>
           <article class="item">
             <h3>Digest format before DB wiring</h3>

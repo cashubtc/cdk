@@ -3,7 +3,7 @@
 #![doc = include_str!("../README.md")]
 
 #[cfg(feature = "federation")]
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 #[cfg(feature = "federation")]
 use std::sync::Mutex;
@@ -343,14 +343,28 @@ struct FederationOperationNotifications {
 #[derive(Debug, Default)]
 struct FederationOperationNotificationState {
     outcomes: HashMap<FederationOperationId, FederationSubmitOperationResponse>,
+    outcome_order: VecDeque<FederationOperationId>,
     notifiers: HashMap<FederationOperationId, FederationOperationNotifier>,
     waiter_count: usize,
+}
+
+#[cfg(feature = "federation")]
+impl FederationOperationNotificationState {
+    fn prune_outcomes(&mut self, response_cache_limit: usize) {
+        while self.outcomes.len() > response_cache_limit {
+            let Some(operation_id) = self.outcome_order.pop_front() else {
+                break;
+            };
+            self.outcomes.remove(&operation_id);
+        }
+    }
 }
 
 #[cfg(feature = "federation")]
 #[derive(Debug, Default)]
 struct FederationOperationNotifier {
     notify: Arc<tokio::sync::Notify>,
+    response: Option<FederationSubmitOperationResponse>,
     waiters: usize,
 }
 
@@ -384,7 +398,7 @@ impl<'a> FederationOperationWaiter<'a> {
             notified.await;
         }
         self.notifications
-            .outcome(self.operation_id)
+            .waiter_response(self.operation_id)
             .expect("notified federation operation has an accepted outcome")
     }
 }
@@ -404,13 +418,18 @@ impl FederationOperationNotifications {
             .expect("federation operation notification state mutex poisoned")
     }
 
-    fn notify(&self, response: FederationSubmitOperationResponse) {
+    fn notify(&self, response: FederationSubmitOperationResponse, response_cache_limit: usize) {
         let operation_id = response.operation_id;
         let mut inner = self.lock_inner();
-        inner.outcomes.insert(operation_id, response);
-        if let Some(notifier) = inner.notifiers.get(&operation_id) {
+        if !inner.outcomes.contains_key(&operation_id) {
+            inner.outcome_order.push_back(operation_id);
+        }
+        inner.outcomes.insert(operation_id, response.clone());
+        if let Some(notifier) = inner.notifiers.get_mut(&operation_id) {
+            notifier.response = Some(response);
             notifier.notify.notify_waiters();
         }
+        inner.prune_outcomes(response_cache_limit);
     }
 
     fn register_waiter(
@@ -423,6 +442,13 @@ impl FederationOperationNotifications {
             return Ok(FederationOperationWaitRegistration::Outcome(
                 response.clone(),
             ));
+        }
+        if let Some(response) = inner
+            .notifiers
+            .get(&operation_id)
+            .and_then(|notifier| notifier.response.clone())
+        {
+            return Ok(FederationOperationWaitRegistration::Outcome(response));
         }
         if inner.waiter_count >= waiter_limit {
             return Err(cdk::Error::from(
@@ -462,15 +488,24 @@ impl FederationOperationNotifications {
         }
     }
 
-    fn outcome(
+    fn waiter_response(
         &self,
         operation_id: FederationOperationId,
     ) -> Option<FederationSubmitOperationResponse> {
-        self.lock_inner().outcomes.get(&operation_id).cloned()
+        let inner = self.lock_inner();
+        inner
+            .notifiers
+            .get(&operation_id)
+            .and_then(|notifier| notifier.response.clone())
+            .or_else(|| inner.outcomes.get(&operation_id).cloned())
     }
 
     fn pending_waiter_count(&self) -> usize {
         self.lock_inner().waiter_count
+    }
+
+    fn response_cache_count(&self) -> usize {
+        self.lock_inner().outcomes.len()
     }
 
     async fn wait_for(
@@ -1469,9 +1504,20 @@ impl MintState {
             .unwrap_or_default()
     }
 
+    pub(crate) fn federation_response_cache_entry_count(&self) -> usize {
+        self.federation_notifications
+            .as_ref()
+            .map(|notifications| notifications.response_cache_count())
+            .unwrap_or_default()
+    }
+
     async fn notify_federation_operation(&self, response: FederationSubmitOperationResponse) {
         if let Some(notifications) = &self.federation_notifications {
-            notifications.notify(response);
+            let response_cache_limit = self
+                .federation_peer_sync_config
+                .unwrap_or_default()
+                .response_cache_limit;
+            notifications.notify(response, response_cache_limit);
         }
     }
 

@@ -19,6 +19,7 @@ const DEFAULT_FEDERATION_PRIVATE_REST_OUTBOUND_CONCURRENCY_LIMIT: usize = 64;
 const DEFAULT_FEDERATION_STATE_DIGEST_CHECKPOINT_RETENTION: usize = 10_000;
 const DEFAULT_FEDERATION_PENDING_MEMPOOL_ITEM_LIMIT: usize = 1024;
 const DEFAULT_FEDERATION_RESPONSE_WAITER_LIMIT: usize = 1024;
+const DEFAULT_FEDERATION_RESPONSE_CACHE_LIMIT: usize = 4096;
 
 /// Private federation peer synchronization policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +52,8 @@ pub struct FederationPeerSyncConfig {
     pub pending_mempool_item_limit: usize,
     /// Maximum number of local requests waiting for accepted operation responses.
     pub response_waiter_limit: usize,
+    /// Maximum number of accepted operation responses retained for idempotent local waiters.
+    pub response_cache_limit: usize,
 }
 
 impl Default for FederationPeerSyncConfig {
@@ -73,6 +76,7 @@ impl Default for FederationPeerSyncConfig {
             state_digest_checkpoint_retention: DEFAULT_FEDERATION_STATE_DIGEST_CHECKPOINT_RETENTION,
             pending_mempool_item_limit: DEFAULT_FEDERATION_PENDING_MEMPOOL_ITEM_LIMIT,
             response_waiter_limit: DEFAULT_FEDERATION_RESPONSE_WAITER_LIMIT,
+            response_cache_limit: DEFAULT_FEDERATION_RESPONSE_CACHE_LIMIT,
         }
     }
 }
@@ -137,6 +141,9 @@ impl FederationPeerSyncConfig {
         }
         if self.response_waiter_limit == 0 {
             anyhow::bail!("federation response waiter limit must be greater than zero");
+        }
+        if self.response_cache_limit == 0 {
+            anyhow::bail!("federation response cache limit must be greater than zero");
         }
 
         Ok(())

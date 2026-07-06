@@ -192,6 +192,10 @@ fn federation_peer_sync_config_rejects_invalid_values() {
             response_waiter_limit: 0,
             ..valid
         },
+        FederationPeerSyncConfig {
+            response_cache_limit: 0,
+            ..valid
+        },
     ];
 
     for config in cases {
@@ -6861,6 +6865,43 @@ async fn submit_federation_envelope_notifies_operation_acceptance() {
     assert_eq!(response.operation_id, operation_id);
     assert_eq!(notified.operation_id, operation_id);
     assert_eq!(notified.outcome.entry().operation_id, operation_id);
+}
+
+#[tokio::test]
+async fn submit_federation_envelope_bounds_response_cache() {
+    let (mut state, _, _) = federation_route_state().await;
+    state.federation_peer_sync_config = Some(FederationPeerSyncConfig {
+        response_cache_limit: 1,
+        ..FederationPeerSyncConfig::default()
+    });
+    let first_quote_id = QuoteId::new();
+    let first_envelope = mint_quote_envelope(&state, &first_quote_id);
+    let first_operation_id = first_envelope.operation_id().expect("first operation id");
+    let first_response = state
+        .submit_federation_envelope(first_envelope.clone())
+        .await
+        .expect("submit first operation");
+    assert_eq!(first_response.operation_id, first_operation_id);
+    assert_eq!(state.federation_response_cache_entry_count(), 1);
+
+    let second_quote_id = QuoteId::new();
+    let second_response = state
+        .submit_federation_envelope(mint_quote_envelope(&state, &second_quote_id))
+        .await
+        .expect("submit second operation");
+    assert_ne!(second_response.operation_id, first_operation_id);
+    assert_eq!(state.federation_response_cache_entry_count(), 1);
+
+    let duplicate_response = state
+        .submit_federation_envelope(first_envelope)
+        .await
+        .expect("resubmit first operation after cache eviction");
+    assert_eq!(duplicate_response.operation_id, first_operation_id);
+    assert!(matches!(
+        duplicate_response.outcome,
+        FederationJournalAppendOutcome::Duplicate(_)
+    ));
+    assert_eq!(state.federation_response_cache_entry_count(), 1);
 }
 
 #[tokio::test]

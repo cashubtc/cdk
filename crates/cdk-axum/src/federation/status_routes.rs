@@ -69,6 +69,7 @@ pub(super) async fn post_local_status(
         .map_err(cdk_error_response)?;
     let pending_mempool_items = state.federation_pending_mempool_len().await;
     let pending_response_waiters = state.federation_pending_response_waiter_count();
+    let response_cache_items = state.federation_response_cache_entry_count();
     let aleph_bft_status = state.federation_aleph_bft_status().await;
     let invalid_operation_alerts = state.federation_invalid_operation_alert_summaries().await;
     let response = FederationLocalStatusResponse::new(
@@ -79,6 +80,7 @@ pub(super) async fn post_local_status(
         materialized_state_rows,
         usize_to_u64_saturating(pending_mempool_items),
         usize_to_u64_saturating(pending_response_waiters),
+        usize_to_u64_saturating(response_cache_items),
         aleph_bft_status,
         invalid_operation_alerts,
     );
@@ -98,6 +100,8 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) pending_mempool_items: u64,
     #[serde(default)]
     pub(crate) pending_response_waiters: u64,
+    #[serde(default)]
+    pub(crate) response_cache_items: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) session_outcome_quorum_operation_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -121,6 +125,7 @@ impl FederationLocalStatusResponse {
         materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
         pending_mempool_items: u64,
         pending_response_waiters: u64,
+        response_cache_items: u64,
         aleph_bft_status: Option<FederationAlephBftAdapterStatus>,
         invalid_operation_alerts: Vec<crate::FederationInvalidOperationAlertSummary>,
     ) -> Self {
@@ -138,6 +143,7 @@ impl FederationLocalStatusResponse {
             sync_message: sync_status.not_ready_message(),
             pending_mempool_items,
             pending_response_waiters,
+            response_cache_items,
             session_outcome_quorum_operation_count,
             session_outcome_quorum_signers,
             payment_observation_reports,

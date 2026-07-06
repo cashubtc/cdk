@@ -380,6 +380,7 @@ max_delay_time = 3
 # private_rest_outbound_concurrency_limit = 64
 # pending_mempool_item_limit = 1024
 # response_waiter_limit = 1024
+# response_cache_limit = 4096
 
 # Transaction limits for DoS protection (optional, defaults shown)
 [limits]
