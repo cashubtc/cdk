@@ -5880,6 +5880,313 @@ async fn federation_aleph_bft_finalized_unit_reports_state_rejected_swap() {
 }
 
 #[tokio::test]
+async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_conflicts() {
+    let (public_config, first_private, second_private) = transport_config();
+    let first_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("first db"));
+    let second_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db"));
+    let first_mnemonic = Mnemonic::generate(12).expect("first mnemonic");
+    let second_mnemonic = Mnemonic::generate(12).expect("second mnemonic");
+    let first_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        first_private.clone(),
+        first_db,
+        &first_mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let second_state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        second_private.clone(),
+        second_db,
+        &second_mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let config = first_state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .clone();
+
+    let mint_quote_id = QuoteId::new();
+    let first_mint_output = mint_output(&first_state, &mint_quote_id);
+    let conflicting_mint_output = swap_output(&first_state, "aleph-cross-member-mint-loser");
+    let first_mint_input = MintInput::Single(MintRequest {
+        quote: mint_quote_id.clone(),
+        outputs: vec![first_mint_output.clone()],
+        signature: None,
+    });
+    let conflicting_mint_input = MintInput::Single(MintRequest {
+        quote: mint_quote_id.clone(),
+        outputs: vec![conflicting_mint_output.clone()],
+        signature: None,
+    });
+    let first_mint_envelope = config
+        .mint_operation(first_mint_input)
+        .expect("first mint envelope");
+    let first_mint_operation_id = first_mint_envelope
+        .operation_id()
+        .expect("first mint operation id");
+    let conflicting_mint_envelope = config
+        .mint_operation(conflicting_mint_input)
+        .expect("conflicting mint envelope");
+    let conflicting_mint_operation_id = conflicting_mint_envelope
+        .operation_id()
+        .expect("conflicting mint operation id");
+
+    let swap_input = proof_for_amount(&first_state, 1, "aleph-cross-member-swap-input");
+    let swap_input_y = swap_input.y().expect("swap input y");
+    let first_swap_output = swap_output(&first_state, "aleph-cross-member-swap-winner");
+    let conflicting_swap_output = swap_output(&first_state, "aleph-cross-member-swap-loser");
+    let first_swap_request =
+        cdk::nuts::SwapRequest::new(vec![swap_input.clone()], vec![first_swap_output.clone()]);
+    let conflicting_swap_request =
+        cdk::nuts::SwapRequest::new(vec![swap_input], vec![conflicting_swap_output.clone()]);
+    let first_swap_envelope = config
+        .swap_operation(first_swap_request)
+        .expect("first swap envelope");
+    let first_swap_operation_id = first_swap_envelope
+        .operation_id()
+        .expect("first swap operation id");
+    let conflicting_swap_envelope = config
+        .swap_operation(conflicting_swap_request)
+        .expect("conflicting swap envelope");
+    let conflicting_swap_operation_id = conflicting_swap_envelope
+        .operation_id()
+        .expect("conflicting swap operation id");
+
+    let melt_quote_id = QuoteId::new();
+    let melt_quote_envelope = config.melt_quote_operation(
+        melt_quote_id.clone(),
+        cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+            request: create_fake_invoice(1000, "aleph cross-member melt".to_string()),
+            unit: CurrencyUnit::Sat,
+            options: None,
+        }),
+    );
+    let melt_inputs = vec![
+        proof_for_amount(&first_state, 1, "aleph-cross-member-melt-a"),
+        proof_for_amount(&first_state, 1, "aleph-cross-member-melt-b"),
+        proof_for_amount(&first_state, 1, "aleph-cross-member-melt-c"),
+    ];
+    let melt_input_ys = melt_inputs
+        .iter()
+        .map(|proof| proof.y().expect("melt input y"))
+        .collect::<Vec<_>>();
+    let mut first_melt_change_output = swap_output(&first_state, "aleph-cross-member-melt-winner");
+    first_melt_change_output.amount = Amount::ZERO;
+    let mut conflicting_melt_change_output =
+        swap_output(&first_state, "aleph-cross-member-melt-loser");
+    conflicting_melt_change_output.amount = Amount::ZERO;
+    let first_melt_request = cdk::nuts::MeltRequest::new(
+        melt_quote_id.clone(),
+        melt_inputs.clone(),
+        Some(vec![first_melt_change_output.clone()]),
+    );
+    let conflicting_melt_request = cdk::nuts::MeltRequest::new(
+        melt_quote_id.clone(),
+        melt_inputs,
+        Some(vec![conflicting_melt_change_output.clone()]),
+    );
+    let first_melt_envelope = config
+        .melt_operation(first_melt_request)
+        .expect("first melt envelope");
+    let first_melt_operation_id = first_melt_envelope
+        .operation_id()
+        .expect("first melt operation id");
+    let conflicting_melt_envelope = config
+        .melt_operation(conflicting_melt_request)
+        .expect("conflicting melt envelope");
+    let conflicting_melt_operation_id = conflicting_melt_envelope
+        .operation_id()
+        .expect("conflicting melt operation id");
+
+    let first_unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        first_private.member_id,
+        0,
+        0,
+        vec![
+            FederationConsensusItem::operation(mint_quote_envelope(&first_state, &mint_quote_id)),
+            FederationConsensusItem::operation(paid_observation_envelope(
+                &first_state,
+                &mint_quote_id,
+            )),
+            FederationConsensusItem::operation(first_mint_envelope),
+            FederationConsensusItem::operation(first_swap_envelope),
+            FederationConsensusItem::operation(melt_quote_envelope),
+            FederationConsensusItem::operation(first_melt_envelope),
+        ],
+    )
+    .expect("first AlephBFT finalized unit");
+    let second_unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        second_private.member_id,
+        0,
+        0,
+        vec![
+            FederationConsensusItem::operation(conflicting_mint_envelope),
+            FederationConsensusItem::operation(conflicting_swap_envelope),
+            FederationConsensusItem::operation(conflicting_melt_envelope),
+        ],
+    )
+    .expect("second AlephBFT finalized unit");
+
+    for state in [&first_state, &second_state] {
+        let first_responses = state
+            .apply_federation_aleph_bft_finalized_unit(first_unit.clone())
+            .await
+            .expect("first finalized unit");
+        assert_eq!(
+            first_responses
+                .iter()
+                .map(|response| response.outcome.entry().status)
+                .collect::<Vec<_>>(),
+            vec![FederationOperationStatus::Applied; 6]
+        );
+        assert_eq!(first_responses[2].operation_id, first_mint_operation_id);
+        assert_eq!(first_responses[3].operation_id, first_swap_operation_id);
+        assert_eq!(first_responses[5].operation_id, first_melt_operation_id);
+
+        let second_responses = state
+            .apply_federation_aleph_bft_finalized_unit(second_unit.clone())
+            .await
+            .expect("second finalized unit");
+        assert_eq!(
+            second_responses
+                .iter()
+                .map(|response| response.outcome.entry().status)
+                .collect::<Vec<_>>(),
+            vec![FederationOperationStatus::Rejected; 3]
+        );
+        assert_eq!(
+            second_responses[0].operation_id,
+            conflicting_mint_operation_id
+        );
+        assert_eq!(
+            second_responses[1].operation_id,
+            conflicting_swap_operation_id
+        );
+        assert_eq!(
+            second_responses[2].operation_id,
+            conflicting_melt_operation_id
+        );
+
+        let quote = state
+            .mint
+            .localstore()
+            .get_mint_quote(&mint_quote_id)
+            .await
+            .expect("mint quote lookup")
+            .expect("mint quote");
+        assert_eq!(quote.state(), MintQuoteState::Issued);
+        assert_eq!(quote.amount_issued(), Amount::new(1, CurrencyUnit::Sat));
+
+        let melt_quote = state
+            .mint
+            .localstore()
+            .get_melt_quote(&melt_quote_id)
+            .await
+            .expect("melt quote lookup")
+            .expect("melt quote");
+        assert_eq!(melt_quote.state, MeltQuoteState::Paid);
+
+        let swap_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&[swap_input_y])
+            .await
+            .expect("swap proof state lookup");
+        assert_eq!(swap_states, vec![Some(cdk::nuts::State::Spent)]);
+        let melt_states = state
+            .mint
+            .localstore()
+            .get_proofs_states(&melt_input_ys)
+            .await
+            .expect("melt proof state lookup");
+        assert_eq!(
+            melt_states,
+            vec![
+                Some(cdk::nuts::State::Spent),
+                Some(cdk::nuts::State::Spent),
+                Some(cdk::nuts::State::Spent),
+            ]
+        );
+
+        let signatures = state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[
+                first_mint_output.blinded_secret,
+                conflicting_mint_output.blinded_secret,
+                first_swap_output.blinded_secret,
+                conflicting_swap_output.blinded_secret,
+                first_melt_change_output.blinded_secret,
+                conflicting_melt_change_output.blinded_secret,
+            ])
+            .await
+            .expect("signature lookup");
+        assert!(signatures[0].is_some());
+        assert!(signatures[1].is_none());
+        assert!(signatures[2].is_some());
+        assert!(signatures[3].is_none());
+        assert!(signatures[4].is_some());
+        assert!(signatures[5].is_none());
+
+        let persisted = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal lookup");
+        assert_eq!(persisted.len(), 9);
+        assert_eq!(
+            persisted
+                .iter()
+                .map(|entry| entry.status)
+                .collect::<Vec<_>>(),
+            vec![
+                FederationOperationStatus::Applied,
+                FederationOperationStatus::Applied,
+                FederationOperationStatus::Applied,
+                FederationOperationStatus::Applied,
+                FederationOperationStatus::Applied,
+                FederationOperationStatus::Applied,
+                FederationOperationStatus::Rejected,
+                FederationOperationStatus::Rejected,
+                FederationOperationStatus::Rejected,
+            ]
+        );
+    }
+
+    let first_entries = first_state
+        .federation_consensus
+        .as_ref()
+        .expect("first consensus")
+        .lock()
+        .await
+        .journal()
+        .entries()
+        .to_vec();
+    let second_entries = second_state
+        .federation_consensus
+        .as_ref()
+        .expect("second consensus")
+        .lock()
+        .await
+        .journal()
+        .entries()
+        .to_vec();
+    let first_digest = materialized_state_digest(&first_state, &first_entries)
+        .await
+        .expect("first materialized digest");
+    let second_digest = materialized_state_digest(&second_state, &second_entries)
+        .await
+        .expect("second materialized digest");
+    assert_eq!(first_digest, second_digest);
+}
+
+#[tokio::test]
 async fn federation_aleph_bft_finalized_unit_conflict_does_not_mutate_runtime() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));

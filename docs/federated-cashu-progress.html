@@ -434,15 +434,15 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover concurrent melt fanout</span>
+          <span class="value">test: cover cross-member Aleph conflicts</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Concurrent identical wallet melt fanout now proves every member accepts one canonical melt operation, converges through matching paid observations, spends the input, returns aggregate-verifiable BLS change signatures, and makes only one elected fake-wallet payment attempt.</span>
+          <span class="value">Cross-member AlephBFT finalized units now prove mint, swap, and melt conflicts converge to matching applied/rejected outcomes across member states, with loser outputs unsigned and final materialized digests equal.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Return to conflicting cross-member AlephBFT ordering scenarios for mint, swap, and melt requests.</span>
+          <span class="value">Build the full fake-backend federation scenario with restarts, delayed payment observations, duplicate wallet retries, catch-up, and final state-digest equality.</span>
         </div>
       </aside>
     </header>
@@ -730,7 +730,7 @@
           </article>
           <article class="item">
             <h3>BFT adapter groundwork</h3>
-            <p>The consensus runtime has a simulator-backed adapter and an AlephBFT adapter boundary with queueing, preview/drain, drained-unit pending tracking, peer-decided item cleanup, finalized-unit delivery, deterministic rejected finalized conflicts, response waiters, duplicate handling, post-admission duplicate replay, pending timeout retry and live duplicate waiter joining for public minting without double issuance, pending conflict-key rejection, and status counters including pending-finalization items.</p>
+            <p>The consensus runtime has a simulator-backed adapter and an AlephBFT adapter boundary with queueing, preview/drain, drained-unit pending tracking, peer-decided item cleanup, finalized-unit delivery, deterministic rejected finalized conflicts for mint, swap, and melt, response waiters, duplicate handling, post-admission duplicate replay, pending timeout retry and live duplicate waiter joining for public minting without double issuance, pending conflict-key rejection, and status counters including pending-finalization items.</p>
           </article>
         </div>
       </section>
@@ -810,9 +810,9 @@
           risks, and the next verification target.
         </p>
         <p class="section-note">
-          Current verification target: production AlephBFT finality hardening,
-          larger wallet-operation smoke repetitions, storage-backed partition
-          windows, and compile gates.
+          Current verification target: full fake-backend federation scenarios,
+          production AlephBFT finality hardening, larger wallet-operation smoke
+          repetitions, storage-backed partition windows, and compile gates.
         </p>
       </section>
 

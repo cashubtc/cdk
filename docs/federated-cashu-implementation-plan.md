@@ -1166,9 +1166,18 @@ Race and wallet scenario tests:
   observations on every member, confirms only the elected member attempts the
   outgoing fake-wallet payment, spends the input on every member, returns
   identical wallet responses, and validates aggregate BLS change signatures.
-- [ ] Conflicting mint, swap, and melt requests submitted concurrently from
+- [x] Conflicting mint, swap, and melt requests submitted concurrently from
   different members are serialized by AlephBFT and converge on identical
-  accepted/rejected outcomes on all honest members.
+  accepted/rejected outcomes on all honest members. Covered by
+  `federation_aleph_bft_finalized_unit_reports_state_rejected_swap`, which
+  proves finalized state-level swap conflicts are rejected without blocking
+  later applied items, and
+  `federation_aleph_bft_finalized_units_serialize_cross_member_value_conflicts`,
+  which applies winner operations from one member's finalized unit and
+  conflicting mint, swap, and melt operations from another member's finalized
+  unit to two member states, verifies matching applied/rejected journal
+  outcomes, proves loser outputs receive no signature shares, and compares
+  final materialized state digests.
 - [x] The accepted operation arrives between admission validation and queue
   submission; the handler returns the cached accepted response without
   resubmitting a conflicting operation. Covered by
