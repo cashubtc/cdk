@@ -68,8 +68,7 @@ pub(super) async fn post_local_status(
         .await
         .map_err(cdk_error_response)?;
     let pending_mempool_items = state.federation_pending_mempool_len().await;
-    let pending_response_waiters = state.federation_pending_response_waiter_count();
-    let response_cache_items = state.federation_response_cache_entry_count();
+    let notification_stats = state.federation_operation_notification_stats();
     let aleph_bft_status = state.federation_aleph_bft_status().await;
     let invalid_operation_alerts = state.federation_invalid_operation_alert_summaries().await;
     let response = FederationLocalStatusResponse::new(
@@ -79,8 +78,12 @@ pub(super) async fn post_local_status(
         payment_observation_reports,
         materialized_state_rows,
         usize_to_u64_saturating(pending_mempool_items),
-        usize_to_u64_saturating(pending_response_waiters),
-        usize_to_u64_saturating(response_cache_items),
+        usize_to_u64_saturating(notification_stats.pending_response_waiters),
+        usize_to_u64_saturating(notification_stats.response_cache_items),
+        notification_stats.response_cache_lookups,
+        notification_stats.response_cache_hits,
+        notification_stats.duplicate_submissions,
+        notification_stats.duplicate_pending_waiter_joins,
         aleph_bft_status,
         invalid_operation_alerts,
     );
@@ -102,6 +105,14 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) pending_response_waiters: u64,
     #[serde(default)]
     pub(crate) response_cache_items: u64,
+    #[serde(default)]
+    pub(crate) response_cache_lookups: u64,
+    #[serde(default)]
+    pub(crate) response_cache_hits: u64,
+    #[serde(default)]
+    pub(crate) duplicate_submissions: u64,
+    #[serde(default)]
+    pub(crate) duplicate_pending_waiter_joins: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) session_outcome_quorum_operation_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -126,6 +137,10 @@ impl FederationLocalStatusResponse {
         pending_mempool_items: u64,
         pending_response_waiters: u64,
         response_cache_items: u64,
+        response_cache_lookups: u64,
+        response_cache_hits: u64,
+        duplicate_submissions: u64,
+        duplicate_pending_waiter_joins: u64,
         aleph_bft_status: Option<FederationAlephBftAdapterStatus>,
         invalid_operation_alerts: Vec<crate::FederationInvalidOperationAlertSummary>,
     ) -> Self {
@@ -144,6 +159,10 @@ impl FederationLocalStatusResponse {
             pending_mempool_items,
             pending_response_waiters,
             response_cache_items,
+            response_cache_lookups,
+            response_cache_hits,
+            duplicate_submissions,
+            duplicate_pending_waiter_joins,
             session_outcome_quorum_operation_count,
             session_outcome_quorum_signers,
             payment_observation_reports,

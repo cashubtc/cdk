@@ -354,10 +354,30 @@ struct FederationOperationNotificationState {
     outcome_order: VecDeque<FederationOperationId>,
     notifiers: HashMap<FederationOperationId, FederationOperationNotifier>,
     waiter_count: usize,
+    response_cache_lookups: u64,
+    response_cache_hits: u64,
+    duplicate_submissions: u64,
+    duplicate_pending_waiter_joins: u64,
 }
 
 #[cfg(feature = "federation")]
 impl FederationOperationNotificationState {
+    fn record_response_cache_lookup(&mut self, hit: bool) {
+        self.response_cache_lookups = self.response_cache_lookups.saturating_add(1);
+        if hit {
+            self.response_cache_hits = self.response_cache_hits.saturating_add(1);
+        }
+    }
+
+    fn record_duplicate_submission(&mut self) {
+        self.duplicate_submissions = self.duplicate_submissions.saturating_add(1);
+    }
+
+    fn record_duplicate_pending_waiter_join(&mut self) {
+        self.record_duplicate_submission();
+        self.duplicate_pending_waiter_joins = self.duplicate_pending_waiter_joins.saturating_add(1);
+    }
+
     fn prune_outcomes(&mut self, response_cache_limit: usize) {
         while self.outcomes.len() > response_cache_limit {
             let Some(operation_id) = self.outcome_order.pop_front() else {
@@ -374,6 +394,17 @@ struct FederationOperationNotifier {
     notify: Arc<tokio::sync::Notify>,
     response: Option<FederationSubmitOperationResponse>,
     waiters: usize,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct FederationOperationNotificationStats {
+    pub(crate) pending_response_waiters: usize,
+    pub(crate) response_cache_items: usize,
+    pub(crate) response_cache_lookups: u64,
+    pub(crate) response_cache_hits: u64,
+    pub(crate) duplicate_submissions: u64,
+    pub(crate) duplicate_pending_waiter_joins: u64,
 }
 
 #[cfg(feature = "federation")]
@@ -447,10 +478,11 @@ impl FederationOperationNotifications {
     ) -> Result<FederationOperationWaitRegistration<'_>, cdk::Error> {
         let mut inner = self.lock_inner();
         if let Some(response) = inner.outcomes.get(&operation_id) {
-            return Ok(FederationOperationWaitRegistration::Outcome(
-                response.clone(),
-            ));
+            let response = response.clone();
+            inner.record_response_cache_lookup(true);
+            return Ok(FederationOperationWaitRegistration::Outcome(response));
         }
+        inner.record_response_cache_lookup(false);
         if let Some(response) = inner
             .notifiers
             .get(&operation_id)
@@ -488,10 +520,11 @@ impl FederationOperationNotifications {
     ) -> Result<Option<FederationOperationWaitRegistration<'_>>, cdk::Error> {
         let mut inner = self.lock_inner();
         if let Some(response) = inner.outcomes.get(&operation_id) {
-            return Ok(Some(FederationOperationWaitRegistration::Outcome(
-                response.clone(),
-            )));
+            let response = response.clone();
+            inner.record_response_cache_lookup(true);
+            return Ok(Some(FederationOperationWaitRegistration::Outcome(response)));
         }
+        inner.record_response_cache_lookup(false);
 
         if let Some(response) = inner
             .notifiers
@@ -503,6 +536,7 @@ impl FederationOperationNotifications {
         if !inner.notifiers.contains_key(&operation_id) {
             return Ok(None);
         }
+        inner.record_duplicate_pending_waiter_join();
         if inner.waiter_count >= waiter_limit {
             return Err(cdk::Error::from(
                 FederationError::ResponseWaiterLimitExceeded {
@@ -554,12 +588,30 @@ impl FederationOperationNotifications {
             .or_else(|| inner.outcomes.get(&operation_id).cloned())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn pending_waiter_count(&self) -> usize {
         self.lock_inner().waiter_count
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn response_cache_count(&self) -> usize {
         self.lock_inner().outcomes.len()
+    }
+
+    fn record_duplicate_submission(&self) {
+        self.lock_inner().record_duplicate_submission();
+    }
+
+    fn stats(&self) -> FederationOperationNotificationStats {
+        let inner = self.lock_inner();
+        FederationOperationNotificationStats {
+            pending_response_waiters: inner.waiter_count,
+            response_cache_items: inner.outcomes.len(),
+            response_cache_lookups: inner.response_cache_lookups,
+            response_cache_hits: inner.response_cache_hits,
+            duplicate_submissions: inner.duplicate_submissions,
+            duplicate_pending_waiter_joins: inner.duplicate_pending_waiter_joins,
+        }
     }
 
     async fn wait_for(
@@ -1354,6 +1406,11 @@ impl MintState {
             &response.outcome,
             FederationJournalAppendOutcome::Appended(_)
         );
+        if !_appended {
+            if let Some(notifications) = &self.federation_notifications {
+                notifications.record_duplicate_submission();
+            }
+        }
         let entry = response.outcome.entry().clone();
 
         if let Err(err) = self
@@ -1408,6 +1465,9 @@ impl MintState {
             let response = FederationSubmitOperationResponse::from_outcome(
                 FederationJournalAppendOutcome::Duplicate(entry.clone()),
             );
+            if let Some(notifications) = &self.federation_notifications {
+                notifications.record_duplicate_submission();
+            }
             drop(consensus);
             if let Some(sequence) = sequence {
                 self.persist_federation_journal_entries(&[], None, Some(sequence))
@@ -1470,6 +1530,7 @@ impl MintState {
             admission,
             FederationConsensusItemAdmission::DuplicateOperation
         ) {
+            notifications.record_duplicate_submission();
             tracing::debug!(
                 operation_id = %operation_id,
                 "Duplicate AlephBFT federation operation is already pending"
@@ -1601,6 +1662,7 @@ impl MintState {
         ))
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn federation_pending_response_waiter_count(&self) -> usize {
         self.federation_notifications
             .as_ref()
@@ -1608,10 +1670,20 @@ impl MintState {
             .unwrap_or_default()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn federation_response_cache_entry_count(&self) -> usize {
         self.federation_notifications
             .as_ref()
             .map(|notifications| notifications.response_cache_count())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn federation_operation_notification_stats(
+        &self,
+    ) -> FederationOperationNotificationStats {
+        self.federation_notifications
+            .as_ref()
+            .map(|notifications| notifications.stats())
             .unwrap_or_default()
     }
 

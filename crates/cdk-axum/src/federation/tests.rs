@@ -6176,6 +6176,11 @@ async fn aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeu
         tokio::task::yield_now().await;
     }
     assert_eq!(state.federation_pending_response_waiter_count(), 2);
+    let stats = state.federation_operation_notification_stats();
+    assert_eq!(stats.response_cache_lookups, 3);
+    assert_eq!(stats.response_cache_hits, 0);
+    assert_eq!(stats.duplicate_submissions, 1);
+    assert_eq!(stats.duplicate_pending_waiter_joins, 1);
     let consensus = state.federation_consensus.as_ref().expect("consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.queued_len(), 1);
@@ -6213,6 +6218,9 @@ async fn aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeu
     assert_eq!(second_response.operation_id, operation_id);
     assert_eq!(state.federation_pending_response_waiter_count(), 0);
     assert_eq!(transport.aleph_bft_finalized_unit_requests().len(), 1);
+    let stats = state.federation_operation_notification_stats();
+    assert_eq!(stats.duplicate_submissions, 1);
+    assert_eq!(stats.duplicate_pending_waiter_joins, 1);
 }
 
 #[tokio::test]
@@ -6355,6 +6363,9 @@ async fn aleph_bft_submit_envelope_returns_finalized_duplicate_without_requeuein
         sequences.get(&peer_private.member_id).copied(),
         Some(duplicate_sequence)
     );
+    let stats = state.federation_operation_notification_stats();
+    assert_eq!(stats.duplicate_submissions, 2);
+    assert_eq!(stats.duplicate_pending_waiter_joins, 0);
 
     let consensus = state.federation_consensus.as_ref().expect("consensus");
     let consensus = consensus.lock().await;
@@ -7385,6 +7396,12 @@ async fn submit_federation_envelope_bounds_response_cache() {
         FederationJournalAppendOutcome::Duplicate(_)
     ));
     assert_eq!(state.federation_response_cache_entry_count(), 1);
+    let stats = state.federation_operation_notification_stats();
+    assert_eq!(stats.response_cache_items, 1);
+    assert_eq!(stats.response_cache_lookups, 3);
+    assert_eq!(stats.response_cache_hits, 3);
+    assert_eq!(stats.duplicate_submissions, 1);
+    assert_eq!(stats.duplicate_pending_waiter_joins, 0);
 }
 
 #[tokio::test]

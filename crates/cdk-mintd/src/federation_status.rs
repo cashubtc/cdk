@@ -37,6 +37,14 @@ pub(crate) struct FederationLocalStatusResponse {
     pub(crate) pending_response_waiters: u64,
     #[serde(default)]
     pub(crate) response_cache_items: u64,
+    #[serde(default)]
+    pub(crate) response_cache_lookups: u64,
+    #[serde(default)]
+    pub(crate) response_cache_hits: u64,
+    #[serde(default)]
+    pub(crate) duplicate_submissions: u64,
+    #[serde(default)]
+    pub(crate) duplicate_pending_waiter_joins: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) session_outcome_quorum_operation_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -294,7 +302,7 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
     let invalid_operation_alerts = invalid_operation_alert_count(status);
     let aleph_bft = aleph_bft_status_fields(status);
     format!(
-        "member {}: consensus_backend={} sync={} ready={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} session_outcome_quorum_operations={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} aleph_bft={} message={}",
+        "member {}: consensus_backend={} sync={} ready={} operations={} latest_index={} order_digest={} state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} duplicate_submissions={} duplicate_pending_waiter_joins={} session_outcome_quorum_operations={} session_outcome_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} payment_quarantine={} invalid_operation_alerts={} aleph_bft={} message={}",
         peer.member_id,
         peer.consensus_backend,
         status.sync_state,
@@ -307,6 +315,10 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         status.pending_mempool_items,
         status.pending_response_waiters,
         status.response_cache_items,
+        status.response_cache_hits,
+        status.response_cache_lookups,
+        status.duplicate_submissions,
+        status.duplicate_pending_waiter_joins,
         session_outcome_quorum_operations,
         session_outcome_quorum_signers,
         payment_reports,
