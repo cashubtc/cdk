@@ -3750,6 +3750,54 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn duplicate_federation_melt_returns_persisted_response() {
+        let state = create_federated_test_state().await;
+        let quote_id = create_federated_melt_quote(&state, 1000).await;
+        let mut change_output = outputs_for_amount(&state, 2)
+            .into_iter()
+            .next()
+            .expect("change output");
+        change_output.amount = Amount::ZERO;
+        let request = cdk::nuts::MeltRequest::new(
+            quote_id,
+            vec![proof_for_amount(&state, 4, "duplicate-melt-with-change")],
+            Some(vec![change_output]),
+        );
+
+        let first = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect("first federated fake-wallet melt should settle");
+        let duplicate = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect("duplicate federated fake-wallet melt should return persisted response");
+
+        assert_eq!(duplicate, first);
+        assert_eq!(duplicate.state(), MeltQuoteState::Paid);
+        assert!(duplicate.change().is_some());
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+        let stats = state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federated_wallet_connector_aggregates_real_axum_member_routes() {
         let (listeners, member_urls) = local_member_listeners().await;
         let bundle = threshold_bundle(&member_urls);
