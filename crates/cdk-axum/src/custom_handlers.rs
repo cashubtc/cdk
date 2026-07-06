@@ -3853,6 +3853,72 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn duplicate_post_swap_after_sqlite_restart_returns_persisted_signature_shares() {
+        let db_file = TempMintDbFile::new("cdk-axum-fed-public-swap-restart");
+        let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        let seed = mnemonic.to_seed_normalized("");
+        let fake = FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 0.0,
+            },
+            HashMap::default(),
+            HashSet::default(),
+            0,
+            CurrencyUnit::Sat,
+        );
+        let db = Arc::new(
+            cdk_sqlite::MintSqliteDatabase::new(db_file.path())
+                .await
+                .expect("mint db"),
+        );
+        let state =
+            create_federated_test_state_with_backend_db_and_seed(Arc::new(fake), db, &seed).await;
+        let request = cdk::nuts::SwapRequest::new(
+            vec![proof_for_amount(&state, 2, "swap-sqlite-restart-input")],
+            outputs_for_amount_with_label(&state, 2, "swap-sqlite-restart-output"),
+        );
+
+        let first = crate::router_handlers::post_swap(
+            AuthHeader::None,
+            State(state.clone()),
+            Json(request.clone()),
+        )
+        .await
+        .expect("first federation swap should return share response")
+        .0;
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Swap]
+        );
+        drop(state);
+
+        let restarted_state = restart_federated_test_state_from_db(&db_file, &seed).await;
+        assert_eq!(
+            federation_operation_kinds(&restarted_state).await,
+            vec![cdk::federation::FederationOperationKind::Swap]
+        );
+
+        let duplicate = crate::router_handlers::post_swap(
+            AuthHeader::None,
+            State(restarted_state.clone()),
+            Json(request),
+        )
+        .await
+        .expect("duplicate federation swap after restart should return persisted shares")
+        .0;
+
+        assert_eq!(duplicate, first);
+        assert_eq!(
+            federation_operation_kinds(&restarted_state).await,
+            vec![cdk::federation::FederationOperationKind::Swap]
+        );
+        let stats = restarted_state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn post_swap_rejects_non_v3_outputs_before_consensus() {
         let state = create_federated_test_state().await;
         let outputs = vec![non_v3_output_for_state(
