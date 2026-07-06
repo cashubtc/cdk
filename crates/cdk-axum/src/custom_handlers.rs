@@ -1947,6 +1947,14 @@ mod tests {
     }
 
     #[cfg(feature = "federation")]
+    fn limit_federation_response_cache_to_one(state: &mut MintState) {
+        state.federation_peer_sync_config = Some(crate::FederationPeerSyncConfig {
+            response_cache_limit: 1,
+            ..crate::FederationPeerSyncConfig::default()
+        });
+    }
+
+    #[cfg(feature = "federation")]
     async fn federation_operation_kinds(
         state: &MintState,
     ) -> Vec<cdk::federation::FederationOperationKind> {
@@ -2105,6 +2113,18 @@ mod tests {
     }
 
     fn outputs_for_amount(state: &MintState, amount: u64) -> Vec<BlindedMessage> {
+        outputs_for_amount_with_label(
+            state,
+            amount,
+            &format!("axum federated mint output {amount}"),
+        )
+    }
+
+    fn outputs_for_amount_with_label(
+        state: &MintState,
+        amount: u64,
+        label: &str,
+    ) -> Vec<BlindedMessage> {
         #[cfg(feature = "federation")]
         let keyset_id = match state.mint.federation_config() {
             Some(config) => config.public_config().keysets[0].id,
@@ -2121,10 +2141,9 @@ mod tests {
             .get(&CurrencyUnit::Sat)
             .expect("active sat keyset");
 
-        let blinded_secret =
-            cdk::nuts::PublicKey::from(cdk::nuts::nut01::BlsG1PublicKey::hash_to_curve(
-                format!("axum federated mint output {amount}").as_bytes(),
-            ));
+        let blinded_secret = cdk::nuts::PublicKey::from(
+            cdk::nuts::nut01::BlsG1PublicKey::hash_to_curve(label.as_bytes()),
+        );
 
         vec![BlindedMessage::new(
             Amount::from(amount),
@@ -3469,6 +3488,59 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn duplicate_federation_mint_after_cache_eviction_returns_persisted_shares() {
+        let mut state = create_federated_test_state().await;
+        limit_federation_response_cache_to_one(&mut state);
+        let first_quote_id = create_paid_bolt11_quote(&state).await;
+        let first_outputs = outputs_for_amount_with_label(&state, 2, "mint-cache-eviction-first");
+        let first_input = cdk::mint::MintInput::Batch(BatchMintRequest {
+            quotes: vec![first_quote_id],
+            quote_amounts: None,
+            outputs: first_outputs,
+            signatures: None,
+        });
+
+        let first = process_federation_mint_input(&state, &first_input)
+            .await
+            .expect("first federation mint submit")
+            .expect("first federation mint response");
+        assert_eq!(state.federation_response_cache_entry_count(), 1);
+
+        let second_quote_id = create_paid_bolt11_quote(&state).await;
+        let second_outputs = outputs_for_amount_with_label(&state, 2, "mint-cache-eviction-second");
+        let second_input = cdk::mint::MintInput::Batch(BatchMintRequest {
+            quotes: vec![second_quote_id],
+            quote_amounts: None,
+            outputs: second_outputs,
+            signatures: None,
+        });
+        let second = process_federation_mint_input(&state, &second_input)
+            .await
+            .expect("second federation mint submit")
+            .expect("second federation mint response");
+        assert_ne!(second, first);
+        assert_eq!(state.federation_response_cache_entry_count(), 1);
+
+        let duplicate = process_federation_mint_input(&state, &first_input)
+            .await
+            .expect("duplicate federation mint submit")
+            .expect("duplicate federation mint response");
+
+        assert_eq!(duplicate, first);
+        assert_eq!(state.federation_response_cache_entry_count(), 1);
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![
+                cdk::federation::FederationOperationKind::Mint,
+                cdk::federation::FederationOperationKind::Mint,
+            ]
+        );
+        let stats = state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn post_swap_returns_federation_signature_shares() {
         let state = create_federated_test_state().await;
         let outputs = outputs_for_amount(&state, 2);
@@ -3577,6 +3649,60 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::Swap]
+        );
+        let stats = state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn duplicate_post_swap_after_cache_eviction_returns_persisted_signature_shares() {
+        let mut state = create_federated_test_state().await;
+        limit_federation_response_cache_to_one(&mut state);
+        let first_request = cdk::nuts::SwapRequest::new(
+            vec![proof_for_amount(&state, 2, "swap-cache-eviction-first")],
+            outputs_for_amount_with_label(&state, 2, "swap-cache-eviction-first"),
+        );
+
+        let first = crate::router_handlers::post_swap(
+            AuthHeader::None,
+            State(state.clone()),
+            Json(first_request.clone()),
+        )
+        .await
+        .expect("first federation swap should return share response");
+        assert_eq!(state.federation_response_cache_entry_count(), 1);
+
+        let second_request = cdk::nuts::SwapRequest::new(
+            vec![proof_for_amount(&state, 2, "swap-cache-eviction-second")],
+            outputs_for_amount_with_label(&state, 2, "swap-cache-eviction-second"),
+        );
+        let second = crate::router_handlers::post_swap(
+            AuthHeader::None,
+            State(state.clone()),
+            Json(second_request),
+        )
+        .await
+        .expect("second federation swap should return share response");
+        assert_ne!(second.0, first.0);
+        assert_eq!(state.federation_response_cache_entry_count(), 1);
+
+        let duplicate = crate::router_handlers::post_swap(
+            AuthHeader::None,
+            State(state.clone()),
+            Json(first_request),
+        )
+        .await
+        .expect("duplicate federation swap should return persisted share response");
+
+        assert_eq!(duplicate.0, first.0);
+        assert_eq!(state.federation_response_cache_entry_count(), 1);
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![
+                cdk::federation::FederationOperationKind::Swap,
+                cdk::federation::FederationOperationKind::Swap,
+            ]
         );
         let stats = state.federation_operation_notification_stats();
         assert_eq!(stats.duplicate_submissions, 1);
@@ -3791,6 +3917,85 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::Melt]
+        );
+        let stats = state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn duplicate_federation_melt_after_cache_eviction_returns_persisted_response() {
+        let mut state = create_federated_test_state().await;
+        limit_federation_response_cache_to_one(&mut state);
+        let first_quote_id = create_federated_melt_quote(&state, 1000).await;
+        let mut first_change_output =
+            outputs_for_amount_with_label(&state, 2, "melt-cache-eviction-first")
+                .into_iter()
+                .next()
+                .expect("first change output");
+        first_change_output.amount = Amount::ZERO;
+        let first_request = cdk::nuts::MeltRequest::new(
+            first_quote_id,
+            vec![proof_for_amount(&state, 4, "melt-cache-eviction-first")],
+            Some(vec![first_change_output]),
+        );
+
+        let first = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &first_request,
+        )
+        .await
+        .expect("first federated fake-wallet melt should settle");
+        assert_eq!(state.federation_response_cache_entry_count(), 1);
+
+        let second_quote_id = create_federated_melt_quote(&state, 1000).await;
+        let mut second_change_output =
+            outputs_for_amount_with_label(&state, 2, "melt-cache-eviction-second")
+                .into_iter()
+                .next()
+                .expect("second change output");
+        second_change_output.amount = Amount::ZERO;
+        let second_request = cdk::nuts::MeltRequest::new(
+            second_quote_id,
+            vec![proof_for_amount(&state, 4, "melt-cache-eviction-second")],
+            Some(vec![second_change_output]),
+        );
+        let second = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &second_request,
+        )
+        .await
+        .expect("second federated fake-wallet melt should settle");
+        assert_ne!(second, first);
+        assert_eq!(state.federation_response_cache_entry_count(), 1);
+
+        let duplicate = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &first_request,
+        )
+        .await
+        .expect("duplicate federated fake-wallet melt should return persisted response");
+
+        assert_eq!(duplicate, first);
+        assert_eq!(state.federation_response_cache_entry_count(), 1);
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![
+                cdk::federation::FederationOperationKind::Melt,
+                cdk::federation::FederationOperationKind::Melt,
+            ]
         );
         let stats = state.federation_operation_notification_stats();
         assert_eq!(stats.duplicate_submissions, 1);
