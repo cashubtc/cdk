@@ -931,6 +931,12 @@ pub enum FederationError {
         /// Journal index whose conflict metadata did not match.
         index: u64,
     },
+    /// A journal entry that requires consensus evidence did not include it.
+    #[error("Federation journal entry is missing consensus evidence at index {index}")]
+    JournalConsensusEvidenceMissing {
+        /// Journal index whose consensus evidence was missing.
+        index: u64,
+    },
     /// Stored journal operation outcome hash did not match the accepted entry.
     #[error(
         "Federation journal outcome hash mismatch at index {index}: expected={expected}, found={found}"

@@ -900,10 +900,20 @@ impl InMemoryFederationJournal {
                 .map(canonical_json_string)
                 .collect::<Result<Vec<_>>>()?;
             for conflict_key_label in &conflict_key_labels {
-                if let Some(existing_operation_id) = journal.conflict_keys.get(conflict_key_label) {
+                if should_reserve_conflict_keys(entry.status) {
+                    if let Some(existing_operation_id) =
+                        journal.conflict_keys.get(conflict_key_label)
+                    {
+                        return Err(FederationError::ConflictingOperation {
+                            conflict_key: conflict_key_label.clone(),
+                            existing_operation_id: existing_operation_id.to_string(),
+                            attempted_operation_id: entry.operation_id.to_string(),
+                        });
+                    }
+                } else if !journal.conflict_keys.contains_key(conflict_key_label) {
                     return Err(FederationError::ConflictingOperation {
                         conflict_key: conflict_key_label.clone(),
-                        existing_operation_id: existing_operation_id.to_string(),
+                        existing_operation_id: "none".to_string(),
                         attempted_operation_id: entry.operation_id.to_string(),
                     });
                 }
@@ -912,10 +922,12 @@ impl InMemoryFederationJournal {
             journal
                 .operation_indices
                 .insert(entry.operation_id, entry.index as usize);
-            for conflict_key_label in conflict_key_labels {
-                journal
-                    .conflict_keys
-                    .insert(conflict_key_label, entry.operation_id);
+            if should_reserve_conflict_keys(entry.status) {
+                for conflict_key_label in conflict_key_labels {
+                    journal
+                        .conflict_keys
+                        .insert(conflict_key_label, entry.operation_id);
+                }
             }
             journal.latest_order_digest = entry.order_digest;
             journal.entries.push(entry);
@@ -952,6 +964,20 @@ impl InMemoryFederationJournal {
         self.append_inner(envelope, Some(evidence))
     }
 
+    /// Append one finalized operation envelope with consensus evidence.
+    ///
+    /// Unlike public admission, finalized ordering must be replayable even when
+    /// a later operation conflicts with a previously accepted one. Such
+    /// conflicts are persisted as deterministic rejected entries instead of
+    /// aborting journal replay.
+    pub fn append_finalized_with_consensus_evidence(
+        &mut self,
+        envelope: FederationOperationEnvelope,
+        evidence: FederationJournalConsensusEvidence,
+    ) -> Result<FederationJournalAppendOutcome> {
+        self.append_finalized_inner(envelope, evidence)
+    }
+
     fn append_inner(
         &mut self,
         envelope: FederationOperationEnvelope,
@@ -968,12 +994,8 @@ impl InMemoryFederationJournal {
         }
 
         envelope.operation.balance_audit()?;
-        let conflict_keys = envelope.operation.conflict_keys();
-        let conflict_key = conflict_keys.first().cloned();
-        let conflict_key_labels = conflict_keys
-            .iter()
-            .map(canonical_json_string)
-            .collect::<Result<Vec<_>>>()?;
+        let (conflict_key, conflict_keys, conflict_key_labels) =
+            operation_conflict_metadata(&envelope)?;
 
         for conflict_key_label in &conflict_key_labels {
             if let Some(existing_operation_id) = self.conflict_keys.get(conflict_key_label) {
@@ -985,6 +1007,69 @@ impl InMemoryFederationJournal {
             }
         }
 
+        let entry = self.push_entry(
+            envelope,
+            operation_id,
+            conflict_key,
+            conflict_keys,
+            conflict_key_labels,
+            consensus_evidence,
+            FederationOperationStatus::Accepted,
+        );
+
+        Ok(FederationJournalAppendOutcome::Appended(entry))
+    }
+
+    fn append_finalized_inner(
+        &mut self,
+        envelope: FederationOperationEnvelope,
+        consensus_evidence: FederationJournalConsensusEvidence,
+    ) -> Result<FederationJournalAppendOutcome> {
+        let operation_id = envelope.operation_id()?;
+        if let Some(existing_index) = self.operation_indices.get(&operation_id) {
+            let entry = self
+                .entries
+                .get(*existing_index)
+                .expect("operation index points to an entry")
+                .clone();
+            return Ok(FederationJournalAppendOutcome::Duplicate(entry));
+        }
+
+        envelope.operation.balance_audit()?;
+        let (conflict_key, conflict_keys, conflict_key_labels) =
+            operation_conflict_metadata(&envelope)?;
+        let status = if conflict_key_labels
+            .iter()
+            .any(|conflict_key_label| self.conflict_keys.contains_key(conflict_key_label))
+        {
+            FederationOperationStatus::Rejected
+        } else {
+            FederationOperationStatus::Accepted
+        };
+
+        let entry = self.push_entry(
+            envelope,
+            operation_id,
+            conflict_key,
+            conflict_keys,
+            conflict_key_labels,
+            Some(consensus_evidence),
+            status,
+        );
+
+        Ok(FederationJournalAppendOutcome::Appended(entry))
+    }
+
+    fn push_entry(
+        &mut self,
+        envelope: FederationOperationEnvelope,
+        operation_id: FederationOperationId,
+        conflict_key: Option<FederationOperationConflictKey>,
+        conflict_keys: Vec<FederationOperationConflictKey>,
+        conflict_key_labels: Vec<String>,
+        consensus_evidence: Option<FederationJournalConsensusEvidence>,
+        status: FederationOperationStatus,
+    ) -> FederationJournalEntry {
         let index = self.entries.len() as u64;
         let previous_order_digest = self.latest_order_digest;
         let order_digest = previous_order_digest.append(index, operation_id);
@@ -1007,17 +1092,18 @@ impl InMemoryFederationJournal {
             operation_outcome_hash: Some(operation_outcome_hash),
             state_digest: Some(state_digest),
             consensus_evidence,
-            status: FederationOperationStatus::Accepted,
+            status,
         };
 
         self.entries.push(entry.clone());
         self.operation_indices.insert(operation_id, index as usize);
-        for conflict_key_label in conflict_key_labels {
-            self.conflict_keys.insert(conflict_key_label, operation_id);
+        if should_reserve_conflict_keys(status) {
+            for conflict_key_label in conflict_key_labels {
+                self.conflict_keys.insert(conflict_key_label, operation_id);
+            }
         }
         self.latest_order_digest = order_digest;
-
-        Ok(FederationJournalAppendOutcome::Appended(entry))
+        entry
     }
 
     fn state_digest_after_append(
@@ -1077,7 +1163,18 @@ impl InMemoryFederationJournal {
             self.state_digest_after_append(peer_entry.index, peer_entry.operation_id);
         peer_entry.validate_outcome_metadata(expected_state_digest)?;
 
-        match self.append_inner(peer_entry.envelope.clone(), peer_entry.consensus_evidence)? {
+        let outcome = if peer_entry.status == FederationOperationStatus::Rejected {
+            let Some(consensus_evidence) = peer_entry.consensus_evidence else {
+                return Err(FederationError::JournalConsensusEvidenceMissing {
+                    index: peer_entry.index,
+                });
+            };
+            self.append_finalized_inner(peer_entry.envelope.clone(), consensus_evidence)?
+        } else {
+            self.append_inner(peer_entry.envelope.clone(), peer_entry.consensus_evidence)?
+        };
+
+        match outcome {
             FederationJournalAppendOutcome::Appended(entry) => Ok(entry),
             FederationJournalAppendOutcome::Duplicate(entry) => {
                 Err(FederationError::CatchUpIndexMismatch {
@@ -1108,6 +1205,26 @@ impl InMemoryFederationJournal {
     }
 }
 
+fn operation_conflict_metadata(
+    envelope: &FederationOperationEnvelope,
+) -> Result<(
+    Option<FederationOperationConflictKey>,
+    Vec<FederationOperationConflictKey>,
+    Vec<String>,
+)> {
+    let conflict_keys = envelope.operation.conflict_keys();
+    let conflict_key = conflict_keys.first().cloned();
+    let conflict_key_labels = conflict_keys
+        .iter()
+        .map(canonical_json_string)
+        .collect::<Result<Vec<_>>>()?;
+    Ok((conflict_key, conflict_keys, conflict_key_labels))
+}
+
+fn should_reserve_conflict_keys(status: FederationOperationStatus) -> bool {
+    !matches!(status, FederationOperationStatus::Rejected)
+}
+
 fn canonical_json_string<T>(value: &T) -> Result<String>
 where
     T: Serialize + ?Sized,
@@ -1135,6 +1252,10 @@ mod tests {
 
     fn federation_id() -> super::super::FederationId {
         super::super::FederationId::from_bytes([9; 32])
+    }
+
+    fn member_id() -> super::super::MemberId {
+        super::super::MemberId::new(1).expect("member id")
     }
 
     fn keyset_id() -> Id {
@@ -1296,6 +1417,59 @@ mod tests {
             Err(FederationError::ConflictingOperation { .. })
         ));
         assert_eq!(journal.len(), 1);
+    }
+
+    #[test]
+    fn journal_records_finalized_conflicts_as_rejected_entries() {
+        let mut journal = InMemoryFederationJournal::new();
+        let first = mint_envelope(
+            "quote-1",
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        let conflict = mint_envelope(
+            "quote-1",
+            "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+        );
+        let first_entry = journal
+            .append_finalized_with_consensus_evidence(
+                first,
+                FederationJournalConsensusEvidence::new(0, 0, 0, member_id(), 0),
+            )
+            .expect("append first finalized")
+            .entry()
+            .clone();
+        let rejected_entry = journal
+            .append_finalized_with_consensus_evidence(
+                conflict.clone(),
+                FederationJournalConsensusEvidence::new(0, 1, 1, member_id(), 1),
+            )
+            .expect("append finalized conflict")
+            .entry()
+            .clone();
+
+        assert_eq!(journal.len(), 2);
+        assert_eq!(first_entry.status, FederationOperationStatus::Accepted);
+        assert_eq!(rejected_entry.status, FederationOperationStatus::Rejected);
+        assert_eq!(rejected_entry.index, 1);
+        assert_eq!(
+            journal
+                .append_finalized_with_consensus_evidence(
+                    conflict,
+                    FederationJournalConsensusEvidence::new(0, 2, 2, member_id(), 2),
+                )
+                .expect("duplicate rejected conflict")
+                .entry()
+                .index,
+            rejected_entry.index
+        );
+
+        let rebuilt = InMemoryFederationJournal::from_entries(journal.entries().to_vec())
+            .expect("rebuild journal with rejected conflict");
+        assert_eq!(rebuilt.len(), 2);
+        assert_eq!(
+            rebuilt.entries()[1].status,
+            FederationOperationStatus::Rejected
+        );
     }
 
     #[test]

@@ -1702,7 +1702,7 @@ impl FederationAlephBftConsensusAdapter {
         for finalized_item in outcome.items {
             if let FederationConsensusItem::Operation(envelope) = &finalized_item.item {
                 let response = FederationSubmitOperationResponse::from_outcome(
-                    self.journal.append_with_consensus_evidence(
+                    self.journal.append_finalized_with_consensus_evidence(
                         envelope.clone(),
                         finalized_item.consensus_evidence(),
                     )?,

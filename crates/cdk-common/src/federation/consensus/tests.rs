@@ -2630,6 +2630,63 @@ fn backend_adapter_runtime_aleph_bft_releases_only_decided_pending_items() {
 }
 
 #[test]
+fn backend_adapter_runtime_aleph_bft_records_finalized_conflicts_as_rejected() {
+    let federation_id = federation_id(13);
+    let members = [member_id_value(1), member_id_value(2), member_id_value(3)];
+    let mut adapter = FederationConsensusBackendAdapterRuntime::with_backend(
+        FederationConsensusBackendKind::AlephBft,
+        federation_id,
+        members,
+        2,
+        members[0],
+    )
+    .expect("aleph-bft adapter runtime");
+    let first = mint_quote_envelope_with_amount(federation_id, "quote-finalized-conflict", 1);
+    let conflict = mint_quote_envelope_with_amount(federation_id, "quote-finalized-conflict", 2);
+    let first_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        members[0],
+        0,
+        0,
+        vec![FederationConsensusItem::operation(first)],
+    )
+    .expect("first unit");
+    let conflict_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        members[1],
+        0,
+        0,
+        vec![FederationConsensusItem::operation(conflict)],
+    )
+    .expect("conflict unit");
+
+    let first_responses = adapter
+        .finalize_aleph_bft_unit(first_unit)
+        .expect("first finalized unit");
+    assert_eq!(
+        first_responses[0].outcome.entry().status,
+        FederationOperationStatus::Accepted
+    );
+
+    let conflict_responses = adapter
+        .finalize_aleph_bft_unit(conflict_unit)
+        .expect("conflicting finalized unit");
+    assert_eq!(conflict_responses.len(), 1);
+    assert_eq!(
+        conflict_responses[0].outcome.entry().status,
+        FederationOperationStatus::Rejected
+    );
+    let status = adapter
+        .aleph_bft_status()
+        .expect("AlephBFT status after conflict");
+    assert_eq!(status.accepted_operation_count, 2);
+    assert_eq!(
+        conflict_responses[0].outcome.entry().status,
+        FederationOperationStatus::Rejected
+    );
+}
+
+#[test]
 fn backend_adapter_runtime_aleph_bft_generic_dispatch_fails_closed() {
     let federation_id = federation_id(13);
     let members = [member_id_value(1), member_id_value(2), member_id_value(3)];

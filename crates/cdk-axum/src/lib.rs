@@ -1868,6 +1868,7 @@ impl MintState {
                 FederationJournalAppendOutcome::Duplicate(_) => None,
             })
             .collect::<Vec<_>>();
+        let entries_to_apply = accepted_federation_journal_entries(&entries);
         let mut sequences = self
             .pending_federation_aleph_bft_sequences_for_entries(&outcome_entries)
             .await;
@@ -1886,7 +1887,8 @@ impl MintState {
         self.clear_federation_aleph_bft_pending_sequences_for_entries(&outcome_entries)
             .await;
 
-        self.apply_federation_journal_entries(&entries).await?;
+        self.apply_federation_journal_entries(&entries_to_apply)
+            .await?;
         self.record_federation_sequences(&sequences).await;
         for response in &responses {
             self.notify_federation_operation(response.clone()).await;
@@ -1921,6 +1923,7 @@ impl MintState {
                 FederationJournalAppendOutcome::Duplicate(_) => None,
             })
             .collect::<Vec<_>>();
+        let entries_to_apply = accepted_federation_journal_entries(&entries);
         let sequences = self
             .pending_federation_aleph_bft_sequences_for_entries(&outcome_entries)
             .await;
@@ -1936,7 +1939,8 @@ impl MintState {
         self.clear_federation_aleph_bft_pending_sequences_for_entries(&outcome_entries)
             .await;
 
-        self.apply_federation_journal_entries(&entries).await?;
+        self.apply_federation_journal_entries(&entries_to_apply)
+            .await?;
         self.record_federation_sequences(&sequences).await;
         for response in &responses {
             self.notify_federation_operation(response.clone()).await;
@@ -2816,6 +2820,22 @@ impl MintState {
             _ => Ok(()),
         }
     }
+}
+
+#[cfg(feature = "federation")]
+fn accepted_federation_journal_entries(
+    entries: &[FederationJournalEntry],
+) -> Vec<FederationJournalEntry> {
+    entries
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.status,
+                FederationOperationStatus::Accepted | FederationOperationStatus::Applying
+            )
+        })
+        .cloned()
+        .collect()
 }
 
 /// Create mint [`Router`] with required endpoints for cashu mint with the default cache
