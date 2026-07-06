@@ -710,6 +710,69 @@ fn proof_for_secret(keyset: &FederatedKeyset, aggregate_secret_seed: u8, secret:
     )
 }
 
+async fn assert_rejected_swap_left_no_materialization(
+    localstore: &MintSqliteDatabase,
+    operation_id: FederationOperationId,
+    input_ys: &[PublicKey],
+    outputs: &[BlindedMessage],
+    context: &str,
+) {
+    let expected_empty_states = vec![None; input_ys.len()];
+    assert_eq!(
+        localstore
+            .get_proofs_states(input_ys)
+            .await
+            .expect("rejected swap proof states"),
+        expected_empty_states,
+        "{context}: rejected swap must fail before proof state storage"
+    );
+
+    let blinded_secrets = outputs
+        .iter()
+        .map(|output| output.blinded_secret)
+        .collect::<Vec<_>>();
+    let expected_empty_signatures = vec![None; blinded_secrets.len()];
+    assert_eq!(
+        localstore
+            .get_blind_signatures(&blinded_secrets)
+            .await
+            .expect("rejected swap blind signatures"),
+        expected_empty_signatures,
+        "{context}: rejected swap must fail before blind signature storage"
+    );
+
+    for output_index in 0..outputs.len() {
+        assert!(
+            localstore
+                .get_federation_signature_shares_for_output(operation_id, output_index as u32)
+                .await
+                .expect("rejected swap output share lookup")
+                .is_empty(),
+            "{context}: rejected swap must fail before output share storage"
+        );
+    }
+
+    for blinded_secret in blinded_secrets {
+        assert!(
+            localstore
+                .get_federation_signature_shares_for_blinded_message(blinded_secret)
+                .await
+                .expect("rejected swap blinded-message share lookup")
+                .is_empty(),
+            "{context}: rejected swap must fail before blinded-message share storage"
+        );
+    }
+
+    assert!(
+        localstore
+            .get_completed_operation(&super::federation_operation_uuid(operation_id))
+            .await
+            .expect("rejected swap completed operation lookup")
+            .is_none(),
+        "{context}: rejected swap must fail before completed-operation storage"
+    );
+}
+
 fn p2pk_locked_proof_for_runtime(
     runtime_config: &FederationRuntimeConfig,
     sig_flag: SigFlag,
@@ -2854,46 +2917,14 @@ async fn apply_federation_swap_rejects_duplicate_inputs_before_state_changes() {
         Err(Error::DuplicateInputs)
     ));
 
-    assert_eq!(
-        localstore
-            .get_proofs_states(&[input_y])
-            .await
-            .expect("duplicate-input proof state"),
-        vec![None],
-        "duplicate swap inputs must fail before proof state storage"
-    );
-    assert_eq!(
-        localstore
-            .get_blind_signatures(&[output.blinded_secret])
-            .await
-            .expect("duplicate-input swap signature lookup"),
-        vec![None],
-        "duplicate swap inputs must fail before blind signature storage"
-    );
-    assert!(
-        localstore
-            .get_federation_signature_shares_for_output(swap_entry.operation_id, 0)
-            .await
-            .expect("duplicate-input swap share lookup")
-            .is_empty(),
-        "duplicate swap inputs must fail before federation share storage"
-    );
-    assert!(
-        localstore
-            .get_federation_signature_shares_for_blinded_message(output.blinded_secret)
-            .await
-            .expect("duplicate-input blinded-message share lookup")
-            .is_empty(),
-        "duplicate swap inputs must fail before blinded-message share storage"
-    );
-    assert!(
-        localstore
-            .get_completed_operations()
-            .await
-            .expect("duplicate-input completed operation lookup")
-            .is_empty(),
-        "duplicate swap inputs must fail before completed-operation storage"
-    );
+    assert_rejected_swap_left_no_materialization(
+        &localstore,
+        swap_entry.operation_id,
+        &[input_y],
+        std::slice::from_ref(&output),
+        "duplicate inputs",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -2908,13 +2939,11 @@ async fn apply_federation_swap_rejects_duplicate_outputs_before_state_changes() 
         second_input.y().expect("duplicate-output second input y"),
     ];
     let output = output_for_runtime(&runtime_config, b"duplicate swap output");
+    let outputs = vec![output.clone(), output.clone()];
     let swap_entry = appended_entry(
         &mut journal,
         runtime_config.operation_envelope(FederationOperation::Swap(FederationSwapOperation {
-            request: SwapRequest::new(
-                vec![first_input, second_input],
-                vec![output.clone(), output.clone()],
-            ),
+            request: SwapRequest::new(vec![first_input, second_input], outputs.clone()),
         })),
     );
     persist_journal_entry(&localstore, &swap_entry).await;
@@ -2925,48 +2954,158 @@ async fn apply_federation_swap_rejects_duplicate_outputs_before_state_changes() 
         Err(Error::DuplicateOutputs)
     ));
 
-    assert_eq!(
-        localstore
-            .get_proofs_states(&input_ys)
-            .await
-            .expect("duplicate-output proof state"),
-        vec![None, None],
-        "duplicate swap outputs must fail before proof state storage"
+    assert_rejected_swap_left_no_materialization(
+        &localstore,
+        swap_entry.operation_id,
+        &input_ys,
+        &outputs,
+        "duplicate outputs",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apply_federation_swap_rejects_oversized_proof_before_state_changes() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let oversized_secret =
+        Secret::new("s".repeat(crate::mint::verification::MAX_PROOF_CONTENT_LEN + 1));
+    let input = proof_for_secret(
+        &runtime_config.public_config().keysets[0],
+        2,
+        oversized_secret,
     );
-    assert_eq!(
-        localstore
-            .get_blind_signatures(&[output.blinded_secret])
-            .await
-            .expect("duplicate-output swap signature lookup"),
-        vec![None],
-        "duplicate swap outputs must fail before blind signature storage"
+    let input_y = input.y().expect("oversized proof input y");
+    let output = output_for_runtime(&runtime_config, b"oversized proof swap output");
+    let swap_entry = appended_entry(
+        &mut journal,
+        runtime_config.operation_envelope(FederationOperation::Swap(FederationSwapOperation {
+            request: SwapRequest::new(vec![input], vec![output.clone()]),
+        })),
     );
-    for output_index in [0, 1] {
-        assert!(
-            localstore
-                .get_federation_signature_shares_for_output(swap_entry.operation_id, output_index)
-                .await
-                .expect("duplicate-output swap share lookup")
-                .is_empty(),
-            "duplicate swap outputs must fail before federation share storage"
-        );
-    }
+    persist_journal_entry(&localstore, &swap_entry).await;
+
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&swap_entry))
+            .await,
+        Err(Error::ProofContentTooLarge {
+            actual,
+            max: crate::mint::verification::MAX_PROOF_CONTENT_LEN,
+        }) if actual == crate::mint::verification::MAX_PROOF_CONTENT_LEN + 1
+    ));
+
+    assert_rejected_swap_left_no_materialization(
+        &localstore,
+        swap_entry.operation_id,
+        &[input_y],
+        std::slice::from_ref(&output),
+        "oversized proof",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apply_federation_swap_rejects_bad_proof_signature_before_state_changes() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let mut input = proof_for_runtime(&runtime_config, "bad swap proof signature");
+    let input_y = input.y().expect("bad proof signature input y");
+    input.c = PublicKey::from(BlsG1PublicKey::hash_to_curve(
+        b"invalid federation swap proof signature",
+    ));
+    let output = output_for_runtime(&runtime_config, b"bad proof signature swap output");
+    let swap_entry = appended_entry(
+        &mut journal,
+        runtime_config.operation_envelope(FederationOperation::Swap(FederationSwapOperation {
+            request: SwapRequest::new(vec![input], vec![output.clone()]),
+        })),
+    );
+    persist_journal_entry(&localstore, &swap_entry).await;
+
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&swap_entry))
+            .await,
+        Err(Error::DHKE(cdk_common::dhke::Error::TokenNotVerified))
+    ));
+
+    assert_rejected_swap_left_no_materialization(
+        &localstore,
+        swap_entry.operation_id,
+        &[input_y],
+        std::slice::from_ref(&output),
+        "bad proof signature",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apply_federation_swap_rejects_p2pk_missing_witness_before_state_changes() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let (input, _signing_key) = p2pk_locked_proof_for_runtime(&runtime_config, SigFlag::SigInputs);
+    let input_y = input.y().expect("p2pk missing witness input y");
+    let output = output_for_runtime(&runtime_config, b"p2pk missing witness swap output");
+    let swap_entry = appended_entry(
+        &mut journal,
+        runtime_config.operation_envelope(FederationOperation::Swap(FederationSwapOperation {
+            request: SwapRequest::new(vec![input], vec![output.clone()]),
+        })),
+    );
+    persist_journal_entry(&localstore, &swap_entry).await;
+
     assert!(
-        localstore
-            .get_federation_signature_shares_for_blinded_message(output.blinded_secret)
+        mint.apply_federation_journal_entries(std::slice::from_ref(&swap_entry))
             .await
-            .expect("duplicate-output blinded-message share lookup")
-            .is_empty(),
-        "duplicate swap outputs must fail before blinded-message share storage"
+            .is_err(),
+        "P2PK input without a witness must be rejected"
     );
-    assert!(
-        localstore
-            .get_completed_operations()
-            .await
-            .expect("duplicate-output completed operation lookup")
-            .is_empty(),
-        "duplicate swap outputs must fail before completed-operation storage"
+
+    assert_rejected_swap_left_no_materialization(
+        &localstore,
+        swap_entry.operation_id,
+        &[input_y],
+        std::slice::from_ref(&output),
+        "p2pk missing witness",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apply_federation_swap_rejects_unbalanced_outputs_before_state_changes() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let inputs = vec![
+        proof_for_runtime(&runtime_config, "unbalanced swap first input"),
+        proof_for_runtime(&runtime_config, "unbalanced swap second input"),
+    ];
+    let input_ys = inputs.ys().expect("unbalanced swap input ys");
+    let output = output_for_runtime(&runtime_config, b"unbalanced swap output");
+    let swap_entry = appended_entry(
+        &mut journal,
+        runtime_config.operation_envelope(FederationOperation::Swap(FederationSwapOperation {
+            request: SwapRequest::new(inputs, vec![output.clone()]),
+        })),
     );
+    persist_journal_entry(&localstore, &swap_entry).await;
+
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&swap_entry))
+            .await,
+        Err(Error::TransactionUnbalanced(2, 1, 0))
+    ));
+
+    assert_rejected_swap_left_no_materialization(
+        &localstore,
+        swap_entry.operation_id,
+        &input_ys,
+        std::slice::from_ref(&output),
+        "unbalanced outputs",
+    )
+    .await;
 }
 
 #[tokio::test]
