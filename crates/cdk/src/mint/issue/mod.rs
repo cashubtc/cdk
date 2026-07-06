@@ -647,6 +647,9 @@ impl Mint {
         let metrics = super::MintMetricGuard::new("process_mint_request");
 
         let result = async {
+            #[cfg(feature = "federation")]
+            self.reject_standalone_federation_path("mint issuance")?;
+
             // Phase 1: Validate input structure
             input.validate()?;
 

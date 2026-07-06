@@ -429,19 +429,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits behind the internal adapter boundary, start the bounded AlephBFT driver loop from router startup when the backend is selected, keep public AlephBFT wallet submissions halted until real finality exists, preserve that halt over stale persisted healthy sync snapshots, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, reject invalid finalized-unit acknowledgements before quorum accounting, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bind signed finalized-unit delivery to the authenticated sender, validate private REST submit responses and AlephBFT finalized-unit acknowledgements against their embedded journal outcomes, reject wrong-kind private REST catch-up requests before sequence persistence, reject empty finalized units plus corrupted retained AlephBFT finalized-item body hashes, accepted-order metadata, unit-finalization gaps, and backwards session order during recovery, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, return durable journal duplicates after response-cache eviction, expose response-cache hit/rate, duplicate-submission, structured sync lag/catch-up counters, signed session-outcome quorum ranges, reject unsupported catch-up response versions before replay mutation, expanded AlephBFT adapter counters in operator status, prove empty-queue data-provider liveness, retry rate-limited wallet member requests, filter wallet fanout to compatible active v3/BLS keyset advertisers, reject non-v3 wallet outputs before member fanout, prove pending-mempool backpressure preserves admitted work through durable finalization, reject unpaid federated mint quotes before blind-signature or share storage, route mint/swap/melt operation construction through pure submission admission helpers, expose pure quote/payment-observation admission helpers for quote creation, payment evidence, and quarantine operations, run pure route admission for quote/payment/quarantine plus mint, swap, melt, restore, and keyset-rotation operation envelopes before append, sequence persistence, or peer forwarding, and route journal replay, live finalization, and catch-up through one accepted-operation apply boundary.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits behind the internal adapter boundary, start the bounded AlephBFT driver loop from router startup when the backend is selected, keep public AlephBFT wallet submissions halted until real finality exists, preserve that halt over stale persisted healthy sync snapshots, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, reject invalid finalized-unit acknowledgements before quorum accounting, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bind signed finalized-unit delivery to the authenticated sender, validate private REST submit responses and AlephBFT finalized-unit acknowledgements against their embedded journal outcomes, reject wrong-kind private REST catch-up requests before sequence persistence, reject empty finalized units plus corrupted retained AlephBFT finalized-item body hashes, accepted-order metadata, unit-finalization gaps, and backwards session order during recovery, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, return durable journal duplicates after response-cache eviction, expose response-cache hit/rate, duplicate-submission, structured sync lag/catch-up counters, signed session-outcome quorum ranges, reject unsupported catch-up response versions before replay mutation, expanded AlephBFT adapter counters in operator status, prove empty-queue data-provider liveness, retry rate-limited wallet member requests, filter wallet fanout to compatible active v3/BLS keyset advertisers, reject non-v3 wallet outputs before member fanout, prove pending-mempool backpressure preserves admitted work through durable finalization, reject unpaid federated mint quotes before blind-signature or share storage, route mint/swap/melt operation construction through pure submission admission helpers, expose pure quote/payment-observation admission helpers for quote creation, payment evidence, and quarantine operations, run pure route admission for quote/payment/quarantine plus mint, swap, melt, restore, and keyset-rotation operation envelopes before append, sequence persistence, or peer forwarding, route journal replay, live finalization, and catch-up through one accepted-operation apply boundary, and block direct standalone value-changing APIs on federation members.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: gate accepted federation apply</span>
+          <span class="value">test: guard federation member standalone paths</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federation apply now has one deterministic accepted-operation entrypoint that accepts only accepted/applying entries, skips already-applied entries, and rejects locally rejected or failed journal entries before materializing mint state.</span>
+          <span class="value">Public mint/swap/melt routes are source-audited to enter federation submission before standalone fallback, and federation members reject direct standalone mint, swap, melt, and raw blind-signing calls.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Continue auditing public Axum routes and Mint federation branches so every mint, swap, melt, restore, and change-output path stays behind consensus acceptance.</span>
+          <span class="value">Continue the mint-side restructuring work by splitting or wrapping standalone issue, swap, and melt validation/apply helpers where it reduces duplication without changing standalone behavior.</span>
         </div>
       </aside>
     </header>
@@ -701,7 +701,7 @@
           </article>
           <article class="item">
             <h3>Mint, swap, melt, restore</h3>
-            <p>Mint quote/payment, issuance, swap, melt quote/payment, melt execution, restore, and check-state flows have federation-aware routes or wallet fanout with accepted-operation signing and apply boundaries.</p>
+            <p>Mint quote/payment, issuance, swap, melt quote/payment, melt execution, restore, and check-state flows have federation-aware routes or wallet fanout with accepted-operation signing/apply boundaries and member-mode guards against direct standalone value paths.</p>
           </article>
           <article class="item">
             <h3>Threshold BLS and keysets</h3>
@@ -743,7 +743,7 @@
         <div class="stack">
           <article class="item">
             <h3>Consensus-before-signing</h3>
-            <p>Naive threshold mix-and-match signing is covered by attack regressions, federation signing paths are tied to accepted operation IDs, output indexes, keysets, and persisted share provenance, and accepted apply rejects terminal local journal statuses before state mutation.</p>
+            <p>Naive threshold mix-and-match signing is covered by attack regressions, federation signing paths are tied to accepted operation IDs, output indexes, keysets, and persisted share provenance, accepted apply rejects terminal local journal statuses before state mutation, and direct standalone member APIs fail closed.</p>
           </article>
           <article class="item">
             <h3>Federation keyset safety</h3>
@@ -809,8 +809,9 @@
           risks, and the next verification target.
         </p>
         <p class="section-note">
-          Current verification target: accepted-operation apply tests plus the
-          broader `cdk` federation library suite and compile gate.
+          Current verification target: member-mode standalone-path guard tests,
+          public route consensus-gating source audits, the broader `cdk`
+          federation library suite, and compile gates.
         </p>
       </section>
 

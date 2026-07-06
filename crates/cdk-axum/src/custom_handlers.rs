@@ -1435,6 +1435,12 @@ mod tests {
             include_str!("../../cdk/src/mint/mod.rs"),
             "\n#[cfg(test)]\nmod tests {",
         );
+        let mint_issue_mod = production_section(
+            include_str!("../../cdk/src/mint/issue/mod.rs"),
+            "\n#[cfg(test)]\nmod batch_mint_tests",
+        );
+        let mint_swap_mod = include_str!("../../cdk/src/mint/swap/mod.rs");
+        let mint_melt_mod = include_str!("../../cdk/src/mint/melt/mod.rs");
 
         let get_keys = source_slice(
             router_handlers,
@@ -1466,6 +1472,17 @@ mod tests {
             mint_quote,
             "submit_federation_mint_quote_operation(&state",
             4,
+        );
+
+        let mint_public_submit = source_slice(
+            custom_handlers,
+            "async fn process_mint_input",
+            "#[cfg(feature = \"federation\")]\nasync fn process_federation_mint_input",
+        );
+        assert_contains_in_order(
+            mint_public_submit,
+            "process_federation_mint_input(state, &input).await?",
+            "state.mint.process_mint_request(input).await",
         );
 
         let mint_quote_status = source_slice(
@@ -1512,6 +1529,17 @@ mod tests {
             "config.swap_share_response(response.operation_id, payload)?",
         );
 
+        let swap_public_submit = source_slice(
+            router_handlers,
+            "pub(crate) async fn post_swap",
+            "#[cfg(feature = \"federation\")]\nasync fn process_federation_swap",
+        );
+        assert_contains_in_order(
+            swap_public_submit,
+            "process_federation_swap(&state, &payload)",
+            ".process_swap_request(payload)",
+        );
+
         let melt_quote = source_slice(
             custom_handlers,
             "pub async fn post_melt_custom_quote",
@@ -1545,6 +1573,17 @@ mod tests {
             "federation_melt_response_from_store(state, payload.quote()).await?",
         );
 
+        let melt_public_submit = source_slice(
+            custom_handlers,
+            "async fn process_melt_request",
+            "#[cfg(feature = \"federation\")]\nasync fn process_federation_melt_request",
+        );
+        assert_contains_in_order(
+            melt_public_submit,
+            "process_federation_melt_request(state, payload).await?",
+            "state.mint.melt(payload).await?",
+        );
+
         let restore_handler = source_slice(
             router_handlers,
             "pub(crate) async fn post_restore",
@@ -1570,6 +1609,13 @@ mod tests {
                 "federation restore must not call `{forbidden}`"
             );
         }
+
+        assert!(
+            mint_issue_mod.contains("self.reject_standalone_federation_path(\"mint issuance\")?")
+        );
+        assert!(mint_swap_mod.contains("self.reject_standalone_federation_path(\"swap\")?"));
+        assert!(mint_melt_mod.contains("self.reject_standalone_federation_path(\"melt\")?"));
+        assert!(mint_mod.contains("self.reject_standalone_federation_path(\"raw blind signing\")?"));
     }
 
     fn create_test_request(prefer_header: Option<&str>) -> Request<()> {

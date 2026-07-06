@@ -1235,6 +1235,9 @@ impl Mint {
         &self,
         blinded_message: Vec<BlindedMessage>,
     ) -> Result<Vec<BlindSignature>, Error> {
+        #[cfg(feature = "federation")]
+        self.reject_standalone_federation_path("raw blind signing")?;
+
         #[cfg(test)]
         {
             if crate::test_helpers::mint::should_fail_in_test() {

@@ -892,6 +892,65 @@ fn federation_mode_defaults_to_standalone() {
     assert!(FederationMode::Member.is_member());
 }
 
+fn assert_requires_consensus(err: Error, operation: &str) {
+    let message = err.to_string();
+    assert!(
+        message.contains("requires consensus acceptance"),
+        "unexpected member-mode guard error: {message}"
+    );
+    assert!(
+        message.contains(operation),
+        "guard error should name {operation}: {message}"
+    );
+}
+
+#[tokio::test]
+async fn federation_member_rejects_direct_standalone_value_paths() {
+    let runtime_config = runtime_config();
+    let (mint, _) = federated_test_mint(runtime_config.clone()).await;
+
+    let mint_input = MintInput::Single(MintRequest {
+        quote: QuoteId::new(),
+        outputs: vec![output_for_runtime(&runtime_config, b"direct member mint")],
+        signature: None,
+    });
+    let err = mint
+        .process_mint_request(mint_input)
+        .await
+        .expect_err("federation member must not use standalone mint");
+    assert_requires_consensus(err, "mint issuance");
+
+    let swap = SwapRequest::new(
+        vec![proof_for_runtime(&runtime_config, "direct-member-swap")],
+        vec![output_for_runtime(&runtime_config, b"direct member swap")],
+    );
+    let err = mint
+        .process_swap_request(swap)
+        .await
+        .expect_err("federation member must not use standalone swap");
+    assert_requires_consensus(err, "swap");
+
+    let melt = MeltRequest::new(
+        QuoteId::new(),
+        vec![proof_for_runtime(&runtime_config, "direct-member-melt")],
+        None,
+    );
+    let err = mint
+        .melt(&melt)
+        .await
+        .expect_err("federation member must not use standalone melt");
+    assert_requires_consensus(err, "melt");
+
+    let err = mint
+        .blind_sign(vec![output_for_runtime(
+            &runtime_config,
+            b"direct member raw signing",
+        )])
+        .await
+        .expect_err("federation member must not use raw standalone signing");
+    assert_requires_consensus(err, "raw blind signing");
+}
+
 #[tokio::test]
 async fn apply_accepted_federation_operation_applies_accepted_and_applying_entries() {
     let runtime_config = runtime_config();

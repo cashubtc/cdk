@@ -815,6 +815,16 @@ impl FederationRuntimeConfig {
 }
 
 impl Mint {
+    pub(crate) fn reject_standalone_federation_path(&self, operation: &str) -> Result<(), Error> {
+        if self.federation_config().is_some() {
+            return Err(Error::Custom(format!(
+                "federation member requires consensus acceptance before {operation}"
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Return the federation runtime config after replaying applied config transitions.
     pub async fn effective_federation_config(
         &self,
