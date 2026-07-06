@@ -468,6 +468,31 @@ pub enum FederationError {
         /// Found payload session.
         found: u64,
     },
+    /// The local AlephBFT proposal queue could not provide the expected unit.
+    #[error("Federation AlephBFT unit proposal is unavailable")]
+    AlephBftUnitProposalUnavailable,
+    /// The local AlephBFT proposal queue head differs from the expected unit.
+    #[error(
+        "Federation AlephBFT unit proposal mismatch: expected_session={expected_session}, expected_member={expected_member}, expected_unit_index={expected_unit_index}, expected_body_hash={expected_body_hash}, found_session={found_session}, found_member={found_member}, found_unit_index={found_unit_index}, found_body_hash={found_body_hash}"
+    )]
+    AlephBftUnitProposalMismatch {
+        /// Expected session.
+        expected_session: u64,
+        /// Expected submitting member.
+        expected_member: MemberId,
+        /// Expected member-local unit index.
+        expected_unit_index: u64,
+        /// Expected body hash.
+        expected_body_hash: String,
+        /// Found session.
+        found_session: u64,
+        /// Found submitting member.
+        found_member: MemberId,
+        /// Found member-local unit index.
+        found_unit_index: u64,
+        /// Found body hash.
+        found_body_hash: String,
+    },
     /// The same AlephBFT member unit was finalized more than once.
     #[error(
         "Duplicate federation AlephBFT unit: session={session}, member={member_id}, unit_index={unit_index}"

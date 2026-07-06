@@ -526,19 +526,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. Private REST can now deliver signed externally finalized AlephBFT units into the durable apply path while the live BFT driver remains intentionally unwired.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. AlephBFT proposal handoff now has non-destructive preview and exact-drain primitives, while the live BFT driver remains intentionally unwired.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: deliver aleph bft finalized units over private rest</span>
+          <span class="value">feat: add safe aleph bft proposal handoff</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Authenticated peers can post `AlephBftFinalizedUnit` private REST messages; the receiver validates the signed envelope, sequence, unit size, and unit metadata, then persists finalized items, journal rows, and the peer sequence atomically before applying local mint state.</span>
+          <span class="value">AlephBFT unit providers can preview the next canonical proposal without draining the queue, then drain only when the caller presents that exact payload; mismatches leave queued operations and unit indexes unchanged.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Wire the live AlephBFT unit proposal/finalization driver so it broadcasts finalized units through this authenticated delivery path and public routes can wait on real BFT output.</span>
+          <span class="value">Wire the live AlephBFT proposal/finalization driver so it previews a proposal, broadcasts it through authenticated delivery, drains only after success, and lets public routes wait on real BFT output.</span>
         </div>
       </aside>
     </header>
@@ -833,6 +833,10 @@
             <p>Private REST now carries `AlephBftFinalizedUnit` messages under the same signed member envelope as status, catch-up, DKG, and operation submission. Accepted deliveries store finalized-unit metadata, appended journal rows, and sender sequence state in one transaction before local apply.</p>
           </article>
           <article class="item">
+            <h3>AlephBFT proposal handoff</h3>
+            <p>The AlephBFT data provider, adapter, and runtime wrappers can now preview the next canonical unit without draining it, then drain only if the caller presents the exact same payload. This gives the future live driver a retry-safe handoff across transient peer failures.</p>
+          </article>
+          <article class="item">
             <h3>Signed REST consensus admission</h3>
             <p>Signed private REST submit-operation envelopes now verify sender identity, receiver, federation ID, body hash, message kind, and operation size before producing a consensus item that preserves the submitted canonical operation bytes; the private operation route uses the same verified admission before forwarding or local submission.</p>
           </article>
@@ -842,7 +846,7 @@
           </article>
           <article class="item">
             <h3>AlephBFT unit payload boundary</h3>
-            <p>`cdk-common` now has canonical AlephBFT unit payloads for CDK consensus items, derived operation-ID lists, length-prefixed body hashing, zero-limit rejection, and a bounded data-provider primitive that does not emit empty units or drop an oversized front item.</p>
+            <p>`cdk-common` now has canonical AlephBFT unit payloads for CDK consensus items, derived operation-ID lists, length-prefixed body hashing, zero-limit rejection, and a bounded data-provider primitive that does not emit empty units, drop an oversized front item, or consume a previewed proposal until exact-drain succeeds.</p>
           </article>
           <article class="item">
             <h3>Axum peer sync loop split out</h3>
@@ -2326,8 +2330,8 @@
             <tr>
               <td>AlephBFT unit/finalization/adapter boundary</td>
               <td><span class="status done">Passed</span></td>
-              <td>`cargo check -p cdk-common --features federation`, `cargo test -p cdk-common --features federation backend_adapter_runtime_ -- --test-threads 1`, and `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1` passed. The tests cover canonical unit metadata, body-hash/order commitment, operation-ID derivation, tamper rejection, duplicate operation admission, byte-bounded batch draining, finalization metadata assignment, duplicate operation marking, replayed member-unit rejection, session advancement, wrong federation/session rejection, adapter queue draining, externally finalized operation application, accepted-item evidence population, idempotent duplicate responses, invalid-unit rejection before journal append, AlephBFT adapter runtime selection, roster validation before queueing, explicit unit-pull/finalize delivery, fail-closed generic dispatch when no external finalization has occurred, roster-bound rejection of finalized units from unknown submitting members before state mutation, and status snapshot counters across queue, unit-pull, and finalization transitions.</td>
-              <td>Wire the explicit AlephBFT unit-pull/finalize adapter runtime methods into the real AlephBFT runtime/network task before feeding the durable accepted-item journal.</td>
+              <td>`cargo check -p cdk-common --features federation`, `cargo test -p cdk-common --features federation backend_adapter_runtime_ -- --test-threads 1`, and `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1` passed. The tests cover canonical unit metadata, body-hash/order commitment, operation-ID derivation, tamper rejection, duplicate operation admission, byte-bounded batch draining, non-destructive proposal preview, exact-match proposal draining, mismatch rejection without queue or index mutation, finalization metadata assignment, duplicate operation marking, replayed member-unit rejection, session advancement, wrong federation/session rejection, externally finalized operation application, accepted-item evidence population, idempotent duplicate responses, invalid-unit rejection before journal append, AlephBFT adapter runtime selection, roster validation before queueing, explicit unit preview/drain/finalize delivery, fail-closed generic dispatch when no external finalization has occurred, roster-bound rejection of finalized units from unknown submitting members before state mutation, and status snapshot counters across queue, unit-pull, and finalization transitions.</td>
+              <td>Wire the explicit AlephBFT unit preview/drain/finalize adapter runtime methods into the real AlephBFT runtime/network task before feeding the durable accepted-item journal.</td>
             </tr>
             <tr>
               <td>Signed REST consensus admission</td>
@@ -2364,6 +2368,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo check -p cdk-axum --features federation`, `cargo test -p cdk-common --features federation federation::transport::tests::signed_aleph_bft_finalized_unit_request_verifies_and_response_validates -- --test-threads 1`, `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1`, and `cargo test -p cdk-axum --features federation aleph_bft -- --test-threads 1` passed. The tests cover signed request round-trip, response validation, peer-client URL/message-kind signing, route acceptance into durable finalized-item storage, materialized mint quote apply, sequence persistence, wrong-kind rejection without mutation, and storage-conflict rejection without runtime or journal mutation.</td>
               <td>Connect live AlephBFT finalization output to this private REST delivery surface and add multi-member delivery/catch-up tests around reordered and duplicate finalized-unit broadcasts.</td>
+            </tr>
+            <tr>
+              <td>AlephBFT proposal preview and exact drain</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo fmt --all -- --check`, `cargo test -p cdk-common --features federation aleph_bft_data_provider_previews_without_draining_and_drains_matching_unit -- --test-threads 1`, `cargo test -p cdk-common --features federation aleph_bft_data_provider_rejects_mismatched_preview_without_draining -- --test-threads 1`, `cargo test -p cdk-common --features federation consensus_runtime_aleph_bft_previews_and_drains_matching_units -- --test-threads 1`, and `cargo test -p cdk-common --features federation backend_adapter_runtime_dispatches_selected_aleph_bft_backend -- --test-threads 1` passed. The tests cover stable repeated previews, queue and unit-index preservation during preview, exact-drain success, mismatch rejection without draining, and runtime-level handoff through the AlephBFT adapter selector.</td>
+              <td>Use this two-phase handoff in the live AlephBFT proposal driver so transient delivery failures cannot silently drop queued consensus items.</td>
             </tr>
             <tr>
               <td>Milestone 0 broad workspace gates</td>
@@ -4022,7 +4032,7 @@
           </article>
           <article class="item">
             <h3>Adapter before BFT</h3>
-            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime now exposes only explicit unit-pull and external-finalization calls so future BFT wiring cannot mistake local admission for accepted consensus order.</p>
+            <p>The first backend adapter is simulator-backed and operation-focused, while the AlephBFT adapter runtime now exposes explicit preview, exact-drain, and external-finalization calls so future BFT wiring cannot mistake local admission for accepted consensus order or drop proposals during transient broadcast failures.</p>
           </article>
           <article class="item">
             <h3>Digest format before DB wiring</h3>
@@ -4064,7 +4074,7 @@
           </article>
           <article class="item">
             <h3>Production ordering backend</h3>
-            <p>Wire the AlephBFT unit data-provider and finalization-handler primitives into a production backend adapter, then persist finalized item metadata before feeding the durable CDK journal/apply path.</p>
+            <p>Wire the AlephBFT unit data-provider preview/exact-drain and finalization-handler primitives into a production backend adapter, then persist finalized item metadata before feeding the durable CDK journal/apply path.</p>
           </article>
           <article class="item">
             <h3>Extended Postgres partitions</h3>

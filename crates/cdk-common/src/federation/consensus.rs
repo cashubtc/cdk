@@ -858,6 +858,52 @@ impl FederationAlephBftUnitDataProvider {
         self.next_unit_index = self.next_unit_index.saturating_add(1);
         Ok(Some(payload))
     }
+
+    /// Preview the next non-empty unit payload without draining queued items.
+    pub fn preview_next_unit_payload(&self) -> Result<Option<FederationAlephBftUnitPayload>> {
+        let mut preview = self.clone();
+        preview.next_unit_payload()
+    }
+
+    /// Drain the next unit only when it exactly matches a previously previewed payload.
+    pub fn drain_next_unit_payload_matching(
+        &mut self,
+        expected: &FederationAlephBftUnitPayload,
+    ) -> Result<FederationAlephBftUnitPayload> {
+        expected.ensure_supported_version()?;
+        let Some(found) = self.preview_next_unit_payload()? else {
+            return Err(FederationError::AlephBftUnitProposalUnavailable);
+        };
+        ensure_matching_aleph_bft_unit_proposal(expected, &found)?;
+
+        let Some(drained) = self.next_unit_payload()? else {
+            return Err(FederationError::AlephBftUnitProposalUnavailable);
+        };
+        ensure_matching_aleph_bft_unit_proposal(expected, &drained)?;
+        Ok(drained)
+    }
+}
+
+fn ensure_matching_aleph_bft_unit_proposal(
+    expected: &FederationAlephBftUnitPayload,
+    found: &FederationAlephBftUnitPayload,
+) -> Result<()> {
+    let expected_bytes = expected.canonical_bytes()?;
+    let found_bytes = found.canonical_bytes()?;
+    if expected_bytes != found_bytes {
+        return Err(FederationError::AlephBftUnitProposalMismatch {
+            expected_session: expected.session,
+            expected_member: expected.submitting_member,
+            expected_unit_index: expected.unit_index,
+            expected_body_hash: expected.body_hash.to_hex(),
+            found_session: found.session,
+            found_member: found.submitting_member,
+            found_unit_index: found.unit_index,
+            found_body_hash: found.body_hash.to_hex(),
+        });
+    }
+
+    Ok(())
 }
 
 /// Converts verified AlephBFT unit payloads into deterministic accepted items.
@@ -1423,6 +1469,20 @@ impl FederationAlephBftConsensusAdapter {
         self.data_provider.next_unit_payload()
     }
 
+    /// Preview the next local unit payload without draining it.
+    pub fn preview_next_unit_payload(&self) -> Result<Option<FederationAlephBftUnitPayload>> {
+        self.data_provider.preview_next_unit_payload()
+    }
+
+    /// Drain the next local unit only if it exactly matches a prior preview.
+    pub fn drain_next_unit_payload_matching(
+        &mut self,
+        expected: &FederationAlephBftUnitPayload,
+    ) -> Result<FederationAlephBftUnitPayload> {
+        self.data_provider
+            .drain_next_unit_payload_matching(expected)
+    }
+
     /// Apply one finalized AlephBFT unit to the local accepted-operation journal.
     pub fn finalize_unit(
         &mut self,
@@ -1725,6 +1785,43 @@ impl FederationConsensusRuntime {
     pub fn next_aleph_bft_unit_payload(&mut self) -> Result<Option<FederationAlephBftUnitPayload>> {
         match &mut self.backend {
             FederationConsensusRuntimeBackend::AlephBft(adapter) => adapter.next_unit_payload(),
+            FederationConsensusRuntimeBackend::InMemory(_) => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: FederationConsensusBackendKind::AlephBft
+                        .as_str()
+                        .to_string(),
+                })
+            }
+        }
+    }
+
+    /// Preview the next local AlephBFT unit payload without draining it.
+    pub fn preview_next_aleph_bft_unit_payload(
+        &self,
+    ) -> Result<Option<FederationAlephBftUnitPayload>> {
+        match &self.backend {
+            FederationConsensusRuntimeBackend::AlephBft(adapter) => {
+                adapter.preview_next_unit_payload()
+            }
+            FederationConsensusRuntimeBackend::InMemory(_) => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: FederationConsensusBackendKind::AlephBft
+                        .as_str()
+                        .to_string(),
+                })
+            }
+        }
+    }
+
+    /// Drain the next AlephBFT unit only if it exactly matches a prior preview.
+    pub fn drain_next_aleph_bft_unit_payload_matching(
+        &mut self,
+        expected: &FederationAlephBftUnitPayload,
+    ) -> Result<FederationAlephBftUnitPayload> {
+        match &mut self.backend {
+            FederationConsensusRuntimeBackend::AlephBft(adapter) => {
+                adapter.drain_next_unit_payload_matching(expected)
+            }
             FederationConsensusRuntimeBackend::InMemory(_) => {
                 Err(FederationError::UnsupportedConsensusBackend {
                     backend: FederationConsensusBackendKind::AlephBft
@@ -2391,6 +2488,43 @@ impl FederationConsensusBackendAdapterRuntime {
         match &mut self.backend {
             FederationConsensusBackendAdapterRuntimeBackend::AlephBft(adapter) => {
                 adapter.next_unit_payload()
+            }
+            FederationConsensusBackendAdapterRuntimeBackend::InMemory(_) => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: FederationConsensusBackendKind::AlephBft
+                        .as_str()
+                        .to_string(),
+                })
+            }
+        }
+    }
+
+    /// Preview the next local AlephBFT unit payload from the selected backend without draining it.
+    pub fn preview_next_aleph_bft_unit_payload(
+        &self,
+    ) -> Result<Option<FederationAlephBftUnitPayload>> {
+        match &self.backend {
+            FederationConsensusBackendAdapterRuntimeBackend::AlephBft(adapter) => {
+                adapter.preview_next_unit_payload()
+            }
+            FederationConsensusBackendAdapterRuntimeBackend::InMemory(_) => {
+                Err(FederationError::UnsupportedConsensusBackend {
+                    backend: FederationConsensusBackendKind::AlephBft
+                        .as_str()
+                        .to_string(),
+                })
+            }
+        }
+    }
+
+    /// Drain the next AlephBFT unit only if it exactly matches a prior preview.
+    pub fn drain_next_aleph_bft_unit_payload_matching(
+        &mut self,
+        expected: &FederationAlephBftUnitPayload,
+    ) -> Result<FederationAlephBftUnitPayload> {
+        match &mut self.backend {
+            FederationConsensusBackendAdapterRuntimeBackend::AlephBft(adapter) => {
+                adapter.drain_next_unit_payload_matching(expected)
             }
             FederationConsensusBackendAdapterRuntimeBackend::InMemory(_) => {
                 Err(FederationError::UnsupportedConsensusBackend {
