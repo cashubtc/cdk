@@ -1280,10 +1280,11 @@ mod tests {
     use cdk::federation::{
         generate_trusted_dealer_configs, FederationConfig, FederationConsensusBackendKind,
         FederationConsensusEngine, FederationConsensusRuntime, FederationJournalEntry,
-        FederationKeysetRotationOperation, FederationOperation, FederationOperationEnvelope,
-        FederationOperationId, InMemoryFederationConsensus, InMemoryFederationJournal,
-        MemberConfigPrivate, MemberId, ThresholdParams, TrustedDealerConfigBundle,
-        TrustedDealerKeysetSpec, TrustedDealerMember,
+        FederationKeysetRotationOperation, FederationMeltQuotePaymentObservation,
+        FederationOperation, FederationOperationEnvelope, FederationOperationId,
+        FederationPaymentObservationPolicy, FederationPaymentTrustModel,
+        InMemoryFederationConsensus, InMemoryFederationJournal, MemberConfigPrivate, MemberId,
+        ThresholdParams, TrustedDealerConfigBundle, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     use cdk::mint::{Mint, MintBuilder, MintMeltLimits, MintQuoteResponse};
     use cdk::nuts::nut00::KnownMethod;
@@ -2682,6 +2683,20 @@ mod tests {
     }
 
     #[cfg(feature = "federation")]
+    fn threshold_all_signers_bundle_with_payment_policy(
+        member_urls: &[(MemberId, cdk::mint_url::MintUrl)],
+        policy: FederationPaymentObservationPolicy,
+    ) -> TrustedDealerConfigBundle {
+        let mut bundle = threshold_all_signers_bundle(member_urls);
+        bundle.public_config.payment_observation_policy = policy;
+        bundle
+            .public_config
+            .validate()
+            .expect("trusted dealer all-signers threshold policy");
+        bundle
+    }
+
+    #[cfg(feature = "federation")]
     fn threshold_rotation_bundle(
         member_urls: &[(MemberId, cdk::mint_url::MintUrl)],
     ) -> TrustedDealerConfigBundle {
@@ -2803,12 +2818,6 @@ mod tests {
         public_config: FederationConfig,
         private_config: MemberConfigPrivate,
     ) -> Arc<Mint> {
-        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
-        let runtime_config = cdk::mint::FederationRuntimeConfig::new(public_config, private_config)
-            .expect("runtime config");
-        let mut builder = MintBuilder::new(db.clone())
-            .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]))
-            .with_federation_config(runtime_config);
         let fake = FakeWallet::new(
             FeeReserve {
                 min_fee_reserve: 1.into(),
@@ -2819,12 +2828,28 @@ mod tests {
             0,
             CurrencyUnit::Sat,
         );
+        build_threshold_member_mint_with_backend(public_config, private_config, Arc::new(fake))
+            .await
+    }
+
+    #[cfg(feature = "federation")]
+    async fn build_threshold_member_mint_with_backend(
+        public_config: FederationConfig,
+        private_config: MemberConfigPrivate,
+        payment_processor: cdk::cdk_payment::DynMintPayment,
+    ) -> Arc<Mint> {
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let runtime_config = cdk::mint::FederationRuntimeConfig::new(public_config, private_config)
+            .expect("runtime config");
+        let mut builder = MintBuilder::new(db.clone())
+            .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]))
+            .with_federation_config(runtime_config);
         builder
             .add_payment_processor(
                 CurrencyUnit::Sat,
                 PaymentMethod::Known(KnownMethod::Bolt11),
                 MintMeltLimits::new(1, 10_000),
-                Arc::new(fake),
+                payment_processor,
             )
             .await
             .expect("payment processor");
@@ -2935,9 +2960,114 @@ mod tests {
     }
 
     #[cfg(feature = "federation")]
+    struct DirectRouteMeltCoordinator {
+        states: Vec<MintState>,
+        completed_melts: tokio::sync::Mutex<HashSet<FederationOperationId>>,
+    }
+
+    #[cfg(feature = "federation")]
+    impl DirectRouteMeltCoordinator {
+        fn new(states: &[MintState]) -> Arc<Self> {
+            Arc::new(Self {
+                states: states.to_vec(),
+                completed_melts: tokio::sync::Mutex::new(HashSet::new()),
+            })
+        }
+
+        async fn settle_paid_once(&self, request: &MeltRequest<QuoteId>) -> Result<(), cdk::Error> {
+            let primary_state = self.states.first().ok_or_else(|| {
+                cdk::Error::InvalidMintResponse(
+                    "direct-route melt coordinator has no member states".to_string(),
+                )
+            })?;
+            let primary_config = primary_state
+                .mint
+                .effective_federation_config()
+                .await?
+                .ok_or_else(|| {
+                    cdk::Error::InvalidMintResponse(
+                        "direct-route member is not in federation mode".to_string(),
+                    )
+                })?;
+            let melt_operation_id = primary_config
+                .melt_operation(request.clone())?
+                .operation_id()?;
+
+            let mut completed_melts = self.completed_melts.lock().await;
+            if completed_melts.contains(&melt_operation_id) {
+                return Ok(());
+            }
+
+            for state in &self.states {
+                let config = state
+                    .mint
+                    .effective_federation_config()
+                    .await?
+                    .ok_or_else(|| {
+                        cdk::Error::InvalidMintResponse(
+                            "direct-route member is not in federation mode".to_string(),
+                        )
+                    })?;
+                let envelope = config.melt_operation(request.clone())?;
+                state
+                    .submit_federation_envelope_with_sequence(envelope, None)
+                    .await?;
+            }
+
+            let quote = primary_state
+                .mint
+                .localstore()
+                .get_melt_quote(request.quote())
+                .await?
+                .ok_or(cdk::Error::UnknownQuote)?;
+            let quote_id = request.quote().to_string();
+            let method = quote.payment_method.clone();
+            let amount = quote.amount().into();
+            let fee_reserve = quote.fee_reserve().into();
+
+            for observer_state in &self.states {
+                let config = observer_state
+                    .mint
+                    .effective_federation_config()
+                    .await?
+                    .ok_or_else(|| {
+                        cdk::Error::InvalidMintResponse(
+                            "direct-route member is not in federation mode".to_string(),
+                        )
+                    })?;
+                let envelope = FederationOperationEnvelope::new(
+                    config.federation_id(),
+                    FederationOperation::MeltQuotePayment(FederationMeltQuotePaymentObservation {
+                        quote: quote_id.clone(),
+                        observer: config.member_id(),
+                        method: method.clone(),
+                        state: MeltQuoteState::Paid,
+                        amount,
+                        fee_reserve,
+                        payment_id: None,
+                        payment_proof: Some(String::new()),
+                        failure_reason: None,
+                        observed_time: None,
+                    }),
+                );
+
+                for state in &self.states {
+                    state
+                        .submit_federation_envelope_with_sequence(envelope.clone(), None)
+                        .await?;
+                }
+            }
+
+            completed_melts.insert(melt_operation_id);
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "federation")]
     #[derive(Clone)]
     struct DirectRouteMemberConnector {
         state: MintState,
+        melt_coordinator: Option<Arc<DirectRouteMeltCoordinator>>,
     }
 
     #[cfg(feature = "federation")]
@@ -2950,7 +3080,20 @@ mod tests {
     #[cfg(feature = "federation")]
     impl DirectRouteMemberConnector {
         fn new(state: MintState) -> Self {
-            Self { state }
+            Self {
+                state,
+                melt_coordinator: None,
+            }
+        }
+
+        fn with_melt_coordinator(
+            state: MintState,
+            melt_coordinator: Arc<DirectRouteMeltCoordinator>,
+        ) -> Self {
+            Self {
+                state,
+                melt_coordinator: Some(melt_coordinator),
+            }
         }
 
         fn unsupported(operation: &str) -> cdk::Error {
@@ -3095,10 +3238,37 @@ mod tests {
 
         async fn post_melt(
             &self,
-            _method: &PaymentMethod,
-            _request: MeltRequest<String>,
+            method: &PaymentMethod,
+            request: MeltRequest<String>,
         ) -> Result<cdk::MeltQuoteResponse<String>, cdk::Error> {
-            Err(Self::unsupported("post_melt"))
+            if method != &PaymentMethod::Known(KnownMethod::Bolt11) {
+                return Err(cdk::Error::InvalidPaymentMethod);
+            }
+
+            let request =
+                cdk::nuts::MeltRequest::<QuoteId>::try_from(request).map_err(cdk::Error::from)?;
+            if let Some(coordinator) = &self.melt_coordinator {
+                coordinator.settle_paid_once(&request).await?;
+            } else {
+                let config = self
+                    .state
+                    .mint
+                    .effective_federation_config()
+                    .await?
+                    .ok_or_else(|| {
+                        cdk::Error::InvalidMintResponse(
+                            "direct-route member is not in federation mode".to_string(),
+                        )
+                    })?;
+                let envelope = config.melt_operation(request.clone())?;
+                self.state
+                    .submit_federation_envelope_with_sequence(envelope, None)
+                    .await?;
+            }
+
+            federation_melt_response_from_store(&self.state, request.quote())
+                .await
+                .map(cdk::MeltQuoteResponse::to_string_id)
         }
 
         async fn post_swap(
@@ -3168,6 +3338,30 @@ mod tests {
                     member_id,
                     Arc::new(DirectRouteMemberConnector::new(state.clone()))
                         as Arc<dyn MintConnector + Send + Sync>,
+                )
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "federation")]
+    fn direct_route_member_connectors_with_melt_coordinator(
+        states: &[MintState],
+        coordinator: Arc<DirectRouteMeltCoordinator>,
+    ) -> BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>> {
+        states
+            .iter()
+            .map(|state| {
+                let member_id = state
+                    .mint
+                    .federation_config()
+                    .expect("federation config")
+                    .member_id();
+                (
+                    member_id,
+                    Arc::new(DirectRouteMemberConnector::with_melt_coordinator(
+                        state.clone(),
+                        coordinator.clone(),
+                    )) as Arc<dyn MintConnector + Send + Sync>,
                 )
             })
             .collect()
@@ -6448,6 +6642,124 @@ mod tests {
                 vec![cdk::federation::FederationOperationKind::Swap]
             );
             assert_eq!(state.federation_response_cache_entry_count(), 1);
+            let proof_states = state
+                .mint
+                .localstore()
+                .get_proofs_states(&[input_y])
+                .await
+                .expect("proof state lookup");
+            assert_eq!(proof_states, vec![Some(cdk::nuts::State::Spent)]);
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn concurrent_federated_wallet_melt_fanout_aggregates_once_per_member() {
+        let member_urls = static_member_urls();
+        let bundle = threshold_all_signers_bundle_with_payment_policy(
+            &member_urls,
+            FederationPaymentObservationPolicy::member_quorum(
+                3,
+                FederationPaymentTrustModel::SharedBackendReadOnly,
+            ),
+        );
+        let (payment_processor, make_payment_calls) = CountingFakeWallet::new();
+        let mut mints = Vec::new();
+        for member_id in [1, 2, 3].map(threshold_member_id) {
+            let private_config = bundle
+                .private_configs
+                .get(&member_id)
+                .expect("private member config")
+                .clone();
+            let mint = build_threshold_member_mint_with_backend(
+                bundle.public_config.clone(),
+                private_config,
+                payment_processor.clone(),
+            )
+            .await;
+            mints.push(mint);
+        }
+
+        let melt_invoice = create_fake_invoice(1000, "concurrent direct melt".to_string());
+        let melt_quote_id = match mints[0]
+            .get_melt_quote(cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+                request: melt_invoice,
+                unit: CurrencyUnit::Sat,
+                options: None,
+            }))
+            .await
+            .expect("melt quote")
+        {
+            cdk::MeltQuoteCreateResponse::Bolt11(response) => response.quote,
+            _ => panic!("expected bolt11 melt quote"),
+        };
+        clone_primary_melt_quote_to_members(&mints, &melt_quote_id).await;
+
+        let mut states = Vec::new();
+        for mint in mints {
+            states.push(threshold_member_state(mint).await);
+        }
+        let melt_coordinator = DirectRouteMeltCoordinator::new(&states);
+        let connector = FederatedMintConnector::new(
+            bundle.public_config.clone(),
+            direct_route_member_connectors_with_melt_coordinator(&states, melt_coordinator),
+        )
+        .expect("federated direct-route connector");
+        let connector = Arc::new(connector);
+
+        let keyset = &bundle.public_config.keysets[0];
+        let melt_input = proof_for_keyset(keyset, 4, "concurrent-direct-melt-input");
+        let input_y = melt_input.y().expect("melt proof y");
+        let melt_change_outputs = vec![blinded_change_output(
+            keyset,
+            "concurrent-direct-melt-change",
+        )];
+        let melt_request = MeltRequest::new(
+            melt_quote_id.to_string(),
+            vec![melt_input],
+            Some(melt_change_outputs.clone()),
+        );
+        let request_count = 4;
+        let melt_results = futures::future::join_all((0..request_count).map(|_| {
+            let connector = connector.clone();
+            let request = melt_request.clone();
+            async move {
+                connector
+                    .post_melt(&PaymentMethod::Known(KnownMethod::Bolt11), request)
+                    .await
+            }
+        }))
+        .await;
+
+        let mut melt_responses = Vec::new();
+        for result in melt_results {
+            let response = result.expect("concurrent threshold direct-route melt");
+            assert_eq!(response.state(), MeltQuoteState::Paid);
+            let change = response.change().expect("melt change");
+            assert_aggregate_signatures_verify(&bundle.public_config, &melt_change_outputs, change);
+            melt_responses.push(response);
+        }
+
+        for response in melt_responses.iter().skip(1) {
+            assert_eq!(response, &melt_responses[0]);
+        }
+        assert_eq!(
+            make_payment_calls.load(Ordering::SeqCst),
+            1,
+            "only the elected member should attempt the outgoing fake-wallet payment"
+        );
+
+        for state in &states {
+            let operation_kinds = federation_operation_kinds(state).await;
+            assert_eq!(
+                operation_kinds,
+                vec![
+                    cdk::federation::FederationOperationKind::Melt,
+                    cdk::federation::FederationOperationKind::MeltQuotePayment,
+                    cdk::federation::FederationOperationKind::MeltQuotePayment,
+                    cdk::federation::FederationOperationKind::MeltQuotePayment,
+                ]
+            );
             let proof_states = state
                 .mint
                 .localstore()
