@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover melt happy observation</span>
+          <span class="value">test: cover melt failure observation</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Public fake-wallet federated melt now proves the live paid path spends inputs, persists change shares, clears saga state, and records the terminal melt payment observation when quote status is checked.</span>
+          <span class="value">Public fake-wallet failed federated melt now records a guarded terminal unpaid quote-status observation after accepted rollback, while fresh unattempted unpaid melt quotes remain observation-free.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -756,7 +756,7 @@
           </article>
           <article class="item">
             <h3>Payment observation safety</h3>
-            <p>Mint and melt payment observations are serialized as consensus material, deduplicated, conflict-reportable, quarantineable, backend-agnostic, and tested across paid, failed, pending, delayed, and offline catch-up paths; successful public fake-wallet melts now bridge the live paid route to terminal quote-status observation rows, and exact duplicate failed public melts no longer attempt another outgoing payment, including after restart and catch-up.</p>
+            <p>Mint and melt payment observations are serialized as consensus material, deduplicated, conflict-reportable, quarantineable, backend-agnostic, and tested across paid, failed, pending, delayed, and offline catch-up paths; successful public fake-wallet melts bridge the live paid route to terminal quote-status observation rows, failed public fake-wallet melts now record guarded terminal unpaid observations after an accepted attempt, and exact duplicate failed public melts no longer attempt another outgoing payment, including after restart and catch-up.</p>
           </article>
           <article class="item">
             <h3>Networking and authentication</h3>
