@@ -13,6 +13,7 @@ build
 config.toml
 .pre-commit-config.yaml
 result
+result-*
 static-bin/
 .aider*
 **/postgres_data/

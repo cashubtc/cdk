@@ -58,6 +58,41 @@ build-static-all: (build-static "cdk-mintd-static") (build-static "cdk-mintd-ldk
   echo "Checksums:"
   cat SHA256SUMS
 
+# Build the CI cache warmup targets locally.
+ci-cache-build:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  nix build -L --no-link \
+    'path:.#deps' \
+    'path:.#deps-msrv' \
+    'path:.#checks.x86_64-linux.workspace-clippy-all-targets' \
+    'path:.#dart-bindings' \
+    'path:.#kotlin-bindings' \
+    'path:.#go-bindings'
+
+# Push the locally built CI cache warmup targets to Cachix.
+ci-cache-push:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  nix build --json --no-link \
+    'path:.#deps' \
+    'path:.#deps-msrv' \
+    'path:.#checks.x86_64-linux.workspace-clippy-all-targets' \
+    'path:.#dart-bindings' \
+    'path:.#kotlin-bindings' \
+    'path:.#go-bindings' \
+    | jq -r '.[].outputs | to_entries[].value' \
+    | cachix push cashudevkit
+
+# Build and push CI cache warmup targets as they complete.
+ci-cache-watch:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  cachix watch-exec cashudevkit -- just ci-cache-build
+
 # run `cargo check` on everything
 check *ARGS="--workspace --all-targets":
   #!/usr/bin/env bash

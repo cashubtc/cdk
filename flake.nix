@@ -218,6 +218,7 @@
               ./Cargo.toml
               ./Cargo.lock
               ./Cargo.lock.msrv
+              ./clippy.toml
               ./.typos.toml
               ./rustfmt.toml
               ./README.md
@@ -238,6 +239,7 @@
             lib.fileset.unions [
               ./Cargo.toml
               ./Cargo.lock.msrv
+              ./clippy.toml
               ./.typos.toml
               ./rustfmt.toml
               ./README.md
@@ -490,6 +492,19 @@
             pname = "cdk-doc-tests";
             cargoArtifacts = workspaceDeps;
             cargoTestExtraArgs = "--doc";
+          }
+        );
+
+        # Workspace-wide clippy check for all targets. This preserves the quick
+        # check coverage while reusing the warmed Crane dependency derivation.
+        workspaceClippyAllTargets = craneLib.mkCargoDerivation (
+          commonCraneArgs
+          // {
+            pname = "cdk-workspace-clippy-all-targets";
+            cargoArtifacts = workspaceDeps;
+            buildPhaseCargoCommand = "cargo clippy --workspace --all-targets -- -D warnings";
+            doCheck = false;
+            installPhaseCommand = "mkdir -p $out";
           }
         );
 
@@ -844,6 +859,8 @@
             git
             pkg-config
             curl
+            cachix
+            jq
             just
             protobuf
             nixpkgs-fmt
@@ -1303,6 +1320,9 @@
               exampleChecks
           ))
           // {
+            # Workspace-wide all-targets clippy check
+            workspace-clippy-all-targets = workspaceClippyAllTargets;
+
             # Doc tests
             doc-tests = docTests;
 

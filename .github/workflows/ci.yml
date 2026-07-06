@@ -90,7 +90,7 @@ jobs:
     name: "Quick Check (workspace clippy)"
     runs-on: self-hosted
     timeout-minutes: 30
-    needs: pre-commit-checks
+    needs: warm-nix-cache
     steps:
       - name: checkout
         uses: actions/checkout@v5
@@ -101,7 +101,7 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Run workspace clippy
-        run: nix develop -i -L .#stable --command cargo clippy --workspace --all-targets -- -D warnings
+        run: nix build -L .#checks.x86_64-linux.workspace-clippy-all-targets
 
   # Discover CI check groups from flake - single source of truth
   discover_ci_groups:
@@ -120,7 +120,7 @@ jobs:
         id: groups
         run: |
           examples=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 8 n == "example-") (builtins.attrNames attrs)' --json)
-          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: n != "pre-commit-check" && n != "doc-tests" && n != "strict-docs" && n != "ffi-tests" && builtins.substring 0 8 n != "example-" && builtins.substring 0 5 n != "msrv-" && builtins.substring 0 5 n != "wasm-") (builtins.attrNames attrs)' --json)
+          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: n != "pre-commit-check" && n != "workspace-clippy-all-targets" && n != "doc-tests" && n != "strict-docs" && n != "ffi-tests" && builtins.substring 0 8 n != "example-" && builtins.substring 0 5 n != "msrv-" && builtins.substring 0 5 n != "wasm-") (builtins.attrNames attrs)' --json)
           msrv_checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 5 n == "msrv-") (builtins.attrNames attrs)' --json)
           wasm_checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 5 n == "wasm-") (builtins.attrNames attrs)' --json)
           {
