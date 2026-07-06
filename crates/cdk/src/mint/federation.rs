@@ -815,6 +815,70 @@ impl FederationRuntimeConfig {
 }
 
 impl Mint {
+    async fn persisted_signature_shares_for_outputs(
+        &self,
+        operation_id: FederationOperationId,
+        outputs: &[BlindedMessage],
+    ) -> Result<Vec<BlindSignature>, Error> {
+        let config = self
+            .effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?;
+        let member_id = config.member_id();
+        let mut signatures = Vec::with_capacity(outputs.len());
+
+        for (index, output) in outputs.iter().enumerate() {
+            let output_index = u32::try_from(index)
+                .map_err(|_| Error::Custom("federation output index overflow".to_string()))?;
+            let share = self
+                .localstore
+                .get_federation_signature_shares_for_output(operation_id, output_index)
+                .await?
+                .into_iter()
+                .find(|share| {
+                    share.member_id == member_id
+                        && share.output_index == output_index
+                        && share.blinded_secret == output.blinded_secret
+                        && share.keyset_id == output.keyset_id
+                        && share.amount == output.amount
+                })
+                .ok_or_else(|| {
+                    Error::Custom(format!(
+                        "missing persisted federation signature share for operation {operation_id} output {output_index}"
+                    ))
+                })?;
+            signatures.push(super::federation_signature_share_to_blind_signature(share));
+        }
+
+        Ok(signatures)
+    }
+
+    /// Return this member's persisted wallet-facing mint share response.
+    pub async fn persisted_mint_share_response(
+        &self,
+        operation_id: FederationOperationId,
+        input: &MintInput,
+    ) -> Result<MintResponse, Error> {
+        Ok(MintResponse {
+            signatures: self
+                .persisted_signature_shares_for_outputs(operation_id, input.outputs())
+                .await?,
+        })
+    }
+
+    /// Return this member's persisted wallet-facing swap share response.
+    pub async fn persisted_swap_share_response(
+        &self,
+        operation_id: FederationOperationId,
+        request: &SwapRequest,
+    ) -> Result<SwapResponse, Error> {
+        Ok(SwapResponse {
+            signatures: self
+                .persisted_signature_shares_for_outputs(operation_id, request.outputs())
+                .await?,
+        })
+    }
+
     pub(crate) fn reject_standalone_federation_path(&self, operation: &str) -> Result<(), Error> {
         if self.federation_config().is_some() {
             return Err(Error::Custom(format!(

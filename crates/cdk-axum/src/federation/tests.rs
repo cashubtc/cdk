@@ -1548,7 +1548,20 @@ fn restore_envelope(
 ) -> FederationOperationEnvelope {
     restore_envelope_with_output(
         federation_id,
+        cdk::nuts::Id::from_str("00bfa73302d12ffd").expect("keyset id"),
         PublicKey::from_hex(label).expect("public key"),
+    )
+}
+
+fn restore_envelope_for_state(
+    state: &MintState,
+    label: &'static str,
+) -> FederationOperationEnvelope {
+    let config = state.mint.federation_config().expect("federation config");
+    restore_envelope_with_output(
+        config.federation_id(),
+        config.public_config().keysets[0].id,
+        PublicKey::from(BlsG1PublicKey::hash_to_curve(label.as_bytes())),
     )
 }
 
@@ -1558,6 +1571,7 @@ fn indexed_restore_envelope(
 ) -> FederationOperationEnvelope {
     restore_envelope_with_output(
         federation_id,
+        cdk::nuts::Id::from_str("00bfa73302d12ffd").expect("keyset id"),
         PublicKey::from(BlsG1PublicKey::hash_to_curve(
             format!("federation evidence restore {index}").as_bytes(),
         )),
@@ -1566,6 +1580,7 @@ fn indexed_restore_envelope(
 
 fn restore_envelope_with_output(
     federation_id: FederationId,
+    keyset_id: Id,
     blinded_secret: PublicKey,
 ) -> FederationOperationEnvelope {
     FederationOperationEnvelope::new(
@@ -1574,7 +1589,7 @@ fn restore_envelope_with_output(
             request: RestoreRequest {
                 outputs: vec![cdk::nuts::BlindedMessage::new(
                     Amount::from(1),
-                    cdk::nuts::Id::from_str("00bfa73302d12ffd").expect("keyset id"),
+                    keyset_id,
                     blinded_secret,
                 )],
             },
@@ -2117,7 +2132,8 @@ async fn non_primary_submit_forwards_to_primary_and_catches_up() {
     let blinded_secret = PublicKey::from(BlsG1PublicKey::hash_to_curve(
         b"non primary forwarded restore",
     ));
-    let envelope = restore_envelope_with_output(federation_id, blinded_secret);
+    let envelope =
+        restore_envelope_with_output(federation_id, public_config.keysets[0].id, blinded_secret);
     let operation_id = envelope.operation_id().expect("operation id");
 
     let mut primary_consensus =
@@ -2501,8 +2517,8 @@ async fn lagging_member_refuses_public_federation_submit_until_healthy() {
     state
         .mark_federation_lagging(peer_member.member_id, 0, 1)
         .await;
-    let envelope = restore_envelope(
-        public_config.federation_id,
+    let envelope = restore_envelope_for_state(
+        &state,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
 
@@ -2543,8 +2559,8 @@ async fn divergent_non_primary_refuses_public_submit_before_forwarding() {
     state
         .mark_federation_materialized_state_mismatch(primary_member.member_id, 1)
         .await;
-    let envelope = restore_envelope(
-        public_config.federation_id,
+    let envelope = restore_envelope_for_state(
+        &state,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
 
@@ -2566,8 +2582,8 @@ async fn rest_peer_client_sync_requires_quorum_evidence_before_public_submit() {
         federation_route_state_three_with_local_private().await;
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let peer_entry = restore_envelope(
-        federation_id,
+    let peer_entry = restore_envelope_for_state(
+        &state,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
     let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
@@ -2602,8 +2618,8 @@ async fn rest_peer_client_sync_requires_quorum_evidence_before_public_submit() {
         })
     ));
 
-    let next = restore_envelope(
-        federation_id,
+    let next = restore_envelope_for_state(
+        &state,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
     let blocked = state.submit_federation_envelope(next).await;
@@ -2616,8 +2632,8 @@ async fn peer_sync_round_catches_up_from_configured_peer() {
         federation_route_state_three_with_local_private().await;
     let federation_id = public_config.federation_id;
     let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let peer_entry = restore_envelope(
-        federation_id,
+    let peer_entry = restore_envelope_for_state(
+        &state,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
     let mut peer_consensus = InMemoryFederationConsensus::new(federation_id, peer_member.member_id);
@@ -2651,8 +2667,8 @@ async fn peer_sync_round_catches_up_from_configured_peer() {
         Some(crate::FederationSyncStatus::Healthy)
     ));
 
-    let next = restore_envelope(
-        federation_id,
+    let next = restore_envelope_for_state(
+        &state,
         "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
     );
     state

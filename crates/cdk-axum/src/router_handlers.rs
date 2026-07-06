@@ -267,7 +267,10 @@ async fn process_federation_swap(
     let envelope = config.swap_operation(payload.clone())?;
     let response = state.submit_federation_envelope(envelope).await?;
     Ok(Some(
-        config.swap_share_response(response.operation_id, payload)?,
+        state
+            .mint
+            .persisted_swap_share_response(response.operation_id, payload)
+            .await?,
     ))
 }
 

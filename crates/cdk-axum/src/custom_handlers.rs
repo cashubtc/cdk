@@ -165,13 +165,16 @@ async fn process_federation_mint_input(
     state: &MintState,
     input: &cdk::mint::MintInput,
 ) -> Result<Option<MintResponse>, cdk::Error> {
-    let Some((operation_id, config)) =
-        submit_federation_mint_operation(state, input.clone()).await?
-    else {
+    let Some(operation_id) = submit_federation_mint_operation(state, input.clone()).await? else {
         return Ok(None);
     };
 
-    Ok(Some(config.mint_share_response(operation_id, input)?))
+    Ok(Some(
+        state
+            .mint
+            .persisted_mint_share_response(operation_id, input)
+            .await?,
+    ))
 }
 
 #[cfg(feature = "federation")]
@@ -446,19 +449,13 @@ fn has_matching_local_melt_payment_observation(
 async fn submit_federation_mint_operation(
     state: &MintState,
     input: cdk::mint::MintInput,
-) -> Result<
-    Option<(
-        cdk::federation::FederationOperationId,
-        cdk::mint::FederationRuntimeConfig,
-    )>,
-    cdk::Error,
-> {
+) -> Result<Option<cdk::federation::FederationOperationId>, cdk::Error> {
     let Some(config) = state.mint.effective_federation_config().await? else {
         return Ok(None);
     };
     let envelope = config.mint_operation(input)?;
     let response = state.submit_federation_envelope(envelope).await?;
-    Ok(Some((response.operation_id, config)))
+    Ok(Some(response.operation_id))
 }
 
 #[cfg(feature = "federation")]
@@ -1321,7 +1318,7 @@ mod tests {
         assert_contains_in_order(
             mint_handler,
             "submit_federation_mint_operation(state, input.clone()).await?",
-            "config.mint_share_response(operation_id, input)?",
+            "persisted_mint_share_response(operation_id, input)",
         );
 
         let melt_handler = source_slice(
@@ -1343,7 +1340,7 @@ mod tests {
         assert_contains_in_order(
             swap_handler,
             "state.submit_federation_envelope(envelope).await?",
-            "config.swap_share_response(response.operation_id, payload)?",
+            "persisted_swap_share_response(response.operation_id, payload)",
         );
     }
 
@@ -1515,7 +1512,7 @@ mod tests {
         assert_contains_in_order(
             mint_submit,
             "submit_federation_mint_operation(state, input.clone()).await?",
-            "config.mint_share_response(operation_id, input)?",
+            "persisted_mint_share_response(operation_id, input)",
         );
 
         let swap_submit = source_slice(
@@ -1526,7 +1523,7 @@ mod tests {
         assert_contains_in_order(
             swap_submit,
             "state.submit_federation_envelope(envelope).await?",
-            "config.swap_share_response(response.operation_id, payload)?",
+            "persisted_swap_share_response(response.operation_id, payload)",
         );
 
         let swap_public_submit = source_slice(
@@ -1965,6 +1962,23 @@ mod tests {
             .iter()
             .map(|entry| entry.envelope.operation.kind())
             .collect()
+    }
+
+    #[cfg(feature = "federation")]
+    async fn first_federation_operation_id(
+        state: &MintState,
+        kind: cdk::federation::FederationOperationKind,
+    ) -> cdk::federation::FederationOperationId {
+        state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("federation journal lookup")
+            .into_iter()
+            .find(|entry| entry.envelope.operation.kind() == kind)
+            .expect("federation operation entry")
+            .operation_id
     }
 
     async fn create_test_state_with_custom_methods(methods: &[&str]) -> MintState {
@@ -3397,6 +3411,25 @@ mod tests {
             verify_blind_signature_share(&share, &blinded_secret, public_share)
                 .expect("share verification")
         );
+        let operation_id =
+            first_federation_operation_id(&state, cdk::federation::FederationOperationKind::Mint)
+                .await;
+        let share_records = state
+            .mint
+            .localstore()
+            .get_federation_signature_shares_for_output(operation_id, 0)
+            .await
+            .expect("persisted mint share lookup");
+        assert_eq!(share_records.len(), 1);
+        assert_eq!(share_records[0].member_id, config.member_id());
+        assert_eq!(share_records[0].output_index, 0);
+        assert_eq!(share_records[0].blinded_secret, outputs[0].blinded_secret);
+        assert_eq!(share_records[0].keyset_id, signature.keyset_id);
+        assert_eq!(share_records[0].amount, signature.amount);
+        assert_eq!(
+            cdk::nuts::PublicKey::from(share_records[0].share.signature()),
+            signature.c
+        );
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![cdk::federation::FederationOperationKind::Mint]
@@ -3445,6 +3478,25 @@ mod tests {
         assert!(
             verify_blind_signature_share(&share, &blinded_secret, public_share)
                 .expect("share verification")
+        );
+        let operation_id =
+            first_federation_operation_id(&state, cdk::federation::FederationOperationKind::Swap)
+                .await;
+        let share_records = state
+            .mint
+            .localstore()
+            .get_federation_signature_shares_for_output(operation_id, 0)
+            .await
+            .expect("persisted swap share lookup");
+        assert_eq!(share_records.len(), 1);
+        assert_eq!(share_records[0].member_id, config.member_id());
+        assert_eq!(share_records[0].output_index, 0);
+        assert_eq!(share_records[0].blinded_secret, outputs[0].blinded_secret);
+        assert_eq!(share_records[0].keyset_id, signature.keyset_id);
+        assert_eq!(share_records[0].amount, signature.amount);
+        assert_eq!(
+            cdk::nuts::PublicKey::from(share_records[0].share.signature()),
+            signature.c
         );
         let proof_states = state
             .mint
