@@ -1096,6 +1096,12 @@ impl MintState {
         envelope: FederationOperationEnvelope,
         sequence: Option<(MemberId, u64)>,
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
+        if self.federation_consensus_backend().await? == FederationConsensusBackendKind::AlephBft {
+            return self
+                .submit_aleph_bft_federation_envelope_with_sequence(envelope, sequence)
+                .await;
+        }
+
         #[cfg(feature = "prometheus")]
         let operation_label = envelope.operation.kind().to_string();
         let consensus = self.federation_consensus.as_ref().ok_or_else(|| {
@@ -1141,6 +1147,73 @@ impl MintState {
             .wait_for_federation_operation_acceptance(operation_id)
             .await
             .unwrap_or(response))
+    }
+
+    async fn federation_consensus_backend(
+        &self,
+    ) -> Result<FederationConsensusBackendKind, cdk::Error> {
+        let consensus = self.federation_consensus.as_ref().ok_or_else(|| {
+            cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
+        })?;
+        let consensus = consensus.lock().await;
+        Ok(consensus.backend_kind())
+    }
+
+    async fn submit_aleph_bft_federation_envelope_with_sequence(
+        &self,
+        envelope: FederationOperationEnvelope,
+        sequence: Option<(MemberId, u64)>,
+    ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
+        if sequence.is_some() {
+            return Err(cdk::Error::Custom(
+                "AlephBFT private REST sequence handoff is not wired yet".to_string(),
+            ));
+        }
+
+        #[cfg(feature = "prometheus")]
+        let operation_label = envelope.operation.kind().to_string();
+        let operation_id = envelope.operation_id()?;
+        let consensus = self.federation_consensus.as_ref().ok_or_else(|| {
+            cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
+        })?;
+        let mut consensus = consensus.lock().await;
+        if let Some(entry) = consensus.journal().entry_by_operation_id(operation_id) {
+            return Ok(FederationSubmitOperationResponse::from_outcome(
+                FederationJournalAppendOutcome::Duplicate(entry.clone()),
+            ));
+        }
+
+        let mut next_consensus = consensus.clone();
+        if let Err(err) = next_consensus.submit_aleph_bft_envelope(envelope) {
+            #[cfg(feature = "prometheus")]
+            self.record_federation_rejected_operation_metric(&operation_label, "consensus");
+            return Err(cdk::Error::from(err));
+        }
+        *consensus = next_consensus;
+        drop(consensus);
+        #[cfg(feature = "prometheus")]
+        self.record_federation_pending_mempool_metric().await;
+
+        let wait_timeout = self
+            .federation_peer_sync_config
+            .unwrap_or_default()
+            .operation_submission_timeout;
+        tokio::time::timeout(
+            wait_timeout,
+            self.wait_for_federation_operation_acceptance(operation_id),
+        )
+        .await
+        .map_err(|_| {
+            cdk::Error::Custom(format!(
+                "timed out waiting for AlephBFT finalization of federation operation {operation_id}"
+            ))
+        })?
+        .ok_or_else(|| {
+            cdk::Error::Custom(
+                "federation operation notifications are unavailable for AlephBFT submit"
+                    .to_string(),
+            )
+        })
     }
 
     pub(crate) async fn submit_federation_payment_observation_envelope(
