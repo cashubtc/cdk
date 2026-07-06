@@ -19,8 +19,8 @@ use cdk_common::federation::{
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
     FederationPaymentObservationContext, FederationPaymentObservationPolicy,
     FederationPaymentObservationQuarantineReason, FederationPaymentTrustModel,
-    InMemoryFederationConsensus, InMemoryFederationJournal, MemberId, ThresholdParams,
-    TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationSwapOperation, InMemoryFederationConsensus, InMemoryFederationJournal, MemberId,
+    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut00::KnownMethod;
@@ -2096,11 +2096,18 @@ async fn apply_federation_swap_rejects_sig_all_output_mutation_before_signing() 
     swap.sign_sig_all(signing_key).expect("sig_all witness");
     *swap.outputs_mut() = vec![mutated_output.clone()];
 
+    assert!(
+        runtime_config
+            .validate_federated_swap_submission(&swap)
+            .is_err(),
+        "SIG_ALL output mutation must be rejected before consensus admission"
+    );
+
     let entry = appended_entry(
         &mut journal,
-        runtime_config
-            .swap_operation(swap)
-            .expect("mutated sig_all swap operation"),
+        runtime_config.operation_envelope(FederationOperation::Swap(FederationSwapOperation {
+            request: swap,
+        })),
     );
     let mut tx = localstore.begin_transaction().await.expect("begin");
     tx.add_federation_journal_entry(&entry)
@@ -3392,12 +3399,16 @@ async fn real_policy_failed_melt_observations_rollback_from_stored_quorum() {
 fn runtime_config_builds_single_and_batch_mint_operations() {
     let runtime_config = runtime_config();
     let quote = QuoteId::new();
+    let single_input = super::MintInput::Single(MintRequest {
+        quote: quote.clone(),
+        outputs: vec![output_for_runtime(&runtime_config, b"single mint")],
+        signature: None,
+    });
+    runtime_config
+        .validate_federated_mint_submission(&single_input)
+        .expect("valid mint admission");
     let single = runtime_config
-        .mint_operation(super::MintInput::Single(MintRequest {
-            quote: quote.clone(),
-            outputs: vec![output_for_runtime(&runtime_config, b"single mint")],
-            signature: None,
-        }))
+        .mint_operation(single_input)
         .expect("single mint operation");
 
     match single.operation {
@@ -3526,6 +3537,12 @@ fn runtime_config_rejects_non_v3_mint_outputs_before_consensus() {
     });
 
     assert!(matches!(
+        runtime_config.validate_federated_mint_submission(&input),
+        Err(cdk_common::Error::Federation(
+            FederationError::InvalidFederatedKeysetVersion { .. }
+        ))
+    ));
+    assert!(matches!(
         runtime_config.mint_operation(input),
         Err(cdk_common::Error::Federation(
             FederationError::InvalidFederatedKeysetVersion { .. }
@@ -3565,7 +3582,7 @@ fn runtime_config_rejects_non_v3_swap_restore_and_change_outputs() {
     let melt = MeltRequest::new(QuoteId::new(), Vec::new(), Some(vec![output]));
 
     assert!(matches!(
-        runtime_config.validate_swap_outputs(&swap),
+        runtime_config.validate_federated_swap_submission(&swap),
         Err(cdk_common::Error::Federation(
             FederationError::InvalidFederatedKeysetVersion { .. }
         ))
@@ -3577,7 +3594,7 @@ fn runtime_config_rejects_non_v3_swap_restore_and_change_outputs() {
         ))
     ));
     assert!(matches!(
-        runtime_config.validate_melt_change_outputs(&melt),
+        runtime_config.validate_federated_melt_submission(&melt),
         Err(cdk_common::Error::Federation(
             FederationError::InvalidFederatedKeysetVersion { .. }
         ))
@@ -3588,6 +3605,44 @@ fn runtime_config_rejects_non_v3_swap_restore_and_change_outputs() {
             FederationError::InvalidFederatedKeysetVersion { .. }
         ))
     ));
+}
+
+#[test]
+fn runtime_config_admission_rejects_invalid_swap_and_melt_proofs_before_consensus() {
+    let runtime_config = runtime_config();
+    let mut invalid_swap_proof = proof_for_runtime(&runtime_config, "invalid swap admission");
+    invalid_swap_proof.c = PublicKey::from(BlsG1PublicKey::hash_to_curve(
+        b"invalid swap admission signature",
+    ));
+    let swap = SwapRequest::new(
+        vec![invalid_swap_proof],
+        vec![output_for_runtime(
+            &runtime_config,
+            b"invalid swap admission output",
+        )],
+    );
+
+    assert!(runtime_config
+        .validate_federated_swap_submission(&swap)
+        .is_err());
+    assert!(runtime_config.swap_operation(swap).is_err());
+
+    let mut invalid_melt_proof = proof_for_runtime(&runtime_config, "invalid melt admission");
+    invalid_melt_proof.c = PublicKey::from(BlsG1PublicKey::hash_to_curve(
+        b"invalid melt admission signature",
+    ));
+    let mut change_output = output_for_runtime(&runtime_config, b"invalid melt admission change");
+    change_output.amount = Amount::ZERO;
+    let melt = MeltRequest::new(
+        QuoteId::new(),
+        vec![invalid_melt_proof],
+        Some(vec![change_output]),
+    );
+
+    assert!(runtime_config
+        .validate_federated_melt_submission(&melt)
+        .is_err());
+    assert!(runtime_config.melt_operation(melt).is_err());
 }
 
 #[test]

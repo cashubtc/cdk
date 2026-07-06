@@ -451,12 +451,21 @@ impl FederationRuntimeConfig {
 
     /// Build the consensus operation for signing mint outputs.
     pub fn mint_operation(&self, input: MintInput) -> Result<FederationOperationEnvelope, Error> {
-        self.validate_output_keysets(input.outputs())?;
+        self.validate_federated_mint_submission(&input)?;
         Ok(
             self.operation_envelope(FederationOperation::Mint(FederationMintOperation {
                 request: mint_request_from_input(input),
             })),
         )
+    }
+
+    /// Validate a federated mint submission before consensus admission.
+    ///
+    /// This validation is intentionally side-effect free: it may reject malformed
+    /// wallet requests, but it must not persist state or create signature shares.
+    pub fn validate_federated_mint_submission(&self, input: &MintInput) -> Result<(), Error> {
+        input.validate()?;
+        self.validate_output_keysets(input.outputs())
     }
 
     /// Sign an accepted mint operation into local threshold BLS signature shares.
@@ -507,7 +516,7 @@ impl FederationRuntimeConfig {
         &self,
         request: MeltRequest<QuoteId>,
     ) -> Result<FederationOperationEnvelope, Error> {
-        self.validate_melt_change_outputs(&request)?;
+        self.validate_federated_melt_submission(&request)?;
         let mut consensus_request = MeltRequest::new(
             request.quote().to_string(),
             request.inputs().clone(),
@@ -525,17 +534,42 @@ impl FederationRuntimeConfig {
         )
     }
 
+    /// Validate a federated melt submission before consensus admission.
+    ///
+    /// This checks only request-local material. Quote state, proof state, payment
+    /// attempts, and change signing remain in accepted consensus apply.
+    pub fn validate_federated_melt_submission(
+        &self,
+        request: &MeltRequest<QuoteId>,
+    ) -> Result<(), Error> {
+        self.validate_melt_change_outputs(request)?;
+        self.verify_proofs(request.inputs())?;
+        request.verify_spending_conditions()?;
+        Ok(())
+    }
+
     /// Build the consensus operation for signing swap outputs.
     pub fn swap_operation(
         &self,
         request: SwapRequest,
     ) -> Result<FederationOperationEnvelope, Error> {
-        self.validate_swap_outputs(&request)?;
+        self.validate_federated_swap_submission(&request)?;
         Ok(
             self.operation_envelope(FederationOperation::Swap(FederationSwapOperation {
                 request,
             })),
         )
+    }
+
+    /// Validate a federated swap submission before consensus admission.
+    ///
+    /// This is a pure admission check. It does not inspect or mutate local proof
+    /// state; accepted consensus apply is still the authoritative spend gate.
+    pub fn validate_federated_swap_submission(&self, request: &SwapRequest) -> Result<(), Error> {
+        self.validate_swap_outputs(request)?;
+        self.verify_proofs(request.inputs())?;
+        request.verify_spending_conditions()?;
+        Ok(())
     }
 
     /// Sign an accepted swap operation into local threshold BLS signature shares.

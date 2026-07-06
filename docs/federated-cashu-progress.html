@@ -526,19 +526,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits behind the internal adapter boundary, start the bounded AlephBFT driver loop from router startup when the backend is selected, keep public AlephBFT wallet submissions halted until real finality exists, preserve that halt over stale persisted healthy sync snapshots, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, reject invalid finalized-unit acknowledgements before quorum accounting, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bind signed finalized-unit delivery to the authenticated sender, validate private REST submit responses and AlephBFT finalized-unit acknowledgements against their embedded journal outcomes, reject wrong-kind private REST catch-up requests before sequence persistence, reject empty finalized units plus corrupted retained AlephBFT finalized-item body hashes, accepted-order metadata, unit-finalization gaps, and backwards session order during recovery, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, return durable journal duplicates after response-cache eviction, expose response-cache hit/rate, duplicate-submission, structured sync lag/catch-up counters, signed session-outcome quorum ranges, reject unsupported catch-up response versions before replay mutation, expanded AlephBFT adapter counters in operator status, prove empty-queue data-provider liveness, retry rate-limited wallet member requests, filter wallet fanout to compatible active v3/BLS keyset advertisers, reject non-v3 wallet outputs before member fanout, prove pending-mempool backpressure preserves admitted work through durable finalization, and reject unpaid federated mint quotes before blind-signature or share storage.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now queue AlephBFT submits behind the internal adapter boundary, start the bounded AlephBFT driver loop from router startup when the backend is selected, keep public AlephBFT wallet submissions halted until real finality exists, preserve that halt over stale persisted healthy sync snapshots, cap remote finalized-unit delivery attempts per unit, stop delivery after quorum, reject invalid finalized-unit acknowledgements before quorum accounting, return typed retryable pending-finalization timeouts, coalesce duplicate pending submit waiters, retain private REST sequence metadata until finalized units apply, bind signed finalized-unit delivery to the authenticated sender, validate private REST submit responses and AlephBFT finalized-unit acknowledgements against their embedded journal outcomes, reject wrong-kind private REST catch-up requests before sequence persistence, reject empty finalized units plus corrupted retained AlephBFT finalized-item body hashes, accepted-order metadata, unit-finalization gaps, and backwards session order during recovery, bound and clean up finalized-response waiters, retain accepted responses in a bounded cache, return durable journal duplicates after response-cache eviction, expose response-cache hit/rate, duplicate-submission, structured sync lag/catch-up counters, signed session-outcome quorum ranges, reject unsupported catch-up response versions before replay mutation, expanded AlephBFT adapter counters in operator status, prove empty-queue data-provider liveness, retry rate-limited wallet member requests, filter wallet fanout to compatible active v3/BLS keyset advertisers, reject non-v3 wallet outputs before member fanout, prove pending-mempool backpressure preserves admitted work through durable finalization, reject unpaid federated mint quotes before blind-signature or share storage, and route mint/swap/melt operation construction through pure submission admission helpers.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: reject unpaid federation mint signing</span>
+          <span class="value">test: validate federation submission admission</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Federated mint apply now proves unpaid quotes fail before blind-signature rows or federation signature-share rows are stored.</span>
+          <span class="value">Federation runtime configs now expose pure mint, swap, and melt admission helpers that reject malformed request-local material before consensus operation construction.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Keep tightening mint-side consensus apply boundaries, then replace the private-REST finalized-unit broadcast stand-in with real AlephBFT finality.</span>
+          <span class="value">Add the remaining quote and payment-observation admission helpers, then continue tightening mint-side consensus apply boundaries.</span>
         </div>
       </aside>
     </header>
@@ -2796,6 +2796,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo test -p cdk --lib --features federation apply_federation_mint_rejects_unpaid_quote_before_signing -- --test-threads 1` and `cargo test -p cdk --lib --features federation apply_federation_mint -- --test-threads 1` passed. The new regression proves unpaid quote minting fails before blind-signature storage and before federation signature-share rows are written.</td>
               <td>Add the same no-side-effect checks to the next remaining mint-side edge cases that can reject after journal acceptance.</td>
+            </tr>
+            <tr>
+              <td>Mint-side submission admission</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo test -p cdk --lib --features federation runtime_config_admission -- --test-threads 1` and `cargo test -p cdk --lib --features federation runtime_config_ -- --test-threads 1` passed. The runtime config now has pure mint, swap, and melt admission helpers, and operation builders reject invalid aggregate BLS input proofs before consensus envelope construction.</td>
+              <td>Add equivalent explicit admission helpers for quote creation and payment observations.</td>
             </tr>
             <tr>
               <td>Locked swap canonical transcripts</td>
