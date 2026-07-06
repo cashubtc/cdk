@@ -506,6 +506,19 @@ async fn federated_test_mint_with_backend_agnostic_payment(
     .await
 }
 
+async fn federated_test_mint_with_counting_payment_processor(
+    runtime_config: FederationRuntimeConfig,
+) -> (Mint, Arc<MintSqliteDatabase>, Arc<AtomicUsize>) {
+    let make_payment_calls = Arc::new(AtomicUsize::new(0));
+    let payment_processor = Arc::new(CountingBackendAgnosticPaymentProcessor {
+        make_payment_calls: Arc::clone(&make_payment_calls),
+    });
+    let (mint, localstore) =
+        federated_test_mint_with_payment_processor(runtime_config, payment_processor).await;
+
+    (mint, localstore, make_payment_calls)
+}
+
 fn appended_entry(
     journal: &mut InMemoryFederationJournal,
     envelope: FederationOperationEnvelope,
@@ -770,6 +783,89 @@ async fn assert_rejected_swap_left_no_materialization(
             .expect("rejected swap completed operation lookup")
             .is_none(),
         "{context}: rejected swap must fail before completed-operation storage"
+    );
+}
+
+async fn assert_rejected_melt_left_no_materialization(
+    localstore: &MintSqliteDatabase,
+    operation_id: FederationOperationId,
+    quote: &QuoteId,
+    input_ys: &[PublicKey],
+    change_outputs: &[BlindedMessage],
+    make_payment_calls: &AtomicUsize,
+    context: &str,
+) {
+    let expected_empty_states = vec![None; input_ys.len()];
+    assert_eq!(
+        localstore
+            .get_proofs_states(input_ys)
+            .await
+            .expect("rejected melt proof states"),
+        expected_empty_states,
+        "{context}: rejected melt must fail before proof state storage"
+    );
+    assert!(
+        localstore
+            .get_melt_saga_by_quote_id(quote)
+            .await
+            .expect("rejected melt saga lookup")
+            .is_none(),
+        "{context}: rejected melt must fail before saga storage"
+    );
+
+    let stored_quote = localstore
+        .get_melt_quote(quote)
+        .await
+        .expect("rejected melt quote lookup")
+        .expect("melt quote should remain stored");
+    assert_eq!(
+        stored_quote.state,
+        MeltQuoteState::Unpaid,
+        "{context}: rejected melt must leave the quote unpaid"
+    );
+
+    let blinded_secrets = change_outputs
+        .iter()
+        .map(|output| output.blinded_secret)
+        .collect::<Vec<_>>();
+    if !blinded_secrets.is_empty() {
+        let expected_empty_signatures = vec![None; blinded_secrets.len()];
+        assert_eq!(
+            localstore
+                .get_blind_signatures(&blinded_secrets)
+                .await
+                .expect("rejected melt change signatures"),
+            expected_empty_signatures,
+            "{context}: rejected melt must fail before change signature storage"
+        );
+    }
+
+    for output_index in 0..change_outputs.len() {
+        assert!(
+            localstore
+                .get_federation_signature_shares_for_output(operation_id, output_index as u32)
+                .await
+                .expect("rejected melt output share lookup")
+                .is_empty(),
+            "{context}: rejected melt must fail before output share storage"
+        );
+    }
+
+    for blinded_secret in blinded_secrets {
+        assert!(
+            localstore
+                .get_federation_signature_shares_for_blinded_message(blinded_secret)
+                .await
+                .expect("rejected melt blinded-message share lookup")
+                .is_empty(),
+            "{context}: rejected melt must fail before blinded-message share storage"
+        );
+    }
+
+    assert_eq!(
+        make_payment_calls.load(Ordering::Relaxed),
+        0,
+        "{context}: rejected melt must fail before payment attempt"
     );
 }
 
@@ -3510,6 +3606,229 @@ async fn process_federation_melt_change_signs_rotated_keyset() {
         share_records[0].consensus_evidence,
         Some(consensus_evidence)
     );
+}
+
+#[tokio::test]
+async fn apply_federation_melt_rejects_bad_proof_signature_before_state_changes() {
+    let runtime_config = runtime_config();
+    let (mint, localstore, make_payment_calls) =
+        federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let mut input = proof_for_runtime(&runtime_config, "bad melt proof signature");
+    let input_y = input.y().expect("bad melt proof signature input y");
+    input.c = PublicKey::from(BlsG1PublicKey::hash_to_curve(
+        b"invalid federation melt proof signature",
+    ));
+    let mut change_output = output_for_runtime(&runtime_config, b"bad melt proof change");
+    change_output.amount = Amount::ZERO;
+    let melt_entry = appended_entry(
+        &mut journal,
+        runtime_config.operation_envelope(FederationOperation::Melt(FederationMeltOperation {
+            request: MeltRequest::new(
+                quote.to_string(),
+                vec![input],
+                Some(vec![change_output.clone()]),
+            ),
+        })),
+    );
+    persist_journal_entry(&localstore, &melt_entry).await;
+
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&melt_entry))
+            .await,
+        Err(Error::DHKE(cdk_common::dhke::Error::TokenNotVerified))
+    ));
+
+    assert_rejected_melt_left_no_materialization(
+        &localstore,
+        melt_entry.operation_id,
+        &quote,
+        &[input_y],
+        std::slice::from_ref(&change_output),
+        &make_payment_calls,
+        "bad proof signature",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apply_federation_melt_rejects_duplicate_inputs_before_state_changes() {
+    let runtime_config = runtime_config();
+    let (mint, localstore, make_payment_calls) =
+        federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let input = proof_for_runtime(&runtime_config, "duplicate melt input");
+    let input_y = input.y().expect("duplicate melt input y");
+    let melt_entry = appended_entry(
+        &mut journal,
+        runtime_config.operation_envelope(FederationOperation::Melt(FederationMeltOperation {
+            request: MeltRequest::new(quote.to_string(), vec![input.clone(), input], None),
+        })),
+    );
+    persist_journal_entry(&localstore, &melt_entry).await;
+
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&melt_entry))
+            .await,
+        Err(Error::DuplicateInputs)
+    ));
+
+    assert_rejected_melt_left_no_materialization(
+        &localstore,
+        melt_entry.operation_id,
+        &quote,
+        &[input_y],
+        &[],
+        &make_payment_calls,
+        "duplicate inputs",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apply_federation_melt_rejects_p2pk_missing_witness_before_state_changes() {
+    let runtime_config = runtime_config();
+    let (mint, localstore, make_payment_calls) =
+        federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let (input, _signing_key) = p2pk_locked_proof_for_runtime(&runtime_config, SigFlag::SigInputs);
+    let input_y = input.y().expect("p2pk missing witness melt input y");
+    let melt_entry = appended_entry(
+        &mut journal,
+        runtime_config.operation_envelope(FederationOperation::Melt(FederationMeltOperation {
+            request: MeltRequest::new(quote.to_string(), vec![input], None),
+        })),
+    );
+    persist_journal_entry(&localstore, &melt_entry).await;
+
+    assert!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&melt_entry))
+            .await
+            .is_err(),
+        "P2PK melt input without a witness must be rejected"
+    );
+
+    assert_rejected_melt_left_no_materialization(
+        &localstore,
+        melt_entry.operation_id,
+        &quote,
+        &[input_y],
+        &[],
+        &make_payment_calls,
+        "p2pk missing witness",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apply_federation_melt_rejects_non_v3_change_before_state_changes() {
+    let runtime_config = runtime_config();
+    let (mint, localstore, make_payment_calls) =
+        federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let input = proof_for_runtime(&runtime_config, "non-v3 melt change input");
+    let input_y = input.y().expect("non-v3 melt change input y");
+    let mut change_output = non_v3_output_for_runtime(&runtime_config);
+    change_output.amount = Amount::ZERO;
+    let melt_entry = appended_entry(
+        &mut journal,
+        runtime_config.operation_envelope(FederationOperation::Melt(FederationMeltOperation {
+            request: MeltRequest::new(
+                quote.to_string(),
+                vec![input],
+                Some(vec![change_output.clone()]),
+            ),
+        })),
+    );
+    persist_journal_entry(&localstore, &melt_entry).await;
+
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&melt_entry))
+            .await,
+        Err(Error::Federation(
+            FederationError::InvalidFederatedKeysetVersion { .. }
+        ))
+    ));
+
+    assert_rejected_melt_left_no_materialization(
+        &localstore,
+        melt_entry.operation_id,
+        &quote,
+        &[input_y],
+        std::slice::from_ref(&change_output),
+        &make_payment_calls,
+        "non-v3 change",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn apply_federation_melt_rejects_unbalanced_inputs_before_payment_attempt() {
+    let runtime_config = runtime_config();
+    let (mint, localstore, make_payment_calls) =
+        federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.melt_quote_operation(quote.clone(), pending_melt_quote_request(1_000)),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let input = proof_for_runtime(&runtime_config, "unbalanced melt input");
+    let input_y = input.y().expect("unbalanced melt input y");
+    let melt_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .melt_operation(MeltRequest::new(quote.clone(), vec![input], None))
+            .expect("unbalanced melt operation"),
+    );
+    persist_journal_entry(&localstore, &melt_entry).await;
+
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&melt_entry))
+            .await,
+        Err(Error::TransactionUnbalanced(1, 1, 1))
+    ));
+
+    assert_rejected_melt_left_no_materialization(
+        &localstore,
+        melt_entry.operation_id,
+        &quote,
+        &[input_y],
+        &[],
+        &make_payment_calls,
+        "unbalanced inputs",
+    )
+    .await;
 }
 
 #[tokio::test]
