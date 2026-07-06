@@ -3088,11 +3088,29 @@ mod tests {
     }
 
     #[cfg(feature = "federation")]
+    async fn assert_http_response_not_ready_contains(response: Response, expected: &str) {
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_error_detail(response).await;
+        assert!(
+            body.contains(expected),
+            "public route should fail closed with `{expected}` in the response: {body}"
+        );
+    }
+
+    #[cfg(feature = "federation")]
     fn assert_aleph_bft_error_not_ready(error: &cdk::Error) {
         match error {
             cdk::Error::Custom(detail)
                 if detail.contains("public federation submissions are disabled") => {}
             _ => panic!("AlephBFT public submit should fail closed, got: {error}"),
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    fn assert_error_not_ready_contains(error: &cdk::Error, expected: &str) {
+        match error {
+            cdk::Error::Custom(detail) if detail.contains(expected) => {}
+            _ => panic!("public route should fail closed with `{expected}`, got: {error}"),
         }
     }
 
@@ -3123,6 +3141,36 @@ mod tests {
             state.federation_pending_response_waiter_count(),
             0,
             "halted AlephBFT public route must not register a response waiter"
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    async fn assert_no_federation_public_submit_work(state: &MintState) {
+        assert!(
+            federation_operation_kinds(state).await.is_empty(),
+            "not-ready federation public route must not append a journal entry"
+        );
+        let consensus = state
+            .federation_consensus
+            .as_ref()
+            .expect("federation consensus")
+            .lock()
+            .await;
+        assert_eq!(
+            consensus.queued_len(),
+            0,
+            "not-ready federation public route must not queue an item"
+        );
+        assert_eq!(
+            consensus.peer_status().operation_count,
+            0,
+            "not-ready federation public route must not accept an operation"
+        );
+        drop(consensus);
+        assert_eq!(
+            state.federation_pending_response_waiter_count(),
+            0,
+            "not-ready federation public route must not register a response waiter"
         );
     }
 
@@ -4602,6 +4650,120 @@ mod tests {
             .expect("melt quote lookup")
             .expect("melt quote");
         assert_eq!(quote.state, MeltQuoteState::Unpaid);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn value_routes_fail_closed_while_catching_up_and_resume_when_healthy() {
+        let state = create_federated_test_state().await;
+        let config = state.mint.federation_config().expect("federation config");
+        let peer = config.member_id();
+        let not_ready = "catching up";
+
+        let quote_id = create_paid_bolt11_quote(&state).await;
+        let mint_request = BatchMintRequest {
+            quotes: vec![quote_id],
+            quote_amounts: None,
+            outputs: outputs_for_amount_with_label(&state, 2, "catching-up-mint-output"),
+            signatures: None,
+        };
+        let swap_request = cdk::nuts::SwapRequest::new(
+            vec![proof_for_amount(&state, 2, "catching-up-swap-input")],
+            outputs_for_amount_with_label(&state, 2, "catching-up-swap-output"),
+        );
+        let melt_quote_id = create_federated_melt_quote(&state, 1000).await;
+        let melt_request = cdk::nuts::MeltRequest::new(
+            melt_quote_id.clone(),
+            vec![proof_for_amount(&state, 2, "catching-up-melt-input")],
+            None,
+        );
+
+        state.mark_federation_catching_up(peer).await;
+
+        let mint_error = cache_post_batch_mint(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(mint_request.clone()),
+        )
+        .await
+        .expect_err("mint should fail while catching up");
+        assert_http_response_not_ready_contains(mint_error, not_ready).await;
+
+        let swap_error = crate::router_handlers::post_swap(
+            AuthHeader::None,
+            State(state.clone()),
+            Json(swap_request.clone()),
+        )
+        .await
+        .expect_err("swap should fail while catching up");
+        assert_http_response_not_ready_contains(swap_error, not_ready).await;
+
+        let melt_error = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &melt_request,
+        )
+        .await
+        .expect_err("melt should fail while catching up");
+        assert_error_not_ready_contains(&melt_error, not_ready);
+        assert_no_federation_public_submit_work(&state).await;
+
+        let quote = state
+            .mint
+            .localstore()
+            .get_melt_quote(&melt_quote_id)
+            .await
+            .expect("melt quote lookup")
+            .expect("melt quote");
+        assert_eq!(quote.state, MeltQuoteState::Unpaid);
+
+        state.mark_federation_healthy().await;
+
+        let mint_response = cache_post_batch_mint(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(mint_request),
+        )
+        .await
+        .expect("mint should resume after catch-up")
+        .0;
+        assert_eq!(mint_response.signatures.len(), 1);
+
+        let swap_response = crate::router_handlers::post_swap(
+            AuthHeader::None,
+            State(state.clone()),
+            Json(swap_request),
+        )
+        .await
+        .expect("swap should resume after catch-up")
+        .0;
+        assert_eq!(swap_response.signatures.len(), 1);
+
+        let melt_response = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &melt_request,
+        )
+        .await
+        .expect("melt should resume after catch-up");
+        assert_eq!(melt_response.state(), MeltQuoteState::Paid);
+
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![
+                cdk::federation::FederationOperationKind::Mint,
+                cdk::federation::FederationOperationKind::Swap,
+                cdk::federation::FederationOperationKind::Melt,
+            ]
+        );
     }
 
     #[cfg(feature = "federation")]
