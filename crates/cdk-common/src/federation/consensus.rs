@@ -341,6 +341,8 @@ pub struct FederationAlephBftAdapterStatus {
     pub next_item_index: u64,
     /// Number of local consensus items waiting to be proposed.
     pub queued_item_count: u64,
+    /// Number of drained local consensus items waiting for finality.
+    pub pending_finalization_item_count: u64,
     /// Number of finalized consensus items retained by the adapter.
     pub finalized_item_count: u64,
     /// Number of accepted operation entries in the adapter journal.
@@ -1603,6 +1605,8 @@ impl FederationAlephBftConsensusAdapter {
             next_unit_finalization_index: self.finalization_handler.next_unit_finalization_index(),
             next_item_index: self.next_item_index(),
             queued_item_count: u64::try_from(self.queued_len()).expect("queue length fits in u64"),
+            pending_finalization_item_count: u64::try_from(self.pending_finalization_len())
+                .expect("pending finalization item count fits in u64"),
             finalized_item_count: u64::try_from(self.finalized_items.len())
                 .expect("finalized item count fits in u64"),
             accepted_operation_count: self.journal.len() as u64,

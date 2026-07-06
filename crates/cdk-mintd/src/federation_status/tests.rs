@@ -455,6 +455,7 @@ fn status_line_includes_aleph_bft_adapter_counters_when_present() {
         next_unit_finalization_index: 8,
         next_item_index: 9,
         queued_item_count: 2,
+        pending_finalization_item_count: 4,
         finalized_item_count: 3,
         accepted_operation_count: 1,
         latest_accepted_operation_index: Some(0),
@@ -464,7 +465,7 @@ fn status_line_includes_aleph_bft_adapter_counters_when_present() {
     let line = member_status_line(&status);
 
     assert!(line.contains(
-        "aleph_bft=backend:aleph_bft local_member:1 session:4 queued:2 finalized:3 accepted:1 next_unit:7 next_finalization_unit:8 next_item:9 latest_accepted:0 members:2"
+        "aleph_bft=backend:aleph_bft local_member:1 session:4 queued:2 pending_finalization:4 finalized:3 accepted:1 next_unit:7 next_finalization_unit:8 next_item:9 latest_accepted:0 members:2"
     ));
 }
 

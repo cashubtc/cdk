@@ -101,6 +101,7 @@ async fn local_status_includes_aleph_bft_adapter_counters() {
     assert_eq!(aleph_bft_status.local_member, local_member);
     assert_eq!(aleph_bft_status.session, 0);
     assert_eq!(aleph_bft_status.queued_item_count, 1);
+    assert_eq!(aleph_bft_status.pending_finalization_item_count, 0);
     assert_eq!(aleph_bft_status.finalized_item_count, 0);
     assert_eq!(aleph_bft_status.accepted_operation_count, 0);
     assert_eq!(aleph_bft_status.allowed_member_count, Some(2));

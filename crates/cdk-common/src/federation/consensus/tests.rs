@@ -2775,6 +2775,7 @@ fn backend_adapter_runtime_reports_aleph_bft_status_across_queue_and_finalizatio
     assert_eq!(initial.next_unit_finalization_index, 0);
     assert_eq!(initial.next_item_index, 0);
     assert_eq!(initial.queued_item_count, 0);
+    assert_eq!(initial.pending_finalization_item_count, 0);
     assert_eq!(initial.finalized_item_count, 0);
     assert_eq!(initial.accepted_operation_count, 0);
     assert_eq!(initial.latest_accepted_operation_index, None);
@@ -2789,6 +2790,7 @@ fn backend_adapter_runtime_reports_aleph_bft_status_across_queue_and_finalizatio
         .expect("submit operation");
     let queued = adapter.aleph_bft_status().expect("queued status");
     assert_eq!(queued.queued_item_count, 1);
+    assert_eq!(queued.pending_finalization_item_count, 0);
     assert_eq!(queued.next_unit_index, 0);
 
     let unit = adapter
@@ -2797,6 +2799,7 @@ fn backend_adapter_runtime_reports_aleph_bft_status_across_queue_and_finalizatio
         .expect("unit");
     let pulled = adapter.aleph_bft_status().expect("pulled status");
     assert_eq!(pulled.queued_item_count, 0);
+    assert_eq!(pulled.pending_finalization_item_count, 1);
     assert_eq!(pulled.next_unit_index, 1);
     assert_eq!(pulled.next_unit_finalization_index, 0);
     assert_eq!(pulled.finalized_item_count, 0);
@@ -2808,6 +2811,7 @@ fn backend_adapter_runtime_reports_aleph_bft_status_across_queue_and_finalizatio
     assert_eq!(finalized.next_unit_index, 1);
     assert_eq!(finalized.next_unit_finalization_index, 1);
     assert_eq!(finalized.next_item_index, 1);
+    assert_eq!(finalized.pending_finalization_item_count, 0);
     assert_eq!(finalized.finalized_item_count, 1);
     assert_eq!(finalized.accepted_operation_count, 1);
     assert_eq!(finalized.latest_accepted_operation_index, Some(0));
