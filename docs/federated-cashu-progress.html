@@ -434,11 +434,11 @@
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">test: cover malformed catch-up evidence</span>
+          <span class="value">test: cover federated restore provenance</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Signed catch-up session outcomes now have explicit bad-signature and truncated-range rejection regressions.</span>
+          <span class="value">Federated restore now proves accepted mint outputs return persisted shares tied to the original operation and output index.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
@@ -744,7 +744,7 @@
         <div class="stack">
           <article class="item">
             <h3>Consensus-before-signing</h3>
-            <p>Naive threshold mix-and-match signing is covered by attack regressions, same-quote/different-output public mint attempts store no conflicting signature share, same-proof public swap conflicts store no loser shares and mark losing journal entries terminal, catch-up replay continues past deterministic rejected swap losers, signed catch-up evidence rejects bad signatures and truncated post-signing ranges, AlephBFT finalized-unit responses are refreshed from post-apply journal status, federation signing paths are tied to accepted operation IDs, output indexes, keysets, accepted journal indexes, consensus evidence, and persisted share provenance, accepted apply rejects terminal local journal statuses before state mutation, public quote creation fails closed before local quote persistence when BFT finality is unavailable, and direct standalone member APIs fail closed.</p>
+            <p>Naive threshold mix-and-match signing is covered by attack regressions, same-quote/different-output public mint attempts store no conflicting signature share, same-proof public swap conflicts store no loser shares and mark losing journal entries terminal, restore of accepted mint outputs returns persisted shares tied to the original operation and output index, catch-up replay continues past deterministic rejected swap losers, signed catch-up evidence rejects bad signatures and truncated post-signing ranges, AlephBFT finalized-unit responses are refreshed from post-apply journal status, federation signing paths are tied to accepted operation IDs, output indexes, keysets, accepted journal indexes, consensus evidence, and persisted share provenance, accepted apply rejects terminal local journal statuses before state mutation, public quote creation fails closed before local quote persistence when BFT finality is unavailable, and direct standalone member APIs fail closed.</p>
           </article>
           <article class="item">
             <h3>Federation keyset safety</h3>

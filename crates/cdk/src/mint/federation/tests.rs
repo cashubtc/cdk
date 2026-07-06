@@ -1717,6 +1717,100 @@ async fn apply_federation_mint_uses_rotated_keyset_for_signing() {
 }
 
 #[tokio::test]
+async fn restore_returns_persisted_accepted_mint_shares_by_original_output_index() {
+    let runtime_config = runtime_config();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let keyset = runtime_config.public_config().keysets[0].clone();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_operation(
+            quote.clone(),
+            bolt11_quote_request(3),
+            bolt11_quote_response(&quote, 3),
+        ),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+    let paid_entry = appended_entry(
+        &mut journal,
+        runtime_config.mint_quote_payment_observation(
+            quote.clone(),
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintQuoteState::Paid,
+            Amount::from(3),
+            Amount::ZERO,
+            Some("restore-persisted-mint-payment".to_string()),
+        ),
+    );
+    persist_and_apply_entry(&mint, &paid_entry).await;
+
+    let outputs = vec![
+        output_for_keyset(&keyset, b"restore accepted mint output zero"),
+        output_for_keyset(&keyset, b"restore accepted mint output one"),
+        output_for_keyset(&keyset, b"restore accepted mint output two"),
+    ];
+    let mint_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .mint_operation(MintInput::Single(MintRequest {
+                quote: quote.clone(),
+                outputs: outputs.clone(),
+                signature: None,
+            }))
+            .expect("mint operation"),
+    );
+    persist_and_apply_entry(&mint, &mint_entry).await;
+
+    let restore_outputs = vec![outputs[2].clone(), outputs[0].clone()];
+    let restored = mint
+        .restore(RestoreRequest {
+            outputs: restore_outputs.clone(),
+        })
+        .await
+        .expect("restore accepted mint outputs");
+    assert_eq!(restored.outputs, restore_outputs);
+    assert_eq!(restored.signatures.len(), restored.outputs.len());
+
+    for (restored_position, original_index) in [2_u32, 0_u32].into_iter().enumerate() {
+        let restored_output = &restored.outputs[restored_position];
+        let restored_signature = &restored.signatures[restored_position];
+        let share_records = localstore
+            .get_federation_signature_shares_for_output(mint_entry.operation_id, original_index)
+            .await
+            .expect("stored federation signature share by original output index");
+        assert_eq!(share_records.len(), 1);
+        let share_record = &share_records[0];
+        assert_eq!(share_record.operation_id, mint_entry.operation_id);
+        assert_eq!(share_record.output_index, original_index);
+        assert_eq!(share_record.member_id, runtime_config.member_id());
+        assert_eq!(share_record.keyset_id, keyset.id);
+        assert_eq!(share_record.amount, Amount::from(1));
+        assert_eq!(share_record.blinded_secret, restored_output.blinded_secret);
+        assert_eq!(
+            share_record.accepted_operation_index,
+            Some(mint_entry.index)
+        );
+        assert_eq!(
+            share_record.consensus_evidence,
+            mint_entry.consensus_evidence
+        );
+        assert_eq!(restored_signature.keyset_id, keyset.id);
+        assert_eq!(restored_signature.amount, Amount::from(1));
+        assert_eq!(
+            restored_signature.c,
+            PublicKey::from(share_record.share.signature())
+        );
+
+        let blinded_message_share_records = localstore
+            .get_federation_signature_shares_for_blinded_message(restored_output.blinded_secret)
+            .await
+            .expect("stored federation signature share by blinded message");
+        assert_eq!(blinded_message_share_records, share_records);
+    }
+}
+
+#[tokio::test]
 async fn apply_federation_mint_rejects_unpaid_quote_before_signing() {
     let runtime_config = runtime_config();
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
