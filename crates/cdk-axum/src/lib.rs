@@ -1416,18 +1416,23 @@ impl MintState {
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
         self.validate_federation_envelope_admission(&envelope)?;
         self.ensure_federation_can_forward_public_submit().await?;
+        let operation_id = envelope.operation_id()?;
 
         if let Some(response) =
             crate::federation::submit_operation_to_primary_if_needed(self, envelope.clone(), None)
                 .await?
         {
+            response.validate(operation_id)?;
             return Ok(response);
         }
 
         self.ensure_federation_ready_for_public_submit().await?;
 
-        self.submit_federation_envelope_with_sequence(envelope, None)
-            .await
+        let response = self
+            .submit_federation_envelope_with_sequence(envelope, None)
+            .await?;
+        response.validate(operation_id)?;
+        Ok(response)
     }
 
     pub(crate) async fn submit_federation_envelope_with_sequence(
@@ -1436,10 +1441,13 @@ impl MintState {
         sequence: Option<(MemberId, u64)>,
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
         self.validate_federation_envelope_admission(&envelope)?;
+        let operation_id = envelope.operation_id()?;
         if self.federation_consensus_backend().await? == FederationConsensusBackendKind::AlephBft {
-            return self
+            let response = self
                 .submit_aleph_bft_federation_envelope_with_sequence(envelope, sequence)
-                .await;
+                .await?;
+            response.validate(operation_id)?;
+            return Ok(response);
         }
 
         #[cfg(feature = "prometheus")]
@@ -1457,6 +1465,7 @@ impl MintState {
                 return Err(cdk::Error::from(err));
             }
         };
+        response.validate(operation_id)?;
         let _appended = matches!(
             &response.outcome,
             FederationJournalAppendOutcome::Appended(_)
@@ -1646,14 +1655,19 @@ impl MintState {
                 )));
             }
         }
+        let operation_id = envelope.operation_id()?;
         if let Some(response) =
             crate::federation::submit_operation_to_primary_if_needed(self, envelope.clone(), None)
                 .await?
         {
+            response.validate(operation_id)?;
             return Ok(response);
         }
-        self.submit_federation_envelope_with_sequence(envelope, None)
-            .await
+        let response = self
+            .submit_federation_envelope_with_sequence(envelope, None)
+            .await?;
+        response.validate(operation_id)?;
+        Ok(response)
     }
 
     async fn finalize_federation_operation_acceptance(

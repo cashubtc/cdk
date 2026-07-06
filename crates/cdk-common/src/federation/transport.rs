@@ -1039,6 +1039,14 @@ impl FederationSubmitOperationResponse {
             });
         }
 
+        let outcome_envelope_operation_id = self.outcome.entry().envelope.operation_id()?;
+        if outcome_envelope_operation_id != outcome_operation_id {
+            return Err(FederationError::SubmitOperationResponseMismatch {
+                expected: outcome_operation_id,
+                found: outcome_envelope_operation_id,
+            });
+        }
+
         Ok(())
     }
 }
@@ -2159,6 +2167,34 @@ mod tests {
         assert_ne!(expected_operation_id, found_operation_id);
 
         response.operation_id = expected_operation_id;
+
+        assert!(matches!(
+            response.validate(expected_operation_id),
+            Err(FederationError::SubmitOperationResponseMismatch { expected, found })
+                if expected == expected_operation_id && found == found_operation_id
+        ));
+    }
+
+    #[test]
+    fn submit_operation_response_validation_rejects_tampered_embedded_envelope() {
+        let expected = mint_quote_envelope();
+        let expected_operation_id = expected.operation_id().expect("expected operation id");
+        let tampered = mint_envelope(
+            "quote-2",
+            "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+        );
+        let found_operation_id = tampered.operation_id().expect("tampered operation id");
+        assert_ne!(expected_operation_id, found_operation_id);
+        let mut journal = InMemoryFederationJournal::new();
+        let mut response = FederationSubmitOperationResponse::from_outcome(
+            journal.append(expected).expect("journal append"),
+        );
+        match &mut response.outcome {
+            FederationJournalAppendOutcome::Appended(entry)
+            | FederationJournalAppendOutcome::Duplicate(entry) => {
+                entry.envelope = tampered;
+            }
+        }
 
         assert!(matches!(
             response.validate(expected_operation_id),

@@ -789,7 +789,9 @@ Federated public API checklist:
   states derived from accepted consensus-visible state.
 - [ ] Public APIs must support the race where the accepted operation arrives
   between admission validation and queue submission: the submit path should then
-  return the cached accepted response.
+  return the cached accepted response. Submit responses now recompute the
+  embedded journal entry envelope's operation ID before any accepted response is
+  returned to wallet-facing mint, swap, or melt handlers.
 - [ ] Public APIs must support the race where the accepted operation arrives
   before the wallet reaches this member: the handler should compute the same
   operation hash and immediately return the persisted response. AlephBFT submit
@@ -950,7 +952,10 @@ Success criteria:
 
 - [ ] No federated mint, swap, melt, restore, or change-output path can return a
   usable signature share unless the exact operation was accepted by AlephBFT or
-  was already accepted earlier and retrieved from durable state.
+  was already accepted earlier and retrieved from durable state. Current
+  coverage includes submit-response validation that rejects tampered embedded
+  journal envelopes before accepted responses can be used for share-returning
+  public paths.
 - [ ] Every safety-critical federation mutation is reachable from ordered
   consensus apply, replay, or catch-up; no public route commits those mutations
   directly.
