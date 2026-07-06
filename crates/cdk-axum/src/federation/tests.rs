@@ -5750,6 +5750,136 @@ async fn federation_aleph_bft_finalized_unit_persists_applies_and_notifies() {
 }
 
 #[tokio::test]
+async fn federation_aleph_bft_finalized_unit_reports_state_rejected_swap() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_backend(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+        FederationConsensusBackendKind::AlephBft,
+    )
+    .await;
+    let config = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .clone();
+    let first_input = proof_for_amount(&state, 1, "aleph-conflict-first");
+    let first_output = swap_output(&state, "aleph-conflict-first");
+    let first_request =
+        cdk::nuts::SwapRequest::new(vec![first_input.clone()], vec![first_output.clone()]);
+    let first_envelope = config
+        .swap_operation(first_request.clone())
+        .expect("first swap envelope");
+    let first_operation_id = first_envelope.operation_id().expect("first operation id");
+
+    let conflicting_output = swap_output(&state, "aleph-conflict-loser");
+    let conflicting_request =
+        cdk::nuts::SwapRequest::new(vec![first_input], vec![conflicting_output.clone()]);
+    let conflicting_envelope = config
+        .swap_operation(conflicting_request)
+        .expect("conflicting swap envelope");
+    let conflicting_operation_id = conflicting_envelope
+        .operation_id()
+        .expect("conflicting operation id");
+
+    let later_input = proof_for_amount(&state, 1, "aleph-conflict-later");
+    let later_output = swap_output(&state, "aleph-conflict-later");
+    let later_request = cdk::nuts::SwapRequest::new(vec![later_input], vec![later_output.clone()]);
+    let later_envelope = config
+        .swap_operation(later_request.clone())
+        .expect("later swap envelope");
+    let later_operation_id = later_envelope.operation_id().expect("later operation id");
+
+    let unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        local_private.member_id,
+        0,
+        0,
+        vec![
+            FederationConsensusItem::operation(first_envelope),
+            FederationConsensusItem::operation(conflicting_envelope),
+            FederationConsensusItem::operation(later_envelope),
+        ],
+    )
+    .expect("AlephBFT finalized unit");
+    let wait_state = state.clone();
+    let waiter = tokio::spawn(async move {
+        wait_state
+            .wait_for_federation_operation_acceptance(conflicting_operation_id)
+            .await
+            .expect("notified conflicting operation")
+    });
+    tokio::task::yield_now().await;
+
+    let responses = state
+        .apply_federation_aleph_bft_finalized_unit(unit)
+        .await
+        .expect("apply finalized unit");
+
+    assert_eq!(responses.len(), 3);
+    assert_eq!(responses[0].operation_id, first_operation_id);
+    assert_eq!(
+        responses[0].outcome.entry().status,
+        FederationOperationStatus::Applied
+    );
+    assert_eq!(responses[1].operation_id, conflicting_operation_id);
+    assert_eq!(
+        responses[1].outcome.entry().status,
+        FederationOperationStatus::Rejected
+    );
+    assert_eq!(responses[2].operation_id, later_operation_id);
+    assert_eq!(
+        responses[2].outcome.entry().status,
+        FederationOperationStatus::Applied
+    );
+    let notified = waiter.await.expect("waiter task");
+    assert_eq!(notified.operation_id, conflicting_operation_id);
+    assert_eq!(
+        notified.outcome.entry().status,
+        FederationOperationStatus::Rejected
+    );
+
+    let first_response = config
+        .swap_share_response(first_operation_id, &first_request)
+        .expect("first expected share response");
+    let later_response = config
+        .swap_share_response(later_operation_id, &later_request)
+        .expect("later expected share response");
+    assert_eq!(
+        state
+            .mint
+            .localstore()
+            .get_blind_signatures(&[
+                first_output.blinded_secret,
+                conflicting_output.blinded_secret,
+                later_output.blinded_secret,
+            ])
+            .await
+            .expect("signature lookup"),
+        vec![
+            Some(first_response.signatures[0].clone()),
+            None,
+            Some(later_response.signatures[0].clone()),
+        ]
+    );
+
+    let persisted = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal lookup");
+    assert_eq!(persisted.len(), 3);
+    assert_eq!(persisted[0].status, FederationOperationStatus::Applied);
+    assert_eq!(persisted[1].status, FederationOperationStatus::Rejected);
+    assert_eq!(persisted[2].status, FederationOperationStatus::Applied);
+}
+
+#[tokio::test]
 async fn federation_aleph_bft_finalized_unit_conflict_does_not_mutate_runtime() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));

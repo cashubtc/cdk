@@ -1859,6 +1859,27 @@ impl MintState {
         }
     }
 
+    async fn federation_submit_responses_with_current_status(
+        &self,
+        responses: &[FederationSubmitOperationResponse],
+    ) -> Vec<FederationSubmitOperationResponse> {
+        let Some(consensus) = &self.federation_consensus else {
+            return responses.to_vec();
+        };
+        let consensus = consensus.lock().await;
+        responses
+            .iter()
+            .map(|response| {
+                let status = consensus
+                    .journal()
+                    .entry_by_operation_id(response.operation_id)
+                    .map(|entry| entry.status)
+                    .unwrap_or_else(|| response.outcome.entry().status);
+                federation_submit_response_with_status(response, status)
+            })
+            .collect()
+    }
+
     async fn remember_federation_aleph_bft_pending_sequence(
         &self,
         operation_id: FederationOperationId,
@@ -1972,6 +1993,9 @@ impl MintState {
 
         self.apply_federation_journal_entries(&entries_to_apply)
             .await?;
+        let responses = self
+            .federation_submit_responses_with_current_status(&responses)
+            .await;
         self.record_federation_sequences(&sequences).await;
         for response in &responses {
             self.notify_federation_operation(response.clone()).await;
@@ -2024,6 +2048,9 @@ impl MintState {
 
         self.apply_federation_journal_entries(&entries_to_apply)
             .await?;
+        let responses = self
+            .federation_submit_responses_with_current_status(&responses)
+            .await;
         self.record_federation_sequences(&sequences).await;
         for response in &responses {
             self.notify_federation_operation(response.clone()).await;
@@ -3005,6 +3032,21 @@ fn federation_operation_status_for_apply_error(error: &cdk::Error) -> Federation
     } else {
         FederationOperationStatus::Failed
     }
+}
+
+#[cfg(feature = "federation")]
+fn federation_submit_response_with_status(
+    response: &FederationSubmitOperationResponse,
+    status: FederationOperationStatus,
+) -> FederationSubmitOperationResponse {
+    let mut response = response.clone();
+    match &mut response.outcome {
+        FederationJournalAppendOutcome::Appended(entry)
+        | FederationJournalAppendOutcome::Duplicate(entry) => {
+            entry.status = status;
+        }
+    }
+    response
 }
 
 /// Create mint [`Router`] with required endpoints for cashu mint with the default cache
