@@ -4212,6 +4212,87 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn duplicate_federation_melt_after_sqlite_restart_returns_persisted_response() {
+        let db_file = TempMintDbFile::new("cdk-axum-fed-public-melt-restart");
+        let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        let seed = mnemonic.to_seed_normalized("");
+        let fake = FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 0.0,
+            },
+            HashMap::default(),
+            HashSet::default(),
+            0,
+            CurrencyUnit::Sat,
+        );
+        let db = Arc::new(
+            cdk_sqlite::MintSqliteDatabase::new(db_file.path())
+                .await
+                .expect("mint db"),
+        );
+        let state =
+            create_federated_test_state_with_backend_db_and_seed(Arc::new(fake), db, &seed).await;
+        let quote_id = create_federated_melt_quote(&state, 1000).await;
+        let mut change_output = outputs_for_amount_with_label(&state, 2, "melt-sqlite-restart")
+            .into_iter()
+            .next()
+            .expect("change output");
+        change_output.amount = Amount::ZERO;
+        let request = cdk::nuts::MeltRequest::new(
+            quote_id,
+            vec![proof_for_amount(&state, 4, "melt-sqlite-restart")],
+            Some(vec![change_output]),
+        );
+
+        let first = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect("first federated fake-wallet melt should settle");
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+        drop(state);
+
+        let restarted_state = restart_federated_test_state_from_db(&db_file, &seed).await;
+        assert_eq!(
+            federation_operation_kinds(&restarted_state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+
+        let duplicate = process_melt_request(
+            PreferHeader {
+                respond_async: false,
+            },
+            &restarted_state,
+            "bolt11",
+            &request,
+        )
+        .await
+        .expect(
+            "duplicate federated fake-wallet melt after restart should return persisted response",
+        );
+
+        assert_eq!(duplicate, first);
+        assert_eq!(duplicate.state(), MeltQuoteState::Paid);
+        assert!(duplicate.change().is_some());
+        assert_eq!(
+            federation_operation_kinds(&restarted_state).await,
+            vec![cdk::federation::FederationOperationKind::Melt]
+        );
+        let stats = restarted_state.federation_operation_notification_stats();
+        assert_eq!(stats.duplicate_submissions, 1);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federated_wallet_connector_aggregates_real_axum_member_routes() {
         let (listeners, member_urls) = local_member_listeners().await;
         let bundle = threshold_bundle(&member_urls);
