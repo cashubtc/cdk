@@ -1438,6 +1438,8 @@ impl Mint {
         if outputs_amount.unit() != &unit {
             return Err(Error::UnsupportedUnit);
         }
+        // Use consensus logical time so replay converges across members.
+        validate_federation_mint_quote_expiry(&quotes, federation_accepted_logical_time(entry))?;
 
         let expected_amounts =
             expected_federation_mint_amounts(&input, &quotes, outputs_amount.clone())?;
@@ -2337,6 +2339,19 @@ fn validate_federation_mint_quotes(
     }
 
     Ok((payment_method, unit))
+}
+
+fn validate_federation_mint_quote_expiry(
+    quotes: &[database::mint::Acquired<MintQuote>],
+    accepted_time: u64,
+) -> Result<(), Error> {
+    for quote in quotes {
+        if quote.expiry != 0 && quote.expiry < accepted_time {
+            return Err(Error::ExpiredQuote(quote.expiry, accepted_time));
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_federation_mint_quote_signatures(
