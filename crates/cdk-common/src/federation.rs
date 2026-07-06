@@ -66,6 +66,7 @@ pub use self::signing::{
     FederationBlindSignatureShare, FederationBlindSignatureShareSet, FederationSignatureShareRecord,
 };
 pub use self::transport::{
+    FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
     FederationDkgCommitmentRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
     FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest,
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,

@@ -85,17 +85,18 @@ Last code-confirmed audit: 2026-07-06. This checklist marks items as done only w
 
 Current confirmed shape:
 
-- Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes and request transcripts, in-memory consensus boundary, private REST peer envelopes, signed REST submit-operation consensus admission, federation journal persistence, dedicated federation signature-share and retained state-digest checkpoint persistence, durable AlephBFT finalized-item persistence, startup reload, and controlled finalized-unit application, operation-hash/output-index signature-share restore provenance, mint/swap/melt/restore/check-state apply paths, deterministic single-member production melt payment attempts, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
+- Core implemented areas: threshold BLS shares, static federation config, trusted-dealer setup, v3/BLS keyset enforcement, canonical operation hashes and request transcripts, in-memory consensus boundary, private REST peer envelopes, signed REST submit-operation consensus admission, signed AlephBFT finalized-unit delivery over private REST, federation journal persistence, dedicated federation signature-share and retained state-digest checkpoint persistence, durable AlephBFT finalized-item persistence, startup reload, and controlled finalized-unit application, operation-hash/output-index signature-share restore provenance, mint/swap/melt/restore/check-state apply paths, deterministic single-member production melt payment attempts, wallet fanout and aggregation, payment observation policy/quarantine, local regtest tooling, DKG setup-route scaffold, keyset rotation, digest comparison, and several catch-up/recovery tests.
 - Partial or intentionally deferred areas: production BFT ordering, live AlephBFT networking and finalization task integration, Iroh/NAT traversal, future deterministic binary operation encoding if a later operation version needs it, a separate `cdk-federation` crate, full dealer-free DKG replacing trusted-dealer setup, dynamic membership, protocol-version governance, comprehensive fuzzing, and a final mainnet security-review checklist.
 - Test-suite status: focused federation replay, peer-sync, peer reconnect backoff, remote pubsub reconnect backoff, peer evidence/backoff, mintd peer-sync config wiring, SQLite federation storage/query plans, SQLite empty federation migration application, live Postgres federation migration/storage coverage, feature-disabled SQLite legacy migration, standalone mint issue/swap regressions, standalone builder keyset-version regression, standalone DbSignatory regressions, session-outcome, trusted-dealer setup, trusted-dealer fakewallet regtest opt-in, deterministic accepted-time mint quote replay, operation balance audit, source- and manifest-enforced fakewallet coupling audits, deterministic trusted-dealer fixture generation, no-fake `cdk-mintd`, mintd startup-policy, payment-observation policy serialization, backend-agnostic payment-observation, payment-observation metadata/idempotence, backend-agnostic production payment-path audits, deterministic single-member production melt payment actor tests, mint storage hot-path index query-plan tests, always-on mint payment observer, durable state-digest checkpoint persistence and retention, backend-agnostic signature-share persistence, operation-hash/output-index restore provenance, fakewallet coupling audit, wallet member request timeout/retry policy tests, federation invite-code discovery tests, wallet quote-visibility and matching mint-quote status quorum tests, consensus test-module split coverage, canonical request transcript tests for NUT-20 and SIG_ALL, federated NUT-20 single and batch issuance tests, P2PK/HTLC/SIG_ALL canonical swap transcript tests, NUT-19 retry backoff, federation protocol-version metadata, mixed-version runtime and wallet rejection, stale-upgrade consensus item and catch-up rejection, 100+ operation offline catch-up, explicit 4-of-7 threshold BLS aggregation, seeded randomized threshold BLS property coverage, witness-bound operation hashing, v1 canonical operation golden vectors, operation-decoding version rejection, operation-decoding fuzz target compilation, federated swap input-reuse attack regression, and `cdk-axum` federation tests were run for recent checkpoints. The broad feature-disabled library gate `cargo test --lib --workspace --exclude cdk-postgres` passed on 2026-07-05, and the broad feature-enabled compile gate `cargo check --workspace --all-targets --exclude cdk-postgres --features federation` passed on 2026-07-05.
-- Latest checkpoint: Axum can now apply an externally finalized AlephBFT unit
-  through a durable landing path: it validates the finalized unit through the
-  roster-bound runtime, persists new finalized-item metadata and appended journal
-  entries in one database transaction, swaps the live runtime only after
-  persistence succeeds, materializes appended operations into mint state, and
-  notifies response waiters. Startup still rebuilds from the durable
-  finalized-item log and fails closed for synchronous public submissions until
-  the live AlephBFT finalization loop is wired.
+- Latest checkpoint: private REST now has a signed AlephBFT finalized-unit
+  delivery surface. Peers sign `AlephBftFinalizedUnit` messages with the
+  existing federation envelope, the receiver validates message kind, body hash,
+  sender roster membership, sequence, unit size, and unit metadata, then uses
+  the durable finalized-unit apply path. Accepted deliveries persist the sender
+  sequence with finalized items and journal rows in the same transaction; bad
+  kinds and storage conflicts leave runtime, journal, quote state, and sequence
+  state unchanged. The live AlephBFT driver that produces and broadcasts these
+  finalized units is still pending.
 
 ## Key observations
 
@@ -532,9 +533,10 @@ Architecture checklist:
   whose `submitting_member` is not in the roster before advancing unit indexes,
   marking duplicates, appending journal entries, or recording finalized items.
   Signed submit-operation admission now reuses that private REST roster check
-  before producing any consensus item.
-  Future AlephBFT wire messages still need to reuse the same roster check at
-  the networking boundary.
+  before producing any consensus item. Signed private REST finalized-unit
+  delivery now reuses the same envelope and sequence check before applying an
+  externally finalized AlephBFT unit. Future non-REST AlephBFT wire messages
+  still need to reuse the same roster check at the networking boundary.
 - [ ] Add a Fedimint-like data-provider loop that drains a bounded pending queue,
   deduplicates operation hashes locally per session, enforces max byte limits,
   and batches items without busy loops. The synchronous
@@ -558,7 +560,10 @@ Architecture checklist:
   journal, and records finalized item metadata. Axum now exposes a controlled
   finalized-unit apply path that persists the finalized-item delta and newly
   appended journal entries atomically before swapping runtime state, applying
-  materialized mint changes, and notifying response waiters.
+  materialized mint changes, and notifying response waiters. The private REST
+  federation router now exposes a signed finalized-unit delivery endpoint that
+  feeds this path and atomically stores the peer sequence with accepted
+  finalized-unit state.
   Generic dispatch-and-finalize calls for the AlephBFT adapter fail closed with
   an external-finalization-required error so local queueing cannot be mistaken
   for BFT acceptance.

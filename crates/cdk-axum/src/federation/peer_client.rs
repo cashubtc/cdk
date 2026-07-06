@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cdk::federation::{
+    FederationAlephBftFinalizedUnitRequest, FederationAlephBftFinalizedUnitResponse,
     FederationConfig, FederationDkgCommitmentRequest, FederationDkgRevealRequest,
     FederationDkgSecretShareRequest, FederationDkgSetupResponse,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalCatchUpRequest,
@@ -166,6 +167,31 @@ where
                 expected_operation_id
             );
         }
+
+        Ok(response)
+    }
+
+    pub(crate) async fn submit_aleph_bft_finalized_unit(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationAlephBftFinalizedUnitRequest,
+    ) -> anyhow::Result<FederationAlephBftFinalizedUnitResponse> {
+        request.ensure_admissible_size()?;
+        let request = self.signed_request(
+            member,
+            FederationRestMessageKind::AlephBftFinalizedUnit,
+            request.clone(),
+        )?;
+        let response: FederationAlephBftFinalizedUnitResponse = self
+            .http_post_with_timeout(
+                member,
+                "aleph-bft/finalized-units",
+                "AlephBFT finalized-unit submission",
+                &request,
+                self.sync_config.operation_submission_timeout,
+            )
+            .await?;
+        response.validate(self.federation_id, &request.payload.unit)?;
 
         Ok(response)
     }

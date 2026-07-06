@@ -1236,6 +1236,16 @@ impl MintState {
         &self,
         payload: FederationAlephBftUnitPayload,
     ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
+        self.apply_federation_aleph_bft_finalized_unit_with_sequence(payload, None)
+            .await
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) async fn apply_federation_aleph_bft_finalized_unit_with_sequence(
+        &self,
+        payload: FederationAlephBftUnitPayload,
+        sequence: Option<(MemberId, u64)>,
+    ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
         let consensus = self.federation_consensus.as_ref().ok_or_else(|| {
             cdk::Error::Custom("federation mint is missing its consensus handle".to_string())
         })?;
@@ -1253,12 +1263,15 @@ impl MintState {
             })
             .collect::<Vec<_>>();
 
-        self.persist_federation_aleph_bft_finalization(&finalized_items, &entries)
+        self.persist_federation_aleph_bft_finalization(&finalized_items, &entries, sequence)
             .await?;
         *consensus = next_consensus;
         drop(consensus);
 
         self.apply_federation_journal_entries(&entries).await?;
+        if let Some((sender, sequence)) = sequence {
+            self.record_federation_sequence(sender, sequence).await;
+        }
         for response in &responses {
             self.notify_federation_operation(response.clone()).await;
         }
@@ -1755,6 +1768,7 @@ impl MintState {
         &self,
         finalized_items: &[FederationAlephBftFinalizedItem],
         entries: &[FederationJournalEntry],
+        sequence: Option<(MemberId, u64)>,
     ) -> Result<(), cdk::Error> {
         let db = self.mint.localstore();
         let mut tx = db.begin_transaction().await?;
@@ -1762,6 +1776,9 @@ impl MintState {
             .await?;
         for entry in entries {
             tx.add_federation_journal_entry(entry).await?;
+        }
+        if let Some((sender, sequence)) = sequence {
+            tx.set_federation_member_sequence(sender, sequence).await?;
         }
         tx.commit().await?;
         Ok(())

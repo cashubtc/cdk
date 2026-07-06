@@ -526,19 +526,19 @@
       <aside class="summary panel" aria-label="Current summary">
         <div class="summary-row">
           <span class="label">Overall status</span>
-          <span class="value">The implementation plan audit continues through Milestone 4A. Axum can now durably apply externally finalized AlephBFT units while the live BFT driver remains intentionally unwired.</span>
+          <span class="value">The implementation plan audit continues through Milestone 4A. Private REST can now deliver signed externally finalized AlephBFT units into the durable apply path while the live BFT driver remains intentionally unwired.</span>
         </div>
         <div class="summary-row">
           <span class="label">Latest commit</span>
-          <span class="value">feat: apply aleph bft finalized units durably</span>
+          <span class="value">feat: deliver aleph bft finalized units over private rest</span>
         </div>
         <div class="summary-row">
           <span class="label">Current checkpoint</span>
-          <span class="value">Externally finalized AlephBFT unit payloads can now be validated, persisted as finalized-item metadata plus appended journal rows in one transaction, applied to mint state, and delivered to response waiters without treating local queueing as consensus acceptance.</span>
+          <span class="value">Authenticated peers can post `AlephBftFinalizedUnit` private REST messages; the receiver validates the signed envelope, sequence, unit size, and unit metadata, then persists finalized items, journal rows, and the peer sequence atomically before applying local mint state.</span>
         </div>
         <div class="summary-row">
           <span class="label">Next checkpoint</span>
-          <span class="value">Wire the live AlephBFT unit proposal/finalization driver into this durable landing path so public federation routes can wait on real BFT output.</span>
+          <span class="value">Wire the live AlephBFT unit proposal/finalization driver so it broadcasts finalized units through this authenticated delivery path and public routes can wait on real BFT output.</span>
         </div>
       </aside>
     </header>
@@ -827,6 +827,10 @@
           <article class="item">
             <h3>AlephBFT finalized-unit apply path</h3>
             <p>Axum can now take an externally finalized AlephBFT unit, validate it through the roster-bound runtime, persist finalized-item metadata and appended journal rows atomically, swap runtime state only after persistence, materialize mint changes, and notify waiting public handlers.</p>
+          </article>
+          <article class="item">
+            <h3>Signed AlephBFT unit delivery</h3>
+            <p>Private REST now carries `AlephBftFinalizedUnit` messages under the same signed member envelope as status, catch-up, DKG, and operation submission. Accepted deliveries store finalized-unit metadata, appended journal rows, and sender sequence state in one transaction before local apply.</p>
           </article>
           <article class="item">
             <h3>Signed REST consensus admission</h3>
@@ -2354,6 +2358,12 @@
               <td><span class="status done">Passed</span></td>
               <td>`cargo fmt --all -- --check`, `cargo check -p cdk-common --features federation`, `cargo check -p cdk-axum --features federation`, `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1`, `cargo test -p cdk-axum --features federation federation_aleph_bft_finalized_unit_ -- --test-threads 1`, and `cargo test -p cdk-axum --features federation federation_runtime_startup_ -- --test-threads 1` passed. The tests cover externally finalized unit persistence, mint-state materialization, response waiter notification, and conflict rejection without runtime or journal mutation.</td>
               <td>Attach the real AlephBFT task to this explicit unit-pull/finalize boundary and then exercise member restart/catch-up across live finalized units.</td>
+            </tr>
+            <tr>
+              <td>Signed AlephBFT finalized-unit REST delivery</td>
+              <td><span class="status done">Passed</span></td>
+              <td>`cargo check -p cdk-axum --features federation`, `cargo test -p cdk-common --features federation federation::transport::tests::signed_aleph_bft_finalized_unit_request_verifies_and_response_validates -- --test-threads 1`, `cargo test -p cdk-common --features federation federation::consensus::tests -- --test-threads 1`, and `cargo test -p cdk-axum --features federation aleph_bft -- --test-threads 1` passed. The tests cover signed request round-trip, response validation, peer-client URL/message-kind signing, route acceptance into durable finalized-item storage, materialized mint quote apply, sequence persistence, wrong-kind rejection without mutation, and storage-conflict rejection without runtime or journal mutation.</td>
+              <td>Connect live AlephBFT finalization output to this private REST delivery surface and add multi-member delivery/catch-up tests around reordered and duplicate finalized-unit broadcasts.</td>
             </tr>
             <tr>
               <td>Milestone 0 broad workspace gates</td>

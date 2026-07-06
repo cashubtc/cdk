@@ -24,6 +24,7 @@ use tracing::instrument;
 
 use crate::MintState;
 
+mod aleph_bft_routes;
 mod catch_up_routes;
 mod dkg_routes;
 mod payment_observation;
@@ -32,6 +33,7 @@ mod status_routes;
 mod sync_config;
 mod sync_loop;
 
+use self::aleph_bft_routes::post_aleph_bft_finalized_unit;
 use self::catch_up_routes::post_journal;
 use self::dkg_routes::{
     post_dkg_commitment, post_dkg_reveal, post_dkg_secret_share, post_dkg_transcript_signature,
@@ -87,6 +89,10 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
             post(post_dkg_transcript_signature),
         )
         .route("/operations", post(post_operation))
+        .route(
+            "/aleph-bft/finalized-units",
+            post(post_aleph_bft_finalized_unit),
+        )
         .route("/journal", post(post_journal))
 }
 

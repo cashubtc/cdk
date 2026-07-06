@@ -14,12 +14,14 @@ use bitcoin::secp256k1::schnorr::Signature;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
-    FederationConfig, FederationConsensusBackendKind, FederationDkgParticipantCommitment,
+    FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload, FederationConfig,
+    FederationConsensusBackendKind, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignature, FederationError, FederationId,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
     FederationOperationEnvelope, FederationOperationId, FederationStateDigest,
     InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, Result,
+    FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
 };
 use crate::nuts::nut01::BlsSecretKeyShare;
 use crate::Amount;
@@ -50,6 +52,8 @@ pub enum FederationRestMessageKind {
     DkgTranscriptSignature,
     /// Submit one operation envelope to a peer.
     SubmitOperation,
+    /// Deliver one AlephBFT unit that has already been finalized.
+    AlephBftFinalizedUnit,
     /// Request missing journal entries from a peer.
     CatchUp,
 }
@@ -63,6 +67,7 @@ impl FederationRestMessageKind {
             Self::DkgSecretShare => b"dkg_secret_share",
             Self::DkgTranscriptSignature => b"dkg_transcript_signature",
             Self::SubmitOperation => b"submit_operation",
+            Self::AlephBftFinalizedUnit => b"aleph_bft_finalized_unit",
             Self::CatchUp => b"catch_up",
         }
     }
@@ -1018,6 +1023,99 @@ impl FederationSubmitOperationResponse {
     }
 }
 
+/// Request to deliver one already-finalized AlephBFT unit to a federation peer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationAlephBftFinalizedUnitRequest {
+    /// Unit payload produced by the AlephBFT ordering layer.
+    pub unit: FederationAlephBftUnitPayload,
+}
+
+impl FederationAlephBftFinalizedUnitRequest {
+    /// Create a finalized-unit delivery request.
+    #[must_use]
+    pub fn new(unit: FederationAlephBftUnitPayload) -> Self {
+        Self { unit }
+    }
+
+    /// Reject this request if the unit payload is malformed or too large.
+    pub fn ensure_admissible_size(&self) -> super::Result<usize> {
+        self.unit
+            .ensure_within_size_limit(FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES)
+    }
+}
+
+/// Response to a finalized AlephBFT unit delivery request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationAlephBftFinalizedUnitResponse {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Federation addressed by this response.
+    pub federation_id: FederationId,
+    /// Body hash of the finalized unit accepted by the peer.
+    pub unit_body_hash: FederationAlephBftUnitBodyHash,
+    /// Operation IDs derived from the accepted unit body.
+    pub operation_ids: Vec<FederationOperationId>,
+    /// Submit responses produced for operation items in the accepted unit.
+    pub responses: Vec<FederationSubmitOperationResponse>,
+}
+
+impl FederationAlephBftFinalizedUnitResponse {
+    /// Create a response from an accepted finalized unit and its operation responses.
+    #[must_use]
+    pub fn new(
+        federation_id: FederationId,
+        unit: &FederationAlephBftUnitPayload,
+        responses: Vec<FederationSubmitOperationResponse>,
+    ) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            federation_id,
+            unit_body_hash: unit.body_hash,
+            operation_ids: unit.operation_ids.clone(),
+            responses,
+        }
+    }
+
+    /// Verify this response belongs to the expected federation and unit body.
+    pub fn validate(
+        &self,
+        expected_federation_id: FederationId,
+        unit: &FederationAlephBftUnitPayload,
+    ) -> Result<()> {
+        if self.version != FEDERATION_REST_API_VERSION {
+            return Err(FederationError::RestVersionMismatch {
+                expected: FEDERATION_REST_API_VERSION,
+                found: self.version,
+            });
+        }
+        if self.federation_id != expected_federation_id {
+            return Err(FederationError::RestFederationMismatch {
+                expected: expected_federation_id,
+                found: self.federation_id,
+            });
+        }
+        if self.unit_body_hash != unit.body_hash {
+            return Err(FederationError::AlephBftUnitBodyHashMismatch {
+                expected: unit.body_hash.to_hex(),
+                found: self.unit_body_hash.to_hex(),
+            });
+        }
+        if self.operation_ids != unit.operation_ids {
+            return Err(FederationError::AlephBftUnitOperationIdsMismatch);
+        }
+        let response_operation_ids = self
+            .responses
+            .iter()
+            .map(|response| response.operation_id)
+            .collect::<Vec<_>>();
+        if response_operation_ids != self.operation_ids {
+            return Err(FederationError::AlephBftUnitOperationIdsMismatch);
+        }
+
+        Ok(())
+    }
+}
+
 /// Request journal entries starting at the next missing index.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FederationJournalCatchUpRequest {
@@ -1470,7 +1568,8 @@ mod tests {
     use std::str::FromStr;
 
     use super::super::{
-        FederationConfig, FederationError, MemberConfigPrivate, MemberConfigPublic, ThresholdParams,
+        FederationConfig, FederationConsensusItem, FederationError, MemberConfigPrivate,
+        MemberConfigPublic, ThresholdParams,
     };
     use super::*;
     use crate::{
@@ -1964,6 +2063,61 @@ mod tests {
         let decoded: FederationSignedRequest<FederationPeerStatusRequest> =
             serde_json::from_str(&json).expect("decoded request");
         decoded.verify(&config, receiver).expect("decoded verifies");
+    }
+
+    #[test]
+    fn signed_aleph_bft_finalized_unit_request_verifies_and_response_validates() {
+        let (config, first_private, _) = transport_config();
+        let receiver = roster_member_id(2);
+        let envelope = mint_quote_envelope();
+        let operation_id = envelope.operation_id().expect("operation id");
+        let unit = FederationAlephBftUnitPayload::new(
+            config.federation_id,
+            first_private.member_id,
+            0,
+            0,
+            vec![FederationConsensusItem::operation(envelope.clone())],
+        )
+        .expect("AlephBFT unit");
+        let payload = FederationAlephBftFinalizedUnitRequest::new(unit.clone());
+        let request = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            7,
+            FederationRestMessageKind::AlephBftFinalizedUnit,
+            payload,
+            &first_private,
+        )
+        .expect("signed AlephBFT finalized-unit request");
+
+        request.verify(&config, receiver).expect("verified request");
+        request
+            .payload
+            .ensure_admissible_size()
+            .expect("admissible finalized unit");
+        let decoded: FederationSignedRequest<FederationAlephBftFinalizedUnitRequest> =
+            serde_json::from_str(
+                &serde_json::to_string(&request).expect("AlephBFT finalized-unit json"),
+            )
+            .expect("decoded request");
+        assert_eq!(
+            decoded.kind,
+            FederationRestMessageKind::AlephBftFinalizedUnit
+        );
+        decoded.verify(&config, receiver).expect("decoded verifies");
+
+        let mut journal = InMemoryFederationJournal::new();
+        let response = FederationAlephBftFinalizedUnitResponse::new(
+            config.federation_id,
+            &unit,
+            vec![FederationSubmitOperationResponse::from_outcome(
+                journal.append(envelope).expect("journal append"),
+            )],
+        );
+        response
+            .validate(config.federation_id, &unit)
+            .expect("response validates");
+        assert_eq!(response.operation_ids, vec![operation_id]);
     }
 
     #[test]
